@@ -10,10 +10,13 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
+
 from . import __version__
 from . import report as R
 from .config import Config, dump_toml
 from .service import Service
+from .solana.rpc import RpcError
 from .store import LIST_NAMES
 
 
@@ -47,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
 
     cmd("status", "database and RPC status")
+    cmd("doctor", "check RPC speed, websocket support and agent credentials")
 
     sp = cmd("config", "show / get / set configuration", json_flag=False)
     sp.add_argument("action", choices=["show", "get", "set"])
@@ -130,6 +134,47 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+async def doctor(svc: Service) -> dict:
+    """Connectivity and capability checks for a first run."""
+    import os
+
+    import websockets
+
+    from .ingest import MINT_AUTHORITY
+
+    out: dict[str, dict] = {}
+    cfg = svc.cfg
+    t0 = time.perf_counter()
+    try:
+        slot = await svc.rpc.get_slot()
+        out["rpc"] = {"ok": True, "detail": f"slot {slot} in {(time.perf_counter() - t0) * 1000:.0f} ms via {svc.status()['rpc']}"}
+    except Exception as exc:
+        out["rpc"] = {"ok": False, "detail": f"{exc} — set HELIUS_API_KEY or SNIPETECH_RPC_URL"}
+        return out
+    try:
+        sigs = await svc.rpc.get_signatures(MINT_AUTHORITY, limit=12)
+        t0 = time.perf_counter()
+        txs = await svc.rpc.get_transactions([s["signature"] for s in sigs[:12]])
+        dt = time.perf_counter() - t0
+        ok = sum(1 for t in txs.values() if t)
+        out["transactions"] = {"ok": ok == len(txs), "detail": f"{ok}/{len(txs)} recent creates fetched in {dt:.1f}s "
+                               f"(~{len(txs) / max(dt, 1e-3):.1f} tx/s; paid RPCs do 20-200)"}  # fmt: skip
+    except Exception as exc:
+        out["transactions"] = {"ok": False, "detail": str(exc)}
+    try:
+        async with websockets.connect(cfg.rpc.websocket_url(), open_timeout=10) as ws:
+            await ws.send(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe"}))
+            ack = json.loads(await asyncio.wait_for(ws.recv(), 10))
+            out["websocket"] = {"ok": "result" in ack, "detail": "subscriptions work (needed for `watch`)" if "result" in ack else str(ack)}
+    except Exception as exc:
+        out["websocket"] = {"ok": False, "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without"}
+    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    out["agent"] = {"ok": has_key, "detail": "ANTHROPIC_API_KEY found" if has_key else "set ANTHROPIC_API_KEY to use `snipetech agent`"}
+    out["config"] = {"ok": bool(cfg.path and cfg.path.exists()), "detail": str(cfg.path) if cfg.path and cfg.path.exists() else "no snipetech.toml (defaults in use) — run `snipetech init`"}
+    out["database"] = {"ok": True, "detail": f"{svc.store.path}: {svc.store.stats()}"}
+    return out
+
+
 def _snipe_overrides(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--buy", type=float, help="snipe size in SOL")
     sp.add_argument("--entry-slots", type=int, help="slots after create your buy lands")
@@ -155,6 +200,8 @@ async def _run(args, cfg: Config) -> int:
         c = args.cmd
         if c == "status":
             _out(args, svc.status(), lambda d: "\n".join(f"{k}: {v}" for k, v in d.items()))
+        elif c == "doctor":
+            _out(args, await doctor(svc), lambda d: "\n".join(f"{'OK ' if v.get('ok') else 'NO '} {k}: {v.get('detail')}" for k, v in d.items()))
         elif c == "index-launches":
             since = int(time.time() - args.hours * 3600)
             res = await svc.ingestor.backfill_launches(since, args.max)
@@ -265,3 +312,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except (httpx.HTTPError, RpcError) as exc:
+        print(
+            f"RPC error: {exc}\nEverything fetched so far is saved; re-run to resume. For speed and reliability use a "
+            "paid RPC (export HELIUS_API_KEY=... or SNIPETECH_RPC_URL=...) or lower rpc.max_rps.",
+            file=sys.stderr,
+        )
+        return 3

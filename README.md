@@ -54,7 +54,12 @@ pip install -e .            # Python 3.11+
 snipetech init              # writes snipetech.toml (see snipetech.example.toml for annotations)
 export HELIUS_API_KEY=...   # or SNIPETECH_RPC_URL=https://...  (public RPC works but is slow)
 export ANTHROPIC_API_KEY=...  # only for `snipetech agent`
+snipetech doctor            # RPC latency + tx/s, websocket support, agent credentials
 ```
+
+The public RPC works for single lookups (the client backs off automatically when rate-limited)
+but manages only ~1-2 transactions/s and drops the websocket firehose. Use a paid RPC for
+`watch`, `index-launches` and anything with lots of history.
 
 ## Workflows
 
@@ -122,6 +127,34 @@ snipetech agent -p "audit my wallet 9yQ… and tell me what to change"
 The agent (Claude Opus 5.5 with adaptive thinking, via the Anthropic tool runner) calls the same
 analyses through 15 tools. It answers from real tool output, prefers walk-forward numbers, and
 only changes lists or settings when you ask.
+
+## Example (real mainnet output, abridged)
+
+```text
+$ snipetech deployer GUjnwzeGHsjUJYEjwL43iVr3KRYKUtJeigBu396bHCms --launches 8
+VERDICT: AVOID   score 8.7/100
+  • EV +0.0098 SOL/snipe but lower bound -0.0875 is not above 0
+  • but the newest 3 launches (unseen by the optimizer) lost -0.2618 SOL/snipe
+  • rinses snipers in 50% of launches (insiders dump within 30s)
+  → skip this deployer's launches
+
+Outcomes (sniper's view):      runner 12%   rinse 50%   rug 38%
+Behaviour:
+  dev buy median 1.5012 SOL (8.2% supply)
+  insiders dump after median 20s; dev sells in 100% of launches
+  peak mcap median 35.6 SOL; graduation 0%; mayhem 100%
+  cadence: 528 launches/day, median gap 47s, median 31.5 trades per launch window
+
+Your strategy:  n=8  EV +0.0098 SOL (bound -0.0875)  win 38%  maxDD 1.1159
+Walk-forward:   picked [TP+100% SL-50% hold30s devexit] on 5 older launches →
+                unseen 3: EV -0.2618 SOL  win 0%
+
+Entry latency (slots after create):   0 → +0.018   2 → +0.066   10 → +0.040
+Recent launches:
+  3unodQ…pump  Know  rug     -0.2360  stop_loss    0.97x  dump 31s
+  7cJtWb…pump  Know  rinse   +0.4443  dev_sell     1.93x  dump 5s
+  5Ktg4o…pump  Know  runner  +0.6114  take_profit  2.23x  dump 22s
+```
 
 ## Sniper integration
 

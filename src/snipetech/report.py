@@ -125,6 +125,13 @@ def render_deployer(r: dict) -> str:
         out.append("Entry latency (slots after create):")
         out.append(table([[s["entry_slot_offset"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["win_rate"])] for s in r["latency_sweep"]],
                          ["slots", "EV", "EV bound", "win"]))
+    tr = r.get("trend") or {}
+    if len(tr.get("chunks", [])) >= 2:
+        out.append("")
+        out.append(f"Over time ({tr['label']}):")
+        out.append(table([[f"{ago(c['from_ts'])} → {ago(c['to_ts'])}", c["launches"], pct(c["rinse_rate"]), pct(c["dump_rate"]),
+                           pct(c["win_rate"]), sol(c["mean_pnl"])] for c in tr["chunks"]],
+                         ["period", "n", "rinse", "dump", "win", "EV"]))  # fmt: skip
     if r.get("patterns"):
         out.append("")
         out.append("After a dump/win/flat launch, the next one was:")
@@ -254,9 +261,11 @@ def render_backtest(r: dict) -> str:
     out.append(f"Tuned on {sp['train_launches']} launches, evaluated on the next {sp['test_launches']}. "
                f"{pct(r['repeat_deployer_share'])} of launches came from a deployer seen before.")
     out.append(f"Snipe everything — unseen: {_stats_line(r['baseline_snipe_all']['test'])}")
-    b = r["best_policy"]
-    out.append(f"Best rule [{b['policy']}] — unseen: {_stats_line(b['test'])}")
-    out.append(f"                                   tuning: {_stats_line(b['train'])}")
+    b = r.get("best_policy")
+    if b:
+        out.append(f"Best rule [{b['policy']}] — unseen: {_stats_line(b['test'])}")
+        out.append(f"   (tuning period: {_stats_line(b['train'])})")
+    out.append(f"Conclusion: {r['conclusion']}")
     out.append("")
     out.append(table([[x["policy"], x["train_n"], sol(x["train_total"]), x["test_n"], sol(x["test_total"])] for x in r["leaderboard"]],
                      ["rule", "tune n", "tune total", "test n", "test total"]))

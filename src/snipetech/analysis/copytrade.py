@@ -109,7 +109,6 @@ def simulate_copy(
     spent = proceeds = tx = 0.0
     target_held = 0.0
     entry_price = None
-    exit_prices: list[float] = []
     last_x = 0  # the copier's own transactions execute in order
     for t, i in zip(pos.trades, idxs):
         if t.is_buy:
@@ -145,7 +144,6 @@ def simulate_copy(
             net = gross * (1 - path.fee_bps[x] / 10_000)
             proceeds += net - net * costs.platform_fee_bps / 10_000
             tx += costs.per_tx_lamports
-            exit_prices.append(gross / amount)
             held -= amount
     if spent == 0:
         return None

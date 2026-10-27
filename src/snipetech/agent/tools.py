@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Any
@@ -62,6 +63,9 @@ def _slim_copy(rep: dict) -> dict:
 
 
 def make_tools(svc: Service) -> list:
+    # Overrides mutate the shared config for one analysis; parallel tool calls must not interleave.
+    override_lock = asyncio.Lock()
+
     @beta_async_tool
     async def analyze_deployer(address: str, refresh: bool = True, include_family: bool = False,
                                buy_sol: float | None = None, entry_slot_offset: int | None = None) -> str:  # fmt: skip
@@ -76,8 +80,9 @@ def make_tools(svc: Service) -> list:
             buy_sol: Override snipe size for this analysis only.
             entry_slot_offset: Override how many slots after the create tx the user's buy lands, for this analysis only.
         """
-        with _overrides(svc, {"snipe.buy_sol": buy_sol, "snipe.entry_slot_offset": entry_slot_offset}):
-            rep = await svc.analyze_deployer(address, refresh=refresh, family=include_family)
+        async with override_lock:
+            with _overrides(svc, {"snipe.buy_sol": buy_sol, "snipe.entry_slot_offset": entry_slot_offset}):
+                rep = await svc.analyze_deployer(address, refresh=refresh, family=include_family)
         return _dump(_slim_deployer(rep))
 
     @beta_async_tool
@@ -95,8 +100,10 @@ def make_tools(svc: Service) -> list:
             latency_slots: Override the user's copy latency (slots) for this analysis only.
             refresh: Fetch new on-chain history first.
         """
-        with _overrides(svc, {"copy.size_sol": size_sol, "copy.buy_latency_slots": latency_slots, "copy.sell_latency_slots": latency_slots}):
-            rep = await svc.analyze_copy(wallet, days, refresh=refresh)
+        overrides = {"copy.size_sol": size_sol, "copy.buy_latency_slots": latency_slots, "copy.sell_latency_slots": latency_slots}
+        async with override_lock:
+            with _overrides(svc, overrides):
+                rep = await svc.analyze_copy(wallet, days, refresh=refresh)
         return _dump(_slim_copy(rep))
 
     @beta_async_tool
@@ -153,8 +160,6 @@ def make_tools(svc: Service) -> list:
         Args:
             days: How far back to test.
         """
-        import asyncio
-
         rep = await asyncio.to_thread(svc.backtest, days)
         rep["leaderboard"] = rep.get("leaderboard", [])[:8]
         return _dump(rep)
@@ -184,8 +189,6 @@ def make_tools(svc: Service) -> list:
             days: Lookback in days.
             backfill_top: First fetch early-trade windows for this many of the most active repeat deployers.
         """
-        import asyncio
-
         if backfill_top:
             await svc.backfill_repeat_deployers(min_launches, backfill_top, days)
         return _dump(await asyncio.to_thread(svc.top_deployers, min_launches, days, 25))
@@ -199,8 +202,6 @@ def make_tools(svc: Service) -> list:
             days: Lookback in days.
             min_positions: Minimum closed positions.
         """
-        import asyncio
-
         return _dump(await asyncio.to_thread(svc.discover_wallets, days, min_positions, 20))
 
     @beta_async_tool

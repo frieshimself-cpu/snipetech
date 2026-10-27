@@ -266,7 +266,7 @@ class Service:
         rows = self.store.deployer_counts(min_launches, since)[:top_k]
         window = self.cfg.snipe.analysis_window_secs
         count = 0
-        for dep, n, _first, _last in rows:
+        for dep, _n, _first, _last in rows:
             launches = self.store.launches_by_deployer(dep, self.cfg.snipe.max_launches)
             self.progress(f"{dep[:8]}…: backfilling {len(launches)} launch windows")
             for l in launches:

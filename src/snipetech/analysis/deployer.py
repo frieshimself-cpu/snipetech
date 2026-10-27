@@ -126,6 +126,7 @@ def deployer_report(
         "dump_rate": recent_dump,
         "mean_pnl": float(np.mean(recent_pnl)) if recent_pnl else None,
     }
+    report["trend"] = _trend(feats)
     if n >= 20:
         report["patterns"] = _transitions([f["outcome"] for f in feats])
 
@@ -143,6 +144,31 @@ def deployer_report(
     report["verdict"] = _decide(report, cfg, n, rec_exit)
     report["launches"] = [_compact(f) for f in reversed(feats)]
     return report
+
+
+def _trend(feats: list[dict], chunks: int = 5) -> dict:
+    """Is the deployer rinsing more or less often? Chronological chunks of its launches."""
+    n = len(feats)
+    k = max(1, min(chunks, n // 3))
+    bounds = np.linspace(0, n, k + 1).astype(int)
+    rows = []
+    for a, b in zip(bounds, bounds[1:]):
+        part = feats[a:b]
+        if not part:
+            continue
+        pnl = [f["sim"]["pnl_sol"] for f in part if f.get("sim")]
+        rows.append({
+            "from_ts": part[0]["ts"], "to_ts": part[-1]["ts"], "launches": len(part),
+            "rinse_rate": sum(1 for f in part if f["outcome"] == "rinse") / len(part),
+            "dump_rate": sum(1 for f in part if f["outcome"] in ("rinse", "rug")) / len(part),
+            "win_rate": sum(1 for f in part if f["outcome"] in ("runner", "graduated")) / len(part),
+            "mean_pnl": float(np.mean(pnl)) if pnl else None,
+        })  # fmt: skip
+    label = "not enough launches"
+    if len(rows) >= 2:
+        delta = rows[-1]["dump_rate"] - rows[0]["dump_rate"]
+        label = "dumping MORE often lately" if delta >= 0.2 else ("dumping LESS often lately" if delta <= -0.2 else "stable")
+    return {"label": label, "chunks": rows}
 
 
 def _transitions(seq: list[str]) -> dict:
@@ -185,13 +211,19 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
             verdict = "AVOID"
             reasons.append(f"EV {mean:+.4f} SOL/snipe is negative")
         reasons.append(f"basis: {basis_name}")
+    if wf and wf["test"].get("n", 0) >= 3 and wf["test"].get("mean", 0.0) < 0 < basis.get("mean", 0.0):
+        reasons.append(f"but the newest {wf['test']['n']} launches (unseen by the optimizer) lost {wf['test']['mean']:+.4f} SOL/snipe")
+        verdict = {"SNIPE": "MARGINAL", "MARGINAL": "AVOID"}.get(verdict, verdict)
     rinse_rate = report["rinse_rate"]
     if rinse_rate >= 0.5:
         reasons.append(f"rinses snipers in {rinse_rate:.0%} of launches (insiders dump within {cfg.snipe.rinse_window_secs}s)")
     recent = report["recent"]
     if recent["launches"] >= 3 and recent["dump_rate"] - dump_rate >= 0.3:
         warnings.append(f"behaviour changed: last {recent['launches']} launches dumped {recent['dump_rate']:.0%} vs {dump_rate:.0%} overall")
-        if verdict == "SNIPE":
+        if recent["dump_rate"] >= 0.8 and verdict in ("SNIPE", "MARGINAL"):
+            verdict = "AVOID"
+            reasons.append(f"now dumping on snipers: {recent['dump_rate']:.0%} of the last {recent['launches']} launches")
+        elif verdict == "SNIPE":
             verdict = "MARGINAL"
     if report["profile"]["insiders_dumped_before_your_entry"] >= 0.5:
         warnings.append("insiders usually sell before your configured entry lands — you are too slow for this deployer")

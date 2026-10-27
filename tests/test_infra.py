@@ -157,3 +157,30 @@ def test_cli_parses_every_command():
                  ["agent", "-p", "hi"], ["list", "add", a, "--list", "block"], ["export", "--out", "x.json"],
                  ["index-launches", "--hours", "1"], ["mint", a], ["config", "set", "snipe.buy_sol", "1"]):  # fmt: skip
         assert p.parse_args(argv).cmd == argv[0]
+
+
+def test_rpc_waits_out_rate_limits():
+    import httpx
+
+    from snipetech.solana.rpc import SolanaRpc
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            return httpx.Response(429, headers={"retry-after": "0"})
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 1, "result": 123})
+
+    async def run():
+        rpc = SolanaRpc("http://rpc.test", max_rps=50, max_retries=1)
+        await rpc.client.aclose()
+        rpc.client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        slot = await rpc.get_slot()
+        rate = rpc.limiter.rate
+        await rpc.close()
+        return slot, rate
+
+    slot, rate = asyncio.run(run())
+    assert slot == 123 and calls["n"] == 4
+    assert rate < 50  # throttled, recovering gradually

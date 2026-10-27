@@ -32,6 +32,8 @@ class Policy:
     skip_mayhem: bool
 
     def label(self) -> str:
+        if self.min_history == 0:
+            return "every launch" + (" no-mayhem" if self.skip_mayhem else "")
         parts = [f"history>={self.min_history}"]
         if self.max_dump_rate <= 1:
             parts.append(f"dump_rate<={self.max_dump_rate:.0%}")
@@ -79,21 +81,26 @@ def policy_backtest(store: Store, cfg: Config, start_ts: int, end_ts: int, max_l
         report["error"] = "need at least 20 analyzable launches; run `snipetech watch` for a while or backfill deployers"
         return report
 
-    window = cfg.snipe.analysis_window_secs
-    history: dict[str, list[tuple[float, dict]]] = {}
+    # A past launch informs a decision only once its outcome was observable: its PnL once
+    # your exit would have happened, its "dumped" flag only if the dump had happened by then.
+    pnl_known = cfg.snipe.exit.max_hold_secs + 30
+    history: dict[str, list[dict]] = {}
     rows = []  # per launch: (ts, pnl, n_hist, dump_rate, mean_pnl, mayhem)
     for f in feats:
-        hist = [h for end, h in history.get(f["deployer"], []) if end <= f["ts"]]
+        t = f["ts"]
+        hist = [h for h in history.get(f["deployer"], []) if h["ts"] + pnl_known <= t]
         n_hist = len(hist)
-        dump = sum(1 for h in hist if h["outcome"] in ("rinse", "rug")) / n_hist if n_hist else 0.0
+        dumped = sum(1 for h in hist if h.get("insider_dump_secs") is not None and h["ts"] + h["insider_dump_secs"] <= t)
+        dump = dumped / n_hist if n_hist else 0.0
         mean_pnl = float(np.mean([h["sim"]["pnl_sol"] for h in hist])) if n_hist else 0.0
-        rows.append((f["ts"], f["sim"]["pnl_sol"], n_hist, dump, mean_pnl, bool(f.get("mayhem"))))
-        history.setdefault(f["deployer"], []).append((f["ts"] + window, f))
+        rows.append((t, f["sim"]["pnl_sol"], n_hist, dump, mean_pnl, bool(f.get("mayhem"))))
+        history.setdefault(f["deployer"], []).append(f)
 
-    arr = np.array([(r[0], r[1], r[2], r[3], r[4], r[5]) for r in rows], dtype=np.float64)
+    arr = np.array(rows, dtype=np.float64)
     ts, pnl, n_hist, dump, mean_pnl, mayhem = arr.T
-    cut_ts = ts[0] + (ts[-1] - ts[0]) * TRAIN_SHARE
-    train, test = ts <= cut_ts, ts > cut_ts
+    cut = int(np.ceil(len(arr) * TRAIN_SHARE))  # chronological split by launch count
+    train = np.arange(len(arr)) < cut
+    test = ~train
 
     def mask_for(p: Policy) -> np.ndarray:
         m = n_hist >= p.min_history
@@ -111,27 +118,41 @@ def policy_backtest(store: Store, cfg: Config, start_ts: int, end_ts: int, max_l
         tr, te = pnl[m & train], pnl[m & test]
         results.append({"policy": p.label(), "train_total": float(tr.sum()), "train_n": int(len(tr)),
                         "test_total": float(te.sum()), "test_n": int(len(te)), "_p": p})  # fmt: skip
-    eligible = [r for r in results if r["train_n"] >= 10] or results
+    min_trades = max(5, int(train.sum() * 0.05))
+    eligible = [r for r in results if r["train_n"] >= min_trades]
+    report["split"] = {"train_until_ts": int(ts[cut - 1]), "train_launches": int(train.sum()), "test_launches": int(test.sum())}
+    report["baseline_snipe_all"] = {"train": summarize(pnl[train], conf, samples), "test": summarize(pnl[test], conf, samples)}
+    report["repeat_deployer_share"] = float((n_hist > 0).mean())
+    report["leaderboard"] = [
+        {k: v for k, v in r.items() if k != "_p"} for r in sorted(results, key=lambda r: -r["train_total"])[:12]
+    ]
+    if not eligible or max(r["train_total"] for r in eligible) <= 0:
+        report["best_policy"] = None
+        report["conclusion"] = (
+            "no rule made money in the tuning period — skipping everything beat every rule "
+            "(collect more history with `snipetech watch`, or change entry/exit settings)"
+        )
+        return report
     best = max(eligible, key=lambda r: r["train_total"])
     bm = mask_for(best["_p"])
-    report["split"] = {"train_until_ts": int(cut_ts), "train_launches": int(train.sum()), "test_launches": int(test.sum())}
-    report["baseline_snipe_all"] = {"train": summarize(pnl[train], conf, samples), "test": summarize(pnl[test], conf, samples)}
     report["best_policy"] = {
         "policy": best["policy"],
         "rule": best["_p"].__dict__,
         "train": summarize(pnl[bm & train], conf, samples),
         "test": summarize(pnl[bm & test], conf, samples),
     }
-    report["leaderboard"] = [
-        {k: v for k, v in r.items() if k != "_p"} for r in sorted(results, key=lambda r: -r["train_total"])[:12]
-    ]
-    report["repeat_deployer_share"] = float((n_hist > 0).mean())
+    test_total = float(pnl[bm & test].sum())
+    verdict = "holds up" if test_total > 0 else "did NOT hold up out of sample — don't trade it"
+    report["conclusion"] = (
+        f"rule [{best['policy']}] made {test_total:+.4f} SOL on unseen launches vs "
+        f"{float(pnl[test].sum()):+.4f} SOL sniping everything: {verdict}"
+    )
     return report
 
 
 def top_deployers(store: Store, cfg: Config, min_launches: int = 3, since_ts: int = 0, limit: int = 30) -> list[dict]:
     out = []
-    for dep, count, first_ts, last_ts in store.deployer_counts(min_launches, since_ts)[: limit * 4]:
+    for dep, count, _first_ts, last_ts in store.deployer_counts(min_launches, since_ts)[: limit * 4]:
         launches = analyzable_launches_for(store, cfg, dep)
         if len(launches) < min_launches:
             continue
