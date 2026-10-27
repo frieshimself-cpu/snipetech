@@ -184,3 +184,39 @@ def test_rpc_waits_out_rate_limits():
     slot, rate = asyncio.run(run())
     assert slot == 123 and calls["n"] == 4
     assert rate < 50  # throttled, recovering gradually
+
+
+class PagingRpc:
+    """getSignaturesForAddress over a synthetic newest-first history (no transactions)."""
+
+    def __init__(self, n: int):
+        self.history = [{"signature": f"s{i:05d}", "slot": 1000 + i, "blockTime": 1_700_000_000 + i, "err": None}
+                        for i in range(n)][::-1]  # fmt: skip
+
+    def add(self, k: int) -> None:
+        start = len(self.history)
+        new = [{"signature": f"s{i:05d}", "slot": 1000 + i, "blockTime": 1_700_000_000 + i, "err": None}
+               for i in range(start, start + k)][::-1]  # fmt: skip
+        self.history = new + self.history
+
+    async def get_signatures(self, address, before=None, until=None, limit=1000):
+        sigs = [s["signature"] for s in self.history]
+        i = sigs.index(before) + 1 if before else 0
+        j = sigs.index(until) if until else len(sigs)
+        return self.history[i:j][:limit]
+
+    async def get_transactions(self, sigs):
+        return {s: None for s in sigs}
+
+
+def test_backfill_address_is_incremental():
+    store = Store(":memory:")
+    rpc = PagingRpc(2500)
+    ing = Ingestor(store, rpc)
+    _, first = asyncio.run(ing.backfill_address("A", max_sigs=1200))
+    assert len(first) == 1200 and store.coverage("addr:A")["exhausted"] is False
+    _, second = asyncio.run(ing.backfill_address("A", max_sigs=5000))  # resumes older history
+    assert len(second) == 1300 and store.coverage("addr:A")["exhausted"] is True
+    rpc.add(7)
+    _, third = asyncio.run(ing.backfill_address("A", max_sigs=5000))  # only the new ones
+    assert [s["signature"] for s in third] == [f"s{i:05d}" for i in range(2506, 2499, -1)]
