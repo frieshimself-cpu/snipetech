@@ -459,28 +459,31 @@ def _config_block(rep: dict) -> dict:
 def top_snipers(store: Store, cfg: Config, since_ts: int, min_snipes: int = 5, limit: int = 30) -> list[dict]:
     """Wallets that repeatedly land in the first slots of launches, ranked by realized PnL there."""
     horizon = cfg.snipe.competition_slots
-    rows = store._q(
-        """SELECT t.user, COUNT(DISTINCT t.mint) n, AVG(t.slot - l.slot) d FROM trades t JOIN launches l ON l.mint = t.mint
+    early = store._q(
+        """SELECT t.user, t.mint, t.sig, t.slot - l.slot, t.quote + t.fee FROM trades t JOIN launches l ON l.mint = t.mint
            WHERE t.is_buy = 1 AND t.ts >= ? AND t.slot - l.slot BETWEEN 0 AND ? AND t.sig != l.sig
-             AND t.user != l.user AND t.user != l.creator
-           GROUP BY t.user HAVING n >= ? ORDER BY n DESC LIMIT 500""",
-        (since_ts, horizon, min_snipes),
+             AND t.user != l.user AND t.user != l.creator""",
+        (since_ts, horizon),
     )
+    by_user: dict[str, list[tuple]] = defaultdict(list)
+    for user, mint, sig, delay, cost in early:
+        if user not in PROTOCOL_WALLETS:
+            by_user[user].append((mint, sig, delay, cost))
     out = []
-    for user, n, avg_delay in rows:
-        if user in PROTOCOL_WALLETS:
+    for user, buys in by_user.items():
+        mints = {b[0] for b in buys}
+        if len(mints) < min_snipes:
             continue
         positions = [p for p in group_positions(store.trades_for_user(user, since_ts)) if p.closed]
         pnl = [sum(t.signed_quote for t in p.trades) / LAMPORTS for p in positions]
-        buys = [t for p in positions for t in p.trades if t.is_buy]
-        metas = store.tx_meta([t.sig for t in buys[:200]])
+        metas = store.tx_meta([b[1] for b in buys[:300]])
         bribes = [m.bribe_lamports / LAMPORTS for m in metas.values()]
         s = summarize(pnl, cfg.verdict.confidence, 500) if pnl else {"n": 0}
         out.append({
-            "wallet": user, "snipes": n, "avg_delay_slots": float(avg_delay), "closed": len(pnl),
+            "wallet": user, "snipes": len(mints), "avg_delay_slots": float(np.mean([b[2] for b in buys])), "closed": len(pnl),
             "total_pnl": s.get("total"), "mean_pnl": s.get("mean"), "ev_lower": s.get("ev_lower"), "win_rate": s.get("win_rate"),
             "median_bribe_sol": float(np.median(bribes)) if bribes else None,
-            "median_buy_sol": float(np.median([(t.quote + t.fee) / LAMPORTS for t in buys])) if buys else None,
+            "median_buy_sol": float(np.median([b[3] for b in buys])) / LAMPORTS,
         })  # fmt: skip
     out.sort(key=lambda r: (r["total_pnl"] if r["total_pnl"] is not None else -1e9), reverse=True)
     return out[:limit]
