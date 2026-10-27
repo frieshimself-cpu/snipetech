@@ -165,3 +165,11 @@ def test_deployer_that_switched_to_rinsing(store, cfg):
     assert rep["trend"]["chunks"][0]["dump_rate"] == 0 and rep["trend"]["chunks"][-1]["dump_rate"] == 1
     assert rep["verdict"]["verdict"] == "AVOID"
     assert any("behaviour changed" in w for w in rep["verdict"]["warnings"])
+
+
+def test_avoid_never_recommends_a_size(store, cfg):
+    d = addr("rinser-size")
+    for i in range(8):
+        rinse_launch(store, i, d, NOW - 90_000 + i * 3600, 7_000_000 + i * 10_000)
+    rep = deployer_report(store, cfg, d, store.launches_by_deployer(d))
+    assert rep["verdict"]["verdict"] == "AVOID" and rep["verdict"]["recommended"]["buy_sol"] == 0.0

@@ -251,7 +251,8 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
         rinse_rate=rinse_rate,
         dump_rate=dump_rate,
         recommended={
-            "buy_sol": size_row["buy_sol"] if size_row else (cfg.snipe.buy_sol if verdict == "SNIPE" else 0.0),
+            # never hand the sniper a size for a deployer it should skip
+            "buy_sol": (size_row["buy_sol"] if size_row else cfg.snipe.buy_sol) if verdict in ("SNIPE", "MARGINAL") else 0.0,
             "exit": rec_exit.to_dict(),
             "exit_label": rec_exit.label(),
         },

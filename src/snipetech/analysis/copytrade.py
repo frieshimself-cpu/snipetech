@@ -410,7 +410,8 @@ def _decide(report: dict, cfg: Config, params: CopyParams, span_days: float) -> 
         "positions_per_day": per_day,
         "projected_monthly_sol": monthly,
         "recommended": {
-            "size_sol": max(report["size_sweep"], key=lambda r: r["ev_lower"])["size_sol"] if report["size_sweep"] else params.size_sol,
+            "size_sol": (max(report["size_sweep"], key=lambda r: r["ev_lower"])["size_sol"] if report["size_sweep"] else params.size_sol)
+            if verdict in ("COPY", "COPY_FILTERED", "MARGINAL") else 0.0,
             "filters": filt["picked"] if filt else None,
             "own_exit": (report.get("own_exits") or {}).get("picked"),
         },
