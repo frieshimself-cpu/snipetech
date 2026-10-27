@@ -62,7 +62,13 @@ def test_ingest_fixture_transactions():
     )
     res = asyncio.run(ing.ingest(infos))
     assert res.fetched == len(TXS)
-    assert res.launches == 2
+    from snipetech.solana.tx import extract_from_transaction
+
+    creates = sum(1 for s, t in TXS.items() for e in extract_from_transaction(t, s).events if e.name == "CreateEvent")
+    assert res.launches == creates == 3
+    assert store.stats()["launches"] == 3
+    # every trade transaction was fingerprinted
+    assert len(store.missing_tx_meta(list(TXS))) == 0
     assert res.trades >= len(TXS) - 2
     # second pass is free: everything is marked seen
     again = asyncio.run(ing.ingest(infos))

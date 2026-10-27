@@ -104,3 +104,24 @@ def dead_launch(store: Store, i: int, deployer: str, ts: int, slot: int) -> Mark
     m.buy(addr(f"lonely-{i}"), 0.1, 30)
     m.commit()
     return m
+
+
+def fingerprint(store: Store, trade: Trade, bribe_sol: float, payer: str | None = None, signers: list[str] | None = None,
+                service: str = "jito") -> None:
+    """Attach a transaction fingerprint (what the tx paid to land) to a synthetic trade."""
+    from snipetech.solana.programs import PUMP_PROGRAM
+    from snipetech.solana.txmeta import PumpIx, TxMeta
+
+    lamports = int(bribe_sol * 1e9)
+    tip = lamports // 2
+    meta = TxMeta(
+        sig=trade.sig, slot=trade.slot, block_time=trade.ts, version=0, fee_payer=payer or trade.user,
+        signers=signers or [payer or trade.user], n_signatures=1, fee=5_000 + (lamports - tip),
+        priority_lamports=lamports - tip, cu_limit=100_000, cu_price=(lamports - tip) * 10, cu_consumed=60_000,
+        tips=[{"dest": "jito-tip", "lamports": tip, "service": service}] if tip else [],
+        pump_ixs=[PumpIx(PUMP_PROGRAM, "buy" if trade.is_buy else "sell", trade.user,
+                         {"amount": trade.base, "max_sol_cost": int((trade.quote + trade.fee) * 1.25)} if trade.is_buy
+                         else {"amount": trade.base, "min_sol_output": 0}, None)],
+        template=["cb:limit", "cb:price", "pump:buy" if trade.is_buy else "pump:sell", "system:transfer"],
+    )  # fmt: skip
+    store.add_tx_meta([meta])

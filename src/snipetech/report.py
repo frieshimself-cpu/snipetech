@@ -74,7 +74,8 @@ def render_deployer(r: dict) -> str:
     out += _verdict_block(v)
     rec = v.get("recommended") or {}
     if rec and v.get("verdict") in ("SNIPE", "MARGINAL") and rec.get("buy_sol"):
-        out.append(f"  → recommended: buy {rec.get('buy_sol')} SOL, exit [{rec.get('exit_label')}]")
+        bribe = f", pay ~{rec['bribe_sol']:g} SOL priority+tip to land ahead of the other snipers" if rec.get("bribe_sol") else ""
+        out.append(f"  → recommended: buy {rec.get('buy_sol')} SOL, exit [{rec.get('exit_label')}]{bribe}")
     elif v.get("verdict") == "AVOID":
         out.append("  → skip this deployer's launches")
     out.append("")
@@ -125,6 +126,7 @@ def render_deployer(r: dict) -> str:
         out.append("Entry latency (slots after create):")
         out.append(table([[s["entry_slot_offset"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["win_rate"])] for s in r["latency_sweep"]],
                          ["slots", "EV", "EV bound", "win"]))
+    out += render_competition(r.get("competition"), r.get("tip_sweep"))
     tr = r.get("trend") or {}
     if len(tr.get("chunks", [])) >= 2:
         out.append("")
@@ -144,6 +146,44 @@ def render_deployer(r: dict) -> str:
              f"{l['max_multiple']:.2f}x", l["insider_dump_secs"], l["peak_mcap_sol"]] for l in r["launches"][:15]]  # fmt: skip
     out.append(table(rows, ["mint", "symbol", "when", "outcome", "pnl", "exit", "max", "dump s", "peak mc"]))
     return "\n".join(out)
+
+
+def render_competition(comp: dict | None, sweep: dict | None) -> list[str]:
+    if not comp or not comp.get("launches"):
+        return []
+    out = ["", "Competition (outside snipers landing in the first slots):"]
+    if not comp["launches_with_snipers"]:
+        out.append("  no outside snipers on these launches")
+        return out
+    b = comp.get("sniper_bribes") or {}
+    out.append(f"  snipers on {pct(comp['launches_with_snipers'])} of launches, median {comp['median_snipers']:.0f} (max {comp['max_snipers']}), "
+               f"{pct(comp['slot0_sniper_share'])} land in the creation slot; their bribes p50 {b.get('p50_sol', 0):.4f} / "
+               f"p90 {b.get('p90_sol', 0):.4f} SOL")
+    if comp.get("fee_order_agreement") is not None:
+        out.append(f"  the higher bribe landed first in {pct(comp['fee_order_agreement'])} of same-slot pairs (n={comp['fee_order_pairs']})"
+                   f"; fingerprinted {pct(comp['fingerprinted_share'])} of sniper txs")
+    out.append(f"  landing services {comp['services']}; routers {comp['routers']}; instructions {comp['instructions']}")
+    if comp.get("bribe_to_rank"):
+        out.append(table([[f"#{x['rank']}", f"{x['p50_sol']:.4f}", f"{x['p75_sol']:.4f}", f"{x['p90_sol']:.4f}", x["launches"]] for x in comp["bribe_to_rank"]],
+                         ["land at", "p50 SOL", "p75 SOL", "p90 SOL", "launches"]))
+    if sweep and sweep.get("rows"):
+        out.append("")
+        out.append(f"Bribe sweep — EV if you pay this much (priority + tip) on your buy, exits [{sweep['exit']}]:")
+        out.append(table([[f"{x['bribe_sol']:g}", x["median_rank"], pct(x["first_share"]), sol(x["mean_pnl"]), sol(x["ev_lower"]), pct(x["win_rate"])]
+                          for x in sweep["rows"]], ["bribe SOL", "rank", "first", "EV", "EV bound", "win"]))  # fmt: skip
+        wf = sweep.get("walk_forward")
+        if wf:
+            out.append(f"  picked {wf['picked_bribe_sol']:g} SOL on {wf['train_launches']} older launches → unseen {wf['test_launches']}: {_stats_line(wf['test'])}")
+        out.append(f"  (assumes {sweep['assumes']})")
+    comps = comp.get("competitors") or []
+    if comps:
+        out.append("")
+        out.append("Snipers you race most (`snipetech sniper <wallet>` reverse-engineers one):")
+        out.append(table([[c["wallet"], c["launches"], c["median_rank"], c["median_slot_delay"],
+                           "-" if c["median_bribe_sol"] is None else f"{c['median_bribe_sol']:.4f}", f"{c['median_buy_sol']:.3f}",
+                           sol(c["total_pnl_sol"]), pct(c["win_rate"])] for c in comps[:8]],
+                         ["wallet", "launches", "rank", "slots", "bribe", "buy SOL", "pnl", "win"]))  # fmt: skip
+    return out
 
 
 def render_copy(r: dict) -> str:
@@ -289,4 +329,59 @@ def render_wallets(rows: list[dict]) -> str:
     out.append(table([[w["wallet"], w["positions"], sol(w["total_pnl"]), sol(w["mean_pnl"]), sol(w["ev_lower"]), pct(w["win_rate"]),
                        w["median_hold_secs"], pct(w["sniper_share"])] for w in rows],
                      ["wallet", "n", "total", "mean", "bound", "win", "hold s", "sniper"]))  # fmt: skip
+    return "\n".join(out)
+
+
+def render_sniper(r: dict) -> str:
+    out = [f"Sniper {r['address']}", "=" * 72]
+    if r.get("note"):
+        return "\n".join(out + [r["note"]])
+    ex = r.get("exact") or {}
+    out.append(f"{r['positions']} positions from {r['trades']} trades; {ex.get('fingerprinted_trades', 0)}/{ex.get('trades', 0)} trade txs fingerprinted")
+    out.append("")
+    out.append("Reconstructed settings  ([exact] = read from its transactions, [inferred] = from its behaviour)")
+    for k, v in (r.get("config") or {}).items():
+        out.append(f"  {k:<26} {v}")
+    perf = r.get("performance") or {}
+    out.append("")
+    out.append(f"Results: {_stats_line(perf)}")
+    act = r.get("activity") or {}
+    out.append(f"Activity: {act.get('positions_per_day', 0):.1f} positions/day, busiest UTC hours {act.get('busiest_hours_utc')}")
+    t = r.get("targets") or {}
+    if t.get("top_deployers"):
+        out.append(f"Targets: {t['distinct_deployers']} deployers; top " + ", ".join(f"{short(d['deployer'])}×{d['positions']}" for d in t["top_deployers"][:5])
+                   + (f"; mayhem {pct(t.get('mayhem_share'))}" if t.get("mayhem_share") is not None else ""))
+    sel = r.get("selection")
+    if sel and sel.get("note"):
+        out.append(f"Filters: {sel['note']}")
+    elif sel:
+        out.append(f"Filters: sniped {sel['picked']} of {sel['population']} launches in its active period ({pct(sel['pick_rate'])})")
+    rel = r.get("related_wallets") or []
+    if rel:
+        out.append("Likely same operator: " + "; ".join(f"{w['wallet']} ({w['why'].strip()})" for w in rel[:5]))
+    rp = r.get("recent_positions") or []
+    if rp:
+        out.append("")
+        out.append(table([[short(p["mint"]), ago(p["ts"]), f"{p['buy_sol']:.3f}", p.get("entry_delay_slots"), p.get("rank"), sol(p.get("pnl_sol")),
+                           " ".join(p.get("exits") or [])] for p in rp], ["mint", "when", "buy", "slots", "rank", "pnl", "exits"]))  # fmt: skip
+    return "\n".join(out)
+
+
+def render_snipers(rows: list[dict]) -> str:
+    out = ["Snipers landing in the first slots of indexed launches, by realized PnL", "=" * 72]
+    out.append(table([[w["wallet"], w["snipes"], f"{w['avg_delay_slots']:.1f}", w["closed"], sol(w["total_pnl"]), sol(w["mean_pnl"]), pct(w["win_rate"]),
+                       "-" if w["median_bribe_sol"] is None else f"{w['median_bribe_sol']:.4f}",
+                       "-" if w["median_buy_sol"] is None else f"{w['median_buy_sol']:.3f}"] for w in rows],
+                     ["wallet", "snipes", "slots", "closed", "total", "mean", "win", "bribe", "buy"]))  # fmt: skip
+    out.append("Reverse-engineer one with `snipetech sniper <wallet>`.")
+    return "\n".join(out)
+
+
+def render_profitable_devs(rows: list[dict]) -> str:
+    out = ["Dev wallets ranked by what sniping them earns you (with the bribe to land ahead of other snipers)", "=" * 72]
+    out.append(table([[d["deployer"], d["verdict"], d["analyzed"], sol(d["ev_sol"]), sol(d["ev_lower_sol"]), pct(d["dump_rate"]),
+                       d["snipers_per_launch"], "-" if d["bribe_first_p75_sol"] is None else f"{d['bribe_first_p75_sol']:.4f}",
+                       "-" if d["best_bribe_sol"] is None else f"{d['best_bribe_sol']:g}", sol(d["ev_at_best_bribe"])] for d in rows],
+                     ["deployer", "verdict", "n", "EV", "bound", "dump", "snipers", "bribe #1", "best bribe", "EV@bribe"]))  # fmt: skip
+    out.append("EV/bound: your configured strategy; EV@bribe: paying the best bribe on your buy. Drill in with `snipetech deployer <wallet>`.")
     return "\n".join(out)

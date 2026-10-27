@@ -108,6 +108,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=30)
     sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch trade windows for the K most active repeat deployers")
 
+    sp = cmd("sniper", "reverse-engineer another sniper: exact fees/tips/slippage/router + inferred entries, exits, filters")
+    sp.add_argument("wallet")
+    sp.add_argument("--days", type=float, default=3.0)
+    sp.add_argument("--no-refresh", action="store_true")
+
+    sp = cmd("snipers", "leaderboard of wallets that land in the first slots of launches, by realized PnL")
+    sp.add_argument("--days", type=float, default=3.0)
+    sp.add_argument("--min-snipes", type=int, default=5)
+    sp.add_argument("--limit", type=int, default=30)
+
+    sp = cmd("profitable-devs", "dev wallets that are profitable to snipe, with the bribe needed to land early")
+    sp.add_argument("--min-launches", type=int, default=3)
+    sp.add_argument("--days", type=float, default=7.0)
+    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch + fingerprint trade windows for the K most active repeat deployers")
+
+    sp = cmd("label", "name an address (router program, tip/fee destination, wallet) in reports")
+    sp.add_argument("address")
+    sp.add_argument("name")
+    sp.add_argument("--kind", choices=["service", "router", "wallet"], default="service")
+
     sp = cmd("discover-wallets", "find consistently profitable wallets (copy candidates) in indexed data")
     sp.add_argument("--days", type=float, default=3.0)
     sp.add_argument("--min-positions", type=int, default=5)
@@ -244,6 +265,14 @@ async def _run(args, cfg: Config) -> int:
                 await svc.backfill_repeat_deployers(args.min_launches, args.backfill, args.days)
             rows = await asyncio.to_thread(svc.top_deployers, args.min_launches, args.days, args.limit)
             _out(args, rows, R.render_top_deployers)
+        elif c == "sniper":
+            _out(args, await svc.profile_sniper(args.wallet, args.days, refresh=not args.no_refresh), R.render_sniper)
+        elif c == "snipers":
+            _out(args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers)
+        elif c == "profitable-devs":
+            _out(args, await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill), R.render_profitable_devs)
+        elif c == "label":
+            _out(args, svc.label(args.address, args.name, args.kind))
         elif c == "discover-wallets":
             rows = await asyncio.to_thread(svc.discover_wallets, args.days, args.min_positions, args.limit)
             _out(args, rows, R.render_wallets)

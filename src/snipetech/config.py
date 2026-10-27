@@ -68,6 +68,7 @@ class SnipeConfig:
     rinse_window_secs: int = 30  # insiders dumping within this window = rinse
     rinse_dump_fraction: float = 0.5  # share of insider bag sold to count as a dump
     runner_multiple: float = 2.0  # position value multiple that counts as a runner
+    competition_slots: int = 3  # outside buyers landing within this many slots of the create are "snipers"
     exit: ExitConfig = field(default_factory=ExitConfig)
 
 

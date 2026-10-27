@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .analysis.audit import audit_report
+from .analysis.sniper import sniper_profile, top_snipers
 from .analysis.copytrade import copy_report
 from .analysis.deployer import deployer_report
 from .analysis.launches import build_context
@@ -119,6 +120,8 @@ class Service:
                     self.progress(f"funder lookup failed: {exc}")
         closed_before = int(time.time()) - window
         launches = self.store.launches_by_deployer(address, limit, before_ts=closed_before)
+        if refresh:
+            await self.fingerprint_early_trades(launches)
         launches += [l for l in self.store.launches_by_deployer(address) if l.ts > closed_before]
         label = None
         if family and funder and funder.get("funder"):
@@ -134,6 +137,16 @@ class Service:
         )
         self.store.put_score("deployer", address, compact_deployer(report))
         return report
+
+    async def fingerprint_early_trades(self, launches: list[Launch]) -> int:
+        """Make sure creates and the first slots of trades carry transaction fingerprints
+        (fees, tips, routers) — needed to see what competing snipers paid."""
+        horizon = self.cfg.snipe.competition_slots
+        sigs: list[str] = []
+        for l in launches:
+            sigs.append(l.sig)
+            sigs += [t.sig for t in self.store.trades_for_mint(l.mint, l.ts - 1, l.ts + 60) if t.slot <= l.slot + horizon]
+        return await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
 
     def deployer_verdict(self, address: str) -> dict:
         """Fast path for the sniper: cached verdict + list overrides, no RPC."""
@@ -236,6 +249,77 @@ class Service:
                 if launch:
                     await ing.backfill_mint_window(mint, launch.ts - 1, launch.ts + self.cfg.snipe.analysis_window_secs)
         return await asyncio.to_thread(audit_report, self.store, self.cfg, wallet, since)
+
+    # -- other snipers ------------------------------------------------------------------------
+
+    async def profile_sniper(self, wallet: str, days: float = 3.0, refresh: bool = True) -> dict:
+        """Reverse-engineer a competing sniper's settings and behaviour from its transactions."""
+        wallet = self._check(wallet)
+        since = int(time.time() - days * 86400)
+        if refresh:
+            ing = self.ingestor
+            await ing.backfill_wallet_trades(wallet, since, self.cfg.copy.max_signatures)
+            firsts: dict[str, int] = {}
+            for t in self.store.trades_for_user(wallet, since):
+                firsts.setdefault(t.mint, t.ts)
+            self.progress(f"locating launches for {len(firsts)} tokens")
+            launches = []
+            for mint, ts in firsts.items():
+                if not self.store.launch(mint):
+                    await ing.backfill_mint_window(mint, ts - 120, ts + 2)
+                launch = self.store.launch(mint)
+                if launch and ts - launch.ts <= self.cfg.snipe.analysis_window_secs:
+                    await ing.backfill_mint_window(mint, launch.ts - 1, launch.ts + self.cfg.snipe.analysis_window_secs)
+                    launches.append(launch)
+            await ing.ensure_tx_meta([t.sig for t in self.store.trades_for_user(wallet, since)])
+            await self.fingerprint_early_trades(launches)
+            if self.cfg.live.funder_lookup and self.store.funder(wallet) is None:
+                try:
+                    await ing.find_funder(wallet)
+                except Exception as exc:
+                    self.progress(f"funder lookup failed: {exc}")
+        report = await asyncio.to_thread(sniper_profile, self.store, self.cfg, wallet, since)
+        self.store.put_score("sniper", wallet, {"address": wallet, "config": report.get("config"), "performance": report.get("performance")})
+        return report
+
+    def top_snipers(self, days: float = 3.0, min_snipes: int = 5, limit: int = 30) -> list[dict]:
+        return top_snipers(self.store, self.cfg, int(time.time() - days * 86400), min_snipes, limit)
+
+    async def profitable_devs(self, min_launches: int = 3, days: float = 7.0, limit: int = 20, backfill: int = 0) -> list[dict]:
+        """Repeat deployers ranked by what sniping them earns you, incl. the bribe to land early."""
+        since = int(time.time() - days * 86400)
+        if backfill:
+            await self.backfill_repeat_deployers(min_launches, backfill, days)
+        rows = []
+        window = self.cfg.snipe.analysis_window_secs
+        for dep, count, _first, _last in self.store.deployer_counts(min_launches, since)[: limit * 3]:
+            launches = [l for l in self.store.launches_by_deployer(dep, self.cfg.snipe.max_launches, before_ts=int(time.time()) - window)
+                        if self.store.coverage(f"mint:{l.mint}").get("from_ts", 1 << 62) <= l.ts]  # fmt: skip
+            if len(launches) < min_launches:
+                continue
+            if backfill:
+                await self.fingerprint_early_trades(launches)
+            rep = await asyncio.to_thread(deployer_report, self.store, self.cfg, dep, launches, self.store.funder(dep), None, False)
+            self.store.put_score("deployer", dep, compact_deployer(rep))
+            v = rep["verdict"]
+            sweep = rep.get("tip_sweep") or {}
+            best = max(sweep.get("rows") or [{}], key=lambda r: r.get("ev_lower", -1e9))
+            comp = rep.get("competition") or {}
+            r1 = next((x for x in comp.get("bribe_to_rank") or [] if x["rank"] == 1), {})
+            rows.append({
+                "deployer": dep, "launches": count, "analyzed": rep["launches_analyzed"], "verdict": v["verdict"],
+                "ev_sol": v.get("ev_sol"), "ev_lower_sol": v.get("ev_lower_sol"), "dump_rate": rep.get("dump_rate"),
+                "snipers_per_launch": comp.get("median_snipers"), "bribe_first_p75_sol": r1.get("p75_sol"),
+                "best_bribe_sol": best.get("bribe_sol"), "ev_at_best_bribe": best.get("mean_pnl"),
+                "ev_lower_at_best_bribe": best.get("ev_lower"), "recommended": v.get("recommended"),
+            })  # fmt: skip
+        order = {"SNIPE": 0, "MARGINAL": 1, "INSUFFICIENT_DATA": 2, "AVOID": 3, "UNKNOWN": 4}
+        rows.sort(key=lambda r: (order.get(r["verdict"], 5), -(r["ev_lower_at_best_bribe"] if r["ev_lower_at_best_bribe"] is not None else -1e9)))
+        return rows[:limit]
+
+    def label(self, address: str, label: str, kind: str = "service") -> dict:
+        self.store.set_label(self._check(address), label, kind)
+        return {"address": address, "label": label, "kind": kind}
 
     # -- research ------------------------------------------------------------------------------
 

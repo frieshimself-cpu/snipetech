@@ -5,6 +5,7 @@ GET  /v1/deployer/{address}            cached verdict (+ list overrides, family 
 GET  /v1/deployer/{address}?refresh=1  backfill + full re-analysis (slow; seconds to minutes)
 GET  /v1/mint/{mint}                   the launch and its deployers' verdicts
 GET  /v1/copy/{wallet}                 cached copytrade verdict  (?refresh=1 to recompute)
+GET  /v1/sniper/{wallet}               reconstructed settings of another sniper (?refresh=1 to recompute)
 GET  /v1/rules                         everything in one document (same as `snipetech export`)
 GET  /v1/signals?since={id}            live signals emitted by `snipetech watch`
 GET  /v1/lists
@@ -85,6 +86,10 @@ def make_handler(svc: Service, api_key: str, loop: _Loop):
                     if refresh:
                         loop.run(svc.analyze_copy(p[1]))
                     return self._send(200, svc.store.get_score("copy", p[1]) or {"address": p[1], "verdict": "UNKNOWN"})
+                if method == "GET" and len(p) == 2 and p[0] == "sniper":
+                    if refresh:
+                        loop.run(svc.profile_sniper(p[1], float(q.get("days", 3))))
+                    return self._send(200, svc.store.get_score("sniper", p[1]) or {"address": p[1], "config": None})
                 if method == "GET" and p == ["rules"]:
                     return self._send(200, svc.export_rules())
                 if method == "GET" and p == ["signals"]:

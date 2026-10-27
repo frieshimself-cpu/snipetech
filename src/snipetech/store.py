@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import Completion, Launch, Migration, Trade
+from .solana.txmeta import TxMeta
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -76,6 +77,13 @@ CREATE TABLE IF NOT EXISTS lists (
 );
 CREATE TABLE IF NOT EXISTS signals (
     id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tx_meta (
+    sig TEXT PRIMARY KEY, slot INTEGER NOT NULL, fee_payer TEXT, priority INTEGER, tip INTEGER, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS tx_meta_payer ON tx_meta(fee_payer, slot);
+CREATE TABLE IF NOT EXISTS labels (
+    address TEXT PRIMARY KEY, label TEXT NOT NULL, kind TEXT NOT NULL, source TEXT, added_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
@@ -316,6 +324,41 @@ class Store:
             "INSERT OR REPLACE INTO launch_features (mint, params, computed_at, data) VALUES (?,?,?,?)",
             [(m, params, now, json.dumps(d)) for m, d in items.items()],
         )
+
+    # -- transaction fingerprints & labels ---------------------------------------
+
+    def add_tx_meta(self, metas: Iterable[TxMeta]) -> None:
+        self._many(
+            "INSERT OR REPLACE INTO tx_meta (sig, slot, fee_payer, priority, tip, data) VALUES (?,?,?,?,?,?)",
+            [(m.sig, m.slot, m.fee_payer, m.priority_lamports, m.tip_lamports, json.dumps(m.to_dict())) for m in metas],
+        )
+
+    def tx_meta(self, sigs: list[str]) -> dict[str, TxMeta]:
+        out: dict[str, TxMeta] = {}
+        for i in range(0, len(sigs), 900):
+            chunk = sigs[i : i + 900]
+            rows = self._q(f"SELECT sig, data FROM tx_meta WHERE sig IN ({','.join('?' * len(chunk))})", chunk)
+            out.update({s: TxMeta.from_dict(json.loads(d)) for s, d in rows})
+        return out
+
+    def tx_meta_for_payer(self, payer: str, since_slot: int = 0) -> list[TxMeta]:
+        rows = self._q("SELECT data FROM tx_meta WHERE fee_payer=? AND slot>=? ORDER BY slot", (payer, since_slot))
+        return [TxMeta.from_dict(json.loads(d)) for (d,) in rows]
+
+    def missing_tx_meta(self, sigs: list[str]) -> list[str]:
+        have = set(self.tx_meta(sigs))
+        return [s for s in dict.fromkeys(sigs) if s not in have]
+
+    def set_label(self, address: str, label: str, kind: str = "service", source: str = "user") -> None:
+        self._exec(
+            "INSERT OR REPLACE INTO labels (address, label, kind, source, added_at) VALUES (?,?,?,?,?)",
+            (address, label, kind, source, int(time.time())),
+        )
+
+    def labels(self, kind: str | None = None) -> dict[str, str]:
+        if kind:
+            return {a: l for a, l in self._q("SELECT address, label FROM labels WHERE kind=?", (kind,))}
+        return {a: l for a, l in self._q("SELECT address, label FROM labels")}
 
     # -- lists, signals, funders -----------------------------------------------
 

@@ -46,6 +46,10 @@ def referenced(type_def: object, out: set[str]) -> None:
 def trim(idl: dict, keep: dict) -> dict:
     types = {t["name"]: t for t in idl["types"]}
     wanted = set(keep["events"]) | set(keep["accounts"])
+    for ix in idl["instructions"]:
+        found: set[str] = set()
+        referenced(ix.get("args", []), found)
+        wanted |= found
     frontier = list(wanted)
     while frontier:
         name = frontier.pop()
@@ -63,6 +67,7 @@ def trim(idl: dict, keep: dict) -> dict:
                 "name": ix["name"],
                 "discriminator": ix["discriminator"],
                 "accounts": [a["name"] for a in ix.get("accounts", [])],
+                "args": ix.get("args", []),
             }
             for ix in idl["instructions"]
         ],

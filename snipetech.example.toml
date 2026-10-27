@@ -32,6 +32,7 @@ min_launches = 5             # fewer than this = INSUFFICIENT_DATA
 rinse_window_secs = 30       # insiders dumping within this window = "rinse"
 rinse_dump_fraction = 0.5    # share of the insider bag that counts as a dump
 runner_multiple = 2.0        # your position value multiple that counts as a "runner"
+competition_slots = 3        # outside buyers landing within this many slots of the create count as competing snipers
 
 [snipe.exit]                 # your current exit rules (the optimizer suggests better ones)
 take_profit = 1.0            # +100%; 0 disables

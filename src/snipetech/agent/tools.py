@@ -45,7 +45,8 @@ def _overrides(svc: Service, values: dict[str, Any]):
 def _slim_deployer(rep: dict) -> dict:
     keep = {k: rep.get(k) for k in ("address", "label", "launches_total", "launches_analyzed", "launches_pending_window",
                                     "settings", "funder", "outcomes", "rinse_rate", "dump_rate", "profile", "cadence",
-                                    "your_strategy", "pnl_by_outcome", "recent", "patterns", "size_sweep", "latency_sweep")}  # fmt: skip
+                                    "your_strategy", "pnl_by_outcome", "recent", "patterns", "size_sweep", "latency_sweep",
+                                    "competition", "tip_sweep", "trend")}  # fmt: skip
     opt = rep.get("optimizer")
     if opt:
         keep["optimizer"] = {k: opt.get(k) for k in ("strategies_tested", "default", "in_sample_best", "walk_forward", "recommended", "recommended_basis", "top")}
@@ -206,6 +207,59 @@ def make_tools(svc: Service) -> list:
         return _dump(await asyncio.to_thread(svc.discover_wallets, days, min_positions, 20))
 
     @beta_async_tool
+    async def profile_sniper(wallet: str, days: float = 3.0, refresh: bool = True) -> str:
+        """Reverse-engineer another sniper/trader wallet. EXACT fields read from its transactions: buy size (exact budget
+        when its instruction carries one), compute-unit price/limit and priority fee, tips and which landing service got
+        them (incl. separate bundle tip txs), bot/platform fees (bps) vs flat fees, router program, pump instruction and
+        transaction template, slippage caps, durable nonces. INFERRED from behaviour: entry timing and rank among
+        snipers, take-profit / stop-loss / time exits, whether it sells when the dev sells, partial exits, which
+        deployers/launches it picks vs skips, related wallets, and its realized PnL.
+
+        Args:
+            wallet: The sniper wallet to profile.
+            days: Lookback in days.
+            refresh: Fetch its on-chain history first.
+        """
+        rep = await svc.profile_sniper(wallet, days, refresh=refresh)
+        rep["recent_positions"] = rep.get("recent_positions", [])[:8]
+        return _dump(rep)
+
+    @beta_async_tool
+    async def top_snipers(days: float = 3.0, min_snipes: int = 5) -> str:
+        """Wallets that repeatedly land in the first slots of indexed launches, ranked by realized PnL, with their
+        median bribe (priority + tip) and buy size. Candidates for profile_sniper.
+
+        Args:
+            days: Lookback in days.
+            min_snipes: Minimum number of launches sniped.
+        """
+        return _dump(await asyncio.to_thread(svc.top_snipers, days, min_snipes, 20))
+
+    @beta_async_tool
+    async def profitable_devs(min_launches: int = 3, days: float = 7.0, backfill_top: int = 0) -> str:
+        """Dev wallets that are profitable to snipe: repeat deployers ranked by your EV, with competition per launch,
+        the bribe (priority + tip) needed to land first, and the best bribe level with EV after paying it.
+
+        Args:
+            min_launches: Minimum launches per deployer.
+            days: Lookback in days.
+            backfill_top: First fetch and fingerprint trade windows for this many of the most active repeat deployers.
+        """
+        return _dump(await svc.profitable_devs(min_launches, days, 20, backfill_top))
+
+    @beta_async_tool
+    async def label_address(address: str, name: str, kind: str = "service") -> str:
+        """Name an address so reports show it: a router program (kind=router), a tip/fee destination (kind=service),
+        or a wallet (kind=wallet). Only call when the user asked for it.
+
+        Args:
+            address: The address to label.
+            name: Display name.
+            kind: service, router or wallet.
+        """
+        return _dump(svc.label(address, name, kind))
+
+    @beta_async_tool
     async def get_settings() -> str:
         """Return the current simulation settings (sizes, latencies, costs, exits, verdict thresholds)."""
         d = svc.cfg.to_dict()
@@ -277,7 +331,7 @@ def make_tools(svc: Service) -> list:
     return [
         analyze_deployer, analyze_copy_target, rank_copy_targets, check_mint, audit_my_wallet, optimize_snipe_strategy,
         backtest_deployer_rules, index_launches, top_deployers, discover_copy_candidates, get_settings, update_setting,
-        manage_list, export_rules, cached_verdicts,
+        manage_list, export_rules, cached_verdicts, profile_sniper, top_snipers, profitable_devs, label_address,
     ]  # fmt: skip
 
 

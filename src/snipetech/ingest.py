@@ -25,6 +25,7 @@ from .solana.normalize import normalize
 from .solana.programs import PUMP_AMM_PROGRAM, WSOL_MINT, decode_account
 from .solana.rpc import RpcError, SolanaRpc
 from .solana.tx import _account_keys, extract_from_transaction
+from .solana.txmeta import extract_tx_meta
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -78,11 +79,13 @@ class Ingestor:
         if not todo:
             return result
         known_pools = self.store.pools()
+        services = self.store.labels("service")
         for start in range(0, len(todo), FETCH_CHUNK):
             chunk = todo[start : start + FETCH_CHUNK]
             txs = await self.rpc.get_transactions(chunk)
             pending: list[tuple[Any, int]] = []
             missing_pools: set[str] = set()
+            metas = []
             for sig in chunk:
                 tx = txs.get(sig)
                 if tx is None:
@@ -92,6 +95,11 @@ class Ingestor:
                 norm = normalize(events, pos, known_pools)
                 missing_pools |= norm.unresolved_pools
                 pending.append((events, pos))
+                if not events.failed:
+                    meta = extract_tx_meta(tx, sig, services)
+                    if events.events or meta.tips:  # trades, creates, and stand-alone bundle tip txs
+                        metas.append(meta)
+            self.store.add_tx_meta(metas)
             if missing_pools:
                 resolved = await self.resolve_pools(missing_pools)
                 known_pools.update(resolved)
@@ -119,6 +127,20 @@ class Ingestor:
         with self.store.lock:
             self.store.conn.executemany("UPDATE trades SET pos=? WHERE sig=?", rows)
             self.store.conn.commit()
+
+    async def ensure_tx_meta(self, sigs: list[str]) -> int:
+        """Fingerprint already-ingested transactions that have no tx_meta yet (re-fetches them)."""
+        missing = self.store.missing_tx_meta(sigs)
+        services = self.store.labels("service")
+        done = 0
+        for start in range(0, len(missing), FETCH_CHUNK):
+            chunk = missing[start : start + FETCH_CHUNK]
+            txs = await self.rpc.get_transactions(chunk)
+            metas = [extract_tx_meta(tx, sig, services) for sig, tx in txs.items() if tx and not (tx.get("meta") or {}).get("err")]
+            self.store.add_tx_meta(metas)
+            done += len(metas)
+            self.progress(f"fingerprinted {done}/{len(missing)} transactions")
+        return done
 
     async def resolve_pools(self, pools: set[str]) -> dict[str, tuple[str, str]]:
         """Look up PumpSwap pool accounts to learn their base/quote mints."""

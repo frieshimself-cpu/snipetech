@@ -12,6 +12,7 @@ from ..models import Launch
 from ..sim.exits import ExitParams
 from ..store import Store
 from .launches import LABELS, build_context, launch_features
+from .competition import competition_report, tip_sweep
 from .optimize import best_size, optimize_exits, sweep_latency, sweep_sizes
 from .stats import summarize, wilson
 
@@ -139,6 +140,10 @@ def deployer_report(
         rec_exit = ExitParams(**opt["recommended"]["exit"])
         report["size_sweep"] = sweep_sizes(contexts, cfg, rec_exit)
         report["latency_sweep"] = sweep_latency(contexts, cfg, rec_exit)
+    if n >= 1:
+        report["competition"] = competition_report(store, cfg, contexts)
+        if n >= 3 and report["competition"].get("launches_with_snipers", 0) > 0:
+            report["tip_sweep"] = tip_sweep(store, cfg, contexts, rec_exit)
 
     # -- verdict -------------------------------------------------------------------------------
     report["verdict"] = _decide(report, cfg, n, rec_exit)
@@ -235,6 +240,23 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
     if basis.get("top_win_share", 0) > 0.6 and basis.get("total", 0) > 0:
         warnings.append("most of the profit comes from a single launch — fragile")
 
+    # Paying to get in ahead of the other snipers: only trusted when it held up on unseen launches.
+    sweep = report.get("tip_sweep") or {}
+    bribe = None
+    sw_wf = sweep.get("walk_forward")
+    if sw_wf and sw_wf["test"].get("n", 0) >= 4:
+        bribe = sw_wf["picked_bribe_sol"]
+        if sw_wf["test"].get("ev_lower", -1e9) > cfg.verdict.min_ev_sol and verdict in ("MARGINAL", "AVOID") and n >= cfg.snipe.min_launches:
+            if report["recent"]["dump_rate"] < 0.8:
+                verdict = "SNIPE"
+                reasons.append(f"profitable if you pay ~{bribe:g} SOL (priority + tip) to land ahead of the other snipers: "
+                               f"{sw_wf['test']['mean']:+.4f} SOL/snipe on unseen launches")  # fmt: skip
+    elif sweep.get("rows"):
+        bribe = sweep.get("recommended_bribe_sol")
+    comp = report.get("competition") or {}
+    if comp.get("launches_with_snipers", 0) >= 0.5 and comp.get("fee_order_agreement") is not None and comp["fee_order_agreement"] < 0.55:
+        warnings.append("fees barely decided landing order among snipers here — speed matters more than tips")
+
     size_row = best_size(report.get("size_sweep") or [])
     mean_ev = basis.get("mean", 0.0)
     roi_lo = basis.get("ev_lower", 0.0) / max(cfg.snipe.buy_sol, 1e-9)
@@ -255,6 +277,7 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
             "buy_sol": (size_row["buy_sol"] if size_row else cfg.snipe.buy_sol) if verdict in ("SNIPE", "MARGINAL") else 0.0,
             "exit": rec_exit.to_dict(),
             "exit_label": rec_exit.label(),
+            "bribe_sol": bribe if verdict in ("SNIPE", "MARGINAL") else 0.0,
         },
     )
 

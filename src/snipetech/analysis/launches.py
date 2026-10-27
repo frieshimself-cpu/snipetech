@@ -3,7 +3,7 @@
 Outcome labels (from a sniper's point of view, using your configured entry):
   graduated  the curve completed inside the analysis window
   runner     your position reached `runner_multiple` before insiders dumped
-  rinse      insiders (dev + same-slot bundle wallets) dumped within `rinse_window_secs`
+  rinse      insiders (dev + bundle wallets) dumped within `rinse_window_secs`
   rug        insiders dumped later in the window
   dead       never got above +20% and nobody dumped (no buyers came)
   chop       everything else
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
@@ -36,23 +36,56 @@ class LaunchContext:
     insider_sell: np.ndarray  # bool per state: a meaningful insider sell happened here
     window_end: float
     completion: Completion | None
+    insider_mode: str = "heuristic"  # "fingerprint" when transaction fingerprints identified the bundle
+    snipers: list[int] = field(default_factory=list)  # path index of each outside wallet's first early buy
 
     @property
     def insiders(self) -> set[str]:
         return self.dev | self.bundle
 
 
+def classify_insiders(store: Store, launch: Launch, path: MarketPath) -> tuple[set[str], set[str], str]:
+    """Dev wallets, bundle wallets, and how the bundle was identified.
+
+    With transaction fingerprints (tx_meta) the bundle is: wallets that co-signed the
+    create transaction; creation-slot buyers whose tx was paid for or co-signed by the dev
+    team; wallets the team funded; and, when the create tx carried a Jito tip, the
+    untipped buys executing right after it in the same slot (bundled txs tip only once).
+    Everyone else who lands early is a real sniper. Without fingerprints every
+    creation-slot buyer is treated as a bundle wallet (conservative)."""
+    dev = launch.deployers()
+    slot0 = [
+        i for i in range(1, path.n)
+        if path.slot[i] == launch.slot and path.is_buy[i] and path.users[i] not in dev and path.users[i] not in PROTOCOL_WALLETS
+    ]  # fmt: skip
+    cosigners = {path.users[i] for i in slot0 if path.sigs[i] == launch.sig}
+    metas = store.tx_meta(list({launch.sig, *(path.sigs[i] for i in slot0)}))
+    if launch.sig not in metas or any(path.sigs[i] not in metas for i in slot0):
+        return dev, {path.users[i] for i in slot0}, "heuristic"
+    create = metas[launch.sig]
+    team = dev | set(create.signers) | {create.fee_payer}
+    bundle = set(cosigners)
+    tipped_create = create.tip_lamports > 0
+    contiguous = True
+    for i in slot0:
+        if path.sigs[i] == launch.sig:
+            continue
+        m = metas[path.sigs[i]]
+        funder = store.funder(path.users[i]) or {}
+        if m.fee_payer in team or set(m.signers) & team or funder.get("funder") in team:
+            bundle.add(path.users[i])
+        elif tipped_create and contiguous and m.tip_lamports == 0:
+            bundle.add(path.users[i])
+        else:
+            contiguous = False
+    return dev, bundle, "fingerprint"
+
+
 def build_context(store: Store, launch: Launch, cfg: Config) -> LaunchContext:
     window_end = launch.ts + cfg.snipe.analysis_window_secs
     trades = store.trades_for_mint(launch.mint, launch.ts - 2, int(window_end))
     path = MarketPath.build(trades, launch, cfg.costs.default_pump_fee_bps)
-    dev = launch.deployers()
-    bundle = {
-        path.users[i]
-        for i in range(1, path.n)
-        if path.slot[i] == launch.slot and path.is_buy[i] and path.users[i] not in dev and path.sigs[i] != launch.sig
-        and path.users[i] not in PROTOCOL_WALLETS
-    }
+    dev, bundle, mode = classify_insiders(store, launch, path)
     insiders = dev | bundle
     held: dict[str, float] = {}
     mask = np.zeros(path.n, dtype=bool)
@@ -69,7 +102,16 @@ def build_context(store: Store, launch: Launch, cfg: Config) -> LaunchContext:
         if frac >= 0.2 or path.quote[i] >= 0.25e9:
             mask[i] = True
     completion = store.completion(launch.mint)
-    return LaunchContext(launch, path, dev, bundle, mask, window_end, completion)
+    horizon = launch.slot + cfg.snipe.competition_slots
+    snipers, seen = [], set()
+    for i in range(1, path.n):
+        u = path.users[i]
+        if path.slot[i] > horizon:
+            break
+        if path.is_buy[i] and u not in insiders and u not in PROTOCOL_WALLETS and u not in seen:
+            seen.add(u)
+            snipers.append(i)
+    return LaunchContext(launch, path, dev, bundle, mask, window_end, completion, mode, snipers)
 
 
 def entry_index(ctx: LaunchContext, slot_offset: int, position: str) -> int:
@@ -86,7 +128,7 @@ def params_key(cfg: Config) -> str:
             "buy": s.buy_sol, "off": s.entry_slot_offset, "pos": s.entry_position, "lat": s.exit_latency_slots,
             "win": s.analysis_window_secs, "rw": s.rinse_window_secs, "rf": s.rinse_dump_fraction,
             "rm": s.runner_multiple, "exit": ExitParams.from_config(s.exit).to_dict(),
-            "costs": [cfg.costs.priority_fee_sol, cfg.costs.tip_sol, cfg.costs.platform_fee_bps], "v": 4,
+            "costs": [cfg.costs.priority_fee_sol, cfg.costs.tip_sol, cfg.costs.platform_fee_bps], "v": 5,
         },
         sort_keys=True,
     )  # fmt: skip
@@ -125,6 +167,8 @@ def launch_features(ctx: LaunchContext, cfg: Config) -> dict:
         return len({users[i] for i in range(1, path.n) if path.is_buy[i] and path.ts[i] <= t0 + secs
                     and users[i] not in ctx.insiders and users[i] not in PROTOCOL_WALLETS})
 
+    f["insider_mode"] = ctx.insider_mode
+    f["early_snipers"] = len(ctx.snipers)
     f["outside_buyers_10s"] = buyers_within(10)
     f["outside_buyers_60s"] = buyers_within(60)
     f["agent_trades"] = sum(1 for u in users if u in PROTOCOL_WALLETS)

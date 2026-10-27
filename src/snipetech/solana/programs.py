@@ -40,6 +40,7 @@ class ProgramIdl:
     events: dict[bytes, str]  # discriminator -> event name
     instructions: dict[bytes, tuple[str, tuple[str, ...]]]  # discriminator -> (name, account names)
     accounts: dict[bytes, str]
+    args: dict[str, list[dict]]  # instruction name -> IDL args
 
 
 @lru_cache(maxsize=None)
@@ -53,6 +54,7 @@ def load_idl(filename: str) -> ProgramIdl:
             bytes(ix["discriminator"]): (ix["name"], tuple(ix["accounts"])) for ix in raw["instructions"]
         },
         accounts={bytes(a["discriminator"]): a["name"] for a in raw["accounts"]},
+        args={ix["name"]: ix.get("args", []) for ix in raw["instructions"]},
     )
 
 
@@ -98,3 +100,30 @@ def instruction_info(program_id: str, data: bytes) -> tuple[str, tuple[str, ...]
     if idl is None or len(data) < 8:
         return None
     return idl.instructions.get(data[:8])
+
+
+def decode_instruction(program_id: str, data: bytes) -> tuple[str, tuple[str, ...], dict[str, Any]] | None:
+    """(name, account names, decoded args) for a pump.fun / PumpSwap instruction.
+
+    Trailing optional args (e.g. `track_volume`) may be omitted by callers; whatever is
+    present is decoded."""
+    info = instruction_info(program_id, data)
+    if info is None:
+        return None
+    name, accounts = info
+    idl = idl_for(program_id)
+    assert idl is not None
+    fields = idl.args.get(name, [])
+    args: dict[str, Any] = {}
+    if fields:
+        from .borsh import Reader, _Truncated
+
+        reader = Reader(data, 8)
+        for f in fields:
+            start = reader.pos
+            try:
+                args[f["name"]] = idl.decoder._read(f["type"], reader)
+            except (_Truncated, ValueError, IndexError):
+                reader.pos = start
+                break
+    return name, accounts, args

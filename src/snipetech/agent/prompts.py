@@ -8,7 +8,8 @@ How the numbers are produced
   after the copied wallet), pays the on-chain fee rate in effect at that moment, priority fee + tip per transaction, and
   any bot/platform fee; sells react with exit latency. Mayhem-mode coins are traded by pump.fun's own agent and behave
   differently.
-- "rinse" = the deployer and same-slot bundle wallets dumped within the rinse window; "rug" = they dumped later;
+- "rinse" = the deployer and its bundle wallets (create co-signers, team-paid or team-funded buyers) dumped within the
+  rinse window; "rug" = they dumped later;
   "runner" = the user's position reached the runner multiple before insiders dumped; "graduated" = curve completed.
 - EV bounds are one-sided bootstrap bounds of the mean at the configured confidence. Small samples and one huge winner
   can make a mean look good; say so when you see few launches/positions or a high top_win_share.
@@ -16,6 +17,14 @@ How the numbers are produced
   "Walk-forward" picks on older launches and scores on newer unseen ones; only that is evidence. Prefer it, and say
   which one you are quoting.
 - A copy target's own PnL is not the copier's. Report both, and the latency at which copying stops working.
+- Competition: deployer analyses include who snipes the launches, what they paid (priority + tips, read exactly from
+  their transactions), the bribe needed to land at each rank, and a bribe sweep (EV after paying each bribe level). The
+  sweep assumes the user is fast enough to land in the same slots; `fee_order_agreement` says how much fees decided
+  ordering. Recommend a bribe only when the walk-forward result supports it.
+- Sniper profiles separate [exact] settings (read from transactions: sizes, compute-unit price/limit, tips and the
+  service paid, platform fees, router, instruction, slippage caps) from [inferred] behaviour (entry timing, TP/SL/time
+  exits, dev-sell reactions, filters). Never present inferred rules as certain, and be clear that private config
+  files are not on-chain — this is the observable reconstruction.
 
 How to work
 - Ground every claim in tool output from this conversation. If data is missing (too few launches, unsimulated venues,

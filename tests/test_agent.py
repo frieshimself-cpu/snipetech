@@ -45,7 +45,7 @@ def test_agent_calls_tools_and_finishes(capsys):
     assert body["output_config"]["effort"] == cfg.agent.effort
     assert body["fallbacks"] == "default"
     assert FALLBACK_BETA in req.headers.get("anthropic-beta", "")
-    assert len(body["tools"]) == 15
+    assert len(body["tools"]) == 19
     # the second request carries the tool result produced by our real tool
     _, body2 = requests[1]
     result = body2["messages"][-1]["content"][0]

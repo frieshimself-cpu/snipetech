@@ -27,6 +27,16 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    },
+    {
+     "name": "initial_virtual_quote_reserves",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -46,6 +56,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -87,6 +103,26 @@
     "pump_fees_event_authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "is_holder_reward",
+     "type": {
+      "option": "bool"
+     }
+    },
+    {
+     "name": "creator_fee_bps",
+     "type": {
+      "option": "u64"
+     }
+    },
+    {
+     "name": "new_creator",
+     "type": {
+      "option": "pubkey"
+     }
+    }
    ]
   },
   {
@@ -109,6 +145,12 @@
     "program_signer",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "idl_authority",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -134,6 +176,28 @@
     "token_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "start_time",
+     "type": "i64"
+    },
+    {
+     "name": "end_time",
+     "type": "i64"
+    },
+    {
+     "name": "seconds_in_a_day",
+     "type": "i64"
+    },
+    {
+     "name": "day_number",
+     "type": "u64"
+    },
+    {
+     "name": "pump_token_supply_per_day",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -165,6 +229,32 @@
     "user_volume_accumulator",
     "fee_config",
     "fee_program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "max_sol_cost",
+     "type": "u64"
+    },
+    {
+     "name": "track_volume",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -207,6 +297,24 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "spendable_quote_in",
+     "type": "u64"
+    },
+    {
+     "name": "min_tokens_out",
+     "type": "u64"
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -239,6 +347,24 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "spendable_quote_in",
+     "type": "u64"
+    },
+    {
+     "name": "min_tokens_out",
+     "type": "u64"
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -270,6 +396,32 @@
     "user_volume_accumulator",
     "fee_config",
     "fee_program"
+   ],
+   "args": [
+    {
+     "name": "spendable_sol_in",
+     "type": "u64"
+    },
+    {
+     "name": "min_tokens_out",
+     "type": "u64"
+    },
+    {
+     "name": "track_volume",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -312,6 +464,24 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "max_sol_cost",
+     "type": "u64"
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -344,6 +514,24 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "max_sol_cost",
+     "type": "u64"
+    },
+    {
+     "name": "partial_fill",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -364,7 +552,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "claim_cashback_v2",
@@ -389,7 +578,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "claim_token_incentives",
@@ -416,7 +606,8 @@
     "event_authority",
     "program",
     "payer"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "close_user_volume_accumulator",
@@ -435,7 +626,8 @@
     "user_volume_accumulator",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "collect_creator_fee",
@@ -455,7 +647,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "collect_creator_fee_v2",
@@ -480,7 +673,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "create",
@@ -509,6 +703,24 @@
     "rent",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "name",
+     "type": "string"
+    },
+    {
+     "name": "symbol",
+     "type": "string"
+    },
+    {
+     "name": "uri",
+     "type": "string"
+    },
+    {
+     "name": "creator",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -540,6 +752,52 @@
     "mayhem_token_vault",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "name",
+     "type": "string"
+    },
+    {
+     "name": "symbol",
+     "type": "string"
+    },
+    {
+     "name": "uri",
+     "type": "string"
+    },
+    {
+     "name": "creator",
+     "type": "pubkey"
+    },
+    {
+     "name": "is_mayhem_mode",
+     "type": "bool"
+    },
+    {
+     "name": "is_cashback_enabled",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    },
+    {
+     "name": "creator_fee_bps",
+     "type": {
+      "defined": {
+       "name": "OptionU64"
+      }
+     }
+    },
+    {
+     "name": "is_holder_reward",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
    ]
   },
   {
@@ -562,7 +820,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "distribute_creator_fees_v2",
@@ -589,6 +848,12 @@
     "quote_mint",
     "quote_token_program",
     "associated_token_program"
+   ],
+   "args": [
+    {
+     "name": "initialize_ata",
+     "type": "bool"
+    }
    ]
   },
   {
@@ -615,6 +880,14 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amounts",
+     "type": {
+      "vec": "u64"
+     }
+    }
    ]
   },
   {
@@ -635,7 +908,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "get_minimum_distributable_fee",
@@ -654,7 +928,8 @@
     "bonding_curve",
     "sharing_config",
     "creator_vault"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "init_user_volume_accumulator",
@@ -675,7 +950,8 @@
     "system_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "initialize",
@@ -693,7 +969,8 @@
     "global",
     "user",
     "system_program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "initialize_quote_control",
@@ -711,7 +988,8 @@
     "quote_control",
     "user",
     "system_program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "migrate",
@@ -751,7 +1029,8 @@
     "event_authority",
     "program",
     "rent"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "migrate_bonding_curve_creator",
@@ -771,7 +1050,8 @@
     "sharing_config",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "migrate_v2",
@@ -813,7 +1093,8 @@
     "rent",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "multi_hop_curve_swap",
@@ -841,6 +1122,16 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amount_in",
+     "type": "u64"
+    },
+    {
+     "name": "hop_fees",
+     "type": "bytes"
+    }
    ]
   },
   {
@@ -862,6 +1153,12 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -881,6 +1178,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -910,6 +1213,16 @@
     "program",
     "fee_config",
     "fee_program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "min_sol_output",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -951,6 +1264,16 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "min_sol_output",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -983,6 +1306,16 @@
     "system_program",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "amount",
+     "type": "u64"
+    },
+    {
+     "name": "min_sol_output",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -1005,6 +1338,12 @@
     "bonding_curve",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "creator",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -1024,6 +1363,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "max_curve_depth",
+     "type": "u8"
+    }
    ]
   },
   {
@@ -1047,7 +1392,8 @@
     "token_program",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "set_metaplex_creator",
@@ -1067,7 +1413,8 @@
     "bonding_curve",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "set_params",
@@ -1086,6 +1433,52 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "initial_virtual_token_reserves",
+     "type": "u64"
+    },
+    {
+     "name": "initial_virtual_sol_reserves",
+     "type": "u64"
+    },
+    {
+     "name": "initial_real_token_reserves",
+     "type": "u64"
+    },
+    {
+     "name": "token_total_supply",
+     "type": "u64"
+    },
+    {
+     "name": "fee_basis_points",
+     "type": "u64"
+    },
+    {
+     "name": "withdraw_authority",
+     "type": "pubkey"
+    },
+    {
+     "name": "enable_migrate",
+     "type": "bool"
+    },
+    {
+     "name": "pool_migration_fee",
+     "type": "u64"
+    },
+    {
+     "name": "creator_fee_basis_points",
+     "type": "u64"
+    },
+    {
+     "name": "set_creator_authority",
+     "type": "pubkey"
+    },
+    {
+     "name": "admin_set_creator_authority",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -1106,6 +1499,12 @@
     "quote_control",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "new_admin",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -1126,6 +1525,16 @@
     "quote_control",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    },
+    {
+     "name": "initial_virtual_quote_reserves",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -1146,6 +1555,12 @@
     "quote_control",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "new_reserves_admin",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -1165,6 +1580,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "whitelist_pda",
+     "type": "pubkey"
+    }
    ]
   },
   {
@@ -1184,6 +1605,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "initial_virtual_quote_reserves",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -1212,7 +1639,8 @@
     "associated_quote_recipient",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "sweep_protocol_fee",
@@ -1240,7 +1668,8 @@
     "associated_quote_recipient",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "sync_user_volume_accumulator",
@@ -1260,7 +1689,8 @@
     "user_volume_accumulator",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "toggle_cashback_enabled",
@@ -1279,6 +1709,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "enabled",
+     "type": "bool"
+    }
    ]
   },
   {
@@ -1298,6 +1734,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "enabled",
+     "type": "bool"
+    }
    ]
   },
   {
@@ -1317,6 +1759,12 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "enabled",
+     "type": "bool"
+    }
    ]
   },
   {
@@ -1336,6 +1784,14 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "buyback_basis_points",
+     "type": {
+      "option": "u64"
+     }
+    }
    ]
   },
   {
@@ -1355,6 +1811,16 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "creator_fee_configurable",
+     "type": "bool"
+    },
+    {
+     "name": "max_configurable_creator_fee_bps",
+     "type": "u64"
+    }
    ]
   },
   {
@@ -1375,7 +1841,8 @@
     "new_authority",
     "event_authority",
     "program"
-   ]
+   ],
+   "args": []
   },
   {
    "name": "update_holder_reward_config",
@@ -1394,6 +1861,16 @@
     "authority",
     "event_authority",
     "program"
+   ],
+   "args": [
+    {
+     "name": "is_holder_reward_enabled",
+     "type": "bool"
+    },
+    {
+     "name": "holder_reward_claim_authority",
+     "type": "pubkey"
+    }
    ]
   }
  ],
@@ -1726,6 +2203,24 @@
       "name": "depth",
       "type": "u8"
      }
+    ]
+   }
+  },
+  {
+   "name": "OptionBool",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     "bool"
+    ]
+   }
+  },
+  {
+   "name": "OptionU64",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     "u64"
     ]
    }
   },
