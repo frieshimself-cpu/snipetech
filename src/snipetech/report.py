@@ -150,7 +150,7 @@ def render_deployer(r: dict) -> str:
 
 def render_competition(comp: dict | None, sweep: dict | None) -> list[str]:
     if not comp or not comp.get("launches"):
-        return []
+        return ["", "Competition: no launches with early-trade data yet"]
     out = ["", "Competition (outside snipers landing in the first slots):"]
     if not comp["launches_with_snipers"]:
         out.append("  no outside snipers on these launches")

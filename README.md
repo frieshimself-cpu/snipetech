@@ -6,10 +6,17 @@ snipetech replays real pump.fun history with *your* bot's settings — landing l
 priority fee + tip, bot fee, exit rules — and tells you, per deployer and per wallet, whether the
 trade makes money **for you**:
 
-- **Serial deployers:** how often they rinse snipers (dev + bundle wallets dump within seconds), the
-  outcome mix of their launches, your expected PnL per snipe with a confidence bound, the exit rules
-  that would have worked (validated on launches they were *not* tuned on), the size to use, and how
-  fast you must land. Verdict: `SNIPE` / `MARGINAL` / `AVOID`.
+- **Which dev wallets are profitable to snipe:** how often they rinse snipers (dev + bundle wallets
+  dump within seconds), the outcome mix of their launches, your expected PnL per snipe with a
+  confidence bound, the exit rules that would have worked (validated on launches they were *not*
+  tuned on), the size to use, and how fast you must land. Verdict: `SNIPE` / `MARGINAL` / `AVOID`.
+- **What it costs to get in before the other snipers:** who snipes each deployer's launches and
+  exactly what they pay (priority fee + tips, read from their transactions), the bribe needed to
+  land at each position, and a bribe sweep with your EV *after* paying each level.
+- **What other snipers are doing:** `snipetech sniper <wallet>` reconstructs a competitor's setup —
+  exact buy size, compute-unit price/limit, tips and which landing service gets them, bot fees,
+  router program, slippage caps, transaction template — plus its entry timing, take-profit /
+  stop-loss / time exits, dev-sell reactions, launch filters, related wallets and real PnL.
 - **Copytrading:** a wallet's PnL is not your PnL. Every position it took is replayed with you landing
   N slots behind it, behind the other copiers, paying fees on every hop, and exiting after it does.
   You get your EV, the latency at which copying stops working, crowding and copier-farming
@@ -84,16 +91,47 @@ snipetech deployer <wallet> --family                 # + sibling wallets funded 
 snipetech deployer <wallet> --buy 1 --entry-slots 0  # what if I were bigger / faster?
 ```
 
-### 2. Find serial deployers worth sniping
+Every deployer report now includes **Competition** (who snipes, what they pay, bribe needed to be
+#1/#2/#3…) and a **bribe sweep**: for each bribe level, the rank you'd have landed at and your EV
+after paying it. The recommended bribe is picked on older launches and checked on newer ones, and
+lands in `recommended.bribe_sol` for your sniper.
+
+### 2. Find dev wallets worth sniping
 
 ```bash
 snipetech index-launches --hours 6        # every launch, ~1 RPC call each (~2,600/hour)
+snipetech profitable-devs --backfill 20   # repeat deployers ranked by your EV, with the bribe to land early
 snipetech top-deployers --backfill 20     # fetch early trades for the 20 most active, rank by EV bound
 snipetech backtest --days 7               # which snipe/skip rule (deployer history + dev buy, bundles, mayhem) made money?
 snipetech optimize --days 7               # best exits/size/latency across all indexed launches
 ```
 
-### 3. Is copytrading this wallet worth it?
+### 3. See what the other snipers are doing
+
+```bash
+snipetech snipers --days 3                # wallets that land first on indexed launches, by realized PnL
+snipetech sniper <wallet> --days 3        # reconstruct its settings and behaviour
+snipetech label <program-or-address> "BotName" --kind router   # name routers / tip destinations in reports
+```
+
+A profile separates what is **exact** (read straight from its transactions) from what is
+**inferred** (patterns in its behaviour):
+
+| Exact | Inferred |
+|---|---|
+| buy size (exact budget when it uses `buy_exact_sol_in`) | entry timing and rank among snipers |
+| compute-unit price & limit, priority fee | take-profit / stop-loss levels (exit clusters) |
+| tips and the landing service paid (Jito accounts verified on-chain; separate bundle tip txs included) | time-based exits |
+| bot/platform fees (bps of trade) vs flat fees | sells when the dev/bundle sells |
+| router program, pump instruction, full tx template | partial exits |
+| slippage caps (`max_sol_cost` / `min_tokens_out` / `min_sol_output`) | launch filters (its picks vs everything launched) |
+| durable nonce, lookup tables, tx version, separate fee payer | related wallets (same funder, co-buying) |
+
+Private config files never touch the chain, so nobody can read "the" config; this is everything the
+chain reveals about it, with exits attributed in order (dev-sell reaction → take-profit band →
+stop-loss band → time) so one behaviour isn't mistaken for another.
+
+### 4. Is copytrading this wallet worth it?
 
 ```bash
 snipetech copy <wallet> --days 14 --size 0.5 --latency 1
@@ -101,7 +139,7 @@ snipetech copy-rank <w1> <w2> <w3>        # or --file wallets.txt
 snipetech discover-wallets --days 3       # profitable round-trippers in your indexed data
 ```
 
-### 4. Run it live next to your sniper
+### 5. Run it live next to your sniper
 
 ```bash
 snipetech watch                  # indexes every launch's first 15 min + emits signals (JSONL)
@@ -115,7 +153,7 @@ snipetech list add <addr> --list copy_target    # watch follows it live
 QuickNode...); the public endpoint drops it. Run it for a day or two and `top-deployers`,
 `backtest` and `discover-wallets` gain a complete dataset with no extra RPC cost.
 
-### 5. Ask the agent
+### 6. Ask the agent
 
 ```bash
 snipetech agent
@@ -212,8 +250,13 @@ before insiders dumped; **graduated** = curve completed; **dead** = nobody came;
   accurate for normal sizes and conservative-to-neutral for large ones; check the size sweep.
 - Snipes held past migration are valued on the PumpSwap pool where trade data exists, else at the
   last known price.
-- Insiders are the dev wallets plus same-slot bundle buyers. Wallets funded by the dev in other
-  slots are not counted unless you use `--family` (funding-graph linking).
+- Insiders are the dev wallets, wallets that co-sign the create transaction and, with transaction
+  fingerprints, creation-slot buyers paid for or funded by the team plus untipped buys bundled right
+  behind a tipped create. Without fingerprints (live-only data) every creation-slot buyer counts as
+  an insider. Wallets the dev funded in other slots are only linked with `--family`.
+- The bribe sweep assumes you are fast enough to land in the same slots as the snipers you outbid;
+  fees decide ordering among equally fast bots (the report shows how often the higher bribe actually
+  landed first).
 - Past behaviour is evidence, not a guarantee. Deployers adapt, which is why recent-behaviour
   warnings and walk-forward numbers exist.
 

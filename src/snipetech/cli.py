@@ -124,6 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--limit", type=int, default=20)
     sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch + fingerprint trade windows for the K most active repeat deployers")
 
+    sp = cmd("fees", "what snipers pay to land early (priority + tips) and the EV of each bribe level for you")
+    sp.add_argument("--deployer", help="one deployer's launches instead of everything indexed")
+    sp.add_argument("--days", type=float, default=1.0)
+    sp.add_argument("--no-refresh", action="store_true")
+
     sp = cmd("label", "name an address (router program, tip/fee destination, wallet) in reports")
     sp.add_argument("address")
     sp.add_argument("name")
@@ -271,6 +276,10 @@ async def _run(args, cfg: Config) -> int:
             _out(args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers)
         elif c == "profitable-devs":
             _out(args, await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill), R.render_profitable_devs)
+        elif c == "fees":
+            rep = await svc.fee_market(args.deployer, args.days, refresh=not args.no_refresh)
+            _out(args, rep, lambda d: f"Fee market — {d['scope']}\n" + "=" * 72 + "\n"
+                 + "\n".join(R.render_competition(d["competition"], d.get("tip_sweep"))))
         elif c == "label":
             _out(args, svc.label(args.address, args.name, args.kind))
         elif c == "discover-wallets":

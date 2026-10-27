@@ -92,3 +92,16 @@ def test_deployer_report_recommends_a_bribe(store, cfg):
     rec = rep["verdict"]["recommended"]
     if rep["verdict"]["verdict"] in ("SNIPE", "MARGINAL"):
         assert rec["bribe_sol"] is not None and rec["bribe_sol"] > 0
+
+
+def test_fee_market_across_all_indexed_launches(store, cfg):
+    import asyncio
+
+    from snipetech.service import Service
+
+    for i in range(8):
+        contested_launch(store, i, addr(f"fm-dev-{i % 3}"), NOW - 60_000 + i * 2000, 600_000 + i * 10_000)
+    rep = asyncio.run(Service(cfg, store=store).fee_market(days=2, refresh=False))
+    comp = rep["competition"]
+    assert comp["launches"] == 8 and comp["fee_order_agreement"] == 1.0
+    assert rep["tip_sweep_launches"] == 8 and rep["tip_sweep"]["rows"]

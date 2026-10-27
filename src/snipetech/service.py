@@ -317,6 +317,29 @@ class Service:
         rows.sort(key=lambda r: (order.get(r["verdict"], 5), -(r["ev_lower_at_best_bribe"] if r["ev_lower_at_best_bribe"] is not None else -1e9)))
         return rows[:limit]
 
+    async def fee_market(self, deployer: str | None = None, days: float = 1.0, max_launches: int = 2000, refresh: bool = True) -> dict:
+        """What snipers pay to land early — across all indexed launches or one deployer's — and,
+        where full trade windows exist, the EV of each bribe level for you."""
+        from .analysis.competition import competition_report, tip_sweep
+        from .analysis.launches import build_context
+
+        now = int(time.time())
+        window = self.cfg.snipe.analysis_window_secs
+        if deployer:
+            launches = self.store.launches_by_deployer(self._check(deployer), max_launches, before_ts=now - 30)
+        else:
+            launches = self.store.launches_between(int(now - days * 86400), now - 30)[-max_launches:]
+        launches = sorted((l for l in launches if self.store.coverage(f"mint:{l.mint}").get("from_ts", 1 << 62) <= l.ts), key=lambda l: l.ts)
+        if refresh:
+            await self.fingerprint_early_trades(launches)
+        contexts = [build_context(self.store, l, self.cfg) for l in launches]
+        report = {"scope": deployer or f"all indexed launches, last {days:g} days", "competition": competition_report(self.store, self.cfg, contexts)}
+        full = [c for c in contexts if c.window_end <= now and self.store.coverage(f"mint:{c.launch.mint}").get("to_ts", 0) >= c.window_end - 1]
+        if len(full) >= 3:
+            report["tip_sweep"] = tip_sweep(self.store, self.cfg, full, ExitParams.from_config(self.cfg.snipe.exit))
+            report["tip_sweep_launches"] = len(full)
+        return report
+
     def label(self, address: str, label: str, kind: str = "service") -> dict:
         self.store.set_label(self._check(address), label, kind)
         return {"address": address, "label": label, "kind": kind}
