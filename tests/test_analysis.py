@@ -149,7 +149,9 @@ def test_policy_backtest_prefers_good_deployers(store, cfg):
     rep = policy_backtest(store, cfg, NOW - 300_000, NOW)
     assert rep["launches"] == 72
     best = rep["best_policy"]
-    assert best["rule"]["min_history"] >= 1
+    rule = best["rule"]
+    # rinse launches are recognisable either by deployer history or by same-slot bundle buyers
+    assert rule["min_history"] >= 1 or (rule["max_bundle_wallets"] is not None and rule["max_bundle_wallets"] < 3)
     assert best["test"]["mean"] > rep["baseline_snipe_all"]["test"]["mean"]
     assert best["test"]["total"] > 0
 

@@ -1,9 +1,13 @@
-"""Walk-forward backtest of *which deployers to snipe*, and discovery leaderboards.
+"""Walk-forward backtest of *what to snipe*, and discovery leaderboards.
 
 For each launch, in time order, a policy decides to snipe or skip using only what was
-knowable at that moment: the deployer's earlier launches whose analysis windows had
-already closed. Policies are tuned on the first part of the period and reported on the
-rest, so the result estimates what following the rules would actually have earned.
+knowable at that moment:
+* the deployer's earlier launches (PnL once your exit would have happened; "dumped" only
+  if the dump had already happened), and
+* what the launch itself shows by the time you land: dev buy size, same-slot bundle
+  wallets, mayhem mode (bundle counts assume you land after the creation slot).
+Policies are tuned on the older part of the period and reported on the newer part, so
+the result estimates what following the rules would actually have earned.
 """
 
 from __future__ import annotations
@@ -30,29 +34,36 @@ class Policy:
     max_dump_rate: float
     min_hist_mean_pnl: float | None
     skip_mayhem: bool
+    min_dev_buy_sol: float | None = None
+    max_dev_buy_sol: float | None = None
+    max_bundle_wallets: int | None = None
 
     def label(self) -> str:
-        if self.min_history == 0:
-            return "every launch" + (" no-mayhem" if self.skip_mayhem else "")
-        parts = [f"history>={self.min_history}"]
-        if self.max_dump_rate <= 1:
+        parts = ["any deployer"] if self.min_history == 0 else [f"history>={self.min_history}"]
+        if self.min_history > 0 and self.max_dump_rate <= 1:
             parts.append(f"dump_rate<={self.max_dump_rate:.0%}")
-        if self.min_hist_mean_pnl is not None:
+        if self.min_history > 0 and self.min_hist_mean_pnl is not None:
             parts.append(f"hist_mean_pnl>={self.min_hist_mean_pnl:+g}")
+        if self.min_dev_buy_sol is not None:
+            parts.append(f"dev_buy>={self.min_dev_buy_sol:g}")
+        if self.max_dev_buy_sol is not None:
+            parts.append(f"dev_buy<={self.max_dev_buy_sol:g}")
+        if self.max_bundle_wallets is not None:
+            parts.append(f"bundle<={self.max_bundle_wallets}")
         if self.skip_mayhem:
             parts.append("no-mayhem")
         return " ".join(parts)
 
 
 def policy_grid() -> list[Policy]:
+    history = [(0, 1.01, None)] + [(mh, dr, mp) for mh in (1, 3) for dr in (0.5, 1.01) for mp in (None, 0.0)]
     out = []
-    for mh in (0, 1, 2, 3, 5):
-        for dr in (0.25, 0.5, 0.75, 1.01):
-            for mp in (None, 0.0):
-                for sm in (False, True):
-                    if mh == 0 and (dr <= 1 or mp is not None):
-                        continue  # no history -> nothing to filter on
-                    out.append(Policy(mh, dr, mp, sm))
+    for mh, dr, mp in history:
+        for sm in (False, True):
+            for lo in (None, 0.05):
+                for hi in (None, 0.5, 2.0):
+                    for bw in (None, 0, 2):
+                        out.append(Policy(mh, dr, mp, sm, lo, hi, bw))
     return out
 
 
@@ -85,7 +96,7 @@ def policy_backtest(store: Store, cfg: Config, start_ts: int, end_ts: int, max_l
     # your exit would have happened, its "dumped" flag only if the dump had happened by then.
     pnl_known = cfg.snipe.exit.max_hold_secs + 30
     history: dict[str, list[dict]] = {}
-    rows = []  # per launch: (ts, pnl, n_hist, dump_rate, mean_pnl, mayhem)
+    rows = []  # per launch: (ts, pnl, n_hist, dump_rate, mean_pnl, mayhem, dev_buy_sol, bundle_wallets)
     for f in feats:
         t = f["ts"]
         hist = [h for h in history.get(f["deployer"], []) if h["ts"] + pnl_known <= t]
@@ -93,11 +104,12 @@ def policy_backtest(store: Store, cfg: Config, start_ts: int, end_ts: int, max_l
         dumped = sum(1 for h in hist if h.get("insider_dump_secs") is not None and h["ts"] + h["insider_dump_secs"] <= t)
         dump = dumped / n_hist if n_hist else 0.0
         mean_pnl = float(np.mean([h["sim"]["pnl_sol"] for h in hist])) if n_hist else 0.0
-        rows.append((t, f["sim"]["pnl_sol"], n_hist, dump, mean_pnl, bool(f.get("mayhem"))))
+        rows.append((t, f["sim"]["pnl_sol"], n_hist, dump, mean_pnl, bool(f.get("mayhem")),
+                     f.get("dev_buy_sol") or 0.0, f.get("bundle_wallets") or 0))  # fmt: skip
         history.setdefault(f["deployer"], []).append(f)
 
     arr = np.array(rows, dtype=np.float64)
-    ts, pnl, n_hist, dump, mean_pnl, mayhem = arr.T
+    ts, pnl, n_hist, dump, mean_pnl, mayhem, dev_buy, bundle = arr.T
     cut = int(np.ceil(len(arr) * TRAIN_SHARE))  # chronological split by launch count
     train = np.arange(len(arr)) < cut
     test = ~train
@@ -110,6 +122,12 @@ def policy_backtest(store: Store, cfg: Config, start_ts: int, end_ts: int, max_l
                 m &= mean_pnl >= p.min_hist_mean_pnl
         if p.skip_mayhem:
             m &= mayhem == 0
+        if p.min_dev_buy_sol is not None:
+            m &= dev_buy >= p.min_dev_buy_sol
+        if p.max_dev_buy_sol is not None:
+            m &= dev_buy <= p.max_dev_buy_sol
+        if p.max_bundle_wallets is not None:
+            m &= bundle <= p.max_bundle_wallets
         return m
 
     results = []

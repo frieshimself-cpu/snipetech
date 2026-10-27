@@ -15,8 +15,9 @@ trade makes money **for you**:
   You get your EV, the latency at which copying stops working, crowding and copier-farming
   detection, and a projected SOL/month. Verdict: `COPY` / `COPY_FILTERED` / `MARGINAL` / `AVOID`.
 - **Strategy research:** search ~300 exit rules, sizes and latencies; run a walk-forward backtest of
-  "which deployers to snipe" rules over every indexed launch; find repeat deployers and profitable
-  copy candidates.
+  snipe/skip rules (deployer history plus what a launch shows when you land: dev buy, same-slot
+  bundle wallets, mayhem mode) over every indexed launch; find repeat deployers and profitable copy
+  candidates.
 - **Your own wallet:** a post-mortem of where your sniper lost money (by deployer, outcome, entry
   delay), plus calibration of your real landing latency so every simulation matches your bot.
 - **Live:** an indexer + signal stream for new launches and copy-target trades, an HTTP API and a
@@ -88,7 +89,7 @@ snipetech deployer <wallet> --buy 1 --entry-slots 0  # what if I were bigger / f
 ```bash
 snipetech index-launches --hours 6        # every launch, ~1 RPC call each (~2,600/hour)
 snipetech top-deployers --backfill 20     # fetch early trades for the 20 most active, rank by EV bound
-snipetech backtest --days 7               # which "snipe/skip deployer" rule would have made money?
+snipetech backtest --days 7               # which snipe/skip rule (deployer history + dev buy, bundles, mayhem) made money?
 snipetech optimize --days 7               # best exits/size/latency across all indexed launches
 ```
 

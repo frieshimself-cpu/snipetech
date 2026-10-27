@@ -87,6 +87,9 @@ class LiveWatcher:
         self.closed_launches: list[Launch] = []
         self.due: set[str] = set()
         self.stats: defaultdict[str, int] = defaultdict(int)
+        self.tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget tasks aren't collected
+        self.lookups = asyncio.Semaphore(4)
+        self.lookups_waiting = 0
 
     # -- entry point --------------------------------------------------------------------------
 
@@ -166,7 +169,9 @@ class LiveWatcher:
             self.stats["launches"] += 1
             self.store.add_launches([launch])
             self.recent[launch.mint] = launch.ts
-            asyncio.get_running_loop().create_task(self._on_launch(launch))
+            task = asyncio.get_running_loop().create_task(self._on_launch(launch))
+            self.tasks.add(task)
+            task.add_done_callback(self.tasks.discard)
         for t in norm.trades:
             lts = self.recent.get(t.mint)
             if lts is not None and t.ts - lts <= window:
@@ -201,12 +206,17 @@ class LiveWatcher:
                 return v["verdict"]
             return (v.get("family") or {}).get("verdict")
 
-        if not any(decisive(v) for v in verdicts.values()) and self.cfg.live.funder_lookup and self.signals != "none":
+        lookup = not any(decisive(v) for v in verdicts.values()) and self.cfg.live.funder_lookup and self.signals != "none"
+        if lookup and self.lookups_waiting < 50:  # drop lookups rather than fall behind the chain
+            self.lookups_waiting += 1
             try:
-                await asyncio.wait_for(self.svc.ingestor.find_funder(launch.user, max_pages=1), timeout=8)
+                async with self.lookups:
+                    await asyncio.wait_for(self.svc.ingestor.find_funder(launch.user, max_pages=1), timeout=8)
                 verdicts[launch.user] = self.svc.deployer_verdict(launch.user)
             except Exception:
-                pass
+                self.stats["funder_lookup_failed"] += 1
+            finally:
+                self.lookups_waiting -= 1
         decided = [d for d in (decisive(verdicts[a]) for a in order) if d]
         verdict = "BLOCK" if "BLOCK" in decided else (decided[0] if decided else None)
         if self.signals == "none" or (self.signals == "known" and verdict is None):

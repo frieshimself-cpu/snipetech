@@ -153,9 +153,10 @@ def make_tools(svc: Service) -> list:
 
     @beta_async_tool
     async def backtest_deployer_rules(days: float = 7.0) -> str:
-        """Walk-forward backtest of deployer-selection rules (minimum history, maximum dump rate, minimum historical
-        PnL, skip mayhem coins) over all indexed launches, versus sniping everything. Needs data from `watch` or
-        `index_launches` + backfilled windows.
+        """Walk-forward backtest of snipe/skip rules over all indexed launches, versus sniping everything. Rules combine
+        deployer history (minimum launches, maximum dump rate, minimum historical PnL) with what each launch shows at
+        entry time (dev buy size, same-slot bundle wallets, mayhem mode). Tuned on older launches, reported on newer
+        ones. Needs data from `watch` or `index_launches` + backfilled windows.
 
         Args:
             days: How far back to test.
