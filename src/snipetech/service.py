@@ -258,18 +258,26 @@ class Service:
         since = int(time.time() - days * 86400)
         if refresh:
             ing = self.ingestor
-            await ing.backfill_wallet_trades(wallet, since, self.cfg.copy.max_signatures)
-            firsts: dict[str, int] = {}
+            window = self.cfg.snipe.analysis_window_secs
+            await ing.backfill_address(wallet, max_sigs=self.cfg.copy.max_signatures, since_ts=since)
+            spans: dict[str, list] = {}
             for t in self.store.trades_for_user(wallet, since):
-                firsts.setdefault(t.mint, t.ts)
-            self.progress(f"locating launches for {len(firsts)} tokens")
+                span = spans.setdefault(t.mint, [t, t.ts])
+                span[1] = max(span[1], t.ts)
+            self.progress(f"locating launches for {len(spans)} tokens")
             launches = []
-            for mint, ts in firsts.items():
-                if not self.store.launch(mint):
-                    await ing.backfill_mint_window(mint, ts - 120, ts + 2)
+            for mint, (first, last_ts) in spans.items():
                 launch = self.store.launch(mint)
-                if launch and ts - launch.ts <= self.cfg.snipe.analysis_window_secs:
-                    await ing.backfill_mint_window(mint, launch.ts - 1, launch.ts + self.cfg.snipe.analysis_window_secs)
+                if launch is None:
+                    # Cheap snipe test: a young token has only a few transactions before this wallet's
+                    # first trade, and the create is one of them. Older tokens aren't snipes.
+                    before = await self.rpc.get_signatures(mint, before=first.sig, limit=40)
+                    if len(before) < 40:
+                        await ing.ingest(before)
+                        launch = self.store.launch(mint)
+                if launch and first.ts - launch.ts <= window:
+                    # trades from the create until shortly after this wallet's last trade (dev sells, ranks)
+                    await ing.backfill_mint_window(mint, launch.ts - 1, min(last_ts + 5, launch.ts + window))
                     launches.append(launch)
             await ing.ensure_tx_meta([t.sig for t in self.store.trades_for_user(wallet, since)])
             await self.fingerprint_early_trades(launches)

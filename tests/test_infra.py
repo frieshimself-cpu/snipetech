@@ -12,6 +12,7 @@ import pytest
 from snipetech.config import Config, dump_toml
 from snipetech.ingest import Ingestor, assign_positions, incoming_sol_transfer
 from snipetech.service import Service
+from snipetech.solana.rpc import SolanaRpc
 from snipetech.store import Store
 
 from .synth import addr, pump_launch, rinse_launch
@@ -213,6 +214,56 @@ class PagingRpc:
 
     async def get_transactions(self, sigs):
         return {s: None for s in sigs}
+
+
+class ChainRpc(FakeRpc):
+    """getSignaturesForAddress over the fixtures: every transaction that references the address, newest first;
+    a `before` cursor may be any known signature, like the real RPC."""
+
+    iter_signatures = SolanaRpc.iter_signatures
+
+    def __init__(self, txs: dict[str, dict]):
+        super().__init__(txs)
+        self.order = sorted(txs, key=lambda s: (txs[s]["slot"], s), reverse=True)
+        self.listed: list[str] = []
+
+    def _keys(self, sig: str) -> set[str]:
+        tx = self.txs[sig]
+        loaded = tx["meta"].get("loadedAddresses") or {}
+        return {*tx["transaction"]["message"]["accountKeys"], *loaded.get("writable", []), *loaded.get("readonly", [])}
+
+    async def get_signatures(self, address, before=None, until=None, limit=1000):
+        self.listed.append(address)
+        sigs = self.order[self.order.index(before) + 1 :] if before else self.order
+        out = []
+        for s in sigs:
+            if s == until:
+                break
+            if address in self._keys(s):
+                tx = self.txs[s]
+                out.append({"signature": s, "slot": tx["slot"], "blockTime": tx["blockTime"], "err": None})
+        return out[:limit]
+
+    async def get_transaction(self, sig):
+        return self.txs.get(sig)
+
+
+def test_profile_sniper_fetches_only_what_it_needs():
+    # 6bD2YsuN… bought EzHRAWk4… three slots after its create (both transactions are fixtures)
+    wallet = "6bD2YsuNF2MjMdYiLHRzmHswx3BzmtRgkFhJuBF6czBs"
+    rpc = ChainRpc(TXS)
+    cfg = Config()
+    cfg.live.funder_lookup = False
+    svc = Service(cfg, store=Store(":memory:"))
+    svc._rpc = rpc
+    rep = asyncio.run(svc.profile_sniper(wallet, days=100_000))
+    mint = next(t.mint for t in svc.store.trades_for_user(wallet, 0))
+    assert svc.store.launch(mint) is not None  # found through the short pre-trade listing
+    assert rep["positions"] == 1 and rep["exact"]["buy_size"]["median_sol"] > 0
+    assert rep["inferred"]["entry"]["median_delay_slots"] == 3
+    # wallet, the snipe test and the launch window; nothing for the unrelated fixtures
+    assert set(rpc.listed) == {wallet, mint}
+    assert rpc.calls < len(TXS)
 
 
 def test_backfill_address_is_incremental():
