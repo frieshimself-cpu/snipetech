@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import signal
 import sys
 import time
 from pathlib import Path
@@ -249,8 +250,19 @@ async def _run(args, cfg: Config) -> int:
         elif c == "watch":
             from .live import LiveWatcher
 
-            print(f"watching via {cfg.rpc.websocket_url().split('?')[0]} (Ctrl+C to stop)", file=sys.stderr)
-            await LiveWatcher(svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose).run()
+            targets = len(svc.store.list_members("copy_target"))
+            how = "HTTP polling" if args.poll else cfg.rpc.websocket_url().split("?")[0]
+            what = "copy targets only" if args.no_firehose else "pump.fun launches + copy targets"
+            print(f"watching {what} ({targets} copy targets) via {how} — Ctrl+C to stop", file=sys.stderr)
+            # SIGTERM (systemd, docker stop) shuts down like Ctrl+C so buffered trades are flushed.
+            main = asyncio.current_task()
+            loop = asyncio.get_running_loop()
+            for signum in (signal.SIGINT, signal.SIGTERM):
+                loop.add_signal_handler(signum, main.cancel)
+            try:
+                await LiveWatcher(svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose).run()
+            except asyncio.CancelledError:
+                print("stopped", file=sys.stderr)
         elif c == "list":
             if args.action == "show":
                 _out(args, svc.lists(), lambda d: "\n".join(
