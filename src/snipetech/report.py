@@ -151,15 +151,19 @@ def render_copy(r: dict) -> str:
     out = [f"Copytrade {r['label']}", "=" * 72]
     out += _verdict_block(v)
     rec = v.get("recommended") or {}
-    if rec and v.get("verdict") not in ("UNKNOWN",):
-        out.append(f"  → recommended size {rec.get('size_sol')} SOL; filters {rec.get('filters')}; own exit {rec.get('own_exit')}")
+    if v.get("verdict") in ("COPY", "COPY_FILTERED", "MARGINAL") and rec:
+        out.append(f"  → copy with {rec.get('size_sol')} SOL" + (f", only when {rec['filters']}" if v.get("verdict") == "COPY_FILTERED" else "")
+                   + (f"; better exits: {rec['own_exit']}" if rec.get("own_exit") else ""))
+    elif v.get("verdict") == "AVOID":
+        out.append("  → don't copy this wallet")
     out.append("")
     out.append(f"Positions: {r['positions_found']} found, {r.get('positions_simulated', 0)} simulated "
                f"({r.get('positions_open', 0)} still open), {r['positions_unsimulated']} skipped. {r['note']}")
     if "target" not in r:
         return "\n".join(out)
     st = r["settings"]
-    out.append(f"Simulated as: {st['size_sol']} SOL ({st['size_mode']}), landing {st['buy_latency']}/{st['sell_latency']} slot(s) after the target, "
+    sizing = f"{st['ratio']:g}x the wallet's size (max {st['max_size_sol']:g} SOL)" if st["size_mode"] == "proportional" else f"{st['size_sol']:g} SOL per buy"
+    out.append(f"Simulated as: {sizing}, landing {st['buy_latency']}/{st['sell_latency']} slot(s) after the target, "
                f"{st['per_tx_cost_sol']:.4g} SOL/tx, platform fee {st['platform_fee_bps']} bps")
     out.append("")
     t = r["target"]

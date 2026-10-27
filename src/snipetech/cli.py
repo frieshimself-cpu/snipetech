@@ -76,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float)
     sp.add_argument("--size", type=float, help="copy size in SOL")
+    sp.add_argument("--proportional", type=float, metavar="RATIO", help="copy RATIO x the wallet's SOL per buy instead of a fixed size")
     sp.add_argument("--latency", type=int, help="your landing latency in slots (buy and sell)")
     sp.add_argument("--no-refresh", action="store_true")
 
@@ -190,6 +191,8 @@ def _apply_overrides(cfg: Config, args) -> None:
         cfg.snipe.analysis_window_secs = args.window
     if getattr(args, "size", None) is not None:
         cfg.copy.size_sol = args.size
+    if getattr(args, "proportional", None) is not None:
+        cfg.copy.size_mode, cfg.copy.proportional_ratio = "proportional", args.proportional
     if getattr(args, "latency", None) is not None:
         cfg.copy.buy_latency_slots = cfg.copy.sell_latency_slots = args.latency
 

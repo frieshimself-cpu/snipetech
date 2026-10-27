@@ -387,6 +387,12 @@ def _decide(report: dict, cfg: Config, params: CopyParams, span_days: float) -> 
         reasons.append(f"the wallet itself is profitable ({tgt['mean']:+.4f} SOL/position) — its edge is speed you can't copy")
     if report["farming_rate"] >= 0.2:
         warnings.append(f"{report['farming_rate']:.0%} of positions look like farming copiers (quick flip into a crowd of buyers)")
+    median_buy = tgt.get("median_buy_sol") or 0.0
+    if params.size_mode == "fixed" and median_buy > 0 and params.size_sol > 3 * median_buy:
+        warnings.append(
+            f"your copy size ({params.size_sol:g} SOL) is {params.size_sol / median_buy:.0f}x the wallet's median buy "
+            f"({median_buy:.3f} SOL): your own price impact dominates — use proportional sizing or a smaller size"
+        )
     breakeven = [r["latency_slots"] for r in report["latency_sweep"] if r["mean_pnl"] > 0]
     max_lat = max(breakeven) if breakeven else None
     if max_lat is not None and max_lat < params.buy_latency:
