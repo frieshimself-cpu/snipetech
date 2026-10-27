@@ -91,7 +91,8 @@ def test_amm_events_use_pre_trade_effective_reserves(prefix):
     (raw,) = [e for e in ev.events if e.name in ("BuyEvent", "SellEvent")]
     f = raw.fields
     pool = f["pool"]
-    mint = ev.pool_mints[pool]
+    mint, quote = ev.pool_mints[pool]
+    assert quote == WSOL_MINT
     pre = {(b["owner"], b["mint"]): int(b["uiTokenAmount"]["amount"]) for b in tx["meta"]["preTokenBalances"]}
     assert f["pool_base_token_reserves"] == pre[(pool, mint)]
     assert f["pool_quote_token_reserves"] == pre[(pool, WSOL_MINT)]
@@ -105,6 +106,21 @@ def test_amm_events_use_pre_trade_effective_reserves(prefix):
     elif raw.ix_name == "buy":
         assert t.quote == f["quote_amount_in"]  # constant-product cost of the tokens received
         assert t.quote + t.fee == f["user_quote_amount_in"]
+
+
+def test_amm_pools_quoted_in_another_token_are_not_sol_trades():
+    """A routed swap wrapped BTC -> token A -> token B: neither PumpSwap pool is quoted in SOL, so
+    neither hop is a SOL trade (read naively, the second hop looked like an 18 SOL buy)."""
+    sig, tx = by_prefix("4iHFAXgL")
+    ev = extract_from_transaction(tx, sig)
+    bases = {base for base, _ in ev.pool_mints.values()}
+    quotes = {quote for _, quote in ev.pool_mints.values()}
+    assert len(ev.pool_mints) == 2 and WSOL_MINT not in quotes
+    assert any(q.startswith("3NZ9JMVB") for q in quotes) and bases & quotes  # first hop's token pays for the second
+    assert normalize(ev).trades == []
+    # a stale cache entry claiming SOL quotes does not override the instruction accounts
+    stale = {p: (base, WSOL_MINT) for p, (base, _) in ev.pool_mints.items()}
+    assert normalize(ev, known_pools=stale).trades == []
 
 
 def test_borsh_tolerates_older_shorter_events():

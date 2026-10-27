@@ -36,7 +36,7 @@ class TxEvents:
     block_time: int | None
     fee_payer: str
     events: list[RawEvent] = field(default_factory=list)
-    pool_mints: dict[str, str] = field(default_factory=dict)  # PumpSwap pool -> base mint seen in ix accounts
+    pool_mints: dict[str, tuple[str, str]] = field(default_factory=dict)  # PumpSwap pool -> (base, quote) from ix accounts
     failed: bool = False
 
 
@@ -95,8 +95,8 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
         last_ix_name[program] = ix_name
         if program == PUMP_AMM_PROGRAM and ix_name in AMM_TRADE_IXS:
             accs = ix.get("accounts", [])
-            if len(accs) > 3:
-                out.pool_mints[keys[accs[0]]] = keys[accs[3]]
+            if len(accs) > 4:
+                out.pool_mints[keys[accs[0]]] = (keys[accs[3]], keys[accs[4]])
 
     for i, ix in enumerate(outer):
         visit(ix)

@@ -26,9 +26,8 @@ def normalize(
     pos: int = 0,
     known_pools: dict[str, tuple[str, str]] | None = None,
 ) -> Normalized:
-    known_pools = dict(known_pools or {})
-    for pool, base_mint in tx.pool_mints.items():
-        known_pools.setdefault(pool, (base_mint, WSOL_MINT))
+    # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL)
+    known_pools = {**(known_pools or {}), **tx.pool_mints}
     out = Normalized([], [], [], [], {}, set())
     out.pools.update({p: known_pools[p] for p in tx.pool_mints})
 

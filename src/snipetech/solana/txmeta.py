@@ -62,6 +62,7 @@ class PumpIx:
     user: str
     args: dict[str, Any]
     router: str | None  # top-level program that invoked pump, when it wasn't pump itself
+    mint: str = ""  # the token traded (curve mint / pool base mint)
 
 
 @dataclass
@@ -191,12 +192,13 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
             name, acc_names, args = decoded
             if not (name.startswith(("buy", "sell")) or name in ("create", "create_v2", "multi_hop_curve_swap", "multi_hop_swap")):
                 return
-            user = ""
-            if "user" in acc_names:
-                idx = acc_names.index("user")
-                user = accs[idx] if idx < len(accs) else ""
+            def account(role: str) -> str:
+                idx = acc_names.index(role) if role in acc_names else len(accs)
+                return accs[idx] if idx < len(accs) else ""
+
             router = outer_program if outer_program not in PUMP_PROGRAMS else None
-            out.pump_ixs.append(PumpIx(program, name, user, args, router))
+            mint = account("mint") or account("base_mint")
+            out.pump_ixs.append(PumpIx(program, name, account("user"), args, router, mint))
 
     for i, ix in enumerate(msg["instructions"]):
         program = keys[ix["programIdIndex"]]

@@ -54,13 +54,12 @@ def _cluster(values: list[float], width: float) -> tuple[float | None, float]:
     return best, best_n / len(arr)
 
 
-def _ix_for(meta: TxMeta | None, user: str, buy: bool):
+def _ix_for(meta: TxMeta | None, trade: Trade):
+    """The pump instruction behind a trade (routed swaps carry several; older records have no mint)."""
     if meta is None:
         return None
-    for p in meta.pump_ixs:
-        if p.user == user and p.name.startswith("buy" if buy else "sell"):
-            return p
-    return None
+    side = [p for p in meta.pump_ixs if p.user == trade.user and p.name.startswith("buy" if trade.is_buy else "sell")]
+    return next((p for p in side if p.mint == trade.mint), next((p for p in side if not p.mint), None))
 
 
 def _slippage(ix, trade: Trade) -> dict:
@@ -72,11 +71,17 @@ def _slippage(ix, trade: Trade) -> dict:
         cap = a.get("max_sol_cost", a.get("max_quote_amount_in"))
         if cap is not None:
             if cap >= U64_MAX:
-                return {"buy_cap": "unlimited"}
+                return {"buy_cap": "router" if ix.router else "unlimited"}
+            if ix.router and abs(cap - (trade.quote + trade.fee)) <= 2:
+                # the router computed the token amount on-chain from live reserves: the cap is just the budget
+                return {"buy_cap": "router", "exact_budget_sol": (cap - 1) / LAMPORTS}
             return {"buy_cap_vs_fill": cap / max(trade.quote + trade.fee, 1) - 1}
         min_out = a.get("min_tokens_out", a.get("min_base_amount_out"))
         if min_out is not None:
-            return {"buy_min_out_vs_fill": 1 - min_out / max(trade.base, 1), "exact_budget_sol": (a.get("spendable_sol_in") or a.get("spendable_quote_in") or 0) / LAMPORTS}
+            budget = {"exact_budget_sol": (a.get("spendable_sol_in") or a.get("spendable_quote_in") or 0) / LAMPORTS}
+            if min_out <= 1:
+                return {"buy_cap": "router" if ix.router else "unlimited", **budget}
+            return {"buy_min_out_vs_fill": 1 - min_out / max(trade.base, 1), **budget}
         return {}
     min_out = a.get("min_sol_output", a.get("min_quote_amount_out"))
     if min_out is None:
@@ -125,7 +130,7 @@ def sniper_profile(store: Store, cfg: Config, wallet: str, since_ts: int) -> dic
         sells = []
         for t in pos.trades:
             m = metas.get(t.sig)
-            ix = _ix_for(m, wallet, t.is_buy)
+            ix = _ix_for(m, t)
             tips = list(m.tips) if m else []
             if m is not None and not tips and t.slot in tip_only:
                 tips = [dict(x, separate_tx=True) for x in tip_only[t.slot]]
@@ -215,7 +220,7 @@ def _exact_settings(tx_rows: list[dict], wallet: str, labels: dict[str, str]) ->
     out["tx_versions"] = dict(Counter(str(r["version"]) for r in fp))
     # buy size: exact budget when the instruction carries one, else what it paid
     budgets = [r.get("exact_budget_sol") for r in buys if r.get("exact_budget_sol")]
-    sizes = budgets or [r["trade_sol"] for r in buys]
+    sizes = [r.get("exact_budget_sol") or r["trade_sol"] for r in buys]
     size_mode, size_share = _mode(sizes, 3)
     out["buy_size"] = {"mode_sol": size_mode, "mode_share": size_share, "median_sol": float(np.median(sizes)) if sizes else None,
                        "p10_sol": float(np.quantile(sizes, 0.1)) if sizes else None, "p90_sol": float(np.quantile(sizes, 0.9)) if sizes else None,
@@ -226,6 +231,7 @@ def _exact_settings(tx_rows: list[dict], wallet: str, labels: dict[str, str]) ->
     slip_mode, slip_share = _mode([max(0.0, s) for s in slip], 2)
     out["buy_slippage"] = {
         "unlimited_share": sum(1 for r in buys if r.get("buy_cap") == "unlimited") / len(buys) if buys else 0.0,
+        "router_share": sum(1 for r in buys if r.get("buy_cap") == "router") / len(buys) if buys else 0.0,
         "headroom_median": float(np.median(slip)) if slip else None, "headroom_max": float(max(slip)) if slip else None,
         "headroom_mode": slip_mode, "mode_share": slip_share,
         "kind": "max cost above fill" if caps else ("min tokens below fill" if mins else None),
@@ -303,7 +309,7 @@ def _inferred_behaviour(rows: list[dict], cfg: Config) -> dict:
             # of the positions where the dev/bundle sold while it was holding, how often it exited within 2 slots
             "dev_sold_while_holding": len(dev_react),
             "reacts_to_dev_sell_share": len(reacted) / len(dev_react) if dev_react else None,
-            "sells_on_dev_sell": len(dev_react) >= 3 and len(reacted) / len(dev_react) >= 0.6,
+            "sells_on_dev_sell": len(reacted) / len(dev_react) >= 0.6 if len(dev_react) >= 3 else None,  # None: too few cases
             "partial_exit_share": sum(1 for r in rows if len(r["sells"]) > 1) / len(rows),
             "first_sell_fraction_median": float(np.median([s["fraction"] for s in firsts])),
         }  # fmt: skip
@@ -422,10 +428,17 @@ def _config_block(rep: dict) -> dict:
     if (ex.get("buy_template") or {}).get("instructions"):
         cfg["buy tx template"] = f"{ex['buy_template']['instructions']} ({ex['buy_template']['share']:.0%})  [exact]"
     sl = ex.get("buy_slippage") or {}
+    parts = []
     if sl.get("unlimited_share"):
-        cfg["buy slippage"] = f"unlimited (u64::MAX cap) on {sl['unlimited_share']:.0%} of buys  [exact]"
-    elif sl.get("headroom_median") is not None:
-        cfg["buy slippage"] = f"cap ≈ {sl['headroom_mode']:.0%} above fill most often (median {sl['headroom_median']:.0%}, max {sl['headroom_max']:.0%}); {sl['kind']}  [exact args]"
+        parts.append(f"unlimited (no price protection) on {sl['unlimited_share']:.0%} of buys")
+    if sl.get("router_share"):
+        parts.append(f"left to the router on {sl['router_share']:.0%} of buys (the pump instruction carries only the "
+                     "budget; any slippage check lives in the router's own, undocumented args)")
+    if sl.get("headroom_median") is not None:
+        parts.append(f"cap ≈ {sl['headroom_mode']:.0%} above fill most often (median {sl['headroom_median']:.0%}, "
+                     f"max {sl['headroom_max']:.0%}; {sl['kind']})")
+    if parts:
+        cfg["buy slippage"] = "; ".join(parts) + "  [exact args]"
     ss = ex.get("sell_slippage") or {}
     if ss.get("no_minimum_share"):
         cfg["sell slippage"] = f"no minimum output on {ss['no_minimum_share']:.0%} of sells  [exact]"
@@ -447,7 +460,8 @@ def _config_block(rep: dict) -> dict:
             cfg["time exit"] = f"~{x['time_exit_secs']:.0f}s ({x['time_exit_support']:.0%} of the {x['unexplained_exits']} exits not explained by TP/SL/dev sells)  [inferred]"
         cfg["hold"] = f"median {x['hold_secs_median']:.0f}s, p90 {x['hold_secs_p90']:.0f}s  [inferred]"
         if x.get("reacts_to_dev_sell_share") is not None:
-            cfg["sells on dev sell"] = (f"{'yes' if x['sells_on_dev_sell'] else 'no'}: exited within 2 slots in {x['reacts_to_dev_sell_share']:.0%} "
+            call = {True: "yes", False: "no", None: "too few cases to tell"}[x["sells_on_dev_sell"]]
+            cfg["sells on dev sell"] = (f"{call}: exited within 2 slots in {x['reacts_to_dev_sell_share']:.0%} "
                                         f"of the {x['dev_sold_while_holding']} positions where the dev/bundle sold first  [inferred]")
         if x.get("partial_exit_share", 0) >= 0.3:
             cfg["partial exits"] = f"{x['partial_exit_share']:.0%} of positions, first sell ≈ {x['first_sell_fraction_median']:.0%} of the bag  [inferred]"

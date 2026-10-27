@@ -49,6 +49,7 @@ def _hits(ctx: LaunchContext, metas: dict[str, TxMeta]) -> list[dict]:
     hits = []
     for rank, i in enumerate(ctx.snipers, 1):
         m = metas.get(path.sigs[i])
+        ixs = [p for p in m.pump_ixs if p.user == path.users[i] and p.mint in (ctx.launch.mint, "")] if m else []
         hits.append({
             "rank": rank, "idx": i, "user": path.users[i], "sig": path.sigs[i],
             "slot_delay": int(path.slot[i] - ctx.launch.slot),
@@ -57,8 +58,8 @@ def _hits(ctx: LaunchContext, metas: dict[str, TxMeta]) -> list[dict]:
             "priority": m.priority_lamports if m else None,
             "tip": m.tip_lamports if m else None,
             "services": sorted({t["service"] for t in m.tips}) if m else [],
-            "router": next((p.router for p in m.pump_ixs if p.user == path.users[i] and p.router), None) if m else None,
-            "ix": next((p.name for p in m.pump_ixs if p.user == path.users[i]), None) if m else None,
+            "router": next((p.router for p in ixs if p.router), None),
+            "ix": next((p.name for p in ixs), None),
         })  # fmt: skip
     return hits
 

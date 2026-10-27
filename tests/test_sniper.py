@@ -85,3 +85,27 @@ def test_dev_reactions_are_not_mistaken_for_stop_losses(store, cfg):
     assert x["stop_loss_multiple"] is None  # its losses were all reactions to the dev dumping
     assert x["time_exit_secs"] is None  # its quick exits were take-profits, not a timer
     assert x["unexplained_exits"] == 0
+
+
+def test_instruction_args_are_read_per_hop_and_router():
+    from snipetech.analysis.sniper import _ix_for, _slippage
+    from snipetech.models import Trade
+    from snipetech.solana.programs import PUMP_PROGRAM
+    from snipetech.solana.txmeta import PumpIx, TxMeta
+
+    def trade(mint, quote, fee, base):
+        return Trade("s", 0, 1, 0, NOW, mint, "curve", BOT, True, quote, base, fee, 125, 0, 0)
+
+    router = addr("router")
+    hops = [PumpIx(PUMP_PROGRAM, "buy", BOT, {"amount": 5, "max_sol_cost": 100_000_001}, router, addr("hop-a")),
+            PumpIx(PUMP_PROGRAM, "buy", BOT, {"amount": 9, "max_sol_cost": 7}, router, addr("hop-b"))]  # fmt: skip
+    meta = TxMeta("s", 1, NOW, 0, BOT, [BOT], 1, 5000, 0, None, None, None, [], [], hops)
+    t = trade(addr("hop-a"), 98_765_431, 1_234_569, 5)
+    ix = _ix_for(meta, t)
+    assert ix is hops[0]  # not the first buy by this user, the one for this token
+    # a router computed the amount on-chain: the cap is the budget, not a 0% slippage setting
+    assert _slippage(ix, t) == {"buy_cap": "router", "exact_budget_sol": 0.1}
+    direct = PumpIx(PUMP_PROGRAM, "buy", BOT, {"amount": 5, "max_sol_cost": 100_000_000}, None)
+    assert _slippage(direct, t)["buy_cap_vs_fill"] == pytest.approx(0.0)  # a real 0% cap
+    unprotected = PumpIx(PUMP_PROGRAM, "buy_exact_sol_in", BOT, {"spendable_sol_in": 100_000_000, "min_tokens_out": 1}, None)
+    assert _slippage(unprotected, t)["buy_cap"] == "unlimited"
