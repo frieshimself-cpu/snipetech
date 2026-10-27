@@ -48,3 +48,13 @@ def test_slippage_args_are_decoded():
     (ix,) = m.pump_ixs
     assert ix.name == "buy_exact_sol_in"
     assert ix.args["spendable_sol_in"] == 995_800 and ix.args["min_tokens_out"] == 12_355_897_260
+
+
+def test_wrapping_sol_is_not_a_payment():
+    """transfer -> sync_native -> swap -> close_account: the 0.1 SOL into the signer's temporary wSOL
+    account is the trade itself (that account is in neither balance list: created and closed here)."""
+    m = load("4bTasFM5")
+    assert m.template[4:8] == ["system:transfer", "spl-token:sync_native", "pumpswap:buy_exact_quote_in",
+                               "spl-token:close_account"]  # fmt: skip
+    assert sorted(t["lamports"] for t in m.transfers) == [1_000_000, 1_556_505]  # 1% platform fee + another fee
+    assert all(t["lamports"] < 100_000_000 for t in m.transfers)

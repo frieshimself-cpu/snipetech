@@ -140,3 +140,17 @@ def test_refresh_fetches_entries_and_insider_sells_not_whole_markets(store, cfg,
     devs = {store.launch(m).deployer for m in windows}
     assert insider and {args[0] for args, _ in insider} <= devs
     assert all(kw["before"] in {t.sig for t in store.trades_for_user(BOT)} for _, kw in insider)
+
+
+def test_priority_set_as_a_sol_amount(store, cfg):
+    """Bots configured with 'priority fee = X SOL' derive the CU price from each tx's CU limit."""
+    bot_world(store)
+    metas = store.tx_meta([t.sig for t in store.trades_for_user(BOT)])
+    for k, m in enumerate(metas.values()):
+        m.cu_limit = 80_000 + 7_919 * k
+        m.cu_price = 2_000_000 * 1_000_000 // m.cu_limit  # 0.002 SOL whatever the limit
+        m.priority_lamports = m.cu_limit * m.cu_price // 1_000_000
+    store.add_tx_meta(metas.values())
+    rep = sniper_profile(store, cfg, BOT, NOW - 100_000)
+    assert rep["exact"]["buy_fees"]["priority_sol_fixed"] == pytest.approx(0.002, rel=0.01)
+    assert rep["config"]["buy priority"].startswith("fixed 0.002000 SOL")

@@ -158,6 +158,9 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
         if b.get("owner") in signers and b["accountIndex"] < len(keys)
     }
     signer_set = set(signers)
+    # token accounts the signers create, wrap SOL into or close within this tx (absent from the balance lists
+    # when created and closed in the same tx): SOL sent there is the trade's own money, not a payment
+    own_accounts: set[str] = set()
     inner_by_outer: dict[int, list[dict]] = {g["index"]: g["instructions"] for g in meta.get("innerInstructions") or []}
 
     def handle(ix: dict, program: str, ancestors: list[str], outer_program: str) -> None:
@@ -184,6 +187,13 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
                 out.tips.append({"dest": dst, "lamports": lamports, "service": service})
             else:
                 out.transfers.append({"src": src, "dst": dst, "lamports": lamports})
+            return
+        if program in (SPL_TOKEN, TOKEN_2022) and data and accs:
+            if data[0] == 17 or (data[0] == 9 and len(accs) >= 3 and accs[2] in signer_set):
+                own_accounts.add(accs[0])  # sync_native / close_account by its owner
+            return
+        if program == ATA_PROGRAM and len(accs) >= 3 and accs[2] in signer_set:
+            own_accounts.add(accs[1])  # associated account created for a signer
             return
         if program in PUMP_PROGRAMS:
             decoded = decode_instruction(program, data)
@@ -217,4 +227,5 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
             height = inner.get("stackHeight") or 2
             stack = stack[: max(1, height - 1)] + [iprog]
             handle(inner, iprog, stack[:-1], program)
+    out.transfers = [t for t in out.transfers if t["dst"] not in own_accounts]
     return out

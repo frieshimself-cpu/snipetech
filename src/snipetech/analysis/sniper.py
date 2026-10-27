@@ -198,7 +198,10 @@ def _exact_settings(tx_rows: list[dict], wallet: str, labels: dict[str, str]) ->
         tips = [sum(t["lamports"] for t in r["tips"]) for r in rs]
         services = Counter(t["service"] for r in rs for t in r["tips"])
         tip_mode, tip_share = _mode([t for t in tips if t])
+        # bots configured as "priority fee = X SOL" vary the CU price with the CU limit
+        prio, prio_share = _cluster([r["priority"] for r in rs if r["priority"]], 0.02)
         return {
+            "priority_sol_fixed": prio / LAMPORTS if prio and prio_share >= 0.6 else None, "priority_fixed_share": prio_share,
             "cu_price_microlamports": cu_price, "cu_price_share": cu_price_share,
             "cu_limit": cu_limit, "cu_limit_share": cu_limit_share,
             "priority_sol_median": float(np.median([r["priority"] for r in rs])) / LAMPORTS,
@@ -413,7 +416,11 @@ def _config_block(rep: dict) -> dict:
         f = ex.get(f"{side}_fees") or {}
         if f:
             cu = f"cu price {f['cu_price_microlamports']:,} µlamports ({f['cu_price_share']:.0%}), limit {f['cu_limit']:,}" if f.get("cu_price_microlamports") else "no compute-budget price set"
-            cfg[f"{side} priority"] = f"{cu}; median priority {f['priority_sol_median']:.6f} SOL  [exact]"
+            if f.get("priority_sol_fixed") and f["cu_price_share"] < 0.6:
+                cfg[f"{side} priority"] = (f"fixed {f['priority_sol_fixed']:.6f} SOL on {f['priority_fixed_share']:.0%} of txs "
+                                           f"(CU price varies with the CU limit, i.e. set as a SOL amount)  [exact]")
+            else:
+                cfg[f"{side} priority"] = f"{cu}; median priority {f['priority_sol_median']:.6f} SOL  [exact]"
             if f.get("tipped_share"):
                 svc = ", ".join(f"{k} {v}" for k, v in f["tip_services"].items())
                 sep = f", {f['separate_tip_tx_share']:.0%} via separate bundle tx" if f.get("separate_tip_tx_share") else ""
@@ -438,8 +445,9 @@ def _config_block(rep: dict) -> dict:
         parts.append(f"left to the router on {sl['router_share']:.0%} of buys (the pump instruction carries only the "
                      "budget; any slippage check lives in the router's own, undocumented args)")
     if sl.get("headroom_median") is not None:
-        parts.append(f"cap ≈ {sl['headroom_mode']:.0%} above fill most often (median {sl['headroom_median']:.0%}, "
-                     f"max {sl['headroom_max']:.0%}; {sl['kind']})")
+        what = "max cost ≈ {:.0%} above" if sl["kind"] == "max cost above fill" else "min tokens out ≈ {:.0%} below"
+        parts.append(f"{what.format(sl['headroom_mode'])} the fill most often (median {sl['headroom_median']:.0%}, "
+                     f"max {sl['headroom_max']:.0%})")
     if parts:
         cfg["buy slippage"] = "; ".join(parts) + "  [exact args]"
     ss = ex.get("sell_slippage") or {}
