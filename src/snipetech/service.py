@@ -324,7 +324,6 @@ class Service:
         from .analysis.launches import build_context
 
         now = int(time.time())
-        window = self.cfg.snipe.analysis_window_secs
         if deployer:
             launches = self.store.launches_by_deployer(self._check(deployer), max_launches, before_ts=now - 30)
         else:
