@@ -109,3 +109,34 @@ def test_instruction_args_are_read_per_hop_and_router():
     assert _slippage(direct, t)["buy_cap_vs_fill"] == pytest.approx(0.0)  # a real 0% cap
     unprotected = PumpIx(PUMP_PROGRAM, "buy_exact_sol_in", BOT, {"spendable_sol_in": 100_000_000, "min_tokens_out": 1}, None)
     assert _slippage(unprotected, t)["buy_cap"] == "unlimited"
+
+
+def test_refresh_fetches_entries_and_insider_sells_not_whole_markets(store, cfg, monkeypatch):
+    """profile_sniper's refresh: the create through its entry per snipe, then only the insiders'
+    own transactions while it held (not every trade on the token)."""
+    import asyncio
+
+    from snipetech.service import Service
+
+    bot_world(store)
+    calls = []
+
+    class Recorder:
+        def __getattr__(self, name):
+            async def record(*args, **kwargs):
+                calls.append((name, args, kwargs))
+
+            return record
+
+    cfg.live.funder_lookup = False
+    monkeypatch.setattr(Service, "ingestor", property(lambda self: Recorder()))
+    asyncio.run(Service(cfg, store=store).profile_sniper(BOT, days=2))
+    windows = {args[0]: args[1:] for name, args, _ in calls if name == "backfill_mint_window"}
+    assert len(windows) == 12
+    for mint, (start, end) in windows.items():
+        first = next(t for t in store.trades_for_user(BOT) if t.mint == mint)
+        assert start == store.launch(mint).ts - 1 and end == first.ts  # up to its entry, not its exit
+    insider = [(args, kw) for name, args, kw in calls if name == "backfill_address_window"]
+    devs = {store.launch(m).deployer for m in windows}
+    assert insider and {args[0] for args, _ in insider} <= devs
+    assert all(kw["before"] in {t.sig for t in store.trades_for_user(BOT)} for _, kw in insider)

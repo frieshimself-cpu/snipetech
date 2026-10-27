@@ -243,11 +243,18 @@ class Ingestor:
         self.store.set_coverage(key, cov)
         return result
 
+    async def backfill_address_window(
+        self, address: str, start_ts: int, end_ts: int, before: str | None = None, max_sigs: int = 2_000
+    ) -> IngestResult:
+        """Ingest an address's transactions between two times, listing back from `before` (any
+        signature at or after `end_ts`; the RPC accepts one that doesn't involve the address)."""
+        return await self.ingest(await self._collect_window(address, start_ts, end_ts, before, max_sigs))
+
     async def _collect_window(
-        self, mint: str, start_ts: int, end_ts: int, cursor: str | None, max_sigs: int
+        self, address: str, start_ts: int, end_ts: int, cursor: str | None, max_sigs: int
     ) -> list[dict[str, Any]]:
         listing: list[dict[str, Any]] = []
-        async for page in self.rpc.iter_signatures(mint, before=cursor, max_sigs=max_sigs, stop_before_ts=start_ts - 1):
+        async for page in self.rpc.iter_signatures(address, before=cursor, max_sigs=max_sigs, stop_before_ts=start_ts - 1):
             listing.extend(s for s in page if (s.get("blockTime") or 0) <= end_ts + 1)
         return listing
 

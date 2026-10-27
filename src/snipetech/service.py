@@ -262,11 +262,10 @@ class Service:
             await ing.backfill_address(wallet, max_sigs=self.cfg.copy.max_signatures, since_ts=since)
             spans: dict[str, list] = {}
             for t in self.store.trades_for_user(wallet, since):
-                span = spans.setdefault(t.mint, [t, t.ts])
-                span[1] = max(span[1], t.ts)
+                spans.setdefault(t.mint, [t, t])[1] = t
             self.progress(f"locating launches for {len(spans)} tokens")
-            launches = []
-            for mint, (first, last_ts) in spans.items():
+            snipes = []
+            for mint, (first, last) in spans.items():
                 launch = self.store.launch(mint)
                 if launch is None:
                     # Cheap snipe test: a young token has only a few transactions before this wallet's
@@ -276,11 +275,18 @@ class Service:
                         await ing.ingest(before)
                         launch = self.store.launch(mint)
                 if launch and first.ts - launch.ts <= window:
-                    # trades from the create until shortly after this wallet's last trade (dev sells, ranks)
-                    await ing.backfill_mint_window(mint, launch.ts - 1, min(last_ts + 5, launch.ts + window))
-                    launches.append(launch)
+                    # the create through its entry: rank among snipers, insiders, the dev's buy
+                    await ing.backfill_mint_window(mint, launch.ts - 1, first.ts)
+                    snipes.append((launch, first, last))
+            await self.fingerprint_early_trades([launch for launch, _, _ in snipes])
+            # Dev/bundle sells while it held, from the insiders' own histories: a handful of
+            # transactions instead of every trade on a hot token.
+            for launch, first, last in snipes:
+                if last.is_buy:
+                    continue  # no exits to attribute
+                for insider in build_context(self.store, launch, self.cfg).insiders - {wallet}:
+                    await ing.backfill_address_window(insider, first.ts, last.ts, before=last.sig)
             await ing.ensure_tx_meta([t.sig for t in self.store.trades_for_user(wallet, since)])
-            await self.fingerprint_early_trades(launches)
             if self.cfg.live.funder_lookup and self.store.funder(wallet) is None:
                 try:
                     await ing.find_funder(wallet)

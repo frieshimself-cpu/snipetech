@@ -115,7 +115,10 @@ def sniper_profile(store: Store, cfg: Config, wallet: str, since_ts: int) -> dic
         row: dict = {"mint": pos.mint, "ts": first.ts, "closed": pos.closed, "buy_sol": (first.quote + first.fee) / LAMPORTS,
                      "deployer": launch.deployer if launch else None}  # fmt: skip
         ctx = None
-        if launch and first.ts - launch.ts <= cfg.snipe.analysis_window_secs:
+        cov = store.coverage(f"mint:{pos.mint}") if launch else {}
+        # a snipe whose market is known from the create through its entry (ranks would be wrong otherwise)
+        if launch and first.ts - launch.ts <= cfg.snipe.analysis_window_secs and cov.get("from_ts", 1 << 62) <= launch.ts \
+                and cov.get("to_ts", 0) >= first.ts:
             ctx = contexts.get(pos.mint) or build_context(store, launch, cfg)
             contexts[pos.mint] = ctx
             row["entry_delay_slots"] = int(first.slot - launch.slot)
