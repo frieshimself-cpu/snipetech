@@ -1,0 +1,279 @@
+"""Plain-text rendering of reports for the terminal (use --json for machines)."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+
+
+def sol(x: float | None, signed: bool = True) -> str:
+    if x is None:
+        return "-"
+    return f"{x:+.4f}" if signed else f"{x:.4f}"
+
+
+def pct(x: float | None) -> str:
+    return "-" if x is None else f"{x * 100:.0f}%"
+
+
+def ago(ts: float | None) -> str:
+    if not ts:
+        return "-"
+    d = time.time() - ts
+    if d < 3600:
+        return f"{d / 60:.0f}m ago"
+    if d < 86400 * 2:
+        return f"{d / 3600:.1f}h ago"
+    return f"{d / 86400:.1f}d ago"
+
+
+def short(addr: str | None, n: int = 6) -> str:
+    if not addr:
+        return "-"
+    return addr if len(addr) <= 2 * n + 1 else f"{addr[:n]}…{addr[-4:]}"
+
+
+def table(rows: list[list[Any]], headers: list[str]) -> str:
+    cells = [[str(h) for h in headers]] + [["-" if c is None else str(c) for c in r] for r in rows]
+    widths = [max(len(r[i]) for r in cells) for i in range(len(headers))]
+    lines = []
+    for j, r in enumerate(cells):
+        lines.append("  ".join(c.ljust(widths[i]) if i == 0 else c.rjust(widths[i]) for i, c in enumerate(r)))
+        if j == 0:
+            lines.append("  ".join("-" * w for w in widths))
+    return "\n".join(lines)
+
+
+def _stats_line(s: dict) -> str:
+    if not s or not s.get("n"):
+        return "no trades"
+    return (
+        f"n={s['n']}  EV {sol(s['mean'])} SOL (bound {sol(s['ev_lower'])})  total {sol(s['total'])}  "
+        f"win {pct(s['win_rate'])}  median {sol(s['median'])}  maxDD {sol(s['max_drawdown'], False)}"
+    )
+
+
+def _verdict_block(v: dict) -> list[str]:
+    out = [f"VERDICT: {v.get('verdict')}" + (f"   score {v['score']}/100" if v.get("score") is not None else "")]
+    for r in v.get("reasons", []):
+        out.append(f"  • {r}")
+    for w in v.get("warnings", []):
+        out.append(f"  ! {w}")
+    return out
+
+
+def _gap(minutes: float | None) -> str:
+    if minutes is None:
+        return "-"
+    return f"{minutes * 60:.0f}s" if minutes < 1 else (f"{minutes:.0f} min" if minutes < 120 else f"{minutes / 60:.1f} h")
+
+
+def render_deployer(r: dict) -> str:
+    v = r["verdict"]
+    out = [f"Deployer {r['label']}", "=" * 72]
+    out += _verdict_block(v)
+    rec = v.get("recommended") or {}
+    if rec and v.get("verdict") in ("SNIPE", "MARGINAL") and rec.get("buy_sol"):
+        out.append(f"  → recommended: buy {rec.get('buy_sol')} SOL, exit [{rec.get('exit_label')}]")
+    elif v.get("verdict") == "AVOID":
+        out.append("  → skip this deployer's launches")
+    out.append("")
+    out.append(f"Launches: {r['launches_total']} found, {r['launches_analyzed']} analyzed"
+               + (f", {r['launches_pending_window']} still inside the window" if r.get("launches_pending_window") else ""))
+    st = r["settings"]
+    out.append(f"Simulated as: {st['buy_sol']} SOL buy landing {st['entry_slot_offset']} slot(s) after create ({st['entry_position']}),"
+               f" exit latency {st['exit_latency_slots']} slot(s), {st['per_tx_cost_sol']:.4g} SOL/tx, platform fee {st['platform_fee_bps']} bps")
+    if r.get("funder"):
+        f = r["funder"]
+        out.append(f"Funded by: {f.get('funder')} ({sol((f.get('amount') or 0) / 1e9, False)} SOL)")
+    if "outcomes" not in r:
+        return "\n".join(out)
+    out.append("")
+    out.append("Outcomes (sniper's view):")
+    rows = [[k, o["count"], pct(o["rate"]), f"{pct(o['ci'][0])}–{pct(o['ci'][1])}"] for k, o in r["outcomes"].items() if o["count"]]
+    out.append(table(rows, ["outcome", "n", "rate", "80% CI"]))
+    p = r["profile"]
+    out.append("")
+    out.append("Behaviour:")
+    out.append(f"  dev buy median {sol(p['median_dev_buy_sol'], False)} SOL ({(p['median_dev_buy_pct_supply'] or 0):.1f}% supply), "
+               f"bundle wallets median {p['median_bundle_wallets']} ({(p['median_bundle_pct_supply'] or 0):.1f}% supply)")
+    dump = p["median_insider_dump_secs"]
+    out.append(f"  insiders dump after median {'-' if dump is None else f'{dump:.0f}s'}; dev sells in {pct(p['dev_sells_share'])} of launches; "
+               f"insiders already out before your entry in {pct(p['insiders_dumped_before_your_entry'])}")
+    out.append(f"  peak mcap median {(p['median_peak_mcap_sol'] or 0):.1f} SOL; graduation {pct(p['graduation_rate'])}; mayhem {pct(p['mayhem_share'])}")
+    c = r["cadence"]
+    out.append(f"  cadence: {c['launches_per_day'] and round(c['launches_per_day'], 1)} launches/day, median gap {_gap(c['median_gap_minutes'])}, "
+               f"median {p.get('median_trades')} trades per launch window, "
+               f"last launch {ago(c['last_launch_ts'])}, busiest UTC hours {c['busiest_hours_utc']}")
+    out.append("")
+    out.append(f"Your strategy:  {_stats_line(r['your_strategy'])}")
+    opt = r.get("optimizer")
+    if opt:
+        out.append(f"Best in-sample: {_stats_line(opt['in_sample_best']['stats'])}  [{opt['in_sample_best']['label']}]")
+        wf = opt.get("walk_forward")
+        if wf:
+            out.append(f"Walk-forward:   picked [{wf['picked']['label']}] on {wf['train_launches']} older launches →")
+            out.append(f"                unseen {wf['test_launches']}: {_stats_line(wf['test'])}")
+            out.append(f"                your exits on the same unseen launches: {_stats_line(wf['test_default'])}")
+    if r.get("size_sweep"):
+        out.append("")
+        out.append("Size sweep (recommended exits):")
+        out.append(table([[s["buy_sol"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["mean_roi"]), pct(s["win_rate"])] for s in r["size_sweep"]],
+                         ["buy SOL", "EV", "EV bound", "ROI", "win"]))
+    if r.get("latency_sweep"):
+        out.append("")
+        out.append("Entry latency (slots after create):")
+        out.append(table([[s["entry_slot_offset"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["win_rate"])] for s in r["latency_sweep"]],
+                         ["slots", "EV", "EV bound", "win"]))
+    if r.get("patterns"):
+        out.append("")
+        out.append("After a dump/win/flat launch, the next one was:")
+        for prev, nxt in r["patterns"].items():
+            dist = ", ".join(f"{k} {pct(v)}" for k, v in nxt.items() if k != "n")
+            out.append(f"  {prev:>4} (n={nxt['n']}): {dist}")
+    out.append("")
+    out.append("Recent launches:")
+    rows = [[short(l["mint"]), l["symbol"][:10], ago(l["ts"]), l["outcome"], sol(l["pnl_sol"]), l["exit_reason"],
+             f"{l['max_multiple']:.2f}x", l["insider_dump_secs"], l["peak_mcap_sol"]] for l in r["launches"][:15]]  # fmt: skip
+    out.append(table(rows, ["mint", "symbol", "when", "outcome", "pnl", "exit", "max", "dump s", "peak mc"]))
+    return "\n".join(out)
+
+
+def render_copy(r: dict) -> str:
+    v = r["verdict"]
+    out = [f"Copytrade {r['label']}", "=" * 72]
+    out += _verdict_block(v)
+    rec = v.get("recommended") or {}
+    if rec and v.get("verdict") not in ("UNKNOWN",):
+        out.append(f"  → recommended size {rec.get('size_sol')} SOL; filters {rec.get('filters')}; own exit {rec.get('own_exit')}")
+    out.append("")
+    out.append(f"Positions: {r['positions_found']} found, {r.get('positions_simulated', 0)} simulated "
+               f"({r.get('positions_open', 0)} still open), {r['positions_unsimulated']} skipped. {r['note']}")
+    if "target" not in r:
+        return "\n".join(out)
+    st = r["settings"]
+    out.append(f"Simulated as: {st['size_sol']} SOL ({st['size_mode']}), landing {st['buy_latency']}/{st['sell_latency']} slot(s) after the target, "
+               f"{st['per_tx_cost_sol']:.4g} SOL/tx, platform fee {st['platform_fee_bps']} bps")
+    out.append("")
+    t = r["target"]
+    out.append(f"The wallet itself: {_stats_line(t)}")
+    out.append(f"  {t['positions_per_day']:.1f} positions/day, median hold {t['median_hold_secs']}s, median buy {t['median_buy_sol']:.3f} SOL, "
+               f"{pct(t['curve_share'])} on the bonding curve")
+    out.append(f"You copying it:    {_stats_line(r['copier'])}")
+    if r.get("capture_ratio") is not None:
+        out.append(f"  you capture {r['capture_ratio']:.0%} of its per-trade ROI")
+    e = r["execution"]
+    out.append(f"  median entry slippage {pct(e['median_entry_slippage'])}; median {e['median_crowd_buyers']:.0f} other buyers "
+               f"({e['median_crowd_sol']:.2f} SOL) pile in within {r['settings'].get('buy_latency', 1) + 2} slots; farming rate {pct(r['farming_rate'])}")
+    out.append(f"  projected: {v.get('positions_per_day', 0):.1f} positions/day → {sol(v.get('projected_monthly_sol'))} SOL/month after fixed costs")
+    out.append("")
+    out.append("Latency sensitivity:")
+    out.append(table([[s["latency_slots"], s["latency_ms"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["win_rate"]), sol(s["total"])] for s in r["latency_sweep"]],
+                     ["slots", "~ms", "EV", "EV bound", "win", "total"]))
+    out.append("")
+    out.append("Size sweep:")
+    out.append(table([[s["size_sol"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["mean_roi"])] for s in r["size_sweep"]], ["SOL", "EV", "EV bound", "ROI"]))
+    if r.get("filters"):
+        f = r["filters"]
+        out.append("")
+        out.append(f"Best filter (picked on older positions): {f['picked']}")
+        out.append(f"  unseen newer positions: {_stats_line(f['test'])}")
+        out.append(f"  unfiltered on the same: {_stats_line(f['test_unfiltered'])}")
+    if r.get("own_exits"):
+        o = r["own_exits"]
+        out.append(f"Copy entries but use own exits [{o['picked']}] on unseen positions: {_stats_line(o['test'])}")
+    out.append("")
+    out.append("Recent positions:")
+    rows = [[short(p["mint"]), ago(p["ts"]), p["venue"], f"{p['target_buy_sol']:.3f}", sol(p["target_pnl_sol"]), sol(p["copier_pnl_sol"]),
+             pct(p["entry_slippage"]), p["crowd_buyers"], p["hold_secs"]] for p in r["positions"][:15]]  # fmt: skip
+    out.append(table(rows, ["mint", "when", "venue", "tgt buy", "tgt pnl", "your pnl", "slip", "crowd", "hold s"]))
+    return "\n".join(out)
+
+
+def render_rank(rows: list[dict]) -> str:
+    out = ["Copy targets ranked by EV lower bound", "=" * 72]
+    out.append(table([[short(r["address"]), r.get("verdict"), sol(r.get("ev_sol")), sol(r.get("ev_lower_sol")), pct(r.get("win_rate")),
+                       r.get("positions"), r.get("max_profitable_latency_slots"), sol(r.get("projected_monthly_sol")), sol(r.get("target_mean_pnl"))]
+                      for r in rows], ["wallet", "verdict", "EV", "bound", "win", "n", "max lat", "SOL/month", "its EV"]))  # fmt: skip
+    return "\n".join(out)
+
+
+def render_audit(r: dict) -> str:
+    out = [f"Audit {r['address']}", "=" * 72]
+    out.append(f"{r['positions']} positions ({r['closed_positions']} closed): {_stats_line(r['summary'])}")
+    out.append(f"on-chain fees {r['onchain_fees_sol']:.4f} SOL, estimated priority+tips {r['est_tx_costs_sol']:.4f} SOL")
+    cal = r["calibration"]
+    if cal.get("snipes"):
+        d = cal["entry_delay_slots"]
+        out.append(f"Your landing: median {d['median']:.0f} slots after create (p25 {d['p25']:.0f}, p75 {d['p75']:.0f}), "
+                   f"relative position in slot {cal['median_relative_position_in_slot']:.2f} → set {cal['recommended']}")
+    out.append("")
+    out.append("By deployer (worst first):")
+    out.append(table([[short(d["deployer"]), d["positions"], sol(d["total_pnl"]), sol(d["mean_pnl"]), pct(d["win_rate"]),
+                       " ".join(f"{k}:{v}" for k, v in d["outcomes"].items())] for d in r["by_deployer"][:20]],
+                     ["deployer", "n", "total", "mean", "win", "outcomes"]))  # fmt: skip
+    b = r["blocklist_suggestion"]
+    if b["deployers"]:
+        out.append(f"Blocking {len(b['deployers'])} repeat losers would have saved {b['saved_sol_in_hindsight']:.4f} SOL ({b['caveat']}).")
+    out.append("")
+    out.append("By entry delay:")
+    out.append(table([[k, v["n"], sol(v["total"]), sol(v["mean"])] for k, v in r["by_entry_delay"].items()], ["delay", "n", "total", "mean"]))
+    out.append("")
+    out.append("By launch outcome:")
+    out.append(table([[k, v["n"], sol(v["total"]), sol(v["mean"])] for k, v in r["by_outcome"].items()], ["outcome", "n", "total", "mean"]))
+    return "\n".join(out)
+
+
+def render_optimize(r: dict) -> str:
+    if r.get("error"):
+        return f"Optimizer: {r['error']}"
+    out = [f"Strategy search — {r['scope']} ({r['launches']} launches, {r['strategies_tested']} exit rules)", "=" * 72]
+    out.append(f"Your exits     [{r['default']['label']}]: {_stats_line(r['default']['stats'])}")
+    out.append(f"Best in-sample [{r['in_sample_best']['label']}]: {_stats_line(r['in_sample_best']['stats'])}")
+    wf = r.get("walk_forward")
+    if wf:
+        out.append(f"Walk-forward pick [{wf['picked']['label']}]")
+        out.append(f"  on unseen launches: {_stats_line(wf['test'])}")
+        out.append(f"  your exits there:   {_stats_line(wf['test_default'])}")
+    out.append(f"Recommended ({r['recommended_basis']}): {r['recommended']['label']}")
+    out.append("Top in-sample: " + "; ".join(f"[{t['label']}] {sol(t['mean_pnl'])}" for t in r["top"]))
+    out.append("")
+    out.append(table([[s["buy_sol"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["mean_roi"]), pct(s["win_rate"])] for s in r["size_sweep"]],
+                     ["buy SOL", "EV", "EV bound", "ROI", "win"]))
+    out.append("")
+    out.append(table([[s["entry_slot_offset"], sol(s["mean_pnl"]), sol(s["ev_lower"]), pct(s["win_rate"])] for s in r["latency_sweep"]],
+                     ["entry slots", "EV", "EV bound", "win"]))
+    return "\n".join(out)
+
+
+def render_backtest(r: dict) -> str:
+    if r.get("error"):
+        return f"Backtest: {r['error']} ({r['launches']} launches available)"
+    out = [f"Walk-forward deployer-selection backtest — {r['launches']} launches", "=" * 72]
+    sp = r["split"]
+    out.append(f"Tuned on {sp['train_launches']} launches, evaluated on the next {sp['test_launches']}. "
+               f"{pct(r['repeat_deployer_share'])} of launches came from a deployer seen before.")
+    out.append(f"Snipe everything — unseen: {_stats_line(r['baseline_snipe_all']['test'])}")
+    b = r["best_policy"]
+    out.append(f"Best rule [{b['policy']}] — unseen: {_stats_line(b['test'])}")
+    out.append(f"                                   tuning: {_stats_line(b['train'])}")
+    out.append("")
+    out.append(table([[x["policy"], x["train_n"], sol(x["train_total"]), x["test_n"], sol(x["test_total"])] for x in r["leaderboard"]],
+                     ["rule", "tune n", "tune total", "test n", "test total"]))
+    return "\n".join(out)
+
+
+def render_top_deployers(rows: list[dict]) -> str:
+    out = ["Deployers ranked by EV lower bound (your strategy)", "=" * 72]
+    out.append(table([[d["deployer"], d["launches"], d["analyzed"], sol(d["mean_pnl"]), sol(d["ev_lower"]), pct(d["win_rate"]),
+                       pct(d["dump_rate"]), pct(d["runner_rate"]), ago(d["last_launch_ts"])] for d in rows],
+                     ["deployer", "launches", "analyzed", "EV", "bound", "win", "dump", "runner", "last"]))  # fmt: skip
+    return "\n".join(out)
+
+
+def render_wallets(rows: list[dict]) -> str:
+    out = ["Copy candidates (profitable round trips in indexed data — verify with `snipetech copy`)", "=" * 72]
+    out.append(table([[w["wallet"], w["positions"], sol(w["total_pnl"]), sol(w["mean_pnl"]), sol(w["ev_lower"]), pct(w["win_rate"]),
+                       w["median_hold_secs"], pct(w["sniper_share"])] for w in rows],
+                     ["wallet", "n", "total", "mean", "bound", "win", "hold s", "sniper"]))  # fmt: skip
+    return "\n".join(out)

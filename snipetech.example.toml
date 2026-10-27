@@ -1,0 +1,83 @@
+# snipetech configuration. Copy to snipetech.toml (or run `snipetech init`) and edit.
+# Every number that changes a verdict lives here — calibrate it to YOUR bot:
+#   snipetech audit <your-sniper-wallet> --apply-calibration
+
+[rpc]
+# Any Solana RPC. Public mainnet works for small lookups but is slow (~1-2 tx/s for getTransaction)
+# and its websocket rate-limits the pump.fun firehose. Setting HELIUS_API_KEY in the environment
+# switches to Helius automatically; SNIPETECH_RPC_URL / SNIPETECH_WS_URL override everything.
+http_url = "https://api.mainnet-beta.solana.com"
+ws_url = ""            # derived from http_url when empty
+max_rps = 8.0          # raise to your plan's limit (e.g. 40-200 on paid RPCs)
+max_concurrency = 8
+timeout_secs = 30.0
+max_retries = 6
+commitment = "confirmed"
+
+[costs]
+priority_fee_sol = 0.0002    # compute-budget fee per transaction
+tip_sol = 0.001              # Jito / sender tip per transaction
+platform_fee_bps = 0         # bot/terminal fee per trade (e.g. 100 = 1% on Axiom/Photon-style bots)
+default_pump_fee_bps = 125   # only used when no on-chain fee rate is known (real rates are read from each trade)
+monthly_fixed_cost_sol = 0.0 # RPC + VPS + subscriptions, for break-even math on copy targets
+
+[snipe]
+buy_sol = 0.5
+entry_slot_offset = 1        # slots after the create tx your buy lands (0 = same slot)
+entry_position = "middle"    # start | middle | end of the trades in your landing slot
+exit_latency_slots = 1       # slots between a trigger and your sell landing
+analysis_window_secs = 900   # how much of each launch's life is analyzed
+max_launches = 150           # launches per deployer to analyze
+min_launches = 5             # fewer than this = INSUFFICIENT_DATA
+rinse_window_secs = 30       # insiders dumping within this window = "rinse"
+rinse_dump_fraction = 0.5    # share of the insider bag that counts as a dump
+runner_multiple = 2.0        # your position value multiple that counts as a "runner"
+
+[snipe.exit]                 # your current exit rules (the optimizer suggests better ones)
+take_profit = 1.0            # +100%; 0 disables
+tp_sell_fraction = 1.0       # sell this share at take-profit, the rest rides the other rules
+stop_loss = 0.35             # -35%; 0 disables
+trailing_stop = 0.0          # e.g. 0.3 = sell 30% below the peak; 0 disables
+trailing_activation = 0.0    # only trail after this gain
+max_hold_secs = 120.0
+sell_on_dev_sell = true      # exit when the dev / same-slot bundle wallets start selling
+
+[copy]
+size_sol = 0.5
+size_mode = "fixed"          # fixed | proportional
+proportional_ratio = 0.1     # your SOL per target SOL in proportional mode
+max_size_sol = 5.0
+buy_latency_slots = 1        # slots after the target's buy that your copy lands
+sell_latency_slots = 1
+landing_position = "middle"
+lookback_days = 14.0
+max_signatures = 5000
+min_positions = 10
+crowd_window_slots = 3       # window for counting other copiers piling in
+
+[verdict]
+confidence = 0.8             # one-sided bootstrap confidence for EV lower bounds
+min_ev_sol = 0.0             # EV lower bound required for SNIPE / COPY
+recent_launches = 5          # window for "behaviour changed" warnings
+bootstrap_samples = 2000
+
+[storage]
+db_path = "snipetech.db"
+live_window_secs = 900       # live indexer keeps each launch's first N seconds of trades
+retain_days = 30.0
+
+[api]
+host = "127.0.0.1"
+port = 8787
+api_key = ""                 # if set, clients must send X-API-Key (or set SNIPETECH_API_KEY)
+
+[live]
+webhook_url = ""             # POST every signal here (or set SNIPETECH_WEBHOOK_URL)
+index_amm = false            # also index all PumpSwap trades (heavy)
+rescore_interval_secs = 120
+funder_lookup = true         # link fresh deployer wallets to their funding wallet's history
+
+[agent]
+model = "claude-opus-5-5"
+effort = "high"
+max_tokens = 16000
