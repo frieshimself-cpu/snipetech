@@ -123,6 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=7.0)
     sp.add_argument("--limit", type=int, default=20)
     sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch + fingerprint trade windows for the K most active repeat deployers")
+    sp.add_argument("--quick", action="store_true", help="skip the exit optimizer (faster, but verdicts can differ from `deployer`)")
 
     sp = cmd("fees", "what snipers pay to land early (priority + tips) and the EV of each bribe level for you")
     sp.add_argument("--deployer", help="one deployer's launches instead of everything indexed")
@@ -275,7 +276,7 @@ async def _run(args, cfg: Config) -> int:
         elif c == "snipers":
             _out(args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers)
         elif c == "profitable-devs":
-            _out(args, await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill), R.render_profitable_devs)
+            _out(args, await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill, args.quick), R.render_profitable_devs)
         elif c == "fees":
             rep = await svc.fee_market(args.deployer, args.days, refresh=not args.no_refresh)
             _out(args, rep, lambda d: f"Fee market — {d['scope']}\n" + "=" * 72 + "\n"

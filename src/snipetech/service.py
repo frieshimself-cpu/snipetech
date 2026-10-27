@@ -285,8 +285,11 @@ class Service:
     def top_snipers(self, days: float = 3.0, min_snipes: int = 5, limit: int = 30) -> list[dict]:
         return top_snipers(self.store, self.cfg, int(time.time() - days * 86400), min_snipes, limit)
 
-    async def profitable_devs(self, min_launches: int = 3, days: float = 7.0, limit: int = 20, backfill: int = 0) -> list[dict]:
-        """Repeat deployers ranked by what sniping them earns you, incl. the bribe to land early."""
+    async def profitable_devs(
+        self, min_launches: int = 3, days: float = 7.0, limit: int = 20, backfill: int = 0, quick: bool = False
+    ) -> list[dict]:
+        """Repeat deployers ranked by what sniping them earns you, incl. the bribe to land early.
+        Runs the same full analysis as `deployer` (so verdicts agree) unless `quick`."""
         since = int(time.time() - days * 86400)
         if backfill:
             await self.backfill_repeat_deployers(min_launches, backfill, days)
@@ -299,7 +302,7 @@ class Service:
                 continue
             if backfill:
                 await self.fingerprint_early_trades(launches)
-            rep = await asyncio.to_thread(deployer_report, self.store, self.cfg, dep, launches, self.store.funder(dep), None, False)
+            rep = await asyncio.to_thread(deployer_report, self.store, self.cfg, dep, launches, self.store.funder(dep), None, not quick)
             self.store.put_score("deployer", dep, compact_deployer(rep))
             v = rep["verdict"]
             sweep = rep.get("tip_sweep") or {}
