@@ -25,6 +25,16 @@ from .factors import CATEGORICAL, FactorContext, factors_at, mid_after, mid_befo
 SKIP = {"_ts", "_mint", "_label"}
 
 
+def routed_out(trades: list[Trade]) -> list[Trade]:
+    """Drop routing hops: in SOL -> DJT -> token, buying DJT is plumbing, not a decision to own DJT
+    (the hop's token is spent as the quote of another trade in the same transaction)."""
+    quotes_by_sig: dict[str, set[str]] = {}
+    for t in trades:
+        if t.quote_mint:
+            quotes_by_sig.setdefault(t.sig, set()).add(t.quote_mint)
+    return [t for t in trades if t.mint not in quotes_by_sig.get(t.sig, ())]
+
+
 def _covered(spans: list[tuple[int, int]], t0: int, t1: int) -> bool:
     return any(a <= t0 and t1 <= b for a, b in spans)
 
@@ -35,7 +45,7 @@ def collect(store: Store, wallet: str, since_ts: int, negatives: int = 15, hold_
     ctx = FactorContext.from_store(store)
     spans = store.tape_spans()
     rng = random.Random(seed)
-    trades = store.user_market(wallet, since_ts)
+    trades = routed_out(store.user_market(wallet, since_ts))
     positions = group_positions(trades)
     near: dict[str, list[int]] = {}
     for t in trades:

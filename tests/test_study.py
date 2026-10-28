@@ -88,3 +88,15 @@ def test_partially_recorded_windows_are_unknown_not_zero(store):
     f = factors_at(FactorContext.from_store(store), first.mint, first.ts, first.order, BOT, known_from=first.ts - 60)
     assert f["vol_60s"] > 0 and f["kol_buyers_60s"] == 1
     assert "vol_300s" not in f and "from_high_300s" not in f and "holders_est" not in f
+
+
+def test_routing_hops_are_not_entries():
+    from dataclasses import replace
+
+    from snipetech.analysis.study import routed_out
+    from snipetech.models import Trade
+
+    hop = Trade("s1", 0, 1, 0, NOW, "DJT", "amm", BOT, True, 10, 5, 0, 0, 1, 1)
+    target = replace(hop, ev=1, mint="TOKEN", venue="curve", quote_mint="DJT")
+    later = replace(hop, sig="s2")  # buying DJT on its own, in another tx, is a real position
+    assert routed_out([hop, target, later]) == [target, later]

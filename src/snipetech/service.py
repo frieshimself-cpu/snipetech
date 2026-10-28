@@ -437,8 +437,10 @@ class Service:
         if backfill_entries:
             # entries outside the tape: fetch each token's market for `entry_window` seconds before the entry
             spans = self.store.tape_spans()
+            from .analysis.study import routed_out
+
             firsts = {}
-            for t in self.store.user_market(wallet, since):
+            for t in routed_out(self.store.user_market(wallet, since)):
                 firsts.setdefault(t.mint, t)
             todo = [t for t in firsts.values() if t.is_buy and not any(a <= t.ts - 300 and t.ts <= b for a, b in spans)]
             todo = sorted(todo, key=lambda t: -t.ts)[:backfill_entries]
