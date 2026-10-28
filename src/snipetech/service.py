@@ -138,6 +138,11 @@ class Service:
         self.store.put_score("deployer", address, compact_deployer(report))
         return report
 
+    def _known_between(self, mint: str, start_ts: int, end_ts: int) -> bool:
+        """Is every trade on `mint` between the two times in the store?"""
+        cov = self.store.coverage(f"mint:{mint}")
+        return cov.get("from_ts", 1 << 62) <= start_ts and cov.get("to_ts", 0) >= end_ts
+
     async def fingerprint_early_trades(self, launches: list[Launch]) -> int:
         """Make sure creates and the first slots of trades carry transaction fingerprints
         (fees, tips, routers) — needed to see what competing snipers paid."""
@@ -252,8 +257,10 @@ class Service:
 
     # -- other snipers ------------------------------------------------------------------------
 
-    async def profile_sniper(self, wallet: str, days: float = 3.0, refresh: bool = True) -> dict:
-        """Reverse-engineer a competing sniper's settings and behaviour from its transactions."""
+    async def profile_sniper(self, wallet: str, days: float = 3.0, refresh: bool = True, deep: int = 0) -> dict:
+        """Reverse-engineer a competing sniper's settings and behaviour from its transactions.
+        `deep`: also fetch the whole market while it held its last N positions (exit rules
+        against the price path, e.g. trailing stops); costs a few hundred transactions each."""
         wallet = self._check(wallet)
         since = int(time.time() - days * 86400)
         if refresh:
@@ -267,17 +274,22 @@ class Service:
             snipes = []
             for mint, (first, last) in spans.items():
                 launch = self.store.launch(mint)
-                if launch is None:
+                if not (launch and self._known_between(mint, launch.ts, first.ts)):
                     # Cheap snipe test: a young token has only a few transactions before this wallet's
-                    # first trade, and the create is one of them. Older tokens aren't snipes.
+                    # first trade, and the create is one of them. Older tokens aren't snipes; for those
+                    # the trades just before its entry are enough (who it bought after, entry context).
                     before = await self.rpc.get_signatures(mint, before=first.sig, limit=40)
-                    if len(before) < 40:
-                        await ing.ingest(before)
-                        launch = self.store.launch(mint)
+                    await ing.ingest(before if len(before) < 40 else before[:20])
+                    launch = self.store.launch(mint) if len(before) < 40 else None
                 if launch and first.ts - launch.ts <= window:
                     # the create through its entry: rank among snipers, insiders, the dev's buy
                     await ing.backfill_mint_window(mint, launch.ts - 1, first.ts)
                     snipes.append((launch, first, last))
+            if deep:
+                held = sorted((v for v in spans.values() if not v[1].is_buy), key=lambda v: -v[1].ts)[:deep]
+                for i, (first, last) in enumerate(held, 1):
+                    self.progress(f"deep: market during hold {i}/{len(held)}")
+                    await ing.backfill_mint_window(first.mint, first.ts, last.ts)
             await self.fingerprint_early_trades([launch for launch, _, _ in snipes])
             # Dev/bundle sells while it held, from the insiders' own histories: a handful of
             # transactions instead of every trade on a hot token.

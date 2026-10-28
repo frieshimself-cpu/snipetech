@@ -207,20 +207,22 @@ def make_tools(svc: Service) -> list:
         return _dump(await asyncio.to_thread(svc.discover_wallets, days, min_positions, 20))
 
     @beta_async_tool
-    async def profile_sniper(wallet: str, days: float = 3.0, refresh: bool = True) -> str:
+    async def profile_sniper(wallet: str, days: float = 3.0, refresh: bool = True, deep: int = 0) -> str:
         """Reverse-engineer another sniper/trader wallet. EXACT fields read from its transactions: buy size (exact budget
         when its instruction carries one), compute-unit price/limit and priority fee, tips and which landing service got
         them (incl. separate bundle tip txs), bot/platform fees (bps) vs flat fees, router program, pump instruction and
-        transaction template, slippage caps, durable nonces. INFERRED from behaviour: entry timing and rank among
-        snipers, take-profit / stop-loss / time exits, whether it sells when the dev sells, partial exits, which
-        deployers/launches it picks vs skips, related wallets, and its realized PnL.
+        transaction template, slippage caps, durable nonces. INFERRED from behaviour: entry timing, rank among
+        snipers, entry market cap, wallets it buys right after (copy targets), take-profit / stop-loss / trailing /
+        time exits, whether it sells when the dev sells, partial exits, which deployers/launches it picks vs skips,
+        related wallets, and its realized PnL.
 
         Args:
             wallet: The sniper wallet to profile.
             days: Lookback in days.
             refresh: Fetch its on-chain history first.
+            deep: Also fetch the whole market during its last N holds (needed to test trailing stops); slower.
         """
-        rep = await svc.profile_sniper(wallet, days, refresh=refresh)
+        rep = await svc.profile_sniper(wallet, days, refresh=refresh, deep=deep)
         rep["recent_positions"] = rep.get("recent_positions", [])[:8]
         return _dump(rep)
 

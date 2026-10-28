@@ -4,9 +4,10 @@ Two kinds of fields, never mixed:
 * exact    — read from the wallet's own transactions: compute-unit price/limit, priority
              fee, tips (and which landing service got them), bot/platform fees, router
              program, pump instruction + arguments (slippage caps), tx template, nonces.
-* inferred — patterns in its behaviour: when it enters, which launches it picks (vs. the
-             ones it skips), and the exit rules that explain its sells (take-profit /
-             stop-loss clusters, time exits, selling right after the dev).
+* inferred — patterns in its behaviour: when it enters (timing, market cap, wallets it buys
+             right after), which launches it picks (vs. the ones it skips), and the exit
+             rules that explain its sells (selling right after the dev, take-profit /
+             stop-loss clusters, trailing stops against the peak, time exits).
 Config files never touch the chain; this is the closest observable reconstruction.
 """
 
@@ -29,6 +30,18 @@ from .launches import build_context
 from .stats import summarize
 
 U64_MAX = (1 << 64) - 1
+LEAD_SLOTS = 3  # a buy this many slots or fewer before its own counts as one it may have followed
+
+
+def _mid_before(t: Trade) -> float | None:
+    """Pool price (lamports per base unit) just before this trade."""
+    q, b = (t.q_after - t.quote, t.b_after + t.base) if t.is_buy else (t.q_after + t.quote, t.b_after - t.base)
+    return q / b if q > 0 and b > 0 else None
+
+
+def _known(store: Store, mint: str, start_ts: int, end_ts: int) -> bool:
+    cov = store.coverage(f"mint:{mint}")
+    return cov.get("from_ts", 1 << 62) <= start_ts and cov.get("to_ts", 0) >= end_ts
 
 
 def _mode(values: list, digits: int | None = None) -> tuple[Any, float]:
@@ -128,7 +141,17 @@ def sniper_profile(store: Store, cfg: Config, wallet: str, since_ts: int) -> dic
             row["mayhem"] = launch.mayhem
             row["dev_buy_sol"] = sum(ctx.path.quote[i] for i in range(1, ctx.path.n)
                                      if ctx.path.sigs[i] == launch.sig and ctx.path.users[i] in ctx.dev) / LAMPORTS  # fmt: skip
+        mid = _mid_before(first)
+        row["entry_mcap_sol"] = mid * 1e6 if mid else None  # 1B supply, 6 decimals
+        # wallets that bought just before it (copy targets, or bots it shares targets with)
+        prior = [t for t in store.trades_for_mint(pos.mint, first.ts - 5, first.ts) if t.order < first.order]
+        if prior or _known(store, pos.mint, first.ts - 5, first.ts):
+            skip = {wallet, *PROTOCOL_WALLETS, *(ctx.insiders if ctx else ())}
+            horizon = launch.slot + cfg.snipe.competition_slots if launch else -1
+            row["leaders"] = {t.user: (int(first.slot - t.slot), t.slot <= horizon) for t in prior
+                              if t.is_buy and t.user not in skip and first.slot - t.slot <= LEAD_SLOTS}  # fmt: skip
         entry_price = first.quote / first.base if first.base else None
+        entry_mid = first.q_after / first.b_after if first.b_after else None
         held = 0.0
         sells = []
         for t in pos.trades:
@@ -157,6 +180,13 @@ def sniper_profile(store: Store, cfg: Config, wallet: str, since_ts: int) -> dic
             if ctx is not None:
                 ins = [i for i in range(1, ctx.path.n) if ctx.insider_sell[i] and first.slot <= ctx.path.slot[i] <= t.slot]
                 s["slots_after_insider_sell"] = int(t.slot - ctx.path.slot[ins[-1]]) if ins else None
+            pre = _mid_before(t)
+            if entry_mid and pre and _known(store, pos.mint, first.ts, t.ts):
+                # the market while it held: how far above entry it got, and how far it fell back before this sell
+                mids = [x.q_after / x.b_after for x in store.trades_for_mint(pos.mint, first.ts, t.ts)
+                        if first.order <= x.order < t.order and x.b_after]  # fmt: skip
+                peak = max(mids, default=entry_mid)
+                s["peak_multiple"], s["drawdown_from_peak"] = peak / entry_mid, max(0.0, 1 - pre / peak)
             sells.append(s)
         row["sells"] = sells
         if pos.closed:
@@ -285,6 +315,22 @@ def _inferred_behaviour(rows: list[dict], cfg: Config) -> dict:
                         "p25": float(np.percentile(d, 25)), "p75": float(np.percentile(d, 75)),
                         "median_rank": float(np.median([r["rank"] for r in rows if r.get("rank")])) if any(r.get("rank") for r in rows) else None,
                         "insider_share": sum(1 for r in rows if r.get("insider")) / len(delays)}  # fmt: skip
+    mcaps = [r["entry_mcap_sol"] for r in rows if r.get("entry_mcap_sol")]
+    if len(mcaps) >= 3:
+        c, share = _cluster(mcaps, 0.2)
+        out["entry_mcap"] = {"median_sol": float(np.median(mcaps)), "p10_sol": float(np.quantile(mcaps, 0.1)),
+                             "p90_sol": float(np.quantile(mcaps, 0.9)), "cluster_sol": c if share >= 0.5 else None,
+                             "cluster_share": share, "positions": len(mcaps)}  # fmt: skip
+    known = [r for r in rows if "leaders" in r]
+    if known:
+        counts = Counter(u for r in known for u in r["leaders"])
+        out["leaders"] = [
+            {"wallet": u, "positions": c, "share": c / len(known),
+             "median_delay_slots": float(np.median([r["leaders"][u][0] for r in known if u in r["leaders"]])),
+             "leader_was_sniping": sum(r["leaders"][u][1] for r in known if u in r["leaders"]) / c}
+            for u, c in counts.most_common(5) if c >= 3 and c / len(known) >= 0.3
+        ]  # fmt: skip
+        out["leader_context_positions"] = len(known)
     firsts = [r["sells"][0] for r in rows if r["sells"] and r["sells"][0].get("multiple")]
     if firsts:
         # Attribute each first exit to the rule that best explains it, in order:
@@ -302,6 +348,12 @@ def _inferred_behaviour(rows: list[dict], cfg: Config) -> dict:
         sl_ok = sl is not None and sl_share >= 0.3 and len(downs) >= 3
         if sl_ok:
             rest = [s for s in rest if not (sl / 1.08 <= s["multiple"] <= sl * 1.08)]
+        # trailing stop: sold a steady fraction below the peak after being up (needs the market while it held)
+        trailing = [s for s in rest if s.get("peak_multiple", 0) >= 1.1]
+        dd, dd_share = _cluster([max(s["drawdown_from_peak"], 0.005) for s in trailing], 0.3)
+        trail_ok = dd is not None and len(trailing) >= 3 and dd_share >= 0.4
+        if trail_ok:
+            rest = [s for s in rest if not (s in trailing and dd / 1.15 <= max(s["drawdown_from_peak"], 0.005) <= dd * 1.15)]
         holds = [s["hold_secs"] for s in firsts]
         hold_c, hold_share = _cluster([max(s["hold_secs"], 1) for s in rest], 0.25)
         time_ok = hold_c is not None and len(rest) >= 3 and hold_share >= 0.5
@@ -309,6 +361,8 @@ def _inferred_behaviour(rows: list[dict], cfg: Config) -> dict:
             "positions_with_exits": len(firsts),
             "take_profit_multiple": tp if tp_ok else None, "take_profit_support": tp_share if ups else 0.0, "winning_exits": len(ups),
             "stop_loss_multiple": sl if sl_ok else None, "stop_loss_support": sl_share if downs else 0.0, "losing_exits": len(downs),
+            "trailing_stop_drawdown": dd if trail_ok else None, "trailing_support": dd_share if trailing else 0.0,
+            "exits_after_peak": len(trailing), "exits_with_market_path": sum(1 for s in firsts if "peak_multiple" in s),
             "hold_secs_median": float(np.median(holds)), "hold_secs_p90": float(np.quantile(holds, 0.9)),
             "time_exit_secs": hold_c if time_ok else None, "time_exit_support": hold_share if rest else 0.0,
             "unexplained_exits": len(rest),
@@ -461,14 +515,28 @@ def _config_block(rep: dict) -> dict:
     if e:
         cfg["entry timing"] = (f"{e['creation_slot_share']:.0%} in the creation slot, median {e['median_delay_slots']:.0f} slots after create"
                                + (f", median rank {e['median_rank']:.0f} among snipers" if e.get("median_rank") else "") + "  [inferred]")
+    for ld in inf.get("leaders") or []:
+        how = ("both snipe the same launches: copying it or the same targets" if ld["leader_was_sniping"] >= 0.5
+               else "likely copies it")
+        cfg[f"buys after {ld['wallet'][:10]}…"] = (f"{ld['share']:.0%} of its {inf['leader_context_positions']} entries, "
+                                                 f"median {ld['median_delay_slots']:.0f} slot{'' if ld['median_delay_slots'] == 1 else 's'} behind ({how})  [inferred]")
+    em = inf.get("entry_mcap")
+    if em:
+        at = f"clusters at ≈{em['cluster_sol']:.0f} SOL ({em['cluster_share']:.0%}); " if em.get("cluster_sol") else ""
+        cfg["entry market cap"] = f"{at}median {em['median_sol']:.0f} SOL (p10 {em['p10_sol']:.0f} – p90 {em['p90_sol']:.0f})  [inferred]"
     x = inf.get("exits")
     if x:
         if x.get("take_profit_multiple"):
             cfg["take profit"] = f"~{x['take_profit_multiple']:.2f}x ({x['take_profit_support']:.0%} of {x['winning_exits']} winning exits cluster there)  [inferred]"
         if x.get("stop_loss_multiple"):
             cfg["stop loss"] = f"~{x['stop_loss_multiple']:.2f}x ({x['stop_loss_support']:.0%} of {x['losing_exits']} losing exits not explained by dev sells)  [inferred]"
+        if x.get("trailing_stop_drawdown"):
+            cfg["trailing stop"] = (f"~{x['trailing_stop_drawdown']:.0%} below the peak ({x['trailing_support']:.0%} of {x['exits_after_peak']} "
+                                    f"exits after being up ≥10%)  [inferred]")
+        elif x.get("positions_with_exits") and not x.get("exits_with_market_path"):
+            cfg["trailing stop"] = "not checked: no market data while it held (run with --deep N, or `watch` while it trades)"
         if x.get("time_exit_secs"):
-            cfg["time exit"] = f"~{x['time_exit_secs']:.0f}s ({x['time_exit_support']:.0%} of the {x['unexplained_exits']} exits not explained by TP/SL/dev sells)  [inferred]"
+            cfg["time exit"] = f"~{x['time_exit_secs']:.0f}s ({x['time_exit_support']:.0%} of the {x['unexplained_exits']} exits no other rule explains)  [inferred]"
         cfg["hold"] = f"median {x['hold_secs_median']:.0f}s, p90 {x['hold_secs_p90']:.0f}s  [inferred]"
         if x.get("reacts_to_dev_sell_share") is not None:
             call = {True: "yes", False: "no", None: "too few cases to tell"}[x["sells_on_dev_sell"]]

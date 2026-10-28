@@ -111,6 +111,7 @@ snipetech optimize --days 7               # best exits/size/latency across all i
 ```bash
 snipetech snipers --days 3                # wallets that land first on indexed launches, by realized PnL
 snipetech sniper <wallet> --days 3        # reconstruct its settings and behaviour
+snipetech sniper <wallet> --deep 20       # + the whole market during its last 20 holds (trailing stops)
 snipetech label <program-or-address> "BotName" --kind router   # name routers / tip destinations in reports
 ```
 
@@ -120,6 +121,8 @@ A profile separates what is **exact** (read straight from its transactions) from
 | Exact | Inferred |
 |---|---|
 | buy size (exact budget when it uses `buy_exact_sol_in`) | entry timing and rank among snipers |
+| | entry market cap; wallets it buys right after (copy targets vs shared snipe targets) |
+| | trailing stops (sells a steady % below the peak; needs the market while it held: `--deep` or `watch`) |
 | compute-unit price & limit, priority fee | take-profit / stop-loss levels (exit clusters) |
 | tips and the landing service paid (Jito accounts verified on-chain; separate bundle tip txs included) | time-based exits |
 | bot/platform fees (bps of trade) vs flat fees | sells when the dev/bundle sells |
@@ -129,7 +132,7 @@ A profile separates what is **exact** (read straight from its transactions) from
 
 Private config files never touch the chain, so nobody can read "the" config; this is everything the
 chain reveals about it, with exits attributed in order (dev-sell reaction → take-profit band →
-stop-loss band → time) so one behaviour isn't mistaken for another.
+stop-loss band → trailing stop → time) so one behaviour isn't mistaken for another.
 
 ### 4. Is copytrading this wallet worth it?
 

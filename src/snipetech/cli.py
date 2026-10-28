@@ -112,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float, default=3.0)
     sp.add_argument("--no-refresh", action="store_true")
+    sp.add_argument("--deep", type=int, default=0, metavar="N",
+                    help="fetch the whole market during its last N holds (trailing stops etc.; ~hundreds of txs each)")
 
     sp = cmd("snipers", "leaderboard of wallets that land in the first slots of launches, by realized PnL")
     sp.add_argument("--days", type=float, default=3.0)
@@ -272,7 +274,7 @@ async def _run(args, cfg: Config) -> int:
             rows = await asyncio.to_thread(svc.top_deployers, args.min_launches, args.days, args.limit)
             _out(args, rows, R.render_top_deployers)
         elif c == "sniper":
-            _out(args, await svc.profile_sniper(args.wallet, args.days, refresh=not args.no_refresh), R.render_sniper)
+            _out(args, await svc.profile_sniper(args.wallet, args.days, refresh=not args.no_refresh, deep=args.deep), R.render_sniper)
         elif c == "snipers":
             _out(args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers)
         elif c == "profitable-devs":

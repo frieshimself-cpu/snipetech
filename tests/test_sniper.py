@@ -2,6 +2,7 @@
 
 import time
 
+import numpy as np
 import pytest
 
 from snipetech.analysis.sniper import sniper_profile, top_snipers
@@ -154,3 +155,37 @@ def test_priority_set_as_a_sol_amount(store, cfg):
     rep = sniper_profile(store, cfg, BOT, NOW - 100_000)
     assert rep["exact"]["buy_fees"]["priority_sol_fixed"] == pytest.approx(0.002, rel=0.01)
     assert rep["config"]["buy priority"].startswith("fixed 0.002000 SOL")
+
+
+def test_copy_trigger_and_trailing_stop_are_recovered(store, cfg):
+    """COPIER buys 1 slot after LEADER on every launch and sells 25% below the peak; peaks differ per
+    launch, so no take-profit level explains its exits."""
+    leader, copier = addr("the-leader"), addr("the-copier")
+    entries = []
+    for i, peak in enumerate((1.5, 1.75, 2.0, 2.4, 2.8, 3.3, 3.9, 4.6)):
+        dev = addr(f"cw-dev-{i}")
+        m = Market(store, addr(f"cw-mint-{i}"), dev, NOW - 50_000 + i * 2000, 7_000_000 + i * 10_000)
+        m.buy(dev, 0.5, 0, sig=m.create_sig)
+        m.buy(leader, 1.0, 10)
+        t = m.buy(copier, 0.3, 11)
+        entries.append(t.quote / t.base * 1e6)
+        mid0, slot, k = price(m), 12, 0
+        while price(m) < mid0 * peak:
+            m.buy(addr(f"cw-fan-{i}-{k}"), 0.3, slot)
+            slot, k = slot + 1, k + 1
+        top, j = price(m), 0
+        while price(m) > top * 0.75:
+            m.sell(addr(f"cw-fan-{i}-{j}"), 1.0, slot)
+            slot, j = slot + 1, j + 1
+        m.sell(copier, 1.0, slot)
+        m.commit()
+    rep = sniper_profile(store, cfg, copier, NOW - 100_000)
+    inf = rep["inferred"]
+    (ld,) = inf["leaders"]
+    assert ld["wallet"] == leader and ld["share"] == 1.0 and ld["median_delay_slots"] == 1 and ld["leader_was_sniping"] == 0
+    x = inf["exits"]
+    assert x["take_profit_multiple"] is None
+    assert x["trailing_stop_drawdown"] == pytest.approx(0.25, abs=0.02)
+    assert "likely copies it" in rep["config"][f"buys after {leader[:10]}…"]
+    assert rep["config"]["trailing stop"].startswith("~2")
+    assert inf["entry_mcap"]["median_sol"] == pytest.approx(float(np.median(entries)), rel=0.1)
