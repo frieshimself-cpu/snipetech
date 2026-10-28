@@ -227,6 +227,29 @@ def make_tools(svc: Service) -> list:
         return _dump(rep)
 
     @beta_async_tool
+    async def study_wallet(wallet: str, days: float = 1.0, backfill_entries: int = 0) -> str:
+        """Why a wallet trades the way it does: every factor at each of its entries (price change and volume
+        over 5s-5m, buys/sells, unique buyers, net flow, whale buys, KOL / smart wallets buying, market cap,
+        curve progress, age, holders, dev buy / dev sold, deployer history, the linked tweet and how long ago
+        it was posted, telegram / website, launch tool, market-wide activity, trending rank) compared with
+        the tokens trading at the same moments that it passed on, and its sells vs the moments it kept
+        holding. Returns per-factor AUC and best cut-offs plus decision-tree rules with an out-of-sample
+        score. Needs the market tape (`snipetech watch --tape`) for the contrast; `backfill_entries` describes
+        older entries from fetched windows instead.
+
+        Args:
+            wallet: The wallet to study.
+            days: Lookback in days.
+            backfill_entries: For its last N entries outside the tape, fetch the market just before each.
+        """
+        rep = await svc.study(wallet, days, refresh=True, backfill_entries=backfill_entries)
+        rep.pop("entry_rows", None)
+        for side in ("entry", "exit"):
+            if side in rep:
+                rep[side]["numeric"] = rep[side]["numeric"][:15]
+        return _dump(rep)
+
+    @beta_async_tool
     async def top_snipers(days: float = 3.0, min_snipes: int = 5) -> str:
         """Wallets that repeatedly land in the first slots of indexed launches, ranked by realized PnL, with their
         median bribe (priority + tip) and buy size. Candidates for profile_sniper.
@@ -333,7 +356,7 @@ def make_tools(svc: Service) -> list:
     return [
         analyze_deployer, analyze_copy_target, rank_copy_targets, check_mint, audit_my_wallet, optimize_snipe_strategy,
         backtest_deployer_rules, index_launches, top_deployers, discover_copy_candidates, get_settings, update_setting,
-        manage_list, export_rules, cached_verdicts, profile_sniper, top_snipers, profitable_devs, label_address,
+        manage_list, export_rules, cached_verdicts, profile_sniper, study_wallet, top_snipers, profitable_devs, label_address,
     ]  # fmt: skip
 
 

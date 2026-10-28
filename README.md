@@ -134,6 +134,39 @@ Private config files never touch the chain, so nobody can read "the" config; thi
 chain reveals about it, with exits attributed in order (dev-sell reaction → take-profit band →
 stop-loss band → trailing stop → time) so one behaviour isn't mistaken for another.
 
+### 3b. Study every factor behind a wallet's trades
+
+`sniper` says *how* a wallet trades (fees, tips, sizes, exits). `study` says *why*: for every
+entry it snapshots the market at that moment and compares it with the tokens that were trading at
+the same moment but that the wallet passed on; for every sell, with the moments it kept holding.
+
+```bash
+snipetech watch --tape                    # record every trade of every token (pump.fun curve,
+                                          # PumpSwap, Raydium LaunchLab; ~1 GB/day) while it trades
+snipetech label --file kols.txt --kind kol  # your KOL list: one address per line, optional name
+snipetech study <wallet> --days 1         # contrast its entries/exits with what it passed on
+snipetech study <wallet> --days 7 --backfill-entries 40   # + describe older entries from fetched windows
+```
+
+Factors at each moment, using only what happened before it:
+
+| Group | Factors |
+|---|---|
+| Price action | change over 5s / 30s / 60s / 5m, distance from the 5m high / low, market cap, curve progress, age |
+| Volume & flow | volume, buys, sells, buy share, net flow, unique buyers per window; largest buy, buys ≥ 1 SOL |
+| Wallets | KOL wallets buying (your list), "smart" wallets buying (`--auto-smart N`), holders and top-10 share |
+| Dev & deployer | dev buy at create, dev has sold, snipers in the first 3 slots, deployer's earlier launches |
+| Socials | X link kind (tweet / community / profile), seconds since the linked tweet (decoded from the tweet id), tweet → launch delay, telegram, website, launch tool (pump.fun, j7tracker, uxento...) |
+| Market | market-wide trades and launches, the token's volume rank among all tokens (trending) |
+| Exits | position value, peak since entry, drop from peak, hold time (+ all of the above) |
+
+Each factor gets an AUC (0.5 = no difference, 1.0 = separates perfectly) and its best cut; a depth-3
+decision tree turns the strongest into rules, scored with time-ordered cross-validation so rules
+that only describe the past are labelled as such. Tokens quoted in other assets (tokenized stocks,
+wXRP, PUMP) are kept apart from SOL trades and valued at the asset's price; routing hops
+(SOL → DJT → token) are not counted as entries. Tweet engagement (likes, the author's followers)
+needs an X data source and isn't measured.
+
 ### 4. Is copytrading this wallet worth it?
 
 ```bash
