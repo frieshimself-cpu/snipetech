@@ -58,3 +58,13 @@ def test_wrapping_sol_is_not_a_payment():
                                "spl-token:close_account"]  # fmt: skip
     assert sorted(t["lamports"] for t in m.transfers) == [1_000_000, 1_556_505]  # 1% platform fee + another fee
     assert all(t["lamports"] < 100_000_000 for t in m.transfers)
+
+
+def test_byte_array_args_are_stored_as_hex():
+    """Some instructions carry `bytes` / `[u8; N]` args; fingerprints must stay JSON-serializable."""
+    from snipetech.solana.txmeta import PumpIx, TxMeta, _jsonable
+
+    args = _jsonable({"amount": 5, "memo": b"\x01\xff", "nested": [bytearray(b"\x02")]})
+    assert args == {"amount": 5, "memo": "01ff", "nested": ["02"]}
+    m = TxMeta("s", 1, 0, 0, "p", ["p"], 1, 5000, 0, None, None, None, [], [], [PumpIx("prog", "buy", "u", args, None)])
+    assert json.loads(json.dumps(m.to_dict()))["pump_ixs"][0]["args"]["memo"] == "01ff"

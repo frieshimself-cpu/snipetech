@@ -106,6 +106,17 @@ class TxMeta:
         return cls(**d)
 
 
+def _jsonable(v: Any) -> Any:
+    """Instruction args as stored: byte arrays (e.g. `bytes` / `[u8; N]` args) become hex."""
+    if isinstance(v, (bytes, bytearray)):
+        return v.hex()
+    if isinstance(v, dict):
+        return {k: _jsonable(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [_jsonable(x) for x in v]
+    return v
+
+
 def _label(program: str) -> str:
     return PROGRAM_LABELS.get(program, f"prog:{program[:8]}")
 
@@ -208,7 +219,7 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
 
             router = outer_program if outer_program not in PUMP_PROGRAMS else None
             mint = account("mint") or account("base_mint")
-            out.pump_ixs.append(PumpIx(program, name, account("user"), args, router, mint))
+            out.pump_ixs.append(PumpIx(program, name, account("user"), _jsonable(args), router, mint))
 
     for i, ix in enumerate(msg["instructions"]):
         program = keys[ix["programIdIndex"]]
