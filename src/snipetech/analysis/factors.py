@@ -47,6 +47,7 @@ class FactorContext:
     _meta: dict[str, dict | None] = field(default_factory=dict)
     _deployer_prior: dict[str, int] = field(default_factory=dict)
     _rate: dict[str, float | None] = field(default_factory=dict)
+    _market: dict[int, dict] = field(default_factory=dict)
 
     @classmethod
     def from_store(cls, store: Store) -> FactorContext:
@@ -73,6 +74,20 @@ class FactorContext:
             self._rate[quote_mint] = a["price_usd"] / self.sol_usd * 1e9 / 10 ** a["decimals"] if ok else None
         return self._rate[quote_mint]
 
+    def market_at(self, ts: int) -> dict:
+        """Market-wide activity in the 5 minutes before `ts` (cached: alternatives share their moment)."""
+        if ts not in self._market:
+            q = self.store._q
+            vol = q("SELECT mint, SUM(quote + fee) v FROM trades WHERE ts>? AND ts<=? GROUP BY mint ORDER BY v DESC", (ts - 300, ts))
+            self._market[ts] = {
+                "rank": {m: i + 1 for i, (m, _) in enumerate(vol)}, "active": len(vol),
+                "trades_60s": q("SELECT COUNT(*) FROM trades WHERE ts>? AND ts<=?", (ts - 60, ts))[0][0],
+                "launches_300s": q("SELECT COUNT(*) FROM launches WHERE ts>? AND ts<=?", (ts - 300, ts))[0][0],
+            }  # fmt: skip
+            if len(self._market) > 5000:
+                self._market.clear()
+        return self._market[ts]
+
     def deployer_prior(self, launch: Launch) -> int:
         if launch.mint not in self._deployer_prior:
             self._deployer_prior[launch.mint] = len(self.store.launches_by_deployer(launch.deployer, 1000, before_ts=launch.ts - 1))
@@ -80,7 +95,7 @@ class FactorContext:
 
 
 def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, int], me: str = "",
-               known_from: int | None = None) -> dict[str, Any]:  # fmt: skip
+               known_from: int | None = None, market: bool = True) -> dict[str, Any]:  # fmt: skip
     """Factors for `mint` at the moment just before `order` (slot, pos, ev) / unix time `ts`.
     `me`: the wallet being studied (its own trades are reported separately, not as market flow).
     `known_from`: earliest time from which every trade of this token is recorded; windows reaching
@@ -92,6 +107,13 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
     start = launch.ts - 1 if young else max(known_from, ts - max(WINDOWS))
     trades = [t for t in store.market(mint, start, ts) if t.order < order]
     f: dict[str, Any] = {"hour_utc": time.gmtime(ts).tm_hour}
+    if market:  # only meaningful when the whole market is recorded (the tape)
+        mk = ctx.market_at(ts)
+        f["mkt_trades_60s"] = mk["trades_60s"]
+        f["mkt_launches_300s"] = mk["launches_300s"]
+        if mint in mk["rank"]:
+            f["volume_rank_300s"] = mk["rank"][mint]
+            f["volume_top_share_300s"] = 1 - (mk["rank"][mint] - 1) / max(mk["active"], 1)  # 1.0 = busiest token
     if launch is not None:
         f["age_s"] = ts - launch.ts
         f["deployer_prior_launches"] = ctx.deployer_prior(launch)

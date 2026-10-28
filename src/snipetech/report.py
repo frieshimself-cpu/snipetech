@@ -398,6 +398,8 @@ FACTOR_HELP = {
     "has_telegram": "has telegram", "has_website": "has website", "my_trades_300s": "its own trades in 5m",
     "hold_s": "held for (s)", "pnl_multiple": "position value x", "peak_multiple": "peak since entry x",
     "from_peak": "vs peak since entry", "hour_utc": "hour (UTC)", "mayhem": "mayhem mode", "holder_reward": "holder-reward coin",
+    "mkt_trades_60s": "market-wide trades 60s", "mkt_launches_300s": "market-wide launches 5m",
+    "volume_rank_300s": "volume rank among all tokens (5m)", "volume_top_share_300s": "volume percentile (5m)",
 }  # fmt: skip
 
 

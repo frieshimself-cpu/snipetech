@@ -66,6 +66,7 @@ def test_factors_see_only_the_past(store):
     f = factors_at(FactorContext.from_store(store), first.mint, first.ts, first.order, BOT)
     assert f["kol_buyers_30s"] == 1 and f["largest_buy_60s"] >= 1.5 and f["my_trades_300s"] == 0
     assert f["venue"] == "curve" and f["quote"] == "SOL" and 0 < f["curve_progress"] < 1 and f["mcap_sol"] > 0
+    assert f["mkt_trades_60s"] > f["buys_60s"] and f["volume_rank_300s"] >= 1 and 0 < f["volume_top_share_300s"] <= 1
 
 
 def test_study_recovers_the_entry_and_exit_rules(store):

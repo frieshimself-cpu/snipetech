@@ -51,7 +51,7 @@ def collect(store: Store, wallet: str, since_ts: int, negatives: int = 15, hold_
             # no tape at that time: describe the moment from its own token's fetched window, if any
             cov = store.coverage(f"mint:{first.mint}")
             if cov.get("from_ts", 1 << 62) < first.ts and cov.get("to_ts", 0) >= first.ts:
-                rows["entries_backfilled"].append(factors_at(ctx, first.mint, first.ts, first.order, wallet, cov["from_ts"])
+                rows["entries_backfilled"].append(factors_at(ctx, first.mint, first.ts, first.order, wallet, cov["from_ts"], market=False)
                                                   | {"_ts": first.ts, "_mint": first.mint})  # fmt: skip
             continue
         rows["entries"].append(factors_at(ctx, first.mint, first.ts, first.order, wallet) | {"_ts": first.ts, "_mint": first.mint})
