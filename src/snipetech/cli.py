@@ -145,6 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
     sp.add_argument("--auto-smart", type=int, default=0, metavar="N",
                     help="label the N most consistently profitable wallets in the data as 'smart' first")
+    sp.add_argument("--backfill-entries", type=int, default=0, metavar="N",
+                    help="for its last N entries outside the tape, fetch the market just before each (described, not contrasted)")
+    sp.add_argument("--entry-window", type=int, default=120, help="seconds fetched before each backfilled entry")
 
     sp = cmd("discover-wallets", "find consistently profitable wallets (copy candidates) in indexed data")
     sp.add_argument("--days", type=float, default=3.0)
@@ -302,7 +305,8 @@ async def _run(args, cfg: Config) -> int:
             else:
                 raise SystemExit("label: give ADDRESS NAME, or --file")
         elif c == "study":
-            rep = await svc.study(args.wallet, args.days, args.negatives, refresh=not args.no_refresh, auto_smart=args.auto_smart)
+            rep = await svc.study(args.wallet, args.days, args.negatives, refresh=not args.no_refresh, auto_smart=args.auto_smart,
+                                  backfill_entries=args.backfill_entries, entry_window=args.entry_window)
             _out(args, rep, R.render_study)
         elif c == "discover-wallets":
             rows = await asyncio.to_thread(svc.discover_wallets, args.days, args.min_positions, args.limit)

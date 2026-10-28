@@ -420,7 +420,7 @@ class Service:
         return top_deployers(self.store, self.cfg, min_launches, int(time.time() - days * 86400), limit)
 
     async def study(self, wallet: str, days: float = 1.0, negatives: int = 15, refresh: bool = True,
-                    auto_smart: int = 0) -> dict:  # fmt: skip
+                    auto_smart: int = 0, backfill_entries: int = 0, entry_window: int = 120) -> dict:  # fmt: skip
         """Every factor at each of a wallet's entries and exits vs. the alternatives it passed on.
         Needs the market tape (`watch --tape`) for the period it traded in."""
         from .meta import ensure_assets, fetch_meta
@@ -434,6 +434,17 @@ class Service:
             for r in self.discover_wallets(days, 5, auto_smart):
                 if r["wallet"] != wallet and (r.get("ev_lower") or 0) > 0:
                     self.store.set_label(r["wallet"], "smart", "smart", "auto")
+        if backfill_entries:
+            # entries outside the tape: fetch each token's market for `entry_window` seconds before the entry
+            spans = self.store.tape_spans()
+            firsts = {}
+            for t in self.store.user_market(wallet, since):
+                firsts.setdefault(t.mint, t)
+            todo = [t for t in firsts.values() if t.is_buy and not any(a <= t.ts - 300 and t.ts <= b for a, b in spans)]
+            todo = sorted(todo, key=lambda t: -t.ts)[:backfill_entries]
+            for i, t in enumerate(todo, 1):
+                self.progress(f"entry window {i}/{len(todo)}")
+                await self.ingestor.backfill_mint_window(t.mint, t.ts - entry_window, t.ts)
         # first pass picks the moments; then fetch what they need (metadata, quote-asset prices) and score
         rows = (await asyncio.to_thread(collect_study, self.store, wallet, since, negatives))["rows"]
         mints = {r["_mint"] for rs in rows.values() for r in rs}

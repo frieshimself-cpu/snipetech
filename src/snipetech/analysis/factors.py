@@ -79,13 +79,17 @@ class FactorContext:
         return self._deployer_prior[launch.mint]
 
 
-def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, int], me: str = "") -> dict[str, Any]:
+def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, int], me: str = "",
+               known_from: int | None = None) -> dict[str, Any]:  # fmt: skip
     """Factors for `mint` at the moment just before `order` (slot, pos, ev) / unix time `ts`.
-    `me`: the wallet being studied (its own trades are reported separately, not as market flow)."""
+    `me`: the wallet being studied (its own trades are reported separately, not as market flow).
+    `known_from`: earliest time from which every trade of this token is recorded; windows reaching
+    further back are left unknown rather than undercounted."""
     store = ctx.store
     launch = ctx.launch(mint)
-    young = launch is not None and ts - launch.ts <= 3600
-    start = launch.ts - 1 if young else ts - max(WINDOWS)
+    known_from = known_from if known_from is not None else ts - max(WINDOWS)
+    young = launch is not None and ts - launch.ts <= 3600 and known_from <= launch.ts
+    start = launch.ts - 1 if young else max(known_from, ts - max(WINDOWS))
     trades = [t for t in store.market(mint, start, ts) if t.order < order]
     f: dict[str, Any] = {"hour_utc": time.gmtime(ts).tm_hour}
     if launch is not None:
@@ -113,6 +117,8 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
 
     others = [t for t in trades if t.user != me]
     for w in WINDOWS:
+        if ts - w < known_from - 1:
+            continue  # not fully recorded that far back
         win = [t for t in others if t.ts > ts - w]
         buys = [t for t in win if t.is_buy]
         vol = sum(sol(t) for t in win)
@@ -132,10 +138,10 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
         then = mid_before(first) if first else now
         f[f"ret_{w}s"] = now / then - 1 if now and then else None
     recent = [p for p in (mid_after(t) for t in trades if t.ts > ts - 300) if p]
-    if now and recent:
+    if now and recent and ts - 300 >= known_from - 1:
         f["from_high_300s"] = now / max(recent) - 1
         f["from_low_300s"] = now / min(recent) - 1
-    f["trades_per_min_300s"] = sum(1 for t in others if t.ts > ts - 300) / 5
+        f["trades_per_min_300s"] = sum(1 for t in others if t.ts > ts - 300) / 5
     mine = [t for t in trades if t.user == me]
     f["my_trades_300s"] = sum(1 for t in mine if t.ts > ts - 300)
     if young:

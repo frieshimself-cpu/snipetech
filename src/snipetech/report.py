@@ -452,6 +452,15 @@ def render_study(r: dict) -> str:
            f"{r['sells']} sells vs {r['hold_samples']} moments it kept holding. Tape: {r['tape_hours']:.1f} h."]  # fmt: skip
     if r.get("entries_outside_tape"):
         out.append(f"{r['entries_outside_tape']} entries fell outside the recorded tape (run `snipetech watch --tape` while it trades).")
+    if r.get("entry_profile"):
+        n = r["entries"] + r.get("entries_backfilled", 0)
+        out += ["", f"WHAT THE MARKET LOOKED LIKE WHEN IT BOUGHT ({n} entries; description, not a comparison)", "-" * 72]
+        num = [d for d in r["entry_profile"] if "median" in d]
+        out.append(table([[_factor_name(d["factor"]), d["n"], _fmt(d["p10"]), _fmt(d["median"]), _fmt(d["p90"])] for d in num],
+                         ["factor", "n", "p10", "median", "p90"]))  # fmt: skip
+        cats = [d for d in r["entry_profile"] if "top" in d]
+        if cats:
+            out.append("  " + "; ".join(f"{d['factor']}: {d['top']} ({pct(d['top_share'])})" for d in cats))
     if "entry" in r:
         out += _study_block("WHY IT BUYS (its entries vs. the alternatives)", r["entry"], "entries", "others")
     if "exit" in r:

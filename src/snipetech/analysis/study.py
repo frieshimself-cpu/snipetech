@@ -40,7 +40,7 @@ def collect(store: Store, wallet: str, since_ts: int, negatives: int = 15, hold_
     near: dict[str, list[int]] = {}
     for t in trades:
         near.setdefault(t.mint, []).append(t.ts)
-    rows: dict[str, list[dict]] = {"entries": [], "skipped": [], "sells": [], "holds": []}
+    rows: dict[str, list[dict]] = {"entries": [], "skipped": [], "sells": [], "holds": [], "entries_backfilled": []}
     uncovered = 0
     for pos in positions:
         first = pos.trades[0]
@@ -48,6 +48,11 @@ def collect(store: Store, wallet: str, since_ts: int, negatives: int = 15, hold_
             continue
         if not _covered(spans, first.ts - 300, first.ts):
             uncovered += 1
+            # no tape at that time: describe the moment from its own token's fetched window, if any
+            cov = store.coverage(f"mint:{first.mint}")
+            if cov.get("from_ts", 1 << 62) < first.ts and cov.get("to_ts", 0) >= first.ts:
+                rows["entries_backfilled"].append(factors_at(ctx, first.mint, first.ts, first.order, wallet, cov["from_ts"])
+                                                  | {"_ts": first.ts, "_mint": first.mint})  # fmt: skip
             continue
         rows["entries"].append(factors_at(ctx, first.mint, first.ts, first.order, wallet) | {"_ts": first.ts, "_mint": first.mint})
         cands = [m for m, _ in store.active_mints(first.ts - 60, first.ts, 3)
@@ -259,5 +264,28 @@ def study_report(store: Store, wallet: str, since_ts: int, negatives: int = 15, 
     if r["sells"] and r["holds"]:
         cmp = compare(r["sells"], r["holds"])
         out["exit"] = cmp | {"tree": tree(r["sells"], r["holds"], cmp["numeric"])}
-    out["entry_rows"] = r["entries"]
+    if r["entries_backfilled"]:
+        out["entries_backfilled"] = len(r["entries_backfilled"])
+        out["entry_profile"] = describe(r["entries"] + r["entries_backfilled"])
+    elif r["entries"]:
+        out["entry_profile"] = describe(r["entries"])
+    out["entry_rows"] = r["entries"] + r["entries_backfilled"]
+    return out
+
+
+def describe(rows: list[dict]) -> list[dict]:
+    """What the market looked like at its entries (no comparison): median and spread per factor."""
+    keys = sorted({k for r in rows for k, v in r.items() if k not in SKIP and k not in CATEGORICAL
+                   and isinstance(v, (int, float)) and not isinstance(v, bool)})  # fmt: skip
+    out = []
+    for k in keys:
+        v = np.array([r[k] for r in rows if r.get(k) is not None], dtype=np.float64)
+        if len(v) >= max(3, len(rows) // 3):
+            out.append({"factor": k, "n": len(v), "median": float(np.median(v)), "p10": float(np.quantile(v, 0.1)),
+                        "p90": float(np.quantile(v, 0.9)), "nonzero": float((v != 0).mean())})  # fmt: skip
+    for k in CATEGORICAL:
+        vals = [r.get(k) for r in rows if r.get(k) is not None]
+        if vals:
+            top = max(set(vals), key=vals.count)
+            out.append({"factor": k, "n": len(vals), "top": top, "top_share": vals.count(top) / len(vals)})
     return out

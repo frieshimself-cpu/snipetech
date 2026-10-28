@@ -80,3 +80,10 @@ def test_study_recovers_the_entry_and_exit_rules(store):
     assert t["cv_balanced_accuracy"] > 0.85 and t["rules"][0]["p"] > 0.9
     ex = {r["factor"]: r for r in rep["exit"]["numeric"]}
     assert ex["pnl_multiple"]["auc"] > 0.9 and ex["pnl_multiple"]["threshold"] == pytest.approx(1.3, abs=0.08)
+
+
+def test_partially_recorded_windows_are_unknown_not_zero(store):
+    first = next(t for t in store.user_market(BOT) if t.is_buy)
+    f = factors_at(FactorContext.from_store(store), first.mint, first.ts, first.order, BOT, known_from=first.ts - 60)
+    assert f["vol_60s"] > 0 and f["kol_buyers_60s"] == 1
+    assert "vol_300s" not in f and "from_high_300s" not in f and "holders_est" not in f
