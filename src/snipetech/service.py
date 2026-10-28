@@ -10,6 +10,8 @@ from typing import Any, Callable
 
 from .analysis.audit import audit_report
 from .analysis.sniper import sniper_profile, top_snipers
+from .analysis.study import collect as collect_study
+from .analysis.study import study_report
 from .analysis.copytrade import copy_report
 from .analysis.deployer import deployer_report
 from .analysis.launches import build_context
@@ -416,6 +418,44 @@ class Service:
 
     def top_deployers(self, min_launches: int = 3, days: float = 30.0, limit: int = 30) -> list[dict]:
         return top_deployers(self.store, self.cfg, min_launches, int(time.time() - days * 86400), limit)
+
+    async def study(self, wallet: str, days: float = 1.0, negatives: int = 15, refresh: bool = True,
+                    auto_smart: int = 0) -> dict:  # fmt: skip
+        """Every factor at each of a wallet's entries and exits vs. the alternatives it passed on.
+        Needs the market tape (`watch --tape`) for the period it traded in."""
+        from .meta import ensure_assets, fetch_meta
+
+        wallet = self._check(wallet)
+        since = int(time.time() - days * 86400)
+        if refresh:
+            await self.ingestor.backfill_address(wallet, max_sigs=self.cfg.copy.max_signatures, since_ts=since)
+        if auto_smart:
+            # wallets with consistently profitable round trips in the same data, as a "smart money" factor
+            for r in self.discover_wallets(days, 5, auto_smart):
+                if r["wallet"] != wallet and (r.get("ev_lower") or 0) > 0:
+                    self.store.set_label(r["wallet"], "smart", "smart", "auto")
+        # first pass picks the moments; then fetch what they need (metadata, quote-asset prices) and score
+        rows = (await asyncio.to_thread(collect_study, self.store, wallet, since, negatives))["rows"]
+        mints = {r["_mint"] for rs in rows.values() for r in rs}
+        launches = [l for l in (self.store.launch(m) for m in mints) if l and l.uri]
+        self.progress(f"metadata for {len(launches)} tokens")
+        await fetch_meta(self.store, [(l.mint, l.uri) for l in launches])
+        await ensure_assets(self.store, self.cfg.rpc.http_url, self.store.quote_mints(sorted(mints)))
+        report = await asyncio.to_thread(study_report, self.store, wallet, since, negatives)
+        self.store.put_score("study", wallet, {k: v for k, v in report.items() if k != "entry_rows"})
+        return report
+
+    def label_file(self, path: str, kind: str) -> dict:
+        """Bulk labels: one address per line, optionally followed by a name (comma or whitespace)."""
+        n = 0
+        for line in Path(path).read_text().splitlines():
+            line = line.split("#", 1)[0].strip()
+            if not line:
+                continue
+            parts = line.replace(",", " ").split()
+            self.store.set_label(self._check(parts[0]), " ".join(parts[1:]) or kind, kind, "file")
+            n += 1
+        return {"labeled": n, "kind": kind}
 
     def discover_wallets(self, days: float = 3.0, min_positions: int = 5, limit: int = 30) -> list[dict]:
         return discover_wallets(self.store, self.cfg, int(time.time() - days * 86400), min_positions, limit)

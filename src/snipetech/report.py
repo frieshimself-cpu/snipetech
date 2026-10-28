@@ -385,3 +385,78 @@ def render_profitable_devs(rows: list[dict]) -> str:
                      ["deployer", "verdict", "n", "EV", "bound", "dump", "snipers", "bribe #1", "best bribe", "EV@bribe"]))  # fmt: skip
     out.append("EV/bound: your configured strategy; EV@bribe: paying the best bribe on your buy. Drill in with `snipetech deployer <wallet>`.")
     return "\n".join(out)
+
+
+FACTOR_HELP = {
+    "age_s": "token age (s)", "mcap_sol": "market cap (SOL)", "curve_progress": "bonding-curve progress",
+    "secs_since_last_trade": "secs since last trade", "trades_per_min_300s": "trades/min (5m)",
+    "from_high_300s": "vs 5m high", "from_low_300s": "vs 5m low", "holders_est": "holders (from tape)",
+    "top10_share_est": "top-10 holders share", "dev_buy_sol": "dev buy at create (SOL)", "dev_sold": "dev has sold",
+    "snipers_3_slots": "snipers in first 3 slots", "deployer_prior_launches": "deployer's earlier launches",
+    "largest_buy_60s": "largest buy 60s (SOL)", "whale_buys_60s": "buys >= 1 SOL in 60s",
+    "tweet_age_s": "secs since the linked tweet", "tweet_to_launch_s": "tweet -> launch (s)",
+    "has_telegram": "has telegram", "has_website": "has website", "my_trades_300s": "its own trades in 5m",
+    "hold_s": "held for (s)", "pnl_multiple": "position value x", "peak_multiple": "peak since entry x",
+    "from_peak": "vs peak since entry", "hour_utc": "hour (UTC)", "mayhem": "mayhem mode", "holder_reward": "holder-reward coin",
+}  # fmt: skip
+
+
+def _factor_name(k: str) -> str:
+    if k in FACTOR_HELP:
+        return FACTOR_HELP[k]
+    for pre, name in (("ret_", "price change "), ("vol_", "volume SOL "), ("buys_", "buys "), ("sells_", "sells "),
+                      ("buy_share_", "buy share of volume "), ("net_flow_", "net buy flow SOL "),
+                      ("uniq_buyers_", "unique buyers "), ("kol_buyers_", "KOL wallets buying "),
+                      ("smart_buyers_", "smart wallets buying ")):  # fmt: skip
+        if k.startswith(pre):
+            return name + k[len(pre):]
+    return k
+
+
+def _fmt(v: float | None) -> str:
+    if v is None:
+        return "-"
+    a = abs(v)
+    return f"{v:.0f}" if a >= 100 else f"{v:.2f}" if a >= 1 else f"{v:.3f}" if a >= 0.01 else f"{v:.2g}"
+
+
+def _study_block(title: str, d: dict, chosen: str, others: str, top: int = 14) -> list[str]:
+    out = ["", title, "-" * 72]
+    rows = [[_factor_name(r["factor"]), f"{r['auc']:.2f}", _fmt(r["chosen_median"]), _fmt(r["others_median"]),
+             f"{r['direction']} {_fmt(r['threshold'])}", pct(r["chosen_pass"]), pct(r["others_pass"])]
+            for r in d["numeric"][:top] if r["strength"] >= 0.1]  # fmt: skip
+    if rows:
+        out.append(table(rows, ["factor", "AUC", f"{chosen} med", f"{others} med", "best cut", f"{chosen} pass", f"{others} pass"]))
+    else:
+        out.append("no factor separates them yet (more data, or a factor we don't measure)")
+    cats = [c for c in d.get("categorical", []) if c["lift"] and (c["lift"] >= 1.5 or c["lift"] <= 0.67)]
+    if cats:
+        out.append("")
+        out.append("  " + "; ".join(f"{c['factor']}={c['value']}: {pct(c['chosen_share'])} vs {pct(c['others_share'])}" for c in cats[:8]))
+    t = d.get("tree")
+    if t and t.get("rules"):
+        cv = t.get("cv_balanced_accuracy")
+        verdict = ("holds up out of sample" if cv and cv >= 0.75 else "partly holds out of sample" if cv and cv >= 0.62
+                   else "does NOT hold out of sample: descriptive only")  # fmt: skip
+        out.append("")
+        out.append(f"  Rules (decision tree; time-ordered CV balanced accuracy {pct(cv) if cv is not None else '-'}: {verdict})")
+        for r in t["rules"][:4]:
+            cond = " AND ".join(r["if"]) or "(always)"
+            out.append(f"   - {cond}  ->  {pct(r['p'])} {chosen} ({r['chosen']} {chosen}, {r['others']} {others})")
+    return out
+
+
+def render_study(r: dict) -> str:
+    out = [f"Study of {r['wallet']}", "=" * 72,
+           f"{r['entries']} entries vs {r['skipped_samples']} tokens it could have bought at the same moments; "
+           f"{r['sells']} sells vs {r['hold_samples']} moments it kept holding. Tape: {r['tape_hours']:.1f} h."]  # fmt: skip
+    if r.get("entries_outside_tape"):
+        out.append(f"{r['entries_outside_tape']} entries fell outside the recorded tape (run `snipetech watch --tape` while it trades).")
+    if "entry" in r:
+        out += _study_block("WHY IT BUYS (its entries vs. the alternatives)", r["entry"], "entries", "others")
+    if "exit" in r:
+        out += _study_block("WHY IT SELLS (its sells vs. moments it kept holding)", r["exit"], "sells", "holds")
+    out.append("")
+    out.append("AUC: 0.5 = no difference, 1.0 / 0.0 = perfectly separates. 'pass' = share on each side of the best cut.")
+    out.append("Factors only use what happened before each moment. KOL factors need a KOL list (`label --file kols.txt --kind kol`).")
+    return "\n".join(out)

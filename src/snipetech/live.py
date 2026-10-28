@@ -90,6 +90,7 @@ class LiveWatcher:
         self.closed_launches: list[Launch] = []
         self.due: set[str] = set()
         self.stats: defaultdict[str, int] = defaultdict(int)
+        self.span_start: int | None = None  # current gap-free stretch of the firehose
         self.tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget tasks aren't collected
         self.lookups = asyncio.Semaphore(4)
         self.lookups_waiting = 0
@@ -146,6 +147,7 @@ class LiveWatcher:
         if self.disconnected_at is not None:
             self.gaps.append((self.disconnected_at, time.time()))
             self.disconnected_at = None
+            self.span_start = int(time.time()) + 1
 
     def _disconnected(self) -> None:
         if self.disconnected_at is None:
@@ -309,12 +311,24 @@ class LiveWatcher:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
             self._flush()
             self._mark_coverage()
+            if self.tape:
+                self._mark_tape()
             now = time.time()
             if now - last_prune > 3600:
                 self.store.prune(int(now - self.cfg.storage.retain_days * 86400))
                 last_prune = now
             await self._rescore()
             log.info("live: %s", dict(self.stats))
+
+    def _mark_tape(self) -> None:
+        """Time ranges in which every trade of every token was recorded (no firehose gap)."""
+        if self.disconnected_at is not None or self.span_start is None:
+            return
+        cov = self.store.coverage("tape")
+        spans = [s for s in cov.get("spans", []) if s[0] != self.span_start]
+        spans.append([self.span_start, int(time.time()) - 2])
+        cov["spans"] = sorted(spans)[-500:]
+        self.store.set_coverage("tape", cov)
 
     def _mark_coverage(self) -> None:
         """A launch's window counts as indexed only if the firehose had no gap during it."""

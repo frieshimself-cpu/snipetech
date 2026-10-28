@@ -92,7 +92,7 @@ class Ingestor:
                     continue
                 events = extract_from_transaction(tx, sig)
                 pos = positions.get(sig, (tx["slot"], 0))[1]
-                norm = normalize(events, pos, known_pools)
+                norm = normalize(events, pos, known_pools, foreign=True)
                 missing_pools |= norm.unresolved_pools
                 pending.append((events, pos))
                 if not events.failed:
@@ -105,9 +105,10 @@ class Ingestor:
                 known_pools.update(resolved)
             seen_rows = []
             for events, pos in pending:
-                norm = normalize(events, pos, known_pools)
+                norm = normalize(events, pos, known_pools, foreign=True)
                 self.store.add_launches(norm.launches)
                 self.store.add_trades(norm.trades)
+                self.store.add_ftrades(norm.foreign)
                 self.store.add_completions(norm.completions)
                 self.store.add_migrations(norm.migrations)
                 if norm.pools:

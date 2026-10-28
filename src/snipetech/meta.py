@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from typing import Any
 from urllib.parse import urlparse
 
@@ -109,3 +110,26 @@ async def fetch_meta(store: Store, items: list[tuple[str, str]], concurrency: in
 
         await asyncio.gather(*(one(m, u) for m, u in todo))
     return len(todo)
+
+
+WSOL = "So11111111111111111111111111111111111111112"
+
+
+async def ensure_assets(store: Store, rpc_url: str, mints: list[str], max_age: int = 3600) -> None:
+    """Symbol, decimals and USD price of quote assets (and SOL), via the DAS `getAsset` method
+    (Helius and other DAS-enabled RPCs). Used to value trades quoted in tokens other than SOL."""
+    now = time.time()
+    todo = [m for m in dict.fromkeys([WSOL, *mints]) if not (a := store.asset(m)) or now - (a.get("updated") or 0) > max_age]
+    if not todo:
+        return
+    async with httpx.AsyncClient(timeout=20) as http:
+        for m in todo:
+            try:
+                r = await http.post(rpc_url, json={"jsonrpc": "2.0", "id": 1, "method": "getAsset", "params": {"id": m}})
+                res = r.json().get("result") or {}
+            except (httpx.HTTPError, ValueError):
+                continue
+            info = res.get("token_info") or {}
+            md = (res.get("content") or {}).get("metadata") or {}
+            store.put_asset(m, info.get("symbol") or md.get("symbol") or "", info.get("decimals"),
+                            (info.get("price_info") or {}).get("price_per_token"))  # fmt: skip

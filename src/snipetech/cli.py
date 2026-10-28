@@ -132,10 +132,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=1.0)
     sp.add_argument("--no-refresh", action="store_true")
 
-    sp = cmd("label", "name an address (router program, tip/fee destination, wallet) in reports")
-    sp.add_argument("address")
-    sp.add_argument("name")
-    sp.add_argument("--kind", choices=["service", "router", "wallet"], default="service")
+    sp = cmd("label", "name an address (router, tip/fee destination, wallet, KOL) in reports and studies")
+    sp.add_argument("address", nargs="?")
+    sp.add_argument("name", nargs="?")
+    sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart"], default="service")
+    sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
+
+    sp = cmd("study", "what decides a wallet's trades: every factor at its entries/exits vs. what it passed on (needs `watch --tape`)")
+    sp.add_argument("wallet")
+    sp.add_argument("--days", type=float, default=1.0)
+    sp.add_argument("--negatives", type=int, default=15, help="alternatives sampled per entry")
+    sp.add_argument("--no-refresh", action="store_true")
+    sp.add_argument("--auto-smart", type=int, default=0, metavar="N",
+                    help="label the N most consistently profitable wallets in the data as 'smart' first")
 
     sp = cmd("discover-wallets", "find consistently profitable wallets (copy candidates) in indexed data")
     sp.add_argument("--days", type=float, default=3.0)
@@ -286,7 +295,15 @@ async def _run(args, cfg: Config) -> int:
             _out(args, rep, lambda d: f"Fee market — {d['scope']}\n" + "=" * 72 + "\n"
                  + "\n".join(R.render_competition(d["competition"], d.get("tip_sweep"))))
         elif c == "label":
-            _out(args, svc.label(args.address, args.name, args.kind))
+            if args.file:
+                _out(args, svc.label_file(args.file, args.kind))
+            elif args.address and args.name:
+                _out(args, svc.label(args.address, args.name, args.kind))
+            else:
+                raise SystemExit("label: give ADDRESS NAME, or --file")
+        elif c == "study":
+            rep = await svc.study(args.wallet, args.days, args.negatives, refresh=not args.no_refresh, auto_smart=args.auto_smart)
+            _out(args, rep, R.render_study)
         elif c == "discover-wallets":
             rows = await asyncio.to_thread(svc.discover_wallets, args.days, args.min_positions, args.limit)
             _out(args, rows, R.render_wallets)

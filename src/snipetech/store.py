@@ -195,6 +195,25 @@ class Store:
                        (start_ts, end_ts, start_ts, end_ts, min_trades))  # fmt: skip
         return [(r[0], r[1]) for r in rows]
 
+    def user_market(self, user: str, since_ts: int = 0) -> list[Trade]:
+        """A wallet's trades, SOL- and foreign-quoted, in block order."""
+        rows = self._q(f"SELECT {_TRADE_COLS}, '' FROM trades WHERE user=? AND ts>=? "
+                       f"UNION ALL SELECT {_TRADE_COLS}, quote_mint FROM ftrades WHERE user=? AND ts>=? "
+                       "ORDER BY 3, 4, 2", (user, since_ts, user, since_ts))  # fmt: skip
+        return [_trade(r) for r in rows]
+
+    def quote_mints(self, mints: list[str]) -> list[str]:
+        """Quote assets (other than SOL) the given tokens trade against."""
+        out: set[str] = set()
+        for i in range(0, len(mints), 500):
+            chunk = mints[i : i + 500]
+            out |= {r[0] for r in self._q(f"SELECT DISTINCT quote_mint FROM ftrades WHERE mint IN ({','.join('?' * len(chunk))})", chunk)}
+        return sorted(out)
+
+    def tape_spans(self) -> list[tuple[int, int]]:
+        """Time ranges in which `watch --tape` recorded every trade."""
+        return [(a, b) for a, b in self.coverage("tape").get("spans", [])]
+
     def put_token_meta(self, mint: str, uri: str, ok: bool, data: dict) -> None:
         self._exec("INSERT OR REPLACE INTO token_meta (mint, uri, fetched_at, ok, data) VALUES (?,?,?,?,?)",
                    (mint, uri, int(time.time()), int(ok), json.dumps(data)))  # fmt: skip
