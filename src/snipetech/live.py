@@ -69,8 +69,10 @@ class SignalSink:
 
 
 class LiveWatcher:
-    def __init__(self, service: Service, signals: str = "known", poll: bool = False, firehose: bool = True):
+    def __init__(self, service: Service, signals: str = "known", poll: bool = False, firehose: bool = True,
+                 tape: bool = False):
         self.svc = service
+        self.tape = tape  # record every trade of every token (not just each launch's first minutes)
         self.cfg = service.cfg
         self.store = service.store
         self.sink = SignalSink(service, self.cfg.live.webhook_url)
@@ -80,6 +82,7 @@ class LiveWatcher:
         self.recent: OrderedDict[str, int] = OrderedDict()  # mint -> launch ts (live window)
         self.slot_pos: dict[int, int] = defaultdict(int)
         self.buffer: list[Trade] = []
+        self.fbuffer: list[Trade] = []  # foreign-quoted trades (tape mode)
         self.pools = self.store.pools()
         self.gaps: list[tuple[float, float]] = []
         self.started = time.time()
@@ -160,7 +163,7 @@ class LiveWatcher:
             for s in sorted(self.slot_pos)[:2500]:
                 del self.slot_pos[s]
         tx = TxEvents(value["signature"], slot, None, "", events)
-        norm = normalize(tx, pos, self.pools)
+        norm = normalize(tx, pos, self.pools, foreign=self.tape)
         if norm.pools:
             self.pools.update(norm.pools)
             self.store.add_pools(norm.pools)
@@ -174,9 +177,12 @@ class LiveWatcher:
             task.add_done_callback(self.tasks.discard)
         for t in norm.trades:
             lts = self.recent.get(t.mint)
-            if lts is not None and t.ts - lts <= window:
+            if self.tape or (lts is not None and t.ts - lts <= window):
                 self.buffer.append(t)
                 self.stats["trades"] += 1
+        if norm.foreign:
+            self.fbuffer.extend(norm.foreign)
+            self.stats["foreign_trades"] += len(norm.foreign)
         if norm.completions:
             self.store.add_completions(norm.completions)
         if norm.migrations:
@@ -186,13 +192,16 @@ class LiveWatcher:
             launch = self.store.launch(mint)
             if launch:
                 self.closed_launches.append(launch)
-        if len(self.buffer) >= 500:
+        if len(self.buffer) + len(self.fbuffer) >= 500:
             self._flush()
 
     def _flush(self) -> None:
         if self.buffer:
             self.store.add_trades(self.buffer)
             self.buffer = []
+        if self.fbuffer:
+            self.store.add_ftrades(self.fbuffer)
+            self.fbuffer = []
 
     # -- signals ---------------------------------------------------------------------------------
 

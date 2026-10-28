@@ -25,7 +25,10 @@ def normalize(
     tx: TxEvents,
     pos: int = 0,
     known_pools: dict[str, tuple[str, str]] | None = None,
+    foreign: bool = False,
 ) -> Normalized:
+    """`foreign`: also return trades quoted in another token (DJT, wXRP, PUMP...) in `.foreign`,
+    in that token's units. They never appear in `.trades`, which stays SOL-denominated."""
     # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL)
     known_pools = {**(known_pools or {}), **tx.pool_mints}
     out = Normalized([], [], [], [], {}, set())
@@ -39,6 +42,8 @@ def normalize(
             t = _curve_trade(tx, ev, pos)
             if t is not None:
                 out.trades.append(t)
+            elif foreign:
+                out.foreign.append(_foreign_curve_trade(tx, ev, pos))
         elif name == "PostCompleteBuyEvent":
             t = _post_complete_trade(tx, ev, pos)
             if t is not None:
@@ -68,6 +73,10 @@ def normalize(
                 continue
             base_mint, quote_mint = mapping
             if quote_mint not in SOL_QUOTES:
+                if foreign:
+                    t = _amm_trade(tx, ev, pos, base_mint)
+                    t.quote_mint = quote_mint
+                    out.foreign.append(t)
                 continue
             out.trades.append(_amm_trade(tx, ev, pos, base_mint))
     return out
@@ -96,6 +105,11 @@ def _curve_trade(tx: TxEvents, ev: RawEvent, pos: int) -> Trade | None:
     f = ev.fields
     if f.get("quote_mint", WSOL_MINT) not in SOL_QUOTES:
         return None  # USDC / pump-coin paired curve: not SOL-denominated
+    return _curve_trade_from(tx, ev, pos, int(f["sol_amount"]), int(f["virtual_sol_reserves"]))
+
+
+def _curve_trade_from(tx: TxEvents, ev: RawEvent, pos: int, quote: int, q_after: int) -> Trade:
+    f = ev.fields
     fee = int(f.get("fee") or 0) + int(f.get("creator_fee") or 0)
     fee_bps = int(f.get("fee_basis_points") or 0) + int(f.get("creator_fee_basis_points") or 0)
     return Trade(
@@ -108,15 +122,23 @@ def _curve_trade(tx: TxEvents, ev: RawEvent, pos: int) -> Trade | None:
         venue=CURVE,
         user=f["user"],
         is_buy=bool(f["is_buy"]),
-        quote=int(f["sol_amount"]),
+        quote=quote,
         base=int(f["token_amount"]),
         fee=fee,
         fee_bps=fee_bps,
-        q_after=int(f["virtual_sol_reserves"]),
+        q_after=q_after,
         b_after=int(f["virtual_token_reserves"]),
         r_base_after=int(f.get("real_token_reserves") or 0),
         ix=f.get("ix_name") or ev.ix_name,
     )
+
+
+def _foreign_curve_trade(tx: TxEvents, ev: RawEvent, pos: int) -> Trade:
+    """A curve quoted in another token: same shape as a SOL trade, amounts in quote-token units."""
+    f = ev.fields
+    t = _curve_trade_from(tx, ev, pos, int(f.get("quote_amount") or 0), int(f.get("virtual_quote_reserves") or 0))
+    t.quote_mint = f["quote_mint"]
+    return t
 
 
 def _post_complete_trade(tx: TxEvents, ev: RawEvent, pos: int) -> Trade | None:

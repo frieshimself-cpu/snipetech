@@ -146,6 +146,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--signals", choices=["all", "known", "none"], default="known")
     sp.add_argument("--poll", action="store_true", help="poll copy targets over HTTP instead of websockets")
     sp.add_argument("--no-firehose", action="store_true", help="only follow copy targets")
+    sp.add_argument("--tape", action="store_true",
+                    help="record every trade of every token (needed by `study`; ~1 GB/day of SQLite)")
 
     sp = cmd("serve", "HTTP API for your sniper", json_flag=False)
     sp.add_argument("--host")
@@ -301,7 +303,7 @@ async def _run(args, cfg: Config) -> int:
             for signum in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(signum, main.cancel)
             try:
-                await LiveWatcher(svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose).run()
+                await LiveWatcher(svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose, tape=args.tape).run()
             except asyncio.CancelledError:
                 print("stopped", file=sys.stderr)
         elif c == "list":

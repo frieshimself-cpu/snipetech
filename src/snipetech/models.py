@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 
 CURVE = "curve"  # pump.fun bonding curve
 AMM = "amm"  # PumpSwap pool (post-migration), incl. the synthetic-migration pool part
@@ -66,6 +66,7 @@ class Trade:
     b_after: int
     r_base_after: int = 0  # real token reserves left on the curve (0 for AMM)
     ix: str = ""
+    quote_mint: str = ""  # "" = SOL; otherwise amounts are in this token's base units (kept apart from SOL trades)
 
     @property
     def order(self) -> tuple[int, int, int]:
@@ -102,3 +103,4 @@ class Normalized:
     migrations: list[Migration]
     pools: dict[str, tuple[str, str]]  # pool -> (base_mint, quote_mint)
     unresolved_pools: set[str]
+    foreign: list[Trade] = field(default_factory=list)  # trades quoted in another token (normalize(foreign=True))

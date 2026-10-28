@@ -85,6 +85,22 @@ CREATE INDEX IF NOT EXISTS tx_meta_payer ON tx_meta(fee_payer, slot);
 CREATE TABLE IF NOT EXISTS labels (
     address TEXT PRIMARY KEY, label TEXT NOT NULL, kind TEXT NOT NULL, source TEXT, added_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS ftrades (
+    sig TEXT NOT NULL, ev INTEGER NOT NULL, slot INTEGER NOT NULL, pos INTEGER NOT NULL, ts INTEGER NOT NULL,
+    mint TEXT NOT NULL, venue TEXT NOT NULL, user TEXT NOT NULL, is_buy INTEGER NOT NULL, quote INTEGER NOT NULL,
+    base INTEGER NOT NULL, fee INTEGER NOT NULL, fee_bps INTEGER NOT NULL, q_after INTEGER NOT NULL,
+    b_after INTEGER NOT NULL, r_base_after INTEGER DEFAULT 0, ix TEXT, quote_mint TEXT NOT NULL,
+    PRIMARY KEY (sig, ev)
+);
+CREATE INDEX IF NOT EXISTS ftrades_mint ON ftrades(mint, slot, pos);
+CREATE INDEX IF NOT EXISTS ftrades_user ON ftrades(user, ts);
+CREATE INDEX IF NOT EXISTS ftrades_ts ON ftrades(ts);
+CREATE TABLE IF NOT EXISTS token_meta (
+    mint TEXT PRIMARY KEY, uri TEXT, fetched_at INTEGER, ok INTEGER, data TEXT
+);
+CREATE TABLE IF NOT EXISTS assets (
+    mint TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, price_usd REAL, updated INTEGER
+);
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
@@ -100,7 +116,7 @@ def _trade(row: tuple) -> Trade:
     return Trade(
         sig=row[0], ev=row[1], slot=row[2], pos=row[3], ts=row[4], mint=row[5], venue=row[6], user=row[7],
         is_buy=bool(row[8]), quote=row[9], base=row[10], fee=row[11], fee_bps=row[12], q_after=row[13],
-        b_after=row[14], r_base_after=row[15], ix=row[16] or "",
+        b_after=row[14], r_base_after=row[15], ix=row[16] or "", quote_mint=(row[17] or "") if len(row) > 17 else "",
     )  # fmt: skip
 
 
@@ -153,6 +169,47 @@ class Store:
                 for l in launches
             ],
         )  # fmt: skip
+
+    def add_ftrades(self, trades: Iterable[Trade]) -> None:
+        """Trades quoted in another token (amounts in that token's units); never mixed into `trades`."""
+        self._many(
+            f"INSERT OR IGNORE INTO ftrades ({_TRADE_COLS}, quote_mint) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            [
+                (t.sig, t.ev, t.slot, t.pos, t.ts, t.mint, t.venue, t.user, int(t.is_buy), t.quote, t.base, t.fee,
+                 t.fee_bps, t.q_after, t.b_after, t.r_base_after, t.ix, t.quote_mint)
+                for t in trades
+            ],
+        )  # fmt: skip
+
+    def market(self, mint: str, start_ts: int, end_ts: int) -> list[Trade]:
+        """Every recorded trade of a token in a time range, SOL- or foreign-quoted, in block order."""
+        rows = self._q(f"SELECT {_TRADE_COLS}, '' FROM trades WHERE mint=? AND ts>=? AND ts<=? "
+                       f"UNION ALL SELECT {_TRADE_COLS}, quote_mint FROM ftrades WHERE mint=? AND ts>=? AND ts<=? "
+                       "ORDER BY 3, 4, 2", (mint, start_ts, end_ts, mint, start_ts, end_ts))  # fmt: skip
+        return [_trade(r) for r in rows]
+
+    def active_mints(self, start_ts: int, end_ts: int, min_trades: int = 1) -> list[tuple[str, int]]:
+        """Tokens traded in a time range (SOL and foreign), with their trade counts."""
+        rows = self._q("SELECT mint, COUNT(*) c FROM (SELECT mint FROM trades WHERE ts>=? AND ts<=? "
+                       "UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND ts<=?) GROUP BY mint HAVING c>=?",
+                       (start_ts, end_ts, start_ts, end_ts, min_trades))  # fmt: skip
+        return [(r[0], r[1]) for r in rows]
+
+    def put_token_meta(self, mint: str, uri: str, ok: bool, data: dict) -> None:
+        self._exec("INSERT OR REPLACE INTO token_meta (mint, uri, fetched_at, ok, data) VALUES (?,?,?,?,?)",
+                   (mint, uri, int(time.time()), int(ok), json.dumps(data)))  # fmt: skip
+
+    def token_meta(self, mint: str) -> dict | None:
+        rows = self._q("SELECT ok, data FROM token_meta WHERE mint=?", (mint,))
+        return (json.loads(rows[0][1]) | {"ok": bool(rows[0][0])}) if rows else None
+
+    def put_asset(self, mint: str, symbol: str, decimals: int, price_usd: float | None) -> None:
+        self._exec("INSERT OR REPLACE INTO assets (mint, symbol, decimals, price_usd, updated) VALUES (?,?,?,?,?)",
+                   (mint, symbol, decimals, price_usd, int(time.time())))  # fmt: skip
+
+    def asset(self, mint: str) -> dict | None:
+        rows = self._q("SELECT symbol, decimals, price_usd, updated FROM assets WHERE mint=?", (mint,))
+        return dict(zip(("symbol", "decimals", "price_usd", "updated"), rows[0])) if rows else None
 
     def add_trades(self, trades: Iterable[Trade]) -> None:
         self._many(

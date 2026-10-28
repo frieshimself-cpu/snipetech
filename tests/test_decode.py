@@ -136,3 +136,33 @@ def test_borsh_tolerates_older_shorter_events():
     assert name == "TradeEvent"
     assert fields["virtual_token_reserves"] == full.fields["virtual_token_reserves"]
     assert "real_sol_reserves" not in fields
+
+
+def test_foreign_quoted_trades_are_kept_apart():
+    """A pump.fun curve quoted in a tokenized stock: not a SOL trade, but kept (in its own units) on request."""
+    sig, tx = by_prefix("5a9f4Bh3")
+    ev = extract_from_transaction(tx, sig)
+    raw = next(e.fields for e in ev.events if e.name == "TradeEvent" and e.fields.get("quote_mint", WSOL_MINT) != WSOL_MINT)
+    plain, full = normalize(ev), normalize(ev, foreign=True)
+    assert all(t.quote_mint == "" for t in plain.trades + full.trades)
+    t = next(t for t in full.foreign if t.mint == raw["mint"])
+    assert t.quote_mint == raw["quote_mint"] and t.quote == raw["quote_amount"] and t.q_after == raw["virtual_quote_reserves"]
+    assert t.venue == "curve" and t.base == raw["token_amount"]
+    # routed wBTC -> token A -> token B: both hops kept as foreign trades, none as SOL trades
+    sig, tx = by_prefix("4iHFAXgL")
+    hops = normalize(extract_from_transaction(tx, sig), foreign=True)
+    assert hops.trades == [] and len(hops.foreign) == 2 and {t.venue for t in hops.foreign} == {"amm"}
+
+
+def test_foreign_trades_are_stored_separately():
+    from snipetech.store import Store
+
+    sig, tx = by_prefix("5a9f4Bh3")
+    norm = normalize(extract_from_transaction(tx, sig), foreign=True)
+    st = Store(":memory:")
+    st.add_trades(norm.trades)
+    st.add_ftrades(norm.foreign)
+    t = norm.foreign[0]
+    assert st.trades_for_mint(t.mint) == []  # the SOL-only view (simulations) never sees them
+    (back,) = [x for x in st.market(t.mint, t.ts - 1, t.ts + 1) if x.sig == t.sig and x.ev == t.ev]
+    assert back.quote_mint == t.quote_mint and back.quote == t.quote
