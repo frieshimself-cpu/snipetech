@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 
 CURVE = "curve"  # pump.fun bonding curve
 AMM = "amm"  # PumpSwap pool (post-migration), incl. the synthetic-migration pool part
+LAUNCHLAB = "launchlab"  # Raydium LaunchLab bonding curve (bonk.fun and others)
 
 
 @dataclass(slots=True)

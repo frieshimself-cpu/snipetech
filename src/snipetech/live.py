@@ -28,7 +28,7 @@ import websockets
 from .models import Launch, Trade
 from .service import Service
 from .solana.normalize import normalize
-from .solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
+from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM
 from .solana.tx import TxEvents, extract_from_logs
 
 log = logging.getLogger(__name__)
@@ -83,6 +83,7 @@ class LiveWatcher:
         self.slot_pos: dict[int, int] = defaultdict(int)
         self.buffer: list[Trade] = []
         self.fbuffer: list[Trade] = []  # foreign-quoted trades (tape mode)
+        self.parked: dict[str, list[tuple[int, dict]]] = {}  # pool -> log notifications waiting for its mints
         self.pools = self.store.pools()
         self.gaps: list[tuple[float, float]] = []
         self.started = time.time()
@@ -103,6 +104,8 @@ class LiveWatcher:
             tasks.append(asyncio.create_task(self._firehose(PUMP_PROGRAM)))
             if self.cfg.live.index_amm:
                 tasks.append(asyncio.create_task(self._firehose(PUMP_AMM_PROGRAM)))
+            if self.tape:
+                tasks.append(asyncio.create_task(self._firehose(LAUNCHLAB_PROGRAM)))
         tasks.append(asyncio.create_task(self._follow_wallets()))
         try:
             await asyncio.gather(*tasks)
@@ -164,8 +167,11 @@ class LiveWatcher:
         if len(self.slot_pos) > 5000:
             for s in sorted(self.slot_pos)[:2500]:
                 del self.slot_pos[s]
-        tx = TxEvents(value["signature"], slot, None, "", events)
+        # receive time stands in for block time (LaunchLab events carry no timestamp; pump's do)
+        tx = TxEvents(value["signature"], slot, int(time.time()), "", events)
         norm = normalize(tx, pos, self.pools, foreign=self.tape)
+        if norm.unresolved_pools and self.tape:
+            self._park(norm.unresolved_pools, slot, value)
         if norm.pools:
             self.pools.update(norm.pools)
             self.store.add_pools(norm.pools)
@@ -196,6 +202,34 @@ class LiveWatcher:
                 self.closed_launches.append(launch)
         if len(self.buffer) + len(self.fbuffer) >= 500:
             self._flush()
+
+    def _park(self, pools: set[str], slot: int, value: dict[str, Any]) -> None:
+        """Logs don't say which token a LaunchLab / PumpSwap pool trades: look the pool up once and
+        replay what arrived meanwhile."""
+        for pool in pools:
+            if pool in self.pools:
+                continue  # resolved already; nothing more to learn
+            waiting = self.parked.setdefault(pool, [])
+            waiting.append((slot, value))
+            if len(waiting) == 1:
+                task = asyncio.get_running_loop().create_task(self._resolve_pool(pool))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
+
+    async def _resolve_pool(self, pool: str) -> None:
+        async with self.lookups:
+            try:
+                found = await asyncio.wait_for(self.svc.ingestor.resolve_pools({pool}), timeout=10)
+            except Exception as exc:  # best effort: the pool's trades stay unrecorded
+                log.debug("pool %s lookup failed: %s", pool, exc)
+                found = {}
+        waiting = self.parked.pop(pool, [])
+        if pool in found:
+            self.pools.update(found)
+            for slot, value in waiting:
+                self._on_logs(slot, value)
+        else:
+            self.stats["unresolved_pool_events"] += len(waiting)
 
     def _flush(self) -> None:
         if self.buffer:

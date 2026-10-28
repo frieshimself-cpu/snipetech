@@ -22,7 +22,7 @@ from typing import Any
 from .models import Launch
 from .solana.base58 import b58decode
 from .solana.normalize import normalize
-from .solana.programs import PUMP_AMM_PROGRAM, WSOL_MINT, decode_account
+from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, WSOL_MINT, decode_account
 from .solana.rpc import RpcError, SolanaRpc
 from .solana.tx import _account_keys, extract_from_transaction
 from .solana.txmeta import extract_tx_meta
@@ -144,7 +144,7 @@ class Ingestor:
         return done
 
     async def resolve_pools(self, pools: set[str]) -> dict[str, tuple[str, str]]:
-        """Look up PumpSwap pool accounts to learn their base/quote mints."""
+        """Look up PumpSwap / LaunchLab pool accounts to learn their base/quote mints."""
         out: dict[str, tuple[str, str]] = {}
 
         async def one(pool: str) -> None:
@@ -155,8 +155,8 @@ class Ingestor:
                 return
             if not data:
                 return
-            decoded = decode_account(PUMP_AMM_PROGRAM, data)
-            if decoded and decoded[0] == "Pool":
+            decoded = decode_account(PUMP_AMM_PROGRAM, data) or decode_account(LAUNCHLAB_PROGRAM, data)
+            if decoded and decoded[0] in ("Pool", "PoolState"):
                 out[pool] = (decoded[1]["base_mint"], decoded[1]["quote_mint"])
 
         await asyncio.gather(*(one(p) for p in pools))

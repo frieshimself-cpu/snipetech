@@ -166,3 +166,27 @@ def test_foreign_trades_are_stored_separately():
     assert st.trades_for_mint(t.mint) == []  # the SOL-only view (simulations) never sees them
     (back,) = [x for x in st.market(t.mint, t.ts - 1, t.ts + 1) if x.sig == t.sig and x.ev == t.ev]
     assert back.quote_mint == t.quote_mint and back.quote == t.quote
+
+
+def test_launchlab_round_trip_decodes_with_trader_and_token():
+    """A real Raydium LaunchLab buy and the matching sell: the events name neither token nor trader;
+    both come from the instruction accounts. Fees are inside a buy's amount_in and outside a sell's amount_out."""
+    from snipetech.solana.normalize import normalize
+
+    trades = {}
+    for prefix in ("5dGuy1Eg", "3vHcn4Gn"):
+        sig, tx = by_prefix(prefix)
+        ev = extract_from_transaction(tx, sig)
+        raw = next(e.fields for e in ev.events if e.name == "LaunchLabTradeEvent")
+        (t,) = normalize(ev).trades
+        fees = raw["protocol_fee"] + raw["platform_fee"] + raw["creator_fee"] + raw["share_fee"]
+        assert t.venue == "launchlab" and t.user == "Fhbh1DTUDKt6qu9zVg8Q5VgnZa1WWWbxBxG6pCoJoggA" and t.fee == fees
+        assert t.mint == "9CU8Mp1iwX37dvLQKKzXkXZ7TCXKkVjHVSWMjmrx9PqN"
+        assert t.q_after - (t.quote if t.is_buy else -t.quote) == raw["virtual_quote"] + raw["real_quote_before"]
+        trades[t.is_buy] = (t, raw)
+    buy, raw = trades[True]
+    assert buy.quote + buy.fee == raw["amount_in"] and buy.base == raw["amount_out"]
+    q0, b0 = buy.q_after - buy.quote, buy.b_after + buy.base
+    assert abs(b0 * buy.quote // (q0 + buy.quote) - buy.base) <= 1  # constant product on virtual + real reserves
+    sell, raw = trades[False]
+    assert sell.quote - sell.fee == raw["amount_out"] and sell.base == raw["amount_in"] == buy.base

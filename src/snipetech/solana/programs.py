@@ -12,6 +12,7 @@ from .borsh import IdlDecoder
 
 PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_AMM_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+LAUNCHLAB_PROGRAM = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"  # Raydium LaunchLab (bonk.fun and others)
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 DEFAULT_PUBKEY = "11111111111111111111111111111111"
 SOL_QUOTES = frozenset({WSOL_MINT, DEFAULT_PUBKEY})
@@ -66,11 +67,17 @@ def amm_idl() -> ProgramIdl:
     return load_idl("pump_amm.json")
 
 
+def launchlab_idl() -> ProgramIdl:
+    return load_idl("launchlab.json")
+
+
 def idl_for(program_id: str) -> ProgramIdl | None:
     if program_id == PUMP_PROGRAM:
         return pump_idl()
     if program_id == PUMP_AMM_PROGRAM:
         return amm_idl()
+    if program_id == LAUNCHLAB_PROGRAM:
+        return launchlab_idl()
     return None
 
 
@@ -82,7 +89,9 @@ def decode_event(program_id: str, payload: bytes) -> tuple[str, dict[str, Any]] 
     name = idl.events.get(payload[:8])
     if name is None:
         return None
-    return name, idl.decoder.decode_struct(name, payload, 8)
+    fields = idl.decoder.decode_struct(name, payload, 8)
+    # LaunchLab's event names collide with pump.fun's (both have a TradeEvent)
+    return ("LaunchLab" + name if program_id == LAUNCHLAB_PROGRAM else name), fields
 
 
 def decode_account(program_id: str, data: bytes) -> tuple[str, dict[str, Any]] | None:
@@ -103,7 +112,7 @@ def instruction_info(program_id: str, data: bytes) -> tuple[str, tuple[str, ...]
 
 
 def decode_instruction(program_id: str, data: bytes) -> tuple[str, tuple[str, ...], dict[str, Any]] | None:
-    """(name, account names, decoded args) for a pump.fun / PumpSwap instruction.
+    """(name, account names, decoded args) for a pump.fun / PumpSwap / LaunchLab instruction.
 
     Trailing optional args (e.g. `track_volume`) may be omitted by callers; whatever is
     present is decoded."""

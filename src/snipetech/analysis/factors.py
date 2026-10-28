@@ -108,14 +108,16 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
     now = mid_after(last)
     if now and rate:
         f["mcap_sol"] = now * SUPPLY * rate / 1e9
-    if last.venue == "curve" and last.r_base_after:
-        f["curve_progress"] = 1 - last.r_base_after / CURVE_TOKENS
+    if last.venue in ("curve", "launchlab") and last.r_base_after:
+        f["curve_progress"] = 1 - last.r_base_after / CURVE_TOKENS  # both sell 793.1M tokens on the curve
     f["secs_since_last_trade"] = ts - last.ts
 
     def sol(t: Trade) -> float:
         return (t.quote + (t.fee if t.is_buy else 0)) * (rate or 0) / 1e9
 
     others = [t for t in trades if t.user != me]
+    # trades from the live tape on LaunchLab carry no trader (logs don't name it): wallet factors unknown
+    users_known = all(t.user for t in trades)
     for w in WINDOWS:
         if ts - w < known_from - 1:
             continue  # not fully recorded that far back
@@ -128,9 +130,10 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
         if w >= 30:
             f[f"buy_share_{w}s"] = sum(sol(t) for t in buys) / vol if vol else None
             f[f"net_flow_{w}s"] = sum(sol(t) if t.is_buy else -sol(t) for t in win)
-            f[f"uniq_buyers_{w}s"] = len({t.user for t in buys})
-            f[f"kol_buyers_{w}s"] = len({t.user for t in buys if t.user in ctx.kols})
-            f[f"smart_buyers_{w}s"] = len({t.user for t in buys if t.user in ctx.smart})
+            if users_known:
+                f[f"uniq_buyers_{w}s"] = len({t.user for t in buys})
+                f[f"kol_buyers_{w}s"] = len({t.user for t in buys if t.user in ctx.kols})
+                f[f"smart_buyers_{w}s"] = len({t.user for t in buys if t.user in ctx.smart})
         if w == 60:
             f["largest_buy_60s"] = max((sol(t) for t in buys), default=0.0)
             f["whale_buys_60s"] = sum(1 for t in buys if sol(t) >= WHALE_SOL)
@@ -144,7 +147,7 @@ def factors_at(ctx: FactorContext, mint: str, ts: int, order: tuple[int, int, in
         f["trades_per_min_300s"] = sum(1 for t in others if t.ts > ts - 300) / 5
     mine = [t for t in trades if t.user == me]
     f["my_trades_300s"] = sum(1 for t in mine if t.ts > ts - 300)
-    if young:
+    if young and users_known:
         _holders(f, trades)
         _insiders(f, launch, trades, rate)
     _socials(ctx, mint, ts, f)

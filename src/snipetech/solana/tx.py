@@ -14,10 +14,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .base58 import b58decode
-from .programs import EVENT_IX_TAG, PUMP_AMM_PROGRAM, PUMP_PROGRAM, decode_event, instruction_info
+from .programs import EVENT_IX_TAG, LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM, decode_event, instruction_info
 
-WATCHED = (PUMP_PROGRAM, PUMP_AMM_PROGRAM)
+WATCHED = (PUMP_PROGRAM, PUMP_AMM_PROGRAM, LAUNCHLAB_PROGRAM)
 AMM_TRADE_IXS = {"buy", "sell", "buy_v2", "sell_v2", "buy_exact_quote_in", "buy_exact_quote_in_v2"}
+LAUNCHLAB_TRADE_IXS = {"buy_exact_in", "buy_exact_out", "sell_exact_in", "sell_exact_out"}
+LAUNCHLAB_INIT_IXS = {"initialize", "initialize_v2", "initialize_with_token_2022"}
 
 
 @dataclass(slots=True)
@@ -37,6 +39,8 @@ class TxEvents:
     fee_payer: str
     events: list[RawEvent] = field(default_factory=list)
     pool_mints: dict[str, tuple[str, str]] = field(default_factory=dict)  # PumpSwap pool -> (base, quote) from ix accounts
+    # LaunchLab pool_state -> (base mint, quote mint, payer) from ix accounts; its events name neither
+    ll_pools: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     failed: bool = False
 
 
@@ -93,10 +97,15 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
             return
         ix_name, account_names = info
         last_ix_name[program] = ix_name
+        accs = ix.get("accounts", [])
         if program == PUMP_AMM_PROGRAM and ix_name in AMM_TRADE_IXS:
-            accs = ix.get("accounts", [])
             if len(accs) > 4:
                 out.pool_mints[keys[accs[0]]] = (keys[accs[3]], keys[accs[4]])
+        elif program == LAUNCHLAB_PROGRAM and len(accs) > 10:
+            if ix_name in LAUNCHLAB_TRADE_IXS:  # payer, authority, global, platform, pool, ..., base_mint(9), quote_mint(10)
+                out.ll_pools[keys[accs[4]]] = (keys[accs[9]], keys[accs[10]], keys[accs[0]])
+            elif ix_name in LAUNCHLAB_INIT_IXS:  # payer, creator, global, platform, authority, pool(5), base(6), quote(7)
+                out.ll_pools[keys[accs[5]]] = (keys[accs[6]], keys[accs[7]], keys[accs[0]])
 
     for i, ix in enumerate(outer):
         visit(ix)

@@ -12,7 +12,7 @@ Semantics verified against mainnet transactions (see tests/test_decode.py):
 
 from __future__ import annotations
 
-from ..models import AMM, CURVE, Completion, Launch, Migration, Normalized, Trade
+from ..models import AMM, CURVE, LAUNCHLAB, Completion, Launch, Migration, Normalized, Trade
 from .programs import SOL_QUOTES, WSOL_MINT
 from .tx import RawEvent, TxEvents
 
@@ -30,9 +30,10 @@ def normalize(
     """`foreign`: also return trades quoted in another token (DJT, wXRP, PUMP...) in `.foreign`,
     in that token's units. They never appear in `.trades`, which stays SOL-denominated."""
     # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL)
-    known_pools = {**(known_pools or {}), **tx.pool_mints}
+    ll = {p: (b, q) for p, (b, q, _) in tx.ll_pools.items()}
+    known_pools = {**(known_pools or {}), **tx.pool_mints, **ll}
     out = Normalized([], [], [], [], {}, set())
-    out.pools.update({p: known_pools[p] for p in tx.pool_mints})
+    out.pools.update({p: known_pools[p] for p in (*tx.pool_mints, *ll)})
 
     for ev in tx.events:
         name, f = ev.name, ev.fields
@@ -61,6 +62,23 @@ def normalize(
         elif name == "CreatePoolEvent":
             out.pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
             known_pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
+        elif name == "LaunchLabPoolCreateEvent":
+            mapping = known_pools.get(f["pool_state"])
+            if mapping is None:
+                out.unresolved_pools.add(f["pool_state"])
+            else:
+                out.launches.append(_launchlab_launch(tx, f, *mapping))
+        elif name == "LaunchLabTradeEvent":
+            mapping = known_pools.get(f["pool_state"])
+            if mapping is None:
+                out.unresolved_pools.add(f["pool_state"])
+                continue
+            t = _launchlab_trade(tx, ev, pos, mapping[0])
+            if mapping[1] in SOL_QUOTES:
+                out.trades.append(t)
+            elif foreign:
+                t.quote_mint = mapping[1]
+                out.foreign.append(t)
 
     # PumpSwap trades need the pool -> mint mapping, which may come from this tx's
     # instruction accounts, a CreatePool/Migration event, or the caller's cache.
@@ -80,6 +98,33 @@ def normalize(
                 continue
             out.trades.append(_amm_trade(tx, ev, pos, base_mint))
     return out
+
+
+def _launchlab_launch(tx: TxEvents, f: dict, mint: str, quote_mint: str) -> Launch:
+    p = f.get("base_mint_param") or {}
+    payer = tx.ll_pools.get(f["pool_state"], ("", "", ""))[2]
+    return Launch(
+        mint=mint, user=payer or f["creator"], creator=f["creator"], name=p.get("name", ""), symbol=p.get("symbol", ""),
+        uri=p.get("uri", ""), bonding_curve=f["pool_state"], slot=tx.slot, ts=tx.block_time or 0, sig=tx.signature,
+        quote_mint="" if quote_mint in SOL_QUOTES else quote_mint,
+    )  # fmt: skip
+
+
+def _launchlab_trade(tx: TxEvents, ev: RawEvent, pos: int, mint: str) -> Trade:
+    """LaunchLab curve: constant product on virtual + real reserves. A buy's `amount_in` includes
+    the fees; a sell's `amount_out` is what the trader receives after them."""
+    f = ev.fields
+    fee = int(f["protocol_fee"]) + int(f["platform_fee"]) + int(f["creator_fee"]) + int(f.get("share_fee") or 0)
+    is_buy = f["trade_direction"] == "Buy"
+    quote = int(f["amount_in"]) - fee if is_buy else int(f["amount_out"]) + fee
+    return Trade(
+        sig=tx.signature, ev=ev.index, slot=tx.slot, pos=pos, ts=tx.block_time or 0, mint=mint, venue=LAUNCHLAB,
+        user=tx.ll_pools.get(f["pool_state"], ("", "", ""))[2], is_buy=is_buy, quote=quote,
+        base=int(f["amount_out"]) if is_buy else int(f["amount_in"]), fee=fee, fee_bps=fee * 10_000 // max(quote, 1),
+        q_after=int(f["virtual_quote"]) + int(f["real_quote_after"]),
+        b_after=int(f["virtual_base"]) - int(f["real_base_after"]),
+        r_base_after=int(f["total_base_sell"]) - int(f["real_base_after"]), ix=ev.ix_name,
+    )  # fmt: skip
 
 
 def _launch(tx: TxEvents, f: dict) -> Launch:

@@ -1,20 +1,24 @@
 #!/usr/bin/env python3
-"""Refresh the vendored, trimmed pump.fun IDLs from the official public docs repo.
+"""Refresh the vendored, trimmed IDLs (pump.fun, PumpSwap, Raydium LaunchLab) from the
+official public repos.
 
 Only the pieces snipetech decodes are kept: events (and the types they reference),
-plus instruction names/discriminators/account names for the trade and create
-instructions. Run this when pump.fun ships a program upgrade that appends fields.
+plus instruction names/discriminators/account names/args. Run this when a program
+ships an upgrade that appends fields.
 
-    python scripts/update_idl.py
+    python scripts/update_idl.py              # all
+    python scripts/update_idl.py launchlab.json
 """
 
 from __future__ import annotations
 
 import json
 import pathlib
+import sys
 import urllib.request
 
 BASE = "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/"
+SOURCES = {"launchlab.json": "https://raw.githubusercontent.com/raydium-io/raydium-idl/master/raydium_launchpad/raydium_launchpad.json"}
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src" / "snipetech" / "solana" / "idl"
 
 KEEP = {
@@ -27,6 +31,11 @@ KEEP = {
         "events": {"BuyEvent", "SellEvent", "CreatePoolEvent"},
         "instructions": None,
         "accounts": {"Pool"},
+    },
+    "launchlab.json": {
+        "events": {"TradeEvent", "PoolCreateEvent"},
+        "instructions": None,
+        "accounts": {"PoolState"},
     },
 }
 
@@ -43,7 +52,7 @@ def referenced(type_def: object, out: set[str]) -> None:
             referenced(v, out)
 
 
-def trim(idl: dict, keep: dict) -> dict:
+def trim(idl: dict, keep: dict, source: str = BASE) -> dict:
     types = {t["name"]: t for t in idl["types"]}
     wanted = set(keep["events"]) | set(keep["accounts"])
     for ix in idl["instructions"]:
@@ -61,7 +70,7 @@ def trim(idl: dict, keep: dict) -> dict:
     return {
         "address": idl["address"],
         "metadata": idl.get("metadata", {}),
-        "source": BASE,
+        "source": source,
         "instructions": [
             {
                 "name": ix["name"],
@@ -79,10 +88,14 @@ def trim(idl: dict, keep: dict) -> dict:
 
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
+    only = set(sys.argv[1:])
     for fname, keep in KEEP.items():
-        with urllib.request.urlopen(BASE + fname, timeout=30) as resp:
+        if only and fname not in only:
+            continue
+        url = SOURCES.get(fname, BASE + fname)
+        with urllib.request.urlopen(url, timeout=30) as resp:
             idl = json.load(resp)
-        trimmed = trim(idl, keep)
+        trimmed = trim(idl, keep, url)
         (OUT / fname).write_text(json.dumps(trimmed, indent=1, sort_keys=False) + "\n")
         print(f"wrote {OUT / fname} ({len(trimmed['events'])} events, {len(trimmed['types'])} types)")
 
