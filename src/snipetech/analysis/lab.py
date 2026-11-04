@@ -109,7 +109,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     for a, b in spans:
         if b - a < 600:
             continue
-        for mint, n in store.active_mints(a, b, min_trades):
+        for mint, _count in store.active_mints(a, b, min_trades):
             trades = [t for t in store.trades_for_mint(mint, a, b)]
             if len(trades) < min_trades:
                 continue
