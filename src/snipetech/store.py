@@ -554,5 +554,12 @@ class Store:
             )
             launches = cur.rowcount
             self.conn.execute("DELETE FROM seen_sigs WHERE ts<?", (before_ts,))
+            self.conn.execute("DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,))
+            # the tape only covers what is still stored: drop / clip recorded spans before the cutoff
+            row = self.conn.execute("SELECT data FROM coverage WHERE key='tape'").fetchone()
+            if row:
+                cov = json.loads(row[0])
+                cov["spans"] = [[max(a, before_ts), b] for a, b in cov.get("spans", []) if b > before_ts]
+                self.conn.execute("UPDATE coverage SET data=?, updated=? WHERE key='tape'", (json.dumps(cov), int(time.time())))
             self.conn.commit()
         return {"trades": trades, "launches": launches, "protected_addresses": len(protected)}

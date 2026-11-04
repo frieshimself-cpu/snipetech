@@ -67,6 +67,15 @@ PY
 set_key HELIUS_API_KEY "Helius API key"
 set_key OKS_KEY "OKTech Sniper API key (make a NEW one in OKTech, with 'Allow starting' on)"
 chmod 600 "$ENVF"
+if ! grep -qE '^SNIPETECH_RETAIN_DAYS=' "$ENVF"; then
+  # the market tape grows ~7 GB/day: keep as many days as fit in ~60% of the disk (3..30)
+  total_gb=$(df -BG --output=size /var/lib/snipetech | tail -1 | tr -dc 0-9)
+  days=$(( ${total_gb:-0} * 6 / 10 / 7 ))
+  [ "$days" -lt 3 ] && days=3
+  [ "$days" -gt 30 ] && days=30
+  echo "SNIPETECH_RETAIN_DAYS=$days" >> "$ENVF"
+  echo "market data kept: last $days days (disk ${total_gb} GB; change SNIPETECH_RETAIN_DAYS in $ENVF)"
+fi
 
 check_keys() {
   local h o

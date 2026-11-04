@@ -125,3 +125,13 @@ def test_http_roundtrip(env):
         assert exc.value.code == 403
     finally:
         server.shutdown()
+
+
+def test_prune_clips_tape_spans(tmp_path):
+    from snipetech.store import Store
+
+    st = Store(str(tmp_path / "t.db"))
+    st.set_coverage("tape", {"spans": [[100, 200], [300, 500], [600, 900]]})
+    st.prune(400)
+    assert st.tape_spans() == [(400, 500), (600, 900)]
+    st.close()

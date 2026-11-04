@@ -261,6 +261,7 @@ _ENV = {
     "SNIPETECH_WS_URL": "rpc.ws_url",
     "SNIPETECH_RPC_RPS": "rpc.max_rps",
     "SNIPETECH_DB": "storage.db_path",
+    "SNIPETECH_RETAIN_DAYS": "storage.retain_days",
     "SNIPETECH_API_KEY": "api.api_key",
     "SNIPETECH_WEBHOOK_URL": "live.webhook_url",
     "SNIPETECH_MODEL": "agent.model",

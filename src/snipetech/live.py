@@ -359,8 +359,10 @@ class LiveWatcher:
         if self.disconnected_at is not None or self.span_start is None:
             return
         cov = self.store.coverage("tape")
-        spans = [s for s in cov.get("spans", []) if s[0] != self.span_start]
-        spans.append([self.span_start, int(time.time()) - 2])
+        now = time.time()
+        # earlier connections' spans end before this one started; this span is clipped to what retention keeps
+        spans = [s for s in cov.get("spans", []) if s[1] < self.span_start]
+        spans.append([max(self.span_start, int(now - self.cfg.storage.retain_days * 86400)), int(now) - 2])
         cov["spans"] = sorted(spans)[-500:]
         self.store.set_coverage("tape", cov)
 
