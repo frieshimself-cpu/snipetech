@@ -155,7 +155,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push", "replica"])
+    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "show", "start", "stop", "delete"])
+    sp.add_argument("--id", help="show/start/stop/delete: the sniper's id (from `oktech status`)")
+    sp.add_argument("--copy-wallet", help="probe: also measure copy speed against this wallet's buys")
+    sp.add_argument("--snipes", type=int, default=5, help="probe: buys per speed-test sniper (default 5)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
     sp.add_argument("--buy", type=float, default=0.05, help="replica: SOL per buy (start small)")
@@ -377,6 +380,27 @@ async def _run(args, cfg: Config) -> int:
             kinds = (args.only,) if args.only else ("copy", "dev")
             if args.action == "status":
                 _out(args, await svc.oktech_status(), R.render_oktech_status)
+                return 0
+            if args.action == "probe":
+                rep = await svc.oktech_probe(args.buy if args.buy != 0.05 else 0.01, args.snipes, args.copy_wallet,
+                                             args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create)  # fmt: skip
+                if args.json:
+                    print(json.dumps(rep, indent=1, default=str))
+                    return 0
+                print(f"OKTech speed test on wallet {rep['wallet']} (at most {rep['max_spend_sol']} SOL in buys + fees)")
+                for sn in rep["snipers"]:
+                    print(f"\n  {sn['name']}" + (f"  [{sn.get('id')}, {sn.get('status')}]" if sn.get("id") else ""))
+                    for line in sn["summary"]:
+                        print(f"    {line}")
+                    if sn.get("caps_kept"):
+                        print(f"    OKTech kept: {sn['caps_kept']}")
+                if not args.create:
+                    print("\nNot created. Add --create to make them on OKTech, idle; start each with `oktech start --id ID`.")
+                return 0
+            if args.action in ("show", "start", "stop", "delete"):
+                if not args.id:
+                    raise SystemExit(f"{args.action}: give --id (see `snipetech oktech status`)")
+                print(json.dumps(await svc.oktech_task(args.action, args.id), indent=1, default=str))
                 return 0
             if args.action == "replica":
                 if not args.from_study:

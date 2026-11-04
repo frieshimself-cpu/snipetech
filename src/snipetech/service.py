@@ -558,6 +558,46 @@ class Service:
                 await client.close()
         return out
 
+    async def oktech_probe(self, buy_sol: float, snipes: int, copy_wallet: str | None, wallet: str, create: bool) -> dict:
+        """The speed-test snipers; with `create`, made on OKTech idle (start them with `oktech start`)."""
+        from .oktech import speedtest_snipers
+
+        if copy_wallet:
+            copy_wallet = self._check(copy_wallet)
+        planned = speedtest_snipers(buy_sol, snipes, copy_wallet)
+        out = {"wallet": wallet, "snipers": [{"name": p.name, "summary": p.summary, "config": p.config} for p in planned],
+               "max_spend_sol": round(len(planned) * snipes * (buy_sol + 0.003 + 0.002), 4)}  # fmt: skip
+        if create:
+            client = self._oktech()
+            try:
+                for p, row in zip(planned, out["snipers"]):
+                    ans = await client.create(p.name, p.config, wallet, p.external_id)
+                    task = ans.get("task") or {}
+                    self.store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source,
+                                                  "name": p.name, "config_hash": p.config_hash, "payload": p.config})  # fmt: skip
+                    back = await client.get(task["id"])  # what OKTech kept of the settings
+                    kept = (back.get("task") or back).get("config") or {}
+                    row |= {"id": task["id"], "status": task.get("status"), "duplicate": bool(ans.get("duplicate")),
+                            "caps_kept": {k: kept.get(k) for k in ("singleSnipe", "totalSnipes", "buyAmount")}}  # fmt: skip
+            finally:
+                await client.close()
+        return out
+
+    async def oktech_task(self, action: str, task_id: str) -> dict:
+        client = self._oktech()
+        try:
+            if action == "start":
+                return await client.start(task_id)
+            if action == "stop":
+                return await client.stop(task_id)
+            if action == "delete":
+                ans = await client.delete(task_id)
+                self.store.remove_oktech_sniper(task_id)
+                return ans
+            return await client.get(task_id)
+        finally:
+            await client.close()
+
     async def oktech_status(self) -> dict:
         client = self._oktech()
         try:

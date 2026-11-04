@@ -90,6 +90,12 @@ class OktechClient:
     async def stop(self, task_id: str) -> dict:
         return await self._req("POST", f"/tasks/{task_id}/stop")
 
+    async def start(self, task_id: str) -> dict:
+        return await self._req("POST", f"/tasks/{task_id}/start")
+
+    async def get(self, task_id: str) -> dict:
+        return await self._req("GET", f"/tasks/{task_id}")
+
     async def delete(self, task_id: str) -> dict:
         return await self._req("DELETE", f"/tasks/{task_id}")
 
@@ -336,6 +342,33 @@ async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str 
                 continue
         store.remove_oktech_sniper(old["id"])
     return results
+
+
+def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> list[PlannedSniper]:
+    """Two capped snipers that measure where OKTech lands, at the minimum fees:
+
+    * launch — buys the next `snipes` pump.fun launches the moment they appear (vs. the create tx);
+    * copy   — copies the next `snipes` buys of `copy_wallet` (vs. that wallet's own tx).
+    Each sells everything 10 s later (or on a 40% drop; the copy also when the copied wallet sells),
+    so almost all of the SOL comes back; the cost is the fees.
+    """
+    sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+            "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
+    base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
+            "totalSnipes": int(snipes), "autoSell": sell}  # fmt: skip
+    out = [PlannedSniper("probe", "launch", f"snipetech speed test: next {snipes} pump.fun launches",
+                         {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, **base},
+                         summary=[f"buys {buy_sol:g} SOL of each of the next {snipes} pump.fun launches, then stops",
+                                  "sells 100% after 10 s (or at -40%)", "measures: slots and position after the create"])]  # fmt: skip
+    if copy_wallet:
+        out.append(PlannedSniper("probe", copy_wallet, f"snipetech speed test: copy {copy_wallet[:6]} x{snipes}", {
+            "mode": "ctbot", "ctbotWallets": [{"address": copy_wallet, "label": "speed test leader", "minSol": 0.1}],
+            "ctbotMinWallets": 1, "ctbotTimeWindowMs": 10000, "ctbotRetriggerCooldownMs": 15000,
+            "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": 50, "sellPercent": 100, "triggerWalletOnly": True, "delayMs": 0},
+            "speedMode": True, **base},
+            summary=[f"copies the next {snipes} buys (>= 0.1 SOL) of {copy_wallet} with {buy_sol:g} SOL, then stops",
+                     "sells when it sells, after 10 s at the latest (or at -40%)", "measures: slots and position after its buy"]))  # fmt: skip
+    return out
 
 
 def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float | None) -> PlannedSniper:

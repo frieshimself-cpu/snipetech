@@ -164,3 +164,17 @@ def test_dev_sniper_entry_rules():
     assert trig["wallet"] == DEV and trig["stages"] == [{"percentGain": 25.0, "withinMs": 15000}] and trig["maxWaitMs"] == 15000
     streak = dev_sniper(DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "streak", "after_dumps": 2}}}, cfg)
     assert "walletTriggers" not in streak.config and any("dumps in a row" in n for n in streak.notes)
+
+
+def test_speedtest_snipers_are_capped():
+    from snipetech.oktech import speedtest_snipers
+
+    ps = speedtest_snipers(0.01, 5, "6Z91Dgiz9E44bMW11rQuMBjt1NwwPoQGXFNZieGfVtAb")
+    assert [p.config["mode"] for p in ps] == ["normal", "ctbot"]
+    for p in ps:
+        c = p.config
+        assert c["singleSnipe"] is True and c["totalSnipes"] == 5 and c["buyAmount"] == 0.01
+        assert c["autoSell"]["enabled"] and c["autoSell"]["sellAfterSeconds"] == 10 and c["autoSell"]["sellPercent"] == 100
+    assert ps[0].config["monitorProgram"] is True
+    assert ps[1].config["ctbotWallets"][0]["address"].startswith("6Z91")
+    assert speedtest_snipers(0.01, 3, None)[0].config["totalSnipes"] == 3 and len(speedtest_snipers(0.01, 3, None)) == 1
