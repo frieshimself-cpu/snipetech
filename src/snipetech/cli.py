@@ -17,6 +17,7 @@ import httpx
 from . import __version__
 from . import report as R
 from .config import Config, dump_toml
+from .oktech import OktechError
 from .service import Service
 from .solana.rpc import RpcError
 from .store import LIST_NAMES
@@ -569,6 +570,10 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+    except OktechError as exc:
+        hint = " — check OKS_KEY (a key from OKTech's Sniper API settings)" if exc.status in (401, 403) else ""
+        print(f"OKTech: {exc}{hint}", file=sys.stderr)
+        return 4
     except (httpx.HTTPError, RpcError) as exc:
         print(
             f"RPC error: {exc}\nEverything fetched so far is saved; re-run to resume. For speed and reliability use a "
