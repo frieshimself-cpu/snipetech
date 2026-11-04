@@ -69,12 +69,16 @@ set_key OKS_KEY "OKTech Sniper API key (make a NEW one in OKTech, with 'Allow st
 chmod 600 "$ENVF"
 if ! grep -qE '^SNIPETECH_RETAIN_DAYS=' "$ENVF"; then
   # the market tape grows ~7 GB/day: keep as many days as fit in ~60% of the disk (3..30)
+  # (and no more than ~70% of what is free now, when the server already runs other things)
   total_gb=$(df -BG --output=size /var/lib/snipetech | tail -1 | tr -dc 0-9)
-  days=$(( ${total_gb:-0} * 6 / 10 / 7 ))
+  free_gb=$(df -BG --output=avail /var/lib/snipetech | tail -1 | tr -dc 0-9)
+  budget=$(( ${total_gb:-0} * 6 / 10 ))
+  [ $(( ${free_gb:-0} * 7 / 10 )) -lt "$budget" ] && budget=$(( ${free_gb:-0} * 7 / 10 ))
+  days=$(( budget / 7 ))
   [ "$days" -lt 3 ] && days=3
   [ "$days" -gt 30 ] && days=30
   echo "SNIPETECH_RETAIN_DAYS=$days" >> "$ENVF"
-  echo "market data kept: last $days days (disk ${total_gb} GB; change SNIPETECH_RETAIN_DAYS in $ENVF)"
+  echo "market data kept: last $days days (disk ${total_gb} GB, ${free_gb} GB free; change SNIPETECH_RETAIN_DAYS in $ENVF)"
 fi
 
 check_keys() {
