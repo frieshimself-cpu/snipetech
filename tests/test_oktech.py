@@ -179,3 +179,47 @@ def test_speedtest_snipers_are_capped():
     assert ps[0].config["monitorProgram"] is True
     assert ps[1].config["ctbotWallets"][0]["address"].startswith("6Z91")
     assert speedtest_snipers(0.01, 3, None)[0].config["totalSnipes"] == 3 and len(speedtest_snipers(0.01, 3, None)) == 1
+
+
+def test_guard_stops_everything_below_the_floor(monkeypatch):
+    import asyncio
+
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    calls = []
+
+    class FakeClient:
+        async def start(self, i):
+            calls.append(("start", i))
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            calls.append(("stop", i))
+            return {}
+
+        async def tasks(self):
+            return [{"id": "a", "status": "running"}, {"id": "b", "status": "running"}]
+
+        async def close(self):
+            pass
+
+    balances = iter([1.0, 0.99, 0.95, 0.7, 0.7, 0.7])
+
+    class FakeRpc:
+        async def call(self, method, params):
+            assert method == "getBalance"
+            return {"value": int(next(balances) * 1e9)}
+
+    async def no_sleep(_):
+        return None
+
+    svc = Service(Config(), store=Store(":memory:"))
+    svc._rpc = FakeRpc()
+    monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
+    monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at", 0.8, 5))
+    assert "below the floor" in rep["reason"]
+    assert calls[:2] == [("start", "a"), ("start", "b")]
+    assert ("stop", "a") in calls and ("stop", "b") in calls

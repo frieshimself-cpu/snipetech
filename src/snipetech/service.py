@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import time
 from pathlib import Path
@@ -575,13 +576,62 @@ class Service:
                     task = ans.get("task") or {}
                     self.store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source,
                                                   "name": p.name, "config_hash": p.config_hash, "payload": p.config})  # fmt: skip
-                    back = await client.get(task["id"])  # what OKTech kept of the settings
-                    kept = (back.get("task") or back).get("config") or {}
-                    row |= {"id": task["id"], "status": task.get("status"), "duplicate": bool(ans.get("duplicate")),
-                            "caps_kept": {k: kept.get(k) for k in ("singleSnipe", "totalSnipes", "buyAmount")}}  # fmt: skip
+                    row |= {"id": task["id"], "status": task.get("status"), "duplicate": bool(ans.get("duplicate"))}
             finally:
                 await client.close()
         return out
+
+    async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True) -> dict:
+        """Start snipers and keep them on a leash: stop all of them as soon as the buying wallet's balance falls
+        below `floor_sol`, after `max_minutes`, or when none is running any more (their own caps reached)."""
+        address = self._check(address)
+        client = self._oktech()
+        events: list[str] = []
+
+        def log(msg: str) -> None:
+            line = f"{time.strftime('%H:%M:%S', time.gmtime())} {msg}"
+            events.append(line)
+            self.progress(line)
+
+        async def balance() -> float:
+            return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+
+        try:
+            b0 = await balance()
+            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol} SOL, at most {max_minutes:g} min")
+            if b0 <= floor_sol:
+                raise SystemExit(f"balance {b0:.4f} is already at or below the floor {floor_sol}")
+            if start:
+                for i in ids:
+                    ans = await client.start(i)
+                    log(f"started {i}: {ans.get('task', {}).get('status', ans)}")
+            t0, low, reason = time.time(), b0, "time limit"
+            while time.time() - t0 < max_minutes * 60:
+                await asyncio.sleep(2)
+                b = await balance()
+                if b < low - 0.005:
+                    log(f"balance {b:.4f} SOL")
+                low = min(low, b)
+                if b < floor_sol:
+                    reason = f"balance {b:.4f} fell below the floor {floor_sol}"
+                    break
+                if int(time.time() - t0) % 20 < 2:
+                    states = {t["id"]: t.get("status") for t in await client.tasks() if t["id"] in ids}
+                    if states and all(st != "running" for st in states.values()):
+                        reason = f"all finished on their own ({states})"
+                        break
+            log(f"stopping: {reason}")
+            for i in ids:
+                with contextlib.suppress(Exception):
+                    await client.stop(i)
+            b1 = await balance()
+            log(f"done: {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); sells that are still in flight land in the next seconds")
+            return {"start_sol": b0, "end_sol": b1, "reason": reason, "events": events}
+        finally:
+            for i in ids:  # whatever happened above, never leave them running
+                with contextlib.suppress(Exception):
+                    await client.stop(i)
+            await client.close()
 
     async def oktech_task(self, action: str, task_id: str) -> dict:
         client = self._oktech()

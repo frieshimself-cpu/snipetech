@@ -155,8 +155,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "show", "start", "stop", "delete"])
-    sp.add_argument("--id", help="show/start/stop/delete: the sniper's id (from `oktech status`)")
+    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "guard", "show", "start", "stop", "delete"])
+    sp.add_argument("--id", action="append", help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several")
+    sp.add_argument("--address", help="guard: the buying wallet's public address (its balance is watched)")
+    sp.add_argument("--floor", type=float, help="guard: stop everything if the wallet's balance falls below this many SOL")
+    sp.add_argument("--max-minutes", type=float, default=60, help="guard: stop everything after this long")
     sp.add_argument("--copy-wallet", help="probe: also measure copy speed against this wallet's buys")
     sp.add_argument("--snipes", type=int, default=5, help="probe: buys per speed-test sniper (default 5)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
@@ -392,15 +395,23 @@ async def _run(args, cfg: Config) -> int:
                     print(f"\n  {sn['name']}" + (f"  [{sn.get('id')}, {sn.get('status')}]" if sn.get("id") else ""))
                     for line in sn["summary"]:
                         print(f"    {line}")
-                    if sn.get("caps_kept"):
-                        print(f"    OKTech kept: {sn['caps_kept']}")
                 if not args.create:
-                    print("\nNot created. Add --create to make them on OKTech, idle; start each with `oktech start --id ID`.")
+                    print("\nNot created. Add --create to make them on OKTech, idle.")
+                else:
+                    print("\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
+                          "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`.")
+                return 0
+            if args.action == "guard":
+                if not (args.id and args.address and args.floor is not None):
+                    raise SystemExit("guard: give --id (one or more), --address and --floor")
+                rep = await svc.oktech_guard(args.id, args.address, args.floor, args.max_minutes)
+                print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action in ("show", "start", "stop", "delete"):
                 if not args.id:
                     raise SystemExit(f"{args.action}: give --id (see `snipetech oktech status`)")
-                print(json.dumps(await svc.oktech_task(args.action, args.id), indent=1, default=str))
+                for i in args.id:
+                    print(json.dumps(await svc.oktech_task(args.action, i), indent=1, default=str))
                 return 0
             if args.action == "replica":
                 if not args.from_study:
