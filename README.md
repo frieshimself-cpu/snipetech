@@ -190,16 +190,45 @@ the key, snipers are created idle: start them on the Sniper page. Settings OKTec
 
 ### 3d. Run it 24/7 on a server
 
+One command on any Ubuntu/Debian server (as root or with sudo):
+
 ```bash
-git clone <this repo> && cd snipetech && sudo bash deploy/setup.sh
-sudoedit /etc/snipetech/env             # HELIUS_API_KEY, OKS_KEY
-sudo systemctl enable --now snipetech-tape snipetech-daily.timer   # (+ snipetech-api if your bot queries it)
+curl -fsSL https://raw.githubusercontent.com/frieshimself-cpu/snipetech/refs/heads/claude/stoic-babbage-5e6pck/deploy/bootstrap.sh | sudo bash
 ```
 
-`snipetech-tape` records every trade of every token (~1 GB/day; keep NVMe space for weeks).
-`snipetech-daily` refreshes dev verdicts, ranks KOLs to follow, runs the strategy lab at several
-latencies and writes the OKTech plan to `/var/lib/snipetech/reports/<date>/`. A machine close to the
-validators (Frankfurt / Amsterdam / New York) keeps the tape's gaps short.
+It installs snipetech under `/opt/snipetech`, asks for your Helius and OKTech keys (hidden input, stored
+only in `/etc/snipetech/env`, mode 600, and checked against both APIs), and starts:
+
+* `snipetech-tape` — records every trade of every token (several GB/day: give it 500 GB of NVMe);
+* `snipetech-daily` — refreshes dev verdicts, ranks KOLs to follow, runs the strategy lab at several
+  latencies and writes the OKTech plan to `/var/lib/snipetech/reports/<date>/`;
+* `snipetech-ops` — remote operations at `https://snipetech.<your-ip>.sslip.io` (Caddy, automatic TLS).
+
+Re-running the command updates the code and keeps keys and data (`SNIPETECH_REKEY=1` asks for the keys
+again). Anything else on the server is left alone; an existing Caddy config gets one site block
+appended (backed up, rolled back if it doesn't validate). A machine close to the validators
+(Frankfurt / Amsterdam / New York) keeps the tape's gaps short.
+
+**Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
+`deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses
+anything older than 5 minutes or replayed. It can: show status, run allowlisted snipetech commands as
+background jobs, read reports and job logs (never the database or the env file), drop wallet lists
+into `inputs/`, run one read-only SQL query at a time, tail the services' journals, start the daily
+job, and update itself to the latest commit of its branch. Output is scrubbed of the keys in the
+server's environment. From the operator's machine:
+
+```bash
+snipetech remote keygen ~/.snipetech/ops_key            # prints the line for deploy/ops_authorized_keys
+export SNIPETECH_OPS_URL=https://snipetech.1-2-3-4.sslip.io SNIPETECH_OPS_KEY=~/.snipetech/ops_key
+snipetech remote status
+snipetech remote --wait run lab --latency 0 --position start
+snipetech remote ls reports && snipetech remote read reports/2026-11-05/oktech-plan.txt
+snipetech remote sql "SELECT count(*) FROM trades"
+snipetech remote put kols.txt && snipetech remote --wait run label --file /var/lib/snipetech/inputs/kols.txt --kind kol
+snipetech remote update                                    # pull, reinstall, restart
+```
+
+Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 
 ### 4. Is copytrading this wallet worth it?
 

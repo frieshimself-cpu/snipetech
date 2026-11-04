@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 import time
@@ -183,11 +184,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--poll", action="store_true", help="poll copy targets over HTTP instead of websockets")
     sp.add_argument("--no-firehose", action="store_true", help="only follow copy targets")
     sp.add_argument("--tape", action="store_true",
-                    help="record every trade of every token (needed by `study`; ~1 GB/day of SQLite)")
+                    help="record every trade of every token (needed by `study` and `lab`; several GB/day of SQLite)")
 
     sp = cmd("serve", "HTTP API for your sniper", json_flag=False)
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
+
+    sp = cmd("ops-serve", "on your server: signed remote-operations endpoint (see deploy/bootstrap.sh)", json_flag=False)
+    sp.add_argument("--host", default="127.0.0.1")
+    sp.add_argument("--port", type=int, default=8788)
+    sp.add_argument("--repo", help="checkout to update (default: this installation)")
+    sp.add_argument("--data", help="data directory (default: the database's directory)")
+    sp.add_argument("--keys", help="authorized public keys (default: <repo>/deploy/ops_authorized_keys)")
+    sp.add_argument("--branch", help="branch `update` pulls (default: the checkout's current branch)")
+
+    sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
+    sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
+    sp.add_argument("--key", default=os.environ.get("SNIPETECH_OPS_KEY"), help="private key file ($SNIPETECH_OPS_KEY)")
+    sp.add_argument("--wait", action="store_true", help="run/job/update: wait for the job and print its output")
+    sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
+                                       "logs", "update", "daily"])  # fmt: skip
+    sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
+                    "put: local-file name; sql: query; logs: unit")  # fmt: skip
 
     sp = cmd("agent", "chat with the Claude strategy agent", json_flag=False)
     sp.add_argument("-p", "--prompt", help="one-shot question instead of an interactive session")
@@ -415,6 +433,96 @@ async def _run(args, cfg: Config) -> int:
         svc.store.close()
 
 
+def _ops_serve(args, cfg: Config) -> int:
+    import subprocess
+
+    from .ops import Ops, make_server
+
+    repo = Path(args.repo or Path(__file__).resolve().parents[2])
+    db = Path(cfg.storage.db_path).resolve()
+    branch = args.branch or subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                                           capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip
+    ops = Ops(repo=repo, data=Path(args.data or db.parent), db=db,
+              keys_file=Path(args.keys or repo / "deploy" / "ops_authorized_keys"), branch=branch)  # fmt: skip
+    server = make_server(ops, args.host, args.port)
+    print(f"ops endpoint on {args.host}:{args.port} (repo {repo}, branch {branch}, data {ops.data})", flush=True)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+
+def _remote(args) -> int:
+    from .ops import OpsError, call, keygen, public_line, wait_job
+
+    rest = list(args.rest)
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if args.action in ("keygen", "pubkey"):
+        path = rest[0] if rest else args.key
+        if not path:
+            print("give a key file path (or set SNIPETECH_OPS_KEY)", file=sys.stderr)
+            return 2
+        print(keygen(path) if args.action == "keygen" else public_line(path))
+        return 0
+    if not args.url or not args.key:
+        print("set SNIPETECH_OPS_URL and SNIPETECH_OPS_KEY (or --url / --key)", file=sys.stderr)
+        return 2
+
+    def go(op: str, **kw):
+        return call(args.url, args.key, op, **kw)
+
+    def show_job(st: dict) -> None:
+        out = st.pop("output", "")
+        print(json.dumps(st, default=str))
+        if out:
+            print(out, end="" if out.endswith("\n") else "\n")
+
+    try:
+        a = args.action
+        if a in ("run", "update"):
+            st = go("run", argv=rest) if a == "run" else go("update")
+            if args.wait:
+                st = wait_job(args.url, args.key, st["id"])
+                show_job(st)
+                return 0 if st.get("exit_code") == 0 else 1
+            print(json.dumps(st))
+        elif a == "job":
+            st = wait_job(args.url, args.key, rest[0]) if args.wait else go("job", id=rest[0])
+            show_job(st)
+        elif a == "kill":
+            print(json.dumps(go("kill", id=rest[0])))
+        elif a == "read":
+            r = go("read", path=rest[0])
+            print(r["content"], end="")
+        elif a == "ls":
+            r = go("ls", path=rest[0] if rest else "")
+            for it in r["items"]:
+                print(f"{it['bytes']:>12}  {time.strftime('%Y-%m-%d %H:%M', time.gmtime(it['mtime']))}  {it['name']}")
+        elif a == "put":
+            r = go("write", name=rest[1] if len(rest) > 1 else Path(rest[0]).name, content=Path(rest[0]).read_text())
+            print(json.dumps(r))
+        elif a == "sql":
+            r = go("sql", query=" ".join(rest))
+            print("\t".join(r["columns"]))
+            for row in r["rows"]:
+                print("\t".join("" if v is None else str(v) for v in row))
+            if r.get("truncated"):
+                print("... (truncated)")
+        elif a == "logs":
+            print(go("logs", unit=rest[0] if rest else "snipetech-tape")["log"], end="")
+        else:
+            print(json.dumps(go(a), indent=2, default=str))
+    except OpsError as exc:
+        print(f"ops error {exc.code}: {exc}", file=sys.stderr)
+        return 1
+    except httpx.HTTPError as exc:
+        print(f"cannot reach {args.url}: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
@@ -426,6 +534,8 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(dump_toml(Config().to_dict()))
         print(f"wrote {path}")
         return 0
+    if args.cmd == "remote":
+        return _remote(args)
     cfg = Config.load(args.config)
     if args.db:
         cfg.storage.db_path = args.db
@@ -446,6 +556,8 @@ def main(argv: list[str] | None = None) -> int:
 
         serve(cfg, args.host, args.port)
         return 0
+    if args.cmd == "ops-serve":
+        return _ops_serve(args, cfg)
     if args.cmd == "agent":
         from .agent.runner import run_agent
 
