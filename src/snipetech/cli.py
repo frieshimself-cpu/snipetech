@@ -138,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart"], default="service")
     sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
 
+    sp = cmd("follow", "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first")
+    sp.add_argument("wallets", nargs="*")
+    sp.add_argument("--kols", action="store_true", help="every wallet labeled kol (`label --file kols.txt --kind kol`)")
+    sp.add_argument("--file", help="wallets, one per line")
+    sp.add_argument("--days", type=float, default=2.0)
+    sp.add_argument("--no-refresh", action="store_true")
+
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
     sp.add_argument("action", choices=["status", "plan", "push", "replica"])
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
@@ -314,6 +321,15 @@ async def _run(args, cfg: Config) -> int:
                 _out(args, svc.label(args.address, args.name, args.kind))
             else:
                 raise SystemExit("label: give ADDRESS NAME, or --file")
+        elif c == "follow":
+            ws = list(args.wallets)
+            if args.file:
+                ws += [line.split()[0] for line in Path(args.file).read_text().splitlines() if line.strip() and not line.startswith("#")]
+            if args.kols:
+                ws += list(svc.store.labels("kol"))
+            if not ws:
+                raise SystemExit("follow: give wallets, --file or --kols")
+            _out(args, await svc.follow(list(dict.fromkeys(ws)), args.days, refresh=not args.no_refresh), R.render_follow)
         elif c == "oktech":
             if args.wallet:
                 cfg.oktech.wallet = args.wallet

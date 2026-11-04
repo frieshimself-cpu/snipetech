@@ -516,3 +516,26 @@ def render_oktech_replica(r: dict) -> str:
         out.append("")
         out.append("Not created. Add --create to make it on OKTech (idle unless your key may start snipers); --json for the payload.")
     return "\n".join(out)
+
+
+def render_follow(rows: list[dict]) -> str:
+    out = ["Who to follow right after they buy", "=" * 72]
+    def f(x, nd=3):
+        return "-" if x is None else f"{x:+.{nd}f}"
+    out.append(table([[(r.get("label") or "")[:12], r["wallet"][:10] + "…", r["buys"], pct(r.get("followed_share")),
+                       f"{(r.get('pump_30s_median') or 0):+.0%}", f"{r.get('copiers_same_slot_median') or 0:.0f}",
+                       "-" if r.get("bribe_to_be_first_p75") is None else f"{r['bribe_to_be_first_p75']:.4f}",
+                       f(r.get("copy_pnl_same_slot")), f(r.get("copy_pnl_next_slot")), r.get("best_exit") or "-"]
+                      for r in rows if r.get("buys")],
+                     ["who", "wallet", "buys", "crowd≥3", "pump 30s", "racers", "bribe #1", "PnL @0", "PnL @1", "best exit"]))  # fmt: skip
+    out.append("")
+    out.append("crowd≥3: share of its buys followed by >= 3 other buyers within 30s. pump 30s: median rise above the price")
+    out.append("right after its buy. racers: copy bots in the same slot (median). bribe #1: priority+tip (SOL, p75) to land")
+    out.append("ahead of all of them. PnL @0/@1: copy replay per trade landing in its slot / one slot later, best exit.")
+    top = next((r for r in rows if r.get("top_racers")), None)
+    if top:
+        out.append("")
+        out.append(f"Fastest copiers of {top.get('label') or top['wallet'][:8]}: " + ", ".join(
+            f"{x['wallet'][:8]}… first {x['first_after_it']}x" + (f" (pays {x['median_bribe_sol']:.4f})" if x.get("median_bribe_sol") else "")
+            for x in top["top_racers"][:3]))
+    return "\n".join(out)

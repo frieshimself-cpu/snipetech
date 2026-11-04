@@ -227,6 +227,34 @@ class Service:
         self.store.put_score("copy", wallet, compact_copy(report))
         return report
 
+    async def follow(self, wallets: list[str], days: float = 2.0, refresh: bool = True) -> list[dict]:
+        """Who is worth following: the crowd after their buys, the copy bots racing them (and what they
+        pay), and the copy replay at 0 / 1 slot."""
+        from .analysis.copytrade import build_cases
+        from .analysis.follow import follow_rank
+
+        since = int(time.time() - days * 86400)
+        wallets = [self._check(w) for w in wallets]
+        if refresh:
+            for i, w in enumerate(wallets, 1):
+                self.progress(f"follow {i}/{len(wallets)}: {w[:8]}")
+                try:
+                    await self.ingestor.backfill_wallet_trades(w, since, self.cfg.copy.max_signatures)
+                except Exception as exc:  # one wallet's history failing shouldn't stop the ranking
+                    self.progress(f"{w[:8]}: {exc}")
+                    continue
+                # what the racers paid: fingerprint the buys right after each of its buys
+                sigs = []
+                for c in (await asyncio.to_thread(build_cases, self.store, w, since))[0]:
+                    p, i0 = c.path, c.idxs[0]
+                    sigs += [p.sigs[j] for j in range(i0 + 1, p.n) if p.slot[j] <= p.slot[i0] + 1 and p.is_buy[j] and p.users[j] != w][:5]
+                await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
+        labels = self.store.labels("kol")
+        rows = await asyncio.to_thread(follow_rank, self.store, self.cfg, wallets, since, labels)
+        for r in rows:
+            self.store.put_score("follow", r["wallet"], r)
+        return rows
+
     async def rank_copy(self, wallets: list[str], days: float | None = None, refresh: bool = True) -> list[dict]:
         out = []
         for w in wallets:
