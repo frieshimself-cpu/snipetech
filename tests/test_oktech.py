@@ -154,3 +154,13 @@ def test_replica_from_study_maps_the_discriminating_rules():
     assert c["metadataFilter"]["conditions"][0]["value"] == "/status/" and c["crowdBuys"]["minSigners"] == 2
     assert c["maxMcapUsd"] == 12_700 and c["autoSell"]["deadExit"] == {"enabled": True, "staleSeconds": 1, "sellPercent": 100}
     assert p.kind == "replica" and p.external_id.startswith(f"st:replica:{TARGET}:")
+
+
+def test_dev_sniper_entry_rules():
+    cfg = Config()
+    rec = DEV_SCORE["recommended"]
+    confirm = dev_sniper(DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "confirm", "gain": 0.25, "within_secs": 15}}}, cfg)
+    trig = confirm.config["walletTriggers"]["configs"][0]
+    assert trig["wallet"] == DEV and trig["stages"] == [{"percentGain": 25.0, "withinMs": 15000}] and trig["maxWaitMs"] == 15000
+    streak = dev_sniper(DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "streak", "after_dumps": 2}}}, cfg)
+    assert "walletTriggers" not in streak.config and any("dumps in a row" in n for n in streak.notes)

@@ -156,7 +156,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
         out["stopLoss"] = {"enabled": True, "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}], "confirmMs": 250}
     if trail > 0:
         out["trailingStopLoss"] = {"enabled": True, "percentFromPeak": _round(trail * 100, 2), "sellPercent": 100,
-                                   "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None}  # fmt: skip
+                                   "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None,
+                                   "confirmMs": 0}  # a dip from the peak sells at once  # fmt: skip
     if e.get("sell_on_dev_sell") and not e.get("copy_exit"):
         notes.append("'sell when the dev sells' has no OKTech equivalent on this sniper; not applied")
     return out
@@ -179,10 +180,22 @@ def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
     if cfg.oktech.preconf:
         config["preconf"] = True
     a = score["address"]
+    rule = rec.get("entry_rule") or {}
+    entry_line = "buys at the launch"
+    if rule.get("kind") == "confirm":
+        # wait for the price to confirm before buying: rinses dump before they confirm
+        config["walletTriggers"] = {"enabled": True, "configs": [{
+            "wallet": a, "stages": [{"percentGain": _round(rule["gain"] * 100, 2), "withinMs": int(rule["within_secs"] * 1000)}],
+            "maxWaitMs": int(rule["within_secs"] * 1000), "abortOnDropPct": 25}]}  # fmt: skip
+        entry_line = f"waits: buys only once its launch is up {rule['gain']:.0%} within {rule['within_secs']}s"
+    elif rule.get("kind") == "streak":
+        entry_line = f"should only buy after {rule['after_dumps']} of its launches in a row dumped"
+        notes.append("OKTech can't count dumps in a row: start this sniper only when snipetech says the streak is on "
+                     "(automatic once your key may start snipers)")  # fmt: skip
     return PlannedSniper("dev", a, f"snipetech dev {a[:6]}", config, [
         f"buys every launch by {a} ({score.get('launches', 0)} analyzed, EV {score.get('ev_sol') or 0:+.4f} SOL, "
         f"bound {score.get('ev_lower_sol') or 0:+.4f})",
-        f"{config['buyAmount']} SOL per buy, priority {prio} + tip {tip} SOL",
+        f"{config['buyAmount']} SOL per buy, priority {prio} + tip {tip} SOL; {entry_line}",
         f"exits: {_describe_exit(rec.get('exit'))}",
     ], notes)  # fmt: skip
 

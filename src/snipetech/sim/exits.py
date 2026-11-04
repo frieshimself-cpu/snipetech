@@ -267,7 +267,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
 
 
 def default_grid(base: ExitParams) -> list[ExitParams]:
-    """Exit strategies explored by the optimizer (≈ 300 combinations)."""
+    """Exit strategies explored by the optimizer (≈ 700 combinations)."""
     grid: list[ExitParams] = []
     for hold in (5, 15, 30, 60, 120, 300, 600):
         for tp in (0.0, 0.25, 0.5, 1.0, 2.0, 4.0):
@@ -287,4 +287,15 @@ def default_grid(base: ExitParams) -> list[ExitParams]:
             replace(base, max_hold_secs=float(hold), take_profit=1.0, tp_sell_fraction=0.5, stop_loss=0.35,
                     trailing_stop=0.35, trailing_activation=0.0, sell_on_dev_sell=True)
         )  # fmt: skip
+    # "ride winners, cut dips": no take-profit; hold while it keeps rising, sell on a small drop from
+    # the peak, and get out early if it dips below entry
+    for hold in (60, 120, 300, 600):
+        for trail in (0.08, 0.12, 0.18, 0.25):
+            for act in (0.0, 0.15, 0.4):
+                for sl in (0.1, 0.2):
+                    for dev in (True, False):
+                        grid.append(
+                            replace(base, max_hold_secs=float(hold), take_profit=0.0, stop_loss=sl, trailing_stop=trail,
+                                    trailing_activation=act, sell_on_dev_sell=dev, tp_sell_fraction=1.0)
+                        )  # fmt: skip
     return grid

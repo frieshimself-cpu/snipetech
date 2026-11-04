@@ -12,6 +12,7 @@ from ..models import Launch
 from ..sim.exits import ExitParams
 from ..store import Store
 from .launches import LABELS, build_context, launch_features
+from .entry_policies import entry_policies
 from .competition import competition_report, tip_sweep
 from .optimize import best_size, optimize_exits, sweep_latency, sweep_sizes
 from .stats import summarize, wilson
@@ -140,6 +141,8 @@ def deployer_report(
         rec_exit = ExitParams(**opt["recommended"]["exit"])
         report["size_sweep"] = sweep_sizes(contexts, cfg, rec_exit)
         report["latency_sweep"] = sweep_latency(contexts, cfg, rec_exit)
+    if optimize and n >= 6:
+        report["entry_policies"] = entry_policies(feats, contexts, cfg, rec_exit)
     if n >= 1:
         report["competition"] = competition_report(store, cfg, contexts)
         if n >= 3 and report["competition"].get("launches_with_snipers", 0) > 0:
@@ -147,6 +150,7 @@ def deployer_report(
 
     # -- verdict -------------------------------------------------------------------------------
     report["verdict"] = _decide(report, cfg, n, rec_exit)
+    _apply_entry_rule(report, cfg)
     report["launches"] = [_compact(f) for f in reversed(feats)]
     return report
 
@@ -280,6 +284,31 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
             "bribe_sol": bribe if verdict in ("SNIPE", "MARGINAL") else 0.0,
         },
     )
+
+
+def _apply_entry_rule(report: dict, cfg: Config) -> None:
+    """If skipping some launches (only after k dumps in a row, or only once the price confirms) beat
+    taking every launch on unseen newer launches, recommend that rule, and let it lift a skip verdict."""
+    pol = report.get("entry_policies") or {}
+    best = None
+    for kind in ("streak", "confirm"):
+        wf = (pol.get(kind) or {}).get("walk_forward")
+        if not wf or wf["picked"] == "every launch":
+            continue
+        t, base = wf["test"], wf["test_take_all"]
+        if (t.get("n") or 0) >= 3 and (t.get("mean") or -1e9) > (base.get("mean") or 0) and (best is None or t["mean"] > best[1]["test"]["mean"]):
+            best = (kind, wf)
+    if best is None:
+        return
+    kind, wf = best
+    v = report["verdict"]
+    rule = {"kind": kind, **wf["params"], "label": wf["picked"], "test": wf["test"], "test_take_all": wf["test_take_all"]}
+    v.setdefault("recommended", {})["entry_rule"] = rule
+    if v.get("verdict") in ("AVOID", "MARGINAL") and (wf["test"].get("ev_lower") or -1) > cfg.verdict.min_ev_sol:
+        v["verdict"] = "SNIPE"
+        v["recommended"]["buy_sol"] = v["recommended"].get("buy_sol") or cfg.snipe.buy_sol
+        v.setdefault("reasons", []).append(f"only with the entry rule '{wf['picked']}': {wf['test']['mean']:+.4f} SOL/launch on unseen "
+                                           f"launches vs {wf['test_take_all'].get('mean') or 0:+.4f} taking every launch")  # fmt: skip
 
 
 def _verdict(verdict: str, n: int, **extra) -> dict:
