@@ -3,6 +3,10 @@ Description=snipetech daily: refresh verdicts, run the strategy lab, plan OKTech
 After=network-online.target
 
 [Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 Type=oneshot
 User=@USER@
 EnvironmentFile=/etc/snipetech/env

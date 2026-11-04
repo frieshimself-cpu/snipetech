@@ -1,0 +1,9 @@
+[Unit]
+Description=snipetech: every snipetech service shares these limits and yields to everything else on the machine
+
+[Slice]
+CPUQuota=200%
+CPUWeight=20
+MemoryHigh=2600M
+MemoryMax=3G
+IOWeight=20

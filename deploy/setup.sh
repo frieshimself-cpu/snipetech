@@ -28,6 +28,9 @@ if [ ! -f /etc/snipetech/env ]; then
 HELIUS_API_KEY=
 OKS_KEY=
 SNIPETECH_CONFIG=/etc/snipetech/snipetech.toml
+# Helius requests per second snipetech may use (default 40). Lower it when the same Helius plan also
+# serves a trading bot on this machine, so snipetech never eats the bot's rate limit:
+# SNIPETECH_RPC_RPS=15
 ENV
   chmod 600 /etc/snipetech/env
 fi

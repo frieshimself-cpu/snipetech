@@ -4,12 +4,15 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 User=@USER@
 EnvironmentFile=/etc/snipetech/env
 ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db watch --tape --signals none
 Restart=always
 RestartSec=5
-Nice=5
 
 [Install]
 WantedBy=multi-user.target

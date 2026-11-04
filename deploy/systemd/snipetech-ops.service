@@ -3,6 +3,10 @@ Description=snipetech remote operations (signed requests only; see src/snipetech
 After=network-online.target
 
 [Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 User=@USER@
 EnvironmentFile=/etc/snipetech/env
 WorkingDirectory=@DATA@

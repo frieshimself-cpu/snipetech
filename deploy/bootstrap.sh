@@ -107,12 +107,19 @@ else
   fi
   CF=/etc/caddy/Caddyfile
   site=$(printf '%s {\n\treverse_proxy 127.0.0.1:8788\n}\n' "$HOST")
-  backup=""
+  backup=""; dropin=""
   if [ "$fresh" = 1 ]; then
     { [ -n "$holder80" ] && [ "$holder80" != caddy ] && printf '{\n\tauto_https disable_redirects\n}\n\n'; printf '%s\n' "$site"; } > "$CF"
+  elif grep -qE '^\s*import\s+/etc/caddy/conf\.d/' "$CF" 2>/dev/null; then
+    # The Caddyfile imports a drop-in directory (survives tools that regenerate the Caddyfile): use it.
+    install -d /etc/caddy/conf.d
+    dropin=/etc/caddy/conf.d/snipetech.caddy
+    printf '# snipetech-ops (written by snipetech bootstrap)\n%s\n' "$site" > "$dropin"
   elif ! grep -q "^$HOST " "$CF" 2>/dev/null; then
     backup="$CF.bak.$(date +%s)"; cp "$CF" "$backup" 2>/dev/null || true
     printf '\n# snipetech-ops (added by snipetech bootstrap)\n%s\n' "$site" >> "$CF"
+    echo "added a site block to $CF. If another deploy script rewrites that file, add this line to its template so"
+    echo "the block survives:  import /etc/caddy/conf.d/*.caddy   (then re-run this command)"
   fi
   if caddy validate --config "$CF" --adapter caddyfile >/dev/null 2>&1; then
     systemctl enable -q caddy
@@ -120,6 +127,7 @@ else
   else
     echo "Caddy rejected the config; restoring and skipping the endpoint"
     [ -n "$backup" ] && cp "$backup" "$CF"
+    [ -n "$dropin" ] && rm -f "$dropin"
     HOST=""
   fi
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then

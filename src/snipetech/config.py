@@ -276,7 +276,7 @@ def _apply_env(cfg: Config) -> None:
         key = os.environ["HELIUS_API_KEY"]
         cfg.rpc.http_url = f"https://mainnet.helius-rpc.com/?api-key={key}"
         cfg.rpc.ws_url = f"wss://mainnet.helius-rpc.com/?api-key={key}"
-        if cfg.rpc.max_rps <= 8:
+        if cfg.rpc.max_rps <= 8 and not os.environ.get("SNIPETECH_RPC_RPS"):
             cfg.rpc.max_rps = 40
 
 
