@@ -353,6 +353,7 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
     so almost all of the SOL comes back; the cost is the fees.
     """
     sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+            "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],  # OKTech needs >= 1 stage; the timer rules
             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
     base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
             "totalSnipes": int(snipes), "autoSell": sell}  # fmt: skip

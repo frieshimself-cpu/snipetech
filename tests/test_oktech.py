@@ -175,6 +175,7 @@ def test_speedtest_snipers_are_capped():
         c = p.config
         assert c["singleSnipe"] is True and c["totalSnipes"] == 5 and c["buyAmount"] == 0.01
         assert c["autoSell"]["enabled"] and c["autoSell"]["sellAfterSeconds"] == 10 and c["autoSell"]["sellPercent"] == 100
+        assert c["autoSell"]["stages"], "OKTech refuses auto-sell without a stage"
     assert ps[0].config["monitorProgram"] is True
     assert ps[1].config["ctbotWallets"][0]["address"].startswith("6Z91")
     assert speedtest_snipers(0.01, 3, None)[0].config["totalSnipes"] == 3 and len(speedtest_snipers(0.01, 3, None)) == 1
