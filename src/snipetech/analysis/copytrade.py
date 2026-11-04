@@ -359,10 +359,13 @@ def _optimize_own_exits(cases: list[CopyCase], wallet: str, p: CopyParams, costs
     train_scores = [(float(np.sum(_own_exit_rows(cases[:cut], wallet, p, costs, ex, lat) or [-1e9])), ex) for ex in grid]
     best = max(train_scores, key=lambda t: t[0])[1]
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
+    mirror = ExitParams(take_profit=0.0, stop_loss=0.0, max_hold_secs=PAD_SECS, sell_on_dev_sell=True)
     return {
         "picked": best.label().replace("devexit", "exit-when-target-sells"),
         "exit": best.to_dict(),
         "test": summarize(_own_exit_rows(cases[cut:], wallet, p, costs, best, lat), conf, samples),
+        # baseline on the same unseen positions: just sell when the target first sells
+        "test_mirror": summarize(_own_exit_rows(cases[cut:], wallet, p, costs, mirror, lat), conf, samples),
     }
 
 
@@ -420,5 +423,14 @@ def _decide(report: dict, cfg: Config, params: CopyParams, span_days: float) -> 
             if verdict in ("COPY", "COPY_FILTERED", "MARGINAL") else 0.0,
             "filters": filt["picked"] if filt else None,
             "own_exit": (report.get("own_exits") or {}).get("picked"),
+            "own_exit_params": (report.get("own_exits") or {}).get("exit"),
+            "own_exit_beats_mirroring": _own_exit_better(report),
         },
     }
+
+
+def _own_exit_better(report: dict) -> bool:
+    """Did the optimized own exits beat exiting when the target sells, on unseen positions?"""
+    own = report.get("own_exits") or {}
+    test, base = own.get("test") or {}, own.get("test_mirror") or {}
+    return bool(test.get("n")) and test.get("mean", 0) > base.get("mean", float("-inf"))

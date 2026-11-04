@@ -1,0 +1,322 @@
+"""OKTech Sniper API: snipetech decides, OKTech's snipers buy and sell.
+
+From snipetech's own verdicts:
+* copy targets with a COPY / COPY_FILTERED verdict -> one `ctbot` sniper each: copies that wallet's
+  buys (only buys at least as big as the analysis says are worth copying, below its market-cap
+  ceiling), sells when it sells, plus the optimized own exits where those beat mirroring;
+* deployers with a SNIPE verdict -> one `normal` sniper each: buys their next launches with the
+  recommended size, bribe (priority fee + tip) and exits.
+
+`plan` shows what would change; `push` creates / replaces / removes snipers to match. Every sniper
+carries an `externalId` derived from its settings, so pushing twice never duplicates one. The key
+is read from $OKS_KEY and only ever sent in the Authorization header. A key without "Allow
+starting" creates snipers idle: start them on the Sniper page.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import hashlib
+import json
+import os
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+from .config import Config
+from .store import Store
+
+KINDS = ("copy", "dev")
+
+
+class OktechError(Exception):
+    def __init__(self, status: int, code: str, message: str, body: dict | None = None):
+        super().__init__(f"{code or status}: {message}")
+        self.status, self.code, self.message, self.body = status, code, message, body or {}
+
+
+class OktechClient:
+    def __init__(self, base_url: str, key: str | None = None, timeout: float = 20.0,
+                 transport: httpx.AsyncBaseTransport | None = None) -> None:  # fmt: skip
+        key = key if key is not None else os.environ.get("OKS_KEY", "")
+        if not key:
+            raise OktechError(401, "NO_KEY", "set OKS_KEY to your OKTech Sniper API key")
+        self.base = base_url.rstrip("/")
+        self.http = httpx.AsyncClient(timeout=timeout, transport=transport, headers={"Authorization": f"Bearer {key}"})
+
+    async def _req(self, method: str, path: str, body: dict | None = None) -> dict:
+        for attempt in range(4):
+            r = await self.http.request(method, self.base + path, json=body)
+            if r.status_code == 429 and attempt < 3:
+                await asyncio.sleep(float(r.headers.get("Retry-After") or 5))
+                continue
+            try:
+                data = r.json()
+            except ValueError:
+                data = {"success": False, "error": r.text[:200]}
+            if r.status_code >= 400 or data.get("success") is False:
+                raise OktechError(r.status_code, data.get("code", ""), data.get("error", r.reason_phrase), data)
+            return data
+        raise OktechError(429, "RATE_LIMITED", "still rate limited after retries")
+
+    async def status(self) -> dict:
+        return await self._req("GET", "/status")
+
+    async def wallets(self) -> dict:
+        return await self._req("GET", "/wallets")
+
+    async def tasks(self) -> list[dict]:
+        return (await self._req("GET", "/tasks")).get("tasks", [])
+
+    async def create(self, name: str, config: dict, wallet: str | None = None, external_id: str | None = None,
+                     start: bool = False) -> dict:  # fmt: skip
+        body: dict[str, Any] = {"name": name, "config": config}
+        if wallet:
+            body["wallet"] = wallet
+        if external_id:
+            body["externalId"] = external_id
+        if start:
+            body["start"] = True
+        try:
+            return await self._req("POST", "/tasks", body)
+        except OktechError as exc:
+            if exc.code == "DUPLICATE_EXTERNAL_ID":  # same settings pushed before: that sniper is ours already
+                return exc.body | {"duplicate": True}
+            raise
+
+    async def stop(self, task_id: str) -> dict:
+        return await self._req("POST", f"/tasks/{task_id}/stop")
+
+    async def delete(self, task_id: str) -> dict:
+        return await self._req("DELETE", f"/tasks/{task_id}")
+
+    async def close(self) -> None:
+        await self.http.aclose()
+
+
+# -- translating snipetech's recommendations into OKTech settings ----------------------------------
+
+
+@dataclass
+class PlannedSniper:
+    kind: str  # copy | dev
+    source: str  # the wallet copied / the deployer sniped
+    name: str
+    config: dict
+    summary: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)  # what OKTech can't express, or clamps
+
+    @property
+    def config_hash(self) -> str:
+        return hashlib.sha256(json.dumps(self.config, sort_keys=True).encode()).hexdigest()[:12]
+
+    @property
+    def external_id(self) -> str:
+        return f"st:{self.kind}:{self.source}:{self.config_hash}"
+
+
+def _round(x: float, nd: int = 4) -> float:
+    return float(round(x, nd))
+
+
+def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[float, float]:
+    """Split a recommended bribe into OKTech's priority fee and tip (each has a minimum)."""
+    bribe = float(bribe_sol or 0)
+    tip, prio = max(0.002, bribe * tip_share), max(0.001, bribe * (1 - tip_share))
+    if bribe < 0.003:
+        notes.append(f"bribe {bribe:g} SOL raised to OKTech's minimums (0.001 priority + 0.002 tip)")
+    return _round(prio, 6), _round(tip, 6)
+
+
+def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0.001) -> dict | None:
+    """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell."""
+    e = exit_params or {}
+    tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
+    sl, trail, act = float(e.get("stop_loss") or 0), float(e.get("trailing_stop") or 0), float(e.get("trailing_activation") or 0)
+    hold = float(e.get("max_hold_secs") or 0)
+    if not (tp or sl or trail or hold):
+        return None
+    stages = []
+    if tp > 0:
+        stages.append({"gainPercent": _round(tp * 100, 2), "sellPercent": _round(min(100.0, frac * 100), 2), "delaySellAllSeconds": 0})
+    elif 0 < hold <= 60:
+        stages.append({"gainPercent": None, "sellPercent": 100, "delaySellAllSeconds": 0, "sellAfterMs": int(hold * 1000)})
+    else:  # OKTech needs at least one stage; an unreachable gain keeps the timer / stop-loss in charge
+        stages.append({"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0})
+        notes.append("no take-profit: exit by stop-loss / timer (one +10000% stage satisfies OKTech's 'at least one stage')")
+    out: dict[str, Any] = {"enabled": True, "stages": stages, "sellTipAmount": sell_fee_sol, "sellPriorityFeeSol": sell_fee_sol}
+    if hold > 0:
+        out |= {"sellAfterSeconds": _round(hold, 1), "sellPercent": 100}
+    else:
+        out |= {"sellPercent": 0}  # no sell-all timer
+    if sl > 0:
+        out["stopLoss"] = {"enabled": True, "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}], "confirmMs": 250}
+    if trail > 0:
+        out["trailingStopLoss"] = {"enabled": True, "percentFromPeak": _round(trail * 100, 2), "sellPercent": 100,
+                                   "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None}  # fmt: skip
+    if e.get("sell_on_dev_sell") and not e.get("copy_exit"):
+        notes.append("'sell when the dev sells' has no OKTech equivalent on this sniper; not applied")
+    return out
+
+
+def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
+    """A SNIPE-verdict deployer -> a `normal` sniper on its launches."""
+    rec = score.get("recommended") or {}
+    if score.get("verdict") != "SNIPE" or not rec.get("buy_sol"):
+        return None
+    notes: list[str] = []
+    prio, tip = fees(rec.get("bribe_sol"), cfg.oktech.tip_share, notes)
+    config: dict[str, Any] = {
+        "mode": "normal", "platforms": ["pumpfun"], "devWallets": [score["address"]],
+        "buyAmount": _round(max(0.001, float(rec["buy_sol"]))), "priorityFee": prio, "tipAmount": tip, "singleSnipe": False,
+    }  # fmt: skip
+    sell = autosell(rec.get("exit"), notes)
+    if sell:
+        config["autoSell"] = sell
+    if cfg.oktech.preconf:
+        config["preconf"] = True
+    a = score["address"]
+    return PlannedSniper("dev", a, f"snipetech dev {a[:6]}", config, [
+        f"buys every launch by {a} ({score.get('launches', 0)} analyzed, EV {score.get('ev_sol') or 0:+.4f} SOL, "
+        f"bound {score.get('ev_lower_sol') or 0:+.4f})",
+        f"{config['buyAmount']} SOL per buy, priority {prio} + tip {tip} SOL",
+        f"exits: {_describe_exit(rec.get('exit'))}",
+    ], notes)  # fmt: skip
+
+
+def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSniper | None:
+    """A COPY / COPY_FILTERED copy target -> a `ctbot` sniper copying that wallet."""
+    rec = score.get("recommended") or {}
+    if score.get("verdict") not in ("COPY", "COPY_FILTERED") or not rec.get("size_sol"):
+        return None
+    notes: list[str] = []
+    filt = rec.get("filters") or {}
+    a = score["address"]
+    wallet: dict[str, Any] = {"address": a, "label": f"snipetech {score['verdict']}",
+                              "minSol": _round(max(float(filt.get("min_target_buy_sol") or 0), cfg.copier.min_leader_sol))}  # fmt: skip
+    if filt.get("max_entry_mcap_sol"):
+        if sol_usd:
+            wallet["maxMcapUsd"] = round(float(filt["max_entry_mcap_sol"]) * sol_usd)
+        else:
+            notes.append("max entry market cap filter skipped: no SOL/USD price available")
+    if filt.get("max_crowd_buyers") is not None:
+        notes.append(f"'at most {filt['max_crowd_buyers']} other buyers' filter has no OKTech equivalent; not applied")
+    prio, tip = fees(None, cfg.oktech.tip_share, notes)
+    config: dict[str, Any] = {
+        "mode": "ctbot", "ctbotWallets": [wallet], "ctbotMinWallets": cfg.oktech.copy_min_wallets,
+        "ctbotTimeWindowMs": cfg.oktech.copy_time_window_ms,
+        "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": cfg.oktech.copy_exit_threshold_percent, "sellPercent": 100,
+                          "triggerWalletOnly": True, "delayMs": 0},
+        "buyAmount": _round(max(0.001, float(rec["size_sol"]))), "priorityFee": prio, "tipAmount": tip,
+        "singleSnipe": False, "speedMode": cfg.oktech.jetstream,
+    }  # fmt: skip
+    if cfg.oktech.preconf:
+        config["preconf"] = True
+    own = rec.get("own_exit_params")
+    exit_line = "sells when the copied wallet sells"
+    if own and rec.get("own_exit_beats_mirroring"):
+        sell = autosell(own | {"copy_exit": True}, notes)
+        if sell:
+            config["autoSell"] = sell
+            exit_line += f", or earlier on its own exits ({_describe_exit(own)}), which did better on unseen positions"
+    lat = score.get("max_profitable_latency_slots")
+    summary = [
+        f"copies {a}: {score.get('positions', 0)} positions analyzed, copier EV {score.get('ev_sol') or 0:+.4f} SOL "
+        f"(bound {score.get('ev_lower_sol') or 0:+.4f}), ~{score.get('positions_per_day') or 0:.1f} trades/day",
+        f"{config['buyAmount']} SOL per copy; only its buys >= {wallet['minSol']} SOL"
+        + (f" below ${wallet['maxMcapUsd']:,} market cap" if "maxMcapUsd" in wallet else ""),
+        exit_line,
+    ]
+    if lat is not None:
+        summary.append(f"profitable only if OKTech lands within {lat} slot(s) of its buys")
+    return PlannedSniper("copy", a, f"snipetech copy {a[:6]}", config, summary, notes)
+
+
+def _describe_exit(e: dict | None) -> str:
+    if not e:
+        return "none"
+    parts = []
+    if e.get("take_profit"):
+        parts.append(f"TP +{e['take_profit']:.0%}" + (f" ({e.get('tp_sell_fraction', 1):.0%})" if e.get("tp_sell_fraction", 1) < 1 else ""))
+    if e.get("stop_loss"):
+        parts.append(f"SL -{e['stop_loss']:.0%}")
+    if e.get("trailing_stop"):
+        parts.append(f"trailing {e['trailing_stop']:.0%}")
+    if e.get("max_hold_secs"):
+        parts.append(f"max hold {e['max_hold_secs']:.0f}s")
+    return ", ".join(parts) or "none"
+
+
+def build_plan(store: Store, cfg: Config, kinds: tuple[str, ...] = KINDS, sol_usd: float | None = None) -> list[PlannedSniper]:
+    """Snipers that snipetech's current verdicts call for, best first, capped at max_snipers."""
+    out: list[tuple[float, PlannedSniper]] = []
+    if "copy" in kinds:
+        for s in store.scores("copy"):
+            p = copy_sniper(s, cfg, sol_usd)
+            if p:
+                out.append((float(s.get("ev_lower_sol") or 0), p))
+    if "dev" in kinds:
+        for s in store.scores("deployer"):
+            if "block" in store.lists_for(s["address"]):
+                continue
+            p = dev_sniper(s, cfg)
+            if p:
+                out.append((float(s.get("ev_lower_sol") or 0), p))
+    out.sort(key=lambda t: -t[0])
+    return [p for _, p in out[: cfg.oktech.max_snipers]]
+
+
+@dataclass
+class SyncPlan:
+    create: list[PlannedSniper] = field(default_factory=list)
+    keep: list[tuple[dict, PlannedSniper]] = field(default_factory=list)
+    replace: list[tuple[dict, PlannedSniper]] = field(default_factory=list)  # settings changed
+    remove: list[dict] = field(default_factory=list)  # verdict no longer supports it
+
+
+def diff(planned: list[PlannedSniper], recorded: list[dict]) -> SyncPlan:
+    by_source = {(r["kind"], r["source"]): r for r in recorded}
+    out = SyncPlan()
+    wanted = set()
+    for p in planned:
+        wanted.add((p.kind, p.source))
+        rec = by_source.get((p.kind, p.source))
+        if rec is None:
+            out.create.append(p)
+        elif rec["config_hash"] == p.config_hash:
+            out.keep.append((rec, p))
+        else:
+            out.replace.append((rec, p))
+    out.remove = [r for k, r in by_source.items() if k not in wanted]
+    return out
+
+
+async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str | None, prune: bool = False) -> list[dict]:
+    """Create new / replaced snipers, then retire the ones they replace (and, with prune, the obsolete)."""
+    results = []
+    creates = plan.create + [p for _, p in plan.replace]
+    for i, p in enumerate(creates):
+        if i and i % 18 == 0:
+            await asyncio.sleep(61)  # 20 creates a minute per key
+        ans = await client.create(p.name, p.config, wallet, p.external_id)
+        task = ans.get("task") or {}
+        store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source, "name": p.name,
+                                 "config_hash": p.config_hash, "payload": p.config, "created_at": int(time.time())})  # fmt: skip
+        results.append({"action": "kept (already there)" if ans.get("duplicate") else "created", "name": p.name, "id": task["id"],
+                        "status": task.get("status")})  # fmt: skip
+    retire = [old for old, _ in plan.replace] + (plan.remove if prune else [])
+    for old in retire:
+        with contextlib.suppress(OktechError):  # it may already be idle; the delete is what counts
+            await client.stop(old["id"])
+        try:
+            await client.delete(old["id"])
+            results.append({"action": "removed", "name": old["name"], "id": old["id"]})
+        except OktechError as exc:
+            if exc.code != "NOT_FOUND":
+                results.append({"action": "remove failed", "name": old["name"], "id": old["id"], "error": str(exc)})
+                continue
+        store.remove_oktech_sniper(old["id"])
+    return results

@@ -458,6 +458,56 @@ class Service:
         self.store.put_score("study", wallet, {k: v for k, v in report.items() if k != "entry_rows"})
         return report
 
+    # -- OKTech ------------------------------------------------------------------------------------
+
+    def _oktech(self):
+        from .oktech import OktechClient
+
+        return OktechClient(self.cfg.oktech.base_url)
+
+    async def oktech_plan(self, kinds: tuple[str, ...] = ("copy", "dev")) -> dict:
+        """The OKTech snipers snipetech's current verdicts call for, vs. the ones it already made."""
+        from .meta import WSOL, ensure_assets
+        from .oktech import build_plan, diff
+
+        try:
+            await ensure_assets(self.store, self.cfg.rpc.http_url, [])  # SOL/USD for market-cap filters
+        except Exception as exc:  # DAS isn't on every RPC; the plan says what it couldn't convert
+            self.progress(f"SOL price lookup failed: {exc}")
+        sol_usd = (self.store.asset(WSOL) or {}).get("price_usd")
+        planned = build_plan(self.store, self.cfg, kinds, sol_usd)
+        d = diff(planned, [r for r in self.store.oktech_snipers() if r["kind"] in kinds])
+
+        def show(p):
+            return {"kind": p.kind, "source": p.source, "name": p.name, "summary": p.summary, "notes": p.notes,
+                    "external_id": p.external_id, "config": p.config}  # fmt: skip
+
+        return {
+            "wallet": self.cfg.oktech.wallet or "default", "sol_usd": sol_usd, "_sync": d,
+            "create": [show(p) for p in d.create], "replace": [show(p) | {"old_id": r["id"]} for r, p in d.replace],
+            "keep": [show(p) | {"id": r["id"]} for r, p in d.keep], "remove": [{"id": r["id"], "name": r["name"]} for r in d.remove],
+        }  # fmt: skip
+
+    async def oktech_push(self, plan: dict, prune: bool = False) -> list[dict]:
+        from .oktech import apply
+
+        client = self._oktech()
+        try:
+            return await apply(client, self.store, plan["_sync"], self.cfg.oktech.wallet or None, prune)
+        finally:
+            await client.close()
+
+    async def oktech_status(self) -> dict:
+        client = self._oktech()
+        try:
+            status, wallets, tasks = await client.status(), await client.wallets(), await client.tasks()
+        finally:
+            await client.close()
+        mine = {r["id"]: r for r in self.store.oktech_snipers()}
+        return {"status": status, "wallets": [w["name"] for w in wallets.get("wallets", [])],
+                "snipers": [t | {"source": (mine.get(t["id"]) or {}).get("source"), "kind": (mine.get(t["id"]) or {}).get("kind")}
+                            for t in tasks]}  # fmt: skip
+
     def label_file(self, path: str, kind: str) -> dict:
         """Bulk labels: one address per line, optionally followed by a name (comma or whitespace)."""
         n = 0

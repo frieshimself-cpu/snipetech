@@ -111,6 +111,11 @@ CREATE TABLE IF NOT EXISTS copy_decisions (
     reason TEXT, data TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS copy_decisions_ts ON copy_decisions(ts);
+CREATE TABLE IF NOT EXISTS oktech_snipers (
+    id TEXT PRIMARY KEY, external_id TEXT, kind TEXT NOT NULL, source TEXT NOT NULL, name TEXT,
+    config_hash TEXT, payload TEXT NOT NULL, created_at INTEGER, removed_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS oktech_snipers_source ON oktech_snipers(kind, source);
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
@@ -238,6 +243,20 @@ class Store:
     def copy_decisions(self, since_ts: int = 0, limit: int = 1000) -> list[dict]:
         rows = self._q("SELECT data FROM copy_decisions WHERE ts>=? ORDER BY id DESC LIMIT ?", (since_ts, limit))
         return [json.loads(r[0]) for r in rows]
+
+    def add_oktech_sniper(self, rec: dict) -> None:
+        self._exec("INSERT OR REPLACE INTO oktech_snipers (id, external_id, kind, source, name, config_hash, payload, created_at, removed_at) "
+                   "VALUES (?,?,?,?,?,?,?,?,?)", (rec["id"], rec.get("external_id"), rec["kind"], rec["source"], rec.get("name"),
+                   rec.get("config_hash"), json.dumps(rec.get("payload") or {}), rec.get("created_at") or int(time.time()), None))  # fmt: skip
+
+    def oktech_snipers(self, active: bool = True) -> list[dict]:
+        sql = "SELECT id, external_id, kind, source, name, config_hash, payload, created_at, removed_at FROM oktech_snipers"
+        rows = self._q(sql + (" WHERE removed_at IS NULL" if active else "") + " ORDER BY created_at")
+        keys = ("id", "external_id", "kind", "source", "name", "config_hash", "payload", "created_at", "removed_at")
+        return [dict(zip(keys, r)) | {"payload": json.loads(r[6])} for r in rows]
+
+    def remove_oktech_sniper(self, task_id: str) -> None:
+        self._exec("UPDATE oktech_snipers SET removed_at=? WHERE id=?", (int(time.time()), task_id))
 
     def tape_spans(self) -> list[tuple[int, int]]:
         """Time ranges in which `watch --tape` recorded every trade."""

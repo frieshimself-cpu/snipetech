@@ -471,3 +471,36 @@ def render_study(r: dict) -> str:
     out.append("AUC: 0.5 = no difference, 1.0 / 0.0 = perfectly separates. 'pass' = share on each side of the best cut.")
     out.append("Factors only use what happened before each moment. KOL factors need a KOL list (`label --file kols.txt --kind kol`).")
     return "\n".join(out)
+
+
+def render_oktech_plan(plan: dict, prune: bool = False) -> str:
+    out = [f"OKTech plan (buying wallet: {plan['wallet']})", "=" * 72]
+    groups = [("CREATE", plan["create"]), ("REPLACE (settings changed)", plan["replace"]), ("UNCHANGED", plan["keep"])]
+    for title, items in groups:
+        for p in items:
+            out.append(f"{title}: {p['name']}  [{'ctbot copy' if p['kind'] == 'copy' else 'normal dev snipe'}]")
+            out += [f"    {line}" for line in p["summary"]]
+            out += [f"    note: {n}" for n in p["notes"]]
+    for r in plan["remove"]:
+        out.append(f"{'REMOVE' if prune else 'OBSOLETE (kept; --prune removes)'}: {r['name']}  {r['id']}")
+    if len(out) == 2:
+        out.append("No snipers: no copy target has a COPY verdict and no deployer a SNIPE verdict yet.")
+        out.append("Analyze some first: `snipetech copy-rank <wallets>`, `snipetech profitable-devs --backfill 20`.")
+    out.append("")
+    out.append("Settings payloads: add --json. Snipers are created idle unless your key may start them; start them on the Sniper page.")
+    return "\n".join(out)
+
+
+def render_oktech_status(r: dict) -> str:
+    st = r["status"]
+    perms = st.get("permissions", {})
+    out = ["OKTech", "=" * 72,
+           f"key: create {'yes' if perms.get('create') else 'no'}, start {'yes' if perms.get('start') else 'no (start them on the Sniper page)'}",
+           f"snipers: {st.get('tasks', {}).get('count')}/{st.get('tasks', {}).get('max')} made by this key, "
+           f"running {st.get('running', {}).get('count')}/{st.get('running', {}).get('max')}",
+           f"wallets: {', '.join(r['wallets']) or '-'}"]  # fmt: skip
+    if r["snipers"]:
+        out.append("")
+        out.append(table([[t.get("name"), t.get("status"), t.get("kind") or "-", t.get("source") or "-", t.get("id")] for t in r["snipers"]],
+                         ["name", "status", "kind", "copies / snipes", "id"]))  # fmt: skip
+    return "\n".join(out)

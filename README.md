@@ -167,6 +167,27 @@ wXRP, PUMP) are kept apart from SOL trades and valued at the asset's price; rout
 (SOL → DJT → token) are not counted as entries. Tweet engagement (likes, the author's followers)
 needs an X data source and isn't measured.
 
+### 3c. Run it through OKTech
+
+snipetech decides; [OKTech](https://oktech.me)'s snipers buy and sell. Wallets with a COPY verdict
+become `ctbot` snipers (copy its buys above the size the analysis says are worth copying, under its
+market-cap ceiling; sell when it sells; plus the optimized own exits where those beat mirroring).
+Deployers with a SNIPE verdict become `normal` snipers on their launches, with the recommended size,
+bribe (split into priority fee + tip) and exits.
+
+```bash
+export OKS_KEY=...                  # OKTech: Sniper page -> API (never put it in a URL or this repo)
+snipetech oktech status             # key permissions, wallets, the snipers snipetech made
+snipetech oktech plan --wallet SNIPER          # what would be created / replaced / removed, and why
+snipetech oktech plan --json                   # the exact payloads
+snipetech oktech push --wallet SNIPER          # apply (asks first); --prune also removes stale ones
+```
+
+Each sniper's `externalId` comes from its settings, so pushing twice never duplicates; a changed
+verdict replaces the sniper (the old one is stopped and deleted). Unless "Allow starting" is on for
+the key, snipers are created idle: start them on the Sniper page. Settings OKTech can't express
+(e.g. "at most N other buyers") are listed as notes in the plan rather than silently dropped.
+
 ### 4. Is copytrading this wallet worth it?
 
 ```bash

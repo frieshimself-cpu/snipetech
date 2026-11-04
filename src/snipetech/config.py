@@ -149,6 +149,21 @@ class CopierConfig:
 
 
 @dataclass
+class OktechConfig:
+    """OKTech Sniper API (`snipetech oktech ...`). The key comes from $OKS_KEY, never this file."""
+
+    base_url: str = "https://oktech.me/api/sniper-api/v1"
+    wallet: str = ""  # which imported OKTech wallet buys (name); empty = your OKTech default wallet
+    tip_share: float = 0.7  # how a recommended bribe splits into tip (rest: priority fee)
+    copy_exit_threshold_percent: float = 50.0  # ctbot: sell when the copied wallet sells at least this much
+    copy_min_wallets: int = 1  # ctbot: copied wallets that must buy within the window
+    copy_time_window_ms: int = 10_000
+    jetstream: bool = True  # ctbot speedMode
+    preconf: bool = False  # only if your OKTech account is approved for preconfs
+    max_snipers: int = 20  # never plan more than this many (OKTech runs at most 20 at once)
+
+
+@dataclass
 class AgentConfig:
     model: str = "claude-opus-5-5"
     effort: str = "high"
@@ -166,6 +181,7 @@ class Config:
     api: ApiConfig = field(default_factory=ApiConfig)
     live: LiveConfig = field(default_factory=LiveConfig)
     copier: CopierConfig = field(default_factory=CopierConfig)
+    oktech: OktechConfig = field(default_factory=OktechConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 

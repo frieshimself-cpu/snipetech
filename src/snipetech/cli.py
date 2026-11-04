@@ -138,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart"], default="service")
     sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
 
+    sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
+    sp.add_argument("action", choices=["status", "plan", "push"])
+    sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
+    sp.add_argument("--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)")
+    sp.add_argument("--prune", action="store_true", help="also remove snipetech snipers whose verdict no longer supports them")
+    sp.add_argument("--yes", action="store_true", help="push without asking")
+
     sp = cmd("study", "what decides a wallet's trades: every factor at its entries/exits vs. what it passed on (needs `watch --tape`)")
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float, default=1.0)
@@ -304,6 +311,25 @@ async def _run(args, cfg: Config) -> int:
                 _out(args, svc.label(args.address, args.name, args.kind))
             else:
                 raise SystemExit("label: give ADDRESS NAME, or --file")
+        elif c == "oktech":
+            if args.wallet:
+                cfg.oktech.wallet = args.wallet
+            kinds = (args.only,) if args.only else ("copy", "dev")
+            if args.action == "status":
+                _out(args, await svc.oktech_status(), R.render_oktech_status)
+                return 0
+            plan = await svc.oktech_plan(kinds)
+            print(R.render_oktech_plan(plan, args.prune) if not args.json else json.dumps({k: v for k, v in plan.items() if k != "_sync"}, indent=1, default=str))
+            if args.action == "push":
+                todo = plan["create"] or plan["replace"] or (args.prune and plan["remove"])
+                if not todo:
+                    print("Nothing to change.")
+                    return 0
+                if not args.yes and input("Apply these changes to your OKTech account? [y/N] ").strip().lower() != "y":
+                    print("Nothing changed.")
+                    return 0
+                for r in await svc.oktech_push(plan, args.prune):
+                    print(f"  {r['action']:22} {r['name']}  {r.get('id', '')}  {r.get('error', '')}")
         elif c == "study":
             rep = await svc.study(args.wallet, args.days, args.negatives, refresh=not args.no_refresh, auto_smart=args.auto_smart,
                                   backfill_entries=args.backfill_entries, entry_window=args.entry_window)
