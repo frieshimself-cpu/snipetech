@@ -42,7 +42,7 @@ SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_U
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
-    "discover-wallets", "list", "export",
+    "discover-wallets", "list", "export", "vanity",
 })  # fmt: skip
 UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily", "snipetech-daily.timer")
 SYSTEMCTL = "/usr/bin/systemctl"
@@ -246,7 +246,7 @@ class Ops:
 
     def op_ls(self, path: str = "") -> dict[str, Any]:
         d = self._inside(path)
-        if not d.is_dir():
+        if not d.is_dir() or (d != self.data and self._hidden(d)):
             raise OpsError(404, f"not a directory: {path}")
         items = []
         for p in sorted(d.iterdir()):
@@ -364,7 +364,12 @@ class Ops:
         return p
 
     def _hidden(self, p: Path) -> bool:
-        return p.name.startswith(".") or ".db" in p.name or p.name in ("env", "snipetech.toml")
+        """Never served: the database, config/env files, and anything under a dot-directory (e.g. .wallets)."""
+        try:
+            parts = p.resolve().relative_to(self.data).parts
+        except ValueError:
+            return True
+        return any(x.startswith(".") for x in parts) or ".db" in p.name or p.name in ("env", "snipetech.toml")
 
     def _ro(self) -> sqlite3.Connection:
         con = sqlite3.connect(f"file:{self.db}?mode=ro", uri=True, timeout=10)

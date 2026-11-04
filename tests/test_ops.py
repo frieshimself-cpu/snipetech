@@ -135,3 +135,37 @@ def test_prune_clips_tape_spans(tmp_path):
     st.prune(400)
     assert st.tape_spans() == [(400, 500), (600, 900)]
     st.close()
+
+
+def test_vanity_keypair_is_valid_and_private(tmp_path):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from snipetech import vanity as V
+
+    r = V.grind("ab", "", True, 1, tmp_path / ".wallets", progress=lambda m: None)
+    assert r["address"].lower().startswith("ab") and "private" not in json.dumps(r).lower().replace("file", "")
+    p = tmp_path / ".wallets" / f"{r['address']}.txt"
+    assert oct(p.stat().st_mode & 0o777) == "0o600"
+    lines = dict(line.split(": ", 1) for line in p.read_text().splitlines() if ": " in line and not line.startswith("#"))
+    n = 0
+    for ch in lines["private_key"]:
+        n = n * 58 + V.ALPHABET.index(ch)
+    secret = n.to_bytes(64, "big")
+    pub = Ed25519PrivateKey.from_private_bytes(secret[:32]).public_key().public_bytes_raw()
+    assert pub == secret[32:] and V.b58encode(pub) == r["address"] == lines["address"]
+    with pytest.raises(ValueError, match="never appears"):
+        V.check_pattern("atlas", ignore_case=False)  # lower-case l does not exist
+    assert V.check_pattern("atlas", ignore_case=True) == "atlas"
+    with pytest.raises(ValueError):
+        V.check_pattern("0x", ignore_case=True)
+
+
+def test_ops_never_serves_dot_dirs(env):
+    ops, key = env
+    (ops.data / ".wallets").mkdir()
+    (ops.data / ".wallets" / "w.txt").write_text("private_key: x")
+    with pytest.raises(O.OpsError):
+        req(ops, key, "read", path=".wallets/w.txt")
+    with pytest.raises(O.OpsError):
+        req(ops, key, "ls", path=".wallets")
+    assert ".wallets/" not in [i["name"] for i in req(ops, key, "ls")["items"]]

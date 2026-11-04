@@ -191,6 +191,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
 
+    sp = cmd("vanity", "make a wallet whose address starts/ends with chosen letters (key saved to a private file, never printed)", json_flag=False)
+    sp.add_argument("--starts-with", default="")
+    sp.add_argument("--ends-with", default="")
+    sp.add_argument("--exact-case", action="store_true", help="match capitals exactly (much slower)")
+    sp.add_argument("--workers", type=int, default=1, help="CPU cores to use (default 1)")
+    sp.add_argument("--out", help="directory for the key file (default: <data dir>/.wallets)")
+
     sp = cmd("ops-serve", "on your server: signed remote-operations endpoint (see deploy/bootstrap.sh)", json_flag=False)
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8788)
@@ -559,6 +566,16 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "ops-serve":
         return _ops_serve(args, cfg)
+    if args.cmd == "vanity":
+        from .vanity import grind
+
+        out = args.out or str(Path(cfg.storage.db_path).resolve().parent / ".wallets")
+        r = grind(args.starts_with, args.ends_with, not args.exact_case, max(1, args.workers), out,
+                  progress=lambda m: print(m, flush=True))  # fmt: skip
+        print(f"\nfound {r['address']} after {r['keys_tried']:,} keys in {r['secs'] / 60:.1f} min")
+        print(f"private key saved to {r['file']} (readable only by root and the snipetech user).")
+        print(f"on the server: sudo cat {r['file']}   then import it, then: sudo rm {r['file']}")
+        return 0
     if args.cmd == "agent":
         from .agent.runner import run_agent
 
