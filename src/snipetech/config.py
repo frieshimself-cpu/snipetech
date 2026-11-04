@@ -118,6 +118,37 @@ class LiveConfig:
 
 
 @dataclass
+class CopierConfig:
+    """The live copytrader (`snipetech copytrade`). Paper mode unless `executor` says otherwise."""
+
+    executor: str = "paper"  # paper | webhook (orders to your own bot) | native (signs and sends itself)
+    webhook_url: str = ""  # webhook: where orders are POSTed (HMAC-signed with $SNIPETECH_WEBHOOK_SECRET)
+    keypair_path: str = ""  # native: Solana CLI keypair JSON (or $SNIPETECH_KEYPAIR)
+    size_sol: float = 0.1
+    size_mode: str = "fixed"  # fixed | proportional (to the copied wallet's buy)
+    proportional_ratio: float = 0.1
+    min_size_sol: float = 0.01
+    max_size_sol: float = 1.0
+    min_leader_sol: float = 0.05  # ignore the copied wallet's dust buys
+    slippage_bps: int = 1500  # min tokens out vs the price right after the copied buy
+    priority_fee_sol: float = 0.0005
+    tip_sol: float = 0.0
+    venues: str = "curve,amm"  # pump.fun curve, PumpSwap
+    mirror_sells: bool = True  # sell the same fraction when the copied wallet sells
+    take_profit: float = 0.0  # own exits on top of mirroring; 0 = off (1.0 = +100%)
+    stop_loss: float = 0.5  # sell everything at -50%
+    trailing_stop: float = 0.0
+    max_hold_secs: float = 0.0
+    max_open_positions: int = 5
+    max_total_sol: float = 2.0  # capital in open positions at once
+    daily_loss_limit_sol: float = 1.0  # stop opening positions after losing this much today
+    cooldown_secs: int = 600  # no re-entry into a token after exiting it
+    skip_deployer_verdicts: str = "AVOID,BLOCK"
+    paper_latency_ms: int = 400  # paper fills use the market this long after the copied trade
+    commitment: str = "processed"  # wallet streams: processed is fastest
+
+
+@dataclass
 class AgentConfig:
     model: str = "claude-opus-5-5"
     effort: str = "high"
@@ -134,6 +165,7 @@ class Config:
     storage: StorageConfig = field(default_factory=StorageConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
     live: LiveConfig = field(default_factory=LiveConfig)
+    copier: CopierConfig = field(default_factory=CopierConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 

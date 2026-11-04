@@ -101,6 +101,16 @@ CREATE TABLE IF NOT EXISTS token_meta (
 CREATE TABLE IF NOT EXISTS assets (
     mint TEXT PRIMARY KEY, symbol TEXT, decimals INTEGER, price_usd REAL, updated INTEGER
 );
+CREATE TABLE IF NOT EXISTS copy_positions (
+    id TEXT PRIMARY KEY, mint TEXT NOT NULL, leader TEXT NOT NULL, status TEXT NOT NULL,
+    opened_ts INTEGER, closed_ts INTEGER, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS copy_positions_status ON copy_positions(status, opened_ts);
+CREATE TABLE IF NOT EXISTS copy_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, leader TEXT, mint TEXT, action TEXT NOT NULL,
+    reason TEXT, data TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS copy_decisions_ts ON copy_decisions(ts);
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
@@ -209,6 +219,25 @@ class Store:
             chunk = mints[i : i + 500]
             out |= {r[0] for r in self._q(f"SELECT DISTINCT quote_mint FROM ftrades WHERE mint IN ({','.join('?' * len(chunk))})", chunk)}
         return sorted(out)
+
+    def put_copy_position(self, pos: dict) -> None:
+        self._exec("INSERT OR REPLACE INTO copy_positions (id, mint, leader, status, opened_ts, closed_ts, data) VALUES (?,?,?,?,?,?,?)",
+                   (pos["id"], pos["mint"], pos["leader"], pos["status"], pos.get("opened_ts"), pos.get("closed_ts"), json.dumps(pos)))  # fmt: skip
+
+    def copy_positions(self, status: str | None = None, since_ts: int = 0) -> list[dict]:
+        sql, args = "SELECT data FROM copy_positions WHERE opened_ts>=?", [since_ts]
+        if status:
+            sql += " AND status=?"
+            args.append(status)
+        return [json.loads(r[0]) for r in self._q(sql + " ORDER BY opened_ts", args)]
+
+    def add_copy_decision(self, d: dict) -> None:
+        self._exec("INSERT INTO copy_decisions (ts, leader, mint, action, reason, data) VALUES (?,?,?,?,?,?)",
+                   (d["ts"], d.get("leader"), d.get("mint"), d["action"], d.get("reason"), json.dumps(d)))  # fmt: skip
+
+    def copy_decisions(self, since_ts: int = 0, limit: int = 1000) -> list[dict]:
+        rows = self._q("SELECT data FROM copy_decisions WHERE ts>=? ORDER BY id DESC LIMIT ?", (since_ts, limit))
+        return [json.loads(r[0]) for r in rows]
 
     def tape_spans(self) -> list[tuple[int, int]]:
         """Time ranges in which `watch --tape` recorded every trade."""
