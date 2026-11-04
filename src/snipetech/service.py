@@ -227,33 +227,43 @@ class Service:
         self.store.put_score("copy", wallet, compact_copy(report))
         return report
 
-    async def follow(self, wallets: list[str], days: float = 2.0, refresh: bool = True) -> list[dict]:
+    async def follow(self, wallets: list[str], days: float = 2.0, refresh: bool = True,
+                     max_secs_per_wallet: float = 900) -> list[dict]:  # fmt: skip
         """Who is worth following: the crowd after their buys, the copy bots racing them (and what they
-        pay), and the copy replay at 0 / 1 slot."""
-        from .analysis.copytrade import build_cases
+        pay), and the copy replay at 0 / 1 slot. Each wallet is scored and saved as soon as it is done
+        (`list` / `export` see it even if the run is cut short); a wallet whose history takes longer than
+        `max_secs_per_wallet` to fetch is scored on what was fetched."""
         from .analysis.follow import follow_rank
 
         since = int(time.time() - days * 86400)
         wallets = [self._check(w) for w in wallets]
-        if refresh:
-            for i, w in enumerate(wallets, 1):
-                self.progress(f"follow {i}/{len(wallets)}: {w[:8]}")
+        labels = self.store.labels("kol")
+        rows = []
+        for i, w in enumerate(wallets, 1):
+            self.progress(f"follow {i}/{len(wallets)}: {labels.get(w) or w[:8]}")
+            if refresh:
                 try:
-                    await self.ingestor.backfill_wallet_trades(w, since, self.cfg.copy.max_signatures)
+                    await asyncio.wait_for(self._follow_fetch(w, since), max_secs_per_wallet)
+                except asyncio.TimeoutError:
+                    self.progress(f"{w[:8]}: fetch capped at {max_secs_per_wallet:.0f}s, scoring what was fetched")
                 except Exception as exc:  # one wallet's history failing shouldn't stop the ranking
                     self.progress(f"{w[:8]}: {exc}")
-                    continue
-                # what the racers paid: fingerprint the buys right after each of its buys
-                sigs = []
-                for c in (await asyncio.to_thread(build_cases, self.store, w, since))[0]:
-                    p, i0 = c.path, c.idxs[0]
-                    sigs += [p.sigs[j] for j in range(i0 + 1, p.n) if p.slot[j] <= p.slot[i0] + 1 and p.is_buy[j] and p.users[j] != w][:5]
-                await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
-        labels = self.store.labels("kol")
-        rows = await asyncio.to_thread(follow_rank, self.store, self.cfg, wallets, since, labels)
-        for r in rows:
-            self.store.put_score("follow", r["wallet"], r)
+            row = (await asyncio.to_thread(follow_rank, self.store, self.cfg, [w], since, labels))[0]
+            self.store.put_score("follow", w, row)
+            rows.append(row)
+        rows.sort(key=lambda r: (r.get("copy_pnl_next_slot") is not None, r.get("copy_pnl_next_slot") or -1e9), reverse=True)
         return rows
+
+    async def _follow_fetch(self, w: str, since: int) -> None:
+        from .analysis.copytrade import build_cases
+
+        await self.ingestor.backfill_wallet_trades(w, since, self.cfg.copy.max_signatures)
+        # what the racers paid: fingerprint the buys right after each of its buys
+        sigs = []
+        for c in (await asyncio.to_thread(build_cases, self.store, w, since))[0]:
+            p, i0 = c.path, c.idxs[0]
+            sigs += [p.sigs[j] for j in range(i0 + 1, p.n) if p.slot[j] <= p.slot[i0] + 1 and p.is_buy[j] and p.users[j] != w][:5]
+        await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
 
     async def rank_copy(self, wallets: list[str], days: float | None = None, refresh: bool = True) -> list[dict]:
         out = []
