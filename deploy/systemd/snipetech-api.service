@@ -1,0 +1,13 @@
+[Unit]
+Description=snipetech HTTP API (verdicts, rules, signals)
+After=network-online.target
+
+[Service]
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,16 @@
+[Unit]
+Description=snipetech daily: refresh verdicts, run the strategy lab, plan OKTech changes
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=/bin/sh -c '\
+  D=@DATA@/reports/$(date -u +%%Y-%%m-%%d); mkdir -p $D; S=@REPO@/.venv/bin/snipetech; DB="--db @DATA@/snipetech.db"; \
+  $S $DB profitable-devs --backfill 20 > $D/profitable-devs.txt 2>&1; \
+  $S $DB follow --kols --days 1 > $D/follow-kols.txt 2>&1; \
+  for lat in 0 1; do for pos in start middle end; do $S $DB lab --latency $lat --position $pos > $D/lab-$lat-$pos.txt 2>&1; done; done; \
+  $S $DB oktech plan > $D/oktech-plan.txt 2>&1'
+TimeoutStartSec=6h

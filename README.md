@@ -188,6 +188,19 @@ verdict replaces the sniper (the old one is stopped and deleted). Unless "Allow 
 the key, snipers are created idle: start them on the Sniper page. Settings OKTech can't express
 (e.g. "at most N other buyers") are listed as notes in the plan rather than silently dropped.
 
+### 3d. Run it 24/7 on a server
+
+```bash
+git clone <this repo> && cd snipetech && sudo bash deploy/setup.sh
+sudoedit /etc/snipetech/env             # HELIUS_API_KEY, OKS_KEY
+sudo systemctl enable --now snipetech-tape snipetech-daily.timer   # (+ snipetech-api if your bot queries it)
+```
+
+`snipetech-tape` records every trade of every token (~1 GB/day; keep NVMe space for weeks).
+`snipetech-daily` refreshes dev verdicts, ranks KOLs to follow, runs the strategy lab at several
+latencies and writes the OKTech plan to `/var/lib/snipetech/reports/<date>/`. A machine close to the
+validators (Frankfurt / Amsterdam / New York) keeps the tape's gaps short.
+
 ### 4. Is copytrading this wallet worth it?
 
 ```bash
