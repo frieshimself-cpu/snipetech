@@ -138,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart"], default="service")
     sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
 
+    sp = cmd("lab", "search the recorded market (`watch --tape`) for strategies that pay at your speed: trigger x exit, out of sample")
+    sp.add_argument("--latency", type=int, default=0, help="slots between the trigger and your buy (0 = same slot)")
+    sp.add_argument("--position", choices=["start", "middle", "end"], default="middle", help="where in that slot you land")
+    sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
+    sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
+    sp.add_argument("--top", type=int, default=10)
+
     sp = cmd("follow", "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first")
     sp.add_argument("wallets", nargs="*")
     sp.add_argument("--kols", action="store_true", help="every wallet labeled kol (`label --file kols.txt --kind kol`)")
@@ -321,6 +328,14 @@ async def _run(args, cfg: Config) -> int:
                 _out(args, svc.label(args.address, args.name, args.kind))
             else:
                 raise SystemExit("label: give ADDRESS NAME, or --file")
+        elif c == "lab":
+            from .analysis.lab import collect as lab_collect
+            from .analysis.lab import rank as lab_rank
+
+            data = await asyncio.to_thread(lab_collect, svc.store, cfg, args.buy, args.latency, args.position, args.per_tx)
+            _out(args, {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,
+                        "position": args.position, "buy_sol": args.buy,
+                        "strategies": lab_rank(data, cfg, args.top)}, R.render_lab)  # fmt: skip
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:

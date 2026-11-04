@@ -25,6 +25,7 @@ class ExitParams:
     trailing_activation: float = 0.0
     max_hold_secs: float = 120.0
     sell_on_dev_sell: bool = True
+    stale_secs: float = 0.0  # sell once nothing has traded for this long (OKTech deadExit); 0 = off
 
     @classmethod
     def from_config(cls, ec) -> "ExitParams":
@@ -39,7 +40,7 @@ class ExitParams:
         )
 
     def label(self) -> str:
-        parts = []
+        parts = [f"STALE{self.stale_secs:g}s"] if self.stale_secs > 0 else []
         if self.take_profit > 0:
             frac = "" if self.tp_sell_fraction >= 1 else f"@{self.tp_sell_fraction:.0%}"
             parts.append(f"TP+{self.take_profit:.0%}{frac}")
@@ -188,6 +189,12 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         t = _first(p.insider_sell, 1, last_rel)
         if t is not None:
             triggers["dev_sell"] = t
+    if ex.stale_secs > 0:
+        # quiet for stale_secs after state j: nothing traded in between, so state j's price is the fill
+        nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
+        t = _first(nxt - p.ts >= ex.stale_secs, 0, last_rel)
+        if t is not None:
+            triggers["stale"] = t
 
     proceeds = 0.0
     sells = 0
@@ -203,7 +210,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
 
     if triggers:
         reason, t_rel = min(triggers.items(), key=lambda kv: (kv[1], kv[0] != "take_profit"))
-        exec_abs = int(p.exec_idx[t_rel])
+        exec_abs = p.e + t_rel if reason == "stale" else int(p.exec_idx[t_rel])
         if reason == "take_profit" and ex.tp_sell_fraction < 1.0:
             part = held * ex.tp_sell_fraction
             proceeds += sell(exec_abs, part, held)

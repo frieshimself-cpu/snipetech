@@ -539,3 +539,15 @@ def render_follow(rows: list[dict]) -> str:
             f"{x['wallet'][:8]}… first {x['first_after_it']}x" + (f" (pays {x['median_bribe_sol']:.4f})" if x.get("median_bribe_sol") else "")
             for x in top["top_racers"][:3]))
     return "\n".join(out)
+
+
+def render_lab(r: dict) -> str:
+    out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL, "
+           f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)", "=" * 72]  # fmt: skip
+    rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
+             pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
+    out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
+    out.append("")
+    out.append("Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%.")
+    out.append("Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot.")
+    return "\n".join(out)

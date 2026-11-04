@@ -1,0 +1,45 @@
+"""Strategy lab: triggers fire once per token, entries respect latency, results are out of sample."""
+
+import time
+
+from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
+from snipetech.config import Config
+from snipetech.sim.market import MarketPath
+from snipetech.store import Store
+
+from .synth import Market, addr
+
+NOW = int(time.time())
+
+
+def whale_world(store: Store, n: int = 40) -> None:
+    """After a >= 2 SOL buy, followers pile in for a few seconds, then it goes quiet."""
+    for i in range(n):
+        m = Market(store, addr(f"lab-{i}"), addr(f"lab-dev-{i}"), NOW - 5000 + i * 60, 20_000_000 + i * 1000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        m.buy(addr(f"lab-small-{i}"), 0.2, 2)
+        m.buy(addr(f"lab-whale-{i}"), 2.5, 5)
+        for k in range(6):
+            m.buy(addr(f"lab-fan-{i}-{k}"), 0.4, 5 + k)
+        for k in range(6):
+            m.sell(addr(f"lab-fan-{i}-{k}"), 1.0, 40 + k * 5)
+        m.commit()
+    store.set_coverage("tape", {"spans": [[NOW - 5100, NOW]]})
+
+
+def test_whale_trigger_and_out_of_sample_ranking():
+    store = Store(":memory:")
+    whale_world(store)
+    path = MarketPath.build(store.trades_for_mint(addr("lab-0")), store.launch(addr("lab-0")))
+    i = _fire(Trigger("whale", sol=2.0), path, store.launch(addr("lab-0")), set())
+    assert path.users[i] == addr("lab-whale-0")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    fast = collect(store, cfg, buy_sol=0.2, latency_slots=0, position="start")
+    slow = collect(store, cfg, buy_sol=0.2, latency_slots=3, position="end")
+    w = next(k for k, t in enumerate(TRIGGERS) if t.kind == "whale" and t.sol == 2.0)
+    assert sum(1 for r in fast["rows"] if r["trigger"] == w) == 40  # once per token
+    best = {r["trigger"]: r for r in rank(fast, cfg, top=50)}
+    late = {r["trigger"]: r for r in rank(slow, cfg, top=50)}
+    label = TRIGGERS[w].label()
+    assert best[label]["test"]["mean"] > 0 > late[label]["test"]["mean"]  # the edge is in being early

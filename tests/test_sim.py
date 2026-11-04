@@ -125,3 +125,23 @@ def test_grid_is_reasonable():
     grid = default_grid(ExitParams())
     assert 200 < len(grid) < 600
     assert len({g.label() for g in grid}) == len(grid)
+
+
+def test_stale_exit_sells_when_trading_stops():
+    import numpy as np
+
+    from snipetech.models import Trade
+    from snipetech.sim.exits import Costs, ExitParams, prepare, run_exit
+    from snipetech.sim.market import MarketPath
+
+    q, b, ts, trades = 30e9, 1.073e15, 1_000, []
+    for i, gap in enumerate([0, 1, 1, 1, 5, 1]):  # quiet for 5 s after the 4th trade
+        ts += gap
+        trades.append(Trade(f"s{i}", 0, 100 + i, 0, ts, "M", "curve", f"u{i}", True, int(1e9), int(3e13), 0, 100, int(q + (i + 1) * 1e9),
+                            int(b - (i + 1) * 3e13)))  # fmt: skip
+    path = MarketPath.build(trades, None)
+    prep = prepare(path, 0, 0.5, Costs(), exit_latency_slots=1)
+    r = run_exit(prep, ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, stale_secs=3), Costs())
+    assert r.exit_reason == "stale" and r.exit_idx == 3 and np.isfinite(r.pnl_sol)
+    off = run_exit(prep, ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False), Costs())
+    assert off.exit_reason == "time"

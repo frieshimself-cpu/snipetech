@@ -137,7 +137,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = float(e.get("stop_loss") or 0), float(e.get("trailing_stop") or 0), float(e.get("trailing_activation") or 0)
     hold = float(e.get("max_hold_secs") or 0)
-    if not (tp or sl or trail or hold):
+    stale = float(e.get("stale_secs") or 0)
+    if not (tp or sl or trail or hold or stale):
         return None
     stages = []
     if tp > 0:
@@ -154,6 +155,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
         out |= {"sellPercent": 0}  # no sell-all timer
     if sl > 0:
         out["stopLoss"] = {"enabled": True, "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}], "confirmMs": 250}
+    if stale > 0:
+        out["deadExit"] = {"enabled": True, "staleSeconds": max(1, int(round(stale))), "sellPercent": 100}
     if trail > 0:
         out["trailingStopLoss"] = {"enabled": True, "percentFromPeak": _round(trail * 100, 2), "sellPercent": 100,
                                    "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None,
