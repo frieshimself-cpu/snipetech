@@ -68,7 +68,7 @@ def _evaluate(policies: list[tuple[str, dict, Callable[[int], int | None]]], con
     n = len(contexts)
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     mats = []
-    for label, params, pick in policies:
+    for _label, _params, pick in policies:
         vals = np.full(n, np.nan)
         for j, ctx in enumerate(contexts):
             e = pick(j)
