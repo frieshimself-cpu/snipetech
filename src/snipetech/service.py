@@ -497,6 +497,29 @@ class Service:
         finally:
             await client.close()
 
+    async def oktech_replica(self, wallet: str, buy_sol: float, create: bool = False) -> dict:
+        """A studied wallet's rules as an OKTech sniper; with `create`, made on OKTech (idle)."""
+        from .meta import WSOL, ensure_assets
+        from .oktech import SyncPlan, apply, replica_from_study
+
+        wallet = self._check(wallet)
+        study = self.store.get_score("study", wallet)
+        if not study or "entry" not in study:
+            raise SystemExit(f"no study with a contrast for {wallet}: run `snipetech study {wallet}` with the tape running")
+        try:
+            await ensure_assets(self.store, self.cfg.rpc.http_url, [])
+        except Exception as exc:
+            self.progress(f"SOL price lookup failed: {exc}")
+        p = replica_from_study(study, self.cfg, buy_sol, (self.store.asset(WSOL) or {}).get("price_usd"))
+        out = {"name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config, "external_id": p.external_id}
+        if create:
+            client = self._oktech()
+            try:
+                out["result"] = await apply(client, self.store, SyncPlan(create=[p]), self.cfg.oktech.wallet or None)
+            finally:
+                await client.close()
+        return out
+
     async def oktech_status(self) -> dict:
         client = self._oktech()
         try:

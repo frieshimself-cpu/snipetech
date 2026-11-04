@@ -131,3 +131,26 @@ def test_errors_and_missing_key(monkeypatch):
 
     with pytest.raises(OktechError, match="UNKNOWN_FIELD"):
         asyncio.run(go())
+
+
+def test_replica_from_study_maps_the_discriminating_rules():
+    from snipetech.oktech import replica_from_study
+
+    study = {
+        "wallet": TARGET, "entries": 105, "skipped_samples": 1575, "tape_hours": 4.1,
+        "entry": {"numeric": [{"factor": "buys_5s", "auc": 0.9, "chosen_median": 5.0, "threshold": 1.0, "direction": ">="},
+                              {"factor": "vol_5s", "auc": 0.95, "chosen_median": 5.4, "threshold": 0.48, "direction": ">="}],
+                  "categorical": [{"factor": "quote", "value": "DJT", "chosen_share": 0.2, "others_share": 0.02, "lift": 10},
+                                  {"factor": "x_kind", "value": "tweet", "chosen_share": 0.84, "others_share": 0.41, "lift": 2.0}]},
+        "exit": {"numeric": [{"factor": "secs_since_last_trade", "direction": ">=", "threshold": 1.0, "chosen_pass": 0.54,
+                              "others_pass": 0.0, "chosen_median": 1.0},
+                             {"factor": "hold_s", "direction": ">=", "threshold": 1.0, "chosen_pass": 0.93, "others_pass": 0.55,
+                              "chosen_median": 1.0}]},
+        "entry_profile": [{"factor": "mcap_sol", "p90": 127.0, "median": 55.0, "p10": 35.0, "n": 100}],
+    }  # fmt: skip
+    p = replica_from_study(study, Config(), 0.05, sol_usd=100.0)
+    c = p.config
+    assert c["mode"] == "normal" and c["monitorProgram"] and c["pumpFilters"]["nonSolQuoteOnly"] and c["pumpAutoSwap"]
+    assert c["metadataFilter"]["conditions"][0]["value"] == "/status/" and c["crowdBuys"]["minSigners"] == 2
+    assert c["maxMcapUsd"] == 12_700 and c["autoSell"]["deadExit"] == {"enabled": True, "staleSeconds": 1, "sellPercent": 100}
+    assert p.kind == "replica" and p.external_id.startswith(f"st:replica:{TARGET}:")

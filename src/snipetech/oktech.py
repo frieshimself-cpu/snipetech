@@ -320,3 +320,71 @@ async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str 
                 continue
         store.remove_oktech_sniper(old["id"])
     return results
+
+
+def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float | None) -> PlannedSniper:
+    """Rebuild a studied wallet's rules (`snipetech study`) as a `normal` OKTech sniper.
+
+    Only rules the study found discriminating are mapped: what it buys (non-SOL-quoted curves,
+    tweet-linked launches, market-cap range), the burst it enters on, and how it exits (when
+    trading pauses, its typical hold). Everything else is left to OKTech's defaults."""
+    wallet = study["wallet"]
+    entry, exit_ = study.get("entry") or {}, study.get("exit") or {}
+    num = {r["factor"]: r for r in entry.get("numeric", [])}
+    xnum = {r["factor"]: r for r in exit_.get("numeric", [])}
+    cats = entry.get("categorical", [])
+    prof = {d["factor"]: d for d in study.get("entry_profile", [])}
+    notes: list[str] = []
+    summary = [f"rules of {wallet} from {study.get('entries', 0)} entries vs {study.get('skipped_samples', 0)} alternatives "
+               f"({study.get('tape_hours', 0):.1f} h of tape)"]  # fmt: skip
+    prio, tip = fees(None, cfg.oktech.tip_share, notes)
+    config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy_sol),
+                              "priorityFee": prio, "tipAmount": tip, "singleSnipe": False}  # fmt: skip
+    # what it buys: the quote asset
+    sol_share = sum(c["chosen_share"] for c in cats if c["factor"] == "quote" and c["value"] == "SOL")
+    quoted = [c for c in cats if c["factor"] == "quote" and c["value"] != "SOL"]
+    if quoted and sol_share < 0.1:
+        config["pumpFilters"] = {"enabled": True, "nonSolQuoteOnly": True, "cashbackOnly": False, "sharingCheck": True}
+        config["pumpAutoSwap"] = True
+        summary.append("only pump.fun curves quoted in non-SOL assets (" + ", ".join(c["value"] for c in quoted[:5])
+                       + "), bought with SOL through OKTech's swap server")  # fmt: skip
+    # tweet-linked launches
+    tw = next((c for c in cats if c["factor"] == "x_kind" and c["value"] == "tweet"), None)
+    if tw and tw["chosen_share"] >= 0.6 and (tw["lift"] or 0) >= 1.5:
+        config["metadataFilter"] = {"enabled": True, "fetchOffChain": True, "matchMode": "all", "allowOnError": False,
+                                    "timeoutMs": 1500, "fetchRetries": 2, "retryDelayMs": 100,
+                                    "conditions": [{"variable": "twitter", "operator": "contains", "value": "/status/", "action": "allow"}]}  # fmt: skip
+        summary.append(f"only launches linking a tweet ({tw['chosen_share']:.0%} of its entries vs {tw['others_share']:.0%} of the rest)")
+        notes.append("the tweet check reads the token's metadata file: it adds the fetch time to every entry")
+    # the burst it enters on
+    b5 = num.get("buys_5s") or num.get("uniq_buyers_30s")
+    if b5 and b5["auc"] >= 0.7:
+        signers = max(2, int(round(b5["chosen_median"] / 2)))
+        config["crowdBuys"] = {"enabled": True, "minSigners": signers, "minTotalQuote": 0, "platforms": ["pumpfun"], "signal": False, "buy": True}
+        summary.append(f"enters on a burst: >= {signers} buyers ({b5['factor']} median {b5['chosen_median']:.0f} at its entries)")
+        if "vol_5s" in num:
+            notes.append(f"its burst also needs >= {num['vol_5s']['threshold']:.2f} SOL in 5s; OKTech's crowd minimum is in "
+                         "the quote asset, which differs per token here, so it is left at 0")  # fmt: skip
+    # market-cap range
+    mc = prof.get("mcap_sol")
+    if mc and sol_usd:
+        config["maxMcapUsd"] = round(mc["p90"] * sol_usd)
+        summary.append(f"max market cap ${config['maxMcapUsd']:,} (90% of its entries were below {mc['p90']:.0f} SOL)")
+    # exits
+    stale = xnum.get("secs_since_last_trade")
+    hold = xnum.get("hold_s")
+    sell: dict[str, Any] = {"enabled": True, "stages": [{"gainPercent": 20, "sellPercent": 50, "delaySellAllSeconds": 0}],
+                            "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+                            "stopLoss": {"enabled": True, "stages": [{"percentLoss": 20, "sellPercent": 100}], "confirmMs": 250}}  # fmt: skip
+    if stale and stale["direction"] == ">=" and stale["others_pass"] <= 0.05:
+        secs = max(1, int(round(stale["threshold"])))
+        sell["deadExit"] = {"enabled": True, "staleSeconds": secs, "sellPercent": 100}
+        summary.append(f"sells everything once nothing has traded for {secs}s ({stale['chosen_pass']:.0%} of its sells, "
+                       f"{stale['others_pass']:.0%} of the moments it kept holding)")  # fmt: skip
+    sell_all = max(5, int(round((hold or {}).get("chosen_median") or 0)) * 8)
+    sell |= {"sellAfterSeconds": sell_all, "sellPercent": 100}
+    summary.append(f"also: half at +20%, all at -20%, everything after {sell_all}s (its median hold is "
+                   f"{(hold or {}).get('chosen_median', 0):.0f}s)")  # fmt: skip
+    notes.append("the +20% / -20% / timer exits are safety rails, not inferred from the wallet")
+    config["autoSell"] = sell
+    return PlannedSniper("replica", wallet, f"snipetech replica {wallet[:6]}", config, summary, notes)

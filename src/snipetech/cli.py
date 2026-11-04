@@ -139,8 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push"])
+    sp.add_argument("action", choices=["status", "plan", "push", "replica"])
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
+    sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
+    sp.add_argument("--buy", type=float, default=0.05, help="replica: SOL per buy (start small)")
+    sp.add_argument("--create", action="store_true", help="replica: create it on OKTech (idle unless your key may start it)")
     sp.add_argument("--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)")
     sp.add_argument("--prune", action="store_true", help="also remove snipetech snipers whose verdict no longer supports them")
     sp.add_argument("--yes", action="store_true", help="push without asking")
@@ -317,6 +320,12 @@ async def _run(args, cfg: Config) -> int:
             kinds = (args.only,) if args.only else ("copy", "dev")
             if args.action == "status":
                 _out(args, await svc.oktech_status(), R.render_oktech_status)
+                return 0
+            if args.action == "replica":
+                if not args.from_study:
+                    raise SystemExit("replica: give --from-study WALLET (run `snipetech study WALLET` first)")
+                rep = await svc.oktech_replica(args.from_study, args.buy, create=args.create)
+                print(json.dumps(rep, indent=1, default=str) if args.json else R.render_oktech_replica(rep))
                 return 0
             plan = await svc.oktech_plan(kinds)
             print(R.render_oktech_plan(plan, args.prune) if not args.json else json.dumps({k: v for k, v in plan.items() if k != "_sync"}, indent=1, default=str))

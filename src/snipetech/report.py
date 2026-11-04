@@ -504,3 +504,15 @@ def render_oktech_status(r: dict) -> str:
         out.append(table([[t.get("name"), t.get("status"), t.get("kind") or "-", t.get("source") or "-", t.get("id")] for t in r["snipers"]],
                          ["name", "status", "kind", "copies / snipes", "id"]))  # fmt: skip
     return "\n".join(out)
+
+
+def render_oktech_replica(r: dict) -> str:
+    out = [f"OKTech replica: {r['name']}", "=" * 72]
+    out += [f"  {line}" for line in r["summary"]]
+    out += [f"  note: {n}" for n in r["notes"]]
+    for res in r.get("result") or []:
+        out.append(f"  {res['action']}: {res['name']} ({res.get('id')}, {res.get('status', '')})")
+    if not r.get("result"):
+        out.append("")
+        out.append("Not created. Add --create to make it on OKTech (idle unless your key may start snipers); --json for the payload.")
+    return "\n".join(out)
