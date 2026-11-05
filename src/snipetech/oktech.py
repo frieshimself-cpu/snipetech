@@ -387,7 +387,7 @@ EXECUTION: dict[str, Any] = {
 }
 
 
-def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt") -> PlannedSniper:
+def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True) -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
@@ -398,9 +398,11 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt") -> Pla
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
                               "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
                               "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
+    if not preexec:
+        config["preexec"] = {"enabled": False}
     summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
                f"stops buying by itself after {config['totalSnipes']} buys and keeps selling until those positions close",
-               "buys straight into the wallet (no seed account) and only after a local dry run of the create + buy succeeds"]
+               "buys straight into the wallet (no seed account)" + (" and only after a local dry run of the create + buy succeeds" if preexec else ", no local dry run")]  # fmt: skip
     kind = trig.get("kind")
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
