@@ -43,6 +43,7 @@ class Trigger:
     ret: float = 0.0  # momentum: price change over 300 s at least this
     max_age: float = 0.0  # whale / burst: only within this many seconds of the launch (0 = any time)
     plain: bool = False  # only normal coins (no mayhem, no holder-reward)
+    group: str = "kol"  # kol: which label kind the wallets come from (kol = labeled KOLs, wallet = the tracked list)
 
     def label(self) -> str:
         base = self._label()
@@ -58,15 +59,20 @@ class Trigger:
         if self.kind == "whale":
             return f"buy >= {self.sol:g} SOL by a non-dev"
         if self.kind == "kol":
-            return "a KOL buys"
+            who = "a KOL" if self.group == "kol" else f"a tracked wallet ({self.group})"
+            return f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
         return "at the launch"
 
+
+KOL_MIN_SOL = 0.1  # a labeled wallet's buy below this is noise, not a signal
 
 TRIGGERS = (
     [Trigger("launch")]
     + [Trigger("burst", n, s, w) for n in (3, 5, 10) for s in (0.5, 1.0, 3.0) for w in (2.0, 5.0)]
     + [Trigger("whale", sol=s) for s in (1.0, 2.0, 5.0)]
     + [Trigger("kol")]
+    # the KOLs' small buys are top-ups after a 2-4 SOL first buy (decu: 4 buys/coin): the first buy is the signal
+    + [Trigger("kol", sol=1.0)] + [Trigger("kol", sol=s, group="wallet") for s in (1.0, 2.0)]
     # forward paper trading: the >= 5 / 2 SOL edge is all in big buys within ~1 s of the launch, on normal coins
     + [Trigger("whale", sol=s, max_age=1.0, plain=True) for s in (2.0, 5.0)]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
@@ -141,8 +147,9 @@ def exit_set() -> list[ExitParams]:
     return out
 
 
-def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None:
-    """Index of the trade at which `trig` fires on this token (first time only)."""
+def _fire(trig: Trigger, path: MarketPath, launch, kols) -> int | None:
+    """Index of the trade at which `trig` fires on this token (first time only).
+    `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}."""
     dev = launch.deployers() if launch is not None else set()
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
@@ -155,14 +162,18 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None
             return None
         idx = [i for i in range(path.n) if path.sigs[i] == launch.sig]
         return max(idx) if idx else None
+    group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
+    seen: set[str] = set()  # buyers so far: a KOL trigger wants the wallet's *first* buy in the coin, not a top-up
     for i in range(path.n):
         if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
             return None
         if not path.is_buy[i] or path.users[i] in dev:
             continue
+        first = path.users[i] not in seen
+        seen.add(path.users[i])
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
             return i
-        if trig.kind == "kol" and path.users[i] in kols and path.quote[i] >= 0.1 * LAMPORTS:
+        if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS:
             return i
         if trig.kind == "burst":
             lo = np.searchsorted(path.ts, path.ts[i] - trig.window, side="left")
@@ -172,13 +183,18 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None
     return None
 
 
+def label_groups(store: Store) -> dict[str, set[str]]:
+    """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list."""
+    return {"kol": set(store.labels("kol")), "wallet": set(store.labels("wallet"))}
+
+
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = exit_set()
-    kols = set(store.labels("kol"))
+    kols = label_groups(store)
     rows: list[dict] = []  # one per (token, trigger): pnl per exit
     for a, b in spans:
         if b - a < 600:
@@ -202,7 +218,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                 if prep is None:
                     continue
                 pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
-                rows.append({"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl})
+                rows.append({"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
+                             "who": path.users[i]})  # fmt: skip
     return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600}
 
 
@@ -230,4 +247,34 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
         })  # fmt: skip
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
+    return out[:top]
+
+
+def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
+                 min_n: int = 4) -> list[dict]:  # fmt: skip
+    """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
+    60% of the trigger's moments (as `rank` does); each triggering wallet is then scored on all of its moments with
+    that exit. Wallets with the same address under several triggers keep the best-covered trigger (lowest threshold)."""
+    rows, exits = data["rows"], data["exits"]
+    conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
+    labels = labels or {}
+    best: dict[str, dict] = {}
+    for ti, trig in enumerate(TRIGGERS):
+        if trig.kind != "kol":
+            continue
+        rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
+        if len(rs) < 10:
+            continue
+        m = np.array([r["pnl"] for r in rs])
+        k = int(np.argmax(m[: int(len(rs) * 0.6)].mean(axis=0)))
+        by: dict[str, list[float]] = {}
+        for r, p in zip(rs, m[:, k]):
+            by.setdefault(r["who"], []).append(float(p))
+        for w, pn in by.items():
+            if len(pn) < min_n or (w in best and best[w]["n"] >= len(pn)):
+                continue
+            st = summarize(np.array(pn), conf, samples)
+            best[w] = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(pn),
+                       "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total")}  # fmt: skip
+    out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)
     return out[:top]

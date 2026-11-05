@@ -153,6 +153,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
     sp.add_argument("--top", type=int, default=10)
+    sp.add_argument("--by-wallet", action="store_true",
+                    help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit")
 
     sp = cmd("follow", "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first")
     sp.add_argument("wallets", nargs="*")
@@ -381,11 +383,14 @@ async def _run(args, cfg: Config) -> int:
         elif c == "lab":
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import rank as lab_rank
+            from .analysis.lab import rank_wallets as lab_rank_wallets
 
             data = await asyncio.to_thread(lab_collect, svc.store, cfg, args.buy, args.latency, args.position, args.per_tx)
-            _out(args, {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,
-                        "position": args.position, "buy_sol": args.buy,
-                        "strategies": lab_rank(data, cfg, args.top)}, R.render_lab)  # fmt: skip
+            res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,
+                   "position": args.position, "buy_sol": args.buy, "strategies": lab_rank(data, cfg, args.top)}  # fmt: skip
+            if args.by_wallet:
+                res["wallets"] = lab_rank_wallets(data, cfg, svc.store.labels(), top=max(args.top, 40))
+            _out(args, res, R.render_lab)
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:

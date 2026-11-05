@@ -550,6 +550,11 @@ def render_lab(r: dict) -> str:
     out.append("")
     out.append("Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%.")
     out.append("Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot.")
+    if r.get("wallets"):
+        out += ["", "Labeled wallets whose first buy in a coin is a signal at this speed (our exit, all of their moments):"]
+        out.append(table([[(w["label"] or "")[:22], w["wallet"][:10], w["trigger"][:34], w["exit"][:30], w["n"], sol(w["mean"]),
+                           sol(w["ev_lower"]), pct(w["win_rate"])] for w in r["wallets"]],
+                         ["label", "wallet", "trigger", "exit", "n", "mean", "bound", "win"]))  # fmt: skip
     return "\n".join(out)
 
 

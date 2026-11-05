@@ -20,7 +20,7 @@ from ..config import Config
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
-from .lab import LAMPORTS, Trigger, _fire, collect, rank
+from .lab import LAMPORTS, Trigger, _fire, collect, label_groups, rank
 from .stats import summarize
 
 SETTLE_SECS = 420  # a trigger is scored once its longest exit (300 s) has played out on the tape
@@ -62,7 +62,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     until = int(now - SETTLE_SECS)
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until}
-    kols = set(store.labels("kol"))
+    kols = label_groups(store)
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
               for s in strategies]  # fmt: skip
     added = 0

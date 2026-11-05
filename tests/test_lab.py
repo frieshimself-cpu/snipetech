@@ -123,3 +123,23 @@ def test_whale_window_and_plain_coin_filters():
     assert _fire(Trigger("whale", sol=2.0, plain=True), path, replace(launch, mayhem=True), set()) is None
     assert _fire(Trigger("whale", sol=2.0, plain=True), path, launch, set()) is not None
     assert "within 1s of launch" in Trigger("whale", sol=5.0, max_age=1.0, plain=True).label()
+
+
+def test_kol_trigger_wants_the_wallets_first_buy_from_its_label_group():
+    store = Store(":memory:")
+    m = Market(store, addr("lab-kol"), addr("lab-kol-dev"), NOW - 4000, 30_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("kol-1"), 0.5, 2)  # the KOL's first buy: small
+    m.buy(addr("kol-1"), 2.0, 4)  # its top-up: not a signal
+    m.buy(addr("tracked-1"), 1.5, 6)  # a tracked (non-KOL) wallet's first buy
+    m.commit()
+    launch = store.launch(addr("lab-kol"))
+    path = MarketPath.build(store.trades_for_mint(addr("lab-kol")), launch)
+    groups = {"kol": {addr("kol-1")}, "wallet": {addr("tracked-1")}}
+    assert path.users[_fire(Trigger("kol"), path, launch, groups)] == addr("kol-1")  # >= 0.1 SOL: fires on the first buy
+    assert _fire(Trigger("kol", sol=1.0), path, launch, groups) is None  # the 2 SOL buy is a top-up, not its first buy
+    assert path.users[_fire(Trigger("kol", sol=1.0, group="wallet"), path, launch, groups)] == addr("tracked-1")
+    assert _fire(Trigger("kol"), path, launch, {addr("kol-1")}) is not None  # a bare set still means the KOL group
+    assert "tracked wallet" in Trigger("kol", sol=2.0, group="wallet").label()
+    rows = collect(store, Config(), buy_sol=0.2, latency_slots=1, position="+1")["rows"]
+    assert all("who" in r for r in rows)
