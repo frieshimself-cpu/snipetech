@@ -238,7 +238,7 @@ class Service:
 
         since = int(time.time() - days * 86400)
         wallets = [self._check(w) for w in wallets]
-        labels = self.store.labels("kol")
+        labels = self.store.labels()  # any labeled kind names the row (kol, wallet, smart, ...)
         rows = []
         for i, w in enumerate(wallets, 1):
             self.progress(f"follow {i}/{len(wallets)}: {labels.get(w) or w[:8]}")
