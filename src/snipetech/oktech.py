@@ -15,6 +15,8 @@ starting" creates snipers idle: start them on the Sniper page.
 
 from __future__ import annotations
 
+import math
+
 import asyncio
 import contextlib
 import hashlib
@@ -430,14 +432,15 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
             # Hunt sums every first-second buy, the creator's included; our rule is one non-dev buy >= min_sol. On the
             # tape (5 Nov, 4 h, 500 candidates) total >= 1.25x with dev <= 1 SOL keeps 79% of our triggers at 86%
             # precision; total >= min_sol alone is 66% precision (the dev's SOL counts).
-            config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
-                              "thresholds": {"minTotalSol": _round(min_sol * 1.25, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
-                                             "maxUniqueBuyers": None,
-                                             "maxDevBuySol": 1.0, "minCpiBuyers": None, "requireKnownBot": False,
-                                             "minLutMatches": None, "minAccountMatches": None},
+            # whole numbers only and no null fields: the 22:11 batch sent 2.5 / 1.0 / nulls and bought launches that
+            # failed both tests (dev 3.95 SOL; only a 1.38 SOL dev buy ahead) as if no threshold were set
+            thresholds: dict[str, Any] = {"minTotalSol": int(math.ceil(min_sol * 1.25)), "maxDevBuySol": 1, "requireKnownBot": False}
+            if buyers > 1:
+                thresholds["minUniqueBuyers"] = int(buyers)
+            config["hunt"] = {"timeWindowMs": int(window_ms), "triggerMode": "all", "thresholds": thresholds,
                               "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
                               "useKnownBotDefaults": True}  # fmt: skip
-            summary.append(f"only after >= {min_sol * 1.25:g} SOL in total is bought (dev's own buy <= 1 SOL) by >= {buyers} "
+            summary.append(f"only after >= {thresholds['minTotalSol']} SOL in total is bought (dev's own buy <= 1 SOL) by >= {buyers} "
                            f"wallet{'s' if buyers > 1 else ''} within {window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
             notes.append("hunt is an approved-accounts mode ([S] tab); the 5 Nov probes also sent it under mode normal and "
                          "bought every launch: verify on the tape that every fill had the big buy in front of it")  # fmt: skip
