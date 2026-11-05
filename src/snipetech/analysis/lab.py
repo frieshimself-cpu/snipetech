@@ -41,8 +41,15 @@ class Trigger:
     progress: float = 0.0  # momentum: bonding-curve progress at least this
     holders: int = 0  # momentum: holders (from the tape) at least this
     ret: float = 0.0  # momentum: price change over 300 s at least this
+    max_age: float = 0.0  # whale / burst: only within this many seconds of the launch (0 = any time)
+    plain: bool = False  # only normal coins (no mayhem, no holder-reward)
 
     def label(self) -> str:
+        base = self._label()
+        extra = ([f"within {self.max_age:g}s of launch"] if self.max_age else []) + (["normal coins"] if self.plain else [])
+        return base + (f" ({', '.join(extra)})" if extra else "")
+
+    def _label(self) -> str:
         if self.kind == "momentum":
             return (f"momentum: >= {self.buyers} buyers/5m, {self.sol:g} SOL bought/30s, curve >= {self.progress:.0%}, "
                     f">= {self.holders} holders, +{self.ret:.0%}/5m")  # fmt: skip
@@ -60,6 +67,8 @@ TRIGGERS = (
     + [Trigger("burst", n, s, w) for n in (3, 5, 10) for s in (0.5, 1.0, 3.0) for w in (2.0, 5.0)]
     + [Trigger("whale", sol=s) for s in (1.0, 2.0, 5.0)]
     + [Trigger("kol")]
+    # forward paper trading: the >= 5 / 2 SOL edge is all in big buys within ~1 s of the launch, on normal coins
+    + [Trigger("whale", sol=s, max_age=1.0, plain=True) for s in (2.0, 5.0)]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
     + [Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2) for u in (20, 40) for v in (3.0, 6.0) for pr in (0.3, 0.5)]
 )
@@ -135,6 +144,10 @@ def exit_set() -> list[ExitParams]:
 def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None:
     """Index of the trade at which `trig` fires on this token (first time only)."""
     dev = launch.deployers() if launch is not None else set()
+    if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
+        return None
+    if trig.max_age and launch is None:
+        return None
     if trig.kind == "momentum":
         return _momentum(trig, path, dev)
     if trig.kind == "launch":
@@ -143,6 +156,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None
         idx = [i for i in range(path.n) if path.sigs[i] == launch.sig]
         return max(idx) if idx else None
     for i in range(path.n):
+        if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
+            return None
         if not path.is_buy[i] or path.users[i] in dev:
             continue
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:

@@ -109,3 +109,17 @@ def test_momentum_fires_on_a_proven_moving_coin_only():
     assert i == 33  # the second 1+ SOL buy completes the picture (progress, holders and buyers were there before)
     assert _momentum(Trigger("momentum", buyers=20, sol=3.0, progress=0.3, holders=100, ret=0.2), p, set()) is None
     assert _momentum(t, p, {p.users[k] for k in range(n)}) is None  # dev buys never trigger
+
+
+def test_whale_window_and_plain_coin_filters():
+    store = Store(":memory:")
+    whale_world(store)  # whale buys 5 s after each launch
+    launch = store.launch(addr("lab-0"))
+    path = MarketPath.build(store.trades_for_mint(addr("lab-0")), launch)
+    assert _fire(Trigger("whale", sol=2.0, max_age=1.0), path, launch, set()) is None  # too late after the launch
+    assert _fire(Trigger("whale", sol=2.0, max_age=10.0), path, launch, set()) is not None
+    from dataclasses import replace
+
+    assert _fire(Trigger("whale", sol=2.0, plain=True), path, replace(launch, mayhem=True), set()) is None
+    assert _fire(Trigger("whale", sol=2.0, plain=True), path, launch, set()) is not None
+    assert "within 1s of launch" in Trigger("whale", sol=5.0, max_age=1.0, plain=True).label()
