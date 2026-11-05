@@ -273,3 +273,7 @@ def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
     assert "hunt" not in cfg
     hunt = strategy_sniper(strat, 5).config
     assert "hunt" in hunt and hunt["mode"] == "hunt"
+    th = hunt["hunt"]["thresholds"]
+    assert th["minTotalSol"] == 3 and th["maxDevBuySol"] == 1 and "maxUniqueBuyers" not in th
+    solo = strategy_sniper(strat | {"trigger": strat["trigger"] | {"solo": True}}, 5).config
+    assert solo["hunt"]["thresholds"]["maxUniqueBuyers"] == 2

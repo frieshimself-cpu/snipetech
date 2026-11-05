@@ -437,11 +437,16 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
             thresholds: dict[str, Any] = {"minTotalSol": int(math.ceil(min_sol * 1.25)), "maxDevBuySol": 1, "requireKnownBot": False}
             if buyers > 1:
                 thresholds["minUniqueBuyers"] = int(buyers)
+            if trig.get("solo"):
+                # the lab's `solo` whale: a lone big buy on a quiet launch. Hunt's "skip launches with more distinct
+                # buyers than this" is the closest live expression (it cannot see whether the buy was in the create tx)
+                thresholds["maxUniqueBuyers"] = 2
             config["hunt"] = {"timeWindowMs": int(window_ms), "triggerMode": "all", "thresholds": thresholds,
                               "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
                               "useKnownBotDefaults": True}  # fmt: skip
             summary.append(f"only after >= {thresholds['minTotalSol']} SOL in total is bought (dev's own buy <= 1 SOL) by >= {buyers} "
-                           f"wallet{'s' if buyers > 1 else ''} within {window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
+                           f"wallet{'s' if buyers > 1 else ''} within {window_ms / 1000:g} s of the launch (OKTech hunt)"
+                           + (", and by at most 2 distinct wallets (a lone buy on a quiet launch)" if trig.get("solo") else ""))  # fmt: skip
             notes.append("hunt is an approved-accounts mode ([S] tab); the 5 Nov probes also sent it under mode normal and "
                          "bought every launch: verify on the tape that every fill had the big buy in front of it")  # fmt: skip
     elif kind == "kol":
