@@ -111,3 +111,134 @@ flow vs organic (non-bot) buys; "Mayhem Battle".
 
 VIP (updates feed, some tasks), Ultimate (speed stream, more Social handles),
 Sniper API keys (needs Sniper), approved-user feature flags listed above.
+
+## Second pass — everything else found (small or hidden)
+
+### Feature-gate table (what an admin can grant per account)
+Pages: Twitter tasks & groups · Chain (on-chain signals) · Service settings ·
+Catch · Sniper · Mayhem · Vamp · Over (licenses, fee wallets, servers) · Recent
+updates · Social. Sniper modes: advanced modes (CTBot, ClaimSniper, Reverse,
+MIG, CopyDev, Stocks) · [A] mode · Gucci mode · Stocks Auto · Preconfs
+(approved) · [S] tab Shapes/Web/Hunt (approved) · AD AutoDeploy (approved) ·
+Loadout (approved) · Local pre-execution (approved) · Account whitelist/
+blacklist (approved) · Sniper API. Streams: Speed stream (Ultimate) · FOMO
+tracking. Admin can also set a per-account max concurrent snipers (site
+default otherwise), VIP expiry, banners, "Recent updates" posts, maintenance
+mode (stop all snipers, restart them when it ends unless the user stopped
+theirs), and share codes.
+
+### Sniper modes not described above
+- **[A] mode (`ansem`)** — Dev Funding Gate: reads the deployer's FIRST-ever
+  funding; buys only if it was a round chunk of SOL inside your band (default
+  0.5–10 SOL) within your window (default 15 min) before deploying. Max dev tx
+  count rejects active wallets. Fail-closed on/off ("Fail Open" logs instead).
+- **Gucci mode** — a list of "gucci entries" (per-entry targets); no help text.
+- **AutoDeploy (AD)** — launches coins itself from a metadata URI / coin form
+  with a chosen creator wallet; dev buy funded from the creator wallet's own
+  quote balance (launch still goes out without the buy if short). Quote mint
+  selectable; "if pump.fun already accepts it, the launch goes out as soon as
+  the sniper is started."
+- **CopyDev** — watches external dev wallets for pump.fun CREATE_V2 and replays
+  the create + dev buy under your creator wallet. "Mirror Sharing Config"
+  splices the target's fee-sharing config (and follow-up updates within 30
+  min). "CDEV auto vamps token creations. This is experimental."
+- **Reverse** — watch one wallet; Buy-on-Sell or Sell-on-Buy against a target
+  mint + pool; Raw mode with instruction filters; Prebuild (pre-signed reverse
+  txs; don't trade that wallet by hand).
+- **ClaimSniper** — fires on pump.fun creator-fee claims: by GitHub user, by
+  mint, by claim wallet allowlist (signer enforced), "Snipe Everything",
+  "First Claim Only" (first time the social user has claimed SOL), minimum SOL
+  per claim.
+- **MIG** — pump migration sniper; Migration Window (max seconds from CREATE to
+  MIGRATE, default 10 s); deployer blacklist; Developer Migration Check.
+- **Stocks / Stonk** — StonkFun V1 (CLMM) or V2 (LaunchLab); creator is
+  StonkFun's deployer; buys in the quote, auto-sell exits back into the quote.
+- **Loadout** — app.loadout.xyz launches, Entry delay in seconds with a
+  "send this much earlier" lead; the on-chain fee steps once per second.
+- **Normal extras** — Monitor Program (program-wide subscription), mints list
+  ("known mints to snipe the moment their pool or curve appears"), DBC
+  protection ("Buy protected launches at once", "No rug levers": LP locked,
+  mint authority gone, metadata frozen), "Once per config" (one launch per
+  listed config for the sniper's life), platform payer, "Track" and "Both /
+  Any" config logic.
+
+### Quotes and swaps
+- **Pump Auto-Swap / Non-SOL curves only / Pump · new quotes only** —
+  pump.fun curves can now be quoted in arbitrary tokens; Auto-Swap routes the
+  buy through a regional swap server that converts SOL to the quote in one
+  tx. "Snipes per new quote" budget; quote pattern blacklist (address-pattern,
+  OR'd); "A cashback coin takes the legacy instructions either way."
+- **Raydium Auto-Swap, DBC Auto-Swap** — the same for LaunchLab / Meteora DBC
+  launches quoted in MET, USDC, etc. Sells still land in the quote.
+- **Match Cashback Status** (experimental) — only pump.fun launches eligible for
+  the creator-cashback program. **Sharing check** — "Pump.fun only. Enables the
+  bot's sharing check on incoming launches to improve transaction land rate."
+- **Creator rewrite check** — catches a dev who rewrites the curve's creator
+  with a fee-sharing config right after create (moves the vault).
+
+### Execution extras
+- **Max market cap (USD)** is enforced as each buy's own min-out, so a buy that
+  would land above it fails on chain rather than filling.
+- **Pre-create token account** (ATA, Token or Token-2022) at sniper start so
+  the buy carries no account creation.
+- **Preconfs** (approved) — registers watched dev / copied wallets on the hub's
+  preconfirmation lanes so their txs are seen before they confirm.
+- **Additional snipers** — extra wallets each with their own buy amount and
+  optional own auto-sell; "Inherit primary auto-sell".
+- **Auto-Transfer** — after the snipe and auto-sell, split the bought token to
+  up to 3 destination wallets by percent (~4 s after the last auto-sell; rent
+  ~0.00204 SOL per new recipient).
+- **Bind to trigger tweet** — a tweet-triggered sniper only buys tokens whose
+  metadata references that exact tweet; the manual start button is disabled.
+- **Notify on complete** (Discord/Telegram); **Relay to Discord** of shapes,
+  crowds and buys; **Jupiter API key** (optional, platform key by default).
+- Per-sniper **share code** (import/export a sniper or strategy; imports copy
+  current settings); "Legacy custom — pick a strategy to migrate".
+- Sniper API: key generated from the Sniper page; "Allow starting" toggle (a
+  key that can start snipers "deserves the care you give the wallet itself");
+  create answers 201 even if the servers failed to start it; unknown fields are
+  errors; key never accepted in the URL; a tweet-bound sniper can be created
+  but not started by the key; "Reason (shown in the start-rejected error)".
+
+### Twitter tasks (details)
+Conditions: post by users, reply/quote (to specific users or post IDs, keyword
+scope: replier text / original / both), retweet, follow (target users),
+profile/bio change, community membership (ID; "each community check costs ~").
+Match ALL/ANY. Extract CA from text (bio/posts/replies/quotes/retweets),
+ignore @mentions, keyword→CA overrides, additional CAs (multi-buy), market-cap
+filter ($1k–$1B, enforced by the OkBot worker at fire time), schedule
+(auto-start / auto-pause daily), "Task resets to running after each execution",
+test matching against a pasted tweet, per-task webhook key, Notify on complete,
+groups. Chains: Solana (OkBot enhanced workers; "Slippage pinned to 100% for
+SOL — we rely on Tip + Priority"), Base/ETH (WETH swap on the pool), BNB, Arc
+(USDC is also gas), Robinhood Chain (USDG, ETH for gas; "Ponz launch sniper"
+fires on every new Pons v1/v2 launch from the Robinhood webhook), Bankr
+fee-claim trigger (BANKR_FEE_CLAIM webhook, recipient match, first-claim only,
+min WETH). A task can instead "enable up to 3 of your sniper tasks" on match.
+Sources: TweetCatcher, X API (TwitterAPI.io key), "1322" Standard and Ultimate
+streams (tweets only, limited slots, per-handle start by approved users), 1322
+FOMO feed, 1322 News feed (publishers chosen by admin, never triggers).
+
+### Mayhem (details)
+Campaign: max relaunches, profit goal, stop after first loss, iteration
+cooldown, slippage bps, priority fee. Helpers: count, saved wallets, buy
+range, buys per helper, gap range, sells by % after N buys / N seconds / a
+milestone / a named signal rule (default `mayhemDumpDuringRun`, "exit if we
+detect the mayhem operator dumping"), abort on drop %. Dev trade plan steps:
+buy more, partial sell, final exit, mark milestone, wait for milestone,
+interval between steps, halt follow-buys (diagnostic). Signal metrics:
+mayhem-bot buys/sells/streaks/SOL in/out/net flow, organic buys and SOL sold,
+price vs entry ×, seconds since launch. Dev wallet can be any saved sniper
+wallet.
+
+### Social / Catch / Vamp / Signals
+Social: followed handles (posts, follows, profile and pinned-post changes),
+staff see every tracked account, FOMO traders and coins (fomo.family), news
+articles, "how long a tweet took to reach us". Catch: pump.fun launch feed with
+search and "query modes", token page with socials. Vamp: paste a CA, it
+launches a copy (image uploaded to IPFS). Signals: wallet activity, token
+launch (creator / name), liquidity change, program instruction (optional
+discriminator and required accounts), large transfer (optional counterparty,
+min amount), whale SOL > 1,000; alert via Discord/Telegram, POST to webhook,
+or fire a sniper; rule language on LaunchLab configs (fee schedules, vesting,
+supply, LP split, migration target) with values like `fee.totalPercent`.
