@@ -59,3 +59,27 @@ def test_landing_plus_n_counts_trades_after_the_trigger():
     assert int(p.landing_index(10, "start", 1)) == 1 and int(p.landing_index(10, "end", 1)) == 3
     # a later slot: counted from its first trade
     assert int(p.landing_index(11, "+1", 1)) == 4
+
+
+def test_paper_scores_only_triggers_after_the_freeze_once_each():
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    whale_world(store)
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    frozen_at = NOW - 3500  # tokens 25..39 come after this
+    rep = paper.freeze(store, cfg, top=3, position="+1", now=frozen_at)
+    assert rep["frozen"], "the whale world has strategies with a positive lower bound"
+    whale = rep["frozen"][0]  # the best one (in this world: buying at the launch)
+    first = paper.run(store, cfg, now=NOW)
+    assert first["new_trades"] > 0
+    trades = store.paper_trades(whale["id"])
+    assert trades and all(t["trigger_ts"] >= frozen_at for t in trades)
+    assert len({t["mint"] for t in trades}) == len(trades) == 15  # one position per token, only after the freeze
+    assert paper.run(store, cfg, now=NOW)["new_trades"] == 0  # incremental: nothing scored twice
+    row = next(r for r in paper.report(store, cfg, now=NOW)["strategies"] if r["id"] == whale["id"])
+    assert row["n"] == 15 and row["mean"] > 0 and row["lab_mean"] is not None
+    # freezing again keeps what is already running instead of duplicating it
+    again = paper.freeze(store, cfg, top=3, position="+1", now=NOW)
+    assert not any(s["id"] == whale["id"] for s in again["frozen"])

@@ -116,6 +116,10 @@ CREATE TABLE IF NOT EXISTS oktech_snipers (
     config_hash TEXT, payload TEXT NOT NULL, created_at INTEGER, removed_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS oktech_snipers_source ON oktech_snipers(kind, source);
+CREATE TABLE IF NOT EXISTS paper_trades (
+    strategy TEXT NOT NULL, mint TEXT NOT NULL, trigger_ts INTEGER NOT NULL, entry_ts REAL, exit_ts REAL,
+    pnl REAL NOT NULL, roi REAL, reason TEXT, data TEXT, PRIMARY KEY (strategy, mint)
+);
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
@@ -522,6 +526,24 @@ class Store:
     def signals_since(self, since_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         rows = self._q("SELECT id, ts, kind, data FROM signals WHERE id>? ORDER BY id LIMIT ?", (since_id, limit))
         return [{"id": i, "ts": ts, "kind": k, **json.loads(d)} for i, ts, k, d in rows]
+
+    def put_paper_trade(self, rec: dict) -> int:
+        """Store one forward paper trade; 0 if this strategy already traded this token."""
+        with self.lock:
+            cur = self.conn.execute(
+                "INSERT OR IGNORE INTO paper_trades (strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
+                (rec["strategy"], rec["mint"], rec["trigger_ts"], rec.get("entry_ts"), rec.get("exit_ts"), rec["pnl"], rec.get("roi"),
+                 rec.get("reason"), json.dumps(rec.get("data") or {})),
+            )  # fmt: skip
+            self.conn.commit()
+            return cur.rowcount
+
+    def paper_trades(self, strategy: str | None = None) -> list[dict]:
+        sql = "SELECT strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data FROM paper_trades"
+        rows = self._q(sql + (" WHERE strategy=? ORDER BY trigger_ts" if strategy else " ORDER BY trigger_ts"), (strategy,) if strategy else ())
+        keys = ("strategy", "mint", "trigger_ts", "entry_ts", "exit_ts", "pnl", "roi", "reason", "data")
+        return [dict(zip(keys, r[:-1])) | {"data": json.loads(r[-1] or "{}")} for r in rows]
 
     def funder(self, wallet: str) -> dict[str, Any] | None:
         rows = self._q("SELECT funder, amount, ts, sig, checked_at FROM funders WHERE wallet=?", (wallet,))

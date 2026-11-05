@@ -204,6 +204,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--host")
     sp.add_argument("--port", type=int)
 
+    sp = cmd("paper", "forward paper-trading: freeze the lab's best strategies, then score them only on newer tape")
+    sp.add_argument("action", choices=["freeze", "run", "report"])
+    sp.add_argument("--top", type=int, default=4, help="freeze: how many strategies (positive lower bound only)")
+    sp.add_argument("--position", type=_position, default="+1", help="freeze: landing position (OKTech measured +1)")
+    sp.add_argument("--latency", type=int, default=0, help="freeze: slots after the trigger")
+    sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
+    sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
+    sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
+
     sp = cmd("vanity", "make a wallet whose address starts/ends with chosen letters (key saved to a private file, never printed)", json_flag=False)
     sp.add_argument("--starts-with", default="")
     sp.add_argument("--ends-with", default="")
@@ -384,6 +393,17 @@ async def _run(args, cfg: Config) -> int:
             if not ws:
                 raise SystemExit("follow: give wallets, --file or --kols")
             _out(args, await svc.follow(list(dict.fromkeys(ws)), args.days, refresh=not args.no_refresh), R.render_follow)
+        elif c == "paper":
+            from .analysis import paper
+
+            if args.action == "freeze":
+                rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
+                                              args.per_tx, args.replace)  # fmt: skip
+            elif args.action == "run":
+                rep = await asyncio.to_thread(paper.run, svc.store, cfg)
+            else:
+                rep = await asyncio.to_thread(paper.report, svc.store, cfg)
+            _out(args, rep, lambda r: R.render_paper(args.action, r))
         elif c == "oktech":
             if args.wallet:
                 cfg.oktech.wallet = args.wallet

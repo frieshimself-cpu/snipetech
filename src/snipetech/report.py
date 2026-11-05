@@ -551,3 +551,30 @@ def render_lab(r: dict) -> str:
     out.append("Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%.")
     out.append("Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot.")
     return "\n".join(out)
+
+
+def render_paper(action: str, r: dict) -> str:
+    import time as _t
+
+    if action == "freeze":
+        out = [f"Frozen for forward testing ({r['tape_hours']:.1f} h of tape behind the pick):"]
+        out += [f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f})"
+                for s in r["frozen"]] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
+        out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
+        return "\n".join(out)
+    if action == "run":
+        if r.get("note"):
+            return r["note"]
+        return f"scored {r['new_trades']} new paper trades (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+    rows = r["strategies"]
+    if not rows:
+        return "nothing frozen yet: run `snipetech paper freeze`"
+    def f(x, nd=4):
+        return "-" if x is None else f"{x:+.{nd}f}"
+    out = ["Forward paper-trading (only tape recorded after each strategy was frozen)", "=" * 72]
+    out.append(table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]), f(s["total"], 3),
+                       pct(s["win_rate"]), f(s["lab_mean"])] for s in rows],
+                     ["id", "strategy", "hours", "trades", "mean", "bound", "total", "win", "lab said"]))  # fmt: skip
+    out.append("")
+    out.append("mean / bound / total in SOL per trade at the frozen size; 'lab said' is what the lab predicted when it was frozen.")
+    return "\n".join(out)
