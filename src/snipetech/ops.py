@@ -42,7 +42,7 @@ SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_U
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
-    "discover-wallets", "list", "export", "vanity", "paper",
+    "discover-wallets", "list", "export", "vanity", "paper", "sweep",
 })  # fmt: skip
 UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily", "snipetech-daily.timer")
 SYSTEMCTL = "/usr/bin/systemctl"

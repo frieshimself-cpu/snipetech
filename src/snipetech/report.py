@@ -583,3 +583,14 @@ def render_paper(action: str, r: dict) -> str:
     out.append("")
     out.append("mean / bound / total in SOL per trade at the frozen size; 'lab said' is what the lab predicted when it was frozen.")
     return "\n".join(out)
+
+
+def render_sweep(r: dict) -> str:
+    out = [f"wallet {r['wallet']}: {r['holdings']} holding(s)"]
+    for x in r["results"]:
+        if x.get("skipped"):
+            out.append(f"  {x['mint']}: skipped, {x['skipped']}")
+        else:
+            tail = "dry run" if x.get("dry_run") else f"sent {x.get('signature')}"
+            out.append(f"  {x['mint']}: {x['amount']} units, quote {x['quote_sol']:.4f} SOL, floor {x['floor_sol']:.4f} SOL, {tail}")
+    return "\n".join(out)

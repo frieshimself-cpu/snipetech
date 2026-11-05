@@ -156,6 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--by-wallet", action="store_true",
                     help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit")
 
+    sp = cmd("sweep", "sell every pump.fun curve token the sniper wallet holds (SNIPER_SECRET): the exit OKTech can drop")
+    sp.add_argument("--mint", action="append", help="only these mints (repeatable)")
+    sp.add_argument("--slippage", type=float, default=0.5, help="SOL floor below the quote, 0-1 (default 0.5: a sweeper wants out)")
+    sp.add_argument("--dry-run", action="store_true", help="show holdings and quotes, send nothing")
+
     sp = cmd("follow", "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first")
     sp.add_argument("wallets", nargs="*")
     sp.add_argument("--kols", action="store_true", help="every wallet labeled kol (`label --file kols.txt --kind kol`)")
@@ -393,6 +398,13 @@ async def _run(args, cfg: Config) -> int:
             if args.by_wallet:
                 res["wallets"] = lab_rank_wallets(data, cfg, svc.store.labels(), top=max(args.top, 40))
             _out(args, res, R.render_lab)
+        elif c == "sweep":
+            from .solana.sell import sweep as _sweep
+
+            try:
+                _out(args, await _sweep(svc.rpc, args.mint, args.slippage, args.dry_run), R.render_sweep)
+            except RuntimeError as exc:
+                raise SystemExit(f"sweep: {exc}") from None
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:
