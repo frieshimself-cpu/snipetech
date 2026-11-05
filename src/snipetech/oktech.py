@@ -397,8 +397,10 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
             window_ms = int(float(trig["max_age"]) * 1000)
         else:
             window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
-        config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "any",
-                          "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers, "maxUniqueBuyers": None,
+        # triggerMode "all": every set threshold must hold (with "any" the 1-buyer rule fired on the first buy, live)
+        config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
+                          "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
+                                         "maxUniqueBuyers": None,
                                          "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
                                          "minLutMatches": None, "minAccountMatches": None},
                           "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
