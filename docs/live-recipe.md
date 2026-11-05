@@ -143,3 +143,28 @@ Lab runs with the realistic landing (`--latency 1|2 --position start`) were star
 must be whole numbers without null fields (2.5 / 1.0 / nulls were ignored and the sniper bought every launch);
 OKTech sent no sell at all for HOUSE in 25 minutes; CAT's trailing stop did not fire on a 26 % drop from peak
 either. Live trading is halted until the lab says a variant is positive where OKTech lands.
+
+### Verdict at the realistic landing (lab, 24.5 h of tape, 224k moments, 5 Nov 23:45 UTC)
+
+Entry at the first trade of the slot after the trigger (`--latency 1 --position start`), 0.2 SOL, every
+trigger with its best exit, out of sample. (Staleness is measured in slot gaps since commit 1ea0b43; the
+earlier run that showed −0.0115 everywhere was the whole-second artefact.)
+
+| trigger (best exit) | n | SOL/trade | lower bound | wins |
+|---|---|---|---|---|
+| buy ≥ 2 SOL by a non-dev, 1 s, normal coins (STALE1s SL-15%) | 834 | −0.0115 | −0.0125 | 12 % |
+| same, not a create bundle (solo), 1 s | 674 | −0.0117 | −0.0128 | 12 % |
+| solo, 5 s window | 733 | −0.0093 | −0.0112 | 12 % |
+| buy ≥ 1 SOL solo, 5 s | 1,569 | −0.0093 | −0.0102 | 13 % |
+| tracked wallet first buy ≥ 1 SOL (STALE1s SL-30%) | 811 | −0.0064 | −0.0078 | 19 % |
+| momentum ≥ 20 buyers/5 m, curve ≥ 30 % | 1,263 | −0.0051 | −0.0066 | 24 % |
+| KOL first buy ≥ 0.1 SOL, hold 60 s | 74 | +0.0158 | −0.0011 | 38 % |
+
+Not one of the 40 triggers has a positive lower bound with n ≥ 200. The best exit for almost every launch
+trigger is the immediate dead exit, i.e. the least-bad choice is to get out at once: **at the slot after
+the trigger, launch sniping has no edge on this tape**. The +0.129/trade paper result for the ≥ 2 SOL
+trigger existed only at position +1 inside the trigger's own slot, which no sender gets.
+
+Still open: `--latency 2` (running), and the per-wallet ranking at the realistic landing (`--by-wallet`),
+because a KOL's buy is its own transaction and copying it lands +1 in the same slot on the measured copy
+tests — the one entry where the paper position is reachable.
