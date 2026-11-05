@@ -34,12 +34,18 @@ LAMPORTS = 1e9
 
 @dataclass(frozen=True)
 class Trigger:
-    kind: str  # launch | burst | whale | kol
+    kind: str  # launch | burst | whale | kol | momentum
     buyers: int = 0
     sol: float = 0.0
     window: float = 0.0
+    progress: float = 0.0  # momentum: bonding-curve progress at least this
+    holders: int = 0  # momentum: holders (from the tape) at least this
+    ret: float = 0.0  # momentum: price change over 300 s at least this
 
     def label(self) -> str:
+        if self.kind == "momentum":
+            return (f"momentum: >= {self.buyers} buyers/5m, {self.sol:g} SOL bought/30s, curve >= {self.progress:.0%}, "
+                    f">= {self.holders} holders, +{self.ret:.0%}/5m")  # fmt: skip
         if self.kind == "burst":
             return f"burst >= {self.buyers} buyers & {self.sol:g} SOL in {self.window:g}s"
         if self.kind == "whale":
@@ -54,7 +60,58 @@ TRIGGERS = (
     + [Trigger("burst", n, s, w) for n in (3, 5, 10) for s in (0.5, 1.0, 3.0) for w in (2.0, 5.0)]
     + [Trigger("whale", sol=s) for s in (1.0, 2.0, 5.0)]
     + [Trigger("kol")]
+    # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
+    + [Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2) for u in (20, 40) for v in (3.0, 6.0) for pr in (0.3, 0.5)]
 )
+
+CURVE_REAL_TOKENS = 793_100_000 * 10**6  # tokens a pump.fun curve sells before it completes
+VIRTUAL_OFFSET = 1_073_000_000_000_000 - CURVE_REAL_TOKENS  # virtual minus real token reserves (constant on the curve)
+
+
+def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
+    """First non-dev buy at which the coin is proven and moving: unique buyers over 5 min, SOL bought over 30 s,
+    curve progress, holders (net buyers on the tape), price change over 5 min, >= 2 buys of 1+ SOL in the last minute."""
+    from collections import Counter
+
+    ts, q, b = path.ts, path.q, path.b
+    buyq = np.where(path.is_buy, path.quote, 0.0)
+    cs = np.concatenate([[0.0], np.cumsum(buyq)])
+    big = np.concatenate([[0], np.cumsum(path.is_buy & (path.quote >= LAMPORTS))])
+    price = np.divide(q, b, out=np.zeros_like(q), where=b > 0)
+    bal: Counter = Counter()
+    holders = 0
+    win: Counter = Counter()
+    uniq, lo = 0, 0
+    for i in range(path.n):
+        u = path.users[i]
+        if u:
+            before = bal[u] > 0
+            bal[u] += path.base[i] if path.is_buy[i] else -path.base[i]
+            holders += int(bal[u] > 0) - int(before)
+            if path.is_buy[i]:
+                win[u] += 1
+                uniq += win[u] == 1
+        while ts[lo] < ts[i] - 300:
+            if path.is_buy[lo] and path.users[lo]:
+                win[path.users[lo]] -= 1
+                uniq -= win[path.users[lo]] == 0
+            lo += 1
+        if not path.is_buy[i] or not u or u in dev:
+            continue
+        progress = 1.0 if path.amm[i] else 1.0 - (b[i] - VIRTUAL_OFFSET) / CURVE_REAL_TOKENS
+        if uniq < trig.buyers or progress < trig.progress or holders < trig.holders:
+            continue
+        j30 = int(np.searchsorted(ts, ts[i] - 30, side="left"))
+        if cs[i + 1] - cs[j30] < trig.sol * LAMPORTS:
+            continue
+        j60 = int(np.searchsorted(ts, ts[i] - 60, side="left"))
+        if big[i + 1] - big[j60] < 2:
+            continue
+        j300 = int(np.searchsorted(ts, ts[i] - 300, side="left"))
+        if price[j300] <= 0 or price[i] / price[j300] - 1 < trig.ret:
+            continue
+        return i
+    return None
 
 
 def exit_set() -> list[ExitParams]:
@@ -78,6 +135,8 @@ def exit_set() -> list[ExitParams]:
 def _fire(trig: Trigger, path: MarketPath, launch, kols: set[str]) -> int | None:
     """Index of the trade at which `trig` fires on this token (first time only)."""
     dev = launch.deployers() if launch is not None else set()
+    if trig.kind == "momentum":
+        return _momentum(trig, path, dev)
     if trig.kind == "launch":
         if launch is None:
             return None

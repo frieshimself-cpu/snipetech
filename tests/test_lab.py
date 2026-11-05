@@ -83,3 +83,29 @@ def test_paper_scores_only_triggers_after_the_freeze_once_each():
     # freezing again keeps what is already running instead of duplicating it
     again = paper.freeze(store, cfg, top=3, position="+1", now=NOW)
     assert not any(s["id"] == whale["id"] for s in again["frozen"])
+
+
+def test_momentum_fires_on_a_proven_moving_coin_only():
+    import numpy as np
+
+    from snipetech.analysis.lab import Trigger, _momentum
+    from snipetech.sim.market import MarketPath
+
+    n = 40
+    p = MarketPath.__new__(MarketPath)
+    p.n = n
+    p.ts = np.arange(n, dtype=np.float64) * 2.0  # a trade every 2 s
+    p.slot = np.arange(n) * 5
+    p.is_buy = np.ones(n, dtype=bool)
+    p.quote = np.full(n, 0.4e9)
+    p.quote[[30, 33]] = 1.5e9  # two 1+ SOL buys late
+    p.base = np.full(n, 10e12)  # 10M tokens per buy: the curve is ~50% sold after 40 buys
+    p.b = 1.073e15 - np.cumsum(p.base)
+    p.q = 30e9 + np.cumsum(p.quote)
+    p.amm = np.zeros(n, dtype=bool)
+    p.users = [f"w{i}" for i in range(n)]
+    t = Trigger("momentum", buyers=20, sol=3.0, progress=0.3, holders=13, ret=0.2)
+    i = _momentum(t, p, set())
+    assert i == 33  # the second 1+ SOL buy completes the picture (progress, holders and buyers were there before)
+    assert _momentum(Trigger("momentum", buyers=20, sol=3.0, progress=0.3, holders=100, ret=0.2), p, set()) is None
+    assert _momentum(t, p, {p.users[k] for k in range(n)}) is None  # dev buys never trigger
