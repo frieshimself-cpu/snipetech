@@ -36,8 +36,10 @@ class Market:
 
     def _push(self, user: str, slot: int, is_buy: bool, quote: int, base: int, sig: str | None = None) -> Trade:
         self.n += 1
+        sig = sig or addr(f"{self.mint}:{self.n}")
+        ev = sum(1 for x in self.trades if x.sig == sig)  # several trades in one tx (a create bundle) get distinct events
         t = Trade(
-            sig=sig or addr(f"{self.mint}:{self.n}"), ev=0, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
+            sig=sig, ev=ev, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
             venue="curve", user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
             fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=R0 - (B0 - self.b), ix="buy" if is_buy else "sell",
         )  # fmt: skip

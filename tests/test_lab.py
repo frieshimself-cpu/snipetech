@@ -143,3 +143,31 @@ def test_kol_trigger_wants_the_wallets_first_buy_from_its_label_group():
     assert "tracked wallet" in Trigger("kol", sol=2.0, group="wallet").label()
     rows = collect(store, Config(), buy_sol=0.2, latency_slots=1, position="+1")["rows"]
     assert all("who" in r for r in rows)
+
+
+def test_solo_whale_trigger_skips_create_bundles():
+    store = Store(":memory:")
+    # 1) the big buy arrives on its own, slots after a quiet create: solo fires
+    m = Market(store, addr("solo-0"), addr("solo-dev-0"), NOW - 4000, 20_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("solo-whale-0"), 2.5, 5)
+    m.commit()
+    # 2) the big buy is inside the create transaction (a bundle): solo never fires, plain whale does
+    b = Market(store, addr("solo-1"), addr("solo-dev-1"), NOW - 3000, 20_000_000)
+    b.buy(b.deployer, 0.5, 0, sig=b.create_sig)
+    b.buy(addr("solo-bundle-1"), 2.5, 0, sig=b.create_sig)
+    b.commit()
+    # 3) the big buy is its own tx but three wallets already bought in the create slot: solo never fires
+    c = Market(store, addr("solo-2"), addr("solo-dev-2"), NOW - 2000, 20_000_000)
+    c.buy(c.deployer, 0.5, 0, sig=c.create_sig)
+    for k in range(3):
+        c.buy(addr(f"solo-crowd-2-{k}"), 0.3, 0)
+    c.buy(addr("solo-whale-2"), 2.5, 0)
+    c.commit()
+    solo, plain = Trigger("whale", sol=2.0, solo=True), Trigger("whale", sol=2.0)
+    for mint, want_solo in ((addr("solo-0"), True), (addr("solo-1"), False), (addr("solo-2"), False)):
+        launch = store.launch(mint)
+        path = MarketPath.build(store.trades_for_mint(mint), launch)
+        assert _fire(plain, path, launch, set()) is not None
+        assert (_fire(solo, path, launch, set()) is not None) is want_solo, mint
+    assert "not a create bundle" in solo.label()

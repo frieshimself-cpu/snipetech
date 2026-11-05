@@ -44,10 +44,12 @@ class Trigger:
     max_age: float = 0.0  # whale / burst: only within this many seconds of the launch (0 = any time)
     plain: bool = False  # only normal coins (no mayhem, no holder-reward)
     group: str = "kol"  # kol: which label kind the wallets come from (kol = labeled KOLs, wallet = the tracked list)
+    solo: bool = False  # whale: the buy is not inside the create tx and at most 2 wallets bought in the create slot
 
     def label(self) -> str:
         base = self._label()
-        extra = ([f"within {self.max_age:g}s of launch"] if self.max_age else []) + (["normal coins"] if self.plain else [])
+        extra = ([f"within {self.max_age:g}s of launch"] if self.max_age else []) + (["normal coins"] if self.plain else []) \
+            + (["not a create bundle"] if self.solo else [])
         return base + (f" ({', '.join(extra)})" if extra else "")
 
     def _label(self) -> str:
@@ -75,6 +77,8 @@ TRIGGERS = (
     + [Trigger("kol", sol=1.0)] + [Trigger("kol", sol=s, group="wallet") for s in (1.0, 2.0)]
     # forward paper trading: the >= 5 / 2 SOL edge is all in big buys within ~1 s of the launch, on normal coins
     + [Trigger("whale", sol=s, max_age=1.0, plain=True) for s in (2.0, 5.0)]
+    # the part of that edge OKTech can reach: the big buy arrives on its own, not as part of a create bundle
+    + [Trigger("whale", sol=s, max_age=a, plain=True, solo=True) for s in (1.0, 2.0) for a in (1.0, 5.0)]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
     + [Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2) for u in (20, 40) for v in (3.0, 6.0) for pr in (0.3, 0.5)]
 )
@@ -180,6 +184,16 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols) -> int | None:
         first = path.users[i] not in seen
         seen.add(path.users[i])
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
+            if trig.solo:
+                # live (5 Nov): a >= 2 SOL buy inside the create bundle cannot be followed in its own slot; we land
+                # after the whole bundle, at the top, and bundles dump within seconds. Keep only the big buys that
+                # arrive on their own: not in the create tx, with at most 2 wallets having bought in the create slot.
+                if launch is None or path.sigs[i] == launch.sig:
+                    return None
+                in_slot = {path.users[j] for j in range(i + 1) if path.slot[j] == launch.slot and path.is_buy[j]
+                           and path.users[j] not in dev}  # fmt: skip
+                if len(in_slot) > 2:
+                    return None
             return i
         if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS:
             return i
