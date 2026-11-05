@@ -183,6 +183,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--via", choices=["hunt", "crowd"], default="hunt",
                     help="strategy: how OKTech gates the big-buy trigger: hunt (fires on every launch, measured) or crowd (buys in the create tx)")
     sp.add_argument("--no-preexec", action="store_true", help="strategy: send buys without OKTech's local pre-execution dry run")
+    sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
     sp.add_argument("--buy", type=float, help="SOL per buy: replica (default 0.05), probe (0.01), strategy (the frozen size)")
@@ -454,7 +455,7 @@ async def _run(args, cfg: Config) -> int:
                 return 0
             if args.action == "strategy":
                 rep = await svc.oktech_strategy(args.id[0] if args.id else None, args.wallet or cfg.oktech.wallet or "SNIPER",
-                                                create=args.create, buy_sol=args.buy, max_buys=args.snipes, via=args.via, preexec=not args.no_preexec)  # fmt: skip
+                                                create=args.create, buy_sol=args.buy, max_buys=args.snipes, via=args.via, preexec=not args.no_preexec, stale=args.stale or None)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0

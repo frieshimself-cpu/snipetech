@@ -387,7 +387,8 @@ EXECUTION: dict[str, Any] = {
 }
 
 
-def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True) -> PlannedSniper:
+def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True,
+                    stale: float | None = 60) -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
@@ -444,6 +445,10 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
         notes.append("OKTech documents no switch that skips mayhem / holder-reward coins: find it on the Sniper form, "
                      "or accept them (they cost a little on paper)")  # fmt: skip
     ex.setdefault("sell_on_dev_sell", False)
+    if stale and not ex.get("stale_secs"):
+        # a coin with no trades for a minute is dead: OKTech's dead exit frees the (one-shot) sniper instead of
+        # holding to the timer. Not part of the paper exit, so it is a cap on hold time, never a widening.
+        ex["stale_secs"] = float(stale)
     sell = autosell(ex, notes)
     if sell:
         config["autoSell"] = sell
