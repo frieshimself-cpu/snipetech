@@ -664,6 +664,92 @@ class Service:
         finally:
             await client.close()
 
+    async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, max_fills: int = 10,
+                           rearm_after: float = 60.0) -> dict:  # fmt: skip
+        """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
+        so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
+        is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
+        sniper has been armed for `rearm_after` seconds without a fill (a failed send also spends the shot). Stops
+        re-arming once `max_fills` buys have been seen since the cycler started, on the emergency floor, or at the time
+        limit; in every case the snipers are left running so they finish selling."""
+        address = self._check(address)
+        mine = {r["id"]: r for r in self.store.oktech_snipers()}
+        uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
+        if uncapped:
+            raise SystemExit(f"refusing to cycle {uncapped}: not capped or not made by snipetech")
+        client = self._oktech()
+        events: list[str] = []
+
+        def log(msg: str) -> None:
+            line = f"{time.strftime('%H:%M:%S', time.gmtime())} {msg}"
+            events.append(line)
+            self.progress(line)
+
+        async def balance() -> float:
+            return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+
+        def fills_since(ts: float) -> int:
+            return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
+
+        t0 = time.time()
+        reason, restarts = "time limit", 0
+        armed_at: dict[str, float] = {}
+        try:
+            b0 = await balance()
+            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min")
+            if b0 <= floor_sol:
+                raise SystemExit(f"balance {b0:.4f} is at or below the floor {floor_sol}")
+            for i in ids:
+                ans = await client.start(i)
+                armed_at[i] = time.time()
+                log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
+            low = b0
+            while time.time() - t0 < max_minutes * 60:
+                await asyncio.sleep(5)
+                try:
+                    b = await balance()
+                    held = await self.holdings(address)
+                except Exception as exc:
+                    log(f"rpc check failed ({exc}); still watching")
+                    continue
+                if b < low - 0.005:
+                    log(f"balance {b:.4f} SOL")
+                low = min(low, b)
+                if b < floor_sol:
+                    reason = f"EMERGENCY: balance {b:.4f} below floor {floor_sol}; stopped re-arming (snipers left running to sell)"
+                    break
+                fills = fills_since(t0)
+                if fills >= max_fills:
+                    reason = f"cap reached: {fills} fills since start; snipers left running to finish selling"
+                    break
+                if held:
+                    continue  # a position is open: never restart now
+                now = time.time()
+                for i in ids:
+                    since = now - armed_at.get(i, now)
+                    if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after:
+                        try:
+                            await client.stop(i)
+                            await asyncio.sleep(1.5)
+                            ans = await client.start(i)
+                            armed_at[i] = time.time()
+                            restarts += 1
+                            log(f"re-armed {i[:8]} after {since:.0f}s (fills so far {fills}): "
+                                f"{ans.get('task', {}).get('status', ans)}")  # fmt: skip
+                        except Exception as exc:
+                            log(f"re-arm of {i[:8]} failed: {exc}")
+                        break  # one restart per tick keeps the rate limits and the state readable
+            log(reason)
+            b1 = await balance()
+            log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); {fills_since(t0)} fills; {restarts} re-arms")
+            held = await self.holdings(address)
+            log(("still held (the running snipers manage them): " + ", ".join(f"{h['mint']} ({h['amount']:,.0f})" for h in held))
+                if held else "no tokens held")  # fmt: skip
+            return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills_since(t0), "restarts": restarts,
+                    "held": held, "events": events}  # fmt: skip
+        finally:
+            await client.close()
+
     async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None,
                               max_buys: int = 5, via: str = "hunt", preexec: bool = True) -> dict:  # fmt: skip
         """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
