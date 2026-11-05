@@ -261,3 +261,14 @@ def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
     cfg = strategy_sniper(strat, 10).config
     assert cfg["extraParams"]["seedAccount"] is False  # 6023 NotEnoughTokensToSell: a stop-loss raced the seed sweep
     assert cfg["preexec"]["enabled"] is True  # 6010 on-chain failures are caught by the local dry run instead of paid for
+
+
+def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
+    from snipetech.oktech import strategy_sniper
+
+    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
+             "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
+    cfg = strategy_sniper(strat, 5, via="crowd").config
+    assert cfg["crowdBuys"] == {"enabled": True, "minSigners": 2, "minTotalQuote": 2.0, "platforms": ["pumpfun"], "signal": False, "buy": True}
+    assert "hunt" not in cfg
+    assert "hunt" in strategy_sniper(strat, 5).config

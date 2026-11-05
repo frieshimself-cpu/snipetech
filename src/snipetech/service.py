@@ -665,7 +665,7 @@ class Service:
             await client.close()
 
     async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None,
-                              max_buys: int = 5) -> dict:  # fmt: skip
+                              max_buys: int = 5, via: str = "hunt") -> dict:  # fmt: skip
         """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
         from .oktech import strategy_sniper
 
@@ -680,7 +680,7 @@ class Service:
                 if buy_sol:
                     s = s | {"buy_sol": buy_sol}
                 try:
-                    p = strategy_sniper(s, max_buys)
+                    p = strategy_sniper(s, max_buys, via)
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue

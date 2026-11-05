@@ -387,7 +387,7 @@ EXECUTION: dict[str, Any] = {
 }
 
 
-def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
+def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt") -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
@@ -411,18 +411,27 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
             window_ms = int(float(trig["max_age"]) * 1000)
         else:
             window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
-        # triggerMode "all": every set threshold must hold (with "any" the 1-buyer rule fired on the first buy, live)
-        config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
-                          "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
-                                         "maxUniqueBuyers": None,
-                                         "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
-                                         "minLutMatches": None, "minAccountMatches": None},
-                          "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
-                          "useKnownBotDefaults": True}  # fmt: skip
-        summary.append(f"only after >= {min_sol:g} SOL is bought by >= {buyers} wallet{'s' if buyers > 1 else ''} within "
-                       f"{window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
-        notes.append("hunt is not in OKTech's API docs: its meaning is inferred from the field names; verify the first buys "
-                     "on-chain (did >= the amount get bought before ours?) before scaling")  # fmt: skip
+        if via == "crowd":
+            # the create transaction itself carries the buys (bundled launch): OKTech's crowd-buy filter reads them
+            # before the create lands. Measured 5 Nov: hunt fired on launches with no such buy (0 of 3 probe fills);
+            # the tape says the bundled subset is the profitable part of the >= 2 SOL / first-second trigger.
+            config["crowdBuys"] = {"enabled": True, "minSigners": 2, "minTotalQuote": _round(min_sol, 3), "platforms": ["pumpfun"],
+                                   "signal": False, "buy": True}  # fmt: skip
+            summary.append(f"only launches whose create transaction already carries >= {min_sol:g} SOL of buys (OKTech crowd buys)")
+            notes.append("crowdBuys fires at the create: verify on-chain that the create's own buys sum to >= the amount")
+        else:
+            # triggerMode "all": every set threshold must hold (with "any" the 1-buyer rule fired on the first buy, live)
+            config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
+                              "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
+                                             "maxUniqueBuyers": None,
+                                             "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
+                                             "minLutMatches": None, "minAccountMatches": None},
+                              "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
+                              "useKnownBotDefaults": True}  # fmt: skip
+            summary.append(f"only after >= {min_sol:g} SOL is bought by >= {buyers} wallet{'s' if buyers > 1 else ''} within "
+                           f"{window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
+            notes.append("hunt fired without that buy on 3 of 3 probe fills (5 Nov 19:59 UTC): treat it as 'every launch' until "
+                         "OKTech says otherwise; the crowd-buys variant (--via crowd) is the gated one")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):
