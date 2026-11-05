@@ -90,8 +90,11 @@ Needs: ~2 SOL in the SNIPER wallet for the 0.2 SOL batches.
 6Z91's quick flips lose (-23 SOL on coins held < 2 s); its profit is in coins held 16 s to minutes.
 Our 100%-out trailing stop leaves that on the table.
 
-1. Add its ladder to the simulator and paper-test it against the current exit:
-   sell ~35% at +10%, trail the rest 10% from the peak, dump everything on a 1-s pause or at -8%.
+1. ~~Add its ladder to the simulator and paper-test it against the current exit~~ Done 5 Nov evening: 24 ladder
+   variants (sell 35–50% at +10/+20%, trail 10–18%, stop -8/-15%, with and without a 1-s dead exit) are in the lab's
+   exit grid. On 20.3 h of tape none beat the plain trailing stop for any trigger (the freeze found nothing new), so
+   the live exit stays SL -15% / trail 10% / 300 s. Re-check when the tape is a few days long; the ladder helps 6Z91
+   because it holds minutes, and our edge is in the first seconds.
 2. Add OKTech's remaining exits to the search grid: `autoStop` (a fast +50% in 3 s turns the exits
    off and lets it run), `momentumHold`, `timerExtension`, `stageAcceleration`.
 3. Freeze the winner, judge it forward for >= 300 trades, then switch the live sniper to it.
