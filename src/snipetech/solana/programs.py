@@ -138,4 +138,4 @@ def decode_instruction(program_id: str, data: bytes) -> tuple[str, tuple[str, ..
     return name, accounts, args
 
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
-TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PazBwyvEJdKGLvMMMMM"
+TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"

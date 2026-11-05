@@ -214,7 +214,7 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
         async def call(self, method, params):
             if method == "getBalance":
                 return {"value": int(next(self.balances) * 1e9)}
-            mint = "Mint1111111111111111111111111111111111111111" if params[1]["programId"].startswith("Tokenz") else None
+            mint = "Mint1111111111111111111111111111111111111111" if params[1]["programId"] == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" else None
             accts = [{"pubkey": "acct", "account": {"data": {"parsed": {"info": {"mint": mint, "tokenAmount": {"uiAmount": 1000.0}}}}}}]
             return {"value": accts if mint else []}
 
@@ -244,3 +244,10 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
     store.add_oktech_sniper({"id": "c", "kind": "strategy", "source": "x", "payload": {"singleSnipe": False}})
     with pytest.raises(SystemExit, match="not capped"):
         asyncio.run(svc.oktech_guard(["c"], w, 0.5, 1))
+
+
+def test_token_program_ids_are_real_addresses():
+    from snipetech.solana.base58 import b58decode
+    from snipetech.solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
+
+    assert len(b58decode(TOKEN_PROGRAM)) == 32 and len(b58decode(TOKEN_2022_PROGRAM)) == 32
