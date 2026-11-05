@@ -115,6 +115,8 @@ class LiveConfig:
     index_amm: bool = False  # also index all PumpSwap trades (heavy)
     rescore_interval_secs: int = 120
     funder_lookup: bool = True  # resolve who funded brand-new deployer wallets
+    source: str = "auto"  # auto (LaserStream for the tape when HELIUS_API_KEY is set) | laserstream | logs
+    laserstream_endpoint: str = "laserstream-mainnet-fra.helius-rpc.com:443"
 
 
 @dataclass

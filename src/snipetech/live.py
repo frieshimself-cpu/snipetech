@@ -16,6 +16,7 @@ optional webhook.
 from __future__ import annotations
 
 import asyncio
+import os
 import json
 import logging
 import time
@@ -83,7 +84,7 @@ class LiveWatcher:
         self.slot_pos: dict[int, int] = defaultdict(int)
         self.buffer: list[Trade] = []
         self.fbuffer: list[Trade] = []  # foreign-quoted trades (tape mode)
-        self.parked: dict[str, list[tuple[int, dict]]] = {}  # pool -> log notifications waiting for its mints
+        self.parked: dict[str, list[tuple[TxEvents, int]]] = {}  # pool -> transactions waiting for its mints
         self.pools = self.store.pools()
         self.gaps: list[tuple[float, float]] = []
         self.started = time.time()
@@ -100,7 +101,9 @@ class LiveWatcher:
 
     async def run(self) -> None:
         tasks = [asyncio.create_task(self._maintenance())]
-        if self.firehose:
+        if self.firehose and self._use_laserstream():
+            tasks.append(asyncio.create_task(self._laserstream()))
+        elif self.firehose:
             tasks.append(asyncio.create_task(self._firehose(PUMP_PROGRAM)))
             if self.cfg.live.index_amm:
                 tasks.append(asyncio.create_task(self._firehose(PUMP_AMM_PROGRAM)))
@@ -146,6 +149,50 @@ class LiveWatcher:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)
 
+    def _use_laserstream(self) -> bool:
+        from .solana import laserstream as LS
+
+        src = self.cfg.live.source
+        if src == "logs":
+            return False
+        ok = bool(os.environ.get("HELIUS_API_KEY")) and LS.available()
+        if src == "laserstream" and not ok:
+            log.warning("live.source=laserstream needs HELIUS_API_KEY and grpcio/protobuf; using logsSubscribe")
+        return ok and (src == "laserstream" or self.tape)
+
+    async def _laserstream(self) -> None:
+        """The whole firehose over one LaserStream subscription: exact block order, every trader."""
+        from .solana import laserstream as LS
+        from .solana.tx import extract_from_transaction
+
+        programs = [PUMP_PROGRAM, LAUNCHLAB_PROGRAM] + ([PUMP_AMM_PROGRAM] if self.cfg.live.index_amm else [])
+        backoff = [1.0]
+
+        def on_connect() -> None:
+            self._connected()
+            backoff[0] = 1.0
+            log.info("LaserStream subscribed (%s)", ", ".join(p[:8] for p in programs))
+
+        def on_tx(txj: dict[str, Any], index: int) -> None:
+            ev = extract_from_transaction(txj)
+            if ev.failed or not ev.events:
+                return
+            self.stats["laserstream_txs"] += 1
+            self._on_tx(ev, index)
+
+        while True:
+            try:
+                await LS.stream(programs, on_tx, endpoint=self.cfg.live.laserstream_endpoint, commitment=self.cfg.rpc.commitment,
+                                on_connect=on_connect)  # fmt: skip
+                raise RuntimeError("stream ended")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # reconnect on anything
+                self._disconnected()
+                log.warning("LaserStream dropped (%s); reconnecting in %.0fs", str(exc)[:200], backoff[0])
+                await asyncio.sleep(backoff[0])
+                backoff[0] = min(backoff[0] * 2, 60)
+
     def _connected(self) -> None:
         if self.disconnected_at is not None:
             self.gaps.append((self.disconnected_at, time.time()))
@@ -168,10 +215,13 @@ class LiveWatcher:
             for s in sorted(self.slot_pos)[:2500]:
                 del self.slot_pos[s]
         # receive time stands in for block time (LaunchLab events carry no timestamp; pump's do)
-        tx = TxEvents(value["signature"], slot, int(time.time()), "", events)
+        self._on_tx(TxEvents(value["signature"], slot, int(time.time()), "", events), pos)
+
+    def _on_tx(self, tx: TxEvents, pos: int) -> None:
+        """One decoded transaction; `pos` orders it within its slot (LaserStream: its index in the block)."""
         norm = normalize(tx, pos, self.pools, foreign=self.tape)
         if norm.unresolved_pools and self.tape:
-            self._park(norm.unresolved_pools, slot, value)
+            self._park(norm.unresolved_pools, tx, pos)
         if norm.pools:
             self.pools.update(norm.pools)
             self.store.add_pools(norm.pools)
@@ -203,14 +253,14 @@ class LiveWatcher:
         if len(self.buffer) + len(self.fbuffer) >= 500:
             self._flush()
 
-    def _park(self, pools: set[str], slot: int, value: dict[str, Any]) -> None:
+    def _park(self, pools: set[str], tx: TxEvents, pos: int) -> None:
         """Logs don't say which token a LaunchLab / PumpSwap pool trades: look the pool up once and
         replay what arrived meanwhile."""
         for pool in pools:
             if pool in self.pools:
                 continue  # resolved already; nothing more to learn
             waiting = self.parked.setdefault(pool, [])
-            waiting.append((slot, value))
+            waiting.append((tx, pos))
             if len(waiting) == 1:
                 task = asyncio.get_running_loop().create_task(self._resolve_pool(pool))
                 self.tasks.add(task)
@@ -226,8 +276,8 @@ class LiveWatcher:
         waiting = self.parked.pop(pool, [])
         if pool in found:
             self.pools.update(found)
-            for slot, value in waiting:
-                self._on_logs(slot, value)
+            for tx, pos in waiting:
+                self._on_tx(tx, pos)
         else:
             self.stats["unresolved_pool_events"] += len(waiting)
 
