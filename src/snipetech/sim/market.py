@@ -128,17 +128,28 @@ class MarketPath:
         qc = k / bc
         return bc - k / (qc + quote_in)
 
+    # Our tokens are modeled as taken out of the recorded reserves (the curve the others traded on, minus what we
+    # hold). That breaks down once we would hold a large share of what is left — e.g. a pool or curve whose recorded
+    # reserves later fall towards our position — and the shifted price explodes. There the value falls back to
+    # selling into the recorded reserves as they are, which can never exceed the SOL in them.
+    MAX_SHARE = 0.5
+
     def sell_gross(self, i: int | np.ndarray, sell: float | np.ndarray, held: float | np.ndarray):
         """Gross lamports for selling `sell` of `held` tokens at state(s) i (before fees)."""
-        k = self.q[i] * self.b[i]
-        rest = np.maximum(self.b[i] - held, 1.0)
+        b = self.b[i]
+        k = self.q[i] * b
+        shifted = b - held
+        ok = shifted >= b * (1.0 - self.MAX_SHARE)
+        rest = np.where(ok, np.maximum(shifted, 1.0), b)
         return k * (1.0 / rest - 1.0 / (rest + sell))
 
     def value_series(self, start: int, held: float) -> np.ndarray:
         """Net (after sell fees) value of `held` tokens at every state from `start` on."""
         q, b, fee = self.q[start:], self.b[start:], self.fee_bps[start:]
-        rest = np.maximum(b - held, 1.0)
-        return q * held / rest * (1.0 - fee / 10_000.0)
+        shifted = b - held
+        ok = shifted >= b * (1.0 - self.MAX_SHARE)
+        gross = np.where(ok, q * held / np.maximum(shifted, 1.0), q * held / (b + held))
+        return gross * (1.0 - fee / 10_000.0)
 
     def mcap_sol(self, i: int) -> float:
         """Fully diluted market cap in SOL at state i (1B supply, 6 decimals)."""

@@ -145,3 +145,20 @@ def test_stale_exit_sells_when_trading_stops():
     assert r.exit_reason == "stale" and r.exit_idx == 3 and np.isfinite(r.pnl_sol)
     off = run_exit(prep, ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False), Costs())
     assert off.exit_reason == "time"
+
+
+def test_position_value_never_exceeds_the_sol_in_the_pool():
+    import numpy as np
+
+    from snipetech.sim.market import MarketPath
+
+    p = MarketPath.__new__(MarketPath)
+    p.q = np.array([30e9, 31e9, 2e9])  # the last state: reserves collapse towards our position
+    p.b = np.array([1.07e15, 1.03e15, 60e12])
+    p.fee_bps = np.array([100, 100, 100])
+    held = 66e12  # ~2 SOL bought at the start of a fresh curve
+    v = p.value_series(0, held)
+    assert np.all(np.isfinite(v)) and v[-1] <= p.q[-1]
+    assert 1.5e9 < v[0] < 2.2e9  # sane where the position is a small share
+    g = p.sell_gross(np.array([2]), held, held)
+    assert float(g[0]) <= p.q[2]
