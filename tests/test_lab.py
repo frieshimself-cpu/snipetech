@@ -43,3 +43,19 @@ def test_whale_trigger_and_out_of_sample_ranking():
     late = {r["trigger"]: r for r in rank(slow, cfg, top=50)}
     label = TRIGGERS[w].label()
     assert best[label]["test"]["mean"] > 0 > late[label]["test"]["mean"]  # the edge is in being early
+
+
+def test_landing_plus_n_counts_trades_after_the_trigger():
+    import numpy as np
+
+    from snipetech.sim.market import MarketPath
+
+    p = MarketPath.__new__(MarketPath)
+    p.slot = np.array([10, 10, 10, 10, 11, 11])  # trades in this token, by slot
+    # trigger at index 1 (slot 10): +0 is right after it, +1 lets one more trade in, +5 stops at the slot's last trade
+    assert int(p.landing_index(10, "+0", 1)) == 1
+    assert int(p.landing_index(10, "+1", 1)) == 2
+    assert int(p.landing_index(10, "+5", 1)) == 3
+    assert int(p.landing_index(10, "start", 1)) == 1 and int(p.landing_index(10, "end", 1)) == 3
+    # a later slot: counted from its first trade
+    assert int(p.landing_index(11, "+1", 1)) == 4

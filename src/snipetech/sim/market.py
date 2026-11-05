@@ -97,9 +97,14 @@ class MarketPath:
 
     def landing_index(self, target_slot: int | np.ndarray, position: str, min_index: int | np.ndarray = 0):
         """Index of the last recorded state that executes *before* a tx landing in
-        `target_slot` at `position` (start / middle / end of that slot's trades)."""
+        `target_slot` at `position`: start / middle / end of that slot's trades, or "+N" — N trades in
+        this token land ahead of you (counted from the trigger in its own slot, else from the slot's
+        start), never past the slot's last trade. "+1" is what OKTech measured on mainnet."""
         lo = np.searchsorted(self.slot, target_slot, side="left")
         hi = np.searchsorted(self.slot, target_slot, side="right")
+        if isinstance(position, str) and position.startswith("+") and position[1:].isdigit():
+            base = np.maximum(lo - 1, min_index)
+            return np.maximum(np.minimum(base + int(position[1:]), np.maximum(hi - 1, base)), min_index)
         if position == "start":
             idx = lo - 1
         elif position == "end":
@@ -107,7 +112,7 @@ class MarketPath:
         elif position == "middle":
             idx = lo + (hi - lo) // 2 - 1
         else:
-            raise ValueError(f"position must be one of {POSITIONS}")
+            raise ValueError(f"position must be one of {POSITIONS} or +N")
         return np.maximum(idx, min_index)
 
     def index_at_time(self, ts: float) -> int:

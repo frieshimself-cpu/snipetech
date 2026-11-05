@@ -34,6 +34,12 @@ def _out(args, data, render=None) -> None:
         print(render(data))
 
 
+def _position(v: str) -> str:
+    if v in ("start", "middle", "end") or (v.startswith("+") and v[1:].isdigit()):
+        return v
+    raise argparse.ArgumentTypeError("start, middle, end or +N (e.g. +1)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="snipetech", description="Decide what to snipe and who to copy on pump.fun.")
     p.add_argument("--version", action="version", version=__version__)
@@ -142,7 +148,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = cmd("lab", "search the recorded market (`watch --tape`) for strategies that pay at your speed: trigger x exit, out of sample")
     sp.add_argument("--latency", type=int, default=0, help="slots between the trigger and your buy (0 = same slot)")
-    sp.add_argument("--position", choices=["start", "middle", "end"], default="middle", help="where in that slot you land")
+    sp.add_argument("--position", type=_position, default="middle",
+                    help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you)")
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
     sp.add_argument("--top", type=int, default=10)
