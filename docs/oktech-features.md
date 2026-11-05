@@ -242,3 +242,51 @@ discriminator and required accounts), large transfer (optional counterparty,
 min amount), whale SOL > 1,000; alert via Discord/Telegram, POST to webhook,
 or fire a sniper; rule language on LaunchLab configs (fee schedules, vesting,
 supply, LP split, migration target) with values like `fee.totalPercent`.
+
+## Gated features — exact behaviour and payload (from the app's help texts and payload code)
+
+Default gate table (`X0` in the bundle): level-unlocked — tasks/settings/catch/
+updates ≥1, sniper/mayhem ≥4, advanced modes ≥4.1, stocks auto ≥4.1 or =4.2,
+gucci =4.2/11.5/12.5, ansem ≥9, over ≥10, vamp ≥11 or =4.145, sniperApi open.
+Per-user only (`usersOnly`): chain, social, sniperAutoDeploy, sniperPreconf,
+sniperSModes, sniperLoadout, sniperPreexec, sniperAccountFilter,
+socialUltimate, fomoTracking.
+
+- **Hunt** `mode:"hunt"`, `hunt:{timeWindowMs(10000), triggerMode any|all,
+  thresholds:{minTotalSol, minUniqueBuyers, maxUniqueBuyers, maxDevBuySol,
+  minCpiBuyers, minLutMatches, minAccountMatches, requireKnownBot},
+  knownBotPrograms[], knownBotWallets[], knownBotLuts[], knownBotAccounts[],
+  useKnownBotDefaults}`. Registers every launch on the chosen venues and buys
+  once the thresholds hold inside the window; dropped when the window closes.
+- **Shapes** `mode:"shapes"`, `launchShape:{enabled, wrapped only|direct|any,
+  wrapperPrograms, ignoreWrapperPrograms, newWrappersOnly, platformPayer,
+  signal}`, `crowdBuys:{enabled, minSigners, minTotalQuote, platforms, signal,
+  buy}`, `signalOnly`, `relaySignals`; wrapped-launch reader twin|shreds|off.
+- **Web** `mode:"web"`, `web.tracking:{trackTransfers, trackConfigs,
+  autoSubscribe, autoMigrationSnipe, maxDepth(3), unsubscribeAfterMs,
+  fundingFilters:{matchMode, sol, usdc, usd1, usdt, custom[]},
+  preload:{enabled, lookbackDays(28), maxTransactions(1000)},
+  childTracking:{maxDepth(1), lookbackDays(1), maxTransactions(100)},
+  creatorFilter:{enabled, minCreations, maxCreations,
+  maxCreationsWhileSubscribed(1), timeoutMs(2000), allowOnError}}`.
+- **Local pre-execution** `preexec:{enabled, padCu(700), padPercent,
+  loadedAccounts(true), loadedAccountsPadPercent(10), complement,
+  complementWaitMs(25, max 500), createWaitMs(5)}`. Replays create + buy in
+  the sniper's VM; sends with a CU limit sized from consumption (ranks higher
+  at the same fee); a buy that fails locally is not sent; SOL-quoted pump.fun
+  only. Two waves: plain buy now + measured copy on the same nonce.
+- **Account filter** `accountFilter:{whitelist[], whitelistMode all|any,
+  blacklist[]}` — keys the launch tx must / must not name, ≤32 each,
+  blacklist judged first.
+- **Preconfs** `preconf:true` — registers dev / copied wallets on the hub's
+  preconfirmation lanes; no-op with Monitor Program alone.
+- **AutoDeploy** `mode:"autodeploy"`, `autoDeploy:{quoteMint, name, symbol,
+  description, twitter, website, imageUrl, metadataUri, devBuy:{enabled,
+  amount}}` — launches the coin itself from the chosen creator wallet.
+- **Loadout** `mode:"loadout"`, `loadout:{entryDelaySecs, maxFeePercent,
+  leadMs, buyProtectedAtOnce}` — protected launches: fee falls from ~100 % to
+  the 5 % floor over 60 s; buy only, no auto-sell.
+- **[A] mode** (level 9) `mode:"ansem"`, `fundingAge:{minFundingSol(0.5),
+  maxFundingSol(10), fundingWindowMinutes(15), maxDevTxCount, onMismatch
+  skip|log}` — first-ever funding of the deployer inside the band and window.
+- **Chain / Social / Ultimate / FOMO** — pages and streams, not sniper fields.
