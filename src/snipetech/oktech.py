@@ -421,6 +421,9 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt") -> Pla
             notes.append("crowdBuys fires at the create: verify on-chain that the create's own buys sum to >= the amount")
         else:
             # triggerMode "all": every set threshold must hold (with "any" the 1-buyer rule fired on the first buy, live)
+            # Hunt is its own sniper mode in the OKTech app ([S] tab): the `hunt` block only applies with mode "hunt".
+            # Our 5 Nov probes sent it under mode "normal", which is one reason they bought every launch.
+            config["mode"] = "hunt"
             config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
                               "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
                                              "maxUniqueBuyers": None,
@@ -430,8 +433,8 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt") -> Pla
                               "useKnownBotDefaults": True}  # fmt: skip
             summary.append(f"only after >= {min_sol:g} SOL is bought by >= {buyers} wallet{'s' if buyers > 1 else ''} within "
                            f"{window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
-            notes.append("hunt fired without that buy on 3 of 3 probe fills (5 Nov 19:59 UTC): treat it as 'every launch' until "
-                         "OKTech says otherwise; the crowd-buys variant (--via crowd) is the gated one")  # fmt: skip
+            notes.append("hunt is an approved-accounts mode ([S] tab); the 5 Nov probes also sent it under mode normal and "
+                         "bought every launch: verify on the tape that every fill had the big buy in front of it")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):

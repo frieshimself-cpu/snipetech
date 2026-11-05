@@ -271,4 +271,5 @@ def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
     cfg = strategy_sniper(strat, 5, via="crowd").config
     assert cfg["crowdBuys"] == {"enabled": True, "minSigners": 2, "minTotalQuote": 2.0, "platforms": ["pumpfun"], "signal": False, "buy": True}
     assert "hunt" not in cfg
-    assert "hunt" in strategy_sniper(strat, 5).config
+    hunt = strategy_sniper(strat, 5).config
+    assert "hunt" in hunt and hunt["mode"] == "hunt"
