@@ -261,6 +261,8 @@ def _describe_exit(e: dict | None) -> str:
     if not e:
         return "none"
     parts = []
+    if e.get("stale_secs"):
+        parts.append(f"sell once nothing trades for {e['stale_secs']:g}s")
     if e.get("take_profit"):
         parts.append(f"TP +{e['take_profit']:.0%}" + (f" ({e.get('tp_sell_fraction', 1):.0%})" if e.get("tp_sell_fraction", 1) < 1 else ""))
     if e.get("stop_loss"):
