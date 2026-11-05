@@ -162,7 +162,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "guard", "show", "start", "stop", "delete"])
+    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "guard", "show", "start", "stop", "delete"])
     sp.add_argument("--id", action="append", help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several")
     sp.add_argument("--address", help="guard: the buying wallet's public address (its balance is watched)")
     sp.add_argument("--floor", type=float, help="guard: stop everything if the wallet's balance falls below this many SOL")
@@ -427,6 +427,25 @@ async def _run(args, cfg: Config) -> int:
                 else:
                     print("\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
                           "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`.")
+                return 0
+            if args.action == "strategy":
+                rep = await svc.oktech_strategy(args.id[0] if args.id else None, args.wallet or cfg.oktech.wallet or "SNIPER",
+                                                create=args.create)  # fmt: skip
+                if args.json:
+                    print(json.dumps(rep, indent=1, default=str))
+                    return 0
+                for sn in rep["snipers"]:
+                    print(f"\n{sn['id']}  {sn['label']}")
+                    if sn.get("error"):
+                        print(f"  skipped: {sn['error']}")
+                        continue
+                    print(f"  OKTech sniper: {sn['name']}" + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else ""))
+                    for line in sn["summary"]:
+                        print(f"    {line}")
+                    for n in sn["notes"]:
+                        print(f"    note: {n}")
+                if not args.create:
+                    print("\nDry run (--json shows the payloads). --create makes them on OKTech, idle; start them with `oktech guard`.")
                 return 0
             if args.action == "guard":
                 if not (args.id and args.address and args.floor is not None):

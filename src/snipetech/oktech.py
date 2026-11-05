@@ -372,6 +372,39 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
     return out
 
 
+def strategy_sniper(strategy: dict) -> PlannedSniper:
+    """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
+
+    Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
+    the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL."""
+    trig, ex = strategy["trigger"], dict(strategy["exit"])
+    notes: list[str] = []
+    buy = float(strategy.get("buy_sol") or 0.2)
+    config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
+                              "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": False}  # fmt: skip
+    summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)"]
+    kind = trig.get("kind")
+    if kind in ("whale", "burst"):
+        min_sol = float(trig.get("sol") or 0)
+        signers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
+        config["crowdBuys"] = {"enabled": True, "minSigners": signers, "minTotalQuote": _round(min_sol, 3), "platforms": ["pumpfun"],
+                               "signal": False, "buy": True}  # fmt: skip
+        summary.append(f"only after early buyers put in >= {min_sol:g} SOL ({signers} wallet{'s' if signers > 1 else ''} or more)")
+        notes.append("crowdBuys semantics are not in OKTech's API docs: confirm on the Sniper page that minTotalQuote is SOL "
+                     "and counts early buys of the launch (most of the lab's triggers of this kind fire within 2 s of it)")  # fmt: skip
+        if kind == "whale":
+            notes.append("the lab's trigger is ONE buy >= the amount by a non-dev; OKTech's crowd filter sums early buys")
+    elif kind == "kol":
+        raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
+    ex.setdefault("sell_on_dev_sell", False)
+    sell = autosell(ex, notes)
+    if sell:
+        config["autoSell"] = sell
+        summary.append(f"exit: {_describe_exit(ex)}")
+    return PlannedSniper("strategy", strategy.get("id") or kind, f"snipetech strategy: {strategy.get('label', kind)}"[:80], config,
+                         summary=summary, notes=notes)  # fmt: skip
+
+
 def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float | None) -> PlannedSniper:
     """Rebuild a studied wallet's rules (`snipetech study`) as a `normal` OKTech sniper.
 

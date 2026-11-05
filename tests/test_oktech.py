@@ -223,3 +223,25 @@ def test_guard_stops_everything_below_the_floor(monkeypatch):
     assert "below the floor" in rep["reason"]
     assert calls[:2] == [("start", "a"), ("start", "b")]
     assert ("stop", "a") in calls and ("stop", "b") in calls
+
+
+def test_strategy_sniper_maps_frozen_strategies():
+    import pytest
+
+    from snipetech.oktech import strategy_sniper
+    from snipetech.sim.exits import ExitParams
+
+    whale = {"id": "w1", "label": "buy >= 5 SOL", "buy_sol": 0.2, "trigger": {"kind": "whale", "buyers": 0, "sol": 5.0, "window": 0.0},
+             "exit": ExitParams(take_profit=0, stop_loss=0.15, trailing_stop=0.25, max_hold_secs=300, sell_on_dev_sell=False).to_dict()}
+    p = strategy_sniper(whale)
+    c = p.config
+    assert c["monitorProgram"] is True and c["platforms"] == ["pumpfun"] and c["buyAmount"] == 0.2
+    assert c["crowdBuys"]["enabled"] and c["crowdBuys"]["minSigners"] == 1 and c["crowdBuys"]["minTotalQuote"] == 5.0 and c["crowdBuys"]["buy"]
+    a = c["autoSell"]
+    assert a["stopLoss"]["stages"][0]["percentLoss"] == 15 and a["trailingStopLoss"]["percentFromPeak"] == 25 and a["stages"]
+    launch = {"id": "l1", "label": "at the launch", "buy_sol": 0.2, "trigger": {"kind": "launch", "buyers": 0, "sol": 0.0, "window": 0.0},
+              "exit": ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1).to_dict()}
+    c2 = strategy_sniper(launch).config
+    assert "crowdBuys" not in c2 and c2["autoSell"]["deadExit"]["staleSeconds"] == 1
+    with pytest.raises(ValueError):
+        strategy_sniper({"trigger": {"kind": "kol"}, "exit": {}})

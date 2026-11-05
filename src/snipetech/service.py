@@ -633,6 +633,36 @@ class Service:
                     await client.stop(i)
             await client.close()
 
+    async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False) -> dict:
+        """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
+        from .oktech import strategy_sniper
+
+        frozen = self.store.coverage("paper_strategies").get("strategies", [])
+        picked = [s for s in frozen if strategy_id in (None, s["id"])]
+        if not picked:
+            raise SystemExit(f"no frozen strategy {strategy_id or ''}: see `snipetech paper report`")
+        out = []
+        client = self._oktech() if create else None
+        try:
+            for s in picked:
+                try:
+                    p = strategy_sniper(s)
+                except ValueError as exc:
+                    out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
+                    continue
+                row = {"id": s["id"], "label": s["label"], "name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config}
+                if client is not None:
+                    ans = await client.create(p.name, p.config, wallet, p.external_id)
+                    task = ans.get("task") or {}
+                    self.store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source,
+                                                  "name": p.name, "config_hash": p.config_hash, "payload": p.config})  # fmt: skip
+                    row |= {"oktech_id": task["id"], "status": task.get("status")}
+                out.append(row)
+        finally:
+            if client is not None:
+                await client.close()
+        return {"wallet": wallet, "snipers": out}
+
     async def oktech_task(self, action: str, task_id: str) -> dict:
         client = self._oktech()
         try:
