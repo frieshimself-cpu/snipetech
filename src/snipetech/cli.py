@@ -178,6 +178,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-minutes", type=float, default=60, help="guard: stop everything after this long")
     sp.add_argument("--max-fills", type=int, default=10, help="cycle: stop re-arming after this many buys")
     sp.add_argument("--rearm-after", type=float, default=60, help="cycle: re-arm an idle sniper after this many seconds")
+    sp.add_argument("--ignore-mint", action="append", help="cycle: a held coin no sniper manages (sold by hand); never counts as open")
     sp.add_argument("--copy-wallet", help="probe: also measure copy speed against this wallet's buys")
     sp.add_argument("--snipes", type=int, default=5, help="probe: buys per speed-test sniper (default 5)")
     sp.add_argument("--via", choices=["hunt", "crowd"], default="hunt",
@@ -481,7 +482,8 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "cycle":
                 if not (args.id and args.address and args.floor is not None):
                     raise SystemExit("cycle: give --id (one or more), --address and --floor")
-                rep = await svc.oktech_cycle(args.id, args.address, args.floor, args.max_minutes, args.max_fills, args.rearm_after)
+                rep = await svc.oktech_cycle(args.id, args.address, args.floor, args.max_minutes, args.max_fills, args.rearm_after,
+                                             args.ignore_mint)
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action == "guard":

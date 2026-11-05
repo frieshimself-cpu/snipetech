@@ -665,7 +665,7 @@ class Service:
             await client.close()
 
     async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, max_fills: int = 10,
-                           rearm_after: float = 60.0) -> dict:  # fmt: skip
+                           rearm_after: float = 60.0, ignore_mints: list[str] | None = None) -> dict:  # fmt: skip
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
@@ -698,7 +698,8 @@ class Service:
             # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
             # only stablecoin dust is ignored
-            return [h for h in await self.holdings(address) if h["mint"] not in STABLE and h["amount"] >= 1]
+            skip = STABLE | set(ignore_mints or [])  # ignore_mints: positions no sniper manages (to be sold by hand)
+            return [h for h in await self.holdings(address) if h["mint"] not in skip and h["amount"] >= 1]
 
         t0 = time.time()
         reason, restarts = "time limit", 0
