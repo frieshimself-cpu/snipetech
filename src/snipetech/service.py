@@ -691,11 +691,14 @@ class Service:
         def fills_since(ts: float) -> int:
             return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
 
+        STABLE = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+                  "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"}  # fmt: skip
+
         async def open_positions() -> list[dict]:
-            # only coins this wallet bought since the cycler started count as positions: dust and stablecoins left in
-            # the wallet (0.0002 USDC blocked every re-arm on the first run) must not pin the snipers
-            bought = {t.mint for t in self.store.trades_for_user(address, int(t0)) if t.is_buy}
-            return [h for h in await self.holdings(address) if h["mint"] in bought and h["amount"] >= 1]
+            # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
+            # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
+            # only stablecoin dust is ignored
+            return [h for h in await self.holdings(address) if h["mint"] not in STABLE and h["amount"] >= 1]
 
         t0 = time.time()
         reason, restarts = "time limit", 0
@@ -736,6 +739,8 @@ class Service:
                 now = time.time()
                 for i in ids:
                     since = now - armed_at.get(i, now)
+                    if since < 20:  # a fresh shot may have just been fired and not reached the tape or the RPC yet
+                        continue
                     if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after:
                         try:
                             await client.stop(i)
