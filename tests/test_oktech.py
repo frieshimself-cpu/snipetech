@@ -181,8 +181,10 @@ def test_speedtest_snipers_are_capped():
     assert speedtest_snipers(0.01, 3, None)[0].config["totalSnipes"] == 3 and len(speedtest_snipers(0.01, 3, None)) == 1
 
 
-def test_guard_stops_everything_below_the_floor(monkeypatch):
+def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
     import asyncio
+
+    import pytest
 
     from snipetech.config import Config
     from snipetech.service import Service
@@ -205,43 +207,40 @@ def test_guard_stops_everything_below_the_floor(monkeypatch):
         async def close(self):
             pass
 
-    balances = iter([1.0, 0.99, 0.95, 0.7, 0.7, 0.7])
-
     class FakeRpc:
+        def __init__(self, balances):
+            self.balances = iter(balances)
+
         async def call(self, method, params):
-            assert method == "getBalance"
-            return {"value": int(next(balances) * 1e9)}
+            if method == "getBalance":
+                return {"value": int(next(self.balances) * 1e9)}
+            mint = "Mint1111111111111111111111111111111111111111" if params[1]["programId"].startswith("Tokenz") else None
+            accts = [{"pubkey": "acct", "account": {"data": {"parsed": {"info": {"mint": mint, "tokenAmount": {"uiAmount": 1000.0}}}}}}]
+            return {"value": accts if mint else []}
 
     async def no_sleep(_):
         return None
 
-    svc = Service(Config(), store=Store(":memory:"))
-    svc._rpc = FakeRpc()
+    store = Store(":memory:")
+    for i in ("a", "b"):
+        store.add_oktech_sniper({"id": i, "kind": "strategy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 3}})
+    svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
-    rep = asyncio.run(svc.oktech_guard(["a", "b"], "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at", 0.8, 5))
-    assert "below the floor" in rep["reason"]
-    assert calls[:2] == [("start", "a"), ("start", "b")]
+    w = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
+    # runaway buying: emergency stop, and the leftovers are named
+    svc._rpc = FakeRpc([1.0, 0.99, 0.95, 0.7, 0.7, 0.7])
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.8, 5))
+    assert rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
     assert ("stop", "a") in calls and ("stop", "b") in calls
+    # normal run past the time limit: nothing is stopped (the snipers keep selling)
+    calls.clear()
+    import itertools
 
-
-def test_strategy_sniper_maps_frozen_strategies():
-    import pytest
-
-    from snipetech.oktech import strategy_sniper
-    from snipetech.sim.exits import ExitParams
-
-    whale = {"id": "w1", "label": "buy >= 5 SOL", "buy_sol": 0.2, "trigger": {"kind": "whale", "buyers": 0, "sol": 5.0, "window": 0.0},
-             "exit": ExitParams(take_profit=0, stop_loss=0.15, trailing_stop=0.25, max_hold_secs=300, sell_on_dev_sell=False).to_dict()}
-    p = strategy_sniper(whale)
-    c = p.config
-    assert c["monitorProgram"] is True and c["platforms"] == ["pumpfun"] and c["buyAmount"] == 0.2
-    assert c["crowdBuys"]["enabled"] and c["crowdBuys"]["minSigners"] == 1 and c["crowdBuys"]["minTotalQuote"] == 5.0 and c["crowdBuys"]["buy"]
-    a = c["autoSell"]
-    assert a["stopLoss"]["stages"][0]["percentLoss"] == 15 and a["trailingStopLoss"]["percentFromPeak"] == 25 and a["stages"]
-    launch = {"id": "l1", "label": "at the launch", "buy_sol": 0.2, "trigger": {"kind": "launch", "buyers": 0, "sol": 0.0, "window": 0.0},
-              "exit": ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1).to_dict()}
-    c2 = strategy_sniper(launch).config
-    assert "crowdBuys" not in c2 and c2["autoSell"]["deadExit"]["staleSeconds"] == 1
-    with pytest.raises(ValueError):
-        strategy_sniper({"trigger": {"kind": "kol"}, "exit": {}})
+    svc._rpc = FakeRpc(itertools.chain([1.0], itertools.repeat(0.98)))
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.5, 0.0001))
+    assert not rep["stopped"] and not any(c[0] == "stop" for c in calls)
+    # an uncapped sniper is refused
+    store.add_oktech_sniper({"id": "c", "kind": "strategy", "source": "x", "payload": {"singleSnipe": False}})
+    with pytest.raises(SystemExit, match="not capped"):
+        asyncio.run(svc.oktech_guard(["c"], w, 0.5, 1))

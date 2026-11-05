@@ -581,10 +581,31 @@ class Service:
                 await client.close()
         return out
 
-    async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True) -> dict:
-        """Start snipers and keep them on a leash: stop all of them as soon as the buying wallet's balance falls
-        below `floor_sol`, after `max_minutes`, or when none is running any more (their own caps reached)."""
+    async def holdings(self, address: str) -> list[dict]:
+        """Every token the wallet holds (both token programs). Raises if the RPC can't answer: never 'nothing held' by mistake."""
+        from .solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
+
+        out = []
+        for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+            r = await self.rpc.call("getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}])
+            for a in r["value"]:
+                info = a["account"]["data"]["parsed"]["info"]
+                amt = float(info["tokenAmount"]["uiAmount"] or 0)
+                if amt > 0 and info["mint"] != "So11111111111111111111111111111111111111112":
+                    out.append({"mint": info["mint"], "amount": amt, "account": a["pubkey"]})
+        return out
+
+    async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
+                           allow_uncapped: bool = False) -> dict:  # fmt: skip
+        """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions,
+        so this never stops one except in an emergency (balance below `floor_sol`: runaway buying), and then lists
+        exactly what is left to sell. At `max_minutes` it stops watching and leaves them running (they are capped)."""
         address = self._check(address)
+        mine = {r["id"]: r for r in self.store.oktech_snipers()}
+        uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
+        if uncapped and not allow_uncapped:
+            raise SystemExit(f"refusing to start {uncapped}: not capped (singleSnipe + totalSnipes) or not made by snipetech. "
+                             "A capped sniper stops buying by itself and keeps selling until its positions are closed.")  # fmt: skip
         client = self._oktech()
         events: list[str] = []
 
@@ -596,44 +617,55 @@ class Service:
         async def balance() -> float:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
+        reason, stopped = "time limit: still running (capped; it keeps selling until its positions close)", False
         try:
             b0 = await balance()
-            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol} SOL, at most {max_minutes:g} min")
+            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; emergency floor {floor_sol} SOL; watching {max_minutes:g} min")
             if b0 <= floor_sol:
                 raise SystemExit(f"balance {b0:.4f} is already at or below the floor {floor_sol}")
             if start:
                 for i in ids:
                     ans = await client.start(i)
                     log(f"started {i}: {ans.get('task', {}).get('status', ans)}")
-            t0, low, reason = time.time(), b0, "time limit"
+            t0, low = time.time(), b0
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(2)
-                b = await balance()
+                try:
+                    b = await balance()
+                except Exception as exc:  # an RPC hiccup is no reason to touch the snipers
+                    log(f"balance check failed ({exc}); still watching")
+                    continue
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
                 if b < floor_sol:
-                    reason = f"balance {b:.4f} fell below the floor {floor_sol}"
+                    reason = f"EMERGENCY: balance {b:.4f} fell below the floor {floor_sol}; stopped buying"
+                    for i in ids:
+                        with contextlib.suppress(Exception):
+                            await client.stop(i)
+                    stopped = True
                     break
                 if int(time.time() - t0) % 20 < 2:
                     states = {t["id"]: t.get("status") for t in await client.tasks() if t["id"] in ids}
                     if states and all(st != "running" for st in states.values()):
                         reason = f"all finished on their own ({states})"
                         break
-            log(f"stopping: {reason}")
-            for i in ids:
-                with contextlib.suppress(Exception):
-                    await client.stop(i)
+            log(reason)
             b1 = await balance()
-            log(f"done: {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); sells that are still in flight land in the next seconds")
-            return {"start_sol": b0, "end_sol": b1, "reason": reason, "events": events}
+            log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f})")
+            held = await self.holdings(address)
+            if held:
+                what = "STILL HELD, sell these by hand (the stopped sniper no longer manages them)" if stopped else \
+                       "still held (the sniper is managing them)"  # fmt: skip
+                log(what + ": " + ", ".join(f"{h['mint']} ({h['amount']:,.0f})" for h in held))
+            else:
+                log("no tokens held")
+            return {"start_sol": b0, "end_sol": b1, "reason": reason, "stopped": stopped, "held": held, "events": events}
         finally:
-            for i in ids:  # whatever happened above, never leave them running
-                with contextlib.suppress(Exception):
-                    await client.stop(i)
             await client.close()
 
-    async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None) -> dict:
+    async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None,
+                              max_buys: int = 5) -> dict:  # fmt: skip
         """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
         from .oktech import strategy_sniper
 
@@ -648,7 +680,7 @@ class Service:
                 if buy_sol:
                     s = s | {"buy_sol": buy_sol}
                 try:
-                    p = strategy_sniper(s)
+                    p = strategy_sniper(s, max_buys)
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue

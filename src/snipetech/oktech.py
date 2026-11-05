@@ -374,7 +374,7 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
     return out
 
 
-def strategy_sniper(strategy: dict) -> PlannedSniper:
+def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
@@ -383,8 +383,10 @@ def strategy_sniper(strategy: dict) -> PlannedSniper:
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
-                              "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": False}  # fmt: skip
-    summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)"]
+                              "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
+                              "totalSnipes": max(1, min(100, int(max_buys)))}  # fmt: skip
+    summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
+               f"stops buying by itself after {config['totalSnipes']} buys and keeps selling until those positions close"]
     kind = trig.get("kind")
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
