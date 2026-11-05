@@ -107,6 +107,7 @@ class Prepared:
     insider_sell: np.ndarray | None  # bool mask over states e..n-1
     exec_idx: np.ndarray  # absolute index where a sell reacting to state j executes
     ts: np.ndarray
+    slot: np.ndarray | None = None
 
     @property
     def entry_ts(self) -> float:
@@ -148,7 +149,22 @@ def prepare(
         insider_sell=None if insider_sell_mask is None else insider_sell_mask[e:],
         exec_idx=exec_idx,
         ts=path.ts[e:],
+        slot=path.slot[e:],
     )
+
+
+def _quiet_secs(p: Prepared, deadline: float) -> np.ndarray:
+    """Seconds of silence after each state. Block timestamps are whole seconds, so a 1 s rule on them fired on
+    nearly every trade whose follower fell in the next second (which is most trades after a late landing); slot
+    gaps (0.4 s each) are exact, and only the gap after the last trade is measured in seconds, to the deadline."""
+    from .market import SLOT_SECS
+
+    nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
+    by_ts = nxt - p.ts  # whole seconds: the true gap is within 1 s of this
+    if p.slot is None:
+        return by_ts
+    by_slot = np.append((p.slot[1:] - p.slot[:-1]) * SLOT_SECS, max(deadline - float(p.ts[-1]), 0.0))
+    return np.maximum(by_slot, by_ts - 1.0)  # the exact slot gap, or the timestamp gap's lower bound
 
 
 def _first(mask: np.ndarray, lo: int, hi: int) -> int | None:
@@ -191,8 +207,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
             triggers["dev_sell"] = t
     if ex.stale_secs > 0:
         # quiet for stale_secs after state j: nothing traded in between, so state j's price is the fill
-        nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
-        t = _first(nxt - p.ts >= ex.stale_secs, 0, last_rel)
+        t = _first(_quiet_secs(p, deadline) >= ex.stale_secs, 0, last_rel)
         if t is not None:
             triggers["stale"] = t
 
@@ -236,8 +251,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
                 if t is not None:
                     more["dev_sell"] = t
             if ex.stale_secs > 0:  # the remainder also leaves when the coin goes quiet (the scale-out ladder's dead exit)
-                nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
-                t = _first(nxt - p.ts >= ex.stale_secs, start_rel, last_rel)
+                t = _first(_quiet_secs(p, deadline) >= ex.stale_secs, start_rel, last_rel)
                 if t is not None:
                     more["stale"] = t
             if more:
