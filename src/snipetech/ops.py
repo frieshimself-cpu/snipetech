@@ -123,6 +123,27 @@ def sign(key_path: str | Path, op: str, args: dict | None = None) -> tuple[bytes
 # ---------------------------------------------------------------- server
 
 
+ENV_FILE = Path("/etc/snipetech/env")
+
+
+def _job_env() -> dict[str, str]:
+    """The service's environment plus whatever is in /etc/snipetech/env *now*: a key added to the file (e.g.
+    SNIPER_SECRET) reaches the next job without restarting the service. Values are never logged."""
+    env = dict(os.environ)
+    try:
+        for line in ENV_FILE.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k, v = k.strip(), v.strip().strip('"').strip("'")
+            if k and v and k not in env:
+                env[k] = v
+    except OSError:
+        pass
+    return env
+
+
 @dataclass
 class Job:
     id: str
@@ -322,7 +343,7 @@ class Ops:
         job = Job(id=jid, argv=argv, log=log, started=time.time())
         fh = log.open("wb")
         job.proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=self.data,
-                                    start_new_session=True)  # fmt: skip
+                                    start_new_session=True, env=_job_env())  # fmt: skip
         fh.close()
         self.jobs[jid] = job
         self._save_meta(job)
