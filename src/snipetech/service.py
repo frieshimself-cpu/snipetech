@@ -752,8 +752,15 @@ class Service:
             msg = t["transaction"]["message"]
             loaded = meta.get("loadedAddresses") or {}
             keys = list(msg["accountKeys"]) + loaded.get("writable", []) + loaded.get("readonly", [])
-            sol_moved = wallet in keys and abs(meta["postBalances"][keys.index(wallet)] - meta["preBalances"][keys.index(wallet)]) > 10_000
-            tok = any(b.get("owner") == wallet for b in (meta.get("postTokenBalances") or []) + (meta.get("preTokenBalances") or []))
+            sol_moved = False
+            if wallet in keys:
+                i = keys.index(wallet)
+                delta = meta["postBalances"][i] - meta["preBalances"][i] + (meta.get("fee", 0) if i == 0 else 0)  # paying the fee isn't trading
+                sol_moved = abs(delta) > 100_000  # > 0.0001 SOL beyond the fee
+
+            pre, post = ({b["mint"]: int(b["uiTokenAmount"]["amount"]) for b in (meta.get(side) or []) if b.get("owner") == wallet}
+                         for side in ("preTokenBalances", "postTokenBalances"))  # fmt: skip
+            tok = any(pre.get(m, 0) != post.get(m, 0) for m in set(pre) | set(post))
             moved += bool(sol_moved or tok)
         return moved / len(txs) if txs else None
 

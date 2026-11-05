@@ -289,8 +289,11 @@ def test_execution_wallets_are_not_counted_as_traders():
     W = "ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn"
 
     def tx(own_moves: bool):
-        return {"meta": {"preBalances": [1_000_000, 5], "postBalances": [1_000_000 - (50_000_000 if own_moves else 0), 5],
-                         "preTokenBalances": [], "postTokenBalances": []},
+        fee = 25_000  # it pays the fee either way; that alone is not trading with its own money
+        bal = {"mint": "M", "owner": W, "uiTokenAmount": {"amount": "1000"}}
+        return {"meta": {"fee": fee, "preBalances": [1_000_000_000, 5],
+                         "postBalances": [1_000_000_000 - fee - (50_000_000 if own_moves else 0), 5],
+                         "preTokenBalances": [bal], "postTokenBalances": [bal]},  # an untouched token account doesn't count
                 "transaction": {"message": {"accountKeys": [W, "Other111111111111111111111111111111111111111"]}}}
 
     class FakeRpc:
