@@ -390,14 +390,19 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
     kind = trig.get("kind")
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
-        signers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
-        config["crowdBuys"] = {"enabled": True, "minSigners": signers, "minTotalQuote": _round(min_sol, 3), "platforms": ["pumpfun"],
-                               "signal": False, "buy": True}  # fmt: skip
-        summary.append(f"only after early buyers put in >= {min_sol:g} SOL ({signers} wallet{'s' if signers > 1 else ''} or more)")
-        notes.append("crowdBuys semantics are not in OKTech's API docs: confirm on the Sniper page that minTotalQuote is SOL "
-                     "and counts early buys of the launch (most of the lab's triggers of this kind fire within 2 s of it)")  # fmt: skip
-        if kind == "whale":
-            notes.append("the lab's trigger is ONE buy >= the amount by a non-dev; OKTech's crowd filter sums early buys")
+        buyers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
+        # whale triggers mostly fire within 2 s of the launch (measured on the tape); bursts carry their own window
+        window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
+        config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "any",
+                          "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers, "maxUniqueBuyers": None,
+                                         "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
+                                         "minLutMatches": None, "minAccountMatches": None},
+                          "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
+                          "useKnownBotDefaults": True}  # fmt: skip
+        summary.append(f"only after >= {min_sol:g} SOL is bought by >= {buyers} wallet{'s' if buyers > 1 else ''} within "
+                       f"{window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
+        notes.append("hunt is not in OKTech's API docs: its meaning is inferred from the field names; verify the first buys "
+                     "on-chain (did >= the amount get bought before ours?) before scaling")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     ex.setdefault("sell_on_dev_sell", False)
