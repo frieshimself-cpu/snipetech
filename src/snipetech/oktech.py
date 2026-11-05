@@ -374,6 +374,19 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
     return out
 
 
+# Execution settings learned from the first live batch (5 Nov 19:46 UTC, sniper 6aecdcd5):
+# * seedAccount (OKTech default on) buys through an ephemeral account and sweeps afterwards; a stop-loss that fired 2 s
+#   after the buy sold from the main wallet, which held 0 tokens -> pump.fun 6023 NotEnoughTokensToSell, position stuck
+#   for 3.5 min. Off: the tokens sit in the buying wallet from the first slot.
+# * ~10 buy attempts in 35 s failed on-chain with pump.fun 6010 AccountTypeNotSupported (v3 buy on a coin whose token
+#   account was never initialised), each paying the priority fee, and each counted toward totalSnipes. preexec runs the
+#   create + our buy locally first and does not send a buy that fails there.
+EXECUTION: dict[str, Any] = {
+    "extraParams": {"seedAccount": False},
+    "preexec": {"enabled": True},
+}
+
+
 def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
@@ -384,9 +397,10 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
     buy = float(strategy.get("buy_sol") or 0.2)
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
                               "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
-                              "totalSnipes": max(1, min(100, int(max_buys)))}  # fmt: skip
+                              "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
     summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
-               f"stops buying by itself after {config['totalSnipes']} buys and keeps selling until those positions close"]
+               f"stops buying by itself after {config['totalSnipes']} buys and keeps selling until those positions close",
+               "buys straight into the wallet (no seed account) and only after a local dry run of the create + buy succeeds"]
     kind = trig.get("kind")
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)

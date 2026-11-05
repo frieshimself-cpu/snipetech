@@ -251,3 +251,13 @@ def test_token_program_ids_are_real_addresses():
     from snipetech.solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
     assert len(b58decode(TOKEN_PROGRAM)) == 32 and len(b58decode(TOKEN_2022_PROGRAM)) == 32
+
+
+def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
+    from snipetech.oktech import strategy_sniper
+
+    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0}, "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
+             "buy_sol": 0.2}  # fmt: skip
+    cfg = strategy_sniper(strat, 10).config
+    assert cfg["extraParams"]["seedAccount"] is False  # 6023 NotEnoughTokensToSell: a stop-loss raced the seed sweep
+    assert cfg["preexec"]["enabled"] is True  # 6010 on-chain failures are caught by the local dry run instead of paid for
