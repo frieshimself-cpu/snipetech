@@ -391,8 +391,12 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
         buyers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
-        # whale triggers mostly fire within 2 s of the launch (measured on the tape); bursts carry their own window
-        window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
+        # whale triggers mostly fire within 2 s of the launch (measured on the tape); bursts carry their own window;
+        # a strategy limited to the first N s after the launch (max_age) uses exactly that
+        if trig.get("max_age"):
+            window_ms = int(float(trig["max_age"]) * 1000)
+        else:
+            window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
         config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "any",
                           "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers, "maxUniqueBuyers": None,
                                          "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
@@ -405,6 +409,10 @@ def strategy_sniper(strategy: dict, max_buys: int = 5) -> PlannedSniper:
                      "on-chain (did >= the amount get bought before ours?) before scaling")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
+    if trig.get("plain"):
+        summary.append("normal coins only: skip mayhem and holder-reward coins (they lose on paper)")
+        notes.append("OKTech documents no switch that skips mayhem / holder-reward coins: find it on the Sniper form, "
+                     "or accept them (they cost a little on paper)")  # fmt: skip
     ex.setdefault("sell_on_dev_sell", False)
     sell = autosell(ex, notes)
     if sell:
