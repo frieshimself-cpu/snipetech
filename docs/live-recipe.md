@@ -37,7 +37,7 @@ its profit was all in big buys within 1 s of the create (+0.31/trade) and on nor
   OKTech cannot trade yet (pump.fun error 6010 on "CreateV2 / SplitSupply" coins).
 * The edge lives in one-off creators: dev-wallet lists cannot express it.
 
-## What OKTech needs — NOT solved (5 Nov, 19:46–20:12 UTC live)
+## What OKTech needs — an account approval (5 Nov, 19:46–20:20 UTC)
 
 Three capped live runs from the SNIPER wallet (0.2 SOL × 3 fills, then 0.02 SOL × 3 and × 4), 1.903 → 1.688 SOL:
 
@@ -58,8 +58,16 @@ coincidence. What was learned on the way:
 * A capped sniper can finish with a position still open (4siK, 20:04): `snipetech sweep` is our own sell for that case
   (needs `SNIPER_SECRET` in `/etc/snipetech/env`).
 
-Open: which OKTech setting, if any, gates a launch buy on the first-second big buy. Candidates to read on the Sniper form
-(tooltips), not in the API docs: Hunt, Crowd buys, Launch shape, Loadout (`entryDelaySecs`), Account filter.
+Resolved from the OKTech web app's own code (oktech.me bundle, 20:20 UTC): **Hunt is the gate** — its help text is
+"SniperHunt: buy only once other buyers cross your thresholds on a new coin", `minTotalSol` = "SOL other buyers must have
+put in before you buy", `minUniqueBuyers` = "Distinct buyer wallets needed", `maxDevBuySol` = "Disqualify the launch when
+the creator bought more than this with it", `minCpiBuyers` = "buys that came through router programs". But the feature
+list reads **"[S] tab (Shapes, Web, Hunt): approved users only"**, as do "Local pre-execution on sniper tasks" and "Account
+whitelist/blacklist on sniper tasks". The API accepts the `hunt` block from any key and ignores it on an account that is
+not approved: that is today's every-launch buying. The status endpoint reports only create/start, not approvals.
+
+**The fix is an account approval, not a setting:** ask OKTech to approve the account for the [S] tab (Hunt), local
+pre-execution and the account filter. The sniper config already sent is then the strategy as frozen.
 
 ## Going live (once a gating setting is found)
 
