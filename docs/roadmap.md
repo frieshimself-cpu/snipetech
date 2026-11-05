@@ -6,6 +6,37 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## Where we stand (5 Nov, night) — the landing reality
+
+Live with Hunt approved (21:13–22:40 UTC, 13 fills at 0.02 and 0.2 SOL) settled the question the paper
+engine could not: **where our buy lands**. OKTech lands 1–2 slots after the create. The paper edge
+(a586d8164a, +0.129/trade) was computed at position +1 *inside the trigger's slot*, right behind the
+≥ 2 SOL buy. When that buy is part of the create bundle — most of the triggers — nobody lands there; we
+land after the whole bundle, at the top, and bundles dump within seconds (BETRAYAL −56 %, ALON −69 %,
+HOUSE −40 %). The one winner, CAT (+265 %), was a dev-heavy launch the new thresholds would skip.
+
+Measured on the tape at the realistic entry (first trade of slot +2):
+
+- every bundle class is negative 30 s and 120 s later (−8 … −26 %), 40–50 % dump > 30 % within 30 s;
+- the only reachable slice — the big buy arrives in a *later* slot than the create, quiet create slot —
+  is −23 % at 120 s (n = 217, 12 h), 55 % dump, but 38 % spike ≥ 20 % first: a trailing exit might
+  still carry it; the lab (`--latency 1|2 --position start`) decides, with exits simulated.
+
+Consequences for the plan:
+
+1. **Phase 1 changes meaning.** "The entry we can actually get" is slot +1 at best, for anyone, OKTech
+   or our own sender. Every strategy is re-ranked at `--latency 1 --position start`; nothing computed at
+   latency 0 counts as evidence any more.
+2. **Hunt is usable but one-shot and coarse.** It fires once per start (`oktech cycle` re-arms), sums the
+   creator's buy, takes whole-number thresholds only (minTotalSol 3 / maxDevBuySol 1 / maxUniqueBuyers ≤ 2
+   is the closest expression of "a lone big buy on a quiet launch"), and cannot see non-SOL quotes (6010
+   failures; the account filter would fix it). Its sells are not reliable (HOUSE never sold; CAT's trailing
+   stop did not fire): `snipetech sweep` with SNIPER_SECRET on the server is the safety net.
+3. **The wallet-copy angle is unaffected** by the bundle problem (a KOL's buy is its own tx, and the
+   measured copy landing is +1 same slot) and is re-ranked at the realistic landing next (`--by-wallet`).
+4. **Live is halted** until a variant is positive at the realistic landing with n ≥ 200 and a positive
+   lower bound; then 0.2 SOL, cycled, with a daily loss stop, and a fresh go from the owner.
+
 ## Where we stand (5 Nov, evening)
 
 - Recorder: every pump.fun / LaunchLab trade with exact block position, 24/7 on the server (LaserStream).
