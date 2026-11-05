@@ -74,3 +74,37 @@ pre-execution and the account filter. The sniper config already sent is then the
 1. One capped buy (totalSnipes 1, 0.05 SOL): verify on-chain that a >= 2 SOL non-dev buy came first, and that it sold.
 2. Batches of 10 buys at 0.2 SOL, each audited against paper (trigger, landing position, exit, PnL).
 3. Raise size / remove the cap only while live per-trade results stay within ~half of paper.
+
+## Hunt live, 5 Nov 21:13–22:10 UTC (account approved for Hunt + local pre-execution)
+
+Facts measured on chain and on the tape, 0.02 SOL per buy on the SNIPER wallet:
+
+- **Hunt triggers correctly.** Every audited fill had a big first-second buy ahead of it; we landed 1–2
+  slots after the create with 2–7 buys in front.
+- **A hunt sniper fires once per start and never re-arms.** Sniper A: one buy 23 s after start, then
+  none across 46 qualifying launches; stop + start → a buy within seconds; after that position closed,
+  none across 12 more. Sniper B identical. `oktech cycle` (stop + start a spent sniper only while the
+  wallet holds no coin bought during the run) is the workaround; 6 re-arms produced 2 fills in 2 min.
+- **Hunt sums the creator's own buy.** Suncat fired on 1.6 SOL from others + 1.0 SOL from the dev.
+  Tape (4 h, 500 candidates): total ≥ 2.5 with dev ≤ 1 SOL keeps 79 % of our single-non-dev-≥2 rule
+  at 86 % precision (total ≥ 2 alone: 66 %). Strategy snipers now send minTotalSol 2.5, maxDevBuySol 1.
+- **PUMP-quoted launches** (quote `pumpCmXq…`, also SQQQ…) trigger Hunt (quote units counted as SOL) and
+  the SOL buy fails with pump error 6010; local pre-execution does not cover non-SOL curves. Only the
+  account filter (not granted) can exclude them. Each such attempt spends the sniper's one shot.
+- **Pre-execution grant landed between the two creates**: the 21:13 sniper ran without it, the 21:19 one
+  with it (OKTech turned it on by default). Behaviour was the same either way.
+- **A dead coin holds to the timer**: Bricks sat flat for 300 s. Strategy snipers now add a 60 s dead exit.
+- **`remote update` kills running server jobs** (the first cycler died at a deploy). Never deploy while a
+  guard or cycler runs.
+
+| fill | non-dev buy in 1 s | dev buy | rule met | in → out (SOL) |
+|---|---|---|---|---|
+| RLT | 11.85 | 0 | yes | 0.0198 → 0.0215 |
+| Bricks | 2.96 | 0 | yes | 0.0198 → 0.0196 (timer) |
+| Suncat | 1.60 | 1.0 | no | 0.0198 → 0.0272 |
+| Gogeta | 2.96 | 0 | yes | 0.0198 → 0.0301 |
+| II | 2.86 | 3.16 | yes (new thresholds would skip) | 0.0198 → 0.0170 |
+
+Gross +0.0166 SOL on 0.099 deployed; wallet net −0.016 (1.6878 → 1.6718): at 0.02 SOL the fixed fees per
+round trip and per failed PUMP-quoted send outweigh the edge. 22:11 UTC: 0.2 SOL batch started, two snipers
+under `oktech cycle --max-fills 10 --max-minutes 60 --floor 0.3`.
