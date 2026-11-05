@@ -35,12 +35,12 @@ its profit was all in big buys within 1 s of the create (+0.31/trade) and on nor
   OKTech cannot trade yet (pump.fun error 6010 on "CreateV2 / SplitSupply" coins).
 * The edge lives in one-off creators: dev-wallet lists cannot express it.
 
-## What OKTech needs
+## What OKTech needs — solved
 
-A Monitor Program sniper on pump.fun that **waits for >= 2 SOL of non-dev buys within 1 s of the create**
-and buys right behind them. Tested and NOT doing that: `crowdBuys` (fires at the create) and `hunt` as
-configured (fired one slot after a create with no buys). `snipetech oktech strategy --id a586d8164a`
-prints the current best attempt (hunt, 1000 ms window); the exit maps to OKTech autoSell exactly.
+`hunt` with `triggerMode: "all"`, only `thresholds.minTotalSol` set, `timeWindowMs` = the launch window.
+Verified live (2026-11-05 17:02 UTC): the buy landed in the create's own slot right after a 3.5 SOL buy
+by another wallet. With `triggerMode: "any"` and a buyer-count threshold it fires at the first buy;
+`crowdBuys` fires at the create. `snipetech oktech strategy --id a586d8164a` prints the config.
 
 ## Going live (once the trigger is solved)
 
