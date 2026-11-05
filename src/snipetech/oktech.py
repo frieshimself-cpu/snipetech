@@ -427,15 +427,18 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
             # Hunt is its own sniper mode in the OKTech app ([S] tab): the `hunt` block only applies with mode "hunt".
             # Our 5 Nov probes sent it under mode "normal", which is one reason they bought every launch.
             config["mode"] = "hunt"
+            # Hunt sums every first-second buy, the creator's included; our rule is one non-dev buy >= min_sol. On the
+            # tape (5 Nov, 4 h, 500 candidates) total >= 1.25x with dev <= 1 SOL keeps 79% of our triggers at 86%
+            # precision; total >= min_sol alone is 66% precision (the dev's SOL counts).
             config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all",
-                              "thresholds": {"minTotalSol": _round(min_sol, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
+                              "thresholds": {"minTotalSol": _round(min_sol * 1.25, 3), "minUniqueBuyers": buyers if buyers > 1 else None,
                                              "maxUniqueBuyers": None,
-                                             "maxDevBuySol": None, "minCpiBuyers": None, "requireKnownBot": False,
+                                             "maxDevBuySol": 1.0, "minCpiBuyers": None, "requireKnownBot": False,
                                              "minLutMatches": None, "minAccountMatches": None},
                               "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
                               "useKnownBotDefaults": True}  # fmt: skip
-            summary.append(f"only after >= {min_sol:g} SOL is bought by >= {buyers} wallet{'s' if buyers > 1 else ''} within "
-                           f"{window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
+            summary.append(f"only after >= {min_sol * 1.25:g} SOL in total is bought (dev's own buy <= 1 SOL) by >= {buyers} "
+                           f"wallet{'s' if buyers > 1 else ''} within {window_ms / 1000:g} s of the launch (OKTech hunt)")  # fmt: skip
             notes.append("hunt is an approved-accounts mode ([S] tab); the 5 Nov probes also sent it under mode normal and "
                          "bought every launch: verify on the tape that every fill had the big buy in front of it")  # fmt: skip
     elif kind == "kol":
