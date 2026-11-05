@@ -171,7 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--snipes", type=int, default=5, help="probe: buys per speed-test sniper (default 5)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
-    sp.add_argument("--buy", type=float, default=0.05, help="replica: SOL per buy (start small)")
+    sp.add_argument("--buy", type=float, help="SOL per buy: replica (default 0.05), probe (0.01), strategy (the frozen size)")
     sp.add_argument("--create", action="store_true", help="replica: create it on OKTech (idle unless your key may start it)")
     sp.add_argument("--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)")
     sp.add_argument("--prune", action="store_true", help="also remove snipetech snipers whose verdict no longer supports them")
@@ -412,7 +412,7 @@ async def _run(args, cfg: Config) -> int:
                 _out(args, await svc.oktech_status(), R.render_oktech_status)
                 return 0
             if args.action == "probe":
-                rep = await svc.oktech_probe(args.buy if args.buy != 0.05 else 0.01, args.snipes, args.copy_wallet,
+                rep = await svc.oktech_probe(args.buy or 0.01, args.snipes, args.copy_wallet,
                                              args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
@@ -430,7 +430,7 @@ async def _run(args, cfg: Config) -> int:
                 return 0
             if args.action == "strategy":
                 rep = await svc.oktech_strategy(args.id[0] if args.id else None, args.wallet or cfg.oktech.wallet or "SNIPER",
-                                                create=args.create)  # fmt: skip
+                                                create=args.create, buy_sol=args.buy)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
@@ -462,7 +462,7 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "replica":
                 if not args.from_study:
                     raise SystemExit("replica: give --from-study WALLET (run `snipetech study WALLET` first)")
-                rep = await svc.oktech_replica(args.from_study, args.buy, create=args.create)
+                rep = await svc.oktech_replica(args.from_study, args.buy or 0.05, create=args.create)
                 print(json.dumps(rep, indent=1, default=str) if args.json else R.render_oktech_replica(rep))
                 return 0
             plan = await svc.oktech_plan(kinds)

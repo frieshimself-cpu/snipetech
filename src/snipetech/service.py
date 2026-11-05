@@ -633,7 +633,7 @@ class Service:
                     await client.stop(i)
             await client.close()
 
-    async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False) -> dict:
+    async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None) -> dict:
         """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
         from .oktech import strategy_sniper
 
@@ -645,6 +645,8 @@ class Service:
         client = self._oktech() if create else None
         try:
             for s in picked:
+                if buy_sol:
+                    s = s | {"buy_sol": buy_sol}
                 try:
                     p = strategy_sniper(s)
                 except ValueError as exc:
