@@ -277,3 +277,34 @@ def test_backfill_address_is_incremental():
     rpc.add(7)
     _, third = asyncio.run(ing.backfill_address("A", max_sigs=5000))  # only the new ones
     assert [s["signature"] for s in third] == [f"s{i:05d}" for i in range(2506, 2499, -1)]
+
+
+def test_execution_wallets_are_not_counted_as_traders():
+    import asyncio
+
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    W = "ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn"
+
+    def tx(own_moves: bool):
+        return {"meta": {"preBalances": [1_000_000, 5], "postBalances": [1_000_000 - (50_000_000 if own_moves else 0), 5],
+                         "preTokenBalances": [], "postTokenBalances": []},
+                "transaction": {"message": {"accountKeys": [W, "Other111111111111111111111111111111111111111"]}}}
+
+    class FakeRpc:
+        def __init__(self, moves):
+            self.moves = moves
+
+        async def get_signatures(self, wallet, limit=25):
+            return [{"signature": f"s{i}", "err": None} for i in range(len(self.moves))]
+
+        async def get_transactions(self, sigs):
+            return {s: tx(m) for s, m in zip(sigs, self.moves)}
+
+    svc = Service(Config(), store=Store(":memory:"))
+    svc._rpc = FakeRpc([False] * 8)
+    assert asyncio.run(svc.own_funds_share(W)) == 0.0
+    svc._rpc = FakeRpc([True] * 6 + [False] * 2)
+    assert asyncio.run(svc.own_funds_share(W)) == 0.75

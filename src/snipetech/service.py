@@ -738,6 +738,42 @@ class Service:
     def discover_wallets(self, days: float = 3.0, min_positions: int = 5, limit: int = 30) -> list[dict]:
         return discover_wallets(self.store, self.cfg, int(time.time() - days * 86400), min_positions, limit)
 
+    async def own_funds_share(self, wallet: str, sample: int = 8) -> float | None:
+        """Share of a wallet's recent transactions in which its own SOL or tokens move. A platform's execution
+        wallet signs everybody's trades through a program but holds none of the money (share ~0): its 'PnL' is
+        other people's."""
+        sigs = [s for s in await self.rpc.get_signatures(wallet, limit=25) if not s.get("err")][:sample]
+        if not sigs:
+            return None
+        txs = [t for t in (await self.rpc.get_transactions([s["signature"] for s in sigs])).values() if t]
+        moved = 0
+        for t in txs:
+            meta = t.get("meta") or {}
+            msg = t["transaction"]["message"]
+            loaded = meta.get("loadedAddresses") or {}
+            keys = list(msg["accountKeys"]) + loaded.get("writable", []) + loaded.get("readonly", [])
+            sol_moved = wallet in keys and abs(meta["postBalances"][keys.index(wallet)] - meta["preBalances"][keys.index(wallet)]) > 10_000
+            tok = any(b.get("owner") == wallet for b in (meta.get("postTokenBalances") or []) + (meta.get("preTokenBalances") or []))
+            moved += bool(sol_moved or tok)
+        return moved / len(txs) if txs else None
+
+    async def discover_real_traders(self, days: float = 3.0, min_positions: int = 5, limit: int = 30) -> list[dict]:
+        """discover_wallets, minus execution wallets that trade other people's money (checked on-chain)."""
+        rows = await asyncio.to_thread(self.discover_wallets, days, min_positions, limit + 10)
+        out = []
+        for r in rows:
+            try:
+                share = await self.own_funds_share(r["wallet"])
+            except Exception as exc:  # unknown stays in, flagged
+                self.progress(f"{r['wallet'][:8]}: own-funds check failed ({exc})")
+                share = None
+            r["own_funds_share"] = share
+            if share is not None and share < 0.5:
+                self.progress(f"{r['wallet'][:8]}: dropped — its own funds move in {share:.0%} of its transactions (execution wallet)")
+                continue
+            out.append(r)
+        return out[:limit]
+
     # -- lists & export ---------------------------------------------------------------------------
 
     def list_add(self, address: str, list_name: str, reason: str = "") -> dict:

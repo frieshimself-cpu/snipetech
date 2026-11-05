@@ -490,7 +490,7 @@ async def _run(args, cfg: Config) -> int:
                                   backfill_entries=args.backfill_entries, entry_window=args.entry_window)
             _out(args, rep, R.render_study)
         elif c == "discover-wallets":
-            rows = await asyncio.to_thread(svc.discover_wallets, args.days, args.min_positions, args.limit)
+            rows = await svc.discover_real_traders(args.days, args.min_positions, args.limit)
             _out(args, rows, R.render_wallets)
         elif c == "watch":
             from .live import LiveWatcher
