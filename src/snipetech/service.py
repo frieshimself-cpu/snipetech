@@ -691,6 +691,12 @@ class Service:
         def fills_since(ts: float) -> int:
             return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
 
+        async def open_positions() -> list[dict]:
+            # only coins this wallet bought since the cycler started count as positions: dust and stablecoins left in
+            # the wallet (0.0002 USDC blocked every re-arm on the first run) must not pin the snipers
+            bought = {t.mint for t in self.store.trades_for_user(address, int(t0)) if t.is_buy}
+            return [h for h in await self.holdings(address) if h["mint"] in bought and h["amount"] >= 1]
+
         t0 = time.time()
         reason, restarts = "time limit", 0
         armed_at: dict[str, float] = {}
@@ -700,6 +706,9 @@ class Service:
             if b0 <= floor_sol:
                 raise SystemExit(f"balance {b0:.4f} is at or below the floor {floor_sol}")
             for i in ids:
+                with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
+                    await client.stop(i)
+                    await asyncio.sleep(1.0)
                 ans = await client.start(i)
                 armed_at[i] = time.time()
                 log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
@@ -708,7 +717,7 @@ class Service:
                 await asyncio.sleep(5)
                 try:
                     b = await balance()
-                    held = await self.holdings(address)
+                    held = await open_positions()
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
