@@ -108,3 +108,38 @@ Facts measured on chain and on the tape, 0.02 SOL per buy on the SNIPER wallet:
 Gross +0.0166 SOL on 0.099 deployed; wallet net −0.016 (1.6878 → 1.6718): at 0.02 SOL the fixed fees per
 round trip and per failed PUMP-quoted send outweigh the edge. 22:11 UTC: 0.2 SOL batch started, two snipers
 under `oktech cycle --max-fills 10 --max-minutes 60 --floor 0.3`.
+
+### 0.2 SOL batch, 22:11–22:40 UTC — stopped
+
+| coin | entry slot | big first-second buys | in → out (SOL) | note |
+|---|---|---|---|---|
+| Mumdumi | +3 | 4 buys summing > 2.5, biggest 0.59 | 0.1975 → 0.190 | Hunt sums, our rule is one buy |
+| BETRAYAL | +1 | dev 0.99 + 8 wallets × 1.5–4.2 (create bundle) | 0.1975 → 0.0864 | bundle dumped 3 s after our buy |
+| HOUSE | 0 | dev 3.95 + 2.37 | 0.1975 → 0.1195 (sold by hand 22:40) | dumped 4 s after; OKTech never sent a sell |
+| GTA | +3 | dev 1.38 only | 0.1975 → 0.1975 | dead exit 60 s worked; thresholds not enforced |
+| ALON | +2 | dev 0.99 + 8 wallets × 1.5–4.4 (create bundle) | 0.1975 → 0.0618 | bundle dumped at slot +10 |
+| CAT | 0 | dev 2.96 + 2.67 | 0.1975 → 0.7215 (sold by hand 22:40, two txs) | the one runner |
+
+Net of the batch +0.25 SOL thanks to CAT; without it −0.47. Day: 1.903 → 1.777 SOL.
+
+**The structural finding.** Our paper entry is position +1 in the trigger's own slot. When the ≥ 2 SOL buy sits
+inside the create bundle (most of the triggers), nobody can land there: OKTech lands at slot +1/+2, after the
+whole bundle, at the top. Tape, last 3 h, our-rule launches, entry at the first trade of slot +2, mark to
+market after 30 s / 120 s:
+
+| big buy | create-slot buyers | n | 30 s | 120 s | dumped > 30 % within 30 s |
+|---|---|---|---|---|---|
+| in create | ≤ 2 | 108 | −11 % | −17 % | 19 % |
+| in create | 3–4 | 88 | −17 % | −16 % | 50 % |
+| in create | ≥ 5 | 69 | −15 % | −26 % | 41 % |
+| same slot | ≤ 2 | 22 | −4 % | −4 % | 18 % |
+| same slot | 3–4 | 126 | −19 % | −23 % | 53 % |
+| same slot | ≥ 5 | 263 | −8 % | −20 % | 49 % |
+| later slot | ≤ 2 | 21 | +2 % | +6 % | 29 % |
+| later slot | 3–4 / ≥ 5 | 25 | −14 % / +4 % | −15 % / −24 % | 36 % / 27 % |
+
+Lab runs with the realistic landing (`--latency 1|2 --position start`) were started 22:29 (jobs
+20261105-222916-301925, 20261105-222915-7da66c); their verdict goes here. Other live facts: Hunt thresholds
+must be whole numbers without null fields (2.5 / 1.0 / nulls were ignored and the sniper bought every launch);
+OKTech sent no sell at all for HOUSE in 25 minutes; CAT's trailing stop did not fire on a 26 % drop from peak
+either. Live trading is halted until the lab says a variant is positive where OKTech lands.
