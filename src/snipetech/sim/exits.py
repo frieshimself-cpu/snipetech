@@ -235,9 +235,14 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
                 t = _first(p.insider_sell, start_rel + 1, last_rel)
                 if t is not None:
                     more["dev_sell"] = t
+            if ex.stale_secs > 0:  # the remainder also leaves when the coin goes quiet (the scale-out ladder's dead exit)
+                nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
+                t = _first(nxt - p.ts >= ex.stale_secs, start_rel, last_rel)
+                if t is not None:
+                    more["stale"] = t
             if more:
                 reason2, t2 = min(more.items(), key=lambda kv: kv[1])
-                exit_abs = int(p.exec_idx[t2])
+                exit_abs = p.e + t2 if reason2 == "stale" else int(p.exec_idx[t2])
                 reason = f"take_profit+{reason2}"
             else:
                 exit_abs = max(p.e + last_rel, exec_abs)

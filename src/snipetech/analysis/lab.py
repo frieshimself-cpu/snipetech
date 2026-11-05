@@ -144,6 +144,14 @@ def exit_set() -> list[ExitParams]:
             out.append(ExitParams(take_profit=tp, stop_loss=0.2, max_hold_secs=hold, sell_on_dev_sell=False))
     for hold in (10, 30, 60):
         out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=hold, sell_on_dev_sell=False))
+    # the scale-out ladder the best copy bot on the tape (6Z91) runs: bank part at a small gain, trail the rest,
+    # dump everything on a pause or a dip below entry
+    for tp in (0.1, 0.2):
+        for frac in (0.35, 0.5):
+            for sl, trail in ((0.08, 0.1), (0.15, 0.1), (0.15, 0.18)):
+                for stale in (0.0, 1.0):
+                    out.append(ExitParams(take_profit=tp, tp_sell_fraction=frac, stop_loss=sl, trailing_stop=trail,
+                                          max_hold_secs=300, sell_on_dev_sell=False, stale_secs=stale))  # fmt: skip
     return out
 
 

@@ -162,3 +162,27 @@ def test_position_value_never_exceeds_the_sol_in_the_pool():
     assert 1.5e9 < v[0] < 2.2e9  # sane where the position is a small share
     g = p.sell_gross(np.array([2]), held, held)
     assert float(g[0]) <= p.q[2]
+
+
+def test_scale_out_ladder_remainder_leaves_on_a_pause():
+    """TP sells a part; the rest rides and still obeys the dead exit (stale) like a single position would."""
+    from snipetech.sim.exits import ExitParams, prepare, run_exit
+
+    store = Store(":memory:")
+    m = Market(store, addr("ladder"), addr("ladder-dev"), 1_700_000_000, 10_000_000)
+    m.buy(m.deployer, 0.3, 0, sig=m.create_sig)
+    m.buy(addr("l-1"), 0.2, 1)
+    for k in range(8):  # a steady run-up, one trade a second
+        m.buy(addr(f"l-fan-{k}"), 0.6, 2 + k)
+    m.buy(addr("l-late"), 0.1, 40)  # then nothing for 30 s
+    m.commit()
+    path = MarketPath.build(store.trades_for_mint(addr("ladder")), store.launch(addr("ladder")))
+    prep = prepare(path, 1, 0.2, Costs(), 0, "+1")
+    ladder = ExitParams(take_profit=0.1, tp_sell_fraction=0.35, stop_loss=0.08, trailing_stop=0.5, max_hold_secs=300,
+                        sell_on_dev_sell=False, stale_secs=3)  # fmt: skip
+    r = run_exit(prep, ladder, Costs())
+    assert r.exit_reason == "take_profit+stale" and r.sells == 2
+    assert r.exit_idx == path.n - 2  # the last trade before the 30 s pause, not the late one
+    plain = run_exit(prep, ExitParams(take_profit=0.1, tp_sell_fraction=0.35, stop_loss=0.08, trailing_stop=0.5,
+                                      max_hold_secs=300, sell_on_dev_sell=False), Costs())  # fmt: skip
+    assert plain.exit_reason == "take_profit+time" and plain.exit_idx >= r.exit_idx
