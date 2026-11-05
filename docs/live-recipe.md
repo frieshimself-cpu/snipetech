@@ -37,14 +37,31 @@ its profit was all in big buys within 1 s of the create (+0.31/trade) and on nor
   OKTech cannot trade yet (pump.fun error 6010 on "CreateV2 / SplitSupply" coins).
 * The edge lives in one-off creators: dev-wallet lists cannot express it.
 
-## What OKTech needs — solved
+## What OKTech needs — NOT solved (5 Nov, 19:46–20:12 UTC live)
 
-`hunt` with `triggerMode: "all"`, only `thresholds.minTotalSol` set, `timeWindowMs` = the launch window.
-Verified live (2026-11-05 17:02 UTC): the buy landed in the create's own slot right after a 3.5 SOL buy
-by another wallet. With `triggerMode: "any"` and a buyer-count threshold it fires at the first buy;
-`crowdBuys` fires at the create. `snipetech oktech strategy --id a586d8164a` prints the config.
+Three capped live runs from the SNIPER wallet (0.2 SOL × 3 fills, then 0.02 SOL × 3 and × 4), 1.903 → 1.688 SOL:
 
-## Going live (once the trigger is solved)
+| run | trigger as sent | fills | had the >= 2 SOL non-dev buy before us | result |
+|---|---|---|---|---|
+| 19:46 | `hunt` all / minTotalSol 2 / 1000 ms | 3 | 2 of 3 (both holder-reward coins) | -0.13 SOL incl. ~10 failed buys |
+| 19:58 | same, no seed account, preexec | 3 | 0 of 3 (1.29, none, 0.27 SOL) | -0.04 |
+| 20:06 | `crowdBuys` minSigners 2 / minTotalQuote 2 | 4 | 0 of 4 (create tx carried 0.99, 0, 0, 1.98 SOL) | -0.04 |
+
+Both fired about every 10 s, which is the launch rate, not the trigger's 76/h. So with `monitorProgram` on, the sniper
+buys every launch, and `hunt` / `crowdBuys` are signal modules, not entry filters. The 17:02 "verified" hunt trade was a
+coincidence. What was learned on the way:
+
+* Auto-sell works as configured (stop -15%, trailing 10%, 300 s timer): sells at 9 s, ~100 s and exactly 300 s observed.
+  The twin `6023 NotEnoughTokensToSell` next to each landed sell is OKTech's duplicate send losing the race (fee only).
+* Buys that fail on-chain with `6010 AccountTypeNotSupported` are sent anyway (~10 per batch, ~0.001 SOL each) and count
+  toward `totalSnipes`; `preexec` did not stop them.
+* A capped sniper can finish with a position still open (4siK, 20:04): `snipetech sweep` is our own sell for that case
+  (needs `SNIPER_SECRET` in `/etc/snipetech/env`).
+
+Open: which OKTech setting, if any, gates a launch buy on the first-second big buy. Candidates to read on the Sniper form
+(tooltips), not in the API docs: Hunt, Crowd buys, Launch shape, Loadout (`entryDelaySecs`), Account filter.
+
+## Going live (once a gating setting is found)
 
 1. One capped buy (totalSnipes 1, 0.05 SOL): verify on-chain that a >= 2 SOL non-dev buy came first, and that it sold.
 2. Batches of 10 buys at 0.2 SOL, each audited against paper (trigger, landing position, exit, PnL).

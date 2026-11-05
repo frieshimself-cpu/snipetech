@@ -14,7 +14,7 @@ first on the server's recording and only then run live in capped batches.
   **+0.133 SOL per 0.2 SOL trade, 629 trades over 4.8 h, 49% wins** (bound +0.120). The >= 5 SOL version
   `3fe27cc4b7`: +0.181 over 204 trades (bound +0.162). The lab over the whole 19.6 h tape agrees (+0.121 / +0.192 on
   the newer 40%).
-- OKTech trigger solved: `hunt` strict mode waits for that buy (verified on-chain, 17:02 UTC).
+- OKTech trigger NOT solved: live probes (19:46–20:12) show `hunt` and `crowdBuys` do not gate; with monitorProgram the sniper buys every launch (see live-recipe.md).
 - Sells are safe: snipers cap their own buys and keep selling; the guard only stops in an emergency.
 - The owner's tracked-wallet list (2,626 Solana addresses: KOLs, devs, snipers, bundles, cabals) is loaded as labels
   (`label --file inputs/tracked_labels.tsv --kind wallet`) and studied below.
