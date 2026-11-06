@@ -85,6 +85,12 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     return out
 
 
+def _floor(b, a) -> float:
+    """The smallest leader buy a new sniper copies: the wallet's own floor from its verdict (its opening buys, not its
+    top-ups), never below [book] min_copy_sol."""
+    return max(float(b.min_copy_sol), float(a.min_sol or 0.0))
+
+
 def _line(a) -> str:
     bits = [a.kind, (a.wallet or "")[:6], a.arm or "", f"{a.fill_sol:g} SOL" if a.fill_sol else "", a.sniper_id or ""]
     return " ".join(b for b in bits if b) + f" — {a.reason}"
@@ -173,9 +179,9 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             if a.kind in ("create", "start", "stop", "retire"):
                 sig = f"[book dry] would {a.kind} {(a.wallet or '')[:6]} {a.arm or ''}".rstrip()
                 if not notes.has_today(sig, now):
-                    notes.write(
-                        f"{sig} ({a.fill_sol:g} SOL) — {a.reason}" if a.fill_sol else f"{sig} — {a.reason}", "info"
-                    )
+                    floor = f" on its buys of {_floor(b, a):g} SOL or more" if a.kind == "create" else ""
+                    size = f" ({a.fill_sol:g} SOL{floor})" if a.fill_sol else ""
+                    notes.write(f"{sig}{size} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
                 await _do(svc, notifier, notes, "stop", a)
@@ -201,19 +207,18 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             if a.wallet in not_replaced:
                 notes.write(f"[book] create {a.wallet[:6]} waits: its old sniper is still on OKTech", "info")
                 continue
-            arm = b.bid_arms.get(a.arm) or {}
+            arm, floor = b.bid_arms.get(a.arm) or {}, _floor(b, a)
             try:
                 # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own
-                rep = await svc.oktech_copylist([f"{a.wallet}:book:{b.min_copy_sol:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
+                rep = await svc.oktech_copylist([f"{a.wallet}:book:{floor:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
                                                 buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name="lab",
                                                 priority_fee=arm.get("priority"), tip=arm.get("tip"), send_count=b.send_count, tag=f"arm:{a.arm}",
                                                 compute_units=arm.get("cu"), salt=f"g{int(now)}")  # fmt: skip
                 for s in rep.get("snipers", []):
                     if s.get("oktech_id"):
                         new_ids.append((s["oktech_id"], a))
-                notifier.send(
-                    notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL — {a.reason}", "decision")
-                )
+                notifier.send(notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL on its buys of "
+                                          f"{floor:g} SOL or more — {a.reason}", "decision"))  # fmt: skip
             except Exception as exc:  # noqa: BLE001
                 notifier.send(
                     notes.write(

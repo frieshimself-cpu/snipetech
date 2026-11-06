@@ -363,3 +363,23 @@ def test_the_book_never_relies_on_the_buy_that_uses_up_the_cap():
     assert _s1(cfg, buys=1).kind == "keep" and _s1(cfg, buys=2).kind == "retire"
     cfg.book.retire_after_buys = 0
     assert _s1(cfg, buys=0).kind == "keep" and _s1(cfg, buys=1).kind == "retire"
+
+
+def test_the_verdicts_copy_plan_sets_the_floor_of_a_new_sniper_only():
+    """A verdict may carry its wallet's copy plan: copy only the leader's buys of at least min_leader_sol (G2oZ's
+    6.5-7.1 SOL openers, not its 0.54 SOL top-ups). rank_wallets keeps the plan, a create carries the floor, an older
+    verdict carries none, and a running sniper keeps the floor it was made with (no churn)."""
+    cfg = _cfg()
+    q1 = dict(_q("W1", 0.03), copy_plan={"min_leader_sol": 0.6, "rebuy_share": 0.05})
+    q2 = dict(_q("W2", 0.02), copy_plan=None)
+    q3 = _q("W3", 0.01)  # a verdict from before copy plans
+    ranked = rank_wallets([q1, q2, q3], {}, cfg.book)
+    assert ranked[0]["copy_plan"] == {"min_leader_sol": 0.6, "rebuy_share": 0.05} and ranked[1]["copy_plan"] is None
+    creates = {a.wallet: a for a in plan_book(_inp(qualified=[q1, q2, q3]), cfg.book).actions if a.kind == "create"}
+    assert creates["W1"].min_sol == 0.6 and creates["W2"].min_sol is None and creates["W3"].min_sol is None
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    assert _one(plan_book(_inp(qualified=[q1, q2, q3], snipers=running), cfg.book), "s1").kind == "keep"
+    cases = [('{"min_leader_sol": 2.96}', 2.96), ({"min_leader_sol": "n/a"}, None), ({"min_leader_sol": -1}, None)]
+    for copy_plan, want in cases:  # a plan stored as text is read; a value that is not a positive number is ignored
+        plan = plan_book(_inp(qualified=[dict(q1, copy_plan=copy_plan)]), cfg.book)
+        assert next(x for x in plan.actions if x.kind == "create").min_sol == want, copy_plan

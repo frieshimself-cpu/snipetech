@@ -548,3 +548,28 @@ def test_a_retire_waits_when_a_coin_is_bought_before_it_runs(tmp_path):
         assert "[book dry] would retire" in (tmp_path / "data" / "operator" / "notes.md").read_text()
     finally:
         st.close()
+
+
+def test_create_sends_the_wallets_own_floor(tmp_path, monkeypatch):
+    """The sniper copies only the leader's buys of at least its verdict's min_leader_sol, never below [book]
+    min_copy_sol; a verdict without a copy plan keeps the book's 0.3. The Telegram line says which buys are copied."""
+    st, cfg = _env(tmp_path, enabled=True)
+    plans = {L1: {"min_leader_sol": 0.6}, L2: None}  # verdicts built by hand: the store's copy_plan column is not here
+    stored = st.latest_verdicts
+
+    def with_plans(status=None):
+        return [dict(v, copy_plan=plans.get(v["wallet"])) for v in stored(status)]
+
+    monkeypatch.setattr(st, "latest_verdicts", with_plans)
+    svc, sent = FakeSvc(st), []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L1}:book:0.6:lab",), (f"{L2}:book:0.3:lab",)]
+        assert any("[book] create" in t and "0.6 SOL or more" in t for t in sent)
+        plans[L1] = {"min_leader_sol": 0.1}  # below the book's own minimum: the minimum holds
+        svc2, quiet = FakeSvc(st), Notifier("T", 7, post=lambda u, d: None)
+        asyncio.run(run_book(svc2, cfg, NOW + 1, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert next(c[1] for c in svc2.calls if c[0] == "create") == (f"{L1}:book:0.3:lab",)
+    finally:
+        st.close()

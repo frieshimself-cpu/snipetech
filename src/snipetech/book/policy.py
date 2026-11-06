@@ -4,6 +4,7 @@ It never stops a sniper while the wallet holds a coin, and never creates or star
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -63,6 +64,7 @@ class Action:
     fill_sol: float | None
     sniper_id: str | None
     reason: str
+    min_sol: float | None = None  # create: the wallet's own floor from its verdict's copy plan (SOL); None = the book's
 
 
 @dataclass
@@ -108,6 +110,24 @@ def best_arm(bid_model: dict[str, dict], cfg: BookConfig, min_n: int = 30) -> st
     return min(candidates)[1]
 
 
+def plan_floor(copy_plan: dict | str | None) -> float | None:
+    """The smallest buy of the leader's to copy, from its verdict's copy plan (min_leader_sol, SOL): it lets a wallet's
+    opening buys through and keeps its top-ups out. None for a verdict from before copy plans, or a value that is not
+    a positive number."""
+    if isinstance(copy_plan, str):
+        try:
+            copy_plan = json.loads(copy_plan)
+        except ValueError:
+            return None
+    if not isinstance(copy_plan, dict):
+        return None
+    try:
+        v = float(copy_plan.get("min_leader_sol"))
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
 def live_pause_reason(lv: dict | None, cfg: BookConfig) -> str | None:
     """Why a wallet is paused on its live results, or None. After live_kill_n live trips, a wallet whose one-sided upper
     bound (2 x mean - lower) is below zero has lost even on the kindest reading of its copies: it is not copied,
@@ -139,7 +159,7 @@ def rank_wallets(qualified: list[dict], live: dict[str, dict], cfg: BookConfig) 
             score, basis = float(q.get("score") or 0.0), "paper"
         if score < cfg.min_score:
             continue
-        rows.append({"wallet": w, "score": score, "basis": basis})
+        rows.append({"wallet": w, "score": score, "basis": basis, "copy_plan": q.get("copy_plan")})
     rows.sort(key=lambda r: (-r["score"], r["wallet"]))
     return rows[: max(0, int(cfg.max_wallets))]
 
@@ -308,12 +328,14 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 else:
                     why = dropped.get(w6, "dropped out of the ranking")
                     plan.actions.append(Action("stop", w6, s["arm"], None, s["id"], why))
+    plans = {r["wallet"]: r.get("copy_plan") for r in bookable}
     for w6, (wallet, arm) in wanted.items():
         if w6 in seen_w6:
             continue
         if arm is None:
             plan.actions.append(Action("skip", wallet, None, None, None, "no bid arm can keep its fee under the limit"))
             continue
+        # a new sniper gets the wallet's own floor; a running one keeps the floor it was made with (no churn)
         plan.actions.append(
             Action(
                 "create",
@@ -322,6 +344,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 usable[arm],
                 None,
                 f"ranked #{[r['wallet'] for r in plan.ranked].index(wallet) + 1}",
+                min_sol=plan_floor(plans.get(wallet)),
             )
         )
     return plan
