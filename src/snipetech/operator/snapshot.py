@@ -30,6 +30,7 @@ class Snapshot:
     tape_last_ts: int | None = None
     jobs_running: list[dict] = field(default_factory=list)
     jobs_ended: list[dict] = field(default_factory=list)
+    jobs_recent: list[dict] = field(default_factory=list)  # research jobs that ended in the last 24 h, newest first
     wallet: str = ""
     native_sol: float | None = None
     wsol: float | None = None
@@ -111,6 +112,22 @@ def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float |
     return out
 
 
+def recent_jobs(jobs_dir: Path, now: float, hours: float = 24.0) -> list[dict]:
+    """Research jobs (lab, follow, copy-rank, ...) that ended in the last `hours`, newest first: the outputs an
+    analyst turn must read before starting anything."""
+    from .jobs import RESEARCH_COMMANDS
+
+    out = []
+    for m in _read_metas(jobs_dir):
+        argv = m.get("argv") or []
+        ended = m.get("ended")
+        if not argv or argv[0] not in RESEARCH_COMMANDS or m.get("running") or ended is None or ended < now - hours * 3600:
+            continue
+        out.append({"id": m.get("id"), "argv": argv, "exit_code": m.get("exit_code"), "ended": ended,
+                    "log": str(jobs_dir / f"{m.get('id')}.log")})  # fmt: skip
+    return sorted(out, key=lambda j: -(j["ended"] or 0))
+
+
 def running_jobs(jobs_dir: Path) -> list[dict]:
     out = []
     for m in _read_metas(jobs_dir):
@@ -164,6 +181,7 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
     try:
         snap.jobs_running = running_jobs(paths.jobs)
         snap.jobs_ended = ended_since(paths.jobs, since, already, now)
+        snap.jobs_recent = recent_jobs(paths.jobs, now)
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"jobs: {exc}")
     try:

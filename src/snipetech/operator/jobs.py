@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from ..ops import Ops, OpsError, _pid_alive
 
 RESEARCH_COMMANDS = frozenset({"lab", "follow", "discover-wallets", "label", "copy-rank", "paper", "study", "copy"})
+REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 
 
 class OperatorJobs:
@@ -39,10 +41,23 @@ class OperatorJobs:
                 if not any(r == root or r.is_relative_to(root) for root in roots):
                     raise PermissionError(f"path not allowed: {a} (only inputs/, reports/, operator/ under the data directory)")
 
-    def start(self, argv: list[str]) -> dict:
+    def _recent_identical(self, argv: list[str], now: float) -> dict | None:
+        for p in (self.ops.data / "jobs").glob("*.json"):
+            meta = self.ops._meta(p.stem)
+            if (meta and list(meta.get("argv") or []) == list(argv) and not meta.get("running")
+                    and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - REPEAT_AFTER_SECS):  # fmt: skip
+                return meta
+        return None
+
+    def start(self, argv: list[str], now: float | None = None) -> dict:
         if not argv or argv[0] not in RESEARCH_COMMANDS:
             raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
         self._check_paths(argv)
+        now = time.time() if now is None else now
+        dup = self._recent_identical(argv, now)
+        if dup:
+            raise PermissionError(f"already ran: job {dup.get('id')} with these exact arguments finished "
+                                  f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead")
         running = self.running()
         if argv[0] == "lab" and any(m.get("argv", [""])[0] == "lab" for m in running):
             raise PermissionError("a lab is already running; one lab at a time")

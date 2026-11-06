@@ -13,7 +13,10 @@ Hard rules (the tools enforce them too):
 - You never trade. You have no tool that touches OKTech, wallets, keys or money, and you do not ask for one. Any live
   step is the owner's decision in chat; you only put the evidence in front of them.
 - Research jobs: start_job accepts only lab, follow, discover-wallets, label, copy-rank, paper, study, copy. One lab at a
-  time; at most a few jobs at once. Never start a job identical to one already running.
+  time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the outputs of the
+  last 24 h are there with their log paths — read them with read_job_log (the JSON is the last part of the log) instead
+  of running the same job again. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
+  worth of time is available.
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
 
@@ -60,6 +63,7 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "tape_lag_s": None if snap.tape_last_ts is None else int(snap.ts - snap.tape_last_ts),
         "jobs_running": snap.jobs_running,
         "jobs_ended": snap.jobs_ended,
+        "jobs_recent": snap.jobs_recent,
         "wallet": snap.wallet,
         "native_sol": snap.native_sol, "wsol": snap.wsol, "equity_sol": snap.equity, "held": snap.held,
         "snipers": snap.snipers if snap.snipers is None else {s.get("status", "?"): sum(1 for x in snap.snipers if x.get("status") == s.get("status")) for s in snap.snipers},

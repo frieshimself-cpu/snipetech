@@ -213,3 +213,30 @@ def test_operator_unit_keeps_child_jobs_alive():
 
     service = (Path(__file__).resolve().parents[2] / "deploy" / "systemd" / "snipetech-operator.service").read_text()
     assert "KillMode=process" in service
+
+
+# first-round lessons: the analyst must see recent research outputs, and must not restart a job that just finished
+def test_snapshot_lists_recent_ended_jobs(tmp_path):
+    from snipetech.operator.snapshot import recent_jobs
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    (jobs / "old.json").write_text(json.dumps({"id": "old", "argv": ["lab", "--position", "+1"], "started": 1, "ended": 2, "exit_code": 0, "running": False}))
+    (jobs / "new.json").write_text(json.dumps({"id": "new", "argv": ["lab", "--position", "+6"], "started": 90_000, "ended": 95_000, "exit_code": 0, "running": False}))
+    (jobs / "upd.json").write_text(json.dumps({"id": "upd", "argv": ["update"], "started": 94_000, "ended": 94_100, "exit_code": 0, "running": False}))
+    out = recent_jobs(jobs, now=100_000, hours=24)
+    assert [j["id"] for j in out] == ["new"]  # research only, last 24 h, newest first
+    assert out[0]["log"].endswith("new.log")
+
+
+def test_start_job_refuses_a_recent_identical_job(tmp_path):
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+    now = 1_000_000
+    (data / "jobs" / "done.json").write_text(json.dumps({"id": "done", "argv": ["lab", "--latency", "0"], "started": now - 3600, "ended": now - 600, "exit_code": 0, "running": False}))
+    j = OperatorJobs(repo=tmp_path, data=data, db=data / "s.db", branch="main")
+    j.ops = O.Ops(repo=tmp_path, data=data, db=data / "s.db", keys_file=tmp_path / "k", branch="main", command=[sys.executable, "-c", "print(1)"])
+    with pytest.raises(PermissionError, match="already ran"):
+        j.start(["lab", "--latency", "0"], now=now)
+    assert j.start(["follow", "--kols"], now=now)["id"]  # a different command is fine
+    assert j.start(["lab", "--latency", "0"], now=now + 7 * 3600)["id"]  # old enough to repeat (last: it occupies the lab slot)
