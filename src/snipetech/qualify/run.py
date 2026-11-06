@@ -26,8 +26,9 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     def run(wallets: list[str], position: str) -> list[dict]:
         from ..analysis import lab as L
 
-        data = L.collect(svc.store, cfg, cfg.book.fill_min_sol, 0, position, 0.0035, groups=("cand",))
-        rows = L.rank_wallets(data, cfg, svc.store.labels(), top=max(1000, len(wallets)), min_n=4)
+        tape = getattr(svc, "tape_store", svc.store)  # the hourly read-only copy when fresh, else the live database
+        data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, 0.0035, groups=("cand",))
+        rows = L.rank_wallets(data, cfg, tape.labels(), top=max(1000, len(wallets)), min_n=4)
         want = set(wallets)
         return [r for r in rows if r.get("wallet") in want]
 

@@ -32,11 +32,16 @@ behind the copied wallet, price gap +26 %, p75 position 4 in the slot, 0.0028 SO
 0.0020 SOL more per buy in failed sends, 90 % of buys tipped; the copy fills belong to Gfree (3), `4vw54B…` (2) and
 `CgaA9a…` (1), as the hand audit said.
 
-Still open on our side (small, listed so nothing is lost): `computeUnits` per arm is plumbed but unset until the
-measure stage has consumption per venue (`fills.cu_used`; PumpSwap buys need more than curve buys); the fee-claim
-decoder needs a real `collect_creator_fee` transaction as a fixture; `expected.json` never expires; `/stop` is
-polled with the operator (up to 15 minutes late); the guard's emergency stop strands by design (this repo never
-sells); `remote update` still kills running jobs (the rule stands: check `remote jobs` first).
+Closed later the same day: fee claims are decoded (two real `collect_creator_fee` / `collect_coin_creator_fee`
+transactions as fixtures, `fee_claim` events from the dev scan); `expected.json` expires after a day and `/resume`
+resets it; `/stop` is acted on within a minute (`snipetech-commands.timer`); labs read the hourly read-only copy of
+the database when it is fresh.
+
+Still open on our side: `computeUnits` per arm is plumbed but unset. Measured over 39 buys (all on the curve):
+50.9k–79.3k CU used against the 150,000 limit (OKTech's own pre-execution sized the hunt buys at 73–78k). A
+100,000 limit would bid 1.5× higher per CU at the same fee, but no PumpSwap buy has been measured yet, so it is a
+decision for the data, not a default. The guard's emergency stop strands by design (this repo never sells);
+`remote update` still kills running jobs (the rule stands: check `remote jobs` first).
 
 ## What is now known about OKTech (from the bundle, the API and the chain)
 

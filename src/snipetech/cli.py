@@ -126,7 +126,7 @@ def _events(args, cfg) -> int:
 
             landing = args.landing or effective_landing_pos(svc.store, cfg.qualify)
             with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
-                out = event_edge(svc.store, cfg, time.time(), landing=landing)
+                out = event_edge(svc.store, cfg, time.time(), landing=landing, tape=svc.tape_store)
             print(json.dumps(out, indent=1, default=str))
             return 0
         if args.action == "scan":
@@ -947,7 +947,7 @@ async def _run(args, cfg: Config) -> int:
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
-                    return lab_collect(svc.store, cfg, args.buy, args.latency, args.position, args.per_tx)
+                    return lab_collect(svc.tape_store, cfg, args.buy, args.latency, args.position, args.per_tx)
 
             data = await asyncio.to_thread(_collect_locked)
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,

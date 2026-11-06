@@ -76,6 +76,36 @@ class Service:
         self.store = store or Store(cfg.storage.db_path)
         self.progress = progress or (lambda msg: None)
         self._rpc: SolanaRpc | None = None
+        self._tape_store: Store | None = None
+
+    TAPE_COPY_MAX_AGE_SECS = 2 * 3600
+
+    @property
+    def tape_store(self) -> Store:
+        """The store the heavy tape readers (labs, the analyst) should read: the hourly read-only copy next to the
+        database (`snipetech.ro.db`, written by `snapshot-db`) when it exists and is under two hours old, else the
+        live store. Writes (verdicts, coverage, fills) always go to `self.store`."""
+        if self._tape_store is None:
+            self._tape_store = self.store
+            try:
+                from .infra.snapshot_db import RO_SUFFIX
+
+                live = Path(self.store.path)
+                ro = live.with_name(live.stem + RO_SUFFIX)
+                if (
+                    self.store.path != ":memory:"
+                    and ro.exists()
+                    and time.time() - ro.stat().st_mtime < self.TAPE_COPY_MAX_AGE_SECS
+                ):
+                    self._tape_store = Store(ro)
+            except OSError:
+                self._tape_store = self.store
+        return self._tape_store
+
+    def reset_tape_store(self) -> None:
+        if self._tape_store is not None and self._tape_store is not self.store:
+            self._tape_store.close()
+        self._tape_store = None
 
     @property
     def rpc(self) -> SolanaRpc:
@@ -91,6 +121,7 @@ class Service:
         if self._rpc is not None:
             await self._rpc.close()
             self._rpc = None
+        self.reset_tape_store()
 
     @staticmethod
     def _check(address: str) -> str:

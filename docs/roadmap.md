@@ -62,6 +62,10 @@ above your ceilings). Anything outside the bounds comes to you as a question on 
 event, so next week's numbers can be read against it. The learning loop as designed is now complete end to end; what
 remains is live evidence.
 
+Later (15:30 UTC): `/stop` now acts within a minute (a one-minute Telegram pass beside the 15-minute round); creator
+fee claims are decoded from the chain and become events; the labs read the hourly read-only copy of the database when
+it is fresh, so research no longer competes with the recorder for the live file. The wallet showed 4.76 SOL at 14:00.
+
 Still yours, in order: start the fee test with the three commands in docs/live-recipe.md ("Fee test, 6 Nov"); send
 the nine questions to OKTech's owner; run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers
 and the events service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; top

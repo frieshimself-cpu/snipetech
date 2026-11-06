@@ -89,14 +89,14 @@ def poll_loop(store: Store, clients: dict[str, Any], interval: float = 60.0, onc
 
 
 def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = None, landing: str = "+6",
-               min_train: int = 15) -> dict[str, Any]:  # fmt: skip
+               min_train: int = 15, tape: Store | None = None) -> dict[str, Any]:  # fmt: skip
     """The lab with each event kind as a trigger at the measured landing: which kinds carry edge for us.
-    Written to coverage events:edge; the analyst reads it, the strategist may propose a sniper for a kind with
-    a positive lower bound over enough moments."""
+    Read from `tape` (the hourly read-only copy when fresh) and written to `store`'s coverage events:edge; the analyst
+    reads it, the strategist may propose a sniper for a kind with a positive lower bound over enough moments."""
     from ..analysis import lab as L
 
     kinds = tuple(kinds or DEFAULT_EDGE_KINDS)
-    data = L.collect(store, cfg, cfg.book.fill_min_sol, 0, landing, 0.0035, groups=(), event_kinds=kinds)
+    data = L.collect(tape or store, cfg, cfg.book.fill_min_sol, 0, landing, 0.0035, groups=(), event_kinds=kinds)
     ranked = L.rank(data, cfg, top=200, min_train=min_train)
     rows = []
     for r in ranked:

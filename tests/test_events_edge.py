@@ -75,3 +75,16 @@ def test_event_edge_writes_the_table(tmp_path):
         assert saved["rows"][0]["kind"] == "trending" and saved["ts"] == NOW
     finally:
         st.close()
+
+
+def test_event_edge_reads_the_tape_copy_and_writes_the_live_store():
+    """Labs read the hourly read-only copy when it is fresh; the result still lands in the live database."""
+    tape, live = Store(":memory:"), Store(":memory:")
+    try:
+        _world(tape)
+        out = event_edge(live, Config(), NOW, kinds=("trending",), min_train=3, tape=tape)
+        assert out["rows"] and live.coverage("events:edge")["rows"] == out["rows"]
+        assert tape.coverage("events:edge") == {}  # nothing written to the copy
+    finally:
+        tape.close()
+        live.close()
