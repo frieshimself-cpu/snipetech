@@ -12,6 +12,7 @@ from ..config import Config
 from .budget import Ledger
 from .gate import Decision
 from .jobs import OperatorJobs
+from .learning import context as learning_context
 from .notify import Notifier
 from .paths import OperatorPaths
 from .prompts import ANALYST_SYSTEM, OPERATOR_SYSTEM, user_message
@@ -32,17 +33,17 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                    notifier: Notifier, notes: NoteSink, *, jobs: OperatorJobs, client: AsyncAnthropic | None = None,
                    now: Callable[[], float] = time.time) -> dict:  # fmt: skip
     op = cfg.operator
-    analyst = decision.mode == "analyst"
-    mode = "analyst" if analyst else "operator"
+    analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
+    mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
     inbox = _read_inbox(paths)
-    tools = make_operator_tools(svc, paths, jobs, op, notes)
+    tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
     client = client or AsyncAnthropic()
     runner = client.beta.messages.tool_runner(
         model=op.analyst_model if analyst else op.model,
         max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,
         system=ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM,
         tools=tools,
-        messages=[{"role": "user", "content": user_message(snap, decision, inbox)}],
+        messages=[{"role": "user", "content": user_message(snap, decision, inbox, learned=learning_context(paths))}],
         thinking={"type": "adaptive"},
         output_config={"effort": op.effort},
         cache_control={"type": "ephemeral"},
@@ -86,7 +87,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         notes.write(f"round cut off ({stopped if stopped != 'end_turn' else 'max_tokens'}) before the model finished", "info")
     if notes.count == notes_before and ran:
         notes.write(f"turn ended without a note (stopped: {stopped}, reasons: {'; '.join(decision.reasons)})", "info")
-    if analyst and ran:
+    if decision.mode == "analyst" and ran:  # a post-mortem never stands in for the day's analysis
         marker = paths.report(f"analyst-{time.strftime('%Y-%m-%d', time.gmtime(now()))}")
         if not marker.exists():  # the model did not write the report: mark the day done anyway, with what happened
             marker.write_text(f"# analyst {time.strftime('%Y-%m-%d', time.gmtime(now()))}\n\nTurn ended with stopped={stopped} after "
