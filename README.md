@@ -331,11 +331,15 @@ Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 **Runs without the timers, and a book switch without SSH.** Until the loop's timers are enabled, every operator
 round (every 15 minutes, already enabled) starts the stages that are due as background jobs: measure and the book every
 round, the event feeds, discover hourly, qualify every 30 minutes (one lab at a time), the read-only database copy
-hourly, the event scan every 3 hours, the strategist on Sundays. A stage whose timer is active is left to systemd. A
-stage that ends cleanly wakes nobody; a failed one is a decision note, repeated every six hours while it keeps failing.
+hourly, the event scan every 3 hours (no unit runs it), the strategist on Sundays. A stage whose timer is active is
+left to systemd. A stage that ends cleanly wakes nobody; a failed one is a decision note, repeated every six hours
+while it keeps failing; stages that cannot start at all are raised the same way. Finished stage jobs are pruned after
+three days; `remote jobs` always lists running jobs first.
 The live book is switched on by `[book] enabled = true` in the owner's config file or, without SSH, by `/book on` in
-Telegram from the owner's chat (or `snipetech book on`); `/book off` and `/stop` halt it. The strategist can never
-switch it on.
+Telegram from the owner's chat (or `snipetech remote --wait run book on`). `/book off` stops what the book runs
+within 15 minutes, except a sniper still selling a coin, which keeps running until the coin is sold (a stop never
+strands a coin); each book sniper makes at most 3 buys, so that is all it can add after a stop. `/stop` halts
+everything. If the config file keeps the book on, `/book off` says so. The strategist can never switch it on.
 
 **The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
 the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`

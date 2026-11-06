@@ -6,6 +6,28 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The bot runs by itself (6 Nov, 16:00 UTC) — what it waits for
+
+Deployed at 15:58 on the owner's "go do it": every 15-minute operator round now starts the loop's stages itself
+(measure, the book, the event feeds, discover, qualify, the read-only database copy, the event scan, the Sunday
+strategist), because the owner has not enabled their timers over SSH. The first round at 16:00 started measure, the
+book, the feeds and qualify with nobody logged in.
+
+The book is still off: switching real money on is the owner's `/book on` in Telegram (this session's safety layer
+refused to do it). Once on, it buys only when both hold: equity of at least 3 SOL (2.65 now) and a wallet that
+scores at least 0.005 SOL a trade at our landing (today one wallet qualifies, `2YDnmMQt…`, at 0.0013).
+
+First fee-test numbers (two paid buys copying `2YDnmMQt…`, 15:52 and 15:58): paying 0.02 priority + 0.02 tip
+landed us 0 and 1 trades behind the leader at +0.9 % and +1.1 % above its price, against 2.5 behind and +26 % at the
+minimum fees (39 round trips on 5–6 Nov). Both trades still lost (−0.16 SOL together, 0.12 of it fees): some sells
+and their failed duplicates went out at the 0.02 buy fee, so the paid arm costs about 0.06 SOL a round trip, 30 % of
+a 0.2 SOL fill. The low-fee arm never bought: OKTech seems to buy a coin once per wallet, so the faster paid sniper
+takes every shared signal. Final numbers when the test ends at 18:08 (docs/live-recipe.md).
+
+A review of the self-running code before it went live found that `/book off` left the book's snipers buying with
+its stops switched off, that one truncated job file could stop every stage silently, and that a running guard
+dropped off `remote jobs` after two hours; all fixed with tests (commit `a095854`).
+
 ## The loop runs itself now (6 Nov, 10:30 UTC) — what is automatic, what is still yours
 
 Built, tested and deployed today (README 3e): the operator checks what you pay for every 15 minutes and tells you
