@@ -23,7 +23,10 @@ def test_inactive_timers_get_their_stage_started():
 
 def test_active_timers_are_left_to_systemd():
     services = {unit: "active" for _, unit, _ in STANDIN if unit}
-    assert due_standins(services, [], NOW) == [["events", "scan"]]  # no unit runs the scan: always stood in for
+    assert due_standins(services, [], NOW) == [
+        ["events", "scan"],
+        ["paper", "run"],
+    ]  # no unit runs these: always stood in for
 
 
 def test_recent_or_running_stages_are_not_started_again():
@@ -149,10 +152,30 @@ def test_each_stage_runs_under_its_own_time_limit(tmp_path):
     (data / "jobs").mkdir(parents=True)
 
     class Jobs:
-        ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main", command=[sys.executable, "-c", "pass"])
+        ops = O.Ops(
+            repo=tmp_path,
+            data=data,
+            db=data / "x.db",
+            keys_file=tmp_path / "k",
+            branch="main",
+            command=[sys.executable, "-c", "pass"],
+        )
 
     limits = {}
     Jobs.ops.op_run = lambda argv, timeout=6 * 3600: limits.update({" ".join(argv): timeout}) or {"id": "x"}
     start_standins(Jobs(), {}, NOW)
     assert limits["measure run"] <= 30 * 60 and limits["book run"] <= 30 * 60 and limits["qualify run"] <= 3 * 3600
     assert all(t < 6 * 3600 for t in limits.values())
+
+
+def test_the_forward_paper_test_runs_around_the_clock():
+    """Learning never stops when nothing trades: the round scores the frozen strategies on new tape every 30 minutes
+    (no systemd unit runs it), quietly when it ends cleanly, under its own time limit."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS, loop_stage
+
+    everything_on = {unit: "active" for _, unit, _ in STANDIN if unit}
+    argvs = [tuple(a) for a in due_standins(everything_on, [], NOW)]
+    assert ("paper", "run") in argvs
+    assert ("paper", "run") not in [tuple(a) for a in due_standins({}, [_meta(["paper", "run"], NOW - 600)], NOW)]
+    assert loop_stage(["paper", "run"]) == "paper run" and loop_stage(["paper", "freeze"]) is None
+    assert STAGE_LIMIT_SECS["paper run"] <= 3600

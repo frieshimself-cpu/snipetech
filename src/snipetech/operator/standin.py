@@ -19,6 +19,7 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("qualify", "run"), "snipetech-qualify.timer", 30 * 60),
     (("snapshot-db",), "snipetech-snapshot.timer", 60 * 60),
     (("events", "scan"), None, 3 * 3600),  # snipetech-events only polls the feeds; no unit runs the scan
+    (("paper", "run"), None, 30 * 60),  # the forward paper test: free learning on live prices, around the clock
     (("strategist", "run"), "snipetech-strategist.timer", 24 * 3600),  # its own weekly guard decides further
 )
 
@@ -28,6 +29,7 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
 STAGE_LIMIT_SECS: dict[str, int] = {
     "measure run": 20 * 60, "book run": 10 * 60, "events poll --once": 10 * 60, "discover run": 60 * 60,
     "qualify run": 2 * 3600, "snapshot-db": 60 * 60, "events scan": 60 * 60, "strategist run": 60 * 60,
+    "paper run": 30 * 60,
 }  # fmt: skip
 
 
