@@ -1,4 +1,5 @@
-"""Vybe client over a mock transport: header, top-traders parsing, usage counter, budget."""
+"""Vybe client over a mock transport: header, top-traders parsing (nested metrics and the older flat shape),
+usage counter, budget, retries, raw passthrough."""
 
 import httpx
 import pytest
@@ -6,6 +7,22 @@ import pytest
 from snipetech.vybe import Vybe
 
 KEY = "vybe-test-key-1234"
+
+NESTED = {
+    "accountAddress": "W1",
+    "accountName": "one",
+    "accountLabels": ["kol"],
+    "metrics": {
+        "realizedPnlUsd": 1234.5,
+        "unrealizedPnlUsd": -10.0,
+        "winRate": 61.0,
+        "tradesVolumeUsd": 50000.0,
+        "tradesCount": 80,
+        "uniqueTokensTraded": 25,
+        "sevenDayPnl": [[1793404800000.0, 100.0], [1793491200000.0, 200.0]],
+    },
+}
+FLAT = {"accountAddress": "W2", "realizedPnlUsd": "99.5", "winRate": None, "tradesCount": "7"}
 
 
 def _client(handler, **kw):
@@ -18,24 +35,7 @@ def test_top_traders_headers_params_parsing_and_counter():
     def handler(req):
         seen["h"] = dict(req.headers)
         seen["url"] = str(req.url)
-        return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {
-                        "accountAddress": "W1",
-                        "realizedPnlUsd": 1234.5,
-                        "unrealizedPnlUsd": -10.0,
-                        "winRate": 0.61,
-                        "tradesVolumeUsd": 50000.0,
-                        "tradesCount": 80,
-                        "uniqueTokensTraded": 25,
-                        "sevenDayPnl": 300.0,
-                    },
-                    {"accountAddress": "W2", "realizedPnlUsd": "99.5", "winRate": None, "tradesCount": "7"},
-                ]
-            },
-        )
+        return httpx.Response(200, json={"data": [NESTED, FLAT]})
 
     v = _client(handler, counter=lambda n: counted.append(n))
     rows = v.top_traders(resolution="30d", limit=100, sort="realizedPnlUsd")
@@ -53,12 +53,7 @@ def test_top_traders_headers_params_parsing_and_counter():
         "labels": ["kol"],
         "name": "one",
     }
-    assert (
-        rows[1]["wallet"] == "W2"
-        and rows[1]["realized_usd"] == 99.5
-        and rows[1]["win_rate"] is None
-        and rows[1]["trades"] == 7
-    )
+    assert rows[1]["wallet"] == "W2" and rows[1]["realized_usd"] == 99.5 and rows[1]["win_rate"] is None and rows[1]["trades"] == 7
     assert counted == [1] and v.requests == 1
 
 
@@ -86,28 +81,7 @@ def test_retries_on_429():
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(429, json={})
-        return httpx.Response(
-            200,
-            json={
-                "data": [
-                    {
-                        "accountAddress": "W1",
-                        "accountName": "one",
-                        "accountLabels": ["kol"],
-                        "metrics": {
-                            "realizedPnlUsd": 1234.5,
-                            "unrealizedPnlUsd": -10.0,
-                            "winRate": 61.0,
-                            "tradesVolumeUsd": 50000.0,
-                            "tradesCount": 80,
-                            "uniqueTokensTraded": 25,
-                            "sevenDayPnl": [[1793404800000.0, 100.0], [1793491200000.0, 200.0]],
-                        },
-                    },
-                    {"accountAddress": "W2", "realizedPnlUsd": "99.5", "winRate": None, "tradesCount": "7"},
-                ]
-            },
-        )  # the older flat shape still parses
+        return httpx.Response(200, json={"data": []})
 
     assert _client(handler).top_traders() == [] and calls["n"] == 2
 
