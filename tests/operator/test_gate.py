@@ -1,0 +1,101 @@
+import json
+
+import pytest
+
+from snipetech.config import OperatorConfig
+from snipetech.operator.gate import Decision, analyst_done_today, decide, expected_state
+from snipetech.operator.paths import OperatorPaths
+from snipetech.operator.snapshot import Snapshot
+
+NOW = 1_793_923_200 + 3600  # 2026-11-06 01:00 UTC
+AT_0630 = 1_793_923_200 + 6 * 3600 + 1800
+CFG = OperatorConfig()
+ALL_ACTIVE = {"snipetech-tape": "active", "snipetech-ops": "active"}
+
+
+def snap(**over) -> Snapshot:
+    base = dict(ts=NOW, services=dict(ALL_ACTIVE), tape_last_ts=NOW - 5, jobs_running=[], jobs_ended=[], wallet="W",
+                native_sol=1.0, wsol=0.1, held=[], snipers=[{"id": "a", "name": "x", "status": "idle"}], fills=[], paper=None,
+                spent_today=0.0, errors=[])  # fmt: skip
+    base.update(over)
+    return Snapshot(**base)
+
+
+@pytest.fixture
+def paths(tmp_path):
+    return OperatorPaths(tmp_path).ensure()
+
+
+def test_quiet_when_nothing_changed(paths):
+    d = decide(snap(), snap(), NOW, CFG, paths)
+    assert d.call is False and d.mode == "none" and d.reasons == []
+
+
+def test_job_ended_triggers(paths):
+    d = decide(snap(jobs_ended=[{"id": "x", "argv": ["lab"], "exit_code": 0}]), snap(), NOW, CFG, paths)
+    assert d.call and d.mode == "operator" and any("job ended" in r for r in d.reasons)
+
+
+def test_unexpected_sniper_triggers(paths):
+    assert decide(snap(snipers=[{"id": "a", "name": "x", "status": "running"}]), snap(), NOW, CFG, paths).call
+
+
+def test_expected_state_file_allows_a_running_sniper(paths):
+    paths.expected.write_text(json.dumps({"snipers_running": 1, "held": 0}))
+    assert expected_state(paths) == {"snipers_running": 1, "held": 0}
+    assert not decide(snap(snipers=[{"id": "a", "name": "x", "status": "running"}]), snap(), NOW, CFG, paths).call
+
+
+def test_held_coin_triggers(paths):
+    assert decide(snap(held=[{"mint": "M", "amount": 5.0}]), snap(), NOW, CFG, paths).call
+
+
+def test_unknown_oktech_state_triggers(paths):
+    assert decide(snap(snipers=None), snap(), NOW, CFG, paths).call
+
+
+def test_equity_move_triggers(paths):
+    assert decide(snap(native_sol=1.0), snap(native_sol=1.2), NOW, CFG, paths).call
+
+
+def test_small_equity_move_is_quiet(paths):
+    assert not decide(snap(native_sol=1.0), snap(native_sol=1.05), NOW, CFG, paths).call
+
+
+def test_tape_stale_triggers(paths):
+    assert decide(snap(tape_last_ts=NOW - 400), snap(), NOW, CFG, paths).call
+
+
+def test_service_down_triggers(paths):
+    assert decide(snap(services={"snipetech-tape": "failed", "snipetech-ops": "active"}), snap(), NOW, CFG, paths).call
+
+
+def test_inbox_triggers(paths):
+    paths.inbox.write_text("check wallet X\n")
+    d = decide(snap(), snap(), NOW, CFG, paths)
+    assert d.call and any("inbox" in r for r in d.reasons)
+
+
+def test_analyst_due_after_0600_once(paths):
+    d = decide(snap(ts=AT_0630), snap(), AT_0630, CFG, paths)
+    assert d.call and d.mode == "analyst"
+    paths.report("analyst-2026-11-06").write_text("x")
+    assert analyst_done_today(paths, AT_0630)
+    assert decide(snap(ts=AT_0630), snap(), AT_0630, CFG, paths).mode != "analyst"
+
+
+def test_analyst_not_due_before_0600(paths):
+    assert decide(snap(), snap(), NOW, CFG, paths).mode == "none"
+
+
+def test_budget_reached_blocks_call(paths):
+    d = decide(snap(spent_today=15.0, jobs_ended=[{"id": "x"}]), snap(), NOW, CFG, paths)
+    assert d.call is False and d.reasons == ["budget"]
+
+
+def test_first_round_without_previous_is_quiet(paths):
+    assert decide(snap(), None, NOW, CFG, paths).call is False
+
+
+def test_decision_is_plain_data():
+    assert Decision(True, "operator", ["x"]).reasons == ["x"]
