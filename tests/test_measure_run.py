@@ -592,3 +592,30 @@ def test_an_exit_is_read_only_once_the_sells_fee_is_known(tmp_path):
         assert st.fill(ds)["exit_reason"] == "manual" and st.fill(ds)["crossed"] == 0
     finally:
         st.close()
+
+
+def test_a_hand_sale_is_judged_against_the_snipers_alive_at_the_sale(tmp_path):
+    """A sale by hand at 0.001 priority + 0.001 tip. The book sniper alive at the sale sells at 0.001 + 0.002 or 0.002
+    untipped, so no sniper of ours paid that: the sale is 'manual'. A morning copy sniper removed hours before (it sold
+    at 0.001 + 0.001) stays in the table, and must not hide the hand sale as the dead exit it happens to look like."""
+    from snipetech.oktech import list_copy_sniper
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _book_sniper(st)
+        morning = Config()
+        morning.oktech.sell_fee_sol = 0.001  # the 6 Nov morning copy snipers
+        leader = addr("morning leader")
+        p = list_copy_sniper(leader, "kol", 0.3, 0.05, cfg=morning, priority_fee=0.001, tip=0.002)
+        row = {"id": "am1", "external_id": "am1", "kind": "copy", "source": leader, "name": p.name,
+               "config_hash": p.config_hash, "payload": p.config, "created_at": NOW - 2 * 86400}  # fmt: skip
+        st.add_oktech_sniper(row)
+        st._exec("UPDATE oktech_snipers SET removed_at=? WHERE id=?", (NOW - 20 * 3600, "am1"))
+        (db, ds), _ = _exit_world(st).values()
+        metas = {db: _meta(db), ds: _meta(ds, priority=1_000_000, tip=1_000_000)}
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert st.fill(ds)["exit_reason"] == "manual"
+    finally:
+        st.close()

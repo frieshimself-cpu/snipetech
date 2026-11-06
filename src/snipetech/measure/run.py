@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import Config
 from ..store import Store
-from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips
+from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
 from .exits import (
     buying_sniper,
     classify_exit,
@@ -294,7 +294,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
-    sniper_fees = fee_pairs(r.get("payload") for r in store.oktech_snipers(active=False))
+    every_sniper = store.oktech_snipers(active=False)
+    all_time_fees = fee_pairs(r.get("payload") for r in every_sniper)  # only when no sniper is known alive at a sale
     newly_crossed: list[tuple[dict, dict | None]] = []
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
@@ -308,7 +309,11 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             label = "sold"
             if s.get("priority_lamports") is not None:  # the fee tells a hand sale: wait for the fingerprint
                 tape = store.trades_for_mint(s["mint"], end_ts=int(s["ts"]) + 1) if buy and exit_spec(payload) else []
-                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, sniper_fees)
+                # the fees of the snipers alive at the sale and of the one that bought: a fee pair only a removed
+                # sniper paid (the morning snipers' 0.001 sell fee) does not hide a sale by hand
+                alive = [r.get("payload") for r in snipers_at(every_sniper, float(s["ts"]))]
+                fees_then = fee_pairs([*alive, payload]) or all_time_fees
+                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, fees_then)
         crossed = 0 if label == "manual" else is_crossed(s, payload)
         want = {"pnl_sol": round(pnl, 6), "exit_reason": label, "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
                 "exit_name": (buy or {}).get("exit_name") or preset_name(payload),

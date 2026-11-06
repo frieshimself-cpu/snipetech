@@ -204,7 +204,8 @@ def classify_exit(sell: dict, buy: dict, tape: list[Trade], leader: str | None, 
     7. unknown: none of these.
     'sold' when the buying sniper's exit settings are not on record. `sell` and `buy` are fills rows; `tape` holds the
     coin's trades up to the sale (from before the copied wallet's first buy, for its bag); `spec` is the buying
-    sniper's OKTech config (or its exit_spec); `sniper_fees` comes from fee_pairs over our snipers."""
+    sniper's OKTech config (or its exit_spec); `sniper_fees` comes from fee_pairs over our snipers alive at the sale
+    and the one that bought (a fee only a long-removed sniper paid must not hide a sale by hand)."""
     if is_manual(sell, sniper_fees):
         return "manual"
     ex = spec if isinstance(spec, dict) and "copy_pct" in spec else exit_spec(spec)
