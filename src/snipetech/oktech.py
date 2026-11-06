@@ -259,6 +259,34 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     return PlannedSniper("copy", a, f"snipetech copy {a[:6]}", config, summary, notes)
 
 
+def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, max_buys: int = 5,
+                     exit_params: dict | None = None, cfg: Config | None = None) -> PlannedSniper:
+    """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
+    only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
+    the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s)."""
+    cfg = cfg or Config()
+    notes: list[str] = []
+    prio, tip = fees(None, cfg.oktech.tip_share, notes)
+    ex = dict(exit_params or {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300})
+    ex.setdefault("sell_on_dev_sell", False)
+    config: dict[str, Any] = {
+        "mode": "ctbot",
+        "ctbotWallets": [{"address": address, "label": f"snipetech {label}"[:40], "minSol": _round(min_sol, 3)}],
+        "ctbotMinWallets": 1, "ctbotTimeWindowMs": cfg.oktech.copy_time_window_ms,
+        "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": cfg.oktech.copy_exit_threshold_percent, "sellPercent": 100,
+                          "triggerWalletOnly": True, "delayMs": 0},
+        "buyAmount": _round(max(0.001, buy_sol)), "priorityFee": prio, "tipAmount": tip,
+        "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))), "speedMode": cfg.oktech.jetstream,
+    }  # fmt: skip
+    sell = autosell(ex | {"copy_exit": True}, notes)
+    if sell:
+        config["autoSell"] = sell
+    summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL, {buy_sol:g} SOL per copy, stops after "
+               f"{config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
+               "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy"]  # fmt: skip
+    return PlannedSniper("copy", address, f"snipetech copy {label[:18]} {address[:6]}", config, summary, notes)
+
+
 def _describe_exit(e: dict | None) -> str:
     if not e:
         return "none"

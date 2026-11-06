@@ -277,3 +277,14 @@ def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
     assert th["minTotalSol"] == 3 and th["maxDevBuySol"] == 1 and "maxUniqueBuyers" not in th
     solo = strategy_sniper(strat | {"trigger": strat["trigger"] | {"solo": True}}, 5).config
     assert solo["hunt"]["thresholds"]["maxUniqueBuyers"] == 2
+
+
+def test_list_copy_sniper_is_capped_and_copies_only_big_buys():
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper("3GzBLpxTuEMJnbSZt5Lt7V5G4PfTzQWtnMoVVz5n5CVU", "0xsolomon", 1.0, 0.05, 5)
+    c = p.config
+    assert c["mode"] == "ctbot" and c["singleSnipe"] and c["totalSnipes"] == 5 and c["buyAmount"] == 0.05
+    assert c["ctbotWallets"][0]["minSol"] == 1.0 and c["ctbotMinWallets"] == 1
+    assert c["ctbotCopyExit"]["enabled"] and c["autoSell"]["deadExit"]["staleSeconds"] == 1
+    assert c["autoSell"]["stopLoss"]["stages"][0]["percentLoss"] == 30

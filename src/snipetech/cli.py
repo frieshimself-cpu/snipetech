@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "guard", "cycle", "holdings", "show", "start",
+    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "copylist", "guard", "cycle", "holdings", "show", "start",
                                        "stop", "delete"])  # fmt: skip
     sp.add_argument("--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)")
     sp.add_argument("--id", action="append", help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several")
@@ -184,6 +184,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--via", choices=["hunt", "crowd"], default="hunt",
                     help="strategy: how OKTech gates the big-buy trigger: hunt (fires on every launch, measured) or crowd (buys in the create tx)")
     sp.add_argument("--no-preexec", action="store_true", help="strategy: send buys without OKTech's local pre-execution dry run")
+    sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL]]",
+                    help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1) are copied")
     sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
@@ -453,6 +455,24 @@ async def _run(args, cfg: Config) -> int:
                 else:
                     print("\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
                           "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`.")
+                return 0
+            if args.action == "copylist":
+                if not args.copy:
+                    raise SystemExit("copylist: give --copy ADDRESS[:LABEL[:MIN_SOL]] (one or more)")
+                rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
+                                                buy_sol=args.buy or 0.05, max_buys=args.snipes)  # fmt: skip
+                if args.json:
+                    print(json.dumps(rep, indent=1, default=str))
+                    return 0
+                for sn in rep["snipers"]:
+                    print(f"\n{sn['label']}  {sn['id']}")
+                    print(f"  OKTech sniper: {sn['name']}" + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else ""))
+                    for line in sn["summary"]:
+                        print(f"    {line}")
+                    for n in sn["notes"]:
+                        print(f"    note: {n}")
+                if not args.create:
+                    print("\nDry run. --create makes them on OKTech, idle; start them with `oktech cycle` or `oktech guard`.")
                 return 0
             if args.action == "strategy":
                 rep = await svc.oktech_strategy(args.id[0] if args.id else None, args.wallet or cfg.oktech.wallet or "SNIPER",

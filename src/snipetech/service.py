@@ -765,6 +765,33 @@ class Service:
         finally:
             await client.close()
 
+    async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
+                              max_buys: int = 5) -> dict:  # fmt: skip
+        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL]]."""
+        from .oktech import list_copy_sniper
+
+        out = []
+        client = self._oktech() if create else None
+        try:
+            for spec in specs:
+                parts = spec.split(":")
+                address = self._check(parts[0])
+                label = parts[1] if len(parts) > 1 and parts[1] else address[:6]
+                min_sol = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
+                p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg)
+                row = {"id": address, "label": label, "name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config}
+                if client is not None:
+                    ans = await client.create(p.name, p.config, wallet, p.external_id)
+                    task = ans.get("task") or {}
+                    self.store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source,
+                                                  "name": p.name, "config_hash": p.config_hash, "payload": p.config})  # fmt: skip
+                    row |= {"oktech_id": task["id"], "status": task.get("status")}
+                out.append(row)
+        finally:
+            if client is not None:
+                await client.close()
+        return {"snipers": out}
+
     async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None,
                               max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60) -> dict:  # fmt: skip
         """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
