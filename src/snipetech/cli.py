@@ -118,7 +118,18 @@ def _events(args, cfg) -> int:
     clients: dict = {}
     try:
         if args.action == "scan":
-            print(json.dumps(scan_tape(svc.store, time.time(), hours=args.hours), indent=1))
+            from .events.dev import dev_transfers
+
+            out = scan_tape(svc.store, time.time(), hours=args.hours)
+
+            async def dev():
+                try:
+                    return await dev_transfers(svc, int(time.time() - args.hours * 3600), now=time.time())
+                finally:
+                    await svc.close()
+
+            out["dev"] = asyncio.run(dev())
+            print(json.dumps(out, indent=1))
             return 0
         if os.environ.get("SOLANATRACKER_API_KEY"):
             from .solanatracker import SolanaTracker
