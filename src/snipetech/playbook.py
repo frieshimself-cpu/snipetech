@@ -8,9 +8,10 @@ OKTECH_PLAYBOOK = """\
 OKTech playbook (measured on our own live trades, 5-6 Nov 2026; a slot is about 0.214 s):
 1. One copy sniper per leader per OKTech wallet. OKTech buys a coin once per wallet, so a second sniper on the same
    leader adds no buys, only crossed exits and failed duplicate sells (5 of 5 contested signals gave one buy).
-2. A sniper's last buy, the one that uses up its totalSnipes cap, can be left with no exit at all (DTAU 6 Nov, 4siK
-   5 Nov: 2 of 4 such buys). The book relies on each sniper's first buy only and replaces it once the wallet holds
-   nothing. A coin nobody is selling is the owner's decision, never an agent's: report it.
+2. A sniper's last buy, the one that uses up its totalSnipes cap, can be left with no exit at all (4siK 5 Nov; DTAU
+   and 5m5h 6 Nov: -24 % and -65 % with no dead exit, stop-loss or timer). The book relies on each sniper's first buy
+   only and replaces it once the wallet holds nothing. A coin nobody is selling is the owner's decision, never an
+   agent's: report it with its /sell line.
 3. OKTech charges the task's buy priority fee again on the landed sell of every exit (7 of 7 fee-test sells); the buy
    tip never leaks into sells. A bid is raised only through the tip, never through the priority fee.
 4. Every sell brings 1.2-1.6 failed duplicate sends (42 for 31 sells), each paying a fee; one send requested does not

@@ -406,6 +406,24 @@ Deploy during the test: at 15:58 the owner's "go do it" deployed `097cb4c`, whic
 the first guard; a second guard (`oktech guard --watch-only`, job `20261106-155810-0f725c`, same floor, until 18:08)
 watches the same six snipers without calling start on them again.
 
+## A copy OKTech never sold, 6 Nov 2026 20:33 UTC (the third such coin)
+
+One of the two fee-test snipers still running on Gfree (`4yo9CUuT…`; the lab exit: dead exit 1 s, stop-loss 30 %,
+300 s timer; 2 buys each) bought 0.2 SOL of `5m5hP15rrB5kyF3V9xsbYfCnvKKr6ZzXozYwAd1kirCF` at 20:33:28, behind
+Gfree's buy. The crowd that copies Gfree sold within a second and the price fell about 65 %. **No exit fired**: no
+dead exit (the coin then sat quiet for 44 s), no stop-loss, no 300 s timer; OKTech still listed the sniper as
+running. The same evening its two earlier Gfree copies were sold within 2 and 8 seconds.
+
+- Third coin OKTech abandoned (4siK 5 Nov, DTAU 17:09, 5m5h 20:33); all three were most likely the buy that used up
+  their sniper's cap. OKTech's exits cannot be relied on for the cap-using buy, whatever the preset.
+- Our own sell (`snipetech sweep --mint …`) was refused by the cloud session's safety layer even with the owner's
+  "do everything" in chat; the owner was asked to sell by hand (by 21:03 the coin was still held, worth about 0.07
+  SOL of the 0.2 paid; no trade in it since 20:39).
+- What changes: the unsold-coin watch (a Telegram line within about a minute of a missed exit), `/sell <coin>` in
+  Telegram so the owner sells with one message, and the book relying on each sniper's first buy only.
+- The two Gfree test snipers (`6aeded579d2356e2dc62a400`, `6aeded3d9d2356e2dc629eed`) should be stopped once the
+  wallet is flat (`/stop`); the session's safety layer refused that stop too.
+
 ## The live book switched on, 6 Nov 2026 16:30 UTC
 
 Owner's yes in chat: "Bro just start it go we can work on safety when im home" (after "nah just start it" and "just
