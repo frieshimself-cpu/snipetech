@@ -98,3 +98,24 @@ def test_scan_is_bounded_and_resumable(tmp_path):
         assert len(svc.rpc.calls) == 1
     finally:
         st.close()
+
+
+def test_fee_claims_in_the_launch_window_become_events():
+    """A creator collecting fees around a launch that reached the threshold is a fee_claim event on that launch."""
+    st = Store(":memory:")
+    try:
+        m = Market(st, addr("fee"), DEV, NOW - 3 * 3600, SLOT)
+        m.buy(DEV, 1.0, 0)
+        m.buy(OTHER, 70.0, 2)  # the curve passes 60 SOL
+        m.commit()
+        claim = TxMeta(sig="CLAIM", slot=SLOT + 50, block_time=NOW - 3600, version=0, fee_payer=DEV, signers=[DEV], n_signatures=1, fee=5000,
+                       priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None,
+                       claims=[{"program": "pump", "name": "collect_creator_fee", "claimer": DEV, "lamports": 450_000_000}])  # fmt: skip
+        rpc = FakeRpc({DEV: [{"signature": "CLAIM", "blockTime": NOW - 3600, "err": None}]})
+        svc = type("S", (), {"store": st, "rpc": rpc, "ingestor": FakeIngestor(st, {"CLAIM": claim})})()
+        out = asyncio.run(dev_transfers(svc, NOW - 86400, now=NOW, min_curve_sol=60))
+        ev = st.events(kind="fee_claim")
+        assert out["events"] >= 1 and len(ev) == 1 and ev[0]["wallet"] == DEV and ev[0]["mint"] == addr("fee")
+        assert ev[0]["data"]["lamports"] == 450_000_000 and ev[0]["data"]["program"] == "pump"
+    finally:
+        st.close()

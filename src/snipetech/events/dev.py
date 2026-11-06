@@ -1,5 +1,6 @@
 """Dev transfers: for launches whose curve reached `min_curve_sol` (60 SOL, about a hundred coins an hour), the creator's outgoing SOL in the day around the
-launch. Each becomes a dev_transfer event and a paid_by_dev edge, which the relationship gate reads.
+launch. Each becomes a dev_transfer event and a paid_by_dev edge, which the relationship gate reads; the creator's fee
+claims in the same window (TxMeta.claims) become fee_claim events.
 Bounded (launches per scan, 24 h window) and resumable (cursor on the launch time)."""
 
 from __future__ import annotations
@@ -53,6 +54,9 @@ async def dev_transfers(
             if m is None:
                 continue
             ts = int(m.block_time or lts)
+            for c in getattr(m, "claims", None) or []:  # the creator collecting fees around the launch
+                events.append({"ts": ts, "slot": int(m.slot), "kind": "fee_claim", "mint": mint, "wallet": c.get("claimer") or creator,
+                               "data": {"lamports": int(c.get("lamports") or 0), "program": c.get("program"), "sig": sig}, "source": "rpc"})  # fmt: skip
             for tr in m.transfers or []:
                 if tr.get("src") != creator or not tr.get("dst") or tr.get("dst") == creator:
                     continue

@@ -40,7 +40,9 @@ def test_cpi_and_log_events_agree(sig):
     tx = TXS[sig]
     cpi = extract_from_transaction(tx, sig).events
     logs = extract_from_logs(tx["meta"]["logMessages"])
-    assert cpi, "every fixture carries at least one pump event"
+    if not cpi and not logs:
+        pytest.skip("not a trade transaction (a creator-fee claim fixture for txmeta)")
+    assert cpi, "every trade fixture carries at least one pump event"
     assert [(e.name, e.fields) for e in cpi] == [(e.name, e.fields) for e in logs]
 
 
@@ -142,11 +144,17 @@ def test_foreign_quoted_trades_are_kept_apart():
     """A pump.fun curve quoted in a tokenized stock: not a SOL trade, but kept (in its own units) on request."""
     sig, tx = by_prefix("5a9f4Bh3")
     ev = extract_from_transaction(tx, sig)
-    raw = next(e.fields for e in ev.events if e.name == "TradeEvent" and e.fields.get("quote_mint", WSOL_MINT) != WSOL_MINT)
+    raw = next(
+        e.fields for e in ev.events if e.name == "TradeEvent" and e.fields.get("quote_mint", WSOL_MINT) != WSOL_MINT
+    )
     plain, full = normalize(ev), normalize(ev, foreign=True)
     assert all(t.quote_mint == "" for t in plain.trades + full.trades)
     t = next(t for t in full.foreign if t.mint == raw["mint"])
-    assert t.quote_mint == raw["quote_mint"] and t.quote == raw["quote_amount"] and t.q_after == raw["virtual_quote_reserves"]
+    assert (
+        t.quote_mint == raw["quote_mint"]
+        and t.quote == raw["quote_amount"]
+        and t.q_after == raw["virtual_quote_reserves"]
+    )
     assert t.venue == "curve" and t.base == raw["token_amount"]
     # routed wBTC -> token A -> token B: both hops kept as foreign trades, none as SOL trades
     sig, tx = by_prefix("4iHFAXgL")

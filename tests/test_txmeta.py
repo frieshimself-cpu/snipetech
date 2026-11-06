@@ -93,3 +93,27 @@ def test_flash_relay_tip_on_a_6_nov_buy():
     m = load("48YmS3mVdwXo")
     assert m.pump_ixs and [(t["lamports"], t["service"]) for t in m.tips] == [(2_000_000, "flash")]
     assert m.tips[0]["dest"].startswith("FLaSH") and m.transfers == []
+
+
+def test_creator_fee_claims_are_decoded_from_real_transactions():
+    """Two real claims: one that collected nothing (both vaults empty) and one that collected 18,737 lamports through the
+    v2 pump instruction and the PumpSwap coin-creator vault. Claims are not trades (pump_ixs stays empty)."""
+    empty = load("5jLo8ERCdTRr")
+    assert empty.pump_ixs == [] and [c["name"] for c in empty.claims] == [
+        "collect_creator_fee",
+        "collect_coin_creator_fee",
+    ]
+    assert {c["claimer"] for c in empty.claims} == {"3X1FYfhocNoM57jWMmHarRyoLsnGhZHf6omVgVaKNL1a"} and sum(
+        c["lamports"] for c in empty.claims
+    ) == 0
+    assert [c["program"] for c in empty.claims] == ["pump", "pumpswap"]
+    real = load("4Jq9WGY127A3")
+    assert [c["name"] for c in real.claims] == ["collect_creator_fee_v2", "collect_coin_creator_fee"]
+    # a third party signed this claim (a claim bot); the beneficiary is the creator account in both instructions
+    assert sum(c["lamports"] for c in real.claims) == 18_737 and real.signers[0] != real.claims[0]["claimer"]
+    assert {c["claimer"] for c in real.claims} == {"8o6yYRnEGChhfRHm3zpmXE136Tu2mH7ChMoy741trVvJ"}
+    assert real.pump_ixs == [] and all(c["lamports"] >= 0 for c in real.claims)
+    from snipetech.solana.txmeta import TxMeta
+
+    again = TxMeta.from_dict(real.to_dict())
+    assert again.claims == real.claims  # survives the tx_meta table round trip

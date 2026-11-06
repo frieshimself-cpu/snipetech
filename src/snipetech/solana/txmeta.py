@@ -127,6 +127,7 @@ class TxMeta:
     tips: list[dict] = field(default_factory=list)  # {dest, lamports, service}
     transfers: list[dict] = field(default_factory=list)  # other outgoing SOL from signers: {src, dst, lamports}
     pump_ixs: list[PumpIx] = field(default_factory=list)
+    claims: list[dict] = field(default_factory=list)  # creator fee claims: {program, name, claimer, lamports}
     template: list[str] = field(default_factory=list)
     nonce: bool = False
     lookup_tables: int = 0
@@ -181,6 +182,34 @@ def _ix_label(program: str, data: bytes) -> str:
         decoded = decode_instruction(program, data)
         return f"{base}:{decoded[0]}" if decoded else f"{base}:other"
     return base
+
+
+def _claim(program: str, name: str, accounts: dict[str, str], keys: list[str], meta: dict) -> dict:
+    """A creator fee claim: who collected and how many lamports left the vault (the curve vault is a plain account,
+    the PumpSwap vault is a WSOL token account). Missing balances read as 0, never as an error."""
+    claimer = accounts.get("creator") or accounts.get("coin_creator") or ""
+    lamports = 0
+    if program == PUMP_PROGRAM:
+        vault = accounts.get("creator_vault")
+        pre, post = meta.get("preBalances") or [], meta.get("postBalances") or []
+        if vault in keys:
+            idx = keys.index(vault)
+            if idx < len(pre) and idx < len(post):
+                lamports = max(0, int(pre[idx]) - int(post[idx]))
+    else:
+        ata = accounts.get("coin_creator_vault_ata")
+
+        def amounts(rows: list) -> dict[str, int]:
+            return {
+                keys[b["accountIndex"]]: int(b["uiTokenAmount"]["amount"])
+                for b in rows or []
+                if b.get("accountIndex", len(keys)) < len(keys)
+            }
+
+        lamports = max(
+            0, amounts(meta.get("preTokenBalances")).get(ata, 0) - amounts(meta.get("postTokenBalances")).get(ata, 0)
+        )
+    return {"program": PROGRAM_LABELS.get(program, program), "name": name, "claimer": claimer, "lamports": lamports}
 
 
 def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, str] | None = None) -> TxMeta:
@@ -258,6 +287,9 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
             if decoded is None:
                 return  # event self-CPI and unknown instructions
             name, acc_names, args = decoded
+            if name.startswith("collect_creator_fee") or name == "collect_coin_creator_fee":
+                out.claims.append(_claim(program, name, dict(zip(acc_names, accs)), keys, meta))
+                return
             if not (
                 name.startswith(("buy", "sell"))
                 or name in ("create", "create_v2", "multi_hop_curve_swap", "multi_hop_swap")

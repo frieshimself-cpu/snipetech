@@ -68,9 +68,10 @@ def test_ingest_fixture_transactions():
     creates = sum(1 for s, t in TXS.items() for e in extract_from_transaction(t, s).events if e.name == "CreateEvent")
     assert res.launches == creates == 3
     assert store.stats()["launches"] == 3
-    # every trade transaction was fingerprinted
-    assert len(store.missing_tx_meta(list(TXS))) == 0
-    assert res.trades >= len(TXS) - 2
+    # every trade transaction was fingerprinted (the creator-fee claim fixtures carry no trade and are not ingested)
+    trade_sigs = [s for s, t in TXS.items() if extract_from_transaction(t, s).events]
+    assert len(store.missing_tx_meta(trade_sigs)) == 0
+    assert res.trades >= len(trade_sigs) - 2
     # second pass is free: everything is marked seen
     again = asyncio.run(ing.ingest(infos))
     assert again.fetched == 0
@@ -291,10 +292,16 @@ def test_execution_wallets_are_not_counted_as_traders():
     def tx(own_moves: bool):
         fee = 25_000  # it pays the fee either way; that alone is not trading with its own money
         bal = {"mint": "M", "owner": W, "uiTokenAmount": {"amount": "1000"}}
-        return {"meta": {"fee": fee, "preBalances": [1_000_000_000, 5],
-                         "postBalances": [1_000_000_000 - fee - (50_000_000 if own_moves else 0), 5],
-                         "preTokenBalances": [bal], "postTokenBalances": [bal]},  # an untouched token account doesn't count
-                "transaction": {"message": {"accountKeys": [W, "Other111111111111111111111111111111111111111"]}}}
+        return {
+            "meta": {
+                "fee": fee,
+                "preBalances": [1_000_000_000, 5],
+                "postBalances": [1_000_000_000 - fee - (50_000_000 if own_moves else 0), 5],
+                "preTokenBalances": [bal],
+                "postTokenBalances": [bal],
+            },  # an untouched token account doesn't count
+            "transaction": {"message": {"accountKeys": [W, "Other111111111111111111111111111111111111111"]}},
+        }
 
     class FakeRpc:
         def __init__(self, moves):
