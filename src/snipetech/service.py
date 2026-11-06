@@ -30,6 +30,27 @@ from .store import Store
 Progress = Callable[[str], None]
 
 
+class OverlapError(ValueError):
+    """A create refused because an active sniper already copies that leader (OKTech buys once per signal per wallet;
+    a second sniper only adds failed sells at its own fee and crossed exits)."""
+
+
+OVERLAP_HINT = ("one buy per signal per wallet; a second sniper only adds failed sells. Stop and delete that one "
+                "first, or pass --allow-overlap for a deliberate test on another OKTech wallet")  # fmt: skip
+
+
+def _planned_leaders(p) -> set[str]:
+    """The wallets a planned sniper would copy (none for a dev or launch sniper)."""
+    from .book.policy import copied_leaders
+
+    return copied_leaders({"kind": p.kind, "source": p.source, "payload": p.config})
+
+
+def _refused(p, leader: str, sid: str) -> dict:
+    return {"action": "refused (overlap)", "name": p.name, "id": sid,
+            "error": f"sniper {sid} already copies {leader[:6]}…: {OVERLAP_HINT}"}  # fmt: skip
+
+
 def compact_deployer(report: dict) -> dict:
     v = report.get("verdict", {})
     return {
@@ -602,9 +623,11 @@ class Service:
             "keep": [show(p) | {"id": r["id"]} for r, p in d.keep], "remove": [{"id": r["id"], "name": r["name"]} for r in d.remove],
         }  # fmt: skip
 
-    async def oktech_push(self, plan: dict, prune: bool = False) -> list[dict]:
-        """Apply a plan. Retires nothing while the sniper wallet holds a coin (or its holdings cannot be read)."""
-        from .oktech import apply
+    async def oktech_push(self, plan: dict, prune: bool = False, allow_overlap: bool = False) -> list[dict]:
+        """Apply a plan. Retires nothing while the sniper wallet holds a coin (or its holdings cannot be read). A new
+        copy sniper whose leader an active sniper already copies is refused (unless `allow_overlap`); so is a
+        replacement while the sniper it replaces is still active and cannot be retired in the same push."""
+        from .oktech import SyncPlan, apply
 
         held: list[dict] | None = None
         if self.cfg.operator.wallet:
@@ -614,9 +637,48 @@ class Service:
                 self.progress(f"holdings unknown ({exc}): nothing will be retired")
         client = self._oktech()
         try:
-            return await apply(client, self.store, plan["_sync"], self.cfg.oktech.wallet or "SNIPER", prune, held=held)
+            sync, refused = plan["_sync"], []
+            if not allow_overlap and (sync.create or sync.replace):
+                copiers = await self._active_copiers(client)
+                active = {i for ids in copiers.values() for i in ids}
+
+                def clash(p, old_id: str | None = None) -> list[tuple[str, str]]:
+                    return [
+                        (lead, i) for lead in sorted(_planned_leaders(p)) for i in copiers.get(lead, []) if i != old_id
+                    ]
+
+                creates, replaces = [], []
+                for p in sync.create:
+                    if hit := clash(p):
+                        refused.append(_refused(p, *hit[0]))
+                    else:
+                        creates.append(p)
+                for old, p in sync.replace:
+                    if hit := clash(p, old["id"]):
+                        refused.append(_refused(p, *hit[0]))
+                    elif old["id"] in active and held != []:  # the old one keeps copying until it can be retired
+                        refused.append({"action": "refused (overlap)", "name": p.name, "id": old["id"],
+                                        "error": "replaced once the wallet holds nothing: until then the old sniper keeps copying"})  # fmt: skip
+                    else:
+                        replaces.append((old, p))
+                sync = SyncPlan(create=creates, keep=sync.keep, replace=replaces, remove=sync.remove)
+            return refused + await apply(client, self.store, sync, self.cfg.oktech.wallet or "SNIPER", prune, held=held)
         finally:
             await client.close()
+
+    async def _active_copiers(self, client) -> dict[str, list[str]]:
+        """Leader -> ids of the active snipers on the account (the book's or not) that already copy it. OKTech's task
+        documents carry no config, so what a task copies comes from our own record of it."""
+        from .book.policy import copied_leaders
+        from .positions import is_active
+
+        local = {r["id"]: r for r in self.store.oktech_snipers(active=False)}
+        out: dict[str, list[str]] = {}
+        for t in await client.tasks():
+            if is_active(t.get("status")):
+                for leader in copied_leaders(local.get(t.get("id")) or {}):
+                    out.setdefault(leader, []).append(str(t.get("id")))
+        return out
 
     async def oktech_replica(self, wallet: str, buy_sol: float, create: bool = False, max_buys: int = 5) -> dict:
         """A studied wallet's rules as an OKTech sniper; with `create`, made on OKTech (idle)."""
@@ -987,13 +1049,25 @@ class Service:
     async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
                               max_buys: int = 5, exit_name: str = "lab", priority_fee: float | None = None,
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
-                              compute_units: int | None = None, salt: str = "") -> dict:  # fmt: skip
-        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60)."""
+                              compute_units: int | None = None, salt: str = "", allow_overlap: bool = False) -> dict:  # fmt: skip
+        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
+        With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
+        is made, naming that sniper, unless `allow_overlap`."""
         from .oktech import list_copy_sniper
 
         out = []
         client = self._oktech() if create else None
         try:
+            if client is not None and not allow_overlap:
+                leaders = [self._check(spec.split(":")[0]) for spec in specs]
+                twice = sorted({a for a in leaders if leaders.count(a) > 1})
+                if twice:
+                    raise OverlapError(f"refused: {twice[0][:6]}… is listed twice: {OVERLAP_HINT}")
+                copiers = await self._active_copiers(client)
+                hits = [(a, copiers[a][0]) for a in leaders if a in copiers]
+                if hits:
+                    a, sid = hits[0]
+                    raise OverlapError(f"refused: sniper {sid} already copies {a[:6]}…: {OVERLAP_HINT}")
             for spec in specs:
                 parts = spec.split(":")
                 address = self._check(parts[0])

@@ -980,3 +980,70 @@ def test_docs_answers_that_are_not_a_json_object_do_not_crash():
 
     assert asyncio.run(go(httpx.Response(200, text="<!doctype html><h1>API</h1>")))["raw"].startswith("<!doctype")
     assert asyncio.run(go(httpx.Response(200, json=[{"mode": "ctbot"}])))["docs"][0]["mode"] == "ctbot"
+
+
+class _OverlapClient:
+    """OKTech's task list (statuses only, no config) and a create that records what it made."""
+
+    def __init__(self, tasks, created):
+        self._tasks, self.created = tasks, created
+
+    async def tasks(self):
+        return list(self._tasks)
+
+    async def create(self, name, config, wallet=None, external_id=None, start=False):
+        self.created.append(config["ctbotWallets"][0]["address"])
+        return {"task": {"id": f"new{len(self.created)}", "status": "idle"}}
+
+    async def close(self):
+        pass
+
+
+def _overlap_env(monkeypatch, statuses):
+    """The book's sniper b1 copies TARGET (our record says so); `statuses` is what OKTech reports for it."""
+    from snipetech.service import Service
+
+    store = Store(":memory:")
+    store.add_oktech_sniper({"id": "b1", "kind": "copy", "source": TARGET, "name": f"snipetech copy book {TARGET[:6]} arm:control",
+                             "payload": {"mode": "ctbot", "ctbotWallets": [{"address": TARGET}]}})  # fmt: skip
+    svc, created = Service(Config(), store=store), []
+    monkeypatch.setattr(svc, "_oktech", lambda: _OverlapClient([{"id": "b1", "status": s} for s in statuses], created))
+    return svc, store, created
+
+
+def test_copylist_refuses_a_second_sniper_on_the_same_leader_unless_allowed(monkeypatch):
+    """Two snipers copying one leader from one OKTech wallet get one buy between them (5 of 5 contested signals on
+    6 Nov) and both try to sell it. A create for a leader that an active sniper (the book's or not) already copies is
+    refused and names that sniper; --allow-overlap is for a deliberate test on another OKTech wallet."""
+    from snipetech.cli import build_parser
+    from snipetech.service import OverlapError
+
+    svc, store, created = _overlap_env(monkeypatch, ["running"])
+    with pytest.raises(OverlapError, match="b1"):
+        asyncio.run(svc.oktech_copylist([f"{TARGET}:G2oZ:0.5"], "SNIPER", create=True))
+    assert created == []
+    rep = asyncio.run(svc.oktech_copylist([f"{TARGET}:G2oZ:0.5"], "SNIPER", create=True, allow_overlap=True))
+    assert created == [TARGET] and rep["snipers"][0]["oktech_id"] == "new1"
+    store.close()
+    svc, store, created = _overlap_env(monkeypatch, ["idle"])  # a stopped sniper buys nothing: no overlap
+    asyncio.run(svc.oktech_copylist([f"{TARGET}:G2oZ:0.5"], "SNIPER", create=True))
+    assert created == [TARGET]
+    with pytest.raises(OverlapError, match="twice"):  # the same leader twice in one call is an overlap too
+        asyncio.run(svc.oktech_copylist([f"{TARGET}:a:0.5", f"{TARGET}:b:0.5"], "SNIPER", create=True))
+    assert created == [TARGET]
+    store.close()
+    args = build_parser().parse_args(["oktech", "copylist", "--copy", f"{TARGET}:x:0.5", "--allow-overlap"])
+    assert args.allow_overlap is True
+    assert build_parser().parse_args(["oktech", "push"]).allow_overlap is False
+
+
+def test_push_refuses_a_verdict_sniper_on_a_leader_another_sniper_copies(monkeypatch):
+    from snipetech.oktech import SyncPlan
+
+    svc, store, created = _overlap_env(monkeypatch, ["running"])
+    p = copy_sniper(COPY_SCORE, Config(), sol_usd=200.0)
+    res = asyncio.run(svc.oktech_push({"_sync": SyncPlan(create=[p])}))
+    assert created == [] and res[0]["action"].startswith("refused") and res[0]["id"] == "b1"
+    res = asyncio.run(svc.oktech_push({"_sync": SyncPlan(create=[p])}, allow_overlap=True))
+    assert created == [TARGET] and any(r["action"] == "created" for r in res)
+    store.close()
