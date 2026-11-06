@@ -6,8 +6,14 @@ bounds is marked as needing the owner's yes."""
 
 from __future__ import annotations
 
+import calendar
+import fcntl
+import json
+import os
 import re
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +25,16 @@ LESSONS_HEADER = "# Lessons (append-only: when, who, n, the lesson | its evidenc
 MAX_LESSON_TEXT = 300
 MAX_EVIDENCE = 400
 DEDUPE_LAST = 50  # a lesson whose text matches one of the last 50 is not written again
+
+IDEAS_FILE = "ideas.json"
+KINDS = ("research", "config", "code", "live-test")
+STATUSES = ("open", "testing", "adopted", "rejected")
+OPEN = ("open", "testing")  # what is still to be decided; adopted and rejected ideas are closed
+ALWAYS_OWNER = ("live-test", "code")  # a live test spends SOL; a code change needs a coding session: the owner's yes
+IDEA_TEXT = {"title": 120, "why": 600, "test": 400, "expected": 300}  # each field's size cap in characters
+IDEA_FIELDS = ("id", *IDEA_TEXT, "kind", "status", "owner_needed", "priority")
+DEFAULT_PRIORITY = 3  # 1 (low) to 5 (high): the agent's own estimate of what testing the idea is worth
+MAX_IDEAS = 100
 
 _LESSON_RE = re.compile(r"^- (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) \[([a-z-]+), n=(\d+)\] (.*) \| evidence: (.*)$")
 _SECRET_RES = (
@@ -96,3 +112,166 @@ def add_lesson(paths: OperatorPaths, text: str, evidence: str, n: int, *, source
     with p.open("a") as f:
         f.write(f"{head}- {lesson['ts']} [{source}, n={count}] {text} | evidence: {evidence}\n")
     return lesson
+
+
+# -- ideas ----------------------------------------------------------------------------------------------------------
+
+
+def _ideas_path(paths: OperatorPaths) -> Path:
+    return paths.root / IDEAS_FILE
+
+
+def _epoch(iso: Any) -> float:
+    try:
+        return float(calendar.timegm(time.strptime(str(iso), "%Y-%m-%dT%H:%M:%SZ")))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _load_ideas(paths: OperatorPaths) -> tuple[list[dict[str, Any]], bool]:
+    """(ideas, readable): a file that is not a JSON list reads as no ideas, and `readable` is False."""
+    try:
+        data = json.loads(_ideas_path(paths).read_text())
+    except FileNotFoundError:
+        return [], True
+    except (OSError, ValueError):
+        return [], False
+    if not isinstance(data, list):
+        return [], False
+    return [d for d in data if isinstance(d, dict) and d.get("id")], True
+
+
+@contextmanager
+def _ideas_lock(paths: OperatorPaths) -> Iterator[None]:
+    """Read-modify-write of ideas.json under one file lock: the round and the strategist may both write."""
+    paths.ensure()
+    fd = os.open(paths.root / "ideas.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_ideas(paths: OperatorPaths, ideas: list[dict[str, Any]]) -> None:
+    p = _ideas_path(paths)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(ideas, indent=1))
+    os.replace(tmp, p)  # a reader sees the old file or the new one, never half of one
+
+
+def _choice(value: Any, field: str, choices: tuple[str, ...]) -> str:
+    v = str(value).strip().lower()
+    if v not in choices:
+        raise ValueError(f"{field} must be one of {', '.join(choices)}, got {value!r}")
+    return v
+
+
+def _flag(value: Any, field: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in ("true", "yes", "1"):
+        return True
+    if v in ("false", "no", "0"):
+        return False
+    raise ValueError(f"{field} must be true or false, got {value!r}")
+
+
+def _title_key(title: Any) -> str:
+    return " ".join(str(title).split()).lower()
+
+
+def _next_id(ideas: list[dict[str, Any]]) -> str:
+    nums = [int(m.group(1)) for i in ideas if (m := re.fullmatch(r"I(\d+)", str(i.get("id"))))]
+    return f"I{max(nums, default=0) + 1}"
+
+
+def _validated(fields: dict[str, Any]) -> dict[str, Any]:
+    unknown = sorted(set(fields) - set(IDEA_FIELDS))
+    if unknown:
+        raise ValueError(f"unknown field(s) {', '.join(unknown)}; an idea has {', '.join(IDEA_FIELDS)}")
+    given = {k: v for k, v in fields.items() if v is not None}
+    clean: dict[str, Any] = {k: _clean(given[k], k, cap) for k, cap in IDEA_TEXT.items() if k in given}
+    if "kind" in given:
+        clean["kind"] = _choice(given["kind"], "kind", KINDS)
+    if "status" in given:
+        clean["status"] = _choice(given["status"], "status", STATUSES)
+    if "owner_needed" in given:
+        clean["owner_needed"] = _flag(given["owner_needed"], "owner_needed")
+    if "priority" in given:
+        try:
+            priority = int(given["priority"])
+        except (TypeError, ValueError):
+            priority = 0
+        if not 1 <= priority <= 5:
+            raise ValueError(f"priority must be 1 (low) to 5 (high), got {given['priority']!r}")
+        clean["priority"] = priority
+    if "id" in given:
+        clean["id"] = str(given["id"]).strip()
+    return clean
+
+
+def upsert_idea(
+    paths: OperatorPaths, fields: dict[str, Any], *, source: str, now: float | None = None
+) -> dict[str, Any]:
+    """Add an idea, or update one (by `id`, else by the same title): fields not given are kept. A new idea needs a
+    title, why (the evidence), test (how to confirm it), expected (the effect) and kind. Live tests and code changes
+    always need the owner. Raises ValueError with what to fix; nothing is written then."""
+    clean = _validated(dict(fields or {}))
+    ts = _iso(time.time() if now is None else now)
+    with _ideas_lock(paths):
+        ideas, readable = _load_ideas(paths)
+        if not readable:  # keep what could not be read for a person to look at, never overwrite it
+            _ideas_path(paths).replace(paths.root / f"{IDEAS_FILE}.broken-{int(_epoch(ts))}")
+        if "id" in clean:
+            idea = next((i for i in ideas if i.get("id") == clean["id"]), None)
+            if idea is None:
+                raise ValueError(f"no idea {clean['id']}; omit id to add a new idea")
+        else:
+            key = _title_key(clean.get("title", ""))
+            idea = next((i for i in ideas if key and _title_key(i.get("title", "")) == key), None)
+        if idea is not None:
+            idea.update({k: v for k, v in clean.items() if k != "id"}, updated=ts)
+        else:
+            missing = [k for k in (*IDEA_TEXT, "kind") if k not in clean]
+            if missing:
+                raise ValueError(f"a new idea needs {', '.join(missing)}")
+            if len(ideas) >= MAX_IDEAS:
+                closed = [i for i in ideas if i.get("status") not in OPEN]
+                if not closed:
+                    raise ValueError(f"already {MAX_IDEAS} ideas open or being tested; close some (adopted or "
+                                     "rejected) or merge them first")  # fmt: skip
+                ideas.remove(min(closed, key=lambda i: _epoch(i.get("updated"))))
+            idea = {"id": _next_id(ideas), **{k: clean[k] for k in IDEA_TEXT}, "kind": clean["kind"],
+                    "status": clean.get("status", "open"), "owner_needed": clean.get("owner_needed", False),
+                    "priority": clean.get("priority", DEFAULT_PRIORITY), "created": ts, "updated": ts,
+                    "source": re.sub(r"[^a-z-]", "", str(source).lower()) or "agent"}  # fmt: skip
+            ideas.append(idea)
+        if idea.get("kind") in ALWAYS_OWNER:
+            idea["owner_needed"] = True
+        _write_ideas(paths, ideas)
+        return dict(idea)
+
+
+def _rank_key(idea: dict[str, Any]) -> tuple:
+    """Most worth testing first: priority, then what is already being tested, then what the agents can do without
+    the owner, then the newest."""
+    return (-int(idea.get("priority") or DEFAULT_PRIORITY), idea.get("status") != "testing",
+            bool(idea.get("owner_needed")), -_epoch(idea.get("updated")))  # fmt: skip
+
+
+def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | None = None) -> list[dict[str, Any]]:
+    """`open` (the default): the open and testing ideas, best first; `all`: every idea in the order they came;
+    or one status."""
+    ideas, _ = _load_ideas(paths)
+    if status in (None, "all"):
+        out = ideas
+    elif status == "open":
+        out = sorted((i for i in ideas if i.get("status") in OPEN), key=_rank_key)
+    else:
+        out = [i for i in ideas if i.get("status") == _choice(status, "status", STATUSES)]
+    return out[: max(0, int(limit))] if limit is not None else out
