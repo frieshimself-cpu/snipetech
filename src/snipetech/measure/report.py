@@ -55,6 +55,13 @@ def _arm_totals(fills: list[dict]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def _delta(control: dict, paid: dict, key: str) -> float | None:
+    """paid minus control for one field; None when either side lacks it."""
+    if control.get(key) is None or paid.get(key) is None:
+        return None
+    return float(paid[key]) - float(control[key])
+
+
 def pair_arms(
     fills: list[dict], control: str = "control", paid: str = "paid", window_secs: float = 20.0
 ) -> dict[str, Any]:
@@ -77,11 +84,8 @@ def pair_arms(
             continue
         used.add(best["sig"])
 
-        def delta(k: str):
-            return None if c.get(k) is None or best.get(k) is None else float(best[k]) - float(c[k])
-
         pairs.append({"mint": c.get("mint"), "lead": c.get("wallet_copied"), "ts": int(c["ts"]), "control_sig": c["sig"], "paid_sig": best["sig"],
-                      "delta_behind": delta("trades_behind"), "delta_pos": delta("pos_in_slot"), "delta_gap_pct": delta("price_gap_pct"),
+                      "delta_behind": _delta(c, best, "trades_behind"), "delta_pos": _delta(c, best, "pos_in_slot"), "delta_gap_pct": _delta(c, best, "price_gap_pct"),
                       "secs_apart": round(best_dt or 0.0, 1)})  # fmt: skip
     paired_c = {p["control_sig"] for p in pairs}
 
