@@ -95,6 +95,17 @@ def _measure(args, cfg) -> int:
 
     svc = Service(cfg)
 
+    if args.action == "report":
+        from .measure.report import fee_test_report, render_fee_test
+
+        try:
+            rep = fee_test_report(svc.store, cfg.operator.wallet, args.since if args.since is not None else int(time.time() - 86400),
+                                  until_ts=args.until)  # fmt: skip
+        finally:
+            svc.store.close()
+        print(json.dumps(rep, indent=1, default=str) if args.json else render_fee_test(rep))
+        return 0
+
     async def go():
         try:
             if args.action == "backfill":
@@ -656,7 +667,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true", help="show the evidence and the proposal; apply nothing")
     sp.add_argument("--force", action="store_true", help="run even if it ran less than a week ago")
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
-    sp.add_argument("action", choices=["run", "backfill"])
+    sp.add_argument("action", choices=["run", "backfill", "report"])
     sp.add_argument(
         "--since", type=int, default=None, help="unix seconds; run: override the cursor; backfill: required"
     )
