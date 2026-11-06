@@ -168,3 +168,8 @@ trigger existed only at position +1 inside the trigger's own slot, which no send
 Still open: `--latency 2` (running), and the per-wallet ranking at the realistic landing (`--by-wallet`),
 because a KOL's buy is its own transaction and copying it lands +1 in the same slot on the measured copy
 tests — the one entry where the paper position is reachable.
+
+Two slots after the trigger (`--latency 2 --position start`, 25.1 h): the same picture, slightly worse —
+our trigger −0.0131/trade (n 861, 7 % wins), solo −0.0120 (n 758), best launch trigger −0.0072 (momentum,
+n 702); only the two tiny KOL first-buy rows are positive (+0.011 / +0.008, n 59 / 75, lower bounds
+negative). No positive lower bound with n ≥ 200 at either landing.
