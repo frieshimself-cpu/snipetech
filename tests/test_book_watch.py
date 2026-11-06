@@ -187,6 +187,37 @@ def test_a_coin_whose_sniper_is_gone_or_unknown_is_flagged(tmp_path):
         st.close()
 
 
+def test_the_buying_sniper_is_the_newest_local_sniper_alive_at_the_buy_copying_the_closest_leader(tmp_path):
+    """Two snipers copying one leader from one wallet (the paid and control G2oZ snipers on 6 Nov): the newer is
+    named, the other listed. A sniper created after the buy, or deleted before it, did not make it."""
+    st = Store(tmp_path / "s.db")
+    try:
+        m, ours = busy(st, G)
+        _sniper(st, G, sid="older", created=ours.ts - 7200)
+        _sniper(st, G, sid="newer", created=ours.ts - 3600)
+        _sniper(st, G, sid="later", created=ours.ts + 120)  # made two minutes after our buy
+        _sniper(st, G, sid="deleted", created=ours.ts - 1800)
+        st._exec("UPDATE oktech_snipers SET removed_at=? WHERE id='deleted'", (ours.ts - 600,))
+        hits = unmanaged(st, W, [_held(m, ours)], [], ours.ts + 400)  # none of them active on OKTech any more
+        assert [(h["sniper_id"], h["also"], h["leader"]) for h in hits] == [("newer", ["older"], G)]
+    finally:
+        st.close()
+
+
+def test_two_token_accounts_of_one_coin_are_one_coin(tmp_path):
+    st = Store(tmp_path / "s.db")
+    try:
+        _sniper(st, G)
+        m, ours = dtau(st)
+        two = [_held(m, ours, value=0.2), _held(m, ours, value=0.06)]
+        hits = unmanaged(st, W, two, FINISHED, ours.ts + 280)
+        assert [h["mint"] for h in hits] == [m.mint] and abs(hits[0]["value_sol"] - 0.26) < 1e-9
+        unpriced = [_held(m, ours, value=0.2), _held(m, ours, value=None)]
+        assert unmanaged(st, W, unpriced, FINISHED, ours.ts + 280)[0]["value_sol"] is None
+    finally:
+        st.close()
+
+
 def test_the_watch_sends_one_line_per_coin_every_15_minutes_and_never_sells(tmp_path):
     cfg = Config()
     cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")

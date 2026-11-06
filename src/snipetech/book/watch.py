@@ -207,32 +207,34 @@ def _leader(payload: dict) -> str | None:
 
 def _buying_sniper(store: Store, mint: str, buy: Trade) -> dict | None:
     """The local copy sniper behind our buy: its leader bought the coin in the 20 slots before it (the closest such
-    leader buy wins; among snipers copying that leader, the newest). None when no sniper of ours explains the buy."""
-    rows = store._q("SELECT id, payload, created_at FROM oktech_snipers WHERE created_at <= ? "
-                    "AND (removed_at IS NULL OR removed_at >= ?)", (int(buy.ts) + 60, int(buy.ts) - 60))  # fmt: skip
+    leader buy wins; among the snipers alive then that copy that leader, the newest). None when no sniper of ours
+    explains the buy. The coin's few buyers come first; only the payloads that name one of them are parsed."""
+    rows = store._q("SELECT slot, pos, user FROM trades WHERE mint=? AND is_buy=1 AND slot>=? AND slot<=?",
+                    (mint, buy.slot - LEADER_WINDOW_SLOTS, buy.slot))  # fmt: skip
+    buyers = sorted({(s, p, u) for s, p, u in rows if (s, p) < (buy.slot, buy.pos) and u != buy.user}, reverse=True)
+    users = list(dict.fromkeys(u for _, _, u in buyers))[:50]  # closest first
+    if not users:
+        return None
+    named = " OR ".join("payload LIKE ?" for _ in users)  # a prefilter: the leader is checked exactly below
+    snipers = store._q(f"SELECT id, payload, created_at FROM oktech_snipers WHERE created_at <= ? "
+                       f"AND (removed_at IS NULL OR removed_at >= ?) AND ({named})",
+                       (int(buy.ts) + 60, int(buy.ts) - 60, *(f"%{u}%" for u in users)))  # fmt: skip
     by_leader: dict[str, list[dict]] = {}
-    for sid, payload, created in rows:
+    for sid, payload, created in snipers:
         try:
             p = json.loads(payload or "{}")
         except ValueError:
             continue
         lead = _leader(p) if isinstance(p, dict) else None
-        if lead:
+        if lead in users:
             by_leader.setdefault(lead, []).append(
                 {"id": str(sid), "payload": p, "created_at": created or 0, "leader": lead}
             )
-    leaders, best = list(by_leader), None
-    for i in range(0, len(leaders), 500):
-        chunk = leaders[i : i + 500]
-        sql = ("SELECT slot, pos, user FROM trades WHERE mint=? AND is_buy=1 AND slot>=? AND slot<=? "
-               f"AND user IN ({','.join('?' * len(chunk))})")  # fmt: skip
-        for slot, pos, user in store._q(sql, (mint, buy.slot - LEADER_WINDOW_SLOTS, buy.slot, *chunk)):
-            if (slot, pos) < (buy.slot, buy.pos) and (best is None or (slot, pos) > best[:2]):
-                best = (slot, pos, user)
-    if best is None:
-        return None
-    cands = sorted(by_leader[best[2]], key=lambda r: r["created_at"], reverse=True)
-    return cands[0] | {"also": [r["id"] for r in cands[1:]]}
+    for user in users:
+        if user in by_leader:
+            cands = sorted(by_leader[user], key=lambda r: r["created_at"], reverse=True)
+            return cands[0] | {"also": [r["id"] for r in cands[1:]]}
+    return None
 
 
 def _tape_last(store: Store, now: float) -> int | None:
@@ -252,9 +254,10 @@ def _position(store: Store, mint: str, buy: Trade, sold_after: bool, status: dic
         after = [t for t in after if (t.slot, t.pos, t.ev) > (buy.slot, buy.pos, buy.ev)]
         bag = 0
         if spec.copy_pct is not None and lead:
+            # the coin's index (`+user` keeps SQLite off the leader's trades in every other coin)
             bag = int(store._q("SELECT COALESCE(SUM(CASE WHEN is_buy=1 THEN base ELSE -base END), 0) FROM trades "
-                               "WHERE mint=? AND user=? AND (slot<? OR (slot=? AND pos<?))",
-                               (mint, lead, buy.slot, buy.slot, buy.pos))[0][0] or 0)  # fmt: skip
+                               "WHERE mint=? AND +user=? AND (slot, pos) < (?, ?)",
+                               (mint, lead, buy.slot, buy.pos))[0][0] or 0)  # fmt: skip
         due = due_exits(buy, spec, after, lead, leader_bag=bag, elapsed=now - buy.ts,
                         horizon=None if tape_last is None else tape_last - buy.ts)  # fmt: skip
     rules: list[tuple[float, str]] = []
@@ -286,7 +289,16 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
     wallet's coins (mint, value_sol). `tasks`: OKTech's tasks (id, status), or None when OKTech did not answer (then a
     sniper's status is not judged). `first_seen`: when the watch first saw each coin held, for a coin whose buy is
     not on the tape (absent: now). Reads only: the tape and the local snipers, bounded per coin."""
-    coins = [h for h in holdings or [] if _is_mint(h.get("mint"))]
+    coins: dict[str, dict] = {}
+    for h in holdings or []:
+        m = h.get("mint")
+        if not _is_mint(m):
+            continue
+        if m in coins:  # two token accounts of one coin: one coin, worth both (unknown if either is unpriced)
+            a, b = coins[m].get("value_sol"), h.get("value_sol")
+            coins[m] = coins[m] | {"value_sol": None if a is None or b is None else float(a) + float(b)}
+        else:
+            coins[m] = h
     if not coins or not wallet:
         return []
     status = (
@@ -295,10 +307,10 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
     tape_last = _tape_last(store, now)
     lagging = tape_last is None or now - tape_last > TAPE_LAG_SECS
     out = []
-    for h in coins:
-        mint = str(h["mint"])
-        ours = _trades(store, f"SELECT {_COLS} FROM trades WHERE mint=? AND user=? AND ts>=? AND ts<=? "
-                              "ORDER BY slot, pos, ev LIMIT 2000", (mint, wallet, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
+    for mint, h in coins.items():
+        # our wallet's index (`+mint`, `+ts`): a coin can have 100,000 trades, the book wallet trades a few a day
+        ours = _trades(store, f"SELECT {_COLS} FROM trades WHERE user=? AND +mint=? AND +ts>=? AND +ts<=? "
+                              "ORDER BY slot, pos, ev LIMIT 2000", (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
         lots = _open_buys(ours)
         if lots:
             hit = min((_position(store, mint, b, sold, status, now, tape_last, lagging, grace_s) for b, sold in lots),
@@ -321,7 +333,7 @@ def _what(name: str, spec: ExitSpec | None, leader: str | None) -> str:
     s = spec or ExitSpec()
     return {
         "dead_exit": f"no trade for {s.stale_secs or 0:g} s",
-        "copy_exit": f"{(leader or 'the copied wallet')[:6]}… sold at least {s.copy_pct or 0:g} % of its coins",
+        "copy_exit": f"{f'{leader[:6]}…' if leader else 'the copied wallet'} sold at least {s.copy_pct or 0:g} % of its coins",
         "stop_loss": f"the price fell {s.stop_loss_pct or 0:g} % below our buy",
         "take_profit": f"the price rose {s.take_profit_pct or 0:g} % above our buy",
         "trailing_stop": f"the price fell {s.trail_pct or 0:g} % from its peak",
@@ -347,9 +359,10 @@ def alert_line(hit: dict, *, migrated: bool = False) -> str:
     mint = hit["mint"]
     head = f"[watch] Nobody is selling coin {mint}"
     if hit.get("bought_at") is not None:
-        head += f": bought {_hms(hit['bought_at'])} UTC"
-        head += f" for {hit['buy_sol']:.3f} SOL" if hit.get("buy_sol") else ""
-        head += f", copying {hit['leader'][:6]}…" if hit.get("leader") else ""
+        bought = f"bought {_hms(hit['bought_at'])} UTC"
+        bought += f" for {hit['buy_sol']:.3f} SOL" if hit.get("buy_sol") else ""
+        bought += f", copying wallet {hit['leader'][:6]}…" if hit.get("leader") else ""
+        head += f" ({bought})"
     due = "; ".join(f"{d['what']} at {_hms(d['at'])}" for d in hit.get("due") or [])
     reason = hit.get("reason")
     if reason == "sniper_inactive":
