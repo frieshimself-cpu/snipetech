@@ -565,8 +565,8 @@ def test_a_retire_waits_when_a_coin_is_bought_before_it_runs(tmp_path):
 
 def test_a_coin_the_owner_ignores_is_not_a_holding_for_the_book(tmp_path):
     """An airdropped token no sniper of ours bought sits in the wallet unpriced. Held, it makes equity unknown and keeps
-    every book sniper, so none is ever retired. Once the owner lists it in [operator] ignore_mints, both holdings
-    reads (the plan's and the one just before the retire) leave it out and the spent sniper is retired."""
+    every book sniper, so none is ever retired. Once the owner lists it in [operator] ignore_mints, every holdings
+    read (the plan's, and the retire's before and after the stop) leaves it out and the spent sniper is retired."""
     spam = {"mint": "Spam" + "z" * 40, "amount": 1000.0, "value_sol": None, "priced": False}
     quiet = Notifier("T", 7, post=lambda u, d: None)
     st, cfg, svc = _made_its_buy(tmp_path / "a", held=[spam])
@@ -580,7 +580,7 @@ def test_a_coin_the_owner_ignores_is_not_a_holding_for_the_book(tmp_path):
     try:
         out = asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
         assert out["actions"]["retire"] == 1 and svc.calls[:2] == [("stop", "k1"), ("delete", "k1")]
-        assert svc._reads == 2  # the plan's read and the retire's read, both without the ignored coin
+        assert svc._reads == 3  # the plan's read and the retire's reads before and after the stop, none sees the coin
     finally:
         st.close()
 
