@@ -297,9 +297,14 @@ class BookConfig:
     equity_floor_sol: float = 3.0
     day_stop_sol: float = 1.0
     min_score: float = 0.005  # SOL per trade lower bound at the landing (verdict score) to be copied
-    explore_share: float = 0.2  # share of wallets run on the alternative bid arm
+    explore_share: float = 0.0  # share of wallets run on the alternative bid arm (none left: the paid arm is retired)
+    # a "retired" arm is never assigned; it stays defined so measure can still tell its old fills by their fee. The
+    # paid arm landed no earlier on 6 Nov, and OKTech charges the buy priority fee again on every exit
     bid_arms: dict[str, dict] = field(
-        default_factory=lambda: {"control": {"priority": 0.001, "tip": 0.002}, "paid": {"priority": 0.02, "tip": 0.02}}
+        default_factory=lambda: {
+            "control": {"priority": 0.001, "tip": 0.002},
+            "paid": {"priority": 0.02, "tip": 0.02, "retired": True},
+        }
     )
     send_count: int = 1
     max_fee_share: float = 0.03  # an arm's fee may be at most this share of the fill

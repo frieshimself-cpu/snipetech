@@ -63,8 +63,16 @@ def fill_for(arm: dict, cfg: BookConfig) -> float | None:
     return round(min(fill, cfg.fill_max_sol), 6)
 
 
+def arm_retired(arm: dict) -> bool:
+    """A retired arm stays in the config only so measure can tell its old fills by their fee; the book never uses it."""
+    v = arm.get("retired", False)
+    return v.strip().lower() in ("1", "true", "yes", "on") if isinstance(v, str) else bool(v)
+
+
 def usable_arms(cfg: BookConfig) -> dict[str, float]:
-    return {name: f for name, arm in cfg.bid_arms.items() if (f := fill_for(arm, cfg)) is not None}
+    return {
+        name: f for name, arm in cfg.bid_arms.items() if not arm_retired(arm) and (f := fill_for(arm, cfg)) is not None
+    }
 
 
 def best_arm(bid_model: dict[str, dict], cfg: BookConfig, min_n: int = 30) -> str:
@@ -142,7 +150,9 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     plan = BookPlan()
     usable = usable_arms(cfg)
     for name, arm in cfg.bid_arms.items():
-        if name not in usable:
+        if arm_retired(arm):
+            plan.notes.append(f"{name} arm retired: never assigned (kept only so old fills keep their arm)")
+        elif name not in usable:
             need = arm_fee_sol(arm) / cfg.max_fee_share if cfg.max_fee_share > 0 else 0
             plan.notes.append(f"{name} arm skipped: its fee {arm_fee_sol(arm):g} SOL needs a {need:.2f} SOL fill to stay under "
                               f"{cfg.max_fee_share:.0%}; fill_max_sol is {cfg.fill_max_sol:g}")  # fmt: skip

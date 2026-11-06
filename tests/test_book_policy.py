@@ -5,7 +5,16 @@ import math
 
 import pytest
 
-from snipetech.book.policy import Action, BookInputs, assign_arms, best_arm, fill_for, plan_book, rank_wallets
+from snipetech.book.policy import (
+    Action,
+    BookInputs,
+    assign_arms,
+    best_arm,
+    fill_for,
+    plan_book,
+    rank_wallets,
+    usable_arms,
+)
 from snipetech.config import BookConfig, Config
 
 NOW = 1_793_923_200
@@ -34,15 +43,31 @@ def test_config_defaults():
     assert (
         b.enabled is False
         and b.min_score == 0.005
-        and b.explore_share == 0.2
+        and b.explore_share == 0.0
         and b.send_count == 1
         and b.max_fee_share == 0.03
     )
     assert (
         b.bid_arms["control"] == {"priority": 0.001, "tip": 0.002}
-        and b.bid_arms["paid"] == {"priority": 0.02, "tip": 0.02}
+        and b.bid_arms["paid"] == {"priority": 0.02, "tip": 0.02, "retired": True}
         and b.live_n == 10
     )
+
+
+def test_a_retired_arm_is_never_assigned():
+    """6 Nov fee test: the paid arm landed no earlier (0.5 vs 0.25 trades behind) and OKTech charged its 0.02 SOL
+    priority again on every exit (0.067 against 0.0093 SOL a fill). It stays defined so old fills keep their arm, but
+    the book never assigns it, even with exploration on and a fill big enough for its fee."""
+    cfg = _cfg(explore_share=0.3, fill_max_sol=2.0)
+    ranked = [_q(f"W{i}", 0.03 - i * 0.001) for i in range(6)]
+    assert "paid" not in usable_arms(cfg.book)
+    assert set(assign_arms(ranked, {}, cfg.book).values()) == {"control"}
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
+    plan = plan_book(_inp(), cfg.book)
+    assert {a.arm for a in plan.actions if a.kind == "create"} == {"control"}
+    assert any("paid arm retired" in n for n in plan.notes)
+    cfg.book.bid_arms["paid"]["retired"] = False  # the owner's file can bring it back
+    assert "paid" in usable_arms(cfg.book)
 
 
 def test_rank_prefers_live_after_ten_fills():
@@ -71,26 +96,29 @@ def test_fill_sizing_keeps_fee_under_three_percent_or_skips_arm():
     assert fill_for({"priority": 0.02, "tip": 0.02}, cfg.book) == pytest.approx(0.04 / 0.03)
 
 
+ALT = {"control": {"priority": 0.001, "tip": 0.002}, "alt": {"priority": 0.02, "tip": 0.02}}  # a second live arm
+
+
 def test_best_arm_needs_thirty_fills():
-    cfg = _cfg(fill_max_sol=2.0)  # both arms usable; an unusable arm is never "best"
+    cfg = _cfg(fill_max_sol=2.0, bid_arms={k: dict(v) for k, v in ALT.items()})  # both arms usable
     assert best_arm({}, cfg.book) == "control"
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 12, "p75_pos": 1.0}}, cfg.book) == "control"
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "paid"
-    cfg.book.fill_max_sol = 1.0
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 12, "p75_pos": 1.0}}, cfg.book) == "control"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "alt"
+    cfg.book.fill_max_sol = 1.0  # an unusable arm is never "best"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
 
 
 def test_explore_assignment_is_deterministic():
-    cfg = _cfg(fill_max_sol=2.0)  # both arms usable
+    cfg = _cfg(fill_max_sol=2.0, explore_share=0.2, bid_arms={k: dict(v) for k, v in ALT.items()})  # both usable
     ranked = [_q(f"W{i}", 0.03 - i * 0.001) for i in range(6)]
     arms = assign_arms(ranked, {}, cfg.book)
     assert (
-        sum(1 for a in arms.values() if a == "paid") == math.ceil(0.2 * 6) == 2
+        sum(1 for a in arms.values() if a == "alt") == math.ceil(0.2 * 6) == 2
         and arms["W0"] == "control"
-        and arms["W5"] == "paid"
+        and arms["W5"] == "alt"
     )
     assert assign_arms(ranked, {}, cfg.book) == arms  # the same plan twice: the same wallets explore
-    cfg.book.fill_max_sol = 1.0  # the paid arm cannot keep its fee under 3 %: everyone on control
+    cfg.book.fill_max_sol = 1.0  # the alt arm cannot keep its fee under 3 %: everyone on control
     assert set(assign_arms(ranked, {}, cfg.book).values()) == {"control"}
 
 
