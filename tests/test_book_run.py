@@ -209,3 +209,20 @@ def test_book_equity_counts_the_coins_held(tmp_path):
         assert out2["kill_reason"] == "equity unknown"  # an unpriced coin: no number to compare with the floor
     finally:
         st.close()
+
+
+def test_a_banned_wallet_is_never_booked(tmp_path):
+    """A wallet banned after it qualified keeps its qualified verdict; the book must not copy it."""
+    st, cfg = _env(tmp_path, enabled=True)
+    st.set_candidate_status(L1, "banned")
+    svc = FakeSvc(st)
+    try:
+        asyncio.run(
+            run_book(
+                svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None), balances=lambda w: (10.0, 0.0, [])
+            )
+        )
+        created = [c for c in svc.calls if c[0] == "create"]
+        assert created and all(not any(spec.startswith(L1) for spec in c[1]) for c in created)
+    finally:
+        st.close()

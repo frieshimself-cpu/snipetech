@@ -178,3 +178,13 @@ def test_verdict_copy_snipers_are_leaders_too():
                           "payload": {"ctbotWallets": [{"address": LEAD}]}})  # fmt: skip
     assert leaders_for(st) == {LEAD}
     st.close()
+
+
+def test_round_trips_charge_the_fees_each_fill_paid():
+    """A fill's own priority fee and tip replace the flat per-transaction cost when they are known."""
+    b = _b("B1", "M", 100, 0.2, 1000.0) | {"priority_lamports": 20_000_000, "tip_lamports": 20_000_000}
+    s = _s("S1", "M", 200, 0.3, 1000.0) | {"priority_lamports": 2_000_000, "tip_lamports": 2_000_000}
+    out = pair_round_trips([b], [s], per_tx_sol=0.0012)
+    assert round(out["trips"][0]["pnl_sol"], 6) == round(0.3 - 0.2 - (0.040005 + 0.004005), 6)
+    flat = pair_round_trips([_b("B1", "M", 100, 0.2, 1000.0)], [_s("S1", "M", 200, 0.3, 1000.0)], per_tx_sol=0.0012)
+    assert round(flat["trips"][0]["pnl_sol"], 6) == round(0.3 - 0.2 - 0.0024, 6)  # unknown fees: the flat cost

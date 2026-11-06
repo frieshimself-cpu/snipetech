@@ -141,9 +141,26 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
             )
         )
     else:
-        status = "crit" if f >= rc.oktech_fail_alert else ("warn" if f > 0 else "ok")
-        out.append(Resource("oktech_failures", f, "tx", rc.oktech_fail_alert, status,
-                            f"{f} failed transactions in the last hour; check OKTech sells and the send count" if status != "ok" else "no failed transactions in the last hour"))  # fmt: skip
+        # OKTech sends every sell 2-3 times and the losers fail (pump error 6023): two failures per landed sell in the
+        # hour are its normal fan-out; only what goes beyond that is alarming
+        sells = 0
+        if cfg.operator.wallet:
+            try:
+                sells = len(
+                    store.fills(wallet=cfg.operator.wallet, since_ts=int(now - 3600), side="sell", limit=10_000)
+                )
+            except Exception:  # noqa: BLE001
+                sells = 0
+        excess = f - 2 * sells
+        status = "crit" if excess >= rc.oktech_fail_alert else ("warn" if f > 0 else "ok")
+        if status == "ok":
+            msg = "no failed transactions in the last hour"
+        elif sells:
+            msg = (f"{f} failed transactions in the last hour, {sells} sells landed (OKTech's sell twins account for up to {2 * sells})"
+                   + ("; the rest needs a look: check OKTech sells and the send count" if status == "crit" else ""))  # fmt: skip
+        else:
+            msg = f"{f} failed transactions in the last hour; check OKTech sells and the send count"
+        out.append(Resource("oktech_failures", f, "tx", rc.oktech_fail_alert, status, msg))
     return out
 
 

@@ -171,13 +171,22 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
     return row
 
 
+def _fill_fee_sol(row: dict) -> float | None:
+    """What a landed fill paid to land: priority + tip + the base fee; None when its fingerprint is unknown."""
+    if row.get("priority_lamports") is None:
+        return None
+    return (int(row.get("priority_lamports") or 0) + int(row.get("tip_lamports") or 0) + 5000) / 1e9
+
+
 def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float) -> dict[str, Any]:
     """FIFO per mint: each sell consumes the oldest open buy lots; a partial sell closes the proportional share.
+    Each trip pays its share of the buy's and the sell's real fees (priority + tip + base, from the fingerprint),
+    or `per_tx_sol` per side when a fill's fees are unknown.
     Returns trips (one per buy lot touched by a sell), the sells with nothing to close, the buys still open, and PnL per sell."""
     open_lots: dict[str, list[dict]] = {}
     for b in sorted(buys, key=lambda r: (r["ts"], r["sig"])):
         open_lots.setdefault(b["mint"], []).append({"sig": b["sig"], "ts": b["ts"], "sol": float(b["sol"]), "tokens": float(b["tokens"]),
-                                                    "left": float(b["tokens"])})  # fmt: skip
+                                                    "left": float(b["tokens"]), "fee": _fill_fee_sol(b)})  # fmt: skip
     trips: list[dict] = []
     unmatched: list[dict] = []
     pnl_by_sell: dict[str, float] = {}
@@ -188,6 +197,7 @@ def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float) -> 
             unmatched.append(s)
             continue
         price = float(s["sol"]) / tokens
+        sell_tokens, sell_fee = tokens, _fill_fee_sol(s)
         for lot in lots:
             if tokens <= 0:
                 break
@@ -196,7 +206,9 @@ def pair_round_trips(buys: list[dict], sells: list[dict], per_tx_sol: float) -> 
             take = min(lot["left"], tokens)
             spent = lot["sol"] * take / lot["tokens"]
             received = price * take
-            pnl = received - spent - 2 * per_tx_sol
+            buy_cost = lot["fee"] * take / lot["tokens"] if lot["fee"] is not None and lot["tokens"] > 0 else per_tx_sol
+            sell_cost = sell_fee * take / sell_tokens if sell_fee is not None else per_tx_sol
+            pnl = received - spent - buy_cost - sell_cost
             trips.append({"buy_sig": lot["sig"], "sell_sig": s["sig"], "mint": s["mint"], "tokens": take, "spent_sol": spent,
                           "received_sol": received, "pnl_sol": pnl, "hold_secs": int(s["ts"] - lot["ts"]), "sell_ts": int(s["ts"])})  # fmt: skip
             pnl_by_sell[s["sig"]] = pnl_by_sell.get(s["sig"], 0.0) + pnl

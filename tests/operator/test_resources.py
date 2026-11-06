@@ -169,3 +169,28 @@ def test_critical_resource_alerts_once_per_day(tmp_path, monkeypatch):
     notes = paths.notes.read_text()
     assert notes.count("resource disk") == 1 and sum(1 for s in sent if "resource disk" in s) == 1
     st.close()
+
+
+def test_sell_twins_do_not_raise_the_failure_alert(tmp_store, ledger):
+    """OKTech sends every sell 2-3 times; the losers fail. During a live session the failures that matter are the ones
+    beyond two per landed sell in the hour."""
+    cfg = Config()
+    cfg.operator.wallet = "W"
+    for i in range(3):
+        tmp_store.put_fill(
+            {"sig": f"s{i}", "ts": NOW - 600, "slot": 1, "wallet": "W", "side": "sell", "sol": 0.2, "tokens": 1.0}
+        )
+    rs = {
+        x.name: x
+        for x in check_resources(
+            cfg, tmp_store, snap(failed_tx_1h=6), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW
+        )
+    }
+    assert rs["oktech_failures"].status == "warn" and "twins" in rs["oktech_failures"].message
+    rs = {
+        x.name: x
+        for x in check_resources(
+            cfg, tmp_store, snap(failed_tx_1h=10), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW
+        )
+    }
+    assert rs["oktech_failures"].status == "crit"  # 10 - 2 x 3 = 4 beyond the twins
