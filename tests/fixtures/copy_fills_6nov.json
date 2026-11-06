@@ -1,0 +1,257 @@
+{
+ "about": "The 12 copy fills of 6 Nov 2026 that OKTech sold, with the preset each ran and the exit read off the tape by the exits audit. Tape rows: our own trades removed, reserves without our tokens out of the pool. Built by tests/fixtures/build_copy_fills_6nov.py.",
+ "fills": [
+  {
+   "name": "au6j",
+   "mint": "au6jPXHfTqSjHGhj7VYKxeE4WPQ3CTgZM2Ykz19pump",
+   "leader": "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku",
+   "preset": "hold60",
+   "arm": "control",
+   "buy": {
+    "slot": 465984791,
+    "pos": 289,
+    "ts": 1793941452,
+    "sol": 0.05,
+    "tokens": 610153093314
+   },
+   "sell": {
+    "slot": 465984884,
+    "pos": 17,
+    "ts": 1793941472,
+    "sol": 0.03606
+   },
+   "live_exit": "copy_exit"
+  },
+  {
+   "name": "H4D5",
+   "mint": "H4D5mThN4ts9ZEqpB1xkiejcCoZ88dAGECbW2o3Kpump",
+   "leader": "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 465992639,
+    "pos": 270,
+    "ts": 1793943128,
+    "sol": 0.05,
+    "tokens": 403582319100
+   },
+   "sell": {
+    "slot": 465992670,
+    "pos": 127,
+    "ts": 1793943134,
+    "sol": 0.043789
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "A7Ys",
+   "mint": "A7YsCfw6qGxKoFeMzfyUMUJJXTjr1ESLYffzgUbJpump",
+   "leader": "CgaA9a1JwAXJyfHuvZ7VW8YfTVRkdiT5mjBBSKcg7Rz5",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 465992642,
+    "pos": 136,
+    "ts": 1793943128,
+    "sol": 0.03,
+    "tokens": 561818297246
+   },
+   "sell": {
+    "slot": 465992652,
+    "pos": 194,
+    "ts": 1793943130,
+    "sol": 0.02953
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "3BrE",
+   "mint": "3BrEjvwwb5KyTUZn4SZKEce1uNtuzcehcHSLH7tUpump",
+   "leader": "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku",
+   "preset": "hold60",
+   "arm": "control",
+   "buy": {
+    "slot": 465994781,
+    "pos": 392,
+    "ts": 1793943585,
+    "sol": 0.05,
+    "tokens": 1024884517554
+   },
+   "sell": {
+    "slot": 465995033,
+    "pos": 78,
+    "ts": 1793943639,
+    "sol": 0.036223
+   },
+   "live_exit": "copy_exit"
+  },
+  {
+   "name": "7bDN",
+   "mint": "7bDNtSnbwad2AUCsCe3v5VLgrxj95PcSci7ATcyGpump",
+   "leader": "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku",
+   "preset": "hold60",
+   "arm": "control",
+   "buy": {
+    "slot": 465995522,
+    "pos": 461,
+    "ts": 1793943743,
+    "sol": 0.05,
+    "tokens": 385357092777
+   },
+   "sell": {
+    "slot": 465995808,
+    "pos": 185,
+    "ts": 1793943804,
+    "sol": 0.057182
+   },
+   "live_exit": "time"
+  },
+  {
+   "name": "9yCW",
+   "mint": "9yCWR1oBMmYjLMJqvjDHeXo7k171o6rFb8RSMTVBL54K",
+   "leader": "2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH",
+   "preset": "lab",
+   "arm": "paid",
+   "buy": {
+    "slot": 466166632,
+    "pos": 298,
+    "ts": 1793980346,
+    "sol": 0.2,
+    "tokens": 3628074382139
+   },
+   "sell": {
+    "slot": 466166651,
+    "pos": 428,
+    "ts": 1793980351,
+    "sol": 0.148429
+   },
+   "live_exit": "copy_exit"
+  },
+  {
+   "name": "Cp2v",
+   "mint": "Cp2vvBS7EoCGwAe1S8g3sEAopb6hWgouumJT8RQ7HrD7",
+   "leader": "2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH",
+   "preset": "lab",
+   "arm": "paid",
+   "buy": {
+    "slot": 466168444,
+    "pos": 518,
+    "ts": 1793980735,
+    "sol": 0.2,
+    "tokens": 4137024417490
+   },
+   "sell": {
+    "slot": 466168451,
+    "pos": 269,
+    "ts": 1793980737,
+    "sol": 0.195843
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "Cmg7",
+   "mint": "Cmg7tzX9uMf474C1Mrpbq4NSiZWCLetppFY3qzWCQFX9",
+   "leader": "2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 466186278,
+    "pos": 796,
+    "ts": 1793984570,
+    "sol": 0.2,
+    "tokens": 4346763811558
+   },
+   "sell": {
+    "slot": 466186293,
+    "pos": 15,
+    "ts": 1793984574,
+    "sol": 0.177557
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "7Rwm",
+   "mint": "7Rwma8D5x2T3LyKrWirJsnoSAXg5EdZXjgNkxHEPSvQs",
+   "leader": "2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 466186526,
+    "pos": 79,
+    "ts": 1793984624,
+    "sol": 0.2,
+    "tokens": 3677676566991
+   },
+   "sell": {
+    "slot": 466186533,
+    "pos": 218,
+    "ts": 1793984626,
+    "sol": 0.132125
+   },
+   "live_exit": "stop_loss"
+  },
+  {
+   "name": "FqK7@1793984705",
+   "mint": "FqK7tCRy26yPkcthDShdyVRfdJSKgPswnSpWobphpump",
+   "leader": "G2oZrd1kAUrWE1E4YPZoMi9euBeGgvtKVj5CHSdwazx",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 466186903,
+    "pos": 722,
+    "ts": 1793984705,
+    "sol": 0.2,
+    "tokens": 4605005836895
+   },
+   "sell": {
+    "slot": 466186914,
+    "pos": 0,
+    "ts": 1793984708,
+    "sol": 0.231541
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "FqK7@1793984799",
+   "mint": "FqK7tCRy26yPkcthDShdyVRfdJSKgPswnSpWobphpump",
+   "leader": "G2oZrd1kAUrWE1E4YPZoMi9euBeGgvtKVj5CHSdwazx",
+   "preset": "lab",
+   "arm": "paid",
+   "buy": {
+    "slot": 466187338,
+    "pos": 315,
+    "ts": 1793984799,
+    "sol": 0.2,
+    "tokens": 3680592706979
+   },
+   "sell": {
+    "slot": 466187346,
+    "pos": 174,
+    "ts": 1793984801,
+    "sol": 0.193898
+   },
+   "live_exit": "stale"
+  },
+  {
+   "name": "otdL",
+   "mint": "otdLSdSCw3PW7bWFUMQJRmzxwgddYR3MfQQ1Z9B3SMf",
+   "leader": "2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH",
+   "preset": "lab",
+   "arm": "control",
+   "buy": {
+    "slot": 466188226,
+    "pos": 386,
+    "ts": 1793984990,
+    "sol": 0.2,
+    "tokens": 4346763811558
+   },
+   "sell": {
+    "slot": 466188234,
+    "pos": 116,
+    "ts": 1793984992,
+    "sol": 0.177105
+   },
+   "live_exit": "copy_exit"
+  }
+ ]
+}
