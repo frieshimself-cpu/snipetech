@@ -1,0 +1,14 @@
+[Unit]
+Description=snipetech snapshot: a read-only copy of the database (snipetech.ro.db) for labs and the analyst
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=15
+IOSchedulingClass=idle
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db snapshot-db
+TimeoutStartSec=20m

@@ -1,0 +1,10 @@
+[Unit]
+Description=Snapshot the snipetech database every hour
+
+[Timer]
+OnCalendar=*:33
+Persistent=true
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

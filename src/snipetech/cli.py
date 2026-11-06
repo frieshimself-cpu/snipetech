@@ -448,6 +448,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
+    cmd("snapshot-db", "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst", json_flag=False)
     sp = cmd("events", "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)")
     sp.add_argument("action", choices=["poll", "scan"])
     sp.add_argument("--once", action="store_true", help="poll: one pass instead of the service loop")
@@ -1057,6 +1058,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "snapshot-db":
+        from .infra.snapshot_db import snapshot_db
+
+        print(json.dumps(snapshot_db(cfg.storage.db_path)))
+        return 0
     if args.cmd == "events":
         return _events(args, cfg)
     if args.cmd == "book":
