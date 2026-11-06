@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the snipetech book every 5 minutes (it only logs its plan until [book] enabled = true)
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+RandomizedDelaySec=15
+
+[Install]
+WantedBy=timers.target

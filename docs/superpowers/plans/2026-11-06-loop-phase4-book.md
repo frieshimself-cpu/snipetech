@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-learning-loop-design.md` (Stage 4 — the book; Safety; Tables `book_state`).
 
+**Status (6 Nov 2026, 12:40 UTC):** Tasks 1–3 built with tests (state lives in the coverage table instead of a new book_state table: a ruling, it is the same key-value shape). Dry acceptance on the server pending the next deploy.
+
 ## Global Constraints
 
 - `cfg.book.enabled` is read from the config file only; nothing in the API, Telegram or a job argument can flip it. Dry mode is the default and is also forced when `equity < equity_floor_sol`.

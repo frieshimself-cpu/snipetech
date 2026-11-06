@@ -262,7 +262,7 @@ and the dashboard shows the counts and the qualified wallets.
 snipetech discover run --sources tape,owner,coinfirst   # one run, local sources only; --json prints the summary
 snipetech qualify run --max 100                         # one lab over the 100 most overdue candidates
 snipetech remote sql "select status, count(*) from candidates group by status"
-sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer   # once, after deploy/setup.sh
+sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer   # once, after deploy/setup.sh
 ```
 
 **Measure (phase 3).** `snipetech measure run` (every 5 min) turns every buy and sell of the book wallet into a
@@ -273,6 +273,15 @@ buys: position, gap, fee, failures) and `wallet_live` (live expectancy per copie
 arm has 30 fills its p75 position becomes the landing the qualify lab measures at, so paper and live agree. `measure
 backfill --since <unix> --until <unix>` replays a past window (the 6 Nov copy test). The operator reads it all
 with `read_fills`.
+
+**The book (phase 4), dry first.** `snipetech book run` (every 5 min) ranks the qualified wallets (a wallet's live
+mean after 10 live fills, else its verdict score; `min_score` floor), keeps one capped copy sniper per wallet in the
+top `max_wallets`, assigns bid arms (`[book] bid_arms`; the alternative arm for an `explore_share` of wallets), sizes
+each fill so the arm's fee is at most 3 % of it (an arm that cannot is skipped and named), and applies the stops:
+equity floor, day stop, daily risk. It never stops a sniper while the wallet holds a coin. With `enabled = false`
+(the default) it only writes `[book dry] would …` notes, once per action per day, and calls OKTech for nothing; the
+owner reads a day of those before flipping `enabled = true` in the config file, after which every stop, create and
+start is a Telegram line. `--live` on the command line is refused while the config says disabled.
 
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses

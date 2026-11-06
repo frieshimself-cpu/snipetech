@@ -1,0 +1,15 @@
+[Unit]
+Description=snipetech book: which qualified wallets to copy, with what fill and bid arm; dry unless [book] enabled (learning loop, stage 4)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db book run
+TimeoutStartSec=4m

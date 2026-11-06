@@ -21,8 +21,8 @@ DUST_TOKENS = 1_000_000.0
 # Long-running services and the timers must be active; the oneshot services (snipetech-daily, snipetech-operator)
 # are inactive most of the day by design and only matter when they are "failed".
 WATCHED_UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer",
-                 "snipetech-discover.timer", "snipetech-qualify.timer", "snipetech-measure.timer")  # fmt: skip
-ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify", "snipetech-measure")
+                 "snipetech-discover.timer", "snipetech-qualify.timer", "snipetech-measure.timer", "snipetech-book.timer")  # fmt: skip
+ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify", "snipetech-measure", "snipetech-book")
 
 
 @dataclass

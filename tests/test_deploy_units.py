@@ -58,3 +58,18 @@ def test_measure_unit_and_timer():
     from snipetech.operator.snapshot import ONESHOT_UNITS, WATCHED_UNITS
 
     assert "snipetech-measure" in ONESHOT_UNITS and "snipetech-measure.timer" in WATCHED_UNITS
+
+
+def test_book_unit_and_timer():
+    service = (UNITS / "snipetech-book.service").read_text()
+    timer = (UNITS / "snipetech-book.timer").read_text()
+    exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" book run") and "--live" not in exec_lines[0]  # dry unless the config enables it
+    assert "User=@USER@" in service and "Type=oneshot" in service and "TimeoutStartSec=4m" in service
+    assert "OnCalendar=*:0/5" in timer and "RandomizedDelaySec=15" in timer and "Persistent=true" in timer
+    assert {"snipetech-book", "snipetech-book.timer"} <= set(O.UNITS)
+    from snipetech.operator.snapshot import ONESHOT_UNITS, WATCHED_UNITS
+
+    assert "snipetech-book" in ONESHOT_UNITS and "snipetech-book.timer" in WATCHED_UNITS
+    setup = (Path(__file__).resolve().parents[1] / "deploy" / "setup.sh").read_text()
+    assert "snipetech-book.timer" in setup
