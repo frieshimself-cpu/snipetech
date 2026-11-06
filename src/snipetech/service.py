@@ -6,18 +6,19 @@ import asyncio
 import contextlib
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .analysis.audit import audit_report
-from .analysis.sniper import sniper_profile, top_snipers
-from .analysis.study import collect as collect_study
-from .analysis.study import study_report
 from .analysis.copytrade import copy_report
 from .analysis.deployer import deployer_report
 from .analysis.launches import build_context
 from .analysis.optimize import optimize_exits, sweep_latency, sweep_sizes
 from .analysis.policy import analyzable_launches, discover_wallets, policy_backtest, top_deployers
+from .analysis.sniper import sniper_profile, top_snipers
+from .analysis.study import collect as collect_study
+from .analysis.study import study_report
 from .config import Config
 from .ingest import Ingestor
 from .models import Launch
@@ -153,7 +154,9 @@ class Service:
         sigs: list[str] = []
         for l in launches:
             sigs.append(l.sig)
-            sigs += [t.sig for t in self.store.trades_for_mint(l.mint, l.ts - 1, l.ts + 60) if t.slot <= l.slot + horizon]
+            sigs += [
+                t.sig for t in self.store.trades_for_mint(l.mint, l.ts - 1, l.ts + 60) if t.slot <= l.slot + horizon
+            ]
         return await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
 
     def deployer_verdict(self, address: str) -> dict:
@@ -245,14 +248,16 @@ class Service:
             if refresh:
                 try:
                     await asyncio.wait_for(self._follow_fetch(w, since), max_secs_per_wallet)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     self.progress(f"{w[:8]}: fetch capped at {max_secs_per_wallet:.0f}s, scoring what was fetched")
                 except Exception as exc:  # one wallet's history failing shouldn't stop the ranking
                     self.progress(f"{w[:8]}: {exc}")
             row = (await asyncio.to_thread(follow_rank, self.store, self.cfg, [w], since, labels))[0]
             self.store.put_score("follow", w, row)
             rows.append(row)
-        rows.sort(key=lambda r: (r.get("copy_pnl_next_slot") is not None, r.get("copy_pnl_next_slot") or -1e9), reverse=True)
+        rows.sort(
+            key=lambda r: (r.get("copy_pnl_next_slot") is not None, r.get("copy_pnl_next_slot") or -1e9), reverse=True
+        )
         return rows
 
     async def _follow_fetch(self, w: str, since: int) -> None:
@@ -263,7 +268,9 @@ class Service:
         sigs = []
         for c in (await asyncio.to_thread(build_cases, self.store, w, since))[0]:
             p, i0 = c.path, c.idxs[0]
-            sigs += [p.sigs[j] for j in range(i0 + 1, p.n) if p.slot[j] <= p.slot[i0] + 1 and p.is_buy[j] and p.users[j] != w][:5]
+            sigs += [
+                p.sigs[j] for j in range(i0 + 1, p.n) if p.slot[j] <= p.slot[i0] + 1 and p.is_buy[j] and p.users[j] != w
+            ][:5]
         await self.ingestor.ensure_tx_meta(list(dict.fromkeys(sigs)))
 
     async def rank_copy(self, wallets: list[str], days: float | None = None, refresh: bool = True) -> list[dict]:
@@ -273,7 +280,7 @@ class Service:
                 out.append(compact_copy(await self.analyze_copy(w, days, refresh)))
             except Exception as exc:
                 out.append({"address": w, "verdict": "ERROR", "error": str(exc)})
-        out.sort(key=lambda r: (r.get("ev_lower_sol") or -1e9), reverse=True)
+        out.sort(key=lambda r: r.get("ev_lower_sol") or -1e9, reverse=True)
         return out
 
     # -- own wallet --------------------------------------------------------------------------
@@ -346,7 +353,11 @@ class Service:
                 except Exception as exc:
                     self.progress(f"funder lookup failed: {exc}")
         report = await asyncio.to_thread(sniper_profile, self.store, self.cfg, wallet, since)
-        self.store.put_score("sniper", wallet, {"address": wallet, "config": report.get("config"), "performance": report.get("performance")})
+        self.store.put_score(
+            "sniper",
+            wallet,
+            {"address": wallet, "config": report.get("config"), "performance": report.get("performance")},
+        )
         return report
 
     def top_snipers(self, days: float = 3.0, min_snipes: int = 5, limit: int = 30) -> list[dict]:
@@ -369,7 +380,9 @@ class Service:
                 continue
             if backfill:
                 await self.fingerprint_early_trades(launches)
-            rep = await asyncio.to_thread(deployer_report, self.store, self.cfg, dep, launches, self.store.funder(dep), None, not quick)
+            rep = await asyncio.to_thread(
+                deployer_report, self.store, self.cfg, dep, launches, self.store.funder(dep), None, not quick
+            )
             self.store.put_score("deployer", dep, compact_deployer(rep))
             v = rep["verdict"]
             sweep = rep.get("tip_sweep") or {}
@@ -384,10 +397,17 @@ class Service:
                 "ev_lower_at_best_bribe": best.get("ev_lower"), "recommended": v.get("recommended"),
             })  # fmt: skip
         order = {"SNIPE": 0, "MARGINAL": 1, "INSUFFICIENT_DATA": 2, "AVOID": 3, "UNKNOWN": 4}
-        rows.sort(key=lambda r: (order.get(r["verdict"], 5), -(r["ev_lower_at_best_bribe"] if r["ev_lower_at_best_bribe"] is not None else -1e9)))
+        rows.sort(
+            key=lambda r: (
+                order.get(r["verdict"], 5),
+                -(r["ev_lower_at_best_bribe"] if r["ev_lower_at_best_bribe"] is not None else -1e9),
+            )
+        )
         return rows[:limit]
 
-    async def fee_market(self, deployer: str | None = None, days: float = 1.0, max_launches: int = 2000, refresh: bool = True) -> dict:
+    async def fee_market(
+        self, deployer: str | None = None, days: float = 1.0, max_launches: int = 2000, refresh: bool = True
+    ) -> dict:
         """What snipers pay to land early — across all indexed launches or one deployer's — and,
         where full trade windows exist, the EV of each bribe level for you."""
         from .analysis.competition import competition_report, tip_sweep
@@ -398,12 +418,22 @@ class Service:
             launches = self.store.launches_by_deployer(self._check(deployer), max_launches, before_ts=now - 30)
         else:
             launches = self.store.launches_between(int(now - days * 86400), now - 30)[-max_launches:]
-        launches = sorted((l for l in launches if self.store.coverage(f"mint:{l.mint}").get("from_ts", 1 << 62) <= l.ts), key=lambda l: l.ts)
+        launches = sorted(
+            (l for l in launches if self.store.coverage(f"mint:{l.mint}").get("from_ts", 1 << 62) <= l.ts),
+            key=lambda l: l.ts,
+        )
         if refresh:
             await self.fingerprint_early_trades(launches)
         contexts = [build_context(self.store, l, self.cfg) for l in launches]
-        report = {"scope": deployer or f"all indexed launches, last {days:g} days", "competition": competition_report(self.store, self.cfg, contexts)}
-        full = [c for c in contexts if c.window_end <= now and self.store.coverage(f"mint:{c.launch.mint}").get("to_ts", 0) >= c.window_end - 1]
+        report = {
+            "scope": deployer or f"all indexed launches, last {days:g} days",
+            "competition": competition_report(self.store, self.cfg, contexts),
+        }
+        full = [
+            c
+            for c in contexts
+            if c.window_end <= now and self.store.coverage(f"mint:{c.launch.mint}").get("to_ts", 0) >= c.window_end - 1
+        ]
         if len(full) >= 3:
             report["tip_sweep"] = tip_sweep(self.store, self.cfg, full, ExitParams.from_config(self.cfg.snipe.exit))
             report["tip_sweep_launches"] = len(full)
@@ -418,8 +448,12 @@ class Service:
     async def optimize_snipe(self, deployer: str | None = None, days: float = 7.0, max_launches: int = 3000) -> dict:
         if deployer:
             deployer = self._check(deployer)
-            await self.ingestor.backfill_deployer(deployer, self.cfg.snipe.max_launches, self.cfg.snipe.analysis_window_secs)
-            launches = sorted(self.store.launches_by_deployer(deployer, self.cfg.snipe.max_launches), key=lambda l: l.ts)
+            await self.ingestor.backfill_deployer(
+                deployer, self.cfg.snipe.max_launches, self.cfg.snipe.analysis_window_secs
+            )
+            launches = sorted(
+                self.store.launches_by_deployer(deployer, self.cfg.snipe.max_launches), key=lambda l: l.ts
+            )
             launches = [l for l in launches if l.ts + self.cfg.snipe.analysis_window_secs <= time.time()]
         else:
             now = int(time.time())
@@ -536,7 +570,7 @@ class Service:
         finally:
             await client.close()
 
-    async def oktech_replica(self, wallet: str, buy_sol: float, create: bool = False) -> dict:
+    async def oktech_replica(self, wallet: str, buy_sol: float, create: bool = False, max_buys: int = 5) -> dict:
         """A studied wallet's rules as an OKTech sniper; with `create`, made on OKTech (idle)."""
         from .meta import WSOL, ensure_assets
         from .oktech import SyncPlan, apply, replica_from_study
@@ -544,12 +578,16 @@ class Service:
         wallet = self._check(wallet)
         study = self.store.get_score("study", wallet)
         if not study or "entry" not in study:
-            raise SystemExit(f"no study with a contrast for {wallet}: run `snipetech study {wallet}` with the tape running")
+            raise SystemExit(
+                f"no study with a contrast for {wallet}: run `snipetech study {wallet}` with the tape running"
+            )
         try:
             await ensure_assets(self.store, self.cfg.rpc.http_url, [])
         except Exception as exc:
             self.progress(f"SOL price lookup failed: {exc}")
-        p = replica_from_study(study, self.cfg, buy_sol, (self.store.asset(WSOL) or {}).get("price_usd"))
+        p = replica_from_study(
+            study, self.cfg, buy_sol, (self.store.asset(WSOL) or {}).get("price_usd"), max_buys=max_buys
+        )
         out = {"name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config, "external_id": p.external_id}
         if create:
             client = self._oktech()
@@ -559,7 +597,9 @@ class Service:
                 await client.close()
         return out
 
-    async def oktech_probe(self, buy_sol: float, snipes: int, copy_wallet: str | None, wallet: str, create: bool) -> dict:
+    async def oktech_probe(
+        self, buy_sol: float, snipes: int, copy_wallet: str | None, wallet: str, create: bool
+    ) -> dict:
         """The speed-test snipers; with `create`, made on OKTech idle (start them with `oktech start`)."""
         from .oktech import speedtest_snipers
 
@@ -587,7 +627,9 @@ class Service:
 
         out = []
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
-            r = await self.rpc.call("getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}])
+            r = await self.rpc.call(
+                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}]
+            )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
                 amt = float(info["tokenAmount"]["uiAmount"] or 0)
@@ -620,7 +662,9 @@ class Service:
         reason, stopped = "time limit: still running (capped; it keeps selling until its positions close)", False
         try:
             b0 = await balance()
-            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; emergency floor {floor_sol} SOL; watching {max_minutes:g} min")
+            log(
+                f"wallet {address[:6]}… holds {b0:.4f} SOL; emergency floor {floor_sol} SOL; watching {max_minutes:g} min"
+            )
             if b0 <= floor_sol:
                 raise SystemExit(f"balance {b0:.4f} is already at or below the floor {floor_sol}")
             if start:
@@ -660,7 +704,14 @@ class Service:
                 log(what + ": " + ", ".join(f"{h['mint']} ({h['amount']:,.0f})" for h in held))
             else:
                 log("no tokens held")
-            return {"start_sol": b0, "end_sol": b1, "reason": reason, "stopped": stopped, "held": held, "events": events}
+            return {
+                "start_sol": b0,
+                "end_sol": b1,
+                "reason": reason,
+                "stopped": stopped,
+                "held": held,
+                "events": events,
+            }
         finally:
             await client.close()
 
@@ -706,7 +757,9 @@ class Service:
         armed_at: dict[str, float] = {}
         try:
             b0 = await balance()
-            log(f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min")
+            log(
+                f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min"
+            )
             if b0 <= floor_sol:
                 raise SystemExit(f"balance {b0:.4f} is at or below the floor {floor_sol}")
             for i in ids:
@@ -773,8 +826,10 @@ class Service:
         for t in self.store.trades_for_user(address, since_ts):
             if not t.is_buy:
                 continue
-            q = ("SELECT user, slot, pos, quote, q_after FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
-                 "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(leaders)))
+            q = (
+                "SELECT user, slot, pos, quote, q_after FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
+                "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(leaders))
+            )
             lead = self.store._q(q, (t.mint, *leaders, t.slot, t.slot, t.pos))
             if not lead:
                 rows.append({"mint": t.mint, "ts": t.ts, "my_sol": t.quote / 1e9, "leader": None})
@@ -782,15 +837,26 @@ class Service:
             user, lslot, lpos, lquote, lq = lead[0]
             between = self.store._q(
                 "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND (slot>? OR (slot=? AND pos>?)) AND (slot<? OR (slot=? AND pos<?))",
-                (t.mint, lslot, lslot, lpos, t.slot, t.slot, t.pos))[0][0]
-            rows.append({"mint": t.mint, "ts": t.ts, "my_sol": t.quote / 1e9, "leader": user, "leader_sol": lquote / 1e9,
-                         "dslot": t.slot - lslot, "between_buys": int(between),
-                         "price_gap_pct": round(100 * ((t.q_after / lq) ** 2 - 1), 1)})
+                (t.mint, lslot, lslot, lpos, t.slot, t.slot, t.pos),
+            )[0][0]
+            rows.append(
+                {
+                    "mint": t.mint,
+                    "ts": t.ts,
+                    "my_sol": t.quote / 1e9,
+                    "leader": user,
+                    "leader_sol": lquote / 1e9,
+                    "dslot": t.slot - lslot,
+                    "between_buys": int(between),
+                    "price_gap_pct": round(100 * ((t.q_after / lq) ** 2 - 1), 1),
+                }
+            )
         return rows
 
     async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
                               max_buys: int = 5, exit_name: str = "lab", priority_fee: float | None = None,
-                              tip: float | None = None, send_count: int | None = None, tag: str = "") -> dict:  # fmt: skip
+                              tip: float | None = None, send_count: int | None = None, tag: str = "",
+                              compute_units: int | None = None, salt: str = "") -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60)."""
         from .oktech import list_copy_sniper
 
@@ -804,8 +870,16 @@ class Service:
                 min_sol = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
                 ex_name = parts[3] if len(parts) > 3 and parts[3] else exit_name
                 p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name,
-                                     priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag)  # fmt: skip
-                row = {"id": address, "label": label, "name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config}
+                                     priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
+                                     compute_units=compute_units, salt=salt)  # fmt: skip
+                row = {
+                    "id": address,
+                    "label": label,
+                    "name": p.name,
+                    "summary": p.summary,
+                    "notes": p.notes,
+                    "config": p.config,
+                }
                 if client is not None:
                     ans = await client.create(p.name, p.config, wallet, p.external_id)
                     task = ans.get("task") or {}
@@ -838,7 +912,14 @@ class Service:
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue
-                row = {"id": s["id"], "label": s["label"], "name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config}
+                row = {
+                    "id": s["id"],
+                    "label": s["label"],
+                    "name": p.name,
+                    "summary": p.summary,
+                    "notes": p.notes,
+                    "config": p.config,
+                }
                 if client is not None:
                     ans = await client.create(p.name, p.config, wallet, p.external_id)
                     task = ans.get("task") or {}
@@ -910,7 +991,11 @@ class Service:
         rows: list[dict] = []
         cursor = None
         for _ in range(max(1, pages)):
-            page, cursor = await asyncio.to_thread(lambda c=cursor: client.leaderboard(days=days, limit=100, cursor=c, max_single_token_pct=sc.max_single_token_pct))
+            page, cursor = await asyncio.to_thread(
+                lambda c=cursor: client.leaderboard(
+                    days=days, limit=100, cursor=c, max_single_token_pct=sc.max_single_token_pct
+                )
+            )
             rows += page
             if not cursor:
                 break
@@ -918,7 +1003,12 @@ class Service:
                                              min_realized_usd=sc.min_realized_usd) if r["wallet"] not in exclude]  # fmt: skip
         now = int(time.time())
         for c in cands:
-            c["source"], c["days"], c["scanned_at"], c["requests_used"] = "solanatracker", days, now, getattr(client, "requests", None)
+            c["source"], c["days"], c["scanned_at"], c["requests_used"] = (
+                "solanatracker",
+                days,
+                now,
+                getattr(client, "requests", None),
+            )
             self.store.put_score("solanatracker", c["wallet"], c)
         return cands
 
@@ -938,7 +1028,9 @@ class Service:
         for period in bc.gainers_periods:
             try:
                 # realised PnL, not total: the "PnL" board is dominated by wallets sitting on unrealised bags
-                gainers += await asyncio.to_thread(lambda p=period: client.gainers(period=p, sort_by="realized_pnl", limit=100))
+                gainers += await asyncio.to_thread(
+                    lambda p=period: client.gainers(period=p, sort_by="realized_pnl", limit=100)
+                )
             except BudgetExceeded:
                 raise
             except Exception as exc:  # noqa: BLE001 - one source failing must not sink the scan
@@ -946,7 +1038,13 @@ class Service:
         top: list[list[dict]] = []
         for mint in self.hottest_mints(int(now - days * 86400), top_coins):
             try:
-                top.append(await asyncio.to_thread(lambda m=mint: client.top_traders(m, time_frame=bc.top_trader_frame, sort_by="realized_pnl", limit=10)))
+                top.append(
+                    await asyncio.to_thread(
+                        lambda m=mint: client.top_traders(
+                            m, time_frame=bc.top_trader_frame, sort_by="realized_pnl", limit=10
+                        )
+                    )
+                )
             except BudgetExceeded:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -983,7 +1081,9 @@ class Service:
             sol_moved = False
             if wallet in keys:
                 i = keys.index(wallet)
-                delta = meta["postBalances"][i] - meta["preBalances"][i] + (meta.get("fee", 0) if i == 0 else 0)  # paying the fee isn't trading
+                delta = (
+                    meta["postBalances"][i] - meta["preBalances"][i] + (meta.get("fee", 0) if i == 0 else 0)
+                )  # paying the fee isn't trading
                 sol_moved = abs(delta) > 100_000  # > 0.0001 SOL beyond the fee
 
             pre, post = ({b["mint"]: int(b["uiTokenAmount"]["amount"]) for b in (meta.get(side) or []) if b.get("owner") == wallet}
@@ -1004,7 +1104,9 @@ class Service:
                 share = None
             r["own_funds_share"] = share
             if share is not None and share < 0.5:
-                self.progress(f"{r['wallet'][:8]}: dropped — its own funds move in {share:.0%} of its transactions (execution wallet)")
+                self.progress(
+                    f"{r['wallet'][:8]}: dropped — its own funds move in {share:.0%} of its transactions (execution wallet)"
+                )
                 continue
             out.append(r)
         return out[:limit]
@@ -1028,7 +1130,19 @@ class Service:
         """A single JSON file your sniper can load: who to snipe/skip, sizes and exits."""
         deployers = {}
         for s in self.store.scores("deployer"):
-            deployers[s["address"]] = {k: s.get(k) for k in ("verdict", "score", "ev_sol", "ev_lower_sol", "rinse_rate", "launches", "recommended", "funder")}
+            deployers[s["address"]] = {
+                k: s.get(k)
+                for k in (
+                    "verdict",
+                    "score",
+                    "ev_sol",
+                    "ev_lower_sol",
+                    "rinse_rate",
+                    "launches",
+                    "recommended",
+                    "funder",
+                )
+            }
         lists = self.lists()
         for item in lists["block"]:
             deployers.setdefault(item["address"], {})["verdict"] = "BLOCK"
@@ -1037,7 +1151,10 @@ class Service:
         snipe = sorted(a for a, d in deployers.items() if d.get("verdict") in ("SNIPE", "ALLOW"))
         skip = sorted(a for a, d in deployers.items() if d.get("verdict") in ("AVOID", "BLOCK"))
         copy_targets = {
-            s["address"]: {k: s.get(k) for k in ("verdict", "ev_sol", "ev_lower_sol", "recommended", "max_profitable_latency_slots")}
+            s["address"]: {
+                k: s.get(k)
+                for k in ("verdict", "ev_sol", "ev_lower_sol", "recommended", "max_profitable_latency_slots")
+            }
             for s in self.store.scores("copy")
         }
         blocked_funders = [i["address"] for i in lists["block"]]

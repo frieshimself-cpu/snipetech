@@ -31,8 +31,9 @@ class FakeSvc:
         return {"ok": True}
 
     async def oktech_copylist(self, specs, wallet, create=False, buy_sol=0.05, max_buys=5, exit_name="lab", priority_fee=None, tip=None,
-                              send_count=None, tag=""):  # fmt: skip
+                              send_count=None, tag="", compute_units=None, salt=""):  # fmt: skip
         self.calls.append(("create", tuple(specs), wallet, buy_sol, max_buys, priority_fee, tip, send_count, tag))
+        self.salts = getattr(self, "salts", []) + [salt]
         return {
             "snipers": [
                 {

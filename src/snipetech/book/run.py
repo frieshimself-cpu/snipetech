@@ -98,7 +98,8 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             try:
                 rep = await svc.oktech_copylist([f"{a.wallet}:book:{b.min_copy_sol:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
                                                 buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name="lab",
-                                                priority_fee=arm.get("priority"), tip=arm.get("tip"), send_count=b.send_count, tag=f"arm:{a.arm}")  # fmt: skip
+                                                priority_fee=arm.get("priority"), tip=arm.get("tip"), send_count=b.send_count, tag=f"arm:{a.arm}",
+                                                compute_units=arm.get("cu"), salt=f"g{int(now) // 300}")  # fmt: skip
                 for s in rep.get("snipers", []):
                     if s.get("oktech_id"):
                         new_ids.append((s["oktech_id"], a))

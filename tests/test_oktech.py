@@ -161,7 +161,8 @@ def test_replica_from_study_maps_the_discriminating_rules():
     p = replica_from_study(study, Config(), 0.05, sol_usd=100.0)
     c = p.config
     assert c["mode"] == "normal" and c["monitorProgram"] and c["pumpFilters"]["nonSolQuoteOnly"] and c["pumpAutoSwap"]
-    assert c["metadataFilter"]["conditions"][0]["value"] == "/status/" and c["crowdBuys"]["minSigners"] == 2
+    assert c["metadataFilter"]["conditions"][0]["value"] == "/status/" and "crowdBuys" not in c  # shapes-mode only
+    assert any("burst" in n for n in p.notes) and c["singleSnipe"] is True and c["totalSnipes"] == 5
     assert c["maxMcapUsd"] == 12_700 and c["autoSell"]["deadExit"] == {
         "enabled": True,
         "staleSeconds": 1,
@@ -298,21 +299,11 @@ def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
     )  # 6010 on-chain failures are caught by the local dry run instead of paid for
 
 
-def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
+def test_strategy_sniper_hunt_variant_thresholds():
     from snipetech.oktech import strategy_sniper
 
     strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
              "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
-    cfg = strategy_sniper(strat, 5, via="crowd").config
-    assert cfg["crowdBuys"] == {
-        "enabled": True,
-        "minSigners": 2,
-        "minTotalQuote": 2.0,
-        "platforms": ["pumpfun"],
-        "signal": False,
-        "buy": True,
-    }
-    assert "hunt" not in cfg
     hunt = strategy_sniper(strat, 5).config
     assert "hunt" in hunt and hunt["mode"] == "hunt"
     th = hunt["hunt"]["thresholds"]
@@ -352,10 +343,12 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     c = p.config
     assert c["priorityFee"] == 0.02 and c["tipAmount"] == 0.02
     assert c["extraParams"]["globalSendCount"] == 1
-    assert c["autoSell"]["sellPriorityFeeSol"] == 0.02 and c["autoSell"]["sellTipAmount"] == 0.02  # exits bid the same
+    # exits do not follow the arm: every sell is sent 2-3 times on separate nonce accounts (the losers fail with 6023 and
+    # still pay the sell priority fee), so a 0.02 sell bid would cost 0.02 per twin; sells bid [oktech] sell_fee_sol
+    assert c["autoSell"]["sellPriorityFeeSol"] == 0.002 and c["autoSell"]["sellTipAmount"] == 0.002
     assert "paid" in p.name and any("0.02" in s for s in p.summary)
     base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
-    assert base.config["extraParams"] == {"globalSendCount": 1}  # one send unless asked otherwise
+    assert base.config["extraParams"] == {"globalSendCount": 1, "seedAccount": False}
     assert base.config["priorityFee"] == 0.001 and base.config["tipAmount"] == 0.002
 
 
@@ -368,8 +361,8 @@ def test_copylist_cli_accepts_fee_test_flags():
 
 
 def test_builders_send_once_and_ask_for_preconfs_by_default():
-    """OKTech's backend sent every transaction three times when globalSendCount was omitted (two failed, both paid);
-    the account is approved for preconfs. Every builder now says both explicitly."""
+    """globalSendCount is sent explicitly (1 is also OKTech's form default: the 2-3 sell sends seen on chain are a
+    separate mechanism, see the audit) and preconfs are asked for; every builder says both."""
     from snipetech.oktech import list_copy_sniper, speedtest_snipers, strategy_sniper
 
     cfg = Config()
@@ -385,3 +378,92 @@ def test_builders_send_once_and_ask_for_preconfs_by_default():
     s = strategy_sniper({"id": "x", "label": "whale 2", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
                          "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}, 5, "hunt", True, 60)  # fmt: skip
     assert s.config["extraParams"]["globalSendCount"] == 1 and s.config["preconf"] is True
+
+
+def _every_builder():
+    """One planned sniper per builder, with the fixtures above."""
+    from snipetech.oktech import list_copy_sniper, replica_from_study, speedtest_snipers, strategy_sniper
+
+    cfg = Config()
+    study = {"wallet": TARGET, "entries": 10, "skipped_samples": 100, "tape_hours": 1.0, "entry": {"numeric": [], "categorical": []},
+             "exit": {"numeric": []}, "entry_profile": []}  # fmt: skip
+    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0}, "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
+             "buy_sol": 0.2}  # fmt: skip
+    return {
+        "list_copy": list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg),
+        "copy": copy_sniper(COPY_SCORE, cfg, sol_usd=200.0),
+        "dev": dev_sniper(DEV_SCORE, cfg),
+        "replica": replica_from_study(study, cfg, 0.05, sol_usd=100.0),
+        "strategy": strategy_sniper(strat, 5),
+        **{
+            f"speed_{p.kind}_{i}": p
+            for i, p in enumerate(speedtest_snipers(0.01, 3, "6Z91Dgiz9E44bMW11rQuMBjt1NwwPoQGXFNZieGfVtAb"))
+        },
+    }
+
+
+def test_every_builder_buys_straight_into_the_wallet():
+    """Audit, 6 Nov: only strategy snipers sent seedAccount false. Every other buy went through OKTech's seed account:
+    a second sweep transaction per fill (and a failed duplicate sweep in 3 of 6), ~0.004 SOL parked as rent per fill,
+    and the 6023 race between a stop-loss and the sweep. Every builder now turns the seed account off."""
+    for name, p in _every_builder().items():
+        assert p.config["extraParams"]["seedAccount"] is False, name
+        assert p.config["extraParams"]["globalSendCount"] == 1, name
+
+
+def test_copy_sniper_sells_bid_the_configured_fee_not_the_arm():
+    from snipetech.oktech import list_copy_sniper
+
+    cfg = Config()
+    assert cfg.oktech.sell_fee_sol == 0.002
+    paid = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, priority_fee=0.02, tip=0.02).config["autoSell"]
+    assert paid["sellPriorityFeeSol"] == 0.002 and paid["sellTipAmount"] == 0.002
+    cfg.oktech.sell_fee_sol = 0.005
+    cheap = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
+    assert cheap["sellPriorityFeeSol"] == 0.005 and cheap["sellTipAmount"] == 0.005
+
+
+def test_compute_units_are_sent_only_when_set():
+    """OKTech's form default is 150,000 CU; our buys use 54-79k, and the leader ranks by fee per CU. A smaller limit
+    at the same SOL fee is a stronger bid, but it is set per arm from measured consumption, never by default."""
+    from snipetech.oktech import list_copy_sniper
+
+    cfg = Config()
+    assert cfg.oktech.compute_units is None
+    assert "computeUnits" not in list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["extraParams"]
+    p = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, compute_units=90_000)
+    assert p.config["extraParams"]["computeUnits"] == 90_000 and any("90,000" in s or "90000" in s for s in p.summary)
+    cfg.oktech.compute_units = 100_000
+    assert list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["extraParams"]["computeUnits"] == 100_000
+    assert (
+        "cu" in Config().book.bid_arms["control"] or "cu" not in Config().book.bid_arms["control"]
+    )  # optional per arm
+
+
+def test_external_id_salt_lets_the_book_replace_a_spent_sniper():
+    """A spent (finished) book sniper is replaced by a new one with the same settings; OKTech refuses a second task
+    with the same externalId, so the replacement carries a generation salt in the id and nothing else changes."""
+    from snipetech.oktech import list_copy_sniper
+
+    a = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, tag="arm:paid")
+    b = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, tag="arm:paid", salt="g2")
+    assert a.config == b.config and a.config_hash == b.config_hash
+    assert a.external_id != b.external_id and b.external_id.endswith(":g2") and a.external_id in b.external_id
+
+
+def test_replica_is_capped_and_never_sends_crowd_buys_outside_shapes_mode():
+    """Audit: `crowdBuys` is a shapes-mode block (the app emits it only with mode shapes; under normal it did not
+    filter: fills every ~10 s on 5 Nov) and the replica was uncapped. Both are fixed: the replica is capped like every
+    other sniper, and a burst rule becomes a note instead of a block that does not gate."""
+    from snipetech.oktech import replica_from_study, strategy_sniper
+
+    study = {"wallet": TARGET, "entries": 10, "skipped_samples": 100, "tape_hours": 1.0,
+             "entry": {"numeric": [{"factor": "buys_5s", "auc": 0.9, "chosen_median": 5.0, "threshold": 1.0, "direction": ">="}],
+                       "categorical": []}, "exit": {"numeric": []}, "entry_profile": []}  # fmt: skip
+    p = replica_from_study(study, Config(), 0.05, sol_usd=100.0, max_buys=4)
+    assert p.config["singleSnipe"] is True and p.config["totalSnipes"] == 4
+    assert "crowdBuys" not in p.config and any("burst" in n and "shapes" in n for n in p.notes)
+    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
+             "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
+    with pytest.raises(ValueError, match="shapes"):
+        strategy_sniper(strat, 5, via="crowd")

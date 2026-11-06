@@ -27,8 +27,6 @@ def _progress(msg: str) -> None:
     print(f"  … {msg}", file=sys.stderr, flush=True)
 
 
-
-
 def _discover(args, cfg) -> int:
     """`snipetech discover run`: build the data clients the environment has keys for, run every source, print the summary."""
     import time
@@ -53,12 +51,16 @@ def _discover(args, cfg) -> int:
         if os.environ.get("BIRDEYE_API_KEY"):
             from .birdeye import Birdeye
 
-            ctx.birdeye = Birdeye(budget_cu=min(cfg.birdeye.daily_cu, ctx.budgets["birdeye_cu"]), counter=_usage(svc, "birdeye"))
+            ctx.birdeye = Birdeye(
+                budget_cu=min(cfg.birdeye.daily_cu, ctx.budgets["birdeye_cu"]), counter=_usage(svc, "birdeye")
+            )
             clients.append(ctx.birdeye)
         if os.environ.get("SOLANATRACKER_API_KEY"):
             from .solanatracker import SolanaTracker
 
-            ctx.solanatracker = SolanaTracker(budget_requests=ctx.budgets["solanatracker"], counter=_usage(svc, "solanatracker"))
+            ctx.solanatracker = SolanaTracker(
+                budget_requests=ctx.budgets["solanatracker"], counter=_usage(svc, "solanatracker")
+            )
             clients.append(ctx.solanatracker)
         if os.environ.get("VYBE_API_KEY"):
             from .vybe import Vybe
@@ -157,12 +159,19 @@ def _events(args, cfg) -> int:
                 out["solanatracker_trending"] = st._get("/tokens/trending/1h", {})
                 out["solanatracker_graduating"] = st._get("/tokens/multi/graduating", {})
             if be is not None:
-                out["birdeye_trending"] = be._get("/defi/token_trending", {"sort_by": "rank", "sort_type": "asc", "offset": 0, "limit": 3}, 30)
+                out["birdeye_trending"] = be._get(
+                    "/defi/token_trending", {"sort_by": "rank", "sort_type": "asc", "offset": 0, "limit": 3}, 30
+                )
             text = json.dumps(out, indent=1, default=str)
             print(text[:6000])
             return 0
         if args.once:
-            print(json.dumps(poll_feeds(svc.store, clients, time.time(), log=lambda m: print(m, file=sys.stderr, flush=True)), indent=1))
+            print(
+                json.dumps(
+                    poll_feeds(svc.store, clients, time.time(), log=lambda m: print(m, file=sys.stderr, flush=True)),
+                    indent=1,
+                )
+            )
             return 0
         poll_loop(svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True))
         return 0
@@ -180,7 +189,12 @@ def _events(args, cfg) -> int:
 async def dump_transaction(svc, signature: str) -> str:
     """One getTransaction result (version 1, json encoding) as text; the way real fixtures reach tests/fixtures/tx/."""
     tx = await svc.rpc.get_transaction(signature)
-    return json.dumps(tx, indent=1, default=str) if tx is not None else json.dumps({"error": "not found", "signature": signature})
+    return (
+        json.dumps(tx, indent=1, default=str)
+        if tx is not None
+        else json.dumps({"error": "not found", "signature": signature})
+    )
+
 
 def _usage(svc, provider: str):
     """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
@@ -209,6 +223,7 @@ def _usage_from_cfg(cfg, provider: str):
             pass
 
     return count
+
 
 def _out(args, data, render=None) -> None:
     if args.json or render is None:
@@ -268,7 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float)
     sp.add_argument("--size", type=float, help="copy size in SOL")
-    sp.add_argument("--proportional", type=float, metavar="RATIO", help="copy RATIO x the wallet's SOL per buy instead of a fixed size")
+    sp.add_argument(
+        "--proportional",
+        type=float,
+        metavar="RATIO",
+        help="copy RATIO x the wallet's SOL per buy instead of a fixed size",
+    )
     sp.add_argument("--latency", type=int, help="your landing latency in slots (buy and sell)")
     sp.add_argument("--no-refresh", action="store_true")
 
@@ -299,14 +319,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-launches", type=int, default=3)
     sp.add_argument("--days", type=float, default=30.0)
     sp.add_argument("--limit", type=int, default=30)
-    sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch trade windows for the K most active repeat deployers")
+    sp.add_argument(
+        "--backfill",
+        type=int,
+        default=0,
+        metavar="K",
+        help="first fetch trade windows for the K most active repeat deployers",
+    )
 
-    sp = cmd("sniper", "reverse-engineer another sniper: exact fees/tips/slippage/router + inferred entries, exits, filters")
+    sp = cmd(
+        "sniper", "reverse-engineer another sniper: exact fees/tips/slippage/router + inferred entries, exits, filters"
+    )
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float, default=3.0)
     sp.add_argument("--no-refresh", action="store_true")
-    sp.add_argument("--deep", type=int, default=0, metavar="N",
-                    help="fetch the whole market during its last N holds (trailing stops etc.; ~hundreds of txs each)")
+    sp.add_argument(
+        "--deep",
+        type=int,
+        default=0,
+        metavar="N",
+        help="fetch the whole market during its last N holds (trailing stops etc.; ~hundreds of txs each)",
+    )
 
     sp = cmd("snipers", "leaderboard of wallets that land in the first slots of launches, by realized PnL")
     sp.add_argument("--days", type=float, default=3.0)
@@ -317,8 +350,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-launches", type=int, default=3)
     sp.add_argument("--days", type=float, default=7.0)
     sp.add_argument("--limit", type=int, default=20)
-    sp.add_argument("--backfill", type=int, default=0, metavar="K", help="first fetch + fingerprint trade windows for the K most active repeat deployers")
-    sp.add_argument("--quick", action="store_true", help="skip the exit optimizer (faster, but verdicts can differ from `deployer`)")
+    sp.add_argument(
+        "--backfill",
+        type=int,
+        default=0,
+        metavar="K",
+        help="first fetch + fingerprint trade windows for the K most active repeat deployers",
+    )
+    sp.add_argument(
+        "--quick", action="store_true", help="skip the exit optimizer (faster, but verdicts can differ from `deployer`)"
+    )
 
     sp = cmd("fees", "what snipers pay to land early (priority + tips) and the EV of each bribe level for you")
     sp.add_argument("--deployer", help="one deployer's launches instead of everything indexed")
@@ -329,24 +370,43 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("address", nargs="?")
     sp.add_argument("name", nargs="?")
     sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart"], default="service")
-    sp.add_argument("--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)")
+    sp.add_argument(
+        "--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)"
+    )
 
-    sp = cmd("lab", "search the recorded market (`watch --tape`) for strategies that pay at your speed: trigger x exit, out of sample")
+    sp = cmd(
+        "lab",
+        "search the recorded market (`watch --tape`) for strategies that pay at your speed: trigger x exit, out of sample",
+    )
     sp.add_argument("--latency", type=int, default=0, help="slots between the trigger and your buy (0 = same slot)")
-    sp.add_argument("--position", type=_position, default="middle",
-                    help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you)")
+    sp.add_argument(
+        "--position",
+        type=_position,
+        default="middle",
+        help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you)",
+    )
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
     sp.add_argument("--top", type=int, default=10)
-    sp.add_argument("--by-wallet", action="store_true",
-                    help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit")
+    sp.add_argument(
+        "--by-wallet",
+        action="store_true",
+        help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit",
+    )
 
-    sp = cmd("sweep", "sell every pump.fun curve token the sniper wallet holds (SNIPER_SECRET): the exit OKTech can drop")
+    sp = cmd(
+        "sweep", "sell every pump.fun curve token the sniper wallet holds (SNIPER_SECRET): the exit OKTech can drop"
+    )
     sp.add_argument("--mint", action="append", help="only these mints (repeatable)")
-    sp.add_argument("--slippage", type=float, default=0.5, help="SOL floor below the quote, 0-1 (default 0.5: a sweeper wants out)")
+    sp.add_argument(
+        "--slippage", type=float, default=0.5, help="SOL floor below the quote, 0-1 (default 0.5: a sweeper wants out)"
+    )
     sp.add_argument("--dry-run", action="store_true", help="show holdings and quotes, send nothing")
 
-    sp = cmd("follow", "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first")
+    sp = cmd(
+        "follow",
+        "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first",
+    )
     sp.add_argument("wallets", nargs="*")
     sp.add_argument("--kols", action="store_true", help="every wallet labeled kol (`label --file kols.txt --kind kol`)")
     sp.add_argument("--file", help="wallets, one per line")
@@ -356,45 +416,105 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
     sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "copylist", "copyaudit", "guard", "cycle", "holdings", "show", "start",
                                        "stop", "delete"])  # fmt: skip
-    sp.add_argument("--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)")
-    sp.add_argument("--id", action="append", help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several")
+    sp.add_argument(
+        "--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)"
+    )
+    sp.add_argument(
+        "--id",
+        action="append",
+        help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several",
+    )
     sp.add_argument("--address", help="guard: the buying wallet's public address (its balance is watched)")
-    sp.add_argument("--floor", type=float, help="guard: stop everything if the wallet's balance falls below this many SOL")
+    sp.add_argument(
+        "--floor", type=float, help="guard: stop everything if the wallet's balance falls below this many SOL"
+    )
     sp.add_argument("--max-minutes", type=float, default=60, help="guard: stop everything after this long")
     sp.add_argument("--max-fills", type=int, default=10, help="cycle: stop re-arming after this many buys")
-    sp.add_argument("--rearm-after", type=float, default=60, help="cycle: re-arm an idle sniper after this many seconds")
-    sp.add_argument("--ignore-mint", action="append", help="cycle: a held coin no sniper manages (sold by hand); never counts as open")
+    sp.add_argument(
+        "--rearm-after", type=float, default=60, help="cycle: re-arm an idle sniper after this many seconds"
+    )
+    sp.add_argument(
+        "--ignore-mint",
+        action="append",
+        help="cycle: a held coin no sniper manages (sold by hand); never counts as open",
+    )
     sp.add_argument("--copy-wallet", help="probe: also measure copy speed against this wallet's buys")
     sp.add_argument("--snipes", type=int, default=5, help="probe: buys per speed-test sniper (default 5)")
-    sp.add_argument("--via", choices=["hunt", "crowd"], default="hunt",
-                    help="strategy: how OKTech gates the big-buy trigger: hunt (fires on every launch, measured) or crowd (buys in the create tx)")
-    sp.add_argument("--no-preexec", action="store_true", help="strategy: send buys without OKTech's local pre-execution dry run")
-    sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
-                    help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60")
-    sp.add_argument("--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one")
+    sp.add_argument(
+        "--via",
+        choices=["hunt", "crowd"],
+        default="hunt",
+        help="strategy: how OKTech gates the big-buy trigger: hunt (fires on every launch, measured) or crowd (buys in the create tx)",
+    )
+    sp.add_argument(
+        "--no-preexec", action="store_true", help="strategy: send buys without OKTech's local pre-execution dry run"
+    )
+    sp.add_argument(
+        "--copy",
+        action="append",
+        metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
+        help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60",
+    )
+    sp.add_argument(
+        "--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one"
+    )
     sp.add_argument("--priority", type=float, help="copylist: priority fee in SOL per buy (OKTech minimum 0.001)")
     sp.add_argument("--tip", type=float, help="copylist: tip in SOL per buy (OKTech minimum 0.002)")
-    sp.add_argument("--send-count", type=int, help="copylist: extraParams.globalSendCount (1 = send each transaction once)")
-    sp.add_argument("--tag", default="", help="copylist: word appended to the sniper names (e.g. control / paid)")
-    sp.add_argument("--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes")
-    sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
+    sp.add_argument(
+        "--send-count", type=int, help="copylist: extraParams.globalSendCount (1 = send each transaction once)"
+    )
+    sp.add_argument(
+        "--tag", default="", help="copylist: word appended to the sniper names (e.g. arm:control / arm:paid)"
+    )
+    sp.add_argument(
+        "--compute-units",
+        type=int,
+        help="copylist: extraParams.computeUnits (OKTech default 150000; our buys use 54-79k)",
+    )
+    sp.add_argument(
+        "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
+    )
+    sp.add_argument(
+        "--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)"
+    )
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
-    sp.add_argument("--buy", type=float, help="SOL per buy: replica (default 0.05), probe (0.01), strategy (the frozen size)")
-    sp.add_argument("--create", action="store_true", help="replica: create it on OKTech (idle unless your key may start it)")
-    sp.add_argument("--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)")
-    sp.add_argument("--prune", action="store_true", help="also remove snipetech snipers whose verdict no longer supports them")
+    sp.add_argument(
+        "--buy", type=float, help="SOL per buy: replica (default 0.05), probe (0.01), strategy (the frozen size)"
+    )
+    sp.add_argument(
+        "--create", action="store_true", help="replica: create it on OKTech (idle unless your key may start it)"
+    )
+    sp.add_argument(
+        "--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)"
+    )
+    sp.add_argument(
+        "--prune", action="store_true", help="also remove snipetech snipers whose verdict no longer supports them"
+    )
     sp.add_argument("--yes", action="store_true", help="push without asking")
 
-    sp = cmd("study", "what decides a wallet's trades: every factor at its entries/exits vs. what it passed on (needs `watch --tape`)")
+    sp = cmd(
+        "study",
+        "what decides a wallet's trades: every factor at its entries/exits vs. what it passed on (needs `watch --tape`)",
+    )
     sp.add_argument("wallet")
     sp.add_argument("--days", type=float, default=1.0)
     sp.add_argument("--negatives", type=int, default=15, help="alternatives sampled per entry")
     sp.add_argument("--no-refresh", action="store_true")
-    sp.add_argument("--auto-smart", type=int, default=0, metavar="N",
-                    help="label the N most consistently profitable wallets in the data as 'smart' first")
-    sp.add_argument("--backfill-entries", type=int, default=0, metavar="N",
-                    help="for its last N entries outside the tape, fetch the market just before each (described, not contrasted)")
+    sp.add_argument(
+        "--auto-smart",
+        type=int,
+        default=0,
+        metavar="N",
+        help="label the N most consistently profitable wallets in the data as 'smart' first",
+    )
+    sp.add_argument(
+        "--backfill-entries",
+        type=int,
+        default=0,
+        metavar="N",
+        help="for its last N entries outside the tape, fetch the market just before each (described, not contrasted)",
+    )
     sp.add_argument("--entry-window", type=int, default=120, help="seconds fetched before each backfilled entry")
 
     sp = cmd("discover-wallets", "find consistently profitable wallets (copy candidates) in indexed data")
@@ -411,8 +531,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--signals", choices=["all", "known", "none"], default="known")
     sp.add_argument("--poll", action="store_true", help="poll copy targets over HTTP instead of websockets")
     sp.add_argument("--no-firehose", action="store_true", help="only follow copy targets")
-    sp.add_argument("--tape", action="store_true",
-                    help="record every trade of every token (needed by `study` and `lab`; several GB/day of SQLite)")
+    sp.add_argument(
+        "--tape",
+        action="store_true",
+        help="record every trade of every token (needed by `study` and `lab`; several GB/day of SQLite)",
+    )
 
     sp = cmd("serve", "HTTP API for your sniper", json_flag=False)
     sp.add_argument("--host")
@@ -427,14 +550,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
 
-    sp = cmd("vanity", "make a wallet whose address starts/ends with chosen letters (key saved to a private file, never printed)", json_flag=False)
+    sp = cmd(
+        "vanity",
+        "make a wallet whose address starts/ends with chosen letters (key saved to a private file, never printed)",
+        json_flag=False,
+    )
     sp.add_argument("--starts-with", default="")
     sp.add_argument("--ends-with", default="")
     sp.add_argument("--exact-case", action="store_true", help="match capitals exactly (much slower)")
     sp.add_argument("--workers", type=int, default=1, help="CPU cores to use (default 1)")
     sp.add_argument("--out", help="directory for the key file (default: <data dir>/.wallets)")
 
-    sp = cmd("ops-serve", "on your server: signed remote-operations endpoint (see deploy/bootstrap.sh)", json_flag=False)
+    sp = cmd(
+        "ops-serve", "on your server: signed remote-operations endpoint (see deploy/bootstrap.sh)", json_flag=False
+    )
     sp.add_argument("--host", default="127.0.0.1")
     sp.add_argument("--port", type=int, default=8788)
     sp.add_argument("--repo", help="checkout to update (default: this installation)")
@@ -442,16 +571,27 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--keys", help="authorized public keys (default: <repo>/deploy/ops_authorized_keys)")
     sp.add_argument("--branch", help="branch `update` pulls (default: the checkout's current branch)")
 
-    sp = cmd("operate", "on your server: one operator round (snapshot, gate, Claude only if something changed)", json_flag=False)
+    sp = cmd(
+        "operate",
+        "on your server: one operator round (snapshot, gate, Claude only if something changed)",
+        json_flag=False,
+    )
     sp.add_argument("--analyst", action="store_true", help="force the daily analyst turn now")
-    sp.add_argument("--dry-run", action="store_true", help="print the snapshot and the gate's decision; never call Claude")
+    sp.add_argument(
+        "--dry-run", action="store_true", help="print the snapshot and the gate's decision; never call Claude"
+    )
     sp.add_argument("--telegram-setup", action="store_true", help="store the owner's Telegram chat id and send a hello")
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
-    sp.add_argument("--expect", metavar="snipers=N,held=M",
-                    help="write operator/expected.json (what 'all quiet' means during a live test) and exit")
+    sp.add_argument(
+        "--expect",
+        metavar="snipers=N,held=M",
+        help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
+    )
 
-    sp = cmd("solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL")
+    sp = cmd(
+        "solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL"
+    )
     sp.add_argument("action", choices=["leaderboard", "first-buyers", "traders", "pnl"])
     sp.add_argument("--days", type=int, default=90)
     sp.add_argument("--mint")
@@ -460,31 +600,62 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = cmd("discover", "the learning loop's discover stage: every source's wallets into the candidates table")
     sp.add_argument("action", choices=["run"])
-    sp.add_argument("--sources", default=None, help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe (default: all with a key)")
-    sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
+    sp.add_argument(
+        "--sources",
+        default=None,
+        help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe (default: all with a key)",
+    )
+    sp = cmd(
+        "qualify",
+        "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)",
+    )
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
-    cmd("snapshot-db", "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst", json_flag=False)
+    cmd(
+        "snapshot-db",
+        "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst",
+        json_flag=False,
+    )
     sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
     sp.add_argument("signature")
-    sp = cmd("events", "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)")
+    sp = cmd(
+        "events",
+        "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)",
+    )
     sp.add_argument("action", choices=["poll", "scan", "edge"])
-    sp.add_argument("--landing", default=None, help="edge: the landing position (default: the measured one, else [qualify] landing_pos)")
+    sp.add_argument(
+        "--landing",
+        default=None,
+        help="edge: the landing position (default: the measured one, else [qualify] landing_pos)",
+    )
     sp.add_argument("--once", action="store_true", help="poll: one pass instead of the service loop")
     sp.add_argument("--interval", type=float, default=60, help="poll: seconds between passes (service: 60)")
-    sp.add_argument("--raw", action="store_true", help="poll: print the first rows of each feed as the API sends them, then exit")
+    sp.add_argument(
+        "--raw", action="store_true", help="poll: print the first rows of each feed as the API sends them, then exit"
+    )
     sp.add_argument("--hours", type=float, default=6.0, help="scan: how far back to look for curve crossings")
-    sp = cmd("book", "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)")
+    sp = cmd(
+        "book",
+        "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
+    )
     sp.add_argument("action", choices=["run"])
-    sp.add_argument("--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)")
+    sp.add_argument(
+        "--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)"
+    )
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill"])
-    sp.add_argument("--since", type=int, default=None, help="unix seconds; run: override the cursor; backfill: required")
+    sp.add_argument(
+        "--since", type=int, default=None, help="unix seconds; run: override the cursor; backfill: required"
+    )
     sp.add_argument("--until", type=int, default=None, help="unix seconds (backfill)")
     sp = cmd("vybe", "query Vybe directly: the free 1d/7d/30d top-traders board")
     sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
     sp.add_argument("--limit", type=int, default=50)
-    sp.add_argument("--sort", default="realizedPnlUsd", choices=["realizedPnlUsd", "unrealizedPnlUsd", "winRate", "tradesVolumeUsd", "tradesCount"])
+    sp.add_argument(
+        "--sort",
+        default="realizedPnlUsd",
+        choices=["realizedPnlUsd", "unrealizedPnlUsd", "winRate", "tradesVolumeUsd", "tradesCount"],
+    )
     sp.add_argument("--raw", action="store_true", help="print Vybe's rows unparsed (field names)")
     sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
     sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
@@ -532,7 +703,10 @@ async def doctor(svc: Service) -> dict:
     t0 = time.perf_counter()
     try:
         slot = await svc.rpc.get_slot()
-        out["rpc"] = {"ok": True, "detail": f"slot {slot} in {(time.perf_counter() - t0) * 1000:.0f} ms via {svc.status()['rpc']}"}
+        out["rpc"] = {
+            "ok": True,
+            "detail": f"slot {slot} in {(time.perf_counter() - t0) * 1000:.0f} ms via {svc.status()['rpc']}",
+        }
     except Exception as exc:
         out["rpc"] = {"ok": False, "detail": f"{exc} — set HELIUS_API_KEY or SNIPETECH_RPC_URL"}
         return out
@@ -550,11 +724,20 @@ async def doctor(svc: Service) -> dict:
         async with websockets.connect(cfg.rpc.websocket_url(), open_timeout=10) as ws:
             await ws.send(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "slotSubscribe"}))
             ack = json.loads(await asyncio.wait_for(ws.recv(), 10))
-            out["websocket"] = {"ok": "result" in ack, "detail": "subscriptions work (needed for `watch`)" if "result" in ack else str(ack)}
+            out["websocket"] = {
+                "ok": "result" in ack,
+                "detail": "subscriptions work (needed for `watch`)" if "result" in ack else str(ack),
+            }
     except Exception as exc:
-        out["websocket"] = {"ok": False, "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without"}
+        out["websocket"] = {
+            "ok": False,
+            "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without",
+        }
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
-    out["agent"] = {"ok": has_key, "detail": "ANTHROPIC_API_KEY found" if has_key else "set ANTHROPIC_API_KEY to use `snipetech agent`"}
+    out["agent"] = {
+        "ok": has_key,
+        "detail": "ANTHROPIC_API_KEY found" if has_key else "set ANTHROPIC_API_KEY to use `snipetech agent`",
+    }
     if os.environ.get("BIRDEYE_API_KEY"):
         try:
             from .birdeye import Birdeye
@@ -582,7 +765,10 @@ async def doctor(svc: Service) -> dict:
         except Exception as exc:  # noqa: BLE001
             out["solanatracker"] = {"ok": False, "detail": f"SOLANATRACKER_API_KEY set but the API answered: {exc}"}
     else:
-        out["solanatracker"] = {"ok": False, "detail": "SOLANATRACKER_API_KEY not set (optional: 90-day wallet leaderboard)"}
+        out["solanatracker"] = {
+            "ok": False,
+            "detail": "SOLANATRACKER_API_KEY not set (optional: 90-day wallet leaderboard)",
+        }
     if os.environ.get("VYBE_API_KEY"):
         try:
             from .vybe import Vybe
@@ -597,7 +783,12 @@ async def doctor(svc: Service) -> dict:
             out["vybe"] = {"ok": False, "detail": f"VYBE_API_KEY set but the API answered: {exc}"}
     else:
         out["vybe"] = {"ok": False, "detail": "VYBE_API_KEY not set (optional: free 30-day leaderboard)"}
-    out["config"] = {"ok": bool(cfg.path and cfg.path.exists()), "detail": str(cfg.path) if cfg.path and cfg.path.exists() else "no snipetech.toml (defaults in use) — run `snipetech init`"}
+    out["config"] = {
+        "ok": bool(cfg.path and cfg.path.exists()),
+        "detail": str(cfg.path)
+        if cfg.path and cfg.path.exists()
+        else "no snipetech.toml (defaults in use) — run `snipetech init`",
+    }
     out["database"] = {"ok": True, "detail": f"{svc.store.path}: {svc.store.stats()}"}
     return out
 
@@ -630,18 +821,33 @@ async def _run(args, cfg: Config) -> int:
         if c == "status":
             _out(args, svc.status(), lambda d: "\n".join(f"{k}: {v}" for k, v in d.items()))
         elif c == "doctor":
-            _out(args, await doctor(svc), lambda d: "\n".join(f"{'OK ' if v.get('ok') else 'NO '} {k}: {v.get('detail')}" for k, v in d.items()))
+            _out(
+                args,
+                await doctor(svc),
+                lambda d: "\n".join(f"{'OK ' if v.get('ok') else 'NO '} {k}: {v.get('detail')}" for k, v in d.items()),
+            )
         elif c == "index-launches":
             since = int(time.time() - args.hours * 3600)
             res = await svc.ingestor.backfill_launches(since, args.max)
             rows = svc.store.deployer_counts(2, since)
             data = {"launches_indexed": res.launches, "transactions": res.fetched, "repeat_deployers": len(rows),
                     "top": [{"deployer": d, "launches": n, "first_ts": a, "last_ts": b} for d, n, a, b in rows[:25]]}  # fmt: skip
-            _out(args, data, lambda d: f"Indexed {d['launches_indexed']} launches; {d['repeat_deployers']} wallets launched 2+ times.\n"
-                 + R.table([[x["deployer"], x["launches"], R.ago(x["last_ts"])] for x in d["top"]], ["deployer", "launches", "last"])
-                 + "\nNext: `snipetech top-deployers --backfill 20` or `snipetech deployer <address>`")
+            _out(
+                args,
+                data,
+                lambda d: (
+                    f"Indexed {d['launches_indexed']} launches; {d['repeat_deployers']} wallets launched 2+ times.\n"
+                    + R.table(
+                        [[x["deployer"], x["launches"], R.ago(x["last_ts"])] for x in d["top"]],
+                        ["deployer", "launches", "last"],
+                    )
+                    + "\nNext: `snipetech top-deployers --backfill 20` or `snipetech deployer <address>`"
+                ),
+            )
         elif c == "deployer":
-            rep = await svc.analyze_deployer(args.address, refresh=not args.no_refresh, max_launches=args.launches, family=args.family)
+            rep = await svc.analyze_deployer(
+                args.address, refresh=not args.no_refresh, max_launches=args.launches, family=args.family
+            )
             _out(args, rep, R.render_deployer)
         elif c == "mint":
             _out(args, await svc.check_mint(args.mint, refresh=args.analyze))
@@ -651,7 +857,9 @@ async def _run(args, cfg: Config) -> int:
         elif c == "copy-rank":
             wallets = list(args.wallets)
             if args.file:
-                wallets += [w.strip() for w in Path(args.file).read_text().splitlines() if w.strip() and not w.startswith("#")]
+                wallets += [
+                    w.strip() for w in Path(args.file).read_text().splitlines() if w.strip() and not w.startswith("#")
+                ]
             if args.source == "birdeye":
                 from .birdeye import Birdeye
 
@@ -684,15 +892,33 @@ async def _run(args, cfg: Config) -> int:
             rows = await asyncio.to_thread(svc.top_deployers, args.min_launches, args.days, args.limit)
             _out(args, rows, R.render_top_deployers)
         elif c == "sniper":
-            _out(args, await svc.profile_sniper(args.wallet, args.days, refresh=not args.no_refresh, deep=args.deep), R.render_sniper)
+            _out(
+                args,
+                await svc.profile_sniper(args.wallet, args.days, refresh=not args.no_refresh, deep=args.deep),
+                R.render_sniper,
+            )
         elif c == "snipers":
-            _out(args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers)
+            _out(
+                args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers
+            )
         elif c == "profitable-devs":
-            _out(args, await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill, args.quick), R.render_profitable_devs)
+            _out(
+                args,
+                await svc.profitable_devs(args.min_launches, args.days, args.limit, args.backfill, args.quick),
+                R.render_profitable_devs,
+            )
         elif c == "fees":
             rep = await svc.fee_market(args.deployer, args.days, refresh=not args.no_refresh)
-            _out(args, rep, lambda d: f"Fee market — {d['scope']}\n" + "=" * 72 + "\n"
-                 + "\n".join(R.render_competition(d["competition"], d.get("tip_sweep"))))
+            _out(
+                args,
+                rep,
+                lambda d: (
+                    f"Fee market — {d['scope']}\n"
+                    + "=" * 72
+                    + "\n"
+                    + "\n".join(R.render_competition(d["competition"], d.get("tip_sweep")))
+                ),
+            )
         elif c == "label":
             if args.file:
                 _out(args, svc.label_file(args.file, args.kind))
@@ -726,12 +952,18 @@ async def _run(args, cfg: Config) -> int:
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:
-                ws += [line.split()[0] for line in Path(args.file).read_text().splitlines() if line.strip() and not line.startswith("#")]
+                ws += [
+                    line.split()[0]
+                    for line in Path(args.file).read_text().splitlines()
+                    if line.strip() and not line.startswith("#")
+                ]
             if args.kols:
                 ws += list(svc.store.labels("kol"))
             if not ws:
                 raise SystemExit("follow: give wallets, --file or --kols")
-            _out(args, await svc.follow(list(dict.fromkeys(ws)), args.days, refresh=not args.no_refresh), R.render_follow)
+            _out(
+                args, await svc.follow(list(dict.fromkeys(ws)), args.days, refresh=not args.no_refresh), R.render_follow
+            )
         elif c == "paper":
             from .analysis import paper
 
@@ -756,7 +988,9 @@ async def _run(args, cfg: Config) -> int:
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
-                print(f"OKTech speed test on wallet {rep['wallet']} (at most {rep['max_spend_sol']} SOL in buys + fees)")
+                print(
+                    f"OKTech speed test on wallet {rep['wallet']} (at most {rep['max_spend_sol']} SOL in buys + fees)"
+                )
                 for sn in rep["snipers"]:
                     print(f"\n  {sn['name']}" + (f"  [{sn.get('id')}, {sn.get('status')}]" if sn.get("id") else ""))
                     for line in sn["summary"]:
@@ -764,12 +998,16 @@ async def _run(args, cfg: Config) -> int:
                 if not args.create:
                     print("\nNot created. Add --create to make them on OKTech, idle.")
                 else:
-                    print("\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
-                          "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`.")
+                    print(
+                        "\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
+                        "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`."
+                    )
                 return 0
             if args.action == "copyaudit":
                 if not (args.copy and args.address):
-                    raise SystemExit("copyaudit: give --address <our wallet> and --copy <leader> (one or more; label/min ignored)")
+                    raise SystemExit(
+                        "copyaudit: give --address <our wallet> and --copy <leader> (one or more; label/min ignored)"
+                    )
                 leaders = [s.split(":")[0] for s in args.copy]
                 rows = svc.oktech_copy_audit(args.address, int(time.time() - args.since_minutes * 60), leaders)
                 if args.json:
@@ -778,33 +1016,43 @@ async def _run(args, cfg: Config) -> int:
                 if not rows:
                     print("no buys by that wallet in the window")
                     return 0
-                print(f"{'mint':10} {'time':8} {'my SOL':>7} {'leader':8} {'lead SOL':>8} {'dslot':>5} {'between':>7} {'gap%':>6}")
+                print(
+                    f"{'mint':10} {'time':8} {'my SOL':>7} {'leader':8} {'lead SOL':>8} {'dslot':>5} {'between':>7} {'gap%':>6}"
+                )
                 for r in rows:
                     tm = time.strftime("%H:%M:%S", time.gmtime(r["ts"]))
                     if r.get("leader"):
                         print(f"{r['mint'][:8]:10} {tm:8} {r['my_sol']:7.3f} {r['leader'][:8]:8} {r['leader_sol']:8.2f} {r['dslot']:5d} "
                               f"{r['between_buys']:7d} {r['price_gap_pct']:6.1f}")  # fmt: skip
                     else:
-                        print(f"{r['mint'][:8]:10} {tm:8} {r['my_sol']:7.3f} {'-':8} {'':>8} {'':>5} {'':>7}  (no copied buy ahead)")
+                        print(
+                            f"{r['mint'][:8]:10} {tm:8} {r['my_sol']:7.3f} {'-':8} {'':>8} {'':>5} {'':>7}  (no copied buy ahead)"
+                        )
                 return 0
             if args.action == "copylist":
                 if not args.copy:
                     raise SystemExit("copylist: give --copy ADDRESS[:LABEL[:MIN_SOL]] (one or more)")
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
                                                 buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
-                                                priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag)  # fmt: skip
+                                                priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
+                                                compute_units=args.compute_units)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
                 for sn in rep["snipers"]:
                     print(f"\n{sn['label']}  {sn['id']}")
-                    print(f"  OKTech sniper: {sn['name']}" + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else ""))
+                    print(
+                        f"  OKTech sniper: {sn['name']}"
+                        + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else "")
+                    )
                     for line in sn["summary"]:
                         print(f"    {line}")
                     for n in sn["notes"]:
                         print(f"    note: {n}")
                 if not args.create:
-                    print("\nDry run. --create makes them on OKTech, idle; start them with `oktech cycle` or `oktech guard`.")
+                    print(
+                        "\nDry run. --create makes them on OKTech, idle; start them with `oktech cycle` or `oktech guard`."
+                    )
                 return 0
             if args.action == "strategy":
                 rep = await svc.oktech_strategy(args.id[0] if args.id else None, args.wallet or cfg.oktech.wallet or "SNIPER",
@@ -817,31 +1065,49 @@ async def _run(args, cfg: Config) -> int:
                     if sn.get("error"):
                         print(f"  skipped: {sn['error']}")
                         continue
-                    print(f"  OKTech sniper: {sn['name']}" + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else ""))
+                    print(
+                        f"  OKTech sniper: {sn['name']}"
+                        + (f"  [{sn['oktech_id']}, {sn['status']}]" if sn.get("oktech_id") else "")
+                    )
                     for line in sn["summary"]:
                         print(f"    {line}")
                     for n in sn["notes"]:
                         print(f"    note: {n}")
                 if not args.create:
-                    print("\nDry run (--json shows the payloads). --create makes them on OKTech, idle; start them with `oktech guard`.")
+                    print(
+                        "\nDry run (--json shows the payloads). --create makes them on OKTech, idle; start them with `oktech guard`."
+                    )
                 return 0
             if args.action == "holdings":
                 if not args.address:
                     raise SystemExit("holdings: give --address")
                 held = await svc.holdings(args.address)
-                print(json.dumps(held, indent=1) if args.json else "\n".join(f"{h['mint']}  {h['amount']:,.4f}" for h in held) or "no tokens held")
+                print(
+                    json.dumps(held, indent=1)
+                    if args.json
+                    else "\n".join(f"{h['mint']}  {h['amount']:,.4f}" for h in held) or "no tokens held"
+                )
                 return 0
             if args.action == "cycle":
                 if not (args.id and args.address and args.floor is not None):
                     raise SystemExit("cycle: give --id (one or more), --address and --floor")
-                rep = await svc.oktech_cycle(args.id, args.address, args.floor, args.max_minutes, args.max_fills, args.rearm_after,
-                                             args.ignore_mint)
+                rep = await svc.oktech_cycle(
+                    args.id,
+                    args.address,
+                    args.floor,
+                    args.max_minutes,
+                    args.max_fills,
+                    args.rearm_after,
+                    args.ignore_mint,
+                )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action == "guard":
                 if not (args.id and args.address and args.floor is not None):
                     raise SystemExit("guard: give --id (one or more), --address and --floor")
-                rep = await svc.oktech_guard(args.id, args.address, args.floor, args.max_minutes, allow_uncapped=args.allow_uncapped)
+                rep = await svc.oktech_guard(
+                    args.id, args.address, args.floor, args.max_minutes, allow_uncapped=args.allow_uncapped
+                )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
             if args.action in ("show", "start", "stop", "delete"):
@@ -853,11 +1119,17 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "replica":
                 if not args.from_study:
                     raise SystemExit("replica: give --from-study WALLET (run `snipetech study WALLET` first)")
-                rep = await svc.oktech_replica(args.from_study, args.buy or 0.05, create=args.create)
+                rep = await svc.oktech_replica(
+                    args.from_study, args.buy or 0.05, create=args.create, max_buys=args.snipes
+                )
                 print(json.dumps(rep, indent=1, default=str) if args.json else R.render_oktech_replica(rep))
                 return 0
             plan = await svc.oktech_plan(kinds)
-            print(R.render_oktech_plan(plan, args.prune) if not args.json else json.dumps({k: v for k, v in plan.items() if k != "_sync"}, indent=1, default=str))
+            print(
+                R.render_oktech_plan(plan, args.prune)
+                if not args.json
+                else json.dumps({k: v for k, v in plan.items() if k != "_sync"}, indent=1, default=str)
+            )
             if args.action == "push":
                 todo = plan["create"] or plan["replace"] or (args.prune and plan["remove"])
                 if not todo:
@@ -869,8 +1141,15 @@ async def _run(args, cfg: Config) -> int:
                 for r in await svc.oktech_push(plan, args.prune):
                     print(f"  {r['action']:22} {r['name']}  {r.get('id', '')}  {r.get('error', '')}")
         elif c == "study":
-            rep = await svc.study(args.wallet, args.days, args.negatives, refresh=not args.no_refresh, auto_smart=args.auto_smart,
-                                  backfill_entries=args.backfill_entries, entry_window=args.entry_window)
+            rep = await svc.study(
+                args.wallet,
+                args.days,
+                args.negatives,
+                refresh=not args.no_refresh,
+                auto_smart=args.auto_smart,
+                backfill_entries=args.backfill_entries,
+                entry_window=args.entry_window,
+            )
             _out(args, rep, R.render_study)
         elif c == "discover-wallets":
             if args.source == "birdeye":
@@ -885,7 +1164,9 @@ async def _run(args, cfg: Config) -> int:
             elif args.source == "solanatracker":
                 from .solanatracker import SolanaTracker
 
-                stc = SolanaTracker(budget_requests=cfg.solanatracker.daily_requests, counter=_usage(svc, "solanatracker"))
+                stc = SolanaTracker(
+                    budget_requests=cfg.solanatracker.daily_requests, counter=_usage(svc, "solanatracker")
+                )
                 try:
                     rows = await svc.discover_solanatracker(stc, int(args.days) if args.days else None, args.pages)
                 finally:
@@ -907,7 +1188,9 @@ async def _run(args, cfg: Config) -> int:
             for signum in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(signum, main.cancel)
             try:
-                await LiveWatcher(svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose, tape=args.tape).run()
+                await LiveWatcher(
+                    svc, signals=args.signals, poll=args.poll, firehose=not args.no_firehose, tape=args.tape
+                ).run()
             except asyncio.CancelledError:
                 print("stopped", file=sys.stderr)
         elif c == "list":
@@ -1024,7 +1307,9 @@ def _remote(args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
+    )
     if args.cmd == "init":
         path = Path(args.config or "snipetech.toml")
         if path.exists() and not args.force:
@@ -1139,7 +1424,11 @@ def main(argv: list[str] | None = None) -> int:
             if args.action == "credits":
                 out = be.credits()
             elif args.action == "gainers":
-                out = be.gainers_raw(args.period, args.sort, limit=args.limit) if args.raw else be.gainers(args.period, args.sort, limit=args.limit)
+                out = (
+                    be.gainers_raw(args.period, args.sort, limit=args.limit)
+                    if args.raw
+                    else be.gainers(args.period, args.sort, limit=args.limit)
+                )
             elif args.action == "top":
                 out = be.top_traders(args.mint, time_frame=args.frame, limit=min(10, args.limit))
             else:

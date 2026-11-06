@@ -163,6 +163,13 @@ class OktechConfig:
     jetstream: bool = True  # ctbot speedMode
     preconf: bool = True  # the account is approved; OKTech ignores the flag on task types it gates (harmless to ask)
     max_snipers: int = 20  # never plan more than this many (OKTech runs at most 20 at once)
+    # Sells: OKTech sends every sell 2-3 times on separate nonce accounts (measured 5-6 Nov; the losers fail with pump
+    # error 6023 and still pay their priority fee), so the sell bid is a fixed small fee for every arm, never the buy bid.
+    sell_fee_sol: float = 0.002  # autoSell sellPriorityFeeSol and sellTipAmount on copy snipers
+    # Compute-unit limit per buy (extraParams.computeUnits). OKTech's default is 150,000; our buys used 54-79k. The leader
+    # ranks by fee per CU, so a tighter limit at the same SOL fee bids higher. Unset = OKTech's default; set it per arm
+    # from measured consumption (fills.cu_used), never below the largest buy seen.
+    compute_units: int | None = None
 
 
 @dataclass
@@ -261,7 +268,9 @@ class BookConfig:
     day_stop_sol: float = 1.0
     min_score: float = 0.005  # SOL per trade lower bound at the landing (verdict score) to be copied
     explore_share: float = 0.2  # share of wallets run on the alternative bid arm
-    bid_arms: dict[str, dict] = field(default_factory=lambda: {"control": {"priority": 0.001, "tip": 0.002}, "paid": {"priority": 0.02, "tip": 0.02}})
+    bid_arms: dict[str, dict] = field(
+        default_factory=lambda: {"control": {"priority": 0.001, "tip": 0.002}, "paid": {"priority": 0.02, "tip": 0.02}}
+    )
     send_count: int = 1
     max_fee_share: float = 0.03  # an arm's fee may be at most this share of the fill
     live_n: int = 10  # live fills before a wallet's live mean outranks its paper score

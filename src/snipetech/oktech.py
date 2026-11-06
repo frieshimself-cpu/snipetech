@@ -115,6 +115,7 @@ class PlannedSniper:
     config: dict
     summary: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)  # what OKTech can't express, or clamps
+    salt: str = ""  # generation tag: a replacement for a spent sniper with the same settings needs a new externalId
 
     @property
     def config_hash(self) -> str:
@@ -122,11 +123,32 @@ class PlannedSniper:
 
     @property
     def external_id(self) -> str:
-        return f"st:{self.kind}:{self.source}:{self.config_hash}"
+        base = f"st:{self.kind}:{self.source}:{self.config_hash}"
+        return f"{base}:{self.salt}" if self.salt else base
 
 
 def _round(x: float, nd: int = 4) -> float:
     return float(round(x, nd))
+
+
+def execution_params(send_count: int | None = None, compute_units: int | None = None) -> dict[str, Any]:
+    """`extraParams` for every sniper we make.
+
+    * seedAccount off: with it on (OKTech's default) every buy goes through an ephemeral account and a second
+      transaction sweeps the tokens into the wallet (measured 6 Nov: a sweep per fill, a failed duplicate sweep in 3 of
+      6, ~0.004 SOL of rent parked per fill, and a stop-loss that raced the sweep on 5 Nov: pump error 6023, position
+      unmanaged for 3.5 min). Off, the tokens sit in the wallet from the first slot.
+    * globalSendCount 1 is also OKTech's form default. It does not explain the 2-3 sell transactions per exit seen
+      on chain (separate nonce accounts; the losers fail with 6023 and pay their fee): that is an open question for
+      OKTech, see docs/oktech-audit-2026-11-06.md.
+    * computeUnits only when asked: OKTech's default is 150,000; the leader ranks by fee per CU."""
+    out: dict[str, Any] = {
+        "globalSendCount": max(1, int(send_count)) if send_count is not None else 1,
+        "seedAccount": False,
+    }
+    if compute_units:
+        out["computeUnits"] = int(compute_units)
+    return out
 
 
 def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[float, float]:
@@ -142,26 +164,49 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell."""
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
-    sl, trail, act = float(e.get("stop_loss") or 0), float(e.get("trailing_stop") or 0), float(e.get("trailing_activation") or 0)
+    sl, trail, act = (
+        float(e.get("stop_loss") or 0),
+        float(e.get("trailing_stop") or 0),
+        float(e.get("trailing_activation") or 0),
+    )
     hold = float(e.get("max_hold_secs") or 0)
     stale = float(e.get("stale_secs") or 0)
     if not (tp or sl or trail or hold or stale):
         return None
     stages = []
     if tp > 0:
-        stages.append({"gainPercent": _round(tp * 100, 2), "sellPercent": _round(min(100.0, frac * 100), 2), "delaySellAllSeconds": 0})
+        stages.append(
+            {
+                "gainPercent": _round(tp * 100, 2),
+                "sellPercent": _round(min(100.0, frac * 100), 2),
+                "delaySellAllSeconds": 0,
+            }
+        )
     elif 0 < hold <= 60:
-        stages.append({"gainPercent": None, "sellPercent": 100, "delaySellAllSeconds": 0, "sellAfterMs": int(hold * 1000)})
+        stages.append(
+            {"gainPercent": None, "sellPercent": 100, "delaySellAllSeconds": 0, "sellAfterMs": int(hold * 1000)}
+        )
     else:  # OKTech needs at least one stage; an unreachable gain keeps the timer / stop-loss in charge
         stages.append({"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0})
-        notes.append("no take-profit: exit by stop-loss / timer (one +10000% stage satisfies OKTech's 'at least one stage')")
-    out: dict[str, Any] = {"enabled": True, "stages": stages, "sellTipAmount": sell_fee_sol, "sellPriorityFeeSol": sell_fee_sol}
+        notes.append(
+            "no take-profit: exit by stop-loss / timer (one +10000% stage satisfies OKTech's 'at least one stage')"
+        )
+    out: dict[str, Any] = {
+        "enabled": True,
+        "stages": stages,
+        "sellTipAmount": sell_fee_sol,
+        "sellPriorityFeeSol": sell_fee_sol,
+    }
     if hold > 0:
         out |= {"sellAfterSeconds": _round(hold, 1), "sellPercent": 100}
     else:
         out |= {"sellPercent": 0}  # no sell-all timer
     if sl > 0:
-        out["stopLoss"] = {"enabled": True, "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}], "confirmMs": 250}
+        out["stopLoss"] = {
+            "enabled": True,
+            "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}],
+            "confirmMs": 250,
+        }
     if stale > 0:
         out["deadExit"] = {"enabled": True, "staleSeconds": max(1, int(round(stale))), "sellPercent": 100}
     if trail > 0:
@@ -183,6 +228,7 @@ def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
     config: dict[str, Any] = {
         "mode": "normal", "platforms": ["pumpfun"], "devWallets": [score["address"]],
         "buyAmount": _round(max(0.001, float(rec["buy_sol"]))), "priorityFee": prio, "tipAmount": tip, "singleSnipe": False,
+        "extraParams": execution_params(compute_units=cfg.oktech.compute_units),
     }  # fmt: skip
     sell = autosell(rec.get("exit"), notes)
     if sell:
@@ -235,6 +281,7 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
                           "triggerWalletOnly": True, "delayMs": 0},
         "buyAmount": _round(max(0.001, float(rec["size_sol"]))), "priorityFee": prio, "tipAmount": tip,
         "singleSnipe": False, "speedMode": cfg.oktech.jetstream,
+        "extraParams": execution_params(compute_units=cfg.oktech.compute_units),
     }  # fmt: skip
     if cfg.oktech.preconf:
         config["preconf"] = True
@@ -258,19 +305,21 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     return PlannedSniper("copy", a, f"snipetech copy {a[:6]}", config, summary, notes)
 
 
-EXITS = {"lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},  # the lab's usual best exit for copies
-         "hold60": {"max_hold_secs": 60}}  # the KOL "first buy, hold 60 s" rows (Pengu, Gfree)
+EXITS = {
+    "lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},  # the lab's usual best exit for copies
+    "hold60": {"max_hold_secs": 60},
+}  # the KOL "first buy, hold 60 s" rows (Pengu, Gfree)
 
 
 def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, max_buys: int = 5,
                      exit_params: dict | None = None, cfg: Config | None = None, exit_name: str = "lab",
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
-                     tag: str = "") -> PlannedSniper:  # fmt: skip
+                     tag: str = "", compute_units: int | None = None, salt: str = "") -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
-    the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). `priority_fee` / `tip` (SOL) override
-    OKTech's minimums for the in-slot fee test; `send_count` sets extraParams.globalSendCount (OKTech sends every
-    transaction several times by default; the extra copies fail and still pay their fee)."""
+    the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). `priority_fee` / `tip` (SOL) are the buy
+    bid (the book's arms); sells always bid `[oktech] sell_fee_sol`. `send_count` / `compute_units` go to
+    extraParams (see execution_params); `salt` makes a fresh externalId for a replacement with the same settings."""
     cfg = cfg or Config()
     notes: list[str] = []
     prio, tip_amount = fees(None, cfg.oktech.tip_share, notes)
@@ -290,21 +339,21 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         "buyAmount": _round(max(0.001, buy_sol)), "priorityFee": prio, "tipAmount": tip,
         "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))), "speedMode": cfg.oktech.jetstream,
     }  # fmt: skip
-    # OKTech's backend sends every transaction several times when globalSendCount is omitted (measured: two failed
-    # duplicates per fill, each paying its fee); one send is the default here. Preconfs: ask when the account has them.
-    config["extraParams"] = {"globalSendCount": max(1, int(send_count)) if send_count is not None else 1}
+    cu = compute_units if compute_units is not None else cfg.oktech.compute_units
+    config["extraParams"] = execution_params(send_count, cu)
     if cfg.oktech.preconf:
         config["preconf"] = True
-    sell = autosell(ex | {"copy_exit": True}, notes, sell_fee_sol=max(prio, tip))
+    sell = autosell(ex | {"copy_exit": True}, notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
     if sell:
         config["autoSell"] = sell
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL, {buy_sol:g} SOL per copy, stops after "
                f"{config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
-               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, send count {config['extraParams']['globalSendCount']}"
-               + (", preconfs requested" if config.get("preconf") else ""),
+               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {cfg.oktech.sell_fee_sol:g} + {cfg.oktech.sell_fee_sol:g} SOL, "
+               f"send count {config['extraParams']['globalSendCount']}, no seed account"
+               + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else ""),
                "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy"]  # fmt: skip
     name = f"snipetech copy {label[:18]} {address[:6]}" + (f" {tag}" if tag else "")
-    return PlannedSniper("copy", address, name[:60], config, summary, notes)
+    return PlannedSniper("copy", address, name[:60], config, summary, notes, salt=salt)
 
 
 def _describe_exit(e: dict | None) -> str:
@@ -314,7 +363,10 @@ def _describe_exit(e: dict | None) -> str:
     if e.get("stale_secs"):
         parts.append(f"sell once nothing trades for {e['stale_secs']:g}s")
     if e.get("take_profit"):
-        parts.append(f"TP +{e['take_profit']:.0%}" + (f" ({e.get('tp_sell_fraction', 1):.0%})" if e.get("tp_sell_fraction", 1) < 1 else ""))
+        parts.append(
+            f"TP +{e['take_profit']:.0%}"
+            + (f" ({e.get('tp_sell_fraction', 1):.0%})" if e.get("tp_sell_fraction", 1) < 1 else "")
+        )
     if e.get("stop_loss"):
         parts.append(f"SL -{e['stop_loss']:.0%}")
     if e.get("trailing_stop"):
@@ -324,7 +376,9 @@ def _describe_exit(e: dict | None) -> str:
     return ", ".join(parts) or "none"
 
 
-def build_plan(store: Store, cfg: Config, kinds: tuple[str, ...] = KINDS, sol_usd: float | None = None) -> list[PlannedSniper]:
+def build_plan(
+    store: Store, cfg: Config, kinds: tuple[str, ...] = KINDS, sol_usd: float | None = None
+) -> list[PlannedSniper]:
     """Snipers that snipetech's current verdicts call for, best first, capped at max_snipers."""
     out: list[tuple[float, PlannedSniper]] = []
     if "copy" in kinds:
@@ -368,7 +422,9 @@ def diff(planned: list[PlannedSniper], recorded: list[dict]) -> SyncPlan:
     return out
 
 
-async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str | None, prune: bool = False) -> list[dict]:
+async def apply(
+    client: OktechClient, store: Store, plan: SyncPlan, wallet: str | None, prune: bool = False
+) -> list[dict]:
     """Create new / replaced snipers, then retire the ones they replace (and, with prune, the obsolete)."""
     results = []
     creates = plan.create + [p for _, p in plan.replace]
@@ -408,7 +464,7 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
             "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],  # OKTech needs >= 1 stage; the timer rules
             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
     base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
-            "totalSnipes": int(snipes), "autoSell": sell, "extraParams": {"globalSendCount": 1}, "preconf": True}  # fmt: skip
+            "totalSnipes": int(snipes), "autoSell": sell, "extraParams": execution_params(), "preconf": True}  # fmt: skip
     out = [PlannedSniper("probe", "launch", f"snipetech speed test: next {snipes} pump.fun launches",
                          {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, **base},
                          summary=[f"buys {buy_sol:g} SOL of each of the next {snipes} pump.fun launches, then stops",
@@ -432,14 +488,15 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
 #   account was never initialised), each paying the priority fee, and each counted toward totalSnipes. preexec runs the
 #   create + our buy locally first and does not send a buy that fails there.
 EXECUTION: dict[str, Any] = {
-    "extraParams": {"seedAccount": False, "globalSendCount": 1},  # one send per transaction (see list_copy_sniper)
+    "extraParams": execution_params(),
     "preexec": {"enabled": True},
     "preconf": True,  # the account is approved; ignored by OKTech where a task type is gated
 }
 
 
-def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True,
-                    stale: float | None = 60) -> PlannedSniper:
+def strategy_sniper(
+    strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60
+) -> PlannedSniper:
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
@@ -466,13 +523,12 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
         else:
             window_ms = 2000 if kind == "whale" else int(float(trig.get("window") or 2) * 1000)
         if via == "crowd":
-            # the create transaction itself carries the buys (bundled launch): OKTech's crowd-buy filter reads them
-            # before the create lands. Measured 5 Nov: hunt fired on launches with no such buy (0 of 3 probe fills);
-            # the tape says the bundled subset is the profitable part of the >= 2 SOL / first-second trigger.
-            config["crowdBuys"] = {"enabled": True, "minSigners": 2, "minTotalQuote": _round(min_sol, 3), "platforms": ["pumpfun"],
-                                   "signal": False, "buy": True}  # fmt: skip
-            summary.append(f"only launches whose create transaction already carries >= {min_sol:g} SOL of buys (OKTech crowd buys)")
-            notes.append("crowdBuys fires at the create: verify on-chain that the create's own buys sum to >= the amount")
+            # `crowdBuys` is a block of OKTech's *shapes* mode (an account grant): the app emits it only with mode
+            # "shapes", and under mode "normal" it did not gate anything on 5 Nov (fills every ~10 s = the launch
+            # rate). Until the account has shapes, there is no crowd variant.
+            raise ValueError(
+                "crowd buys gate only in OKTech's shapes mode, which this account does not have: use --via hunt"
+            )
         else:
             # triggerMode "all": every set threshold must hold (with "any" the 1-buyer rule fired on the first buy, live)
             # Hunt is its own sniper mode in the OKTech app ([S] tab): the `hunt` block only applies with mode "hunt".
@@ -483,7 +539,11 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
             # precision; total >= min_sol alone is 66% precision (the dev's SOL counts).
             # whole numbers only and no null fields: the 22:11 batch sent 2.5 / 1.0 / nulls and bought launches that
             # failed both tests (dev 3.95 SOL; only a 1.38 SOL dev buy ahead) as if no threshold were set
-            thresholds: dict[str, Any] = {"minTotalSol": int(math.ceil(min_sol * 1.25)), "maxDevBuySol": 1, "requireKnownBot": False}
+            thresholds: dict[str, Any] = {
+                "minTotalSol": int(math.ceil(min_sol * 1.25)),
+                "maxDevBuySol": 1,
+                "requireKnownBot": False,
+            }
             if buyers > 1:
                 thresholds["minUniqueBuyers"] = int(buyers)
             if trig.get("solo"):
@@ -517,7 +577,9 @@ def strategy_sniper(strategy: dict, max_buys: int = 5, via: str = "hunt", preexe
                          summary=summary, notes=notes)  # fmt: skip
 
 
-def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float | None) -> PlannedSniper:
+def replica_from_study(
+    study: dict, cfg: Config, buy_sol: float, sol_usd: float | None, max_buys: int = 5
+) -> PlannedSniper:
     """Rebuild a studied wallet's rules (`snipetech study`) as a `normal` OKTech sniper.
 
     Only rules the study found discriminating are mapped: what it buys (non-SOL-quoted curves,
@@ -534,7 +596,11 @@ def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float 
                f"({study.get('tape_hours', 0):.1f} h of tape)"]  # fmt: skip
     prio, tip = fees(None, cfg.oktech.tip_share, notes)
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy_sol),
-                              "priorityFee": prio, "tipAmount": tip, "singleSnipe": False}  # fmt: skip
+                              "priorityFee": prio, "tipAmount": tip, "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))),
+                              "extraParams": execution_params(compute_units=cfg.oktech.compute_units)}  # fmt: skip
+    summary.append(
+        f"capped: stops buying after {config['totalSnipes']} buys and keeps selling until those positions close"
+    )
     # what it buys: the quote asset
     sol_share = sum(c["chosen_share"] for c in cats if c["factor"] == "quote" and c["value"] == "SOL")
     quoted = [c for c in cats if c["factor"] == "quote" and c["value"] != "SOL"]
@@ -549,17 +615,18 @@ def replica_from_study(study: dict, cfg: Config, buy_sol: float, sol_usd: float 
         config["metadataFilter"] = {"enabled": True, "fetchOffChain": True, "matchMode": "all", "allowOnError": False,
                                     "timeoutMs": 1500, "fetchRetries": 2, "retryDelayMs": 100,
                                     "conditions": [{"variable": "twitter", "operator": "contains", "value": "/status/", "action": "allow"}]}  # fmt: skip
-        summary.append(f"only launches linking a tweet ({tw['chosen_share']:.0%} of its entries vs {tw['others_share']:.0%} of the rest)")
+        summary.append(
+            f"only launches linking a tweet ({tw['chosen_share']:.0%} of its entries vs {tw['others_share']:.0%} of the rest)"
+        )
         notes.append("the tweet check reads the token's metadata file: it adds the fetch time to every entry")
     # the burst it enters on
     b5 = num.get("buys_5s") or num.get("uniq_buyers_30s")
     if b5 and b5["auc"] >= 0.7:
         signers = max(2, int(round(b5["chosen_median"] / 2)))
-        config["crowdBuys"] = {"enabled": True, "minSigners": signers, "minTotalQuote": 0, "platforms": ["pumpfun"], "signal": False, "buy": True}
-        summary.append(f"enters on a burst: >= {signers} buyers ({b5['factor']} median {b5['chosen_median']:.0f} at its entries)")
-        if "vol_5s" in num:
-            notes.append(f"its burst also needs >= {num['vol_5s']['threshold']:.2f} SOL in 5s; OKTech's crowd minimum is in "
-                         "the quote asset, which differs per token here, so it is left at 0")  # fmt: skip
+        # OKTech's crowd-buy block (`crowdBuys`) gates only in its shapes mode, which this account does not have; under
+        # mode normal it is accepted and ignored (5 Nov: fills at the launch rate), so the burst rule is not sent
+        notes.append(f"it enters on a burst (>= {signers} buyers, {b5['factor']} median {b5['chosen_median']:.0f}); OKTech can "
+                     "only gate on that in shapes mode (not granted), so this sniper buys launches without the burst rule")  # fmt: skip
     # market-cap range
     mc = prof.get("mcap_sol")
     if mc and sol_usd:
