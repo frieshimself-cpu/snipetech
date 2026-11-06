@@ -347,6 +347,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             p = paths.report(name)
         except ValueError as exc:
             return f"error: {exc}"
+        if source == "postmortem" and str(name).startswith("analyst-"):  # that file marks the day's analysis done
+            return "error: a post-mortem writes postmortem-<YYYY-MM-DD-HHMM>, never the day's analyst report"
         paths.ensure()
         p.write_text(text)
         return f"wrote {p.name}"

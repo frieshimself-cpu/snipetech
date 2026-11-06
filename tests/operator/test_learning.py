@@ -347,3 +347,15 @@ def test_the_post_mortem_reads_each_round_trip_in_one_call(toolbox):
     out = json.loads(_call(tools["read_round_trips"], hours=6))
     assert out["summary"]["trips"] == 1 and out["trips"][0]["leader"] == "LEAD"
     assert json.loads(_call(tools["read_round_trips"], hours=48))["summary"]["trips"] == 2
+
+
+def test_a_post_mortem_cannot_write_the_days_analyst_report(toolbox):
+    """The day's analysis counts as done once operator/analyst-<day>.md exists: a post-mortem round writing that name
+    would cancel the day's analysis, so its write_report refuses it."""
+    tools, paths, _ = toolbox
+    assert _call(tools["write_report"], name="analyst-2026-11-06", text="# pm").startswith("error")
+    assert not paths.report("analyst-2026-11-06").exists()
+    assert (
+        _call(tools["write_report"], name="postmortem-2026-11-06-1800", text="# pm")
+        == "wrote postmortem-2026-11-06-1800.md"
+    )
