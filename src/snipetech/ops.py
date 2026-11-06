@@ -126,6 +126,20 @@ def sign(key_path: str | Path, op: str, args: dict | None = None) -> tuple[bytes
 ENV_FILE = Path("/etc/snipetech/env")
 
 
+def _pid_alive(pid: Any) -> bool:
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 def _job_env() -> dict[str, str]:
     """The service's environment plus whatever is in /etc/snipetech/env *now*: a key added to the file (e.g.
     SNIPER_SECRET) reaches the next job without restarting the service. Values are never logged."""
@@ -342,8 +356,12 @@ class Ops:
         log = self.data / "jobs" / f"{jid}.log"
         job = Job(id=jid, argv=argv, log=log, started=time.time())
         fh = log.open("wb")
-        job.proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=self.data,
-                                    start_new_session=True, env=_job_env())  # fmt: skip
+        # A wrapper shell writes the exit code to <id>.exit so the outcome survives the starting process going away
+        # (the operator is a short-lived timer run; the ops service may restart): _meta() reconciles from that file.
+        env = _job_env() | {"SNIPETECH_JOB_EXIT": str(self.data / "jobs" / f"{jid}.exit")}
+        wrapped = ["/bin/sh", "-c", '"$@"; echo $? > "$SNIPETECH_JOB_EXIT"', "sh", *cmd]
+        job.proc = subprocess.Popen(wrapped, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=self.data,
+                                    start_new_session=True, env=env)  # fmt: skip
         fh.close()
         self.jobs[jid] = job
         self._save_meta(job)
@@ -364,7 +382,7 @@ class Ops:
 
     def _job_dict(self, job: Job) -> dict[str, Any]:
         return {"id": job.id, "argv": job.argv, "started": int(job.started), "ended": int(job.ended) if job.ended else None,
-                "exit_code": job.code, "running": job.code is None}  # fmt: skip
+                "exit_code": job.code, "running": job.code is None, "pid": job.proc.pid if job.proc else None}  # fmt: skip
 
     def _save_meta(self, job: Job) -> None:
         (self.data / "jobs" / f"{job.id}.json").write_text(json.dumps(self._job_dict(job)))
@@ -374,8 +392,16 @@ class Ops:
         if not p.exists() or not p.resolve().is_relative_to(self.data / "jobs"):
             return None
         meta = json.loads(p.read_text())
-        if meta.get("running"):  # the server restarted while it ran
-            meta |= {"running": False, "exit_code": meta.get("exit_code"), "note": "ops restarted while this ran"}
+        if meta.get("running"):  # started by a process that is gone (restart, or the operator's timer run)
+            exit_file = self.data / "jobs" / f"{jid}.exit"
+            if exit_file.exists():
+                try:
+                    code: int | None = int(exit_file.read_text().strip() or 0)
+                except ValueError:
+                    code = None
+                meta |= {"running": False, "exit_code": code, "ended": int(exit_file.stat().st_mtime)}
+            elif not _pid_alive(meta.get("pid")):
+                meta |= {"running": False, "exit_code": meta.get("exit_code"), "note": "process gone"}
         return meta
 
     def _inside(self, rel: str) -> Path:
