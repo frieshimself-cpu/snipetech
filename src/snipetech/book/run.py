@@ -211,7 +211,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         notes.write(f"book: balances failed: {type(exc).__name__}: {exc}", "info")
     holdings_known = True
     try:
-        holdings = await svc.open_positions(wallet)
+        holdings = await svc.open_positions(wallet, ignore=cfg.operator.ignore_mints)
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
         holdings_known = False
@@ -378,6 +378,11 @@ async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a) -> None:
         )
 
 
+def _ignored(svc) -> list[str]:
+    """The owner's [operator] ignore_mints: coins never counted as held (spam airdrops and the like)."""
+    return list(getattr(getattr(getattr(svc, "cfg", None), "operator", None), "ignore_mints", None) or [])
+
+
 async def _retire(
     svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store=None, now: float | None = None
 ) -> bool:
@@ -389,7 +394,7 @@ async def _retire(
 
     async def held() -> bool:
         try:
-            if await svc.open_positions(wallet):
+            if await svc.open_positions(wallet, ignore=_ignored(svc)):
                 return True
         except Exception:  # noqa: BLE001 - unknown holdings: treat as held
             return True

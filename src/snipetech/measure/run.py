@@ -14,7 +14,7 @@ from typing import Any
 
 from ..config import Config
 from ..store import Store
-from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips
+from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
 from .exits import (
     buying_sniper,
     classify_exit,
@@ -87,13 +87,21 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
 TWIN_WINDOW_SECS = 3.0  # the losing variants of one exit land in the winner's slot or up to 5 slots later (6 Nov)
 
 
+def _landed_before(sell: dict, failed: dict) -> bool:
+    """The landed sell went in at or before the failed send: by slot when both are known, else by the second."""
+    if failed.get("slot") is not None and sell.get("slot") is not None:
+        return int(sell["slot"]) <= int(failed["slot"])
+    return float(sell["ts"]) <= float(failed["ts"])
+
+
 def twin_fees_by_sell(
     failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
 ) -> dict[str, float]:
     """What each landed sell's failed twins cost, in SOL. OKTech sends every exit as one tipped and up to two untipped
     variants; the losers fail on chain and still pay their priority fee and the 5,000-lamport base fee (a failed
     send's tip is rolled back). A failed send carrying a sell instruction (`is_sell`) on the same coin within
-    `window_s` seconds of a landed sell is that sell's twin; with several landed sells in reach, the nearest one."""
+    `window_s` seconds after a landed sell is that sell's twin; with several landed sells in reach, the nearest one.
+    A twin never lands before its winner, so a sell that landed after the failed send is never its winner."""
     by_mint: dict[str, list[dict]] = {}
     for s in sells:
         if s.get("mint"):
@@ -102,7 +110,8 @@ def twin_fees_by_sell(
     for f in failed_rows:
         if not f.get("is_sell") or not f.get("mint") or f.get("priority_lamports") is None:
             continue
-        near = [s for s in by_mint.get(f["mint"], []) if abs(float(f["ts"]) - float(s["ts"])) <= window_s]
+        near = [s for s in by_mint.get(f["mint"], [])
+                if abs(float(f["ts"]) - float(s["ts"])) <= window_s and _landed_before(s, f)]  # fmt: skip
         if not near:
             continue
         slot = f.get("slot")
@@ -285,7 +294,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
-    sniper_fees = fee_pairs(r.get("payload") for r in store.oktech_snipers(active=False))
+    every_sniper = store.oktech_snipers(active=False)
+    all_time_fees = fee_pairs(r.get("payload") for r in every_sniper)  # only when no sniper is known alive at a sale
     newly_crossed: list[tuple[dict, dict | None]] = []
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
@@ -299,7 +309,11 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             label = "sold"
             if s.get("priority_lamports") is not None:  # the fee tells a hand sale: wait for the fingerprint
                 tape = store.trades_for_mint(s["mint"], end_ts=int(s["ts"]) + 1) if buy and exit_spec(payload) else []
-                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, sniper_fees)
+                # the fees of the snipers alive at the sale and of the one that bought: a fee pair only a removed
+                # sniper paid (the morning snipers' 0.001 sell fee) does not hide a sale by hand
+                alive = [r.get("payload") for r in snipers_at(every_sniper, float(s["ts"]))]
+                fees_then = fee_pairs([*alive, payload]) or all_time_fees
+                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, fees_then)
         crossed = 0 if label == "manual" else is_crossed(s, payload)
         want = {"pnl_sol": round(pnl, 6), "exit_reason": label, "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
                 "exit_name": (buy or {}).get("exit_name") or preset_name(payload),

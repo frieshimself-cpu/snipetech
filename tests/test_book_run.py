@@ -17,16 +17,18 @@ L1, L2 = "L1" + "x" * 30, "L2" + "y" * 30
 
 
 class FakeSvc:
-    def __init__(self, store, snipers=None, held=None, fail=(), held_later=None):
+    def __init__(self, store, snipers=None, held=None, fail=(), held_later=None, cfg=None):
         self.store, self._snipers, self._held, self.calls = store, snipers or [], held or [], []
         self._fail, self._held_later, self._reads = set(fail), held_later, 0  # held_later: what later reads see
+        self.cfg = cfg or Config()
 
     async def oktech_status(self):
         return {"snipers": list(self._snipers)}
 
-    async def open_positions(self, address):
+    async def open_positions(self, address, ignore=()):
         self._reads += 1
-        return list(self._held_later if self._held_later is not None and self._reads > 1 else self._held)
+        held = self._held_later if self._held_later is not None and self._reads > 1 else self._held
+        return [h for h in held if h.get("mint") not in set(ignore or ())]  # as positions.filter_positions does
 
     async def oktech_task(self, action, task_id):
         self.calls.append((action, task_id))
@@ -503,7 +505,7 @@ def _made_its_buy(tmp_path, **svc_kw):
     _record(st, "k1", "copy", L1, K1, created_at=NOW - 3600)
     _coin(st, "c1", NOW - 3000, 400_000_000, 0, 3, leader=L1, sell_slot=10)
     _fresh_tape(st)
-    return st, cfg, FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], **svc_kw)
+    return st, cfg, FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], cfg=cfg, **svc_kw)
 
 
 def _fresh_tape(st):
@@ -557,6 +559,28 @@ def test_a_retire_waits_when_a_coin_is_bought_before_it_runs(tmp_path):
         asyncio.run(run_book(dry, cfg, NOW + 60, balances=lambda w: (10.0, 0.0, [])))
         assert dry.calls == []
         assert "[book dry] would retire" in (tmp_path / "data" / "operator" / "notes.md").read_text()
+    finally:
+        st.close()
+
+
+def test_a_coin_the_owner_ignores_is_not_a_holding_for_the_book(tmp_path):
+    """An airdropped token no sniper of ours bought sits in the wallet unpriced. Held, it makes equity unknown and keeps
+    every book sniper, so none is ever retired. Once the owner lists it in [operator] ignore_mints, both holdings
+    reads (the plan's and the one just before the retire) leave it out and the spent sniper is retired."""
+    spam = {"mint": "Spam" + "z" * 40, "amount": 1000.0, "value_sol": None, "priced": False}
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    st, cfg, svc = _made_its_buy(tmp_path / "a", held=[spam])
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert not any(c[0] in ("stop", "delete") for c in svc.calls)  # the coin counts as held: k1 is kept
+    finally:
+        st.close()
+    st, cfg, svc = _made_its_buy(tmp_path / "b", held=[spam])
+    cfg.operator.ignore_mints = [spam["mint"]]
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert out["actions"]["retire"] == 1 and svc.calls[:2] == [("stop", "k1"), ("delete", "k1")]
+        assert svc._reads == 2  # the plan's read and the retire's read, both without the ignored coin
     finally:
         st.close()
 
@@ -684,12 +708,12 @@ def test_a_retire_is_undone_when_a_coin_appears_while_it_stops(tmp_path):
     minute when it rate-limits) gets its sniper started again; nothing is deleted and nothing replaces it this run."""
 
     class LateCoin(FakeSvc):
-        async def open_positions(self, address):
+        async def open_positions(self, address, ignore=()):
             self._reads += 1
             return [{"mint": "NEW", "amount": 1.0, "value_sol": 0.2}] if self._reads >= 3 else []
 
     st, cfg, _ = _made_its_buy(tmp_path)
-    svc = LateCoin(st, snipers=[{"id": "k1", "name": K1, "status": "running"}])
+    svc = LateCoin(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], cfg=cfg)
     sent = []
     try:
         asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
@@ -758,7 +782,7 @@ def test_a_retire_that_cannot_delete_pages_once_a_day(tmp_path):
     try:
         for i in range(3):
             asyncio.run(run_book(FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}],
-                                         fail={("delete", "k1")}), cfg, NOW + i * 300, notifier=note,
+                                         fail={("delete", "k1")}, cfg=cfg), cfg, NOW + i * 300, notifier=note,
                                  balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
         assert sum("could not be deleted" in t for t in sent) == 1
     finally:

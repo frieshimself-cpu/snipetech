@@ -132,7 +132,7 @@ def _watch_env(tmp_path, monkeypatch):
         def __init__(self):
             self.held, self.status_calls = [_held(m, ours)], 0
 
-        async def open_positions(self, address):
+        async def open_positions(self, address, ignore=()):
             assert address == W
             return list(self.held)
 
@@ -175,7 +175,7 @@ def test_a_watch_that_cannot_read_the_wallet_never_breaks_the_kill_switch(tmp_pa
 
     paths, st, cfg, svc, _m, ours = _watch_env(tmp_path, monkeypatch)
 
-    async def broken(address):
+    async def broken(address, ignore=()):
         raise RuntimeError("rpc down")
 
     svc.open_positions = broken
@@ -185,3 +185,60 @@ def test_a_watch_that_cannot_read_the_wallet_never_breaks_the_kill_switch(tmp_pa
     finally:
         st.close()
     assert rc == 0 and "watch: skipped: RuntimeError: rpc down" in paths.log.read_text()
+
+
+def _timed_pass(cfg, svc, at, sent):
+    """One one-minute pass at `at` (the pass's clock), and how long it really took."""
+    import time
+
+    from snipetech.operator.run import commands_pass
+
+    t = time.monotonic()
+    rc = asyncio.run(commands_pass(cfg, svc, now=lambda: at, send=lambda x: sent.append(x) or True,
+                                   commands_get=lambda url, params: {"result": []}))  # fmt: skip
+    return rc, time.monotonic() - t
+
+
+def test_a_hanging_wallet_read_cannot_hold_up_the_one_minute_pass(tmp_path, monkeypatch):
+    """With Helius hanging, one holdings read retried for about 250 s, so every pass ran into the unit's 2-minute
+    timeout and the owner's /stop was polled every 2 minutes instead of every minute. The watch has a time bound."""
+    import snipetech.operator.run as R
+
+    paths, st, cfg, svc, _m, ours = _watch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(R, "WATCH_TIMEOUT_SECS", 0.5, raising=False)
+
+    async def hangs(address, ignore=()):
+        await asyncio.sleep(3)
+        return []
+
+    svc.open_positions = hangs
+    try:
+        rc, took = _timed_pass(cfg, svc, ours.ts + 70, [])
+    finally:
+        st.close()
+    assert rc == 0 and took < 2.0, f"the pass took {took:.1f} s"
+    assert "watch: skipped: the wallet or OKTech did not answer within 0.5 s" in paths.log.read_text()
+
+
+def test_oktech_answering_slowly_leaves_the_coin_to_the_tape(tmp_path, monkeypatch):
+    """OKTech's tasks are waited for only a few seconds: past that the coin is judged by the tape and its sniper's
+    payload, as when OKTech does not answer at all, instead of the whole watch being cut off by its bound."""
+    import snipetech.book.watch as Wt
+    import snipetech.operator.run as R
+
+    paths, st, cfg, svc, m, ours = _watch_env(tmp_path, monkeypatch)
+    monkeypatch.setattr(Wt, "OKTECH_WAIT_SECS", 0.3, raising=False)
+    monkeypatch.setattr(R, "WATCH_TIMEOUT_SECS", 1.0, raising=False)
+
+    async def slow():
+        await asyncio.sleep(3)
+        return {"snipers": []}
+
+    svc.oktech_status = slow
+    sent: list[str] = []
+    try:
+        rc, took = _timed_pass(cfg, svc, ours.ts + 70, sent)
+    finally:
+        st.close()
+    assert rc == 0 and took < 2.0, f"the pass took {took:.1f} s"
+    assert len(sent) == 1 and m.mint in sent[0] and "Nobody is selling" in sent[0]  # the dead exit, from the tape

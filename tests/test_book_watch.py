@@ -13,6 +13,7 @@ from snipetech.book.watch import (
     current_hits,
     due_exits,
     exit_spec,
+    stray_line,
     unmanaged,
     watch_pass,
 )
@@ -220,6 +221,66 @@ def test_two_token_accounts_of_one_coin_are_one_coin(tmp_path):
         st.close()
 
 
+H = addr("second leader")
+
+
+def _sell_tokens(m, user, tokens, slot_offset):
+    """Sell exactly `tokens` of `user`'s coins (Market.sell sells a share of all it holds)."""
+    out = m.q * tokens // (m.b + tokens)
+    m.q, m.b = m.q - out, m.b + tokens
+    m.holdings[user] -= tokens
+    return m._push(user, m.slot0 + slot_offset, False, out, tokens)
+
+
+def two_lots(st):
+    """Two buys of ours in one coin before the first is sold: we copy G at slot B and H five slots later. Nothing
+    trades for 28 slots, then OKTech's dead exit sells exactly the first lot's coins, 33 slots after it. The second
+    lot (its sniper's cap-using buy) is never sold; the coin trades on at a flat price."""
+    m = Market214(st, addr("two-lot coin"), addr("two-lot dev"), T0, S0)
+    m.buy(addr("two-lot dev"), 1.0, 0, sig=m.create_sig)
+    for k in range(20):
+        m.buy(addr(f"two-lot early {k}"), 0.5, 1 + k)
+    m.buy(G, 2.0, B - 1)
+    lot1 = m.buy(W, 0.2, B)
+    m.buy(H, 2.0, B + 4)
+    lot2 = m.buy(W, 0.2, B + 5)
+    _sell_tokens(m, W, lot1.base, B + 33)
+    for k, slot in enumerate(range(B + 36, B + 2700, 2), start=1):
+        trader = addr(f"two-lot trader {(k + 1) // 2}")
+        if k % 2:
+            m.buy(trader, 0.1, slot)
+        else:
+            m.sell(trader, 1.0, slot)
+    m.commit()
+    return m, lot1, lot2
+
+
+def test_a_second_buy_in_a_coin_is_judged_by_its_own_exits(tmp_path):
+    """A sale matched wholly to the first lot does not count as a sale of the second: the second lot's dead exit
+    was due at about +2.5 s, so it is flagged about a minute later, as a single DTAU-shaped lot is (not at +360 s)."""
+    from snipetech.book.watch import _open_buys
+
+    st = Store(tmp_path / "s.db")
+    try:
+        _sniper(st, G, sid="copy-g")
+        _sniper(st, H, sid="copy-h")
+        m, _lot1, lot2 = two_lots(st)
+        running = [{"id": "copy-g", "status": "running"}, {"id": "copy-h", "status": "running"}]
+        held = [_held(m, lot2)]
+        assert unmanaged(st, W, held, running, lot2.ts + 60) == []  # OKTech still has its minute
+        hits = unmanaged(st, W, held, running, lot2.ts + 92)
+        assert [(h["reason"], h["buy_sig"], h["sniper_id"]) for h in hits] == [
+            ("exits_not_acted_on", lot2.sig, "copy-h")
+        ]
+        assert abs(hits[0]["flag_at"] - (lot2.ts + 62.5)) < 1.0 and hits[0]["due"][0]["exit"] == "dead_exit"
+    finally:
+        st.close()
+    # a sale marks only the lots it took coins from: partly the first, or the first and part of the second
+    b1, b2 = _t(0, "us", base=100), _t(5, "us", base=100)
+    assert _open_buys([b1, b2, _t(9, "us", False, base=50)]) == [(b1, True), (b2, False)]
+    assert _open_buys([b1, b2, _t(9, "us", False, base=150)]) == [(b2, True)]
+
+
 def test_the_watch_sends_one_line_per_coin_every_15_minutes_and_never_sells(tmp_path):
     cfg = Config()
     cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
@@ -299,6 +360,70 @@ def test_the_book_can_tell_whether_the_one_minute_watch_is_running(tmp_path):
         assert not watched_within(paths, T0, 180)  # never ran
         watch_pass(cfg, st, Notifier(None, None), W, [], [], T0)
         assert watched_within(paths, T0 + 120, 180) and not watched_within(paths, T0 + 300, 180)
+    finally:
+        st.close()
+
+
+def test_a_coin_the_book_never_bought_is_said_once_a_day_and_an_ignored_coin_never(tmp_path):
+    """An airdropped token stays in the wallet: no buy of ours on the tape, never priced. The watch says once a day
+    that it is not a coin the book bought (sell it by hand or tell me to ignore it), never every 15 minutes, even when
+    it leaves the wallet's holdings for a while and comes back. A coin on [operator] ignore_mints is never said."""
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    st = Store(cfg.storage.db_path)
+    sent: list[str] = []
+    notifier = Notifier("T", 7, post=lambda url, data: sent.append(data["text"]))
+    spam = addr("airdropped spam")
+    held = [{"mint": spam, "amount": 1000.0, "raw": 10**9, "decimals": 6, "value_sol": None, "priced": False}]
+    try:
+        for t in range(T0, T0 + 25 * 3600, 300):  # a pass every 5 minutes for 25 hours
+            gone = T0 + 3600 <= t < T0 + 3900  # out of the holdings for a moment (an RPC hiccup, a dust price)
+            watch_pass(cfg, st, notifier, W, [] if gone else held, [], t)
+        assert len(sent) == 2, f"{len(sent)} alerts in 25 hours"  # when first flagged, then a day later
+        assert all(spam in s and "not a coin the book bought" in s and "tell me to ignore it" in s for s in sent)
+        assert "remote run sweep" not in sent[0]
+        current = stray_line({"mint": spam, "value_sol": 0.0123, "lagging": False})  # the tape is current
+        assert "it is not a coin the book bought" in current and "0.012 SOL" in current
+        cfg.operator.ignore_mints = [spam]
+        assert watch_pass(cfg, st, notifier, W, held, [], T0 + 50 * 3600) == []
+        assert len(sent) == 2 and current_hits(OperatorPaths(tmp_path / "data"), T0 + 50 * 3600) == []
+    finally:
+        st.close()
+
+
+def test_the_minute_watch_reads_the_holdings_without_the_ignored_coins(tmp_path):
+    """watch_wallet asks for the holdings without the owner's ignored coins, so an ignored airdrop neither alerts
+    nor makes the one-minute pass ask OKTech for its tasks."""
+    import asyncio
+
+    from snipetech.book.watch import watch_wallet
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    cfg.operator.wallet = W
+    st = Store(cfg.storage.db_path)
+    spam = addr("airdropped spam")
+    cfg.operator.ignore_mints = [spam]
+
+    class Svc:
+        store = st
+
+        def __init__(self):
+            self.ignored, self.status_calls = None, 0
+
+        async def open_positions(self, address, ignore=()):
+            self.ignored = list(ignore or ())
+            coins = [{"mint": spam, "amount": 1.0, "raw": 10**6, "value_sol": None, "priced": False}]
+            return [h for h in coins if h["mint"] not in set(ignore or ())]
+
+        async def oktech_status(self):
+            self.status_calls += 1
+            return {"snipers": []}
+
+    svc = Svc()
+    try:
+        assert asyncio.run(watch_wallet(cfg, svc, Notifier(None, None), T0)) == []
+        assert svc.ignored == [spam] and svc.status_calls == 0
     finally:
         st.close()
 

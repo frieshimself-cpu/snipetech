@@ -18,10 +18,13 @@ the 20 slots before), and that sniper's own exits from its local payload. A coin
 
 It runs from the one-minute pass (`operate --commands`), and at the end of the book's run when that timer is off. A
 flagged coin gets one Telegram decision line, repeated every 15 minutes while it is held, and one `events` row (kind
-"unmanaged") for the weekly evidence. operator/watch.json keeps the current hits; the operator's gate reads them."""
+"unmanaged") for the weekly evidence. A coin with no buy of ours on the tape at all (an airdropped token) is not a coin
+the book bought: it gets one line a day, never every 15 minutes. The coins on the owner's [operator] ignore_mints list
+are not watched at all. operator/watch.json keeps the current hits; the operator's gate reads them."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -48,11 +51,13 @@ GRACE_SECS = 60  # an exit not acted on within a minute is not OKTech being a li
 DEFAULT_TIMER_SECS = 300  # every preset the book sends sells everything by 300 s
 UNKNOWN_HOLD_SECS = DEFAULT_TIMER_SECS + GRACE_SECS  # a coin no active sniper of ours is behind
 REPEAT_SECS = 15 * 60  # one line per coin per 15 minutes while it is held
+STRAY_REPEAT_SECS = 86400  # a coin with no buy of ours on the tape (an airdrop): one line a day while it is held
 LEADER_WINDOW_SLOTS = 20  # our copy lands within this many slots of the leader's buy (plan item 2b uses the same)
 LOOKBACK_SECS = 3 * 86400  # our buys are looked up this far back
 WINDOW_SLOTS = int(15 * 60 / SLOT_SECS) + 1  # a buy's exits are looked for in its first 15 minutes
 MAX_ROWS = 20_000  # trades read per position, at most
 TAPE_LAG_SECS = 60  # the tape's newest trade older than this: the tape lags
+OKTECH_WAIT_SECS = 8  # OKTech's tasks waited for this long at most; past it the tape and the payloads judge the coin
 OPEN_SHARE = 0.01  # a buy with less than 1 % of its tokens left is closed (a full sale leaves a few tokens behind)
 STATE_FILE = "watch.json"  # in operator/: current hits, when each coin was first seen and last reported
 HIT_MAX_AGE_SECS = 30 * 60  # the gate ignores hits the watch wrote longer ago than this
@@ -183,8 +188,9 @@ def _trades(store: Store, sql: str, params: tuple) -> list[Trade]:
 
 
 def _open_buys(ours: list[Trade]) -> list[tuple[Trade, bool]]:
-    """Our buys in a coin that still hold tokens once our sales are matched to them oldest first, each with whether
-    any sale of ours came after it."""
+    """Our buys in a coin that still hold tokens once our sales are matched to them oldest first, each with whether a
+    sale of ours took tokens from it. A sale matched wholly to an older buy leaves a younger one unsold: that buy (a
+    sniper's cap-using second lot) is judged by its own exits."""
     lots: list[list] = []  # [buy, tokens left, sold since]
     for t in ours:
         if t.is_buy:
@@ -192,9 +198,9 @@ def _open_buys(ours: list[Trade]) -> list[tuple[Trade, bool]]:
             continue
         left = int(t.base)
         for lot in lots:
-            lot[2] = True
             take = min(lot[1], left)
-            lot[1], left = lot[1] - take, left - take
+            if take > 0:
+                lot[1], left, lot[2] = lot[1] - take, left - take, True
     return [(b, sold) for b, rest, sold in lots if rest > b.base * OPEN_SHARE]
 
 
@@ -317,10 +323,11 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
                       key=lambda x: x["flag_at"])  # fmt: skip
         else:  # no open buy of ours on the tape explains the coin: the buy is not recorded yet, or is older
             start = max([float((first_seen or {}).get(mint, now))] + [float(t.ts) for t in ours])
+            # stray: no buy of ours at all on the tape, so not a coin the book bought (an airdrop): said once a day
             hit = {"mint": mint, "reason": "not_on_tape", "flag_at": start + UNKNOWN_HOLD_SECS, "start": start,
                    "held_secs": now - start, "bought_at": None, "buy_sig": None, "buy_slot": None, "buy_sol": None,
                    "leader": None, "sniper_id": None, "also": [], "sniper_status": None, "timer_secs": None,
-                   "lagging": lagging, "due": []}  # fmt: skip
+                   "lagging": lagging, "due": [], "stray": not any(t.is_buy for t in ours)}  # fmt: skip
         if now >= hit["flag_at"]:
             out.append(hit | {"value_sol": h.get("value_sol")})
     return out
@@ -391,6 +398,25 @@ def alert_line(hit: dict, *, migrated: bool = False) -> str:
     return f"{head}. {why}. {worth[0].upper()}{worth[1:]}. {how}. Nothing sells it unless you do."
 
 
+def stray_line(hit: dict) -> str:
+    """The once-a-day line for a held coin with no buy of ours on the tape (an airdropped token): not a coin the book
+    bought, so no sniper of ours sells it. Plain words; nothing here sells."""
+    if hit.get("lagging"):
+        what = ("it is probably not a coin the book bought (the tape is behind, so a buy of ours may not be recorded "
+                "yet), so nothing may be selling it")  # fmt: skip
+    else:
+        what = "it is not a coin the book bought, so no sniper of ours will sell it"
+    value = hit.get("value_sol")
+    worth = (
+        "Its value is not known (the tape has not priced it)" if value is None else f"It is worth about {value:.3f} SOL"
+    )
+    return (
+        f"[watch] Coin {hit['mint']} is in the wallet, but the tape shows no buy of ours for it: {what}. {worth}. Sell "
+        "it by hand, or tell me to ignore it and it goes on the ignore list in the settings. I will say this once a "
+        "day while it is held."
+    )
+
+
 def _migrated(store: Store, mint: str) -> bool:
     try:
         return store.completion(mint) is not None or store.migration(mint) is not None
@@ -435,31 +461,43 @@ def current_hits(paths: OperatorPaths, now: float, max_age: float = HIT_MAX_AGE_
 def watch_pass(cfg: Config, store: Store, notifier: Notifier, wallet: str, holdings: list[dict],
                tasks: list[dict] | None, now: float, *, notes=None) -> list[dict]:  # fmt: skip
     """One watch over the wallet's holdings: returns the flagged coins (each with `alerted`), sends at most one
-    Telegram decision line per coin per 15 minutes while it is held, records one `events` row per flagged position,
-    and writes operator/watch.json. It never sells. The book's run can call it at its end with the holdings and the
-    OKTech tasks it already has; `notes` is a NoteSink (default: operator/notes.md next to the database)."""
+    Telegram decision line per coin per 15 minutes while it is held (one a day for a coin with no buy of ours on the
+    tape), records one `events` row per flagged position, and writes operator/watch.json. It never sells. The coins on
+    [operator] ignore_mints are left out. The book's run can call it at its end with the holdings and the OKTech tasks
+    it already has; `notes` is a NoteSink (default: operator/notes.md next to the database)."""
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     state = _load(paths)
-    held = {str(h["mint"]) for h in holdings or [] if _is_mint(h.get("mint"))}
+    ignored = {str(m) for m in cfg.operator.ignore_mints or ()}
+    holdings = [h for h in holdings or [] if str(h.get("mint")) not in ignored]
+    held = {str(h["mint"]) for h in holdings if _is_mint(h.get("mint"))}
     seen = {m: float(ts) for m, ts in (state.get("first_seen") or {}).items() if m in held}
     for m in held:
         seen.setdefault(m, float(now))
     hits = unmanaged(store, wallet, holdings, tasks, now, first_seen=seen) if held else []
     alerted = {m: float(ts) for m, ts in (state.get("alerted") or {}).items() if m in held}
+    # a coin with no buy of ours is said once a day, and kept for the day even while it is out of the holdings: a coin
+    # whose value hovers at the dust line, or one missed holdings read, does not make it news again
+    strays = {m: float(ts) for m, ts in (state.get("strays") or {}).items() if now - float(ts) < STRAY_REPEAT_SECS}
     recorded = [k for k in state.get("recorded") or [] if str(k).split("|", 1)[0] in held]
     if hits and notes is None:
         from ..operator.tools import NoteSink
 
         notes = NoteSink(paths, now=lambda: now)
     for h in hits:
+        if h.get("stray"):
+            h["alerted"] = h["mint"] not in strays
+            if h["alerted"]:
+                notifier.send(notes.write(stray_line(h), "decision"))
+                strays[h["mint"]] = float(now)
+            continue
         h["alerted"] = now - alerted.get(h["mint"], -math.inf) >= REPEAT_SECS
         if h["alerted"]:
             notifier.send(notes.write(alert_line(h, migrated=_migrated(store, h["mint"])), "decision"))
             alerted[h["mint"]] = float(now)
 
     def save() -> None:
-        _save(paths, {"ts": float(now), "wallet": wallet, "first_seen": seen, "alerted": alerted, "recorded": recorded,
-                      "hits": hits})  # fmt: skip
+        _save(paths, {"ts": float(now), "wallet": wallet, "first_seen": seen, "alerted": alerted, "strays": strays,
+                      "recorded": recorded, "hits": hits})  # fmt: skip
 
     save()  # before the database write below, which can wait on a busy database: an alert sent is never sent twice
     new = [h for h in hits if f"{h['mint']}|{h.get('buy_sig') or int(h['start'])}" not in recorded]
@@ -480,16 +518,17 @@ def watch_pass(cfg: Config, store: Store, notifier: Notifier, wallet: str, holdi
 
 
 async def watch_wallet(cfg: Config, svc, notifier: Notifier, now: float, *, notes=None) -> list[dict]:
-    """The one-minute pass's watch: the wallet's holdings by the book's rule (Service.open_positions), OKTech's tasks
-    only while a coin is held, then `watch_pass`. Raises when the holdings cannot be read (the caller logs it)."""
+    """The one-minute pass's watch: the wallet's holdings by the book's rule (Service.open_positions, without the
+    owner's ignored coins), OKTech's tasks only while a coin is held (for `OKTECH_WAIT_SECS` at most), then
+    `watch_pass`. Raises when the holdings cannot be read (the caller logs it)."""
     wallet = cfg.operator.wallet
     if not wallet:
         return []
-    holdings = list(await svc.open_positions(wallet) or [])
+    holdings = list(await svc.open_positions(wallet, ignore=cfg.operator.ignore_mints) or [])
     tasks = None
     if any(_is_mint(h.get("mint")) for h in holdings):
         try:
-            tasks = list((await svc.oktech_status()).get("snipers") or [])
+            tasks = list((await asyncio.wait_for(svc.oktech_status(), OKTECH_WAIT_SECS)).get("snipers") or [])
         except Exception:  # noqa: BLE001 - OKTech not answering: the tape and the payloads still judge the coin
             tasks = None
     return watch_pass(cfg, svc.store, notifier, wallet, holdings, tasks, now, notes=notes)

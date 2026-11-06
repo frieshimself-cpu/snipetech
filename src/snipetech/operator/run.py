@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import os
@@ -29,6 +30,9 @@ from .tools import NoteSink
 from .turn import run_turn
 
 STALE_LOCK_SECS = 2 * 3600
+# the one-minute pass waits this long for the watch (the wallet's holdings, OKTech's tasks), then moves on: the RPC
+# client's own retries run for minutes, past the unit's 2-minute limit, and a pass still running eats the next one
+WATCH_TIMEOUT_SECS = 20
 
 
 def _log(paths: OperatorPaths, now: float, text: str) -> None:
@@ -123,9 +127,11 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
         cfg, svc, paths, now=t0, notifier=notifier, notes=notes, snap=load_current(paths), commands_get=commands_get
     )
     try:
-        for h in await watch_wallet(cfg, svc, notifier, t0, notes=notes):
-            if h.get("alerted"):  # once per coin per 15 minutes, as the owner hears it
+        for h in await asyncio.wait_for(watch_wallet(cfg, svc, notifier, t0, notes=notes), WATCH_TIMEOUT_SECS):
+            if h.get("alerted"):  # as often as the owner hears it
                 _log(paths, t0, f"watch: {h['mint']} is not being sold ({h['reason']})")
+    except TimeoutError:  # the next minute's pass tries again
+        _log(paths, t0, f"watch: skipped: the wallet or OKTech did not answer within {WATCH_TIMEOUT_SECS:g} s")
     except Exception as exc:  # noqa: BLE001 - the watch must never break the one-minute kill switch
         _log(paths, t0, f"watch: skipped: {type(exc).__name__}: {str(exc)[:160]}")
     return 0
