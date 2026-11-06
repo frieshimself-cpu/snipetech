@@ -5,7 +5,16 @@ import math
 
 import pytest
 
-from snipetech.book.policy import Action, BookInputs, assign_arms, best_arm, fill_for, plan_book, rank_wallets
+from snipetech.book.policy import (
+    Action,
+    BookInputs,
+    assign_arms,
+    best_arm,
+    fill_for,
+    plan_book,
+    rank_wallets,
+    usable_arms,
+)
 from snipetech.config import BookConfig, Config
 
 NOW = 1_793_923_200
@@ -34,15 +43,31 @@ def test_config_defaults():
     assert (
         b.enabled is False
         and b.min_score == 0.005
-        and b.explore_share == 0.2
+        and b.explore_share == 0.0
         and b.send_count == 1
         and b.max_fee_share == 0.03
     )
     assert (
         b.bid_arms["control"] == {"priority": 0.001, "tip": 0.002}
-        and b.bid_arms["paid"] == {"priority": 0.02, "tip": 0.02}
+        and b.bid_arms["paid"] == {"priority": 0.02, "tip": 0.02, "retired": True}
         and b.live_n == 10
     )
+
+
+def test_a_retired_arm_is_never_assigned():
+    """6 Nov fee test: the paid arm landed no earlier (0.5 vs 0.25 trades behind) and OKTech charged its 0.02 SOL
+    priority again on every exit (0.067 against 0.0093 SOL a fill). It stays defined so old fills keep their arm, but
+    the book never assigns it, even with exploration on and a fill big enough for its fee."""
+    cfg = _cfg(explore_share=0.3, fill_max_sol=2.0)
+    ranked = [_q(f"W{i}", 0.03 - i * 0.001) for i in range(6)]
+    assert "paid" not in usable_arms(cfg.book)
+    assert set(assign_arms(ranked, {}, cfg.book).values()) == {"control"}
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
+    plan = plan_book(_inp(), cfg.book)
+    assert {a.arm for a in plan.actions if a.kind == "create"} == {"control"}
+    assert any("paid arm retired" in n for n in plan.notes)
+    cfg.book.bid_arms["paid"]["retired"] = False  # the owner's file can bring it back
+    assert "paid" in usable_arms(cfg.book)
 
 
 def test_rank_prefers_live_after_ten_fills():
@@ -71,26 +96,29 @@ def test_fill_sizing_keeps_fee_under_three_percent_or_skips_arm():
     assert fill_for({"priority": 0.02, "tip": 0.02}, cfg.book) == pytest.approx(0.04 / 0.03)
 
 
+ALT = {"control": {"priority": 0.001, "tip": 0.002}, "alt": {"priority": 0.02, "tip": 0.02}}  # a second live arm
+
+
 def test_best_arm_needs_thirty_fills():
-    cfg = _cfg(fill_max_sol=2.0)  # both arms usable; an unusable arm is never "best"
+    cfg = _cfg(fill_max_sol=2.0, bid_arms={k: dict(v) for k, v in ALT.items()})  # both arms usable
     assert best_arm({}, cfg.book) == "control"
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 12, "p75_pos": 1.0}}, cfg.book) == "control"
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "paid"
-    cfg.book.fill_max_sol = 1.0
-    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "paid": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 12, "p75_pos": 1.0}}, cfg.book) == "control"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "alt"
+    cfg.book.fill_max_sol = 1.0  # an unusable arm is never "best"
+    assert best_arm({"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 31, "p75_pos": 1.0}}, cfg.book) == "control"
 
 
 def test_explore_assignment_is_deterministic():
-    cfg = _cfg(fill_max_sol=2.0)  # both arms usable
+    cfg = _cfg(fill_max_sol=2.0, explore_share=0.2, bid_arms={k: dict(v) for k, v in ALT.items()})  # both usable
     ranked = [_q(f"W{i}", 0.03 - i * 0.001) for i in range(6)]
     arms = assign_arms(ranked, {}, cfg.book)
     assert (
-        sum(1 for a in arms.values() if a == "paid") == math.ceil(0.2 * 6) == 2
+        sum(1 for a in arms.values() if a == "alt") == math.ceil(0.2 * 6) == 2
         and arms["W0"] == "control"
-        and arms["W5"] == "paid"
+        and arms["W5"] == "alt"
     )
     assert assign_arms(ranked, {}, cfg.book) == arms  # the same plan twice: the same wallets explore
-    cfg.book.fill_max_sol = 1.0  # the paid arm cannot keep its fee under 3 %: everyone on control
+    cfg.book.fill_max_sol = 1.0  # the alt arm cannot keep its fee under 3 %: everyone on control
     assert set(assign_arms(ranked, {}, cfg.book).values()) == {"control"}
 
 
@@ -228,10 +256,130 @@ def test_a_dropped_sniper_is_stopped_while_another_sniper_holds_the_coin():
 
 def test_the_book_promises_only_what_it_enforces():
     """A sniper still selling a coin is never stopped, so the daily cap can be overrun by its remaining buys: keep
-    those few (3 a sniper) and say so when the owner switches the book on."""
+    those few (3 a sniper) and say so when the owner switches the book on. Each sniper is relied on for one buy: the
+    other two are spares, and it is replaced once the wallet holds nothing (holders are never narrowed)."""
     from snipetech.book.switch import book_line
 
     cfg = Config()
     assert cfg.book.max_buys_per_sniper == 3
     line = book_line(cfg)
     assert "2 SOL a day at risk" in line and "up to 3 more buys" in line
+    assert "relied on for one buy, keeps two spares, and is replaced once the wallet holds nothing" in line
+
+
+LOSE5 = {"W1": {"wallet": "W1", "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "status": "warming"}}  # 2YDn, 6 Nov
+
+
+def test_a_wallet_is_paused_after_five_losing_live_trips():
+    """2YDn on 6 Nov: 5 copies, 5 losses (mean -0.058 SOL, lower bound -0.075). Live results outrank paper only after
+    10 fills, but a wallet whose optimistic bound (2 x mean - lower = -0.041) is below zero after 5 is paused whatever
+    its paper score says; with 4 trips it is still ranked on paper."""
+    cfg = _cfg()
+    assert cfg.book.live_kill_n == 5
+    plan = plan_book(_inp(live=LOSE5), cfg.book)
+    assert not any(a.kind == "create" and a.wallet == "W1" for a in plan.actions)
+    skip = next(a for a in plan.actions if a.wallet == "W1")
+    assert skip.kind == "skip" and skip.reason.startswith("live paused")
+    assert "n 5" in skip.reason and "-0.058" in skip.reason and "-0.041" in skip.reason
+    assert any("W1" in n and "paused" in n and "lost 0.058 SOL each" in n for n in plan.notes)
+    assert [r["wallet"] for r in plan.ranked] == ["W2", "W3"]  # the next wallet moves up
+    four = plan_book(_inp(live={"W1": dict(LOSE5["W1"], n=4)}), cfg.book)
+    assert any(a.kind == "create" and a.wallet == "W1" for a in four.actions)
+    assert four.ranked[0]["wallet"] == "W1" and four.ranked[0]["basis"] == "paper"
+    mixed = {"W1": {"wallet": "W1", "n": 6, "mean_sol": -0.01, "lower_sol": -0.05}}  # upper +0.03: not proven a loser
+    assert any(a.kind == "create" and a.wallet == "W1" for a in plan_book(_inp(live=mixed), cfg.book).actions)
+
+
+def test_a_paused_wallets_sniper_is_stopped_only_when_it_holds_nothing():
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    flat = plan_book(_inp(live=LOSE5, snipers=snipers), cfg.book)
+    a = next(x for x in flat.actions if x.sniper_id == "s1")
+    assert a.kind == "stop" and "live paused" in a.reason
+    held = plan_book(_inp(live=LOSE5, snipers=snipers, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
+    a = next(x for x in held.actions if x.sniper_id == "s1")
+    assert a.kind == "keep" and "holds a coin" in a.reason
+    assert not any(x.kind in ("create", "start") and x.wallet == "W1" for x in held.actions)
+
+
+def test_no_book_sniper_for_a_leader_another_sniper_copies():
+    """OKTech buys once per signal per wallet: on 6 Nov, 5 of 5 signals two snipers could take gave one buy, and the
+    second sniper only added failed sells at its own fee and crossed exits. A ranked wallet that another sniper on
+    the account already copies is skipped and never created; the book's own sniper for it is never started, and a
+    running one is stopped only while the wallet holds nothing."""
+    cfg = _cfg()
+    plan = plan_book(_inp(other_copies={"W1"}), cfg.book)
+    assert {a.wallet for a in plan.actions if a.kind == "create"} == {"W2", "W3"}
+    skip = next(a for a in plan.actions if a.wallet == "W1")
+    assert skip.kind == "skip" and "another sniper" in skip.reason and "one buy per signal" in skip.reason
+    assert any("W1" in n and "another sniper" in n for n in plan.notes)
+    idle = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "idle"}]
+    assert not any(a.sniper_id == "s1" for a in plan_book(_inp(other_copies={"W1"}, snipers=idle), cfg.book).actions)
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    flat = plan_book(_inp(other_copies={"W1"}, snipers=running), cfg.book)
+    a = next(x for x in flat.actions if x.sniper_id == "s1")
+    assert a.kind == "stop" and "another sniper" in a.reason
+    held = plan_book(_inp(other_copies={"W1"}, snipers=running, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
+    assert next(x for x in held.actions if x.sniper_id == "s1").kind == "keep"
+
+
+def _one(plan, sid):
+    return next(a for a in plan.actions if a.sniper_id == sid)
+
+
+def _s1(cfg, status="running", buys=1, **over):
+    """What the plan does with W1's book sniper s1, which has made `buys` buys; the wallet's holdings were read."""
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": status}]
+    kw = {"snipers": snipers, "buys_by_sniper": {"s1": buys}, "holdings_known": True} | over
+    return _one(plan_book(_inp(**kw), cfg.book), "s1")
+
+
+def test_a_sniper_is_retired_after_its_relied_on_buy_only_while_flat():
+    """DTAU (6 Nov) and 4siK (5 Nov) were the buy that used up a sniper's cap, and OKTech managed no exit for either.
+    The book relies on a sniper's first buy only: once it has made it and the wallet holds nothing, it is retired and
+    the same plan creates a fresh one, so its two spare buys are never needed. Never while the wallet holds a coin or
+    while its holdings could not be read."""
+    cfg = _cfg()
+    assert cfg.book.retire_after_buys == 1 and cfg.book.max_buys_per_sniper == 3
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    plan = plan_book(_inp(snipers=running, buys_by_sniper={"s1": 1}, holdings_known=True), cfg.book)
+    a = _one(plan, "s1")
+    assert a.kind == "retire" and a.wallet == "W1" and "holds nothing" in a.reason and "spare" in a.reason
+    assert any(x.kind == "create" and x.wallet == "W1" for x in plan.actions)  # replaced in the same plan
+    held = [{"mint": "M1", "amount": 5.0}]
+    assert _s1(cfg, holdings=held).kind == "keep"
+    holding = plan_book(_inp(snipers=running, holdings=held, buys_by_sniper={"s1": 1}, holdings_known=True), cfg.book)
+    assert not any(x.kind == "create" and x.wallet == "W1" for x in holding.actions)
+    assert _s1(cfg, holdings_known=False).kind == "keep"  # holdings could not be read
+    assert _s1(cfg, buys=0).kind == "keep"  # no buy yet
+    assert _s1(cfg, status="starting").kind == "retire"
+    # a stopped sniper that already made its buy is replaced, never restarted with a part-used cap
+    assert _s1(cfg, status="idle").kind == "retire" and _s1(cfg, status="idle", buys=0).kind == "start"
+
+
+def test_the_book_never_relies_on_the_buy_that_uses_up_the_cap():
+    """retire_after_buys is used as at most max_buys_per_sniper - 1 (and at least 1), whatever a config says."""
+    cfg = _cfg(retire_after_buys=5)
+    assert _s1(cfg, buys=1).kind == "keep" and _s1(cfg, buys=2).kind == "retire"
+    cfg.book.retire_after_buys = 0
+    assert _s1(cfg, buys=0).kind == "keep" and _s1(cfg, buys=1).kind == "retire"
+
+
+def test_the_verdicts_copy_plan_sets_the_floor_of_a_new_sniper_only():
+    """A verdict may carry its wallet's copy plan: copy only the leader's buys of at least min_leader_sol (G2oZ's
+    6.5-7.1 SOL openers, not its 0.54 SOL top-ups). rank_wallets keeps the plan, a create carries the floor, an older
+    verdict carries none, and a running sniper keeps the floor it was made with (no churn)."""
+    cfg = _cfg()
+    q1 = dict(_q("W1", 0.03), copy_plan={"min_leader_sol": 0.6, "rebuy_share": 0.05})
+    q2 = dict(_q("W2", 0.02), copy_plan=None)
+    q3 = _q("W3", 0.01)  # a verdict from before copy plans
+    ranked = rank_wallets([q1, q2, q3], {}, cfg.book)
+    assert ranked[0]["copy_plan"] == {"min_leader_sol": 0.6, "rebuy_share": 0.05} and ranked[1]["copy_plan"] is None
+    creates = {a.wallet: a for a in plan_book(_inp(qualified=[q1, q2, q3]), cfg.book).actions if a.kind == "create"}
+    assert creates["W1"].min_sol == 0.6 and creates["W2"].min_sol is None and creates["W3"].min_sol is None
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    assert _one(plan_book(_inp(qualified=[q1, q2, q3], snipers=running), cfg.book), "s1").kind == "keep"
+    cases = [('{"min_leader_sol": 2.96}', 2.96), ({"min_leader_sol": "n/a"}, None), ({"min_leader_sol": -1}, None)]
+    for copy_plan, want in cases:  # a plan stored as text is read; a value that is not a positive number is ignored
+        plan = plan_book(_inp(qualified=[dict(q1, copy_plan=copy_plan)]), cfg.book)
+        assert next(x for x in plan.actions if x.kind == "create").min_sol == want, copy_plan

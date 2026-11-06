@@ -4,6 +4,7 @@ It never stops a sniper while the wallet holds a coin, and never creates or star
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import dataclass, field
@@ -30,16 +31,40 @@ class BookInputs:
     stopped: bool = False  # the owner's /stop flag is set: kill mode until /resume
     switched_on: bool = True  # the owner's switch ([book] enabled or /book on); off = stop the book's own snipers
     holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
+    other_copies: set[str] = field(default_factory=set)  # leaders an active sniper that is not the book's copies
+    buys_by_sniper: dict[str, int] = field(default_factory=dict)  # book sniper id -> buys it has made (from the tape)
+    holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
+
+
+OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one buy per signal per wallet"
+RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
+
+
+def relied_buys(cfg: BookConfig) -> int:
+    """The buys the book relies on per sniper: retire_after_buys, but never the buy that uses up OKTech's cap (DTAU
+    and 4siK were that buy, and OKTech managed no exit for either), so at most max_buys_per_sniper - 1, at least 1."""
+    return max(1, min(int(cfg.retire_after_buys), int(cfg.max_buys_per_sniper) - 1))
+
+
+def copied_leaders(rec: dict) -> set[str]:
+    """The wallets a sniper copies, from our own record of it (OKTech's task documents carry no config): the payload's
+    ctbotWallets, or the source of a copy sniper whose payload does not say."""
+    payload = rec.get("payload") or {}
+    out = {str(w["address"]) for w in payload.get("ctbotWallets") or [] if isinstance(w, dict) and w.get("address")}
+    if not out and rec.get("kind") in ("copy", "vcopy") and rec.get("source"):
+        out.add(str(rec["source"]))
+    return out
 
 
 @dataclass
 class Action:
-    kind: str  # create | start | stop | keep | skip | kill
+    kind: str  # create | start | stop | retire (stop, delete, replace) | keep | skip | kill
     wallet: str | None
     arm: str | None
     fill_sol: float | None
     sniper_id: str | None
     reason: str
+    min_sol: float | None = None  # create: the wallet's own floor from its verdict's copy plan (SOL); None = the book's
 
 
 @dataclass
@@ -63,8 +88,16 @@ def fill_for(arm: dict, cfg: BookConfig) -> float | None:
     return round(min(fill, cfg.fill_max_sol), 6)
 
 
+def arm_retired(arm: dict) -> bool:
+    """A retired arm stays in the config only so measure can tell its old fills by their fee; the book never uses it."""
+    v = arm.get("retired", False)
+    return v.strip().lower() in ("1", "true", "yes", "on") if isinstance(v, str) else bool(v)
+
+
 def usable_arms(cfg: BookConfig) -> dict[str, float]:
-    return {name: f for name, arm in cfg.bid_arms.items() if (f := fill_for(arm, cfg)) is not None}
+    return {
+        name: f for name, arm in cfg.bid_arms.items() if not arm_retired(arm) and (f := fill_for(arm, cfg)) is not None
+    }
 
 
 def best_arm(bid_model: dict[str, dict], cfg: BookConfig, min_n: int = 30) -> str:
@@ -77,21 +110,56 @@ def best_arm(bid_model: dict[str, dict], cfg: BookConfig, min_n: int = 30) -> st
     return min(candidates)[1]
 
 
+def plan_floor(copy_plan: dict | str | None) -> float | None:
+    """The smallest buy of the leader's to copy, from its verdict's copy plan (min_leader_sol, SOL): it lets a wallet's
+    opening buys through and keeps its top-ups out. None for a verdict from before copy plans, or a value that is not
+    a positive number."""
+    if isinstance(copy_plan, str):
+        try:
+            copy_plan = json.loads(copy_plan)
+        except ValueError:
+            return None
+    if not isinstance(copy_plan, dict):
+        return None
+    try:
+        v = float(copy_plan.get("min_leader_sol"))
+    except (TypeError, ValueError):
+        return None
+    return v if math.isfinite(v) and v > 0 else None
+
+
+def live_pause_reason(lv: dict | None, cfg: BookConfig) -> str | None:
+    """Why a wallet is paused on its live results, or None. After live_kill_n live trips, a wallet whose one-sided upper
+    bound (2 x mean - lower) is below zero has lost even on the kindest reading of its copies: it is not copied,
+    whatever its paper score, until those trips leave the measure window."""
+    if not lv or lv.get("mean_sol") is None or int(lv.get("n") or 0) < cfg.live_kill_n:
+        return None
+    mean = float(lv["mean_sol"])
+    lower = float(lv["lower_sol"]) if lv.get("lower_sol") is not None else mean
+    upper = mean + abs(mean - lower)  # = 2 x mean - lower; a row with lower above mean never widens it downwards
+    if upper >= 0:
+        return None
+    return f"live paused: n {int(lv['n'])}, mean {mean:.3f}, upper {upper:.3f}"
+
+
 def rank_wallets(qualified: list[dict], live: dict[str, dict], cfg: BookConfig) -> list[dict]:
-    """Qualified wallets by live mean (after live_n fills) else paper score; below min_score dropped; top max_wallets."""
+    """Qualified wallets by live mean (after live_n fills) else paper score; paused on live results or below min_score
+    dropped; top max_wallets."""
     rows = []
     for q in qualified:
         w = q.get("wallet")
         if not w:
             continue
         lv = live.get(w) or {}
+        if live_pause_reason(lv, cfg):
+            continue
         if (lv.get("n") or 0) >= cfg.live_n and lv.get("mean_sol") is not None:
             score, basis = float(lv["mean_sol"]), "live"
         else:
             score, basis = float(q.get("score") or 0.0), "paper"
         if score < cfg.min_score:
             continue
-        rows.append({"wallet": w, "score": score, "basis": basis})
+        rows.append({"wallet": w, "score": score, "basis": basis, "copy_plan": q.get("copy_plan")})
     rows.sort(key=lambda r: (-r["score"], r["wallet"]))
     return rows[: max(0, int(cfg.max_wallets))]
 
@@ -125,7 +193,9 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     plan = BookPlan()
     usable = usable_arms(cfg)
     for name, arm in cfg.bid_arms.items():
-        if name not in usable:
+        if arm_retired(arm):
+            plan.notes.append(f"{name} arm retired: never assigned (kept only so old fills keep their arm)")
+        elif name not in usable:
             need = arm_fee_sol(arm) / cfg.max_fee_share if cfg.max_fee_share > 0 else 0
             plan.notes.append(f"{name} arm skipped: its fee {arm_fee_sol(arm):g} SOL needs a {need:.2f} SOL fill to stay under "
                               f"{cfg.max_fee_share:.0%}; fill_max_sol is {cfg.fill_max_sol:g}")  # fmt: skip
@@ -169,14 +239,42 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                     plan.actions.append(Action("stop", s["w6"], s["arm"], None, s["id"], plan.kill_reason))
         return plan
     plan.ranked = rank_wallets(inp.qualified, inp.live, cfg)
-    arms = assign_arms(plan.ranked, inp.bid_model, cfg)
-    wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in plan.ranked}
+    dropped: dict[str, str] = {}  # wallet[:6] -> why its sniper is no longer wanted, when it is more than the ranking
+    for q in inp.qualified:
+        w = q.get("wallet")
+        why = live_pause_reason(inp.live.get(w) if w else None, cfg)
+        if w and why:
+            plan.actions.append(Action("skip", w, None, None, None, why))
+            lv = inp.live[w]  # paused means its mean is below zero: the note says the loss as a plain number
+            plan.notes.append(
+                f"{w[:6]} paused: its {int(lv['n'])} live copies lost {-float(lv['mean_sol']):.3f} SOL each on average; "
+                "not copied until those results are older than the measure window, whatever its paper score"
+            )
+            dropped[w[:6]] = why
+    bookable = []
+    for r in plan.ranked:
+        if r["wallet"] in inp.other_copies:  # its signals already buy through that sniper; a second adds failed sells
+            plan.actions.append(Action("skip", r["wallet"], None, None, None, OVERLAP_REASON))
+            plan.notes.append(f"{r['wallet'][:6]} is left to another sniper that already copies it from this OKTech "
+                              "wallet: OKTech buys once per signal per wallet")  # fmt: skip
+            dropped[r["wallet"][:6]] = OVERLAP_REASON
+        else:
+            bookable.append(r)
+    arms = assign_arms(bookable, inp.bid_model, cfg)
+    wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
     seen_w6: set[str] = set()
+    # holder attribution is off (run_book passes holders=None): a sniper is retired only while the wallet holds nothing
+    flat = inp.holdings_known and not inp.holdings
+    relied = relied_buys(cfg)
     for s in mine:
         w6, status = s["w6"], str(s.get("status"))
         if w6 in wanted and wanted[w6][1] is not None:
             wallet, arm = wanted[w6]
-            if status in ("running", "starting") and s["arm"] == arm:
+            if status in ("running", "starting", "idle") and flat and inp.buys_by_sniper.get(s["id"], 0) >= relied:
+                # not seen: the same plan creates its replacement. An idle one is replaced too, never restarted with
+                # a part-used cap (a retire whose delete failed leaves it idle)
+                plan.actions.append(Action("retire", wallet, s["arm"], None, s["id"], RETIRE_REASON))
+            elif status in ("running", "starting") and s["arm"] == arm:
                 plan.actions.append(Action("keep", wallet, arm, None, s["id"], f"ranked and {status} on its arm"))
                 seen_w6.add(w6)
             elif status in ("running", "starting") and s["arm"] != arm:
@@ -228,13 +326,16 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                         )
                     )
                 else:
-                    plan.actions.append(Action("stop", w6, s["arm"], None, s["id"], "dropped out of the ranking"))
+                    why = dropped.get(w6, "dropped out of the ranking")
+                    plan.actions.append(Action("stop", w6, s["arm"], None, s["id"], why))
+    plans = {r["wallet"]: r.get("copy_plan") for r in bookable}
     for w6, (wallet, arm) in wanted.items():
         if w6 in seen_w6:
             continue
         if arm is None:
             plan.actions.append(Action("skip", wallet, None, None, None, "no bid arm can keep its fee under the limit"))
             continue
+        # a new sniper gets the wallet's own floor; a running one keeps the floor it was made with (no churn)
         plan.actions.append(
             Action(
                 "create",
@@ -243,6 +344,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 usable[arm],
                 None,
                 f"ranked #{[r['wallet'] for r in plan.ranked].index(wallet) + 1}",
+                min_sol=plan_floor(plans.get(wallet)),
             )
         )
     return plan

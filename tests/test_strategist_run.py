@@ -105,7 +105,8 @@ def test_in_bounds_patch_is_applied_and_logged(tmp_path):
 
 def test_question_when_out_of_bounds(tmp_path):
     out, st, sent, paths, cfg = _run(tmp_path, {"book.explore_share": 0.25, "book.fill_max_sol": 3.0})
-    assert out["applied"] == {} and out["refusals"] and Config.load(cfg.path).book.explore_share == 0.2
+    assert out["applied"] == {} and out["refusals"]
+    assert Config.load(cfg.path).book.explore_share == Config().book.explore_share  # nothing applied
     assert any("fill_max_sol" in t and "?" in t for t in sent)  # the owner is asked, nothing is applied
     assert st.coverage("strategist:proposal")["patch"]["book.fill_max_sol"] == 3.0
     st.close()
@@ -126,7 +127,8 @@ def test_weekly_guard(tmp_path):
 def test_dry_run_applies_nothing(tmp_path):
     out, st, sent, paths, cfg = _run(tmp_path, {"book.explore_share": 0.25}, dry_run=True)
     assert out["dry_run"] and out["would_apply"] == {"book.explore_share": 0.25}
-    assert Config.load(cfg.path).book.explore_share == 0.2 and st.coverage("strategist:last") == {} and sent == []
+    assert Config.load(cfg.path).book.explore_share == Config().book.explore_share
+    assert st.coverage("strategist:last") == {} and sent == []
     st.close()
 
 

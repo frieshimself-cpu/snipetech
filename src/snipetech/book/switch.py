@@ -9,6 +9,7 @@ import time
 
 from ..config import Config
 from ..operator.paths import OperatorPaths
+from .policy import relied_buys
 
 
 def book_flag(paths: OperatorPaths):
@@ -88,9 +89,20 @@ def book_off_reply(cfg: Config, paths: OperatorPaths) -> str:
             f"{cfg.book.max_buys_per_sniper}) until the coin is sold; /stop does the same.")  # fmt: skip
 
 
+_WORDS = {0: "no", 1: "one", 2: "two", 3: "three", 4: "four", 5: "five"}
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{_WORDS.get(n, str(n))} {noun}{'' if n == 1 else 's'}"
+
+
 def book_line(cfg: Config, paths: OperatorPaths | None = None) -> str:
     b = cfg.book
     bar = effective_min_score(cfg, paths) if paths is not None else b.min_score
+    relied = relied_buys(b)
+    spares = max(0, int(b.max_buys_per_sniper) - relied)
     return (f"it copies only wallets that clear every gate and score at least {bar:g} SOL a trade, {b.fill_min_sol:g}-{b.fill_max_sol:g} SOL a fill, "
             f"at most {b.daily_risk_sol:g} SOL a day at risk; it stops below {b.equity_floor_sol:g} SOL equity or after a {b.day_stop_sol:g} SOL day loss. "
-            f"A stop never strands a coin: the sniper holding one keeps running until it is sold and can make up to {b.max_buys_per_sniper} more buys first")  # fmt: skip
+            f"Each sniper is relied on for {_count(relied, 'buy')}, keeps {_count(spares, 'spare')}, and is replaced once the wallet holds nothing. "
+            f"A stop never strands a coin: while the wallet holds one, every book sniper keeps running until it is sold, and each can make up to "
+            f"{b.max_buys_per_sniper} more buys first")  # fmt: skip

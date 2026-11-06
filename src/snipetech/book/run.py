@@ -1,8 +1,11 @@
 """`book run`: gather → plan → in dry mode write what it would do, in live mode execute through the Service's OKTech
-calls (stop → create → start), one Telegram line per action. Dry is the default and is forced under a kill reason."""
+calls (stop → retire → create → start), one Telegram line per action. Dry is the default and is forced under a kill
+reason. A retire stops and deletes a sniper that made its relied-on buy while the wallet holds nothing, and the same
+run creates its replacement."""
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -13,7 +16,8 @@ from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
-from .policy import BookInputs, BookPlan, plan_book
+from ..positions import is_active
+from .policy import BOOK_NAME_RE, BookInputs, BookPlan, copied_leaders, plan_book
 from .state import day_accounting, record_run
 from .switch import book_live, effective_min_score
 
@@ -22,6 +26,69 @@ def _bookable(store) -> list[dict]:
     """Qualified wallets the book may copy: a wallet banned after it qualified keeps its verdict but is never booked."""
     banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}
     return [v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned]
+
+
+def _other_copies(store, tasks: list[dict]) -> set[str]:
+    """The leaders an active sniper that is not the book's already copies (OKTech buys once per signal per wallet, so
+    a book sniper on the same leader would only add failed sells and crossed exits). OKTech's task documents carry no
+    config: what a task copies comes from our own record of it; a task made in the OKTech app is unknown here."""
+    local = {r["id"]: r for r in store.oktech_snipers(active=False)}
+    out: set[str] = set()
+    for t in tasks:
+        if not is_active(t.get("status")) or BOOK_NAME_RE.match(str(t.get("name") or "")):
+            continue
+        out |= copied_leaders(local.get(t.get("id")) or {"kind": t.get("kind"), "source": t.get("source")})
+    return out
+
+
+CREATED_GRACE_SECS = 60  # our clock against block time: a buy just before the recorded creation can still be its own
+LEADER_LEAD_SLOTS = 20  # a buy copies the leader when the leader bought the coin within this many slots before it
+
+
+def _alive(rec: dict, ts: float) -> bool:
+    born, gone = rec.get("created_at"), rec.get("removed_at")
+    return born is not None and float(born) <= ts and (gone is None or ts <= float(gone))
+
+
+def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
+    """Buys each book sniper that can still buy (running, starting, idle) has made, read from the tape rather than
+    from fills, which lag by minutes: our wallet's buys since the sniper was made (a minute of clock grace) in coins
+    its leader bought within the 20 slots before. A buy from before the sniper existed, while another of our snipers
+    on that leader was alive, is that one's (a replacement never inherits its predecessor's buy). A sniper without our
+    own record of it (when it was made, what it copies) is not counted, so it is never retired."""
+    local = {r["id"]: r for r in store.oktech_snipers(active=False)}
+    mine: list[tuple[str, str, float]] = []
+    for t in tasks:
+        book = BOOK_NAME_RE.match(str(t.get("name") or ""))
+        if not book or str(t.get("status")) not in ("running", "starting", "idle"):
+            continue
+        rec = local.get(t.get("id")) or {}
+        leaders = sorted(copied_leaders(rec))
+        if leaders and rec.get("created_at") is not None:
+            mine.append((str(t["id"]), leaders[0], float(rec["created_at"])))
+    if not mine:
+        return {}
+    since = int(min(born for _, _, born in mine) - CREATED_GRACE_SECS)
+    buys = store._q("SELECT DISTINCT sig, mint, slot, pos, ts FROM trades WHERE user=? AND is_buy=1 AND ts>=? "
+                    "ORDER BY slot, pos", (wallet, since))  # fmt: skip
+    out: dict[str, int] = {}
+    for sid, leader, born in mine:
+        others = [r for r in local.values() if r["id"] != sid and leader in copied_leaders(r)]
+        n = 0
+        for _sig, mint, slot, pos, ts in buys:
+            if ts < born - CREATED_GRACE_SECS or (ts < born and any(_alive(o, ts) for o in others)):
+                continue
+            behind = store._q("SELECT 1 FROM trades WHERE mint=? AND user=? AND is_buy=1 AND slot>=? AND (slot<? OR "
+                              "(slot=? AND pos<?)) LIMIT 1", (mint, leader, slot - LEADER_LEAD_SLOTS, slot, slot, pos))  # fmt: skip
+            n += bool(behind)
+        out[sid] = n
+    return out
+
+
+def _floor(b, a) -> float:
+    """The smallest leader buy a new sniper copies: the wallet's own floor from its verdict (its opening buys, not its
+    top-ups), never below [book] min_copy_sol."""
+    return max(float(b.min_copy_sol), float(a.min_sol or 0.0))
 
 
 def _line(a) -> str:
@@ -50,10 +117,12 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         native, wsol, held_from_balances = res
     except Exception as exc:  # noqa: BLE001
         notes.write(f"book: balances failed: {type(exc).__name__}: {exc}", "info")
+    holdings_known = True
     try:
         holdings = await svc.open_positions(wallet)
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
+        holdings_known = False
     # equity = SOL + wrapped SOL + the tape value of the coins held; a coin the tape has not priced makes it unknown
     # (the kill path then creates nothing and stops nothing), never a false floor breach after the book's own buys
     if native is None or wsol is None or any(not h.get("priced", True) for h in holdings or []):
@@ -69,10 +138,17 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     acc = day_accounting(store, wallet, now, equity_now=equity)
     live_mode = book_live(cfg, paths) if dry is None else not dry
     act_on_stops = dry is not True  # an explicit dry preview never acts; the routine run always applies its stops
+    try:
+        buys = _buys_by_sniper(store, wallet, snipers)
+    except Exception as exc:  # noqa: BLE001 - no count, no retire: the snipers keep their spare buys this run
+        buys = {}
+        notes.write(f"book: could not count the snipers' buys on the tape ({type(exc).__name__}); none is replaced "
+                    "this run", "info")  # fmt: skip
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
-                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None)  # fmt: skip
+                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
+                     other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known)  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
@@ -100,12 +176,12 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         counts[a.kind] = counts.get(a.kind, 0) + 1
     if effective_dry:
         for a in plan.actions:
-            if a.kind in ("create", "start", "stop"):
+            if a.kind in ("create", "start", "stop", "retire"):
                 sig = f"[book dry] would {a.kind} {(a.wallet or '')[:6]} {a.arm or ''}".rstrip()
                 if not notes.has_today(sig, now):
-                    notes.write(
-                        f"{sig} ({a.fill_sol:g} SOL) — {a.reason}" if a.fill_sol else f"{sig} — {a.reason}", "info"
-                    )
+                    floor = f" on its buys of {_floor(b, a):g} SOL or more" if a.kind == "create" else ""
+                    size = f" ({a.fill_sol:g} SOL{floor})" if a.fill_sol else ""
+                    notes.write(f"{sig}{size} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
                 await _do(svc, notifier, notes, "stop", a)
@@ -117,25 +193,32 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             "ranked": len(plan.ranked),
             "notes": plan.notes,
         }
-    # live: stop → create → start
+    # live: stop → retire (stop, delete) → create → start
     for a in plan.actions:
         if a.kind == "stop" and a.sniper_id:
             await _do(svc, notifier, notes, "stop", a)
+    not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
+    for a in plan.actions:
+        if a.kind == "retire" and a.sniper_id and not await _retire(svc, wallet, notifier, notes, a):
+            not_replaced.add(a.wallet or "")
     new_ids: list[tuple[str, Any]] = []
     for a in plan.actions:
         if a.kind == "create" and a.wallet and a.arm:
-            arm = b.bid_arms.get(a.arm) or {}
+            if a.wallet in not_replaced:
+                notes.write(f"[book] create {a.wallet[:6]} waits: its old sniper is still on OKTech", "info")
+                continue
+            arm, floor = b.bid_arms.get(a.arm) or {}, _floor(b, a)
             try:
-                rep = await svc.oktech_copylist([f"{a.wallet}:book:{b.min_copy_sol:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
+                # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own
+                rep = await svc.oktech_copylist([f"{a.wallet}:book:{floor:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
                                                 buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name="lab",
                                                 priority_fee=arm.get("priority"), tip=arm.get("tip"), send_count=b.send_count, tag=f"arm:{a.arm}",
-                                                compute_units=arm.get("cu"), salt=f"g{int(now) // 300}")  # fmt: skip
+                                                compute_units=arm.get("cu"), salt=f"g{int(now)}")  # fmt: skip
                 for s in rep.get("snipers", []):
                     if s.get("oktech_id"):
                         new_ids.append((s["oktech_id"], a))
-                notifier.send(
-                    notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL — {a.reason}", "decision")
-                )
+                notifier.send(notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL on its buys of "
+                                          f"{floor:g} SOL or more — {a.reason}", "decision"))  # fmt: skip
             except Exception as exc:  # noqa: BLE001
                 notifier.send(
                     notes.write(
@@ -173,3 +256,27 @@ async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a) -> None:
         notifier.send(
             notes.write(f"[book] {action} {a.sniper_id} failed: {type(exc).__name__}: {str(exc)[:120]}", "decision")
         )
+
+
+async def _retire(svc, wallet: str, notifier: Notifier, notes: NoteSink, a) -> bool:
+    """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing; True when it is gone. The
+    holdings are read again first: a coin bought since the plan was made keeps it running (a stop strands a coin)."""
+    w6, sid = (a.wallet or "")[:6], a.sniper_id
+    try:
+        held = await svc.open_positions(wallet)
+    except Exception as exc:  # noqa: BLE001 - unknown holdings: never retire
+        notes.write(f"[book] retire {w6} ({sid}) waits: holdings could not be read ({type(exc).__name__})", "info")
+        return False
+    if held:
+        notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again", "info")
+        return False
+    with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
+        await svc.oktech_task("stop", sid)
+    try:
+        await svc.oktech_task("delete", sid)
+    except Exception as exc:  # noqa: BLE001
+        notifier.send(notes.write(f"[book] retire {w6} ({sid}) failed: it could not be deleted ({type(exc).__name__}: "
+                                  f"{str(exc)[:120]}); no replacement this run", "decision"))  # fmt: skip
+        return False
+    notifier.send(notes.write(f"[book] retire {w6} {a.arm or ''} ({sid}) — {a.reason}", "decision"))
+    return True

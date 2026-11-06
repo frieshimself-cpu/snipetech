@@ -17,17 +17,21 @@ L1, L2 = "L1" + "x" * 30, "L2" + "y" * 30
 
 
 class FakeSvc:
-    def __init__(self, store, snipers=None, held=None):
+    def __init__(self, store, snipers=None, held=None, fail=(), held_later=None):
         self.store, self._snipers, self._held, self.calls = store, snipers or [], held or [], []
+        self._fail, self._held_later, self._reads = set(fail), held_later, 0  # held_later: what later reads see
 
     async def oktech_status(self):
         return {"snipers": list(self._snipers)}
 
     async def open_positions(self, address):
-        return list(self._held)
+        self._reads += 1
+        return list(self._held_later if self._held_later is not None and self._reads > 1 else self._held)
 
     async def oktech_task(self, action, task_id):
         self.calls.append((action, task_id))
+        if (action, task_id) in self._fail:
+            raise RuntimeError(f"{action} refused")
         return {"ok": True}
 
     async def oktech_copylist(self, specs, wallet, create=False, buy_sol=0.05, max_buys=5, exit_name="lab", priority_fee=None, tip=None,
@@ -38,7 +42,7 @@ class FakeSvc:
             "snipers": [
                 {
                     "id": s.split(":")[0],
-                    "oktech_id": f"new-{i}",
+                    "oktech_id": f"new-{len(self.calls)}-{i}",
                     "status": "idle",
                     "name": f"snipetech copy book {s[:6]} {tag}",
                 }
@@ -367,7 +371,6 @@ def test_cli_book_run_live_is_refused_while_the_book_is_off(tmp_path):
         cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "book", "run", "--live"])
 
 
-
 def test_an_off_book_note_does_not_swallow_the_live_books_page(tmp_path):
     """Off in the morning below the floor (a note), then /book on: the halt must still reach the owner once."""
     st, cfg = _env(tmp_path)
@@ -403,3 +406,170 @@ def test_cli_book_bar_says_where_the_bar_lives(tmp_path, capsys):
     assert cli.main(["--db", str(db), "book", "bar", "0.002"]) == 0
     out = capsys.readouterr().out
     assert str(tmp_path / "data" / "operator" / "BOOK_MIN_SCORE") in out and "0.002" in out
+
+
+L3, L4 = "L3" + "z" * 30, "L4" + "w" * 30
+
+
+def _record(st, sid, kind, leader, name, created_at=NOW - 3600, removed_at=None):
+    """Our local record of a sniper we made: what it copies lives only here (OKTech's tasks carry no config)."""
+    payload = {"mode": "ctbot", "ctbotWallets": [{"address": leader}]} if kind != "dev" else {"mode": "normal"}
+    st.add_oktech_sniper({"id": sid, "external_id": f"e-{sid}", "kind": kind, "source": leader, "name": name,
+                          "config_hash": "h", "payload": payload, "created_at": created_at})  # fmt: skip
+    if removed_at is not None:  # remove_oktech_sniper stamps the wall clock; the tests need an exact time
+        st._exec("UPDATE oktech_snipers SET removed_at=? WHERE id=?", (removed_at, sid))
+
+
+def test_other_copies_come_from_active_non_book_copy_snipers(tmp_path):
+    """OKTech's task documents carry no config, so what a task copies comes from our own record of it. Only active
+    snipers that are not the book's count; a task we did not make is unknown and ignored."""
+    from snipetech.book.run import _other_copies
+
+    st, cfg = _env(tmp_path)
+    _record(st, "f1", "copy", L1, f"snipetech copy G2oZ {L1[:6]} arm:paid")
+    _record(st, "f2", "copy", L2, f"snipetech copy Gfree {L2[:6]}")
+    _record(st, "b1", "copy", L3, f"snipetech copy book {L3[:6]} arm:control")
+    _record(st, "v1", "vcopy", L4, f"snipetech verdict copy {L4[:6]}")
+    _record(st, "d1", "dev", "DEV", "snipetech dev DEVxxx")
+    tasks = [{"id": "f1", "name": f"snipetech copy G2oZ {L1[:6]} arm:paid", "status": "running"},
+             {"id": "f2", "name": f"snipetech copy Gfree {L2[:6]}", "status": "idle"},  # stopped: buys nothing
+             {"id": "b1", "name": f"snipetech copy book {L3[:6]} arm:control", "status": "running"},  # the book's own
+             {"id": "v1", "name": f"snipetech verdict copy {L4[:6]}", "status": "starting"},
+             {"id": "d1", "name": "snipetech dev DEVxxx", "status": "running"},
+             {"id": "x9", "name": "made in the OKTech app", "status": "running"}]  # fmt: skip
+    try:
+        assert _other_copies(st, tasks) == {L1, L4}
+        # the live book leaves L1 to the fee-test sniper that already copies it and books L2 only
+        svc = FakeSvc(st, snipers=tasks[:1])
+        cfg.book.enabled = True
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        created = [c[1] for c in svc.calls if c[0] == "create"]
+        assert created == [(f"{L2}:book:0.3:lab",)]
+    finally:
+        st.close()
+
+
+def _coin(st, name, ts, slot, leader_slot, my_slot, leader=None, sell_slot=None):
+    """One coin on the tape: the leader's buy (if any) and our wallet's buy (and sell) at the given slot offsets."""
+    from tests.synth import Market, addr
+
+    m = Market(st, addr(name), addr(f"dev-{name}"), ts, slot)
+    if leader:
+        m.buy(leader, 3.0, leader_slot)
+    m.buy(W, 0.2, my_slot)
+    if sell_slot is not None:
+        m.sell(W, 1.0, sell_slot)
+    m.commit()
+
+
+def test_buys_by_sniper_counts_our_tape_buys_behind_its_leader_since_creation(tmp_path):
+    """Each book sniper's buys come from the tape, not from fills (measure lags by minutes): our wallet's buys since
+    the sniper was made (a minute of clock grace) in coins its leader bought in the 20 slots before. A buy made just
+    before a replacement existed, while its predecessor on the same leader was alive, is the predecessor's."""
+    from snipetech.book.run import _buys_by_sniper
+
+    st, _cfg = _env(tmp_path)
+    t0, s0 = NOW - 3600, 400_000_000
+    n1, n2, n3, n4 = (f"snipetech copy book {leader[:6]} arm:control" for leader in (L1, L2, L3, L4))
+    _record(st, "k1", "copy", L1, n1, created_at=t0)
+    _record(st, "p1", "copy", L2, n2, created_at=t0 - 7200, removed_at=t0 + 1225)
+    _record(st, "k2", "copy", L2, n2, created_at=t0 + 1230)  # p1's replacement
+    _record(st, "k4", "copy", L3, n3, created_at=t0)
+    _coin(st, "c1", t0 + 600, s0, 0, 3, leader=L1, sell_slot=10)  # k1: behind its leader (the sell is no buy)
+    _coin(st, "c2", t0 + 900, s0 + 10_000, 0, 25, leader=L1)  # the leader bought 25 slots earlier: not a copy
+    _coin(st, "c4", t0 - 300, s0 - 10_000, 0, 2, leader=L1)  # before k1 was made
+    _coin(st, "c5", t0 - 30, s0 - 5_000, 0, 2, leader=L1)  # 30 s before, no sniper of ours on L1 then: clock grace
+    _coin(st, "c3", t0 + 1200, s0 + 20_000, 0, 2, leader=L2)  # p1's buy, 30 s before k2 was made
+    _coin(st, "c6", t0 + 1500, s0 + 30_000, 0, 1, leader=L2)  # k2's own buy
+    _coin(st, "c7", t0 + 1600, s0 + 40_000, 0, 2)  # nobody we copy bought it
+    # k3: no record of ours, so never counted and never retired; k4: spent; x1: not the book's
+    tasks = [{"id": "k1", "name": n1, "status": "running"}, {"id": "k2", "name": n2, "status": "idle"},
+             {"id": "k3", "name": n4, "status": "running"}, {"id": "k4", "name": n3, "status": "finished"},
+             {"id": "x1", "name": f"snipetech copy G2oZ {L1[:6]} arm:paid", "status": "running"}]  # fmt: skip
+    try:
+        assert _buys_by_sniper(st, W, tasks) == {"k1": 2, "k2": 1}
+    finally:
+        st.close()
+
+
+K1 = f"snipetech copy book {L1[:6]} arm:control"
+
+
+def _made_its_buy(tmp_path, **svc_kw):
+    """L1's book sniper k1 made its relied-on buy (sold since); L2 has no sniper yet."""
+    st, cfg = _env(tmp_path, enabled=True)
+    _record(st, "k1", "copy", L1, K1, created_at=NOW - 3600)
+    _coin(st, "c1", NOW - 3000, 400_000_000, 0, 3, leader=L1, sell_slot=10)
+    return st, cfg, FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], **svc_kw)
+
+
+def test_retire_is_stop_then_delete_then_a_create_with_a_fresh_salt(tmp_path):
+    """The sniper that made its buy is stopped and deleted (a stopped task reads idle, and restarting it would rely
+    on a part-used cap), then replaced in the same run under a salt of this run's second (the 5-minute one would repeat
+    the externalId of a sniper replaced within 5 minutes). A failed delete means no replacement this run."""
+    st, cfg, svc = _made_its_buy(tmp_path / "a")
+    sent = []
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert out["dry"] is False and out["actions"]["retire"] == 1
+        assert [c[0] for c in svc.calls] == ["stop", "delete", "create", "create", "start", "start"]
+        assert svc.calls[:2] == [("stop", "k1"), ("delete", "k1")]
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L1}:book:0.3:lab",), (f"{L2}:book:0.3:lab",)]
+        assert svc.salts == [f"g{int(NOW)}"] * 2
+        assert any("[book] retire" in t and "k1" in t and "holds nothing" in t for t in sent)
+    finally:
+        st.close()
+    st, cfg, svc = _made_its_buy(tmp_path / "b", fail={("delete", "k1")})
+    sent = []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert ("delete", "k1") in svc.calls
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L2}:book:0.3:lab",)]  # nothing replaces k1 yet
+        assert any("k1" in t and "could not be deleted" in t and "no replacement" in t for t in sent)
+    finally:
+        st.close()
+
+
+def test_a_retire_waits_when_a_coin_is_bought_before_it_runs(tmp_path):
+    """The holdings are read again just before the retire: a coin bought since the plan keeps the sniper running."""
+    st, cfg, svc = _made_its_buy(tmp_path, held_later=[{"mint": "NEW", "amount": 1.0, "value_sol": 0.2}])
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert not any(c[1] == "k1" for c in svc.calls if c[0] in ("stop", "delete"))
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L2}:book:0.3:lab",)]
+        cfg.book.enabled = False  # off, with k1 already stopped: no kill, a dry plan that only writes what it would do
+        dry = FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "idle"}])
+        asyncio.run(run_book(dry, cfg, NOW + 60, balances=lambda w: (10.0, 0.0, [])))
+        assert dry.calls == []
+        assert "[book dry] would retire" in (tmp_path / "data" / "operator" / "notes.md").read_text()
+    finally:
+        st.close()
+
+
+def test_create_sends_the_wallets_own_floor(tmp_path, monkeypatch):
+    """The sniper copies only the leader's buys of at least its verdict's min_leader_sol, never below [book]
+    min_copy_sol; a verdict without a copy plan keeps the book's 0.3. The Telegram line says which buys are copied."""
+    st, cfg = _env(tmp_path, enabled=True)
+    plans = {L1: {"min_leader_sol": 0.6}, L2: None}  # verdicts built by hand: the store's copy_plan column is not here
+    stored = st.latest_verdicts
+
+    def with_plans(status=None):
+        return [dict(v, copy_plan=plans.get(v["wallet"])) for v in stored(status)]
+
+    monkeypatch.setattr(st, "latest_verdicts", with_plans)
+    svc, sent = FakeSvc(st), []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L1}:book:0.6:lab",), (f"{L2}:book:0.3:lab",)]
+        assert any("[book] create" in t and "0.6 SOL or more" in t for t in sent)
+        plans[L1] = {"min_leader_sol": 0.1}  # below the book's own minimum: the minimum holds
+        svc2, quiet = FakeSvc(st), Notifier("T", 7, post=lambda u, d: None)
+        asyncio.run(run_book(svc2, cfg, NOW + 1, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert next(c[1] for c in svc2.calls if c[0] == "create") == (f"{L1}:book:0.3:lab",)
+    finally:
+        st.close()

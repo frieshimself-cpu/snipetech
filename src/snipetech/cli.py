@@ -481,6 +481,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--tag", default="", help="copylist: word appended to the sniper names (e.g. arm:control / arm:paid)"
     )
+    sp.add_argument("--allow-overlap", action="store_true",
+                    help="copylist/push: create even when an active sniper already copies that leader (a deliberate test "
+                         "on another OKTech wallet; one wallet buys once per signal)")  # fmt: skip
     sp.add_argument(
         "--compute-units",
         type=int,
@@ -1064,7 +1067,7 @@ async def _run(args, cfg: Config) -> int:
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
                                                 buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
-                                                compute_units=args.compute_units)  # fmt: skip
+                                                compute_units=args.compute_units, allow_overlap=args.allow_overlap)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
@@ -1192,7 +1195,7 @@ async def _run(args, cfg: Config) -> int:
                 if not args.yes and input("Apply these changes to your OKTech account? [y/N] ").strip().lower() != "y":
                     print("Nothing changed.")
                     return 0
-                for r in await svc.oktech_push(plan, args.prune):
+                for r in await svc.oktech_push(plan, args.prune, allow_overlap=args.allow_overlap):
                     print(f"  {r['action']:22} {r['name']}  {r.get('id', '')}  {r.get('error', '')}")
         elif c == "study":
             rep = await svc.study(
