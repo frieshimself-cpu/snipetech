@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 
+import os
 import pytest
 from pathlib import Path
 
@@ -146,7 +147,8 @@ def test_vanity_keypair_is_valid_and_private(tmp_path):
     r = V.grind("ab", "", True, 1, tmp_path / ".wallets", progress=lambda m: None)
     assert r["address"].lower().startswith("ab") and "private" not in json.dumps(r).lower().replace("file", "")
     p = tmp_path / ".wallets" / f"{r['address']}.txt"
-    assert oct(p.stat().st_mode & 0o777) == "0o600"
+    if os.name != "nt":  # Windows has no POSIX modes
+        assert oct(p.stat().st_mode & 0o777) == "0o600"
     lines = dict(line.split(": ", 1) for line in p.read_text().splitlines() if ": " in line and not line.startswith("#"))
     n = 0
     for ch in lines["private_key"]:
