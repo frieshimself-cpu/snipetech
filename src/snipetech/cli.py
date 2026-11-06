@@ -28,6 +28,62 @@ def _progress(msg: str) -> None:
 
 
 
+
+def _discover(args, cfg) -> int:
+    """`snipetech discover run`: build the data clients the environment has keys for, run every source, print the summary."""
+    import time
+
+    from .discovery.run import run_discover
+    from .discovery.sources import (
+        BirdeyeSource,
+        CoinFirstBuyersSource,
+        DiscoverContext,
+        OwnerSource,
+        SolanaTrackerSource,
+        TapeSource,  # fmt: skip
+        VybeSource,
+        default_sources,
+    )
+    from .service import Service
+
+    svc = Service(cfg)
+    clients = []
+    try:
+        ctx = DiscoverContext(svc=svc, cfg=cfg, now=time.time(), log=lambda m: print(m, file=sys.stderr, flush=True))
+        if os.environ.get("BIRDEYE_API_KEY"):
+            from .birdeye import Birdeye
+
+            ctx.birdeye = Birdeye(budget_cu=min(cfg.birdeye.daily_cu, ctx.budgets["birdeye_cu"]), counter=_usage(svc, "birdeye"))
+            clients.append(ctx.birdeye)
+        if os.environ.get("SOLANATRACKER_API_KEY"):
+            from .solanatracker import SolanaTracker
+
+            ctx.solanatracker = SolanaTracker(budget_requests=ctx.budgets["solanatracker"], counter=_usage(svc, "solanatracker"))
+            clients.append(ctx.solanatracker)
+        if os.environ.get("VYBE_API_KEY"):
+            from .vybe import Vybe
+
+            ctx.vybe = Vybe(budget_requests=ctx.budgets["vybe"], counter=_usage(svc, "vybe"))
+            clients.append(ctx.vybe)
+        if args.sources:
+            table = {"tape": TapeSource, "owner": OwnerSource, "solanatracker": lambda: SolanaTrackerSource(90),
+                     "solanatracker30": lambda: SolanaTrackerSource(30, pages=3), "birdeye": lambda: BirdeyeSource(top_coins=cfg.birdeye.top_coins),
+                     "coinfirst": CoinFirstBuyersSource, "vybe": VybeSource}  # fmt: skip
+            sources = [table[n.strip()]() for n in args.sources.split(",") if n.strip()]
+        else:
+            sources = default_sources(ctx)
+        out = run_discover(ctx, sources)
+        out["sources"] = [s.name for s in sources]
+        print(json.dumps(out, indent=1, default=str))
+        return 0
+    finally:
+        for c in clients:
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+        svc.store.close()
+
 def _usage(svc, provider: str):
     """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
 
@@ -302,6 +358,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wallet")
     sp.add_argument("--limit", type=int, default=20)
 
+    sp = cmd("discover", "the learning loop's discover stage: every source's wallets into the candidates table")
+    sp.add_argument("action", choices=["run"])
+    sp.add_argument("--sources", default=None, help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe (default: all with a key)")
     sp = cmd("vybe", "query Vybe directly: the free 1d/7d/30d top-traders board")
     sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
     sp.add_argument("--limit", type=int, default=50)
@@ -890,6 +949,8 @@ def main(argv: list[str] | None = None) -> int:
             stc.close()
         print(json.dumps(out, indent=1, default=str))
         return 0
+    if args.cmd == "discover":
+        return _discover(args, cfg)
     if args.cmd == "vybe":
         from .vybe import Vybe
 
