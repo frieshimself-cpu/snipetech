@@ -78,17 +78,27 @@ class FakeSvc:
         self.store = store
 
 
-def _scripted_turn(patch, reason="because"):
+def _scripted_turn(patch, reason="because", seen=None):
     async def turn(cfg, evidence, ledger, notes, client=None, now=None, **kw):
+        if seen is not None:
+            seen.append(evidence)
         return {"patch": patch, "reason": reason, "usd": 0.5, "stopped": "end_turn"}
 
     return turn
 
 
-def _run(tmp_path, patch, **kw):
+def _trips(st, n, start, wallet=W):
+    """n live round trips of the book wallet (a sell each), a minute apart from `start`."""
+    for i in range(n):
+        st.put_fill({"sig": f"{wallet[:4]}-{int(start) + i * 60}", "ts": int(start) + i * 60, "wallet": wallet, "mint": f"M{i}",
+                     "side": "sell", "sol": 0.19, "tokens": 1.0, "pnl_sol": -0.01})  # fmt: skip
+
+
+def _run(tmp_path, patch, trips=20, **kw):
     cfg = _cfg_file(tmp_path)
     paths = OperatorPaths(tmp_path / "data").ensure()
     st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, trips, NOW - 3 * 86400)
     sent = []
     out = asyncio.run(run_strategist(FakeSvc(st), cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
                                      turn=_scripted_turn(patch), **kw))  # fmt: skip
@@ -112,16 +122,64 @@ def test_question_when_out_of_bounds(tmp_path):
     st.close()
 
 
-def test_weekly_guard(tmp_path):
-    out, st, sent, paths, cfg = _run(tmp_path, {"book.explore_share": 0.25})
+def _again(st, cfg, at, patch=None, seen=None, sent=None, **kw):
+    sent = [] if sent is None else sent
+    return asyncio.run(run_strategist(FakeSvc(st), Config.load(cfg.path), at, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                      turn=_scripted_turn(patch or {"book.explore_share": 0.3}, seen=seen), **kw))  # fmt: skip
+
+
+def test_at_most_one_turn_a_day(tmp_path):
+    out, st, _sent, _paths, cfg = _run(tmp_path, {"book.explore_share": 0.25})
     assert out["applied"]
-    out2 = asyncio.run(run_strategist(FakeSvc(st), Config.load(cfg.path), NOW + 3600, notifier=Notifier("T", 7, post=lambda u, d: None),
-                                      turn=_scripted_turn({"book.explore_share": 0.3})))  # fmt: skip
-    assert out2["skipped"] and "week" in out2["skipped"] and Config.load(cfg.path).book.explore_share == 0.25
-    out3 = asyncio.run(run_strategist(FakeSvc(st), Config.load(cfg.path), NOW + 3600, notifier=Notifier("T", 7, post=lambda u, d: None),
-                                      turn=_scripted_turn({"book.explore_share": 0.3}), force=True))  # fmt: skip
+    _trips(st, 25, NOW + 60)  # plenty of new trades, but the last turn was an hour ago
+    out2 = _again(st, cfg, NOW + 3600)
+    assert out2["skipped"] and "once a day" in out2["skipped"] and Config.load(cfg.path).book.explore_share == 0.25
+    out3 = _again(st, cfg, NOW + 3600, force=True)
     assert out3["applied"] == {"book.explore_share": 0.3}
     st.close()
+
+
+def test_no_turn_until_twenty_new_live_round_trips_since_the_last_one(tmp_path):
+    """Daily, but Claude is called only when there is something new to judge: under 20 new live round trips since
+    its last turn it records why it waited, at no cost, and the trips keep counting from that last turn."""
+    out, st, _sent, paths, cfg = _run(tmp_path, {"book.explore_share": 0.25})
+    assert out["applied"] == {"book.explore_share": 0.25}
+    _trips(st, 19, NOW + 60)
+    seen: list = []
+    day = NOW + 25 * 3600
+    told: list = []
+    out2 = _again(st, cfg, day, seen=seen, sent=told)
+    assert out2["skipped"].startswith(
+        "not enough new trades: 19 live round trips since the last turn (06 Nov 05:00 UTC), 20 needed"
+    )
+    assert seen == [] and st.coverage("strategist:last")["ts"] == NOW  # no turn; the count still starts there
+    assert st.coverage("strategist:waiting") == {"ts": day, "new_trips": 19, "needed": 20, "since_ts": NOW}
+    assert "[strategist] not enough new trades" in paths.notes.read_text() and told == []  # nothing on Telegram
+    _trips(st, 1, NOW + 7200)
+    out3 = _again(st, cfg, day + 3600, seen=seen)
+    assert out3["applied"] == {"book.explore_share": 0.3}
+    assert seen[0]["since_last_turn"] == {"last_turn_utc": "2026-11-06 05:00", "round_trips": 20}
+    st.close()
+
+
+def test_new_trips_count_from_the_last_applied_change_too(tmp_path):
+    """Without a turn on record (the coverage table was reset), the last change the strategist applied still starts the
+    count: the trips before it measured the old settings."""
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, 25, NOW - 4 * 86400)
+    st.add_events([{"ts": NOW - 2 * 86400, "slot": 1, "kind": "param_change", "wallet": "book.explore_share", "mint": None,
+                    "data": {"key": "book.explore_share", "old": 0.2, "new": 0.25}, "source": "strategist"}])  # fmt: skip
+    _trips(st, 5, NOW - 86400)
+    seen: list = []
+    out = _again(st, cfg, NOW, seen=seen)
+    assert out["skipped"].startswith("not enough new trades: 5 live round trips") and seen == []
+    first = Store(tmp_path / "first.db")  # nothing on record at all: the week's trips count
+    _trips(first, 20, NOW - 4 * 86400)
+    assert _again(first, cfg, NOW, seen=seen)["applied"] == {"book.explore_share": 0.3}
+    st.close()
+    first.close()
 
 
 def test_dry_run_applies_nothing(tmp_path):
@@ -185,12 +243,13 @@ def test_apply_patch_writes_the_overlay_not_the_owners_file(tmp_path):
     st.close()
 
 
-def test_a_failed_turn_is_not_the_weeks_run(tmp_path):
-    """An API error (or a budget stop) must not count as this week's strategist run: it retries next time and tells
-    the owner once."""
+def test_a_failed_turn_is_not_the_days_run(tmp_path):
+    """An API error (or a budget stop) must not count as the strategist's turn: it retries next time and tells the
+    owner once."""
     cfg = _cfg_file(tmp_path)
     OperatorPaths(tmp_path / "data").ensure()
     st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, 20, NOW - 86400)
     sent = []
 
     async def broken(cfg_, evidence, ledger, notes, client=None, now=None, **kw):
@@ -206,13 +265,14 @@ def test_a_failed_turn_is_not_the_weeks_run(tmp_path):
 
 
 def test_the_daily_cap_is_respected(tmp_path):
-    """The strategist shares the operator's daily ledger: with the day's budget spent it does not run (and the week's
-    run is still due)."""
+    """The strategist shares the operator's daily ledger: with the day's budget spent it does not run (and its turn is
+    still due)."""
     from snipetech.operator.budget import Ledger
 
     cfg = _cfg_file(tmp_path)
     paths = OperatorPaths(tmp_path / "data").ensure()
     st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, 20, NOW - 86400)
     Ledger(paths.spend, cfg.operator.prices).record(
         "operator", {"input_tokens": 10_000_000, "output_tokens": 0}, NOW - 60
     )  # 30 $ > 15 $
@@ -234,6 +294,7 @@ def test_relative_bounds_use_the_owners_file_on_the_server(tmp_path):
     OperatorPaths(tmp_path / "data").ensure()
     (tmp_path / "data" / "autotune.toml").write_text("[book]\nmin_score = 0.01\n")  # last week's change
     st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, 20, NOW - 86400)
     out = asyncio.run(run_strategist(FakeSvc(st), Config.load(cfg.path), NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
                                      turn=_scripted_turn({"book.min_score": 0.02})))  # fmt: skip
     assert out["applied"] == {} and out["refusals"]  # x4 the owner's 0.005: a question, not a change
