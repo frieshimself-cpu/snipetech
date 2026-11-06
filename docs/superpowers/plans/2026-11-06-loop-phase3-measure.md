@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-learning-loop-design.md` (Stage 5 — measure; Tables `fills`, `bid_model`, `wallet_live`).
 
+**Status (6 Nov 2026, 12:10 UTC):** Tasks 1–4 built with tests; server backfill of the 6 Nov copy test pending the next deploy.
+
 ## Global Constraints
 
 - Money columns in lamports are integers; SOL columns are floats rounded to 6 places; never a float where the spec says lamports.

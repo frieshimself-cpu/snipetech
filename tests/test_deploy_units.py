@@ -42,3 +42,19 @@ def test_discover_and_qualify_units():
 def test_daily_job_runs_one_lab_not_six():
     service = (UNITS / "snipetech-daily.service").read_text()
     assert service.count("$S $DB lab ") == 1 and "for lat in" not in service and "--position +1" in service
+
+
+def test_measure_unit_and_timer():
+    service = (UNITS / "snipetech-measure.service").read_text()
+    timer = (UNITS / "snipetech-measure.timer").read_text()
+    assert "User=@USER@" in service and "EnvironmentFile=/etc/snipetech/env" in service and "Type=oneshot" in service
+    exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_lines) == 1 and " measure run" in exec_lines[0] and "oktech" not in exec_lines[0]
+    assert "TimeoutStartSec=10m" in service and "Slice=snipetech.slice" in service
+    assert "OnCalendar=*:0/5" in timer and "Persistent=true" in timer and "RandomizedDelaySec=20" in timer
+    assert {"snipetech-measure", "snipetech-measure.timer"} <= set(O.UNITS)
+    setup = (Path(__file__).resolve().parents[1] / "deploy" / "setup.sh").read_text()
+    assert "snipetech-measure.timer" in setup
+    from snipetech.operator.snapshot import ONESHOT_UNITS, WATCHED_UNITS
+
+    assert "snipetech-measure" in ONESHOT_UNITS and "snipetech-measure.timer" in WATCHED_UNITS

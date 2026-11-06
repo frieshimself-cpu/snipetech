@@ -1,0 +1,15 @@
+[Unit]
+Description=snipetech measure: the book wallet's live fills audited from the chain and the tape (learning loop, stage 5)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db measure run
+TimeoutStartSec=10m

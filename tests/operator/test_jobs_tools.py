@@ -163,3 +163,24 @@ def test_read_verdicts_tool(toolbox):
     out = json.loads(_call(tools["read_verdicts"]))
     assert len(out["verdicts"]) == 2 and out["verdicts"][0]["wallet"] == "W1"  # by score
     assert "error" in _call(tools["read_verdicts"], status="bogus")
+
+
+def test_read_fills_tool(toolbox):
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        now = 1_793_923_200
+        st.put_fill({"sig": "B1", "ts": now - 600, "wallet": "ME", "wallet_copied": "LEAD", "mint": "M1", "side": "buy", "sol": 0.2,
+                     "trades_behind": 2, "price_gap_pct": 25.0, "pos_in_slot": 5, "bid_arm": "control", "priority_lamports": 1_000_000})  # fmt: skip
+        st.put_fill({"sig": "S1", "ts": now - 300, "wallet": "ME", "mint": "M1", "side": "sell", "sol": 0.25, "pnl_sol": 0.045, "buy_sig": "B1",
+                     "exit_reason": "sold"})  # fmt: skip
+        st.put_fill({"sig": "OLD", "ts": now - 3 * 86400, "wallet": "ME", "mint": "M0", "side": "buy", "sol": 0.2})
+        st.put_bid_model({"arm": "control", "n": 1, "failed_n": 0, "mean_pos": 5, "p25_pos": 5, "p75_pos": 5, "mean_gap_pct": 25.0,
+                          "mean_fee_sol": 0.001, "updated_at": now})  # fmt: skip
+        st.put_wallet_live({"wallet": "LEAD", "n": 1, "mean_sol": 0.045, "lower_sol": 0.0, "last_fill": now - 300, "status": "warming", "updated_at": now})
+    finally:
+        st.close()
+    out = json.loads(_call(tools["read_fills"], hours=24))
+    assert [f["sig"] for f in out["fills"]] == ["S1", "B1"] and out["bid_model"][0]["arm"] == "control"
+    assert out["wallet_live"][0]["wallet"] == "LEAD" and out["summary"] == {"buys": 1, "sells": 1, "failed": 0, "pnl_sol": 0.045}
+    assert len(json.loads(_call(tools["read_fills"], hours=24 * 7))["fills"]) == 3

@@ -34,6 +34,9 @@ from every source and `qualify` (every 30 min, one lab at a time) writes a verdi
 Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound), crowding and relationship
 gates all passed; the snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from
 read_verdicts, not from raw lab logs, and treat a newly qualified wallet as the decision-level event it is.
+Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
+behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. Once a
+wallet has 10 live fills, its live mean outranks any paper number; say so when the two disagree.
 
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet clearing all three gates, a
 sniper running or a coin held when none should be, equity moved more than the alert threshold, the tape stalled, a

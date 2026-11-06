@@ -262,8 +262,17 @@ and the dashboard shows the counts and the qualified wallets.
 snipetech discover run --sources tape,owner,coinfirst   # one run, local sources only; --json prints the summary
 snipetech qualify run --max 100                         # one lab over the 100 most overdue candidates
 snipetech remote sql "select status, count(*) from candidates group by status"
-sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer   # once, after deploy/setup.sh
+sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer   # once, after deploy/setup.sh
 ```
+
+**Measure (phase 3).** `snipetech measure run` (every 5 min) turns every buy and sell of the book wallet into a
+`fills` row audited from the chain and the tape: position in the slot, the copied wallet's buy and how many trades
+and what price gap we landed behind it, priority fee, tip and compute units from the transaction, PnL per round trip
+(FIFO, partial sells), and failed sends as rows of pure cost. From those it keeps `bid_model` (what each bid arm
+buys: position, gap, fee, failures) and `wallet_live` (live expectancy per copied wallet, 7-day half-life); once an
+arm has 30 fills its p75 position becomes the landing the qualify lab measures at, so paper and live agree. `measure
+backfill --since <unix> --until <unix>` replays a past window (the 6 Nov copy test). The operator reads it all
+with `read_fills`.
 
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses

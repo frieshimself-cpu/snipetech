@@ -60,6 +60,7 @@ def _inside(path: Path, roots: list[Path]) -> bool:
 
 def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: OperatorConfig, notes: NoteSink) -> list:
     roots = [paths.reports, paths.root, paths.jobs]
+    now_fn = notes.now
 
     @beta_async_tool
     async def read_job_log(id: str, tail: int = 200) -> str:
@@ -178,6 +179,27 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         return redact(json.dumps({"counts": counts, "verdicts": rows[: max(1, int(limit))]}, default=str))
 
     @beta_async_tool
+    async def read_fills(hours: int = 24, limit: int = 50) -> str:
+        """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
+        arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
+        provisional once a wallet's live n reaches 10.
+
+        Args:
+            hours: Look back this many hours (default 24).
+            limit: At most this many fill rows, newest first.
+        """
+        try:
+            since = int(now_fn() - max(1, int(hours)) * 3600)
+            rows = svc.store.fills(since_ts=since, limit=max(1, int(limit)))
+            summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": sum(r["side"] == "sell" for r in rows),
+                       "failed": sum(r["side"] == "failed" for r in rows),
+                       "pnl_sol": round(sum(r["pnl_sol"] or 0.0 for r in rows if r["side"] == "sell"), 6)}  # fmt: skip
+            out = {"summary": summary, "fills": rows, "bid_model": svc.store.bid_model(), "wallet_live": svc.store.wallet_live()}
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {type(exc).__name__}: {exc}"
+        return redact(json.dumps(out, default=str))
+
+    @beta_async_tool
     async def write_report(name: str, text: str) -> str:
         """Write a markdown report into operator/ (the analyst's daily output, e.g. name "analyst-2026-11-06").
 
@@ -193,4 +215,4 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         p.write_text(text)
         return f"wrote {p.name}"
 
-    return [read_job_log, read_file, sql, start_job, write_note, set_candidates, write_report, read_verdicts]
+    return [read_job_log, read_file, sql, start_job, write_note, set_candidates, write_report, read_verdicts, read_fills]
