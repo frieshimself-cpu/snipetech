@@ -30,6 +30,7 @@ from ..analysis.lab_lock import LabBusy
 from ..analysis.lab_lock import lab_lock as _lab_lock
 from ..config import Config
 from ..store import _LATEST_VERDICT, Store
+from .learning import digest_lines as learning_lines
 from .paths import OperatorPaths
 from .snapshot import systemd_services
 from .standin import job_metas, loop_stage
@@ -62,11 +63,11 @@ DISCOVER_SOURCES = ("tape", "owner", "solanatracker", "solanatracker30", "birdey
 SEARCH_KEY = "research:search"
 DIGEST_KEY = "research:digest"
 DIGEST_EVERY_H = 6
-MAX_CHARS = 1500
+MAX_CHARS = 2400  # the research lines (about 1500 at most) and what was learned and is tested next (under 900)
 
 # what the loop's stages are called in the digest; stages missing here (measure, book, feeds, copies) are not research
 STAGE_NAMES = {"qualify run": "wallet checks", "research search": "strategy search", "paper run": "forward paper test",
-               "discover run": "wallet discovery", "events scan": "event scan", "strategist run": "weekly strategist"}  # fmt: skip
+               "discover run": "wallet discovery", "events scan": "event scan", "strategist run": "strategist"}  # fmt: skip
 # a verdict's status in words: (one wallet, several wallets)
 STATUS_WORDS = {"qualified": ("passes every check", "passed every check"),
                 "candidate": ("needs more evidence", "need more evidence"), "retired": ("dropped", "dropped")}  # fmt: skip
@@ -488,6 +489,7 @@ def digest_text(store: Store, cfg: Config, paths: OperatorPaths, now: float, sin
     lines.append(book_reason(store, cfg, paths))
     options = plan(b, metas, cfg, now)
     lines.append(f"Next: {options[0]['why']}" if options else f"Next: nothing to start yet ({not_now(b, metas, now)})")
+    lines += learning_lines(paths, since, now)  # what the agents learned since the last digest, what they test next
     text = "\n".join(lines)
     return text if len(text) <= MAX_CHARS else text[: MAX_CHARS - 1] + "…"
 
