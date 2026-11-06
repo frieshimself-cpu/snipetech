@@ -19,7 +19,8 @@ LEADER_GRACE_SECS = 60  # a buy in flight when the sniper was made or removed st
 
 
 def copy_sniper_rows(store: Store) -> list[dict]:
-    """Every copy sniper we ever made (removed ones too), with the wallets it copies and when it lived."""
+    """Every copy sniper we ever made (removed ones too), with the wallets it copies, when it lived and the config it
+    was created with (its exits and fees)."""
     out = []
     for rec in store.oktech_snipers(active=False):
         if rec.get("kind") not in COPY_KINDS:
@@ -30,19 +31,28 @@ def copy_sniper_rows(store: Store) -> list[dict]:
             if isinstance(w, dict) and w.get("address")
         }
         if wallets:
-            out.append({"wallets": wallets, "created_at": rec.get("created_at"), "removed_at": rec.get("removed_at")})
+            out.append({"wallets": wallets, "created_at": rec.get("created_at"), "removed_at": rec.get("removed_at"),
+                        "id": rec.get("id"), "name": rec.get("name"), "payload": rec.get("payload") or {}})  # fmt: skip
     return out
 
 
-def leaders_at(rows: list[dict], ts: float) -> set[str]:
-    """The wallets copied by a sniper alive at `ts`."""
-    out: set[str] = set()
+def snipers_at(rows: list[dict], ts: float) -> list[dict]:
+    """The copy snipers alive at `ts`."""
+    out = []
     for r in rows:
         born, gone = r.get("created_at"), r.get("removed_at")
         if born is not None and ts < float(born) - LEADER_GRACE_SECS:
             continue
         if gone is not None and ts > float(gone) + LEADER_GRACE_SECS:
             continue
+        out.append(r)
+    return out
+
+
+def leaders_at(rows: list[dict], ts: float) -> set[str]:
+    """The wallets copied by a sniper alive at `ts`."""
+    out: set[str] = set()
+    for r in snipers_at(rows, ts):
         out |= r["wallets"]
     return out
 
