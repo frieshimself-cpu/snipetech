@@ -6,6 +6,33 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The loop runs itself now (6 Nov, 10:30 UTC) — what is automatic, what is still yours
+
+Built, tested and deployed today (README 3e): the operator checks what you pay for every 15 minutes and tells you
+on Telegram once a day per problem; a morning digest; `/status`, `/stop` (never strands a coin), `/resume`; a live
+page at `/dash`; and the first two stages of the learning loop — `discover` (hourly, seven sources into one
+candidates table) and `qualify` (every 30 minutes, one lab at a time, a verdict per wallet at the +6 landing).
+The three gates from the roadmap are now code, not a checklist. Nothing trades: the book stays off until you fund
+it and say so.
+
+What the day's data said:
+
+- The +6 by-wallet lab on 35 h of tape (300 938 moments): still one wallet with n ≥ 20 and a positive lower
+  bound — `G2oZrd…` (n 40, +0.017 SOL a trade, 90 % wins, +0.66 SOL over the window). `3JD7zr…` (Solprop) has
+  n 54 at +0.006 with a lower bound just above zero. Everything else positive has n < 20.
+- The 19 SolanaTracker leaderboard wallets: 18 made **no** pump.fun buy in two days of tape, the one that did
+  (`4AQyaA…`, 5 buys) had no followers at all. The paid leaderboards rank people who trade elsewhere; for us the
+  tape, the coin-first source (first buyers of runners) and your tracked list are the feeds that matter.
+- The daily job was killed at systemd's 6-hour limit this morning: it ran six labs beside my manual lab on a
+  4-CPU box with 1.8 GB peak memory and swap. It now runs one lab (+1 landing), the +6 by-wallet lab belongs to
+  `qualify`, and every lab takes the same lock. The resize to 16 GB / 6 CPU is still the right move once the Vultr
+  balance is topped up.
+
+Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the two new timers (the
+exact lines are in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
+bot; top up Vultr and say "resize now" between jobs; fund the wallet (6–10 SOL) and say yes to the fee test when
+you want the first measured live step.
+
 ## The wallet labs at both landings (6 Nov, 08:00 UTC) — one survivor, and it is small
 
 Same 32 h of tape, 132 wallets, best exit each, 0.2 SOL a trade:

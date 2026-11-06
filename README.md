@@ -245,6 +245,26 @@ alone), `/resume`. A live page at `https://<host>/dash` shows services, resource
 decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
 password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until that token is set.
 
+**Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
+`snipetech discover run` (hourly) puts every source's wallets into one `candidates` table: the tape's consistent
+winners, your tracked list, SolanaTracker's 90- and 30-day boards, Birdeye's gainers and hot-coin top traders,
+Vybe's 30-day board, and the first buyers of coins that ran 5× within ten minutes. Platform wallets and flagged bots
+are banned, a failing source is reported and skipped, and each source has its own budget. `snipetech qualify run`
+(every 30 min) takes the candidates whose review is due, labels them `cand`, runs **one** by-wallet lab at the
+`[qualify] landing_pos` (+6) and writes a verdict per wallet: `qualified` (history, venue, tape n and lower bound,
+crowding and relationship gates all passed; reviewed daily), `candidate` (not enough evidence yet; 72 h) or
+`retired` (loses, trades elsewhere, bot pace, or tied to dev teams; a week). A lab runs at most once per
+`lab_interval_h` and never beside another lab: every lab on the box takes the same `lab.lock`, so the daily job,
+an ops job and the qualify timer queue instead of colliding. The operator reads the result with `read_verdicts`
+and the dashboard shows the counts and the qualified wallets.
+
+```bash
+snipetech discover run --sources tape,owner,coinfirst   # one run, local sources only; --json prints the summary
+snipetech qualify run --max 100                         # one lab over the 100 most overdue candidates
+snipetech remote sql "select status, count(*) from candidates group by status"
+sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer   # once, after deploy/setup.sh
+```
+
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses
 anything older than 5 minutes or replayed. It can: show status, run allowlisted snipetech commands as

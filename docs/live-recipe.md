@@ -266,3 +266,13 @@ at the 0.001 minimum, last every time. The bots trade 1–5 SOL a fill, so 0.01�
 and 20–60 % to our 0.05 SOL fills. Conclusion: the copy test failed on the bid and the size, not on the pipe. Next:
 a paid-fee test on OKTech at 0.2 SOL fills (control at minimum fees vs 0.02 priority + 0.02 tip, same leaders,
 five fills each, position and price gap as the outcome), and the lab at position +3, where a paid bid would land.
+
+## Operator phase 1 on the server (6 Nov, 10:31 UTC) — accepted
+
+Deployed `2de75be` at 10:30 with no job running. The 10:31 round (new code) logged
+`resources: anthropic_credit=ok birdeye_cu=ok solanatracker_requests=ok vybe_credits=ok sol_float=ok disk=ok
+oktech_failures=ok`, sent the first daily digest to Telegram, and called the operator about `snipetech-daily`
+failing (the 6-hour timeout above). `/status`, `/stop`, `/resume` are live but need a message from the owner's
+phone to be seen in the log; the dashboard needs `DASH_TOKEN` in the env file. Phase 2 (`discover`, `qualify`)
+deployed right after; the timers wait for `setup.sh` on the box.
+

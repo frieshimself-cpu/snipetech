@@ -10,6 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-learning-loop-design.md` (Stage 2, Stage 3, Tables).
 
+**Status (6 Nov 2026, 10:45 UTC):** Tasks 1–5 built with tests and deployed. Rulings while executing: venues are
+`curve`/`amm` (no `pool`); the lab has no Service entry point, so `qualify` calls `analysis.lab.collect` and
+`rank_wallets` in-process; the lab's `wallet` triggers fire only at ≥ 1 SOL, so a `cand` trigger group at the 0.1 SOL
+floor was added (it also covers the tracked list); a running lab is detected by `snapshot.running_jobs` **and** a
+box-wide `lab.lock` that every lab takes (daily job, ops jobs, qualify); the tape source uses the pure-tape
+`discover_wallets` (no RPC per wallet); the coin-first source measures the price (q/b) multiple, scans the last 6 h
+and caps at 100 coins; an owner source feeds the tracked list; `qualify` runs at most one lab per `lab_interval_h`
+(2 h) because the box is CPU-bound; the daily job's six labs became one. Timers must be enabled by the owner once.
+
 ## Global Constraints
 
 - One lab at a time, enforced by checking the jobs directory (reuse `operator.jobs.OperatorJobs.running`), never by convention.
