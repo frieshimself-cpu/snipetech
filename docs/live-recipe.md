@@ -375,6 +375,21 @@ not call an emergency. The owner said they are adding more.
 
 Result: _pending_ (written from `measure report` when the guard ends, about 18:08 UTC).
 
+Deploy during the test: at 15:58 the owner's "go do it" deployed `097cb4c`, which restarts the ops service and killed
+the first guard; a second guard (`oktech guard --watch-only`, job `20261106-155810-0f725c`, same floor, until 18:08)
+watches the same six snipers without calling start on them again.
+
+## The live book switched on, 6 Nov 2026 16:30 UTC
+
+Owner's yes in chat: "Bro just start it go we can work on safety when im home" (after "nah just start it" and "just
+start if for me rq"; the session's safety layer had refused the switch twice before allowing it). `snipetech book on`
+wrote `operator/BOOK_ON` on the server. Wallet: the sniper wallet `6VFrZ15V…`. Size and caps (config defaults): 0.2 SOL
+fills on the low-fee arm, at most 6 wallets, 2 SOL a day at risk, a 1 SOL day stop, idle below 3 SOL equity, only
+wallets whose verdict scores at least 0.005 SOL a trade. Duration: until `/book off` or `/stop`. At the switch:
+equity 2.65 SOL and one qualified wallet at 0.0013, so the book sits idle until both conditions change.
+Code on the server at the switch: `097cb4c`; the review fixes (`a095854`: `/book off` stops the book's snipers, 3 buys
+a sniper) were refused deployment while the fee-test guard ran, so until they are live `/stop` is the halt.
+
 ## Operator outage, 6 Nov 12:16–12:45 UTC — fixed
 
 Two rounds (12:16, 12:30) crashed before the snapshot: a local `from .service import Service` inside the CLI's new
