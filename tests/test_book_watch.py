@@ -13,6 +13,7 @@ from snipetech.book.watch import (
     current_hits,
     due_exits,
     exit_spec,
+    stray_line,
     unmanaged,
     watch_pass,
 )
@@ -359,6 +360,70 @@ def test_the_book_can_tell_whether_the_one_minute_watch_is_running(tmp_path):
         assert not watched_within(paths, T0, 180)  # never ran
         watch_pass(cfg, st, Notifier(None, None), W, [], [], T0)
         assert watched_within(paths, T0 + 120, 180) and not watched_within(paths, T0 + 300, 180)
+    finally:
+        st.close()
+
+
+def test_a_coin_the_book_never_bought_is_said_once_a_day_and_an_ignored_coin_never(tmp_path):
+    """An airdropped token stays in the wallet: no buy of ours on the tape, never priced. The watch says once a day
+    that it is not a coin the book bought (sell it by hand or tell me to ignore it), never every 15 minutes, even when
+    it leaves the wallet's holdings for a while and comes back. A coin on [operator] ignore_mints is never said."""
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    st = Store(cfg.storage.db_path)
+    sent: list[str] = []
+    notifier = Notifier("T", 7, post=lambda url, data: sent.append(data["text"]))
+    spam = addr("airdropped spam")
+    held = [{"mint": spam, "amount": 1000.0, "raw": 10**9, "decimals": 6, "value_sol": None, "priced": False}]
+    try:
+        for t in range(T0, T0 + 25 * 3600, 300):  # a pass every 5 minutes for 25 hours
+            gone = T0 + 3600 <= t < T0 + 3900  # out of the holdings for a moment (an RPC hiccup, a dust price)
+            watch_pass(cfg, st, notifier, W, [] if gone else held, [], t)
+        assert len(sent) == 2, f"{len(sent)} alerts in 25 hours"  # when first flagged, then a day later
+        assert all(spam in s and "not a coin the book bought" in s and "tell me to ignore it" in s for s in sent)
+        assert "remote run sweep" not in sent[0]
+        current = stray_line({"mint": spam, "value_sol": 0.0123, "lagging": False})  # the tape is current
+        assert "it is not a coin the book bought" in current and "0.012 SOL" in current
+        cfg.operator.ignore_mints = [spam]
+        assert watch_pass(cfg, st, notifier, W, held, [], T0 + 50 * 3600) == []
+        assert len(sent) == 2 and current_hits(OperatorPaths(tmp_path / "data"), T0 + 50 * 3600) == []
+    finally:
+        st.close()
+
+
+def test_the_minute_watch_reads_the_holdings_without_the_ignored_coins(tmp_path):
+    """watch_wallet asks for the holdings without the owner's ignored coins, so an ignored airdrop neither alerts
+    nor makes the one-minute pass ask OKTech for its tasks."""
+    import asyncio
+
+    from snipetech.book.watch import watch_wallet
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    cfg.operator.wallet = W
+    st = Store(cfg.storage.db_path)
+    spam = addr("airdropped spam")
+    cfg.operator.ignore_mints = [spam]
+
+    class Svc:
+        store = st
+
+        def __init__(self):
+            self.ignored, self.status_calls = None, 0
+
+        async def open_positions(self, address, ignore=()):
+            self.ignored = list(ignore or ())
+            coins = [{"mint": spam, "amount": 1.0, "raw": 10**6, "value_sol": None, "priced": False}]
+            return [h for h in coins if h["mint"] not in set(ignore or ())]
+
+        async def oktech_status(self):
+            self.status_calls += 1
+            return {"snipers": []}
+
+    svc = Svc()
+    try:
+        assert asyncio.run(watch_wallet(cfg, svc, Notifier(None, None), T0)) == []
+        assert svc.ignored == [spam] and svc.status_calls == 0
     finally:
         st.close()
 

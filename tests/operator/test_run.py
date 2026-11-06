@@ -132,7 +132,7 @@ def _watch_env(tmp_path, monkeypatch):
         def __init__(self):
             self.held, self.status_calls = [_held(m, ours)], 0
 
-        async def open_positions(self, address):
+        async def open_positions(self, address, ignore=()):
             assert address == W
             return list(self.held)
 
@@ -175,7 +175,7 @@ def test_a_watch_that_cannot_read_the_wallet_never_breaks_the_kill_switch(tmp_pa
 
     paths, st, cfg, svc, _m, ours = _watch_env(tmp_path, monkeypatch)
 
-    async def broken(address):
+    async def broken(address, ignore=()):
         raise RuntimeError("rpc down")
 
     svc.open_positions = broken

@@ -200,6 +200,9 @@ class OperatorConfig:
     """The server-side operator: a 15-minute snapshot, Claude only when something changed (docs/superpowers/specs)."""
 
     wallet: str = ""  # the sniper wallet to watch (public key)
+    # coins the owner said to ignore (an airdropped token, a coin kept on purpose): the unsold-coin watch never
+    # alerts on them and neither the watch nor the book counts them as held
+    ignore_mints: list[str] = field(default_factory=list)
     daily_usd: float = 15.0  # no more Claude calls today past this
     turn_usd: float = 2.0  # one turn stops after the response that crosses this
     max_jobs: int = 3  # research jobs running at once (one `lab` at a time regardless)

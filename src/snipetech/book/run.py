@@ -138,7 +138,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         notes.write(f"book: balances failed: {type(exc).__name__}: {exc}", "info")
     holdings_known = True
     try:
-        holdings = await svc.open_positions(wallet)
+        holdings = await svc.open_positions(wallet, ignore=cfg.operator.ignore_mints)
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
         holdings_known = False
@@ -286,7 +286,7 @@ async def _retire(svc, wallet: str, notifier: Notifier, notes: NoteSink, a) -> b
     holdings are read again first: a coin bought since the plan was made keeps it running (a stop strands a coin)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
     try:
-        held = await svc.open_positions(wallet)
+        held = await svc.open_positions(wallet, ignore=svc.cfg.operator.ignore_mints)
     except Exception as exc:  # noqa: BLE001 - unknown holdings: never retire
         notes.write(f"[book] retire {w6} ({sid}) waits: holdings could not be read ({type(exc).__name__})", "info")
         return False
