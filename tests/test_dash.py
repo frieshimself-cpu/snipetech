@@ -107,16 +107,7 @@ def test_state_uses_phase2_tables_when_present(ops):
                             "n_tape": 25, "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
         st.upsert_candidate("W4", "tape", {}, NOW - 100, status="banned")
         st.set_coverage("qualify:last_lab", {"ts": NOW - 50, "wallets": 3})
-        con = sqlite3.connect(ops.db)
-        con.execute(
-            "CREATE TABLE fills (id INTEGER PRIMARY KEY, ts INTEGER, wallet TEXT, mint TEXT, side TEXT, sol REAL, sniper TEXT)"
-        )
-        con.execute(
-            "INSERT INTO fills (ts, wallet, mint, side, sol, sniper) VALUES (?,?,?,?,?,?)",
-            (NOW - 10, "W1", "M1", "buy", 0.2, "s1"),
-        )
-        con.commit()
-        con.close()
+        st.put_fill({"sig": "S1", "ts": NOW - 10, "wallet": "W1", "mint": "M1", "side": "buy", "sol": 0.2, "sniper_id": "s1"})
     finally:
         st.close()
     s = dash_state(ops, now=NOW)
