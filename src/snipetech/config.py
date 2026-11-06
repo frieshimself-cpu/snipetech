@@ -196,6 +196,7 @@ class OperatorConfig:
     equity_alert_sol: float = 0.1
     tape_stale_secs: int = 300
     analyst_after_utc: str = "06:00"
+    digest_hour_utc: int = 7  # the daily Telegram digest goes out in the first round after this hour (UTC)
     model: str = "claude-sonnet-5-5"
     analyst_model: str = "claude-opus-5-5"
     max_tokens: int = 8000

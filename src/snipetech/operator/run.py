@@ -14,6 +14,7 @@ from ..config import Config
 from ..ops import _pid_alive
 from .budget import Ledger
 from .commands import handle_command, poll_commands
+from .digest import digest_due, digest_text, mark_sent
 from .gate import Decision, decide
 from .jobs import OperatorJobs
 from .notify import from_env
@@ -99,6 +100,20 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                     notifier.send(notes.write(f"resource {line}", "decision"))
         except Exception as exc:  # noqa: BLE001
             _log(paths, t0, f"resources: failed: {type(exc).__name__}: {exc}")
+        # Daily digest: once a day after the configured hour; the marker is written only after a successful send.
+        try:
+            if digest_due(paths, t0, cfg.operator.digest_hour_utc):
+                text = digest_text(snap, snap.resources, Ledger(paths.spend, cfg.operator.prices), svc.store, t0, paths=paths)
+                if notifier.send(text):
+                    mark_sent(paths, t0, store=svc.store, snap=snap)
+                    _log(paths, t0, "digest sent")
+                elif not notifier.enabled:
+                    mark_sent(paths, t0, store=svc.store, snap=snap)  # nowhere to send it; do not retry every round
+                    _log(paths, t0, "digest skipped: telegram not configured")
+                else:
+                    _log(paths, t0, "digest send failed; will retry next round")
+        except Exception as exc:  # noqa: BLE001
+            _log(paths, t0, f"digest: failed: {type(exc).__name__}: {exc}")
         decision = decide(snap, prev, t0, cfg.operator, paths)
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
