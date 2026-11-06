@@ -220,6 +220,66 @@ def test_two_token_accounts_of_one_coin_are_one_coin(tmp_path):
         st.close()
 
 
+H = addr("second leader")
+
+
+def _sell_tokens(m, user, tokens, slot_offset):
+    """Sell exactly `tokens` of `user`'s coins (Market.sell sells a share of all it holds)."""
+    out = m.q * tokens // (m.b + tokens)
+    m.q, m.b = m.q - out, m.b + tokens
+    m.holdings[user] -= tokens
+    return m._push(user, m.slot0 + slot_offset, False, out, tokens)
+
+
+def two_lots(st):
+    """Two buys of ours in one coin before the first is sold: we copy G at slot B and H five slots later. Nothing
+    trades for 28 slots, then OKTech's dead exit sells exactly the first lot's coins, 33 slots after it. The second
+    lot (its sniper's cap-using buy) is never sold; the coin trades on at a flat price."""
+    m = Market214(st, addr("two-lot coin"), addr("two-lot dev"), T0, S0)
+    m.buy(addr("two-lot dev"), 1.0, 0, sig=m.create_sig)
+    for k in range(20):
+        m.buy(addr(f"two-lot early {k}"), 0.5, 1 + k)
+    m.buy(G, 2.0, B - 1)
+    lot1 = m.buy(W, 0.2, B)
+    m.buy(H, 2.0, B + 4)
+    lot2 = m.buy(W, 0.2, B + 5)
+    _sell_tokens(m, W, lot1.base, B + 33)
+    for k, slot in enumerate(range(B + 36, B + 2700, 2), start=1):
+        trader = addr(f"two-lot trader {(k + 1) // 2}")
+        if k % 2:
+            m.buy(trader, 0.1, slot)
+        else:
+            m.sell(trader, 1.0, slot)
+    m.commit()
+    return m, lot1, lot2
+
+
+def test_a_second_buy_in_a_coin_is_judged_by_its_own_exits(tmp_path):
+    """A sale matched wholly to the first lot does not count as a sale of the second: the second lot's dead exit
+    was due at about +2.5 s, so it is flagged about a minute later, as a single DTAU-shaped lot is (not at +360 s)."""
+    from snipetech.book.watch import _open_buys
+
+    st = Store(tmp_path / "s.db")
+    try:
+        _sniper(st, G, sid="copy-g")
+        _sniper(st, H, sid="copy-h")
+        m, _lot1, lot2 = two_lots(st)
+        running = [{"id": "copy-g", "status": "running"}, {"id": "copy-h", "status": "running"}]
+        held = [_held(m, lot2)]
+        assert unmanaged(st, W, held, running, lot2.ts + 60) == []  # OKTech still has its minute
+        hits = unmanaged(st, W, held, running, lot2.ts + 92)
+        assert [(h["reason"], h["buy_sig"], h["sniper_id"]) for h in hits] == [
+            ("exits_not_acted_on", lot2.sig, "copy-h")
+        ]
+        assert abs(hits[0]["flag_at"] - (lot2.ts + 62.5)) < 1.0 and hits[0]["due"][0]["exit"] == "dead_exit"
+    finally:
+        st.close()
+    # a sale marks only the lots it took coins from: partly the first, or the first and part of the second
+    b1, b2 = _t(0, "us", base=100), _t(5, "us", base=100)
+    assert _open_buys([b1, b2, _t(9, "us", False, base=50)]) == [(b1, True), (b2, False)]
+    assert _open_buys([b1, b2, _t(9, "us", False, base=150)]) == [(b2, True)]
+
+
 def test_the_watch_sends_one_line_per_coin_every_15_minutes_and_never_sells(tmp_path):
     cfg = Config()
     cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")

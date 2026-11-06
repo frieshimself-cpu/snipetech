@@ -183,8 +183,9 @@ def _trades(store: Store, sql: str, params: tuple) -> list[Trade]:
 
 
 def _open_buys(ours: list[Trade]) -> list[tuple[Trade, bool]]:
-    """Our buys in a coin that still hold tokens once our sales are matched to them oldest first, each with whether
-    any sale of ours came after it."""
+    """Our buys in a coin that still hold tokens once our sales are matched to them oldest first, each with whether a
+    sale of ours took tokens from it. A sale matched wholly to an older buy leaves a younger one unsold: that buy (a
+    sniper's cap-using second lot) is judged by its own exits."""
     lots: list[list] = []  # [buy, tokens left, sold since]
     for t in ours:
         if t.is_buy:
@@ -192,9 +193,9 @@ def _open_buys(ours: list[Trade]) -> list[tuple[Trade, bool]]:
             continue
         left = int(t.base)
         for lot in lots:
-            lot[2] = True
             take = min(lot[1], left)
-            lot[1], left = lot[1] - take, left - take
+            if take > 0:
+                lot[1], left, lot[2] = lot[1] - take, left - take, True
     return [(b, sold) for b, rest, sold in lots if rest > b.base * OPEN_SHARE]
 
 
