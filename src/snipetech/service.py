@@ -766,8 +766,8 @@ class Service:
             await client.close()
 
     async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
-                              max_buys: int = 5) -> dict:  # fmt: skip
-        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL]]."""
+                              max_buys: int = 5, exit_name: str = "lab") -> dict:  # fmt: skip
+        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60)."""
         from .oktech import list_copy_sniper
 
         out = []
@@ -778,7 +778,8 @@ class Service:
                 address = self._check(parts[0])
                 label = parts[1] if len(parts) > 1 and parts[1] else address[:6]
                 min_sol = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
-                p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg)
+                ex_name = parts[3] if len(parts) > 3 and parts[3] else exit_name
+                p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name)
                 row = {"id": address, "label": label, "name": p.name, "summary": p.summary, "notes": p.notes, "config": p.config}
                 if client is not None:
                     ans = await client.create(p.name, p.config, wallet, p.external_id)

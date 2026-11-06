@@ -259,15 +259,19 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     return PlannedSniper("copy", a, f"snipetech copy {a[:6]}", config, summary, notes)
 
 
+EXITS = {"lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},  # the lab's usual best exit for copies
+         "hold60": {"max_hold_secs": 60}}  # the KOL "first buy, hold 60 s" rows (Pengu, Gfree)
+
+
 def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, max_buys: int = 5,
-                     exit_params: dict | None = None, cfg: Config | None = None) -> PlannedSniper:
+                     exit_params: dict | None = None, cfg: Config | None = None, exit_name: str = "lab") -> PlannedSniper:
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
     the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s)."""
     cfg = cfg or Config()
     notes: list[str] = []
     prio, tip = fees(None, cfg.oktech.tip_share, notes)
-    ex = dict(exit_params or {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300})
+    ex = dict(exit_params or EXITS[exit_name])
     ex.setdefault("sell_on_dev_sell", False)
     config: dict[str, Any] = {
         "mode": "ctbot",

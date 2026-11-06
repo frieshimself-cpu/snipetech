@@ -288,3 +288,11 @@ def test_list_copy_sniper_is_capped_and_copies_only_big_buys():
     assert c["ctbotWallets"][0]["minSol"] == 1.0 and c["ctbotMinWallets"] == 1
     assert c["ctbotCopyExit"]["enabled"] and c["autoSell"]["deadExit"]["staleSeconds"] == 1
     assert c["autoSell"]["stopLoss"]["stages"][0]["percentLoss"] == 30
+
+
+def test_list_copy_sniper_hold60_exit():
+    from snipetech.oktech import list_copy_sniper
+
+    c = list_copy_sniper("JAunzNqs3bVBcWDjDxfq9rgLzJMCadNXoaCgfzLGMtYs", "Pengu", 0.1, 0.05, 5, exit_name="hold60").config
+    assert c["autoSell"]["sellAfterSeconds"] == 60 and "stopLoss" not in c["autoSell"] and "deadExit" not in c["autoSell"]
+    assert c["ctbotWallets"][0]["minSol"] == 0.1

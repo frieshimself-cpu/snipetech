@@ -184,8 +184,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--via", choices=["hunt", "crowd"], default="hunt",
                     help="strategy: how OKTech gates the big-buy trigger: hunt (fires on every launch, measured) or crowd (buys in the create tx)")
     sp.add_argument("--no-preexec", action="store_true", help="strategy: send buys without OKTech's local pre-execution dry run")
-    sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL]]",
-                    help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1) are copied")
+    sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
+                    help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60")
+    sp.add_argument("--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one")
     sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
@@ -460,7 +461,7 @@ async def _run(args, cfg: Config) -> int:
                 if not args.copy:
                     raise SystemExit("copylist: give --copy ADDRESS[:LABEL[:MIN_SOL]] (one or more)")
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
-                                                buy_sol=args.buy or 0.05, max_buys=args.snipes)  # fmt: skip
+                                                buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
