@@ -144,6 +144,13 @@ def _trips(svc, cfg: Config, paths: OperatorPaths, now: float) -> dict:
         return {"n": 0, "since_ts": None, "newest_ts": None}
 
 
+def _mark_postmortem(paths: OperatorPaths, now: float, trips: dict, mode: str, reviewed: bool) -> None:
+    try:
+        learning.mark_postmortem(paths, now, trips, mode, reviewed=reviewed)
+    except OSError as exc:
+        _log(paths, now, f"post-mortem mark: failed: {exc}")
+
+
 def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) -> dict[str, float]:
     """When each state reason last called Claude. A state missing this round keeps its time until its refire window
     has passed, so a state that flaps (present, absent, present) is not news again each time it comes back."""
@@ -265,11 +272,9 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         )
         ledger = Ledger(paths.spend, cfg.operator.prices)
         extra = {"client": client} if client is not None else {}
-        if decision.mode in ("analyst", "postmortem"):  # every analyst turn reviews the live trips: not again soon
-            try:
-                learning.mark_postmortem(paths, t0, trips, decision.mode)
-            except OSError as exc:
-                _log(paths, t0, f"post-mortem mark: failed: {exc}")
+        review = decision.mode in ("analyst", "postmortem")  # every analyst turn reviews the live round trips
+        if review:  # its time first: a turn that fails or crashes is not retried before the gap has passed
+            _mark_postmortem(paths, t0, trips, decision.mode, reviewed=False)
         try:
             result = turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, jobs=jobs, now=now, **extra)
             if hasattr(result, "__await__"):
@@ -279,6 +284,8 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             if not notes.has_today("round failed", now()):
                 notifier.send(notes.write(f"round failed: {type(exc).__name__}: {str(exc)[:160]}", "decision"))
             return 0
+        if review and (result or {}).get("stopped") not in ("api_error", "refusal"):  # it ran: these trips are done
+            _mark_postmortem(paths, t0, trips, decision.mode, reviewed=True)
         _log(paths, now(), f"turn {decision.mode}: {json.dumps(result, default=str)}")
         return 0
     finally:

@@ -129,6 +129,21 @@ def test_five_new_live_round_trips_start_one_post_mortem_and_it_is_not_repeated(
     assert len(tmp_env["calls"]) == 1 and "call postmortem" in tmp_env["paths"].log.read_text()
 
 
+def test_a_failed_post_mortem_keeps_its_trips_for_the_next_one(tmp_env):
+    """An API error must not count as a review of the trips: the next post-mortem (three hours on, or the daily
+    analysis) still starts from the same sells; the three-hour spacing holds all the same."""
+    from snipetech.operator import learning
+
+    _sells(tmp_env["svc"].store, 5, NOW - 3600)
+    failed = lambda *a, **k: {"usd": 0.0, "tool_calls": 0, "stopped": "api_error", "notes": 1}
+    _op(tmp_env, turn=failed)
+    pm = learning.postmortem_state(tmp_env["paths"])
+    assert pm["ts"] == NOW and pm["sell_ts"] is None  # tried now; nothing reviewed yet
+    assert learning.trips_since_postmortem(tmp_env["svc"].store, "W", tmp_env["paths"], NOW + 4 * 3600)["n"] == 5
+    _op(tmp_env)  # straight after: not again within three hours
+    assert tmp_env["calls"] == []
+
+
 def test_a_post_mortem_is_recorded_only_when_the_turn_is_called(tmp_env, monkeypatch, capsys):
     from snipetech.operator import learning
 

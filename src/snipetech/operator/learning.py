@@ -375,29 +375,28 @@ def last_postmortem_ts(paths: OperatorPaths) -> float | None:
 
 
 def trips_since_postmortem(store: Store, wallet: str, paths: OperatorPaths, now: float) -> dict[str, Any]:
-    """Live round trips (sells in fills) after the newest sell the last post-mortem saw. Counting from that sell, not
-    from the clock, keeps a sell that measure records a few minutes late from slipping between two post-mortems."""
+    """Live round trips (sells in fills) after the newest sell the last finished post-mortem reviewed; the last day's
+    before any. Counting from that sell, not from the clock, keeps a sell that measure records a few minutes late
+    from slipping between two post-mortems."""
     st = postmortem_state(paths)
-    if st.get("sell_ts") is not None:
-        since = int(st["sell_ts"])
-    elif st.get("ts") is not None:
-        since = int(st["ts"])
-    else:
-        since = int(now - FIRST_WINDOW_SECS)
+    since = int(st["sell_ts"]) if st.get("sell_ts") is not None else int(now - FIRST_WINDOW_SECS)
     rows = store.fills(wallet=wallet or None, since_ts=since + 1, side="sell", limit=100_000)
     newest = max((int(r["ts"]) for r in rows if r.get("ts") is not None), default=None)
     return {"n": len(rows), "since_ts": since, "newest_ts": newest if newest is not None else st.get("sell_ts")}
 
 
-def mark_postmortem(paths: OperatorPaths, now: float, trips: dict[str, Any], mode: str) -> None:
-    """Record that a post-mortem turn ran now over `trips` (from trips_since_postmortem), so it is not repeated."""
+def mark_postmortem(paths: OperatorPaths, now: float, trips: dict[str, Any], mode: str, reviewed: bool = True) -> None:
+    """Record a post-mortem turn over `trips` (from trips_since_postmortem). Its time is recorded before the turn, so
+    a turn that fails is not retried within the gap; its trips count as reviewed (`reviewed`) only once it ran, so
+    the next post-mortem starts from the same sells when it did not."""
     try:
         data = json.loads(_state_path(paths).read_text())
         data = data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         data = {}
-    data["postmortem"] = {"ts": int(now), "sell_ts": trips.get("newest_ts"), "n": int(trips.get("n") or 0),
-                          "mode": str(mode)}  # fmt: skip
+    prev = data.get("postmortem") if isinstance(data.get("postmortem"), dict) else {}
+    data["postmortem"] = {"ts": int(now), "sell_ts": trips.get("newest_ts") if reviewed else prev.get("sell_ts"),
+                          "n": int(trips.get("n") or 0), "mode": str(mode)}  # fmt: skip
     paths.ensure()
     p = _state_path(paths)
     tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
