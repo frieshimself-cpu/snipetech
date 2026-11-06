@@ -637,6 +637,13 @@ class Store:
         self._exec(f"INSERT OR REPLACE INTO wallet_live ({', '.join(_LIVE_COLS)}) VALUES ({', '.join('?' * len(_LIVE_COLS))})",
                    [row.get(c) for c in _LIVE_COLS])  # fmt: skip
 
+    def prune_wallet_live(self, keep: list[str]) -> None:
+        """Drop live-expectancy rows of wallets the last measure run did not see (no longer leaders, or misattributed)."""
+        if keep:
+            self._exec(f"DELETE FROM wallet_live WHERE wallet NOT IN ({','.join('?' * len(keep))})", list(keep))
+        else:
+            self._exec("DELETE FROM wallet_live")
+
     def wallet_live(self, status: str | None = None) -> list[dict[str, Any]]:
         sql = f"SELECT {', '.join(_LIVE_COLS)} FROM wallet_live"
         params: tuple = ()

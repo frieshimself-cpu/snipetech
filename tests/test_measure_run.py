@@ -147,14 +147,43 @@ def test_landing_override_after_30_fills(tmp_path):
         out = asyncio.run(
             run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
         )
+        # measured: p75 of trades behind the leader is 2 (X and Y), plus the calibration offset of 3 (the 6 Nov copy
+        # test: 2-4 trades behind matched the lab's +6 price gaps) -> "+5"
+        assert out["landing_pos"] == "+5" and st.coverage("measure:landing_pos")["pos"] == "+5"
         assert (
-            out["landing_pos"] == "+1" and st.coverage("measure:landing_pos")["pos"] == "+1"
-        )  # we were 2nd in our slot (index 1)
+            st.coverage("measure:landing_pos")["behind_p75"] == 2 and st.coverage("measure:landing_pos")["pos_p75"] == 1
+        )
         from snipetech.qualify.run import effective_landing_pos
 
-        assert effective_landing_pos(st, cfg.qualify) == "+1"
+        # the measured landing never moves the labs closer than the configured one (rule 2: paper results at a
+        # better landing are not evidence); it can only push them further back
+        assert effective_landing_pos(st, cfg.qualify) == "+6"
+        st.set_coverage("measure:landing_pos", {"pos": "+9"})
+        assert effective_landing_pos(st, cfg.qualify) == "+9"
         st.set_coverage("measure:landing_pos", {})
         assert effective_landing_pos(st, cfg.qualify) == "+6"
+    finally:
+        st.close()
+
+
+def test_stale_wallet_live_rows_are_removed(tmp_path):
+    """A wallet that stops being a leader (the 4 Nov probe's bot) must not keep a live-expectancy row."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        st.put_wallet_live({"wallet": "STALE", "n": 2, "mean_sol": -0.005, "lower_sol": -0.01, "last_fill": NOW - 86400, "status": "warming",
+                            "updated_at": NOW - 86400})  # fmt: skip
+        sigs = _copy_world(st, coins=2)
+        asyncio.run(
+            run_measure(
+                svc,
+                cfg,
+                NOW,
+                since_ts=NOW - 7200,
+                ensure_meta=_ensure(st, {b: _meta(b) for b, _ in sigs}),
+                failed_sigs=_no_failed,
+            )
+        )
+        assert [r["wallet"] for r in st.wallet_live()] == [LEAD]
     finally:
         st.close()
 

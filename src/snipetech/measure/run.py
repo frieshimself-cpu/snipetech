@@ -15,6 +15,7 @@ from .classify import arm_from_fee, classify_trade, leaders_for, pair_round_trip
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
+LANDING_OFFSET = 3  # lab position = buys behind the leader + 3 (calibrated on the 6 Nov copy test)
 BASE_FEE_LAMPORTS = 5000
 
 
@@ -173,11 +174,20 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     live = wallet_live_rows(trips, now, m.half_life_days)
     for row in live:
         store.put_wallet_live(row)
+    store.prune_wallet_live([row["wallet"] for row in live])
     landing = None
     best = max(arms, key=lambda a: a["n"], default=None)
-    if best and best["n"] >= m.min_arm_fills and best.get("p75_pos") is not None:
-        landing = f"+{int(round(best['p75_pos']))}"
-        store.set_coverage(LANDING_KEY, {"pos": landing, "arm": best["arm"], "n": best["n"], "ts": int(now)})
+    if best and best["n"] >= m.min_arm_fills:
+        behind = sorted(int(b["trades_behind"]) for b in all_buys if (b.get("bid_arm") or "control") == best["arm"]
+                        and b.get("trades_behind") is not None)  # fmt: skip
+        if behind:
+            # the lab's "+N" counts every trade after the leader's; the 6 Nov copy test landed 2-4 buys behind at the
+            # price gaps the lab shows at +6, hence the offset of 3 between "buys behind" and the lab position
+            q = statistics.quantiles(behind, n=4) if len(behind) >= 2 else None
+            behind_p75 = q[2] if q else behind[0]
+            landing = f"+{int(round(behind_p75)) + LANDING_OFFSET}"
+            store.set_coverage(LANDING_KEY, {"pos": landing, "behind_p75": behind_p75, "pos_p75": best.get("p75_pos"),
+                                             "arm": best["arm"], "n": len(behind), "ts": int(now)})  # fmt: skip
     if move_cursor:
         store.set_coverage(LAST_KEY, {"ts": int(now)})
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),

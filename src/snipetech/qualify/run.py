@@ -35,12 +35,19 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
 
 
 def effective_landing_pos(store, q) -> str:
-    """The measured landing once the measure stage has enough fills on an arm (coverage measure:landing_pos), else the config."""
+    """The configured landing, or the measured one (coverage measure:landing_pos, written by the measure stage after
+    enough fills) when that is *further back*. A measured landing never moves the labs closer than the config: paper
+    results at a better landing than the one we get are not evidence (CLAUDE.md rule 2)."""
     try:
         pos = store.coverage("measure:landing_pos").get("pos")
     except Exception:  # noqa: BLE001
         pos = None
-    return str(pos) if pos else q.landing_pos
+    if not pos:
+        return q.landing_pos
+    try:
+        return str(pos) if int(str(pos).lstrip("+")) > int(str(q.landing_pos).lstrip("+")) else q.landing_pos
+    except ValueError:
+        return q.landing_pos
 
 
 def _tape_start(store, now: float) -> int:
