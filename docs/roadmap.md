@@ -32,6 +32,12 @@ every fill checked on the tape for its slot relative to the leader's buy. Expect
 real but modest product. Not started: needs the owner's go.
 
 
+**Day-2 refresh (6 Nov 04:40 UTC, 29.3 h of tape, +1 behind):** 112 wallets scored, 40 with a positive lower
+bound, top-25 total +14.0 SOL/day paper at 0.2. The five live candidates held or improved: 0xsolomon
+`3GzBLpxT` n 26 +0.052 (lower +0.046, 96 % wins), Gfree n 20 +0.070 (lower +0.043), Megga n 23 +0.048,
+Decu n 30 +0.037, Pengu n 16 +0.085. New strong rows: Cupseyy n 10 +0.103 (lower +0.065), 0xsolomon
+`DEdEW3SM` n 12 +0.074, dv n 47 +0.023. The live copy-landing test on the five started 04:36 UTC.
+
 **Sensitivity to the position inside the slot (6 Nov, 02:50 UTC).** Our own 11 speed-test fills (5 Nov 04:30–05:18)
 landed in the same slot as the last big buy ahead of them in 9 of 11 cases, with 0–3 trades in between. The same
 per-wallet ranking at +6 trades behind the leader (a conservative bound) keeps far less: 8 wallets with a
