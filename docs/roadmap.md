@@ -41,8 +41,14 @@ The measure stage (phase 3) is live too (6 Nov, 11:15 UTC): every buy and sell o
 cost. Its first pass re-derived the copy-test table by itself (62 failed duplicate sends in 24 h, mean gap 18 %, p75
 position 3.75) — the next live step will be measured the moment it happens, with no one watching.
 
-Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the three new timers (the
-exact lines are in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
+Later the same day (12:45 UTC): the book runs in dry mode every five minutes (it writes what it would do; it said
+"equity below floor" once, correctly, at 3 SOL) and the events stage is live — trending and graduating feeds, exact
+curve crossings and dev-payment edges (1 141 in the first scan) feeding the relationship gate. The OKTech audit found
+two settings we never sent (one send per transaction, preconfs) — both are defaults now — and the fee test is
+prepared for the owner to start (docs/live-recipe.md).
+
+Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers and the events
+service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
 bot; top up Vultr and say "resize now" between jobs; fund the wallet (6–10 SOL) and say yes to the fee test when
 you want the first measured live step.
 

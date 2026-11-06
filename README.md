@@ -262,7 +262,7 @@ and the dashboard shows the counts and the qualified wallets.
 snipetech discover run --sources tape,owner,coinfirst   # one run, local sources only; --json prints the summary
 snipetech qualify run --max 100                         # one lab over the 100 most overdue candidates
 snipetech remote sql "select status, count(*) from candidates group by status"
-sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer   # once, after deploy/setup.sh
+sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer snipetech-events   # once, after deploy/setup.sh
 ```
 
 **Measure (phase 3).** `snipetech measure run` (every 5 min) turns every buy and sell of the book wallet into a
@@ -282,6 +282,14 @@ equity floor, day stop, daily risk. It never stops a sniper while the wallet hol
 (the default) it only writes `[book dry] would …` notes, once per action per day, and calls OKTech for nothing; the
 owner reads a day of those before flipping `enabled = true` in the config file, after which every stop, create and
 start is a Telegram line. `--live` on the command line is refused while the config says disabled.
+
+**Events (phase 5).** `snipetech events poll` (a service, once a minute) writes the trending and graduating lists
+from SolanaTracker and Birdeye into an `events` table, once per appearance (pump.fun's own feed sits behind a
+Cloudflare browser check and is not used). `snipetech events scan` (hourly) adds the exact chain facts: the first
+trade that lifts a coin's curve past 10, 30 and 60 SOL of real reserves, measured from the coin's own starting
+reserves, and the creator's outgoing SOL in the day around any launch that reached 60 SOL, which becomes a
+`paid_by_dev` edge that the qualify stage's relationship gate reads. The nightly event-expectancy lab (each event
+kind as a trigger at the measured landing) is the next step of this phase.
 
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses
