@@ -13,7 +13,8 @@ from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
-from .policy import BookInputs, BookPlan, plan_book
+from ..positions import is_active
+from .policy import BOOK_NAME_RE, BookInputs, BookPlan, copied_leaders, plan_book
 from .state import day_accounting, record_run
 from .switch import book_live, effective_min_score
 
@@ -22,6 +23,19 @@ def _bookable(store) -> list[dict]:
     """Qualified wallets the book may copy: a wallet banned after it qualified keeps its verdict but is never booked."""
     banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}
     return [v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned]
+
+
+def _other_copies(store, tasks: list[dict]) -> set[str]:
+    """The leaders an active sniper that is not the book's already copies (OKTech buys once per signal per wallet, so
+    a book sniper on the same leader would only add failed sells and crossed exits). OKTech's task documents carry no
+    config: what a task copies comes from our own record of it; a task made in the OKTech app is unknown here."""
+    local = {r["id"]: r for r in store.oktech_snipers(active=False)}
+    out: set[str] = set()
+    for t in tasks:
+        if not is_active(t.get("status")) or BOOK_NAME_RE.match(str(t.get("name") or "")):
+            continue
+        out |= copied_leaders(local.get(t.get("id")) or {"kind": t.get("kind"), "source": t.get("source")})
+    return out
 
 
 def _line(a) -> str:
@@ -72,7 +86,8 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
-                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None)  # fmt: skip
+                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
+                     other_copies=_other_copies(store, snipers))  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.

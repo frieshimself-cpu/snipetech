@@ -30,6 +30,20 @@ class BookInputs:
     stopped: bool = False  # the owner's /stop flag is set: kill mode until /resume
     switched_on: bool = True  # the owner's switch ([book] enabled or /book on); off = stop the book's own snipers
     holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
+    other_copies: set[str] = field(default_factory=set)  # leaders an active sniper that is not the book's copies
+
+
+OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one buy per signal per wallet"
+
+
+def copied_leaders(rec: dict) -> set[str]:
+    """The wallets a sniper copies, from our own record of it (OKTech's task documents carry no config): the payload's
+    ctbotWallets, or the source of a copy sniper whose payload does not say."""
+    payload = rec.get("payload") or {}
+    out = {str(w["address"]) for w in payload.get("ctbotWallets") or [] if isinstance(w, dict) and w.get("address")}
+    if not out and rec.get("kind") in ("copy", "vcopy") and rec.get("source"):
+        out.add(str(rec["source"]))
+    return out
 
 
 @dataclass
@@ -208,8 +222,17 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 "not copied until those results are older than the measure window, whatever its paper score"
             )
             dropped[w[:6]] = why
-    arms = assign_arms(plan.ranked, inp.bid_model, cfg)
-    wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in plan.ranked}
+    bookable = []
+    for r in plan.ranked:
+        if r["wallet"] in inp.other_copies:  # its signals already buy through that sniper; a second adds failed sells
+            plan.actions.append(Action("skip", r["wallet"], None, None, None, OVERLAP_REASON))
+            plan.notes.append(f"{r['wallet'][:6]} is left to another sniper that already copies it from this OKTech "
+                              "wallet: OKTech buys once per signal per wallet")  # fmt: skip
+            dropped[r["wallet"][:6]] = OVERLAP_REASON
+        else:
+            bookable.append(r)
+    arms = assign_arms(bookable, inp.bid_model, cfg)
+    wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
     seen_w6: set[str] = set()
     for s in mine:
         w6, status = s["w6"], str(s.get("status"))

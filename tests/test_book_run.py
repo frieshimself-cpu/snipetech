@@ -367,7 +367,6 @@ def test_cli_book_run_live_is_refused_while_the_book_is_off(tmp_path):
         cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "book", "run", "--live"])
 
 
-
 def test_an_off_book_note_does_not_swallow_the_live_books_page(tmp_path):
     """Off in the morning below the floor (a note), then /book on: the halt must still reach the owner once."""
     st, cfg = _env(tmp_path)
@@ -403,3 +402,45 @@ def test_cli_book_bar_says_where_the_bar_lives(tmp_path, capsys):
     assert cli.main(["--db", str(db), "book", "bar", "0.002"]) == 0
     out = capsys.readouterr().out
     assert str(tmp_path / "data" / "operator" / "BOOK_MIN_SCORE") in out and "0.002" in out
+
+
+L3, L4 = "L3" + "z" * 30, "L4" + "w" * 30
+
+
+def _record(st, sid, kind, leader, name, created_at=NOW - 3600, removed=False):
+    """Our local record of a sniper we made: what it copies lives only here (OKTech's tasks carry no config)."""
+    payload = {"mode": "ctbot", "ctbotWallets": [{"address": leader}]} if kind != "dev" else {"mode": "normal"}
+    st.add_oktech_sniper({"id": sid, "external_id": f"e-{sid}", "kind": kind, "source": leader, "name": name,
+                          "config_hash": "h", "payload": payload, "created_at": created_at})  # fmt: skip
+    if removed:
+        st.remove_oktech_sniper(sid)
+
+
+def test_other_copies_come_from_active_non_book_copy_snipers(tmp_path):
+    """OKTech's task documents carry no config, so what a task copies comes from our own record of it. Only active
+    snipers that are not the book's count; a task we did not make is unknown and ignored."""
+    from snipetech.book.run import _other_copies
+
+    st, cfg = _env(tmp_path)
+    _record(st, "f1", "copy", L1, f"snipetech copy G2oZ {L1[:6]} arm:paid")
+    _record(st, "f2", "copy", L2, f"snipetech copy Gfree {L2[:6]}")
+    _record(st, "b1", "copy", L3, f"snipetech copy book {L3[:6]} arm:control")
+    _record(st, "v1", "vcopy", L4, f"snipetech verdict copy {L4[:6]}")
+    _record(st, "d1", "dev", "DEV", "snipetech dev DEVxxx")
+    tasks = [{"id": "f1", "name": f"snipetech copy G2oZ {L1[:6]} arm:paid", "status": "running"},
+             {"id": "f2", "name": f"snipetech copy Gfree {L2[:6]}", "status": "idle"},  # stopped: buys nothing
+             {"id": "b1", "name": f"snipetech copy book {L3[:6]} arm:control", "status": "running"},  # the book's own
+             {"id": "v1", "name": f"snipetech verdict copy {L4[:6]}", "status": "starting"},
+             {"id": "d1", "name": "snipetech dev DEVxxx", "status": "running"},
+             {"id": "x9", "name": "made in the OKTech app", "status": "running"}]  # fmt: skip
+    try:
+        assert _other_copies(st, tasks) == {L1, L4}
+        # the live book leaves L1 to the fee-test sniper that already copies it and books L2 only
+        svc = FakeSvc(st, snipers=tasks[:1])
+        cfg.book.enabled = True
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        created = [c[1] for c in svc.calls if c[0] == "create"]
+        assert created == [(f"{L2}:book:0.3:lab",)]
+    finally:
+        st.close()

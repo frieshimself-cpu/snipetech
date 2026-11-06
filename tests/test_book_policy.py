@@ -298,3 +298,24 @@ def test_a_paused_wallets_sniper_is_stopped_only_when_it_holds_nothing():
     a = next(x for x in held.actions if x.sniper_id == "s1")
     assert a.kind == "keep" and "holds a coin" in a.reason
     assert not any(x.kind in ("create", "start") and x.wallet == "W1" for x in held.actions)
+
+
+def test_no_book_sniper_for_a_leader_another_sniper_copies():
+    """OKTech buys once per signal per wallet: on 6 Nov, 5 of 5 signals two snipers could take gave one buy, and the
+    second sniper only added failed sells at its own fee and crossed exits. A ranked wallet that another sniper on
+    the account already copies is skipped and never created; the book's own sniper for it is never started, and a
+    running one is stopped only while the wallet holds nothing."""
+    cfg = _cfg()
+    plan = plan_book(_inp(other_copies={"W1"}), cfg.book)
+    assert {a.wallet for a in plan.actions if a.kind == "create"} == {"W2", "W3"}
+    skip = next(a for a in plan.actions if a.wallet == "W1")
+    assert skip.kind == "skip" and "another sniper" in skip.reason and "one buy per signal" in skip.reason
+    assert any("W1" in n and "another sniper" in n for n in plan.notes)
+    idle = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "idle"}]
+    assert not any(a.sniper_id == "s1" for a in plan_book(_inp(other_copies={"W1"}, snipers=idle), cfg.book).actions)
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    flat = plan_book(_inp(other_copies={"W1"}, snipers=running), cfg.book)
+    a = next(x for x in flat.actions if x.sniper_id == "s1")
+    assert a.kind == "stop" and "another sniper" in a.reason
+    held = plan_book(_inp(other_copies={"W1"}, snipers=running, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
+    assert next(x for x in held.actions if x.sniper_id == "s1").kind == "keep"
