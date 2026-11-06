@@ -12,6 +12,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
+from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive
 from .budget import Ledger
@@ -109,7 +110,9 @@ async def run_commands(cfg: Config, svc, paths: OperatorPaths, *, now: float, no
 async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.time, send: Callable[[str], bool] | None = None,
                         commands_get: Callable[[str, dict], dict] | None = None) -> int:  # fmt: skip
     """`snipetech operate --commands`: the one-minute kill-switch poll. No snapshot, no Claude, no API key: just the
-    owner's Telegram commands, acted on within a minute instead of at the next 15-minute round."""
+    owner's Telegram commands, acted on within a minute instead of at the next 15-minute round, then the watchdog for
+    coins nobody is selling (book/watch.py: it reads the wallet, OKTech's tasks while a coin is held and the tape, and
+    alerts; it never sells)."""
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     t0 = now()
     notes = NoteSink(paths, now=now)
@@ -119,6 +122,12 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
     await run_commands(
         cfg, svc, paths, now=t0, notifier=notifier, notes=notes, snap=load_current(paths), commands_get=commands_get
     )
+    try:
+        for h in await watch_wallet(cfg, svc, notifier, t0, notes=notes):
+            if h.get("alerted"):  # once per coin per 15 minutes, as the owner hears it
+                _log(paths, t0, f"watch: {h['mint']} is not being sold ({h['reason']})")
+    except Exception as exc:  # noqa: BLE001 - the watch must never break the one-minute kill switch
+        _log(paths, t0, f"watch: skipped: {type(exc).__name__}: {str(exc)[:160]}")
     return 0
 
 

@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..book.policy import BOOK_NAME_RE
+from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
 from .paths import OperatorPaths
@@ -16,11 +17,12 @@ ACTIVE = ("active", "activating")
 DEFAULT_EXPECTED = {"snipers_running": 0, "held": 0}
 
 
-STATE_REFIRE_SECS = 3600  # a persisting state (coin held, tape stale, ...) re-triggers at most once an hour
+STATE_REFIRE_SECS = 3600  # a persisting state (coin held, unmanaged coin, tape stale, ...) re-triggers at most hourly
 SERVICE_REFIRE_SECS = 6 * 3600  # a unit the owner has to enable or reset by hand: a reminder every six hours is enough
 
 
 STUCK_SECS = 30 * 60  # our exits close within minutes (dead exit 1 s, 300 s at most); a coin held longer is stuck
+# (the backstop: book/watch.py flags a coin nobody is selling about a minute after its first exit was due)
 
 
 def refire_secs(state_key: str) -> int:
@@ -128,6 +130,12 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
     allowed_held = exp["held"] + len(book_running)
     if len(snap.held) > allowed_held:
         states.append(f"{len(snap.held)} coin(s) held, expected {allowed_held}")
+    # the watchdog's coins nobody is selling (written by the one-minute pass), while the wallet still holds them: a
+    # decision now, reminded hourly, whatever the book expects to hold
+    held_mints = {str(h.get("mint")) for h in snap.held if h.get("mint")}
+    nobody = [h for h in current_hits(paths, now) if str(h.get("mint")) in held_mints]
+    if nobody:
+        states.append(f"unmanaged: {len(nobody)} coin(s) nobody is selling (operator/watch.json)")
     stuck = [h for h in snap.held if now - float(h.get("since", now)) > STUCK_SECS]
     if stuck:
         states.append(f"coin(s) held over {STUCK_SECS // 60} min: {len(stuck)}")  # which: the snapshot's held coins

@@ -281,3 +281,31 @@ def test_the_stuck_coin_reminder_key_does_not_change_with_the_coins(paths):
     ka = [k for k in decide(a, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
     kb = [k for k in decide(b, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
     assert ka and ka == kb
+
+
+def test_an_unmanaged_coin_is_a_decision_in_the_same_round(paths):
+    """The watchdog (book/watch.py) flags a coin nobody is selling within a minute and writes operator/watch.json. The
+    round that reads it calls the operator at once, not after the coin has been held 30 minutes, and reminds hourly
+    (not every six hours) while the coin is still held."""
+    from snipetech.book.watch import state_path
+    from snipetech.operator.gate import refire_secs
+
+    book = [{"id": "b1", "name": BOOK, "status": "running"}]
+    held = [{"mint": "Mint1111", "amount": 5.0, "since": NOW - 120}]
+    s = snap(book_live=True, snipers=book, held=held)
+    assert not decide(s, snap(), NOW, CFG, paths).call  # a young coin while the book trades: quiet
+    hits = [{"mint": "Mint1111", "reason": "exits_not_acted_on"}]
+    state_path(paths).write_text(json.dumps({"ts": NOW - 30, "hits": hits}))
+    d = decide(s, snap(), NOW, CFG, paths)
+    assert d.call and d.mode == "operator"
+    assert any(r.startswith("unmanaged: 1 coin(s) nobody is selling") for r in d.reasons)
+    key = next(k for k in d.state_reasons if k.startswith("unmanaged:"))
+    assert refire_secs(key) == 3600
+    prev = snap()
+    prev.reason_ts = {key: NOW - 1800}
+    assert not decide(s, prev, NOW, CFG, paths).call  # raised half an hour ago: not news yet
+    prev.reason_ts = {key: NOW - 3600}
+    assert decide(s, prev, NOW, CFG, paths).call  # an hour on and still held: raised again
+    assert not decide(snap(book_live=True, snipers=book, held=[]), snap(), NOW, CFG, paths).call  # sold since
+    state_path(paths).write_text(json.dumps({"ts": NOW - 3 * 3600, "hits": hits}))
+    assert not decide(s, snap(), NOW, CFG, paths).call  # a watch that stopped writing is not news
