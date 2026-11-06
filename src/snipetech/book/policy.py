@@ -31,9 +31,18 @@ class BookInputs:
     switched_on: bool = True  # the owner's switch ([book] enabled or /book on); off = stop the book's own snipers
     holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
     other_copies: set[str] = field(default_factory=set)  # leaders an active sniper that is not the book's copies
+    buys_by_sniper: dict[str, int] = field(default_factory=dict)  # book sniper id -> buys it has made (from the tape)
+    holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
 
 
 OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one buy per signal per wallet"
+RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
+
+
+def relied_buys(cfg: BookConfig) -> int:
+    """The buys the book relies on per sniper: retire_after_buys, but never the buy that uses up OKTech's cap (DTAU
+    and 4siK were that buy, and OKTech managed no exit for either), so at most max_buys_per_sniper - 1, at least 1."""
+    return max(1, min(int(cfg.retire_after_buys), int(cfg.max_buys_per_sniper) - 1))
 
 
 def copied_leaders(rec: dict) -> set[str]:
@@ -48,7 +57,7 @@ def copied_leaders(rec: dict) -> set[str]:
 
 @dataclass
 class Action:
-    kind: str  # create | start | stop | keep | skip | kill
+    kind: str  # create | start | stop | retire (stop, delete, replace) | keep | skip | kill
     wallet: str | None
     arm: str | None
     fill_sol: float | None
@@ -234,11 +243,18 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     arms = assign_arms(bookable, inp.bid_model, cfg)
     wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
     seen_w6: set[str] = set()
+    # holder attribution is off (run_book passes holders=None): a sniper is retired only while the wallet holds nothing
+    flat = inp.holdings_known and not inp.holdings
+    relied = relied_buys(cfg)
     for s in mine:
         w6, status = s["w6"], str(s.get("status"))
         if w6 in wanted and wanted[w6][1] is not None:
             wallet, arm = wanted[w6]
-            if status in ("running", "starting") and s["arm"] == arm:
+            if status in ("running", "starting", "idle") and flat and inp.buys_by_sniper.get(s["id"], 0) >= relied:
+                # not seen: the same plan creates its replacement. An idle one is replaced too, never restarted with
+                # a part-used cap (a retire whose delete failed leaves it idle)
+                plan.actions.append(Action("retire", wallet, s["arm"], None, s["id"], RETIRE_REASON))
+            elif status in ("running", "starting") and s["arm"] == arm:
                 plan.actions.append(Action("keep", wallet, arm, None, s["id"], f"ranked and {status} on its arm"))
                 seen_w6.add(w6)
             elif status in ("running", "starting") and s["arm"] != arm:

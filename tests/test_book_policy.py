@@ -319,3 +319,45 @@ def test_no_book_sniper_for_a_leader_another_sniper_copies():
     assert a.kind == "stop" and "another sniper" in a.reason
     held = plan_book(_inp(other_copies={"W1"}, snipers=running, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
     assert next(x for x in held.actions if x.sniper_id == "s1").kind == "keep"
+
+
+def _one(plan, sid):
+    return next(a for a in plan.actions if a.sniper_id == sid)
+
+
+def _s1(cfg, status="running", buys=1, **over):
+    """What the plan does with W1's book sniper s1, which has made `buys` buys; the wallet's holdings were read."""
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": status}]
+    kw = {"snipers": snipers, "buys_by_sniper": {"s1": buys}, "holdings_known": True} | over
+    return _one(plan_book(_inp(**kw), cfg.book), "s1")
+
+
+def test_a_sniper_is_retired_after_its_relied_on_buy_only_while_flat():
+    """DTAU (6 Nov) and 4siK (5 Nov) were the buy that used up a sniper's cap, and OKTech managed no exit for either.
+    The book relies on a sniper's first buy only: once it has made it and the wallet holds nothing, it is retired and
+    the same plan creates a fresh one, so its two spare buys are never needed. Never while the wallet holds a coin or
+    while its holdings could not be read."""
+    cfg = _cfg()
+    assert cfg.book.retire_after_buys == 1 and cfg.book.max_buys_per_sniper == 3
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    plan = plan_book(_inp(snipers=running, buys_by_sniper={"s1": 1}, holdings_known=True), cfg.book)
+    a = _one(plan, "s1")
+    assert a.kind == "retire" and a.wallet == "W1" and "holds nothing" in a.reason and "spare" in a.reason
+    assert any(x.kind == "create" and x.wallet == "W1" for x in plan.actions)  # replaced in the same plan
+    held = [{"mint": "M1", "amount": 5.0}]
+    assert _s1(cfg, holdings=held).kind == "keep"
+    holding = plan_book(_inp(snipers=running, holdings=held, buys_by_sniper={"s1": 1}, holdings_known=True), cfg.book)
+    assert not any(x.kind == "create" and x.wallet == "W1" for x in holding.actions)
+    assert _s1(cfg, holdings_known=False).kind == "keep"  # holdings could not be read
+    assert _s1(cfg, buys=0).kind == "keep"  # no buy yet
+    assert _s1(cfg, status="starting").kind == "retire"
+    # a stopped sniper that already made its buy is replaced, never restarted with a part-used cap
+    assert _s1(cfg, status="idle").kind == "retire" and _s1(cfg, status="idle", buys=0).kind == "start"
+
+
+def test_the_book_never_relies_on_the_buy_that_uses_up_the_cap():
+    """retire_after_buys is used as at most max_buys_per_sniper - 1 (and at least 1), whatever a config says."""
+    cfg = _cfg(retire_after_buys=5)
+    assert _s1(cfg, buys=1).kind == "keep" and _s1(cfg, buys=2).kind == "retire"
+    cfg.book.retire_after_buys = 0
+    assert _s1(cfg, buys=0).kind == "keep" and _s1(cfg, buys=1).kind == "retire"
