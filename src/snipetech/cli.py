@@ -189,6 +189,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
                     help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60")
     sp.add_argument("--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one")
+    sp.add_argument("--priority", type=float, help="copylist: priority fee in SOL per buy (OKTech minimum 0.001)")
+    sp.add_argument("--tip", type=float, help="copylist: tip in SOL per buy (OKTech minimum 0.002)")
+    sp.add_argument("--send-count", type=int, help="copylist: extraParams.globalSendCount (1 = send each transaction once)")
+    sp.add_argument("--tag", default="", help="copylist: word appended to the sniper names (e.g. control / paid)")
     sp.add_argument("--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes")
     sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
@@ -523,7 +527,8 @@ async def _run(args, cfg: Config) -> int:
                 if not args.copy:
                     raise SystemExit("copylist: give --copy ADDRESS[:LABEL[:MIN_SOL]] (one or more)")
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
-                                                buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit)  # fmt: skip
+                                                buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
+                                                priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0

@@ -296,3 +296,25 @@ def test_list_copy_sniper_hold60_exit():
     c = list_copy_sniper("JAunzNqs3bVBcWDjDxfq9rgLzJMCadNXoaCgfzLGMtYs", "Pengu", 0.1, 0.05, 5, exit_name="hold60").config
     assert c["autoSell"]["sellAfterSeconds"] == 60 and "stopLoss" not in c["autoSell"] and "deadExit" not in c["autoSell"]
     assert c["ctbotWallets"][0]["minSol"] == 0.1
+
+
+def test_list_copy_sniper_fee_and_send_count_overrides():
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5,
+                         priority_fee=0.02, tip=0.02, send_count=1, tag="paid")  # fmt: skip
+    c = p.config
+    assert c["priorityFee"] == 0.02 and c["tipAmount"] == 0.02
+    assert c["extraParams"]["globalSendCount"] == 1
+    assert c["autoSell"]["sellPriorityFeeSol"] == 0.02 and c["autoSell"]["sellTipAmount"] == 0.02  # exits bid the same
+    assert "paid" in p.name and any("0.02" in s for s in p.summary)
+    base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
+    assert "extraParams" not in base.config and base.config["priorityFee"] == 0.001 and base.config["tipAmount"] == 0.002
+
+
+def test_copylist_cli_accepts_fee_test_flags():
+    from snipetech.cli import build_parser
+
+    a = build_parser().parse_args(["oktech", "copylist", "--copy", "W:Gfree:0.5", "--buy", "0.2", "--priority", "0.02", "--tip", "0.02",
+                                   "--send-count", "1", "--tag", "paid"])  # fmt: skip
+    assert a.priority == 0.02 and a.tip == 0.02 and a.send_count == 1 and a.tag == "paid"
