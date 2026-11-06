@@ -164,6 +164,9 @@ class OktechConfig:
     jetstream: bool = True  # ctbot speedMode
     preconf: bool = True  # the account is approved; OKTech ignores the flag on task types it gates (harmless to ask)
     max_snipers: int = 20  # never plan more than this many (OKTech runs at most 20 at once)
+    # verdict snipers (`oktech push`): capped like every other sniper, and never bigger than this per buy
+    verdict_max_buys: int = 5
+    max_buy_sol: float = 1.0
     # Sells: OKTech sends every sell 2-3 times on separate nonce accounts (measured 5-6 Nov; the losers fail with pump
     # error 6023 and still pay their priority fee), so the sell bid is a fixed small fee for every arm, never the buy bid.
     sell_fee_sol: float = 0.002  # autoSell sellPriorityFeeSol and sellTipAmount on copy snipers

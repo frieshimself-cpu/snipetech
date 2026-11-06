@@ -572,7 +572,7 @@ class Service:
     async def oktech_plan(self, kinds: tuple[str, ...] = ("copy", "dev")) -> dict:
         """The OKTech snipers snipetech's current verdicts call for, vs. the ones it already made."""
         from .meta import WSOL, ensure_assets
-        from .oktech import build_plan, diff
+        from .oktech import PUSH_KINDS, build_plan, diff
 
         try:
             await ensure_assets(self.store, self.cfg.rpc.http_url, [])  # SOL/USD for market-cap filters
@@ -580,7 +580,8 @@ class Service:
             self.progress(f"SOL price lookup failed: {exc}")
         sol_usd = (self.store.asset(WSOL) or {}).get("price_usd")
         planned = build_plan(self.store, self.cfg, kinds, sol_usd)
-        d = diff(planned, [r for r in self.store.oktech_snipers() if r["kind"] in kinds])
+        own = {PUSH_KINDS[k] for k in kinds if k in PUSH_KINDS}
+        d = diff(planned, [r for r in self.store.oktech_snipers() if r["kind"] in own])
 
         def show(p):
             return {"kind": p.kind, "source": p.source, "name": p.name, "summary": p.summary, "notes": p.notes,
@@ -593,11 +594,18 @@ class Service:
         }  # fmt: skip
 
     async def oktech_push(self, plan: dict, prune: bool = False) -> list[dict]:
+        """Apply a plan. Retires nothing while the sniper wallet holds a coin (or its holdings cannot be read)."""
         from .oktech import apply
 
+        held: list[dict] | None = None
+        if self.cfg.operator.wallet:
+            try:
+                held = await self.open_positions(self.cfg.operator.wallet)
+            except Exception as exc:  # noqa: BLE001 - unknown holdings block every retire
+                self.progress(f"holdings unknown ({exc}): nothing will be retired")
         client = self._oktech()
         try:
-            return await apply(client, self.store, plan["_sync"], self.cfg.oktech.wallet or None, prune)
+            return await apply(client, self.store, plan["_sync"], self.cfg.oktech.wallet or "SNIPER", prune, held=held)
         finally:
             await client.close()
 
@@ -623,7 +631,9 @@ class Service:
         if create:
             client = self._oktech()
             try:
-                out["result"] = await apply(client, self.store, SyncPlan(create=[p]), self.cfg.oktech.wallet or None)
+                out["result"] = await apply(
+                    client, self.store, SyncPlan(create=[p]), self.cfg.oktech.wallet or "SNIPER", held=[]
+                )
             finally:
                 await client.close()
         return out

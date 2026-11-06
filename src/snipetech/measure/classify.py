@@ -14,6 +14,7 @@ from ..store import Store
 ARM_RE = re.compile(r"arm:([A-Za-z0-9_-]+)")
 
 
+COPY_KINDS = ("copy", "vcopy")  # copylist / book snipers and verdict snipers from `oktech push`
 LEADER_GRACE_SECS = 60  # a buy in flight when the sniper was made or removed still counts
 
 
@@ -21,7 +22,7 @@ def copy_sniper_rows(store: Store) -> list[dict]:
     """Every copy sniper we ever made (removed ones too), with the wallets it copies and when it lived."""
     out = []
     for rec in store.oktech_snipers(active=False):
-        if rec.get("kind") != "copy":
+        if rec.get("kind") not in COPY_KINDS:
             continue
         wallets = {
             str(w["address"])
@@ -55,7 +56,7 @@ def leaders_for(store: Store, ts: float | None = None) -> set[str]:
         return leaders_at(copy_sniper_rows(store), ts)
     out: set[str] = set()
     for rec in store.oktech_snipers(active=True):
-        if rec.get("kind") != "copy":
+        if rec.get("kind") not in COPY_KINDS:
             continue
         for w in (rec.get("payload") or {}).get("ctbotWallets") or []:
             if isinstance(w, dict) and w.get("address"):

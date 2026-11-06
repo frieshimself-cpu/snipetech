@@ -170,3 +170,11 @@ def test_sell_without_buy_is_left_open():
         and [s["sig"] for s in out["unmatched"]] == ["S0"]
         and [b["sig"] for b in out["open"]] == ["B1"]
     )
+
+
+def test_verdict_copy_snipers_are_leaders_too():
+    st = Store(":memory:")
+    st.add_oktech_sniper({"id": "v1", "external_id": "e", "kind": "vcopy", "source": LEAD, "name": "snipetech copy x", "config_hash": "h",
+                          "payload": {"ctbotWallets": [{"address": LEAD}]}})  # fmt: skip
+    assert leaders_for(st) == {LEAD}
+    st.close()

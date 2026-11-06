@@ -56,7 +56,11 @@ def test_dev_and_copy_snipers():
     cfg = Config()
     d = dev_sniper(DEV_SCORE, cfg)
     assert d.config["mode"] == "normal" and d.config["devWallets"] == [DEV] and d.config["buyAmount"] == 0.25
-    assert d.config["singleSnipe"] is False and "autoSell" in d.config
+    assert (
+        d.config["singleSnipe"] is True
+        and d.config["totalSnipes"] == Config().oktech.verdict_max_buys
+        and "autoSell" in d.config
+    )
     assert dev_sniper(DEV_SCORE | {"verdict": "AVOID"}, cfg) is None
     c = copy_sniper(COPY_SCORE, cfg, sol_usd=200.0)
     w = c.config["ctbotWallets"][0]
@@ -64,7 +68,8 @@ def test_dev_and_copy_snipers():
     assert c.config["ctbotCopyExit"]["enabled"] and c.config["autoSell"]["stages"][0]["gainPercent"] == 30.0
     assert any("other buyers" in n for n in c.notes) and any("2 slot" in s for s in c.summary)
     assert copy_sniper(COPY_SCORE, cfg, sol_usd=None).config["ctbotWallets"][0].get("maxMcapUsd") is None
-    assert len(c.external_id) <= 120 and c.external_id.startswith(f"st:copy:{TARGET}:")
+    assert len(c.external_id) <= 120 and c.external_id.startswith(f"st:vcopy:{TARGET}:")
+    assert c.config["singleSnipe"] is True and c.config["totalSnipes"] == Config().oktech.verdict_max_buys
 
 
 def test_plan_and_diff():
@@ -73,13 +78,15 @@ def test_plan_and_diff():
     store.put_score("copy", TARGET, COPY_SCORE)
     store.put_score("deployer", "Bad", DEV_SCORE | {"address": "Bad", "verdict": "AVOID"})
     plan = build_plan(store, Config(), sol_usd=200.0)
-    assert [p.kind for p in plan] == ["copy", "dev"]  # best bound first
+    assert [p.kind for p in plan] == ["vcopy", "dev"]  # best bound first
     rec = [{"id": "t1", "kind": "dev", "source": DEV, "name": "x", "config_hash": plan[1].config_hash},
-           {"id": "t2", "kind": "copy", "source": TARGET, "name": "y", "config_hash": "old"},
-           {"id": "t3", "kind": "dev", "source": "Gone", "name": "z", "config_hash": "h"}]  # fmt: skip
+           {"id": "t2", "kind": "vcopy", "source": TARGET, "name": "y", "config_hash": "old"},
+           {"id": "t3", "kind": "dev", "source": "Gone", "name": "z", "config_hash": "h"},
+           {"id": "h1", "kind": "copy", "source": TARGET, "name": "snipetech copy hand TARGET", "config_hash": "x"},  # hand-made
+           {"id": "b1", "kind": "copy", "source": "BookW", "name": "snipetech copy book BookW arm:control", "config_hash": "x"}]  # fmt: skip
     d = diff(plan, rec)
     assert [r["id"] for r, _ in d.keep] == ["t1"] and [r["id"] for r, _ in d.replace] == ["t2"]
-    assert [r["id"] for r in d.remove] == ["t3"] and not d.create
+    assert [r["id"] for r in d.remove] == ["t3"] and not d.create  # copylist and book snipers are never push's to touch
 
 
 def test_requests_sent_to_oktech():
@@ -102,7 +109,7 @@ def test_requests_sent_to_oktech():
     store.put_score("deployer", DEV, DEV_SCORE)
     store.put_score("copy", TARGET, COPY_SCORE)
     store.add_oktech_sniper(
-        {"id": "old-copy", "kind": "copy", "source": TARGET, "name": "old", "config_hash": "stale", "payload": {}}
+        {"id": "old-copy", "kind": "vcopy", "source": TARGET, "name": "old", "config_hash": "stale", "payload": {}}
     )
 
     async def go():
@@ -110,7 +117,7 @@ def test_requests_sent_to_oktech():
             "https://oktech.test/api/sniper-api/v1", key="oks_test", transport=httpx.MockTransport(handler)
         )
         plan = diff(build_plan(store, Config(), sol_usd=150.0), store.oktech_snipers())
-        res = await apply(client, store, plan, wallet="SNIPER")
+        res = await apply(client, store, plan, wallet="SNIPER", held=[])  # nothing held: the replaced sniper may go
         await client.close()
         return res
 
@@ -692,3 +699,103 @@ def test_guard_waits_for_the_tape_instead_of_tripping_on_an_unpriced_coin(monkey
     assert not rep["stopped"] and calls == [] and any("unpriced" in e for e in rep["events"])
     assert rep["held"] and rep["held"][0]["priced"] is False
     store.close()
+
+
+def test_push_never_retires_while_a_coin_is_held():
+    """A stopped sniper strands its coin; OKTech's task documents do not say which sniper holds what, so while the
+    wallet holds any coin nothing is stopped or deleted (the replacement is still created)."""
+    from snipetech.oktech import SyncPlan
+
+    sent = []
+
+    def handler(request):
+        sent.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/tasks"):
+            return httpx.Response(201, json={"success": True, "task": {"id": "new1", "status": "idle"}})
+        return httpx.Response(200, json={"success": True})
+
+    store = Store(":memory:")
+    p = copy_sniper(COPY_SCORE, Config(), sol_usd=200.0)
+    old = {"id": "old1", "kind": "vcopy", "source": TARGET, "name": "old", "config_hash": "stale"}
+
+    async def go():
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="k", transport=httpx.MockTransport(handler))
+        try:
+            return await apply(
+                client, store, SyncPlan(replace=[(old, p)]), "SNIPER", held=[{"mint": "M1", "amount": 5.0}]
+            )
+        finally:
+            await client.close()
+
+    res = asyncio.run(go())
+    assert not any(m in ("DELETE",) or path.endswith("/stop") for m, path in sent)
+    assert any(r["action"] == "created" for r in res) and any(
+        r["action"].startswith("kept") and "held" in r["action"] for r in res
+    )
+
+
+def test_push_retires_an_old_sniper_only_after_its_replacement_exists():
+    from snipetech.oktech import SyncPlan
+
+    sent = []
+
+    def handler(request):
+        sent.append((request.method, request.url.path))
+        if request.method == "POST" and request.url.path.endswith("/tasks"):
+            return httpx.Response(500, json={"success": False, "code": "SERVER", "error": "boom"})
+        return httpx.Response(200, json={"success": True})
+
+    store = Store(":memory:")
+    p = copy_sniper(COPY_SCORE, Config(), sol_usd=200.0)
+    old = {"id": "old1", "kind": "vcopy", "source": TARGET, "name": "old", "config_hash": "stale"}
+
+    async def go():
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="k", transport=httpx.MockTransport(handler))
+        try:
+            return await apply(client, store, SyncPlan(replace=[(old, p)]), "SNIPER", held=[])
+        finally:
+            await client.close()
+
+    res = asyncio.run(go())
+    assert not any(m == "DELETE" or path.endswith("/stop") for m, path in sent)  # its replacement failed: old one stays
+    assert any(r["action"] == "create failed" for r in res)
+
+
+def test_verdict_sizes_are_capped_and_the_mcap_filter_is_bucketed():
+    big = COPY_SCORE | {"recommended": COPY_SCORE["recommended"] | {"size_sol": 5.0}}
+    cfg = Config()
+    c = copy_sniper(big, cfg, sol_usd=200.0)
+    assert c.config["buyAmount"] == cfg.oktech.max_buy_sol and any("capped" in n for n in c.notes)
+    a, b = copy_sniper(COPY_SCORE, cfg, sol_usd=200.0), copy_sniper(COPY_SCORE, cfg, sol_usd=201.3)
+    assert a.config_hash == b.config_hash  # a SOL price tick does not flip every sniper to "replace"
+
+
+def test_duplicate_answer_without_a_task_id_is_looked_up_by_external_id():
+    from snipetech.oktech import SyncPlan
+
+    p = copy_sniper(COPY_SCORE, Config(), sol_usd=200.0)
+
+    def handler(request):
+        if request.method == "POST" and request.url.path.endswith("/tasks"):
+            return httpx.Response(409, json={"success": False, "code": "DUPLICATE_EXTERNAL_ID", "error": "exists"})
+        if request.method == "GET" and request.url.path.endswith("/tasks"):
+            return httpx.Response(
+                200, json={"success": True, "tasks": [{"id": "found1", "externalId": p.external_id, "status": "idle"}]}
+            )
+        return httpx.Response(200, json={"success": True})
+
+    store = Store(":memory:")
+
+    async def go():
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="k", transport=httpx.MockTransport(handler))
+        try:
+            return await apply(client, store, SyncPlan(create=[p]), "SNIPER", held=[])
+        finally:
+            await client.close()
+
+    res = asyncio.run(go())
+    assert (
+        res[0]["id"] == "found1"
+        and res[0]["action"] == "kept (already there)"
+        and store.oktech_snipers()[0]["id"] == "found1"
+    )

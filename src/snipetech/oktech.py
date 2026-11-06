@@ -30,7 +30,8 @@ import httpx
 from .config import Config
 from .store import Store
 
-KINDS = ("copy", "dev")
+KINDS = ("copy", "dev")  # what `oktech plan --only` names; verdict copies are recorded as kind "vcopy"
+PUSH_KINDS = {"copy": "vcopy", "dev": "dev"}
 
 
 class OktechError(Exception):
@@ -131,6 +132,24 @@ def _round(x: float, nd: int = 4) -> float:
     return float(round(x, nd))
 
 
+def _capped_size(size_sol: float, cfg: Config, notes: list[str]) -> float:
+    """A verdict's recommended size, never above [oktech] max_buy_sol (the sweep recommended up to 5 SOL)."""
+    size = max(0.001, float(size_sol))
+    if size > cfg.oktech.max_buy_sol:
+        notes.append(f"size {size:g} SOL capped at {cfg.oktech.max_buy_sol:g} SOL ([oktech] max_buy_sol)")
+        size = cfg.oktech.max_buy_sol
+    return _round(size)
+
+
+def _bucket_usd(x: float) -> int:
+    """Two significant figures (41,234 -> 41,000)."""
+    if x <= 0:
+        return 0
+    digits = len(str(int(x))) - 2
+    step = 10 ** max(0, digits)
+    return int(round(x / step) * step)
+
+
 def execution_params(send_count: int | None = None, compute_units: int | None = None) -> dict[str, Any]:
     """`extraParams` for every sniper we make.
 
@@ -227,10 +246,11 @@ def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
     prio, tip = fees(rec.get("bribe_sol"), cfg.oktech.tip_share, notes)
     config: dict[str, Any] = {
         "mode": "normal", "platforms": ["pumpfun"], "devWallets": [score["address"]],
-        "buyAmount": _round(max(0.001, float(rec["buy_sol"]))), "priorityFee": prio, "tipAmount": tip, "singleSnipe": False,
+        "buyAmount": _capped_size(float(rec["buy_sol"]), cfg, notes), "priorityFee": prio, "tipAmount": tip, "singleSnipe": True,
+        "totalSnipes": max(1, min(100, int(cfg.oktech.verdict_max_buys))),
         "extraParams": execution_params(compute_units=cfg.oktech.compute_units),
     }  # fmt: skip
-    sell = autosell(rec.get("exit"), notes)
+    sell = autosell(rec.get("exit"), notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
     if sell:
         config["autoSell"] = sell
     if cfg.oktech.preconf:
@@ -268,7 +288,9 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
                               "minSol": _round(max(float(filt.get("min_target_buy_sol") or 0), cfg.copier.min_leader_sol))}  # fmt: skip
     if filt.get("max_entry_mcap_sol"):
         if sol_usd:
-            wallet["maxMcapUsd"] = round(float(filt["max_entry_mcap_sol"]) * sol_usd)
+            wallet["maxMcapUsd"] = _bucket_usd(
+                float(filt["max_entry_mcap_sol"]) * sol_usd
+            )  # 2 significant figures: a price tick is not a new sniper
         else:
             notes.append("max entry market cap filter skipped: no SOL/USD price available")
     if filt.get("max_crowd_buyers") is not None:
@@ -279,8 +301,8 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
         "ctbotTimeWindowMs": cfg.oktech.copy_time_window_ms,
         "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": cfg.oktech.copy_exit_threshold_percent, "sellPercent": 100,
                           "triggerWalletOnly": True, "delayMs": 0},
-        "buyAmount": _round(max(0.001, float(rec["size_sol"]))), "priorityFee": prio, "tipAmount": tip,
-        "singleSnipe": False, "speedMode": cfg.oktech.jetstream,
+        "buyAmount": _capped_size(float(rec["size_sol"]), cfg, notes), "priorityFee": prio, "tipAmount": tip,
+        "singleSnipe": True, "totalSnipes": max(1, min(100, int(cfg.oktech.verdict_max_buys))), "speedMode": cfg.oktech.jetstream,
         "extraParams": execution_params(compute_units=cfg.oktech.compute_units),
     }  # fmt: skip
     if cfg.oktech.preconf:
@@ -288,7 +310,7 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     own = rec.get("own_exit_params")
     exit_line = "sells when the copied wallet sells"
     if own and rec.get("own_exit_beats_mirroring"):
-        sell = autosell(own | {"copy_exit": True}, notes)
+        sell = autosell(own | {"copy_exit": True}, notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
         if sell:
             config["autoSell"] = sell
             exit_line += f", or earlier on its own exits ({_describe_exit(own)}), which did better on unseen positions"
@@ -302,7 +324,7 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     ]
     if lat is not None:
         summary.append(f"profitable only if OKTech lands within {lat} slot(s) of its buys")
-    return PlannedSniper("copy", a, f"snipetech copy {a[:6]}", config, summary, notes)
+    return PlannedSniper("vcopy", a, f"snipetech verdict copy {a[:6]}", config, summary, notes)
 
 
 EXITS = {
@@ -406,7 +428,9 @@ class SyncPlan:
 
 
 def diff(planned: list[PlannedSniper], recorded: list[dict]) -> SyncPlan:
-    by_source = {(r["kind"], r["source"]): r for r in recorded}
+    """What `push` changes. Only its own rows count (verdict copies "vcopy" and dev snipers): snipers made with
+    copylist, the book, probes and strategies are never push's to replace or prune."""
+    by_source = {(r["kind"], r["source"]): r for r in recorded if r.get("kind") in PUSH_KINDS.values()}
     out = SyncPlan()
     wanted = set()
     for p in planned:
@@ -422,22 +446,42 @@ def diff(planned: list[PlannedSniper], recorded: list[dict]) -> SyncPlan:
     return out
 
 
-async def apply(
-    client: OktechClient, store: Store, plan: SyncPlan, wallet: str | None, prune: bool = False
-) -> list[dict]:
-    """Create new / replaced snipers, then retire the ones they replace (and, with prune, the obsolete)."""
-    results = []
-    creates = plan.create + [p for _, p in plan.replace]
-    for i, p in enumerate(creates):
+async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str | None, prune: bool = False,
+                held: list[dict] | None = None) -> list[dict]:  # fmt: skip
+    """Create new and replacement snipers; retire an old one only after its replacement exists, and never while the
+    wallet holds a coin (`held` = open positions; None = unknown, which also blocks every retire: OKTech's task
+    documents do not say which sniper holds what, and a stopped sniper strands its coin)."""
+    results: list[dict] = []
+    created_for: set[str] = set()  # sources whose replacement exists
+    creates = [(None, p) for p in plan.create] + [(old, p) for old, p in plan.replace]
+    for i, (old, p) in enumerate(creates):
         if i and i % 18 == 0:
             await asyncio.sleep(61)  # 20 creates a minute per key
-        ans = await client.create(p.name, p.config, wallet, p.external_id)
+        try:
+            ans = await client.create(p.name, p.config, wallet, p.external_id)
+        except OktechError as exc:
+            results.append({"action": "create failed", "name": p.name, "error": str(exc)})
+            continue
         task = ans.get("task") or {}
-        store.add_oktech_sniper({"id": task["id"], "external_id": p.external_id, "kind": p.kind, "source": p.source, "name": p.name,
+        tid = task.get("id")
+        if not tid and ans.get("duplicate"):  # the 409 body carries no task: find it by its externalId
+            with contextlib.suppress(OktechError):
+                tid = next((t.get("id") for t in await client.tasks() if t.get("externalId") == p.external_id), None)
+        if not tid:
+            results.append({"action": "create failed", "name": p.name, "error": "no task id in OKTech's answer"})
+            continue
+        store.add_oktech_sniper({"id": tid, "external_id": p.external_id, "kind": p.kind, "source": p.source, "name": p.name,
                                  "config_hash": p.config_hash, "payload": p.config, "created_at": int(time.time())})  # fmt: skip
-        results.append({"action": "kept (already there)" if ans.get("duplicate") else "created", "name": p.name, "id": task["id"],
+        results.append({"action": "kept (already there)" if ans.get("duplicate") else "created", "name": p.name, "id": tid,
                         "status": task.get("status")})  # fmt: skip
-    retire = [old for old, _ in plan.replace] + (plan.remove if prune else [])
+        created_for.add(p.source)
+    retire = [old for old, p in plan.replace if p.source in created_for] + (plan.remove if prune else [])
+    if retire and (held is None or held):
+        why = "the wallet holds " + ", ".join(str(h.get("mint"))[:8] for h in held) if held else "holdings unknown"
+        for old in retire:
+            results.append({"action": f"kept: {why} (a stopped sniper strands its coin); retire it once nothing is held",
+                            "name": old.get("name"), "id": old.get("id")})  # fmt: skip
+        return results
     for old in retire:
         with contextlib.suppress(OktechError):  # it may already be idle; the delete is what counts
             await client.stop(old["id"])
