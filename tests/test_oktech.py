@@ -1086,6 +1086,7 @@ def test_menu_exits_are_expressible_valid_and_carry_a_stop_loss():
             assert validate_exit(dict(m.params)) == [] and 0 < m.params["stop_loss"] <= 0.35
     with pytest.raises(TypeError):
         MENU["lab"].params["stop_loss"] = 0.9  # the menu cannot be changed by whoever reads it
+    assert len(set(COPY_EXIT_MENU)) == 3  # and its exits can be kept in a set
     # the presets sent today are the menu's lab and hold60, value for value
     assert EXITS == {
         "lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},

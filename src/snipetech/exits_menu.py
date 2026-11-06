@@ -42,6 +42,9 @@ class MenuExit:
         object.__setattr__(self, "features", tuple(self.features))
         object.__setattr__(self, "family", self.family or self.name)
 
+    def __hash__(self) -> int:  # the parameters are a mapping: a menu exit is known by its name
+        return hash(self.name)
+
 
 COPY_EXIT_MENU: tuple[MenuExit, ...] = (
     MenuExit(
