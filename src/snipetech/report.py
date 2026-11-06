@@ -594,3 +594,24 @@ def render_sweep(r: dict) -> str:
             tail = "dry run" if x.get("dry_run") else f"sent {x.get('signature')}"
             out.append(f"  {x['mint']}: {x['amount']} units, quote {x['quote_sol']:.4f} SOL, floor {x['floor_sol']:.4f} SOL, {tail}")
     return "\n".join(out)
+
+
+def render_birdeye_pnl(rows: list[dict]) -> str:
+    out = ["Birdeye 30-day PnL per wallet", "=" * 72]
+    out.append(table([[short(r["wallet"]), r.get("trades"), r.get("unique_tokens"), pct(r.get("win_rate")),
+                       f"{(r.get('realized_usd') or 0):,.0f}", f"{(r.get('total_usd') or 0):,.0f}", f"{(r.get('invested_usd') or 0):,.0f}"]
+                      for r in rows], ["wallet", "trades", "coins", "win", "realized $", "total $", "invested $"]))  # fmt: skip
+    return "\n".join(out)
+
+
+def render_birdeye_candidates(rows: list[dict]) -> str:
+    out = [f"Birdeye copy candidates ({len(rows)}; CU used this scan: {rows[0].get('cu_used') if rows else 0})", "=" * 72]
+    body = []
+    for r in rows:
+        h = r.get("hist30") or {}
+        body.append([short(r["wallet"]), "+".join(r.get("sources", [])), len(r.get("coins", [])), r.get("trades"),
+                     h.get("trades"), pct(h.get("win_rate")) if h.get("win_rate") is not None else "",
+                     f"{(h.get('realized_usd') or 0):,.0f}" if h and "error" not in h else (h.get("error", "")[:20] if h else "")])  # fmt: skip
+    out.append(table(body, ["wallet", "found via", "coins", "trades", "30d trades", "30d win", "30d realized $"]))
+    out.append("Next: label the good ones, then the tape labs at +1 and +6 decide (docs/roadmap.md).")
+    return "\n".join(out)

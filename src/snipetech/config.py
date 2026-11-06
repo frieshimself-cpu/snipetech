@@ -199,6 +199,18 @@ class OperatorConfig:
 
 
 @dataclass
+class BirdeyeConfig:
+    """Birdeye Data API (docs/birdeye.md). The key is BIRDEYE_API_KEY in the environment."""
+
+    daily_cu: int = 250_000  # compute units a day a scan may spend (plan: 8 M a month)
+    top_coins: int = 30  # hottest coins from the tape whose top traders become candidates
+    pnl_top: int = 100  # candidates that get a 30-day PnL summary (30 CU each)
+    gainers_periods: list[str] = field(default_factory=lambda: ["1W", "30d"])
+    top_trader_frame: str = "7d"
+    min_trades: int = 5
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -212,6 +224,7 @@ class Config:
     oktech: OktechConfig = field(default_factory=OktechConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
     operator: OperatorConfig = field(default_factory=OperatorConfig)
+    birdeye: BirdeyeConfig = field(default_factory=BirdeyeConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     @classmethod

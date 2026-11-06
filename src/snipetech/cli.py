@@ -94,6 +94,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--file", help="file with one wallet per line")
     sp.add_argument("--days", type=float)
     sp.add_argument("--no-refresh", action="store_true")
+    sp.add_argument("--source", choices=["tape", "birdeye"], default="tape",
+                    help="birdeye: a 30-day PnL summary per wallet from Birdeye (30 CU each) instead of replaying RPC history")  # fmt: skip
 
     sp = cmd("audit", "post-mortem of your own sniper wallet + latency calibration")
     sp.add_argument("wallet")
@@ -212,6 +214,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=3.0)
     sp.add_argument("--min-positions", type=int, default=5)
     sp.add_argument("--limit", type=int, default=30)
+    sp.add_argument("--source", choices=["tape", "birdeye"], default="tape",
+                    help="birdeye: market-wide candidates from Birdeye gainers + top traders of the tape's hottest coins")  # fmt: skip
+    sp.add_argument("--top-coins", type=int, help="birdeye: hottest coins to pull top traders for (default config)")
+    sp.add_argument("--pnl-top", type=int, help="birdeye: candidates that get a 30-day PnL summary (default config)")
 
     sp = cmd("watch", "live indexer + launch/copy signals (websocket)", json_flag=False)
     sp.add_argument("--signals", choices=["all", "known", "none"], default="known")
@@ -314,6 +320,20 @@ async def doctor(svc: Service) -> dict:
         out["websocket"] = {"ok": False, "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without"}
     has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
     out["agent"] = {"ok": has_key, "detail": "ANTHROPIC_API_KEY found" if has_key else "set ANTHROPIC_API_KEY to use `snipetech agent`"}
+    if os.environ.get("BIRDEYE_API_KEY"):
+        try:
+            from .birdeye import Birdeye
+
+            be = Birdeye()
+            try:
+                cr = await asyncio.to_thread(be.credits)
+            finally:
+                be.close()
+            out["birdeye"] = {"ok": True, "detail": f"{cr['remaining']:,} CU left this cycle ({cr['used']:,} used)"}
+        except Exception as exc:  # noqa: BLE001
+            out["birdeye"] = {"ok": False, "detail": f"BIRDEYE_API_KEY set but the API answered: {exc}"}
+    else:
+        out["birdeye"] = {"ok": False, "detail": "BIRDEYE_API_KEY not set (optional: market-wide wallet discovery)"}
     out["config"] = {"ok": bool(cfg.path and cfg.path.exists()), "detail": str(cfg.path) if cfg.path and cfg.path.exists() else "no snipetech.toml (defaults in use) — run `snipetech init`"}
     out["database"] = {"ok": True, "detail": f"{svc.store.path}: {svc.store.stats()}"}
     return out
@@ -369,7 +389,21 @@ async def _run(args, cfg: Config) -> int:
             wallets = list(args.wallets)
             if args.file:
                 wallets += [w.strip() for w in Path(args.file).read_text().splitlines() if w.strip() and not w.startswith("#")]
-            _out(args, await svc.rank_copy(wallets, args.days, refresh=not args.no_refresh), R.render_rank)
+            if args.source == "birdeye":
+                from .birdeye import Birdeye
+
+                be = Birdeye(budget_cu=cfg.birdeye.daily_cu)
+                try:
+                    rows = []
+                    for w in dict.fromkeys(wallets):
+                        row = await asyncio.to_thread(be.wallet_pnl, w, "30d")
+                        svc.store.put_score("birdeye", w, {"wallet": w, "hist30": row, "scanned_at": int(time.time())})
+                        rows.append(row)
+                finally:
+                    be.close()
+                _out(args, rows, R.render_birdeye_pnl)
+            else:
+                _out(args, await svc.rank_copy(wallets, args.days, refresh=not args.no_refresh), R.render_rank)
         elif c == "audit":
             rep = await svc.audit(args.wallet, args.days, refresh=not args.no_refresh)
             if args.apply_calibration and rep["calibration"].get("recommended"):
@@ -570,8 +604,18 @@ async def _run(args, cfg: Config) -> int:
                                   backfill_entries=args.backfill_entries, entry_window=args.entry_window)
             _out(args, rep, R.render_study)
         elif c == "discover-wallets":
-            rows = await svc.discover_real_traders(args.days, args.min_positions, args.limit)
-            _out(args, rows, R.render_wallets)
+            if args.source == "birdeye":
+                from .birdeye import Birdeye
+
+                be = Birdeye(budget_cu=cfg.birdeye.daily_cu)
+                try:
+                    rows = await svc.discover_birdeye(be, args.days, args.top_coins, args.pnl_top)
+                finally:
+                    be.close()
+                _out(args, rows[: args.limit] if args.limit else rows, R.render_birdeye_candidates)
+            else:
+                rows = await svc.discover_real_traders(args.days, args.min_positions, args.limit)
+                _out(args, rows, R.render_wallets)
         elif c == "watch":
             from .live import LiveWatcher
 

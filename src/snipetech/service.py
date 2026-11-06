@@ -890,6 +890,55 @@ class Service:
     def discover_wallets(self, days: float = 3.0, min_positions: int = 5, limit: int = 30) -> list[dict]:
         return discover_wallets(self.store, self.cfg, int(time.time() - days * 86400), min_positions, limit)
 
+    def hottest_mints(self, since_ts: int, limit: int) -> list[str]:
+        """Coins whose curve reached the most SOL since `since_ts` — where early wallets made the money."""
+        rows = self.store._q("select mint, max(q_after) peak from trades where ts > ? and venue = 'curve' group by mint order by peak desc limit ?",
+                             (since_ts, limit))  # fmt: skip
+        return [m for m, _ in rows]
+
+    async def discover_birdeye(self, client, days: float = 7.0, top_coins: int | None = None, pnl_top: int | None = None,
+                               now: float | None = None) -> list[dict]:  # fmt: skip
+        """Market-wide copy candidates from Birdeye: its gainer lists plus the top traders of the coins our tape saw
+        pump, minus known platform wallets, each with a 30-day PnL summary. Every row is stored under score kind
+        'birdeye'; the tape labs at +1/+6 remain the gates that decide."""
+        from .birdeye import BudgetExceeded, candidates_from_birdeye
+
+        bc = self.cfg.birdeye
+        now = time.time() if now is None else now
+        top_coins = bc.top_coins if top_coins is None else top_coins
+        pnl_top = bc.pnl_top if pnl_top is None else pnl_top
+        exclude = set(self.store.labels("service")) | set(self.store.labels("platform"))
+        gainers: list[dict] = []
+        for period in bc.gainers_periods:
+            try:
+                gainers += await asyncio.to_thread(lambda p=period: client.gainers(period=p, sort_by="PnL", limit=100, min_trade=bc.min_trades))
+            except BudgetExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001 - one source failing must not sink the scan
+                self.progress(f"birdeye gainers {period}: {exc}")
+        top: list[list[dict]] = []
+        for mint in self.hottest_mints(int(now - days * 86400), top_coins):
+            try:
+                top.append(await asyncio.to_thread(lambda m=mint: client.top_traders(m, time_frame=bc.top_trader_frame, sort_by="realized_pnl", limit=10)))
+            except BudgetExceeded:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.progress(f"birdeye top traders {mint[:8]}: {exc}")
+        cands = candidates_from_birdeye(gainers, top, exclude=exclude, min_trades=bc.min_trades)
+        for c in cands[:pnl_top]:
+            try:
+                c["hist30"] = await asyncio.to_thread(lambda w=c["wallet"]: client.wallet_pnl(w, duration="30d"))
+            except BudgetExceeded:
+                break
+            except Exception as exc:  # noqa: BLE001
+                c["hist30"] = {"error": str(exc)[:120]}
+            c["scanned_at"] = int(now)
+            self.store.put_score("birdeye", c["wallet"], c)
+        cu = getattr(client, "used_cu", None)
+        for c in cands:
+            c["cu_used"] = cu
+        return cands
+
     async def own_funds_share(self, wallet: str, sample: int = 8) -> float | None:
         """Share of a wallet's recent transactions in which its own SOL or tokens move. A platform's execution
         wallet signs everybody's trades through a program but holds none of the money (share ~0): its 'PnL' is
