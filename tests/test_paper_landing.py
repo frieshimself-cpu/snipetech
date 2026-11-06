@@ -217,3 +217,43 @@ def test_paper_freeze_from_the_command_line_measures_at_our_landing_under_the_la
     monkeypatch.setattr(cli.R, "render_paper", lambda action, r: "")
     assert cli.main(["--config", str(cfg_path), "paper", "freeze"]) in (0, None)
     assert seen["args"][3] == "+6" and str(seen["kw"].get("lock_dir")) == str((tmp_path / "data").resolve())
+
+
+def _trail10() -> ExitParams:
+    from snipetech.analysis.lab import exit_set
+
+    return next(e for e in exit_set() if e.label() == "SL-15% TRAIL10% hold300s")
+
+
+def _without_new_fields(exit_params: dict) -> dict:
+    """An exit as strategies stored it before the watch delay and the copy exit existed (6 Nov evening)."""
+    return {k: v for k, v in exit_params.items() if k not in ("watch_secs", "copy_exit_pct")}
+
+
+def test_a_strategy_keeps_its_id_after_the_exit_gained_the_watch_and_the_copy_exit():
+    """Paper strategy a586d8164a was frozen on 5 Nov (docs/live-recipe.md), before the exit had a watch delay and a
+    copy exit. Left at their defaults those fields are not part of the id, so the same strategy gets the same id."""
+    from dataclasses import replace
+
+    trigger_5nov = {"kind": "whale", "buyers": 0, "sol": 2.0, "window": 0.0, "progress": 0.0, "holders": 0, "ret": 0.0,
+                    "max_age": 1.0, "plain": True}  # fmt: skip
+    ex = _trail10()
+    assert paper.strategy_id(trigger_5nov, _without_new_fields(ex.to_dict()), "+1", 0, 0.2) == "a586d8164a"
+    assert paper.strategy_id(trigger_5nov, ex.to_dict(), "+1", 0, 0.2) == "a586d8164a"
+    watched = replace(ex, watch_secs=1.3).to_dict()
+    assert paper.strategy_id(trigger_5nov, watched, "+1", 0, 0.2) != "a586d8164a"  # a field that is set still counts
+
+
+def test_freezing_a_strategy_frozen_before_the_new_exit_fields_adds_no_copy():
+    store = Store(":memory:")
+    trig, ex = Trigger("whale", sol=2.0), _trail10()
+    old_exit = _without_new_fields(ex.to_dict())
+    old = {"id": paper.strategy_id(trig.__dict__, old_exit, "+6", 0, 0.2), "label": "old", "trigger": trig.__dict__,
+           "exit": old_exit, "position": "+6", "latency": 0, "buy_sol": 0.2, "per_tx_sol": 0.0035, "from_ts": T0,
+           "lab": {"mean": 0.05, "ev_lower": 0.05}}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": [old]})
+    rows = [{"mint": f"m{k}", "trigger": 0, "ts": T0 + k, "order": (k, 0), "pnl": [0.05]} for k in range(30)]
+    data = {"rows": rows, "exits": [ex], "triggers": [trig], "tape_hours": 1.0}  # the lab ranks the same strategy first
+    rep = paper.freeze(store, Config(), top=4, position="+6", latency=0, buy_sol=0.2, now=NOW, data=data)
+    assert rep["frozen"] == [] and [s["id"] for s in rep["kept"]] == [old["id"]]
+    assert [s["id"] for s in store.coverage("paper_strategies")["strategies"]] == [old["id"]]
