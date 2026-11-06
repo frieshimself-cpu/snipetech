@@ -8,6 +8,7 @@
 | `oktech-settings.md` | What each sniper setting means and the values we use | Claude |
 | `oktech-browser-handoff.md` | Brief for a local Claude session that can see oktech.me in Chrome | Claude |
 | `birdeye.md` | What the Birdeye plan gives us, CU costs, where it plugs in | Claude |
+| `jev.md` | TypeSafe's Jev: what it is, why it is not used yet, the measured-first plan | Claude |
 | `superpowers/specs/` | Designs approved before building (operator agent) | Claude, owner approves |
 | `superpowers/plans/` | Task-by-task implementation plans with their tests | Claude |
 | `inbox/` | The owner's raw notes and screenshots, read-only for Claude | Owner |
