@@ -241,3 +241,28 @@ buy with a 30 % stop and returns capped at +200 %:
 Low-cap follow-through wallets with a copyable, quiet landing do not exist in this 30-hour window. The search
 stays automated (`discover-wallets` → `follow` → lab by wallet at +1 and +6) in the autopilot, but the live
 list is empty until a wallet clears all three with n ≥ 20.
+
+### Inside the slot: what the buyers ahead of us paid (6 Nov, 08:30 UTC)
+
+Every buyer between the leader's buy and ours on the seven copy fills, read from the transactions themselves
+(version-1 transactions need `maxSupportedTransactionVersion: 1`; our own fills are legacy/v0, OKTech's `tipAmount`
+does not appear as a Jito tip):
+
+| coin | position in slot | wallet | buy | priority fee | Jito tip | who |
+|---|---|---|---|---|---|---|
+| 3BrEjvww | 61 / 62 / 63 | Gfree + two wallets | 1.25 / 1.30 / 1.36 | 0.002 each | – | leader's own bundle (same fee, same tx format, adjacent) |
+| 3BrEjvww | 334 | 6Z91Dgiz | 2.47 | 0 | **0.033** | copy bot |
+| 3BrEjvww | 392 | **us** | 0.049 | 0.001 | – | last |
+| H4D5mThN | 24 / 25 | Decu / FteNBUJP | 2.93 / 4.94 | 0 / **0.200** | – | a bot paying 0.2 SOL to sit directly behind Decu |
+| H4D5mThN | 235–256 | three bots | 0.3–3.0 | 0.0004–0.010 | – | |
+| H4D5mThN | 270 | **us** | 0.049 | 0.001 | – | last |
+| A7YsCfw6 | 108 | E3wNBV6L | 4.15 | 0 | **0.325** | copy bot (8 % of the buy) |
+| au6jPXHf | 184 | 9nH7Fpth | 3.25 | 0.032 | 0.003 | directly behind Gfree |
+| 7bDNtSnb | 407 / 461 | 6Z91Dgiz / **us** | 2.47 / 0.049 | 0 / 0.001 | 0.033 / – | |
+
+Reading: we were in the leader's slot six times out of seven — OKTech's speed is not the problem. The order inside
+the slot is a fee auction: the leader's own wallets are unbeatable, then bots paying 0.01–0.3 SOL per fill, then us
+at the 0.001 minimum, last every time. The bots trade 1–5 SOL a fill, so 0.01–0.03 SOL of fees is 1–3 % to them
+and 20–60 % to our 0.05 SOL fills. Conclusion: the copy test failed on the bid and the size, not on the pipe. Next:
+a paid-fee test on OKTech at 0.2 SOL fills (control at minimum fees vs 0.02 priority + 0.02 tip, same leaders,
+five fills each, position and price gap as the outcome), and the lab at position +3, where a paid bid would land.
