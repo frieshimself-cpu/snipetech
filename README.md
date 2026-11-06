@@ -321,6 +321,17 @@ snipetech remote update                                    # pull, reinstall, re
 
 Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 
+**The strategist (learning loop, stage 6).** Once a week (`snipetech-strategist.timer`, Sundays 05:00 UTC) one Opus turn
+reads the week's numbers from the tables — fills and the bid model per arm, live expectancy per copied wallet, verdict
+counts, the event-edge table, past parameter changes — and proposes at most one change to `[book]` / `[qualify]`. The
+owner's `[autotune]` table says which keys it may touch and how far (`book.fill_max_sol` ≤ 1 SOL, `book.min_score` within
+×0.5–×2, `book.explore_share` 0–0.3, the bid arms' priority and tip ≤ 0.05 SOL, `qualify.max_gap3_pct` 5–30,
+`qualify.min_n_tape` 10–40, `qualify.landing_pos` in +3/+6/+9); `book.enabled`, wallets and keys are never tunable. A
+patch inside the bounds is applied (the config file is rewritten atomically, each change is an `events` row of kind
+`param_change` and a Telegram line); one key outside the bounds turns the whole patch into a question on Telegram and
+nothing changes. `snipetech strategist run --dry-run` shows the evidence and the proposal without applying; the turn is
+capped at `[autotune] turn_usd` (10 $) and shares the operator's daily ledger.
+
 ### 4. Is copytrading this wallet worth it?
 
 ```bash

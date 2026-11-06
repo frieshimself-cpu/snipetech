@@ -1,0 +1,74 @@
+"""Pure: what a proposed patch may change. Only keys listed in [autotune] bounds, each inside its rule; one key outside
+and the whole patch is refused (it becomes a question for the owner). A few things are never tunable whatever the
+table says: anything that switches the book on, names a wallet or a key, or points at a URL."""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Any
+
+from ..config import AutotuneConfig, Config
+
+NEVER_TUNABLE_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
+
+
+def get_path(cfg: Any, dotted: str) -> Any:
+    """Read `section.key` or `section.dict.key.leaf` from the config."""
+    obj: Any = cfg
+    for part in dotted.split("."):
+        if isinstance(obj, dict):
+            if part not in obj:
+                raise KeyError(dotted)
+            obj = obj[part]
+        elif dataclasses.is_dataclass(obj) and part in {f.name for f in dataclasses.fields(obj)}:
+            obj = getattr(obj, part)
+        else:
+            raise KeyError(dotted)
+    return obj
+
+
+def check_patch(patch: dict[str, Any], current: Config, auto: AutotuneConfig) -> tuple[dict[str, Any], list[str]]:
+    """(accepted, refusals): accepted is the whole patch with values coerced, or empty when any key is refused."""
+    accepted: dict[str, Any] = {}
+    refusals: list[str] = []
+    for key, value in (patch or {}).items():
+        rule = auto.bounds.get(key)
+        if rule is None:
+            refusals.append(f"{key}: not in [autotune] bounds")
+            continue
+        if any(w in key.lower() for w in NEVER_TUNABLE_WORDS):
+            refusals.append(f"{key}: never tunable")
+            continue
+        try:
+            cur = get_path(current, key)
+        except KeyError:
+            refusals.append(f"{key}: unknown config key")
+            continue
+        if "choices" in rule:
+            if value not in rule["choices"]:
+                refusals.append(f"{key}: {value!r} is not one of {rule['choices']}")
+                continue
+            accepted[key] = value
+            continue
+        if isinstance(value, bool):
+            refusals.append(f"{key}: {value!r} is not a number")
+            continue
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            refusals.append(f"{key}: {value!r} is not a number")
+            continue
+        lo, hi = rule.get("min"), rule.get("max")
+        if "rel_min" in rule:
+            lo = float(cur) * float(rule["rel_min"])
+        if "rel_max" in rule:
+            hi = float(cur) * float(rule["rel_max"])
+        if (lo is not None and v < lo - 1e-12) or (hi is not None and v > hi + 1e-12):
+            refusals.append(
+                f"{key}: {value} is outside [{lo if lo is not None else '-inf'}, {hi if hi is not None else 'inf'}] (now {cur})"
+            )
+            continue
+        accepted[key] = int(round(v)) if isinstance(cur, int) and not isinstance(cur, bool) else v
+    if refusals:
+        return {}, refusals
+    return accepted, []

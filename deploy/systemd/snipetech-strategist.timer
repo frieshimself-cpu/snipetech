@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the snipetech strategist on Sundays at 05:00 UTC (after the daily job)
+
+[Timer]
+OnCalendar=Sun *-*-* 05:00:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

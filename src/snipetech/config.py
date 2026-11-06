@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import dataclasses
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -239,6 +240,29 @@ class SolanaTrackerConfig:
 
 
 @dataclass
+class AutotuneConfig:
+    """What the weekly strategist (`snipetech strategist run`, Sundays 05:00 UTC) may change by itself, and how far.
+    A key not in `bounds` is never touched; a proposal outside them becomes a question on Telegram instead of a
+    change. `min`/`max` are absolute, `rel_min`/`rel_max` multiply the current value, `choices` lists the allowed
+    strings. `book.enabled`, wallets, keys and sizes above these ceilings are never tunable."""
+
+    enabled: bool = True
+    turn_usd: float = 10.0  # one Opus turn a week, cut off at this
+    bounds: dict[str, dict] = field(default_factory=lambda: {
+        "book.fill_max_sol": {"min": 0.1, "max": 1.0},
+        "book.min_score": {"rel_min": 0.5, "rel_max": 2.0},
+        "book.explore_share": {"min": 0.0, "max": 0.3},
+        "book.bid_arms.control.priority": {"min": 0.001, "max": 0.05},
+        "book.bid_arms.control.tip": {"min": 0.002, "max": 0.05},
+        "book.bid_arms.paid.priority": {"min": 0.001, "max": 0.05},
+        "book.bid_arms.paid.tip": {"min": 0.002, "max": 0.05},
+        "qualify.max_gap3_pct": {"min": 5, "max": 30},
+        "qualify.min_n_tape": {"min": 10, "max": 40},
+        "qualify.landing_pos": {"choices": ["+3", "+6", "+9"]},
+    })  # fmt: skip
+
+
+@dataclass
 class ResourcesConfig:
     """Thresholds for the operator's resource checks (credits, data-API usage, SOL float, disk)."""
 
@@ -331,7 +355,11 @@ class Config:
     qualify: QualifyConfig = field(default_factory=QualifyConfig)
     measure: MeasureConfig = field(default_factory=MeasureConfig)
     book: BookConfig = field(default_factory=BookConfig)
+    autotune: AutotuneConfig = field(default_factory=AutotuneConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
+    env_keys: list[str] = field(
+        default_factory=list, compare=False, repr=False
+    )  # values that came from the environment
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Config:
@@ -347,6 +375,7 @@ class Config:
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
         d.pop("path", None)
+        d.pop("env_keys", None)
         return d
 
     def get(self, dotted: str) -> Any:
@@ -370,10 +399,29 @@ class Config:
         return coerced
 
     def save(self, path: str | Path | None = None) -> Path:
+        """Write the config file atomically. Values that came from the environment (the Helius key inside the RPC
+        URLs, SNIPETECH_* overrides) are written back as the file had them, never as the environment set them."""
         p = Path(path) if path else (self.path or DEFAULT_PATH)
-        p.write_text(dump_toml(self.to_dict()))
+        data = self.to_dict()
+        if self.env_keys:
+            base = Config()
+            if p.exists():
+                with p.open("rb") as fh:
+                    _apply(base, tomllib.load(fh))
+            for dotted in self.env_keys:
+                _set_nested(data, dotted, base.get(dotted))
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(dump_toml(data))
+        os.replace(tmp, p)
         self.path = p
         return p
+
+
+def _set_nested(d: dict[str, Any], dotted: str, value: Any) -> None:
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        d = d.setdefault(part, {})
+    d[parts[-1]] = value
 
 
 def _coerce(value: Any, target: type) -> Any:
@@ -422,13 +470,16 @@ def _apply_env(cfg: Config) -> None:
     for env, dotted in _ENV.items():
         if os.environ.get(env):
             cfg.set(dotted, os.environ[env])
+            cfg.env_keys.append(dotted)
     # Convenience: HELIUS_API_KEY alone is enough to use Helius mainnet.
     if os.environ.get("HELIUS_API_KEY") and not os.environ.get("SNIPETECH_RPC_URL"):
         key = os.environ["HELIUS_API_KEY"]
         cfg.rpc.http_url = f"https://mainnet.helius-rpc.com/?api-key={key}"
         cfg.rpc.ws_url = f"wss://mainnet.helius-rpc.com/?api-key={key}"
+        cfg.env_keys += ["rpc.http_url", "rpc.ws_url"]
         if cfg.rpc.max_rps <= 8 and not os.environ.get("SNIPETECH_RPC_RPS"):
             cfg.rpc.max_rps = 40
+            cfg.env_keys.append("rpc.max_rps")
 
 
 def _toml_value(v: Any) -> str:
@@ -442,6 +493,14 @@ def _toml_value(v: Any) -> str:
     return f'"{s}"'
 
 
+_BARE_KEY = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _toml_key(k: str) -> str:
+    """A bare key when TOML allows it, else a quoted one (the [autotune] bounds are keyed by dotted config paths)."""
+    return k if _BARE_KEY.match(k) else _toml_value(k)
+
+
 def dump_toml(data: dict[str, Any], prefix: str = "") -> str:
     scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
     tables = {k: v for k, v in data.items() if isinstance(v, dict)}
@@ -449,9 +508,9 @@ def dump_toml(data: dict[str, Any], prefix: str = "") -> str:
     if prefix and scalars:
         lines.append(f"[{prefix}]")
     for k, v in scalars.items():
-        lines.append(f"{k} = {_toml_value(v)}")
+        lines.append(f"{_toml_key(k)} = {_toml_value(v)}")
     if scalars:
         lines.append("")
     for k, v in tables.items():
-        lines.append(dump_toml(v, f"{prefix}.{k}" if prefix else k))
+        lines.append(dump_toml(v, f"{prefix}.{_toml_key(k)}" if prefix else _toml_key(k)))
     return "\n".join(lines)

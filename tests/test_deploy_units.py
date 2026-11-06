@@ -25,16 +25,23 @@ def test_setup_enables_the_operator_timer():
 
 
 def test_discover_and_qualify_units():
-    for name, cmd, cal in (("discover", " discover run", "OnCalendar=*:07"), ("qualify", " qualify run", "OnCalendar=*:0/30")):
+    for name, cmd, cal in (
+        ("discover", " discover run", "OnCalendar=*:07"),
+        ("qualify", " qualify run", "OnCalendar=*:0/30"),
+    ):
         service = (UNITS / f"snipetech-{name}.service").read_text()
         timer = (UNITS / f"snipetech-{name}.timer").read_text()
-        assert "User=@USER@" in service and "EnvironmentFile=/etc/snipetech/env" in service and "Type=oneshot" in service
+        assert (
+            "User=@USER@" in service and "EnvironmentFile=/etc/snipetech/env" in service and "Type=oneshot" in service
+        )
         exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
         assert len(exec_lines) == 1 and cmd in exec_lines[0] and "oktech" not in exec_lines[0]
         assert "Slice=snipetech.slice" in service and "TimeoutStartSec=" in service
         assert cal in timer and "Persistent=true" in timer and "RandomizedDelaySec=" in timer
     assert "KillMode=process" in (UNITS / "snipetech-qualify.service").read_text()
-    assert {"snipetech-discover", "snipetech-discover.timer", "snipetech-qualify", "snipetech-qualify.timer"} <= set(O.UNITS)
+    assert {"snipetech-discover", "snipetech-discover.timer", "snipetech-qualify", "snipetech-qualify.timer"} <= set(
+        O.UNITS
+    )
     setup = (Path(__file__).resolve().parents[1] / "deploy" / "setup.sh").read_text()
     assert "snipetech-discover.timer" in setup and "snipetech-qualify.timer" in setup
 
@@ -64,7 +71,9 @@ def test_book_unit_and_timer():
     service = (UNITS / "snipetech-book.service").read_text()
     timer = (UNITS / "snipetech-book.timer").read_text()
     exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
-    assert len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" book run") and "--live" not in exec_lines[0]  # dry unless the config enables it
+    assert (
+        len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" book run") and "--live" not in exec_lines[0]
+    )  # dry unless the config enables it
     assert "User=@USER@" in service and "Type=oneshot" in service and "TimeoutStartSec=4m" in service
     assert "OnCalendar=*:0/5" in timer and "RandomizedDelaySec=15" in timer and "Persistent=true" in timer
     assert {"snipetech-book", "snipetech-book.timer"} <= set(O.UNITS)
@@ -73,3 +82,13 @@ def test_book_unit_and_timer():
     assert "snipetech-book" in ONESHOT_UNITS and "snipetech-book.timer" in WATCHED_UNITS
     setup = (Path(__file__).resolve().parents[1] / "deploy" / "setup.sh").read_text()
     assert "snipetech-book.timer" in setup
+
+
+def test_strategist_unit_and_timer():
+    service = (UNITS / "snipetech-strategist.service").read_text()
+    timer = (UNITS / "snipetech-strategist.timer").read_text()
+    exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" strategist run")
+    assert "OnCalendar=Sun *-*-* 05:00:00 UTC" in timer and "Persistent=true" in timer
+    assert {"snipetech-strategist", "snipetech-strategist.timer"} <= set(O.UNITS)
+    assert "snipetech-strategist.timer" in (UNITS.parent / "setup.sh").read_text()

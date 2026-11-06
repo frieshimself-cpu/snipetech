@@ -642,6 +642,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)"
     )
+    sp = cmd(
+        "strategist",
+        "the learning loop's strategist: one bounded parameter change a week to [book] / [qualify] (Sundays)",
+        json_flag=False,
+    )
+    sp.add_argument("action", choices=["run"])
+    sp.add_argument("--dry-run", action="store_true", help="show the evidence and the proposal; apply nothing")
+    sp.add_argument("--force", action="store_true", help="run even if it ran less than a week ago")
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill"])
     sp.add_argument(
@@ -1404,6 +1412,20 @@ def main(argv: list[str] | None = None) -> int:
         async def go():
             try:
                 return await run_book(svc, cfg, time.time(), dry=(False if args.live else None))
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        print(json.dumps(asyncio.run(go()), indent=1, default=str))
+        return 0
+    if args.cmd == "strategist":
+        from .strategist.run import run_strategist
+
+        svc = Service(cfg)
+
+        async def go():
+            try:
+                return await run_strategist(svc, cfg, time.time(), dry_run=args.dry_run, force=args.force)
             finally:
                 await svc.close()
                 svc.store.close()

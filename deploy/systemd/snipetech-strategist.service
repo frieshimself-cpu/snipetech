@@ -1,0 +1,15 @@
+[Unit]
+Description=snipetech strategist: one bounded parameter change a week to [book] / [qualify] from the week's numbers (learning loop, stage 6)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db strategist run
+TimeoutStartSec=20m

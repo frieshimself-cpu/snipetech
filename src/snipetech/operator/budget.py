@@ -11,10 +11,14 @@ _MILLION = 1_000_000.0
 
 def cost_usd(usage: dict, prices: dict, analyst: bool) -> float:
     """Dollars for one response's token counts; missing counts are 0; analyst turns use the analyst_* rates."""
-    p = (lambda k: float(prices.get(f"analyst_{k}" if analyst else k, 0.0)))
-    n = (lambda k: int(usage.get(k) or 0))  # the SDK reports unused counters as None
-    return (n("input_tokens") * p("in") + n("output_tokens") * p("out")
-            + n("cache_read_input_tokens") * p("cache_read") + n("cache_creation_input_tokens") * p("cache_write")) / _MILLION
+    p = lambda k: float(prices.get(f"analyst_{k}" if analyst else k, 0.0))
+    n = lambda k: int(usage.get(k) or 0)  # the SDK reports unused counters as None
+    return (
+        n("input_tokens") * p("in")
+        + n("output_tokens") * p("out")
+        + n("cache_read_input_tokens") * p("cache_read")
+        + n("cache_creation_input_tokens") * p("cache_write")
+    ) / _MILLION
 
 
 def _utc_day(ts: float) -> str:
@@ -27,7 +31,7 @@ class Ledger:
 
     def record(self, mode: str, usage: dict, now: float | None = None) -> float:
         now = time.time() if now is None else now
-        usd = cost_usd(usage, self.prices, analyst=(mode == "analyst"))
+        usd = cost_usd(usage, self.prices, analyst=(mode in ("analyst", "strategist")))  # both run on the analyst model
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
                 "usd": round(usd, 6)}  # fmt: skip

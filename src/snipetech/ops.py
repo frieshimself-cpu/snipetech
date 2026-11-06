@@ -44,12 +44,15 @@ SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_U
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
-    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "tx",
+    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "tx", "strategist",
 })  # fmt: skip
-UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily", "snipetech-daily.timer",
-         "snipetech-operator", "snipetech-operator.timer", "snipetech-discover", "snipetech-discover.timer",
-         "snipetech-qualify", "snipetech-qualify.timer", "snipetech-measure", "snipetech-measure.timer",
-         "snipetech-book", "snipetech-book.timer", "snipetech-events", "snipetech-snapshot", "snipetech-snapshot.timer")  # fmt: skip
+UNITS = (
+    "snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily",
+    "snipetech-daily.timer", "snipetech-operator", "snipetech-operator.timer", "snipetech-discover",
+    "snipetech-discover.timer", "snipetech-qualify", "snipetech-qualify.timer", "snipetech-measure",
+    "snipetech-measure.timer", "snipetech-book", "snipetech-book.timer", "snipetech-events",
+    "snipetech-snapshot", "snipetech-snapshot.timer", "snipetech-strategist", "snipetech-strategist.timer",
+)  # fmt: skip
 SYSTEMCTL = "/usr/bin/systemctl"
 
 
@@ -141,7 +144,14 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
         proc.send_signal(sig)
 
 
-REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET", "BIRDEYE_API_KEY", "SOLANATRACKER_API_KEY", "VYBE_API_KEY")
+REDACT_ENV = SECRET_ENV + (
+    "TELEGRAM_BOT_TOKEN",
+    "TYPESAFE_API_KEY",
+    "SNIPER_SECRET",
+    "BIRDEYE_API_KEY",
+    "SOLANATRACKER_API_KEY",
+    "VYBE_API_KEY",
+)
 
 
 def redact(text: str) -> str:
@@ -181,7 +191,11 @@ def _job_env() -> dict[str, str]:
             if k and v and k not in env:
                 env[k] = v
     except OSError as e:  # the file must be group-readable by the service user (setup.sh: root:snipetech 640)
-        print(f"[ops] cannot read {ENV_FILE}: {e.strerror}; jobs only see keys the service started with", file=sys.stderr, flush=True)
+        print(
+            f"[ops] cannot read {ENV_FILE}: {e.strerror}; jobs only see keys the service started with",
+            file=sys.stderr,
+            flush=True,
+        )
     return env
 
 
@@ -252,11 +266,17 @@ class Ops:
     # -- ops
 
     def op_status(self) -> dict[str, Any]:
-        out: dict[str, Any] = {"time": int(time.time()), "branch": self.branch, "code": self._git("log", "-1", "--format=%h %s %cI")}
+        out: dict[str, Any] = {
+            "time": int(time.time()),
+            "branch": self.branch,
+            "code": self._git("log", "-1", "--format=%h %s %cI"),
+        }
         out["services"] = {u: self._run([SYSTEMCTL, "is-active", u]).strip() or "unknown" for u in UNITS}
         du = shutil.disk_usage(self.data)
         out["disk_gb"] = {"free": round(du.free / 1e9, 1), "total": round(du.total / 1e9, 1)}
-        out["db_gb"] = round(sum(p.stat().st_size for p in self.db.parent.glob(self.db.name + "*") if p.is_file()) / 1e9, 2)
+        out["db_gb"] = round(
+            sum(p.stat().st_size for p in self.db.parent.glob(self.db.name + "*") if p.is_file()) / 1e9, 2
+        )
         try:
             con = self._ro()
             row = con.execute("SELECT data FROM coverage WHERE key='tape'").fetchone()
@@ -357,7 +377,10 @@ class Ops:
     def op_logs(self, unit: str = "snipetech-tape", lines: int = 100) -> dict[str, Any]:
         if unit not in UNITS:
             raise OpsError(403, f"unit not allowed: {unit}")
-        return {"unit": unit, "log": self._run(["journalctl", "-u", unit, "-n", str(int(lines)), "--no-pager", "-o", "short-iso"])}
+        return {
+            "unit": unit,
+            "log": self._run(["journalctl", "-u", unit, "-n", str(int(lines)), "--no-pager", "-o", "short-iso"]),
+        }
 
     def op_update(self) -> dict[str, Any]:
         sudo = ["sudo", "-n"] if self.use_sudo else []
@@ -584,7 +607,9 @@ def call(url: str, key_path: str | Path, op: str, timeout: float = 120, **args) 
     return data
 
 
-def wait_job(url: str, key_path: str | Path, jid: str, poll: float = 10, tail: int = 20000, max_secs: float = 3600) -> dict:
+def wait_job(
+    url: str, key_path: str | Path, jid: str, poll: float = 10, tail: int = 20000, max_secs: float = 3600
+) -> dict:
     t0 = time.time()
     while True:
         st = call(url, key_path, "job", id=jid, tail=tail)

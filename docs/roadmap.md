@@ -55,6 +55,13 @@ instead of the leader; tips to the relays OKTech really uses (not Jito) read as 
 What only OKTech can answer (why every sell goes out two or three times, why one buy in three carries no tip,
 compute units, silent acceptance of ungranted features) is a nine-question list at the end of that file.
 
+The strategist (stage 6, 14:30 UTC) is built and deployed too: once a week, on Sundays, an Opus turn reads the week's
+numbers and may move one knob of the book or the qualify stage inside the `[autotune]` bounds you set (it can widen
+exploration or move the labs' landing further back; it can never switch the book on, touch a wallet or raise a size
+above your ceilings). Anything outside the bounds comes to you as a question on Telegram. Every applied change is an
+event, so next week's numbers can be read against it. The learning loop as designed is now complete end to end; what
+remains is live evidence.
+
 Still yours, in order: start the fee test with the three commands in docs/live-recipe.md ("Fee test, 6 Nov"); send
 the nine questions to OKTech's owner; run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers
 and the events service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; top

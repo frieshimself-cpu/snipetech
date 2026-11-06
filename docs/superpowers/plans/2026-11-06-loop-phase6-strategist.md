@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-learning-loop-design.md` (Stage 6 — think: Strategist; Safety).
 
+**Status (6 Nov, 14:30 UTC):** built and deployed as planned (`strategist/` bounds, evidence, turn, apply, run; `[autotune]`; Sunday timer). Ruling: the strategist's ledger lines carry mode `strategist` (priced at the analyst rates) and count toward the operator's daily cap; `Config.save` was made atomic and env-safe (it no longer writes the Helius key into the file) because the apply step rewrites the config.
+
 ## Global Constraints
 
 - The strategist can change only keys listed in `[autotune]`, each with `min`/`max` (numbers) or `choices` (strings); anything else in a patch is refused with the reason, and the whole patch is then a question, never partially applied.

@@ -1,0 +1,85 @@
+"""The week's numbers as one compact JSON document, from the tables only (never from logs or the chain)."""
+
+from __future__ import annotations
+
+import dataclasses
+import statistics
+import time
+from typing import Any
+
+from ..config import Config
+from ..store import Store
+
+BASE_FEE = 5000
+
+
+def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
+    arms: dict[str, dict[str, Any]] = {}
+    for f in fills:
+        a = f.get("bid_arm") or "control"
+        d = arms.setdefault(
+            a,
+            {
+                "buys": 0,
+                "sells": 0,
+                "failed": 0,
+                "realised_sol": 0.0,
+                "fees_sol": 0.0,
+                "_behind": [],
+                "_gap": [],
+                "_pos": [],
+            },
+        )
+        side = f.get("side")
+        if side == "buy":
+            d["buys"] += 1
+            d["fees_sol"] += ((f.get("priority_lamports") or 0) + (f.get("tip_lamports") or 0) + BASE_FEE) / 1e9
+            for src, dst in (("trades_behind", "_behind"), ("price_gap_pct", "_gap"), ("pos_in_slot", "_pos")):
+                if f.get(src) is not None:
+                    d[dst].append(float(f[src]))
+        elif side == "sell":
+            d["sells"] += 1
+            if f.get("pnl_sol") is not None:
+                d["realised_sol"] += float(f["pnl_sol"])
+        elif side == "failed":
+            d["failed"] += 1
+            d["fees_sol"] += ((f.get("priority_lamports") or 0) + BASE_FEE) / 1e9
+    out = {}
+    for a, d in arms.items():
+        pos = sorted(d.pop("_pos"))
+        q = statistics.quantiles(pos, n=4) if len(pos) >= 2 else None
+        behind, gap = d.pop("_behind"), d.pop("_gap")
+        out[a] = {**d, "realised_sol": round(d["realised_sol"], 6), "fees_sol": round(d["fees_sol"], 6),
+                  "mean_behind": round(statistics.fmean(behind), 2) if behind else None,
+                  "mean_gap_pct": round(statistics.fmean(gap), 1) if gap else None,
+                  "p75_pos": (q[2] if q else (pos[0] if pos else None))}  # fmt: skip
+    return out
+
+
+def _compact_live(r: dict) -> dict:
+    return {k: r.get(k) for k in ("wallet", "n", "mean_sol", "lower_sol", "status")}
+
+
+def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[str, Any]:
+    since = int(now - days * 86400)
+    wallet = cfg.operator.wallet
+    fills = store.fills(wallet=wallet, since_ts=since, limit=100_000) if wallet else []
+    live = sorted(store.wallet_live(), key=lambda r: -(r.get("mean_sol") or 0))
+    qualified = sorted(store.latest_verdicts("qualified"), key=lambda r: -(r.get("score") or 0))
+    return {
+        "now_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(now)),
+        "window_days": days,
+        "arms": _arm_rows(fills),
+        "bid_model": {r["arm"]: r for r in store.bid_model()},
+        "wallets_live_top": [_compact_live(r) for r in live[:10]],
+        "wallets_live_bottom": [_compact_live(r) for r in live[-5:]] if len(live) > 10 else [],
+        "verdict_counts": store.verdict_counts(),
+        "qualified_top": [
+            {k: r.get(k) for k in ("wallet", "score", "n_tape", "lower_sol", "computed_at")} for r in qualified[:10]
+        ],
+        "event_edge": store.coverage("events:edge"),
+        "book_day": store.coverage("book:day"),
+        "param_changes": [e.get("data") or {} for e in store.events(kind="param_change", limit=7)],
+        "current": {"book": dataclasses.asdict(cfg.book), "qualify": dataclasses.asdict(cfg.qualify)},
+        "bounds": cfg.autotune.bounds,
+    }
