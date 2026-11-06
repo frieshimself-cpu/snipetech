@@ -174,3 +174,107 @@ def test_the_idea_list_is_capped_by_dropping_the_oldest_closed_idea(paths, monke
     assert [i["title"] for i in L.list_ideas(paths, status="all")] == ["b", "c", "d"]
     with pytest.raises(ValueError, match="3 ideas"):
         L.upsert_idea(paths, IDEA | {"title": "e"}, source="analyst", now=NOW + 240)
+
+
+def test_every_turn_sees_the_last_ten_lessons_and_the_top_five_open_ideas(paths):
+    for i in range(12):
+        L.add_lesson(paths, f"lesson L{i:02d}", f"evidence E{i:02d}", i + 1, source="analyst", now=NOW + i)
+    for i, prio in enumerate((1, 2, 3, 4, 5, 1, 2)):
+        L.upsert_idea(paths, IDEA | {"title": f"plan-{'ABCDEFG'[i]}", "priority": prio}, source="analyst", now=NOW)
+    L.upsert_idea(paths, IDEA | {"title": "plan-X", "priority": 5, "status": "rejected"}, source="analyst", now=NOW)
+    text = L.context(paths)
+    assert "L01" not in text and all(f"L{i:02d}" in text and f"E{i:02d}" in text for i in range(2, 12))
+    assert text.index("L02") < text.index("L11")  # newest last
+    shown = [p for p in ("plan-E", "plan-D", "plan-C", "plan-B", "plan-G") if p in text]
+    assert shown == ["plan-E", "plan-D", "plan-C", "plan-B", "plan-G"]  # best first
+    assert text.index("plan-E") < text.index("plan-D") < text.index("plan-G")
+    assert "plan-A" not in text and "plan-F" not in text and "plan-X" not in text
+
+
+def test_what_every_turn_sees_stays_small(paths):
+    for i in range(12):  # words, not one long run of letters (that reads as a key to the secret check)
+        L.add_lesson(paths, f"{i:02d} " + "tx " * 96, "ev " * 133, 3, source="analyst", now=NOW + i)
+    for i in range(6):
+        L.upsert_idea(paths, IDEA | {"title": f"{i} " + "xy " * 36, "why": "wh " * 199, "test": "te " * 133},
+                      source="analyst", now=NOW)  # fmt: skip
+    text = L.context(paths)
+    assert len(text) <= L.CONTEXT_MAX_CHARS and "11 tx tx" in text  # every line cut short, the newest still there
+
+
+def test_with_nothing_learned_yet_the_turn_is_told_so(paths):
+    text = L.context(paths)
+    assert "nothing yet" in text and "none yet" in text
+
+
+def test_the_digest_says_what_was_learned_since_the_last_one_and_what_is_tested_next(paths):
+    L.add_lesson(paths, "an old lesson", "e", 2, source="analyst", now=NOW - 7 * H)
+    L.add_lesson(paths, "Crowded leaders lose at our landing", "4 of 5 losses 2-4 behind", 5, source="postmortem",
+                 now=NOW - 2 * H)  # fmt: skip
+    L.upsert_idea(paths, IDEA | {"priority": 4}, source="analyst", now=NOW)
+    L.upsert_idea(paths, IDEA | {"title": "Copy 9WzD live at 0.1 SOL", "kind": "live-test", "priority": 5},
+                  source="analyst", now=NOW)  # fmt: skip
+    lines = L.digest_lines(paths, NOW - 6 * H, NOW)
+    assert lines[0] == "What it learned since 12:00 UTC:"
+    assert "- Crowded leaders lose at our landing (5 cases)" in lines and not any("old lesson" in x for x in lines)
+    i = lines.index("Testing next:")
+    assert lines[i + 1 :] == [
+        "- Copy 9WzD live at 0.1 SOL (needs your yes)",
+        "- Copy only leader buys of 0.5 SOL or more",
+    ]
+
+
+def test_a_quiet_digest_says_nothing_new_was_learned(paths):
+    assert L.digest_lines(paths, NOW - 6 * H, NOW) == ["What it learned: nothing new since 12:00 UTC",
+                                                        "Testing next: no open ideas yet"]  # fmt: skip
+
+
+def _sell(st, sig, ts, wallet="W", **kw):
+    st.put_fill(
+        {"sig": sig, "ts": int(ts), "wallet": wallet, "mint": f"M{sig}", "side": "sell", "sol": 0.19, "tokens": 1.0}
+        | kw
+    )
+
+
+def test_new_round_trips_count_from_the_newest_sell_the_last_post_mortem_saw(paths):
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    for sig, ts in (("s0", NOW - 30 * H), ("s1", NOW - 5 * H), ("s2", NOW - 4 * H), ("s3", NOW - H)):
+        _sell(st, sig, ts)
+    st.put_fill({"sig": "b0", "ts": NOW - 2 * H, "wallet": "W", "mint": "M9", "side": "buy", "sol": 0.2, "tokens": 1.0})
+    _sell(st, "x0", NOW - 2 * H, wallet="OTHER")
+    t = L.trips_since_postmortem(st, "W", paths, NOW)
+    assert t == {"n": 3, "since_ts": NOW - 24 * H, "newest_ts": NOW - H}  # never reviewed: the last day counts
+    assert L.last_postmortem_ts(paths) is None
+    L.mark_postmortem(paths, NOW, t, "postmortem")
+    assert L.last_postmortem_ts(paths) == NOW and L.trips_since_postmortem(st, "W", paths, NOW)["n"] == 0
+    _sell(st, "s4", NOW - H + 30)  # measured after the post-mortem, sold after the newest sell it saw: new
+    later = L.trips_since_postmortem(st, "W", paths, NOW + 600)
+    assert later == {"n": 1, "since_ts": NOW - H, "newest_ts": NOW - H + 30}
+    L.mark_postmortem(paths, NOW + 600, L.trips_since_postmortem(st, "W", paths, NOW + 600), "analyst")
+    L.mark_postmortem(paths, NOW + 900, L.trips_since_postmortem(st, "W", paths, NOW + 900), "analyst")  # none new
+    assert L.trips_since_postmortem(st, "W", paths, NOW + 900)["since_ts"] == NOW - H + 30
+    st.close()
+
+
+def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_prediction(paths):
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    st.put_fill({"sig": "B" * 88, "ts": NOW - 400, "wallet": "W", "wallet_copied": "LEAD", "mint": "M1", "side": "buy", "sol": 0.2,
+                 "tokens": 1.0, "trades_behind": 3, "price_gap_pct": 31.0, "pos_in_slot": 4, "bid_arm": "control"})  # fmt: skip
+    _sell(st, "S" * 88, NOW - 100, buy_sig="B" * 88, pnl_sol=-0.041, exit_reason="copy_exit", exit_name="lab", crossed=0,
+          twin_fee_sol=0.0021)  # fmt: skip
+    _sell(st, "old", NOW - 9 * H, pnl_sol=0.01)
+    st.upsert_candidate("LEAD", "tape", {}, NOW - 86400)
+    st.put_verdict({"wallet": "LEAD", "computed_at": NOW - 3600, "status": "qualified", "score": 0.004, "n_tape": 30,
+                    "mean_sol": 0.009, "lower_sol": 0.002, "landing_pos": "+6",
+                    "copy_plan": {"min_leader_sol": 0.5, "leader_style": "dumper"}})  # fmt: skip
+    out = L.round_trips(st, "W", NOW - 6 * H)
+    assert out["summary"] == {"trips": 1, "wins": 0, "losses": 1, "pnl_sol": -0.041}
+    (trip,) = out["trips"]
+    assert trip["leader"] == "LEAD" and trip["held_secs"] == 300 and trip["trades_behind"] == 3
+    assert trip["price_gap_pct"] == 31.0 and trip["exit_reason"] == "copy_exit" and trip["twin_fee_sol"] == 0.0021
+    assert trip["verdict"]["mean_sol"] == 0.009 and trip["verdict"]["copy_plan"]["min_leader_sol"] == 0.5
+    assert trip["sig"] == "S" * 12 and "B" * 20 not in json.dumps(out)  # short signatures only
+    st.close()

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from ..ops import redact
+from ..store import _LATEST_VERDICT, Store
 from .paths import OperatorPaths
 
 LESSONS_FILE = "lessons.md"
@@ -35,6 +36,18 @@ IDEA_TEXT = {"title": 120, "why": 600, "test": 400, "expected": 300}  # each fie
 IDEA_FIELDS = ("id", *IDEA_TEXT, "kind", "status", "owner_needed", "priority")
 DEFAULT_PRIORITY = 3  # 1 (low) to 5 (high): the agent's own estimate of what testing the idea is worth
 MAX_IDEAS = 100
+
+# what every turn is shown (the operator's, the analyst's and the strategist's message), and the digest's share
+CONTEXT_LESSONS = 10
+CONTEXT_IDEAS = 5
+CONTEXT_LINE = 240  # each lesson or idea line is cut to this many characters
+CONTEXT_MAX_CHARS = 4000
+DIGEST_LESSONS = 3
+DIGEST_IDEAS = 3
+DIGEST_LINE = 150
+
+STATE_FILE = "learning.json"  # when the last post-mortem ran and the newest sell it saw
+FIRST_WINDOW_SECS = 24 * 3600  # before the first post-mortem, the last day's round trips count as new
 
 _LESSON_RE = re.compile(r"^- (\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ) \[([a-z-]+), n=(\d+)\] (.*) \| evidence: (.*)$")
 _SECRET_RES = (
@@ -275,3 +288,139 @@ def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | N
     else:
         out = [i for i in ideas if i.get("status") == _choice(status, "status", STATUSES)]
     return out[: max(0, int(limit))] if limit is not None else out
+
+
+# -- what a turn and the digest are shown ---------------------------------------------------------------------------
+
+
+def _cut(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _idea_flags(idea: dict[str, Any]) -> str:
+    flags = ["being tested"] if idea.get("status") == "testing" else []
+    return ", ".join(flags + (["needs your yes"] if idea.get("owner_needed") else []))
+
+
+def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,
+            max_chars: int = CONTEXT_MAX_CHARS) -> str:  # fmt: skip
+    """The block every turn's message carries: the last lessons (newest last) and the best open ideas, each line cut
+    short and the whole capped, so a long memory never crowds out the round."""
+    lines = ["What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):"]
+    rows = read_lessons(paths, lessons)
+    lines += [_cut(f"- {x['ts'][:16]}Z {x['source']}, n {x['n']}: {x['text']} (evidence: {x['evidence']})",
+                   CONTEXT_LINE) for x in rows] or ["- nothing yet"]  # fmt: skip
+    lines.append("Open ideas, best first (operator/ideas.json; list_ideas for all, upsert_idea to change one):")
+    lines += [_cut(f"- {i['id']} [{i['kind']}, {i['status']}, priority {i['priority']}"
+                   f"{', needs the owner' if i.get('owner_needed') else ''}] {i['title']}. Why: {i['why']} Test: {i['test']}",
+                   CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
+    return _cut("\n".join(lines), max_chars)
+
+
+def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:
+    """The owner's digest: what was learned since the last digest and what is tested next, in plain words."""
+    hm = time.strftime("%H:%M", time.gmtime(since))
+    new = [x for x in _all_lessons(paths) if since < _epoch(x["ts"]) <= now]
+    if new:
+        out = [f"What it learned since {hm} UTC:"]
+        out += [_cut(f"- {x['text']} ({x['n']} {'case' if x['n'] == 1 else 'cases'})", DIGEST_LINE)
+                for x in new[-DIGEST_LESSONS:]]  # fmt: skip
+        if len(new) > DIGEST_LESSONS:
+            out.append(f"- and {len(new) - DIGEST_LESSONS} more in operator/lessons.md")
+    else:
+        out = [f"What it learned: nothing new since {hm} UTC"]
+    top = list_ideas(paths, "open", limit=DIGEST_IDEAS)
+    if not top:
+        return out + ["Testing next: no open ideas yet"]
+    out.append("Testing next:")
+    for i in top:
+        flags = _idea_flags(i)
+        out.append(_cut(f"- {i['title']}" + (f" ({flags})" if flags else ""), DIGEST_LINE))
+    return out
+
+
+# -- post-mortems ---------------------------------------------------------------------------------------------------
+
+
+def _state_path(paths: OperatorPaths) -> Path:
+    return paths.root / STATE_FILE
+
+
+def postmortem_state(paths: OperatorPaths) -> dict[str, Any]:
+    """The last post-mortem (a daily analyst turn or one the gate started): when it ran, the newest sell it saw."""
+    try:
+        data = json.loads(_state_path(paths).read_text())
+    except (OSError, ValueError):
+        return {}
+    pm = data.get("postmortem") if isinstance(data, dict) else None
+    return pm if isinstance(pm, dict) else {}
+
+
+def last_postmortem_ts(paths: OperatorPaths) -> float | None:
+    ts = postmortem_state(paths).get("ts")
+    return float(ts) if ts is not None else None
+
+
+def trips_since_postmortem(store: Store, wallet: str, paths: OperatorPaths, now: float) -> dict[str, Any]:
+    """Live round trips (sells in fills) after the newest sell the last post-mortem saw. Counting from that sell, not
+    from the clock, keeps a sell that measure records a few minutes late from slipping between two post-mortems."""
+    st = postmortem_state(paths)
+    if st.get("sell_ts") is not None:
+        since = int(st["sell_ts"])
+    elif st.get("ts") is not None:
+        since = int(st["ts"])
+    else:
+        since = int(now - FIRST_WINDOW_SECS)
+    rows = store.fills(wallet=wallet or None, since_ts=since + 1, side="sell", limit=100_000)
+    newest = max((int(r["ts"]) for r in rows if r.get("ts") is not None), default=None)
+    return {"n": len(rows), "since_ts": since, "newest_ts": newest if newest is not None else st.get("sell_ts")}
+
+
+def mark_postmortem(paths: OperatorPaths, now: float, trips: dict[str, Any], mode: str) -> None:
+    """Record that a post-mortem turn ran now over `trips` (from trips_since_postmortem), so it is not repeated."""
+    try:
+        data = json.loads(_state_path(paths).read_text())
+        data = data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        data = {}
+    data["postmortem"] = {"ts": int(now), "sell_ts": trips.get("newest_ts"), "n": int(trips.get("n") or 0),
+                          "mode": str(mode)}  # fmt: skip
+    paths.ensure()
+    p = _state_path(paths)
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps(data))
+    os.replace(tmp, p)
+
+
+def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> dict[str, Any]:
+    """Each live round trip since `since_ts`, newest first, read for a post-mortem: the landing (the buy's trades
+    behind the copied wallet, price gap, place in the slot), the exit (which one fired, crossed, failed duplicate
+    sends), the money, and what the copied wallet's latest verdict predicted (mean at the landing, copy plan)."""
+    sells = store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=max(1, int(limit)))
+    verdicts: dict[str, dict[str, Any] | None] = {}
+    trips = []
+    for s in sells:
+        buy = (store.fill(s["buy_sig"]) if s.get("buy_sig") else None) or {}
+        leader = buy.get("wallet_copied")
+        if leader and leader not in verdicts:
+            rows = store._q(f"SELECT * FROM ({_LATEST_VERDICT}) v WHERE v.wallet = ?", (leader,))
+            v = Store._verdict_dict(rows[0]) if rows else None
+            verdicts[leader] = (
+                {
+                    k: v.get(k)
+                    for k in ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "copy_plan")
+                }
+                if v
+                else None
+            )
+        held = int(s["ts"]) - int(buy["ts"]) if buy.get("ts") is not None and s.get("ts") is not None else None
+        trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
+                      "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
+                      "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
+                      "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
+                      "exit_reason": s.get("exit_reason"), "exit_name": s.get("exit_name"), "crossed": s.get("crossed"),
+                      "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None})  # fmt: skip
+    pnl = [float(t["pnl_sol"]) for t in trips if t["pnl_sol"] is not None]
+    summary = {"trips": len(trips), "wins": sum(p > 0 for p in pnl), "losses": sum(p <= 0 for p in pnl),
+               "pnl_sol": round(sum(pnl), 6)}  # fmt: skip
+    return {"since_ts": int(since_ts), "summary": summary, "trips": trips}
