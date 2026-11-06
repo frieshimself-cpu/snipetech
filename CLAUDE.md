@@ -43,3 +43,12 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 Non-technical, decisive, wants plain words and the numbers that change a decision. Lead with the outcome; one
 idea per sentence; no jargon without a gloss. Ask only when the answer changes what you build. Every milestone and
 every live result goes into `docs/` and is pushed, so the next session starts from the record, not from memory.
+
+## Local-session automations (set these up in `.claude/settings.json` on the owner's PC; a cloud session cannot)
+
+1. Permission allowlist for read-only server commands and tests: `Bash(.venv/bin/snipetech remote status*)`,
+   `Bash(.venv/bin/snipetech remote jobs*)`, `Bash(.venv/bin/snipetech remote read*)`,
+   `Bash(.venv/bin/snipetech remote sql*)`, `Bash(.venv/bin/pytest*)`. Never allowlist `remote update`,
+   `remote kill`, `remote run oktech*` or anything that trades.
+2. PreToolUse hook on Edit/Write that refuses paths matching `/etc/snipetech/env`, `.env`, `ops_key`, `*.key`.
+3. PostToolUse hook on Edit/Write of `src/**/*.py`: run `.venv/bin/pytest -q -x` and surface failures.
