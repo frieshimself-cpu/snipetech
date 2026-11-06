@@ -183,3 +183,11 @@ def test_state_has_events_section(ops):
     s = dash_state(ops, now=NOW)
     assert s["events"]["counts_24h"] == {"graduating": 1} and s["events"]["last_poll"]["added"] == 1 and s["events"]["edge"]["rows"][0]["kind"] == "graduating"
     assert s["events"]["recent"][0]["mint"] == "M1"
+
+
+def test_the_dashboard_shows_the_owners_book_switch(ops):
+    """/book on writes operator/BOOK_ON; the dashboard must say on, as /status does."""
+    from snipetech.book.switch import book_switch
+
+    book_switch(OperatorPaths(ops.data).ensure(), True, "test", now=NOW)
+    assert dash_state(ops, now=NOW)["book"]["enabled"] is True

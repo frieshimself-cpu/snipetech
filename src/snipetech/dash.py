@@ -166,7 +166,9 @@ def dash_state(ops, now: float | None = None) -> dict[str, Any]:
     except sqlite3.Error:
         con = None
     try:
-        cfg_book = _read_json(paths.root / "book.json", {})  # phase 4 writes this; until then only the flag matters
+        from .book.switch import book_flag  # the owner's /book on; the config file's [book] enabled is not read here
+
+        cfg_book = _read_json(paths.root / "book.json", {})
         state = {
             "generated_at": int(now),
             "version": status.get("code"),
@@ -187,7 +189,10 @@ def dash_state(ops, now: float | None = None) -> dict[str, Any]:
             "snapshot": _snapshot_view(snap, now),
             "candidates": _candidates(con, tables, paths),
             "fills": _fills(con, tables),
-            "book": {"enabled": bool(cfg_book.get("enabled", False)), "stopped": paths.stop_flag.exists()},
+            "book": {
+                "enabled": bool(cfg_book.get("enabled", False)) or book_flag(paths).exists(),
+                "stopped": paths.stop_flag.exists(),
+            },
             "events": _events(con, tables, now),
         }
     finally:

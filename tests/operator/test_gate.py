@@ -223,3 +223,51 @@ def test_a_coin_held_past_half_an_hour_is_raised_even_while_the_book_trades(path
              held=[{"mint": "Mint1111", "amount": 5.0, "since": NOW - 40 * 60}])  # fmt: skip
     d = decide(s, snap(), NOW, CFG, paths)
     assert d.call and any("held over 30 min" in r for r in d.reasons)
+
+
+def test_each_failing_stage_has_its_own_stable_reminder(paths):
+    failed = [
+        {"id": "m", "argv": ["measure", "run"], "exit_code": 1},
+        {"id": "q", "argv": ["qualify", "run"], "exit_code": 2},
+    ]
+    d = decide(snap(jobs_ended=failed), snap(), NOW, CFG, paths)
+    assert "loop stage failed: measure run" in d.reasons and "loop stage failed: qualify run" in d.reasons
+
+
+def test_a_flapping_state_is_not_news_every_time_it_comes_back(paths):
+    """measure fails, passes, fails again within six hours: one call, not two (the reminder time is carried across
+    the round in which the stage passed)."""
+    from snipetech.operator.run import carry_reason_ts
+
+    failed = [{"id": "m", "argv": ["measure", "run"], "exit_code": 1}]
+
+    def at(t, **kw):
+        return snap(ts=t, tape_last_ts=t - 5, **kw)
+
+    d1 = decide(at(NOW, jobs_ended=failed), at(NOW - 900), NOW, CFG, paths)
+    assert d1.call
+    prev = at(NOW)
+    prev.reason_ts = carry_reason_ts({}, d1, NOW)
+    t2 = NOW + 900
+    d2 = decide(at(t2), prev, t2, CFG, paths)  # measure passed this round
+    prev2 = at(t2)
+    prev2.reason_ts = carry_reason_ts(prev.reason_ts, d2, t2)
+    assert "loop stage failed: measure run" in prev2.reason_ts
+    t3 = NOW + 1800
+    assert not decide(at(t3, jobs_ended=failed), prev2, t3, CFG, paths).call
+
+
+def test_the_books_own_buys_and_sells_do_not_count_as_equity_moves(paths):
+    """A 0.2 SOL buy moves SOL into a coin; valued at the tape price, equity barely moves. A real loss still calls."""
+    prev = snap(native_sol=2.0, wsol=0.0)
+    prev.equity_ref = 2.0
+    holding = snap(native_sol=1.8, wsol=0.0, held=[{"mint": "M", "amount": 5.0, "priced": True, "value_sol": 0.19, "since": NOW}],
+                   book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"}])  # fmt: skip
+    assert not decide(holding, prev, NOW, CFG, paths).call
+    lost = snap(native_sol=1.85, wsol=0.0)
+    assert decide(lost, prev, NOW, CFG, paths).call
+
+
+def test_a_stand_in_that_cannot_start_stages_is_raised(paths):
+    d = decide(snap(errors=["stand-in: measure run did not start: OpsError: busy"]), snap(), NOW, CFG, paths)
+    assert d.call and any("loop stages not starting" in r for r in d.reasons)

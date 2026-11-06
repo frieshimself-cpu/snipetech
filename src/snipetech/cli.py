@@ -1435,15 +1435,16 @@ def main(argv: list[str] | None = None) -> int:
         return _events(args, cfg)
     if args.cmd == "book":
         from .book.run import run_book
-        from .book.switch import book_line, book_live, book_switch
+        from .book.switch import book_flag, book_line, book_live, book_off_reply, book_switch
         from .operator.paths import OperatorPaths
 
         bpaths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
         if args.action in ("on", "off"):
             book_switch(bpaths, args.action == "on", "cli", time.time())
-            print(
-                f"book {args.action}: " + (book_line(cfg) if args.action == "on" else "it creates and starts nothing")
-            )
+            # the switch is a file next to this machine's database: run it on the server (`snipetech remote --wait run
+            # book on|off`) or with /book on|off in Telegram
+            print(f"switch file {book_flag(bpaths)} on this machine")
+            print(f"book on: {book_line(cfg)}" if args.action == "on" else book_off_reply(cfg, bpaths))
             return 0
         if args.action == "status":
             print(

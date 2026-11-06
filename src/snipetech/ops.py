@@ -312,12 +312,17 @@ class Ops:
         return state | {"output": text}
 
     def op_jobs(self) -> dict[str, Any]:
-        metas = sorted((self.data / "jobs").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:30]
-        out = []
-        for p in metas:
+        """Every running job first, however old (a session checks this list before a deploy kills running jobs: a
+        live test's guard must never drop off it), then the 30 newest ended ones."""
+        paths = sorted((self.data / "jobs").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+        running, ended = [], []
+        for p in paths:
             jid = p.stem
-            out.append(self._job_dict(self.jobs[jid]) if jid in self.jobs else self._meta(jid))
-        return {"jobs": out}
+            d = self._job_dict(self.jobs[jid]) if jid in self.jobs else self._meta(jid)
+            if d is None:
+                continue
+            (running if d.get("running") else ended).append(d)
+        return {"jobs": running + ended[:30]}
 
     def op_kill(self, id: str) -> dict[str, Any]:
         _check_id(id)
@@ -436,13 +441,22 @@ class Ops:
                 "exit_code": job.code, "running": job.code is None, "pid": job.proc.pid if job.proc else None}  # fmt: skip
 
     def _save_meta(self, job: Job) -> None:
-        (self.data / "jobs" / f"{job.id}.json").write_text(json.dumps(self._job_dict(job)))
+        """Atomic: a reader never sees a half-written file (write a temp file, then rename it over the old one)."""
+        path = self.data / "jobs" / f"{job.id}.json"
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        tmp.write_text(json.dumps(self._job_dict(job)))
+        os.replace(tmp, path)
 
     def _meta(self, jid: str) -> dict | None:
         p = self.data / "jobs" / f"{jid}.json"
         if not p.exists() or not p.resolve().is_relative_to(self.data / "jobs"):
             return None
-        meta = json.loads(p.read_text())
+        try:
+            meta = json.loads(p.read_text())
+        except (OSError, ValueError):  # a write cut short (full disk, crash): unknown, never fatal to the caller
+            return None
+        if not isinstance(meta, dict):
+            return None
         if meta.get("running"):  # started by a process that is gone (restart, or the operator's timer run)
             exit_file = self.data / "jobs" / f"{jid}.exit"
             if exit_file.exists():

@@ -114,7 +114,11 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
             live = live or book_flag(OperatorPaths(Path(cfg.storage.db_path).resolve().parent)).exists()
         except Exception:  # noqa: BLE001
             pass
-        needed = (b.max_wallets * b.fill_max_sol * 2 + rc.sol_float_margin) if live else rc.sol_float_margin
+        # the fill the book can actually use (an arm whose fee cannot stay under max_fee_share is skipped)
+        from ..book.policy import usable_arms
+
+        fills = list(usable_arms(b).values())
+        needed = (b.max_wallets * max(fills) * 2 + rc.sol_float_margin) if live and fills else rc.sol_float_margin
         eq = snap.equity
         if eq is None:
             out.append(Resource("sol_float", None, "sol", needed, "unknown", "wallet balance not read this round"))
@@ -160,7 +164,9 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
                 )
             except Exception:  # noqa: BLE001
                 sells = 0
-        excess = f - 2 * sells
+        # the measure stage may not have written this hour's sells yet: half the landed transactions are sells too
+        landed_sells = (snap.ok_tx_1h or 0) // 2 if getattr(snap, "ok_tx_1h", None) is not None else 0
+        excess = f - 2 * max(sells, landed_sells)
         status = "crit" if excess >= rc.oktech_fail_alert else ("warn" if f > 0 else "ok")
         if status == "ok":
             msg = "no failed transactions in the last hour"

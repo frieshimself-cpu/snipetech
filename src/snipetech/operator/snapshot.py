@@ -21,11 +21,11 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 WATCHED_UNITS = (
     "snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer",
     "snipetech-discover.timer", "snipetech-qualify.timer", "snipetech-measure.timer", "snipetech-book.timer",
-    "snipetech-events", "snipetech-strategist.timer", "snipetech-commands.timer",
+    "snipetech-events", "snipetech-strategist.timer", "snipetech-commands.timer", "snipetech-snapshot.timer",
 )  # fmt: skip
 ONESHOT_UNITS = (
     "snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify",
-    "snipetech-measure", "snipetech-book", "snipetech-strategist", "snipetech-commands",
+    "snipetech-measure", "snipetech-book", "snipetech-strategist", "snipetech-commands", "snipetech-snapshot",
 )  # fmt: skip
 
 
@@ -51,12 +51,27 @@ class Snapshot:
     verdicts: dict[str, int] = field(default_factory=dict)  # the qualify stage's candidates by effective status
     resources: list[dict] = field(default_factory=list)  # filled by operator.resources after the snapshot
     book_live: bool = False  # the live book was on (config or the owner's /book on) when this snapshot was taken
+    equity_ref: float | None = None  # the last total equity a round could value (carried while a coin is unpriced)
+    ok_tx_1h: int | None = None  # landed transactions by the wallet in the last hour (None = could not read)
 
     @property
     def equity(self) -> float | None:
         if self.native_sol is None or self.wsol is None:
             return None
         return self.native_sol + self.wsol
+
+    @property
+    def total_equity(self) -> float | None:
+        """SOL + wrapped SOL + the tape value of every coin held; None when a balance or a coin's price is unknown.
+        The book's own buys move SOL into coins: this is the equity they do not move."""
+        if self.native_sol is None or self.wsol is None:
+            return None
+        total = self.native_sol + self.wsol
+        for h in self.held or []:
+            if h.get("priced") is False or h.get("value_sol") is None:
+                return None
+            total += float(h["value_sol"])
+        return total
 
     def to_json(self) -> str:
         return json.dumps(asdict(self) | {"equity": self.equity}, default=str)
@@ -164,13 +179,20 @@ def systemd_services(units: tuple[str, ...] | None = None) -> dict[str, str]:
     return out
 
 
-async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) -> int | None:
-    """How many of the wallet's recent transactions failed inside `window` seconds; None when the RPC does not answer."""
+async def transaction_counts(svc, wallet: str, now: float, window: int = 3600) -> tuple[int | None, int | None]:
+    """(failed, landed) transactions of the wallet inside `window` seconds; (None, None) when the RPC does not answer."""
     try:
         sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50}])
     except Exception:  # noqa: BLE001
-        return None
-    return sum(1 for s in sigs or [] if s.get("err") is not None and (s.get("blockTime") or 0) >= now - window)
+        return None, None
+    recent = [s for s in sigs or [] if (s.get("blockTime") or 0) >= now - window]
+    failed = sum(1 for s in recent if s.get("err") is not None)
+    return failed, len(recent) - failed
+
+
+async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) -> int | None:
+    """How many of the wallet's recent transactions failed inside `window` seconds; None when the RPC does not answer."""
+    return (await transaction_counts(svc, wallet, now, window))[0]
 
 
 async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, list[dict]]:
@@ -244,10 +266,12 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
                 res = await res
             snap.native_sol, snap.wsol, held = res
             snap.held = carry_since(list(held or []), prev, now)
+            total = snap.total_equity
+            snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"balances: {exc}")
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
-            snap.failed_tx_1h = await failed_transactions(svc, wallet, now)
+            snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
         try:
             rows = svc.store._q(
                 "select ts, mint, is_buy, quote from trades where user=? and ts>? order by ts", (wallet, since)

@@ -202,3 +202,11 @@ def test_read_events_tool(toolbox):
     assert out["edge"]["rows"][0]["kind"] == "trending"
     out = json.loads(_call(tools["read_events"], kind="trending", hours=24 * 7))
     assert [e["mint"] for e in out["events"]] == ["M1", "OLD"]
+
+
+def test_loop_stage_jobs_do_not_use_up_the_research_limit(jobs):
+    """The round's stand-in starts measure, book and the feeds just before the operator's turn; they must not make
+    the analyst's research job bounce off max_jobs."""
+    for i, argv in enumerate((["measure", "run"], ["book", "run"], ["events", "poll", "--once"], ["discover", "run"])):
+        _meta(jobs.ops.data / "jobs", f"s{i}", argv, running=True, pid=os.getpid())
+    assert jobs.start(["follow", "--kols"])["id"]

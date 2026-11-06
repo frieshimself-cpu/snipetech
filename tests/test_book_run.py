@@ -87,9 +87,38 @@ def test_day_accounting_and_record_run(tmp_path):
         st.close()
 
 
+def test_a_book_that_is_off_stops_its_own_snipers(tmp_path):
+    """/book off: the routine run stops the book's snipers that hold nothing (safety, not new money) and creates
+    nothing; an explicit dry preview never acts."""
+    st, cfg = _env(tmp_path)  # enabled=false, no BOOK_ON flag
+    svc = FakeSvc(st, snipers=[{"id": "s9", "name": "snipetech copy book OLDWAL arm:control", "status": "running"}])
+    try:
+        preview = asyncio.run(run_book(svc, cfg, NOW, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        assert svc.calls == [] and preview["dry"] is True
+        out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (10.0, 0.0, [])))
+        assert out["kill_reason"] == "book off" and svc.calls == [("stop", "s9")]
+    finally:
+        st.close()
+
+
+def test_the_book_keeps_only_the_sniper_whose_coin_is_held(tmp_path):
+    """Below the floor with a coin held: the measured fill says the coin copied L1, so L2's sniper is stopped."""
+    st, cfg = _env(tmp_path, enabled=True)
+    st.put_fill({"sig": "b1", "ts": NOW - 60, "slot": 1, "wallet": W, "wallet_copied": L1, "mint": "M", "side": "buy",
+                 "sol": 0.2, "tokens": 1000.0})  # fmt: skip
+    snipers = [{"id": "k1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"},
+               {"id": "k2", "name": f"snipetech copy book {L2[:6]} arm:control", "status": "running"}]  # fmt: skip
+    svc = FakeSvc(st, snipers=snipers, held=[{"mint": "M", "amount": 3.0, "value_sol": 0.1}])
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (1.0, 0.0, [{"mint": "M"}])))
+        assert out["kill_reason"] == "equity below floor" and svc.calls == [("stop", "k2")]
+    finally:
+        st.close()
+
+
 def test_dry_mode_calls_nothing(tmp_path):
     st, cfg = _env(tmp_path)  # enabled=false
-    svc = FakeSvc(st, snipers=[{"id": "s9", "name": "snipetech copy book OLDWAL arm:control", "status": "running"}])
+    svc = FakeSvc(st, snipers=[])
     sent = []
     try:
         out = asyncio.run(
@@ -101,10 +130,10 @@ def test_dry_mode_calls_nothing(tmp_path):
                 balances=lambda w: (10.0, 0.0, []),
             )
         )
-        assert out["dry"] is True and out["actions"]["create"] == 2 and out["actions"]["stop"] == 1
+        assert out["dry"] is True and out["actions"]["create"] == 2 and "stop" not in out["actions"]
         assert svc.calls == [] and sent == []
         notes = (tmp_path / "data" / "operator" / "notes.md").read_text()
-        assert "[book dry] would create" in notes and "would stop" in notes
+        assert "[book dry] would create" in notes
         out2 = asyncio.run(
             run_book(svc, cfg, NOW + 300, balances=lambda w: (10.0, 0.0, []))
         )  # the same plan again: no new note lines
@@ -132,7 +161,7 @@ def test_live_mode_executes_in_order_with_telegram_lines(tmp_path):
         kinds = [c[0] for c in svc.calls]
         assert kinds == ["stop", "create", "start", "start"]  # stop s9, create L2, start the new one and the idle s1
         create = next(c for c in svc.calls if c[0] == "create")
-        assert create[1] == (f"{L2}:book:0.3:lab",) and create[2] == "SNIPER" and create[3] == 0.2 and create[4] == 10
+        assert create[1] == (f"{L2}:book:0.3:lab",) and create[2] == "SNIPER" and create[3] == 0.2 and create[4] == 3
         assert create[5] == 0.001 and create[6] == 0.002 and create[7] == 1 and create[8] == "arm:control"
         assert len(sent) == 4 and all("[book]" in t for t in sent)
         assert st.coverage("book:last_run")["dry"] is False
@@ -249,3 +278,13 @@ def test_cli_book_switch_parses():
     p = build_parser()
     assert p.parse_args(["book", "on"]).action == "on" and p.parse_args(["book", "off"]).action == "off"
     assert p.parse_args(["book", "status"]).action == "status"
+
+
+def test_cli_book_off_says_where_the_switch_is_and_whether_it_held(tmp_path, capsys):
+    from snipetech import cli
+
+    db = tmp_path / "data" / "snipetech.db"
+    assert cli.main(["--db", str(db), "book", "on"]) == 0
+    assert cli.main(["--db", str(db), "book", "off"]) == 0
+    out = capsys.readouterr().out
+    assert str(tmp_path / "data" / "operator" / "BOOK_ON") in out and "stops its snipers that hold nothing" in out

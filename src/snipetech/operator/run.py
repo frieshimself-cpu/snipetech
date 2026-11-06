@@ -122,6 +122,16 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
     return 0
 
 
+def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) -> dict[str, float]:
+    """When each state reason last called Claude. A state missing this round keeps its time until its refire window
+    has passed, so a state that flaps (present, absent, present) is not news again each time it comes back."""
+    out = {k: ts for k, ts in prev_ts.items() if k not in decision.state_reasons and t0 - ts < refire_secs(k)}
+    for k in decision.state_reasons:
+        fresh = decision.call and (k not in prev_ts or t0 - prev_ts[k] >= refire_secs(k))
+        out[k] = t0 if fresh else prev_ts.get(k, t0)
+    return out
+
+
 async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = False, repo: Path, branch: str,
                   now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None,
                   disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None,
@@ -148,11 +158,17 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
         if not dry_run:  # loop stages whose timers are not enabled run from here
+
+            def standin_log(m: str) -> None:
+                _log(paths, t0, m)
+                if "did not start" in m or "failed" in m:  # the gate raises it: the loop must not stop silently
+                    snap.errors.append(m)
+
             try:
                 start_standins(OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch),
-                               dict(snap.services or {}), t0, log=lambda m: _log(paths, t0, m))  # fmt: skip
+                               dict(snap.services or {}), t0, log=standin_log)  # fmt: skip
             except Exception as exc:  # noqa: BLE001
-                _log(paths, t0, f"stand-in: failed: {type(exc).__name__}: {exc}")
+                standin_log(f"stand-in: failed: {type(exc).__name__}: {exc}")
         if paths.stop_flag.exists():
             _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.
@@ -189,8 +205,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
         prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
-        snap.reason_ts = {k: (t0 if decision.call and k not in prev_ts or (decision.call and t0 - prev_ts.get(k, 0) >= refire_secs(k)) else prev_ts.get(k, t0))
-                          for k in decision.state_reasons}  # fmt: skip
+        snap.reason_ts = carry_reason_ts(prev_ts, decision, t0)
         save(snap, paths)
         if decision.reasons == ["budget"]:
             _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} spent today")

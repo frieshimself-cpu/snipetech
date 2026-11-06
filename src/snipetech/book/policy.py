@@ -28,6 +28,8 @@ class BookInputs:
     holdings: list[dict]
     now: float
     stopped: bool = False  # the owner's /stop flag is set: kill mode until /resume
+    switched_on: bool = True  # the owner's switch ([book] enabled or /book on); off = stop the book's own snipers
+    holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
 
 
 @dataclass
@@ -127,6 +129,14 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             need = arm_fee_sol(arm) / cfg.max_fee_share if cfg.max_fee_share > 0 else 0
             plan.notes.append(f"{name} arm skipped: its fee {arm_fee_sol(arm):g} SOL needs a {need:.2f} SOL fill to stay under "
                               f"{cfg.max_fee_share:.0%}; fill_max_sol is {cfg.fill_max_sol:g}")  # fmt: skip
+    holding = bool(inp.holdings)
+    mine = _book_snipers(inp.snipers)
+
+    def holds(s: dict) -> bool:
+        """This sniper may be managing the wallet's coin: the coin's buy copied its leader, or the coin cannot be traced
+        to a leader (then every book sniper counts as a holder: never strand a coin)."""
+        return holding and (inp.holders is None or s["w6"] in inp.holders)
+
     # stops
     if inp.stopped:
         plan.kill_reason = "owner /stop"
@@ -138,13 +148,13 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         plan.kill_reason = "day stop"
     elif inp.day_risk_used_sol >= cfg.daily_risk_sol:
         plan.kill_reason = "daily risk used"
-    holding = bool(inp.holdings)
-    mine = _book_snipers(inp.snipers)
+    elif not inp.switched_on and any(is_active(s.get("status")) for s in mine):
+        plan.kill_reason = "book off"  # a running copy sniper keeps buying to its cap until it is stopped
     if plan.kill_reason:
         plan.actions.append(Action("kill", None, None, None, None, plan.kill_reason))
         for s in mine:
             if is_active(s.get("status")):
-                if holding:
+                if holds(s):
                     plan.actions.append(
                         Action(
                             "keep",
@@ -206,7 +216,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             if status == "stopping":
                 plan.actions.append(Action("keep", w6, s["arm"], None, s["id"], "already stopping"))
             elif is_active(status):
-                if holding:
+                if holds(s):
                     plan.actions.append(
                         Action(
                             "keep",

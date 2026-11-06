@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..book.switch import book_line, book_live, book_switch
+from ..book.switch import book_line, book_live, book_off_reply, book_switch
 from ..config import Config
 from ..positions import is_active
 from .notify import API, Notifier, get_updates
@@ -185,7 +185,7 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                          + (" (the /stop flag is set: it stays halted until /resume)" if paths.stop_flag.exists() else "") + ".")  # fmt: skip
             else:
                 notes.write("owner switched the book off (/book off)", "decision")
-                reply = "book off: it creates and starts nothing; snipers it already runs keep selling what they hold."
+                reply = book_off_reply(cfg, paths)
         else:
             reply = f"book: {'on' if book_live(cfg, paths) else 'off'}" + (
                 " (halted by /stop)" if paths.stop_flag.exists() else ""

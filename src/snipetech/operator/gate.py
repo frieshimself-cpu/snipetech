@@ -10,6 +10,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..config import OperatorConfig
 from ..positions import is_active
 from .paths import OperatorPaths
+from .standin import loop_stage
 
 ACTIVE = ("active", "activating")
 DEFAULT_EXPECTED = {"snipers_running": 0, "held": 0}
@@ -23,20 +24,10 @@ STUCK_SECS = 30 * 60  # our exits close within minutes (dead exit 1 s, 300 s at 
 
 
 def refire_secs(state_key: str) -> int:
-    slow = state_key.startswith(("service not active", "loop stage failed", "coin(s) held over"))
+    slow = state_key.startswith(
+        ("service not active", "loop stage failed", "coin(s) held over", "loop stages not starting")
+    )
     return SERVICE_REFIRE_SECS if slow else STATE_REFIRE_SECS
-
-
-def loop_stage(argv) -> str | None:
-    """The learning-loop stage a job runs (`measure run`, `book run`, ...), or None for anything else. The round
-    starts these itself while their timers are inactive, so they end every round: routine, not news."""
-    from .standin import STANDIN
-
-    argv = tuple(argv or ())
-    for stage, _unit, _every in STANDIN:
-        if argv[: len(stage)] == stage:
-            return " ".join(stage)
-    return None
 
 
 @dataclass
@@ -116,8 +107,10 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
         )
     failed = sorted({loop_stage(j.get("argv")) for j in snap.jobs_ended
                      if loop_stage(j.get("argv")) is not None and j.get("exit_code") != 0})  # fmt: skip
-    if failed:
-        states.append("loop stage failed: " + ", ".join(failed))
+    for stage in failed:  # one stable reminder per stage, whatever else fails alongside it
+        states.append(f"loop stage failed: {stage}")
+    if any(str(e).startswith("stand-in") for e in snap.errors or []):
+        states.append("loop stages not starting (operator/log.txt says why)")
     exp = expected_state(paths)
     # while the owner has the book on (and has not said /stop), the book's own snipers running and the coins they hold
     # are the book working, not a deviation; anything else running still counts against expected.json
@@ -142,8 +135,14 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
         gained = (snap.verdicts or {}).get("qualified", 0) - (getattr(prev, "verdicts", None) or {}).get("qualified", 0)
         if gained > 0:
             events.append(f"{gained} newly qualified wallet(s) (read_verdicts)")
-    if prev is not None and snap.equity is not None and prev.equity is not None:
-        move = snap.equity - prev.equity
+    # equity with the coins valued at the tape price, against the last equity a round could value: the book's own
+    # buys only move SOL into coins; a real loss shows up here once the coin is sold or priced
+    ref = getattr(prev, "equity_ref", None) if prev is not None else None
+    if ref is None and prev is not None and not prev.held:  # a snapshot written before equity_ref existed
+        ref = prev.equity
+    total = snap.total_equity
+    if total is not None and ref is not None:
+        move = total - ref
         if abs(move) > cfg.equity_alert_sol:
             events.append(f"equity moved {move:+.3f} SOL")
     if snap.tape_last_ts is not None and now - snap.tape_last_ts > cfg.tape_stale_secs:

@@ -84,7 +84,7 @@ def test_disk_float_birdeye_and_requests_thresholds(tmp_store, ledger):
                                                birdeye_credits=lambda: {"used": 7_000_000, "remaining": 900_000}, now=NOW)}  # fmt: skip
     assert rs["disk"].status == "crit" and "320" in rs["disk"].message
     assert rs["sol_float"].status == "crit" and "send" in rs["sol_float"].message and W in rs["sol_float"].message
-    assert rs["sol_float"].threshold == pytest.approx(6 * 1.0 * 2 + 0.2)
+    assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2)  # the control arm's 0.2 SOL fill
     assert rs["birdeye_cu"].status == "crit"
     assert rs["solanatracker_requests"].status == "crit" and rs["solanatracker_requests"].value == 20_000
     assert rs["vybe_credits"].status == "ok"
@@ -194,3 +194,34 @@ def test_sell_twins_do_not_raise_the_failure_alert(tmp_store, ledger):
         )
     }
     assert rs["oktech_failures"].status == "crit"  # 10 - 2 x 3 = 4 beyond the twins
+
+
+def test_twin_sells_are_allowed_for_by_the_chain_before_measure_records_the_sells(tmp_store, ledger):
+    """Right after a round trip the failed twin sells are on chain but the measure stage has not written the sells
+    yet: the landed transactions in the same hour stand for them, so a normal round trip raises no alarm."""
+    cfg = Config()
+    cfg.operator.wallet = "W"
+    s = snap(failed_tx_1h=3)
+    s.ok_tx_1h = 4  # two buys and two sells landed
+    rs = {
+        x.name: x
+        for x in check_resources(cfg, tmp_store, s, ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    }
+    assert rs["oktech_failures"].status == "warn"
+    s.ok_tx_1h = 0
+    rs = {
+        x.name: x
+        for x in check_resources(cfg, tmp_store, s, ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    }
+    assert rs["oktech_failures"].status == "crit"
+
+
+def test_the_sol_float_is_sized_from_the_fill_the_book_can_use(tmp_store, ledger):
+    """With the default arms the paid arm cannot keep its fee under 3 % below a 1.33 SOL fill, so the book fills
+    0.2 SOL on the control arm: six wallets need 6 x 0.2 x 2 + 0.2 = 2.6 SOL, not 12.2."""
+    cfg = Config()
+    cfg.operator.wallet = W
+    cfg.book.enabled = True
+    rs = {x.name: x for x in check_resources(cfg, tmp_store, snap(native_sol=3.0, wsol=0.0, wallet=W), ledger, disk_free_gb=lambda: 50.0,
+                                               birdeye_credits=None, now=NOW)}  # fmt: skip
+    assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2) and rs["sol_float"].status == "warn"

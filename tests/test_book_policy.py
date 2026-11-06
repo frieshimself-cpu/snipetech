@@ -187,3 +187,51 @@ def test_owner_stop_is_a_kill_reason():
     assert not any(a.kind in ("create", "start") for a in plan.actions)
     holding = plan_book(_inp(snipers=snipers, stopped=True, holdings=[{"mint": "M", "amount": 1.0}]), cfg.book)
     assert any(a.kind == "keep" and a.sniper_id == "s1" for a in holding.actions)  # still never strands a coin
+
+
+def test_a_book_switched_off_stops_its_own_snipers():
+    """/book off must stop what the book runs (a running copy sniper keeps buying to its cap otherwise); snipers that are
+    not the book's are never touched."""
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"},
+               {"id": "x1", "name": "snipetech copy Gfree 4yo9CU arm:paid", "status": "running"}]  # fmt: skip
+    plan = plan_book(_inp(snipers=snipers, switched_on=False), cfg.book)
+    assert plan.kill_reason == "book off"
+    assert any(a.kind == "stop" and a.sniper_id == "s1" for a in plan.actions)
+    assert not any(a.sniper_id == "x1" for a in plan.actions)
+    assert not any(a.kind in ("create", "start") for a in plan.actions)
+
+
+def test_a_book_switched_off_with_nothing_running_has_no_kill_reason():
+    assert plan_book(_inp(switched_on=False), _cfg().book).kill_reason is None
+
+
+def test_while_a_coin_is_held_only_the_sniper_that_bought_it_is_kept():
+    """The held coin's buy copied W1, so only W1's sniper manages it; the others can stop without stranding anything.
+    When the coin cannot be traced to a leader, every book sniper is kept (never strand a coin)."""
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"},
+               {"id": "s2", "name": "snipetech copy book W2 arm:control", "status": "running"}]  # fmt: skip
+    held = [{"mint": "M1", "amount": 5.0}]
+    plan = plan_book(_inp(equity_sol=0.5, snipers=snipers, holdings=held, holders={"W1"}), cfg.book)
+    kinds = {(a.kind, a.sniper_id) for a in plan.actions if a.sniper_id}
+    assert kinds == {("keep", "s1"), ("stop", "s2")}
+    unknown = plan_book(_inp(equity_sol=0.5, snipers=snipers, holdings=held, holders=None), cfg.book)
+    assert {(a.kind, a.sniper_id) for a in unknown.actions if a.sniper_id} == {("keep", "s1"), ("keep", "s2")}
+
+
+def test_a_dropped_sniper_is_stopped_while_another_sniper_holds_the_coin():
+    snipers = [{"id": "s9", "name": "snipetech copy book W9 arm:control", "status": "running"}]
+    plan = plan_book(_inp(snipers=snipers, holdings=[{"mint": "M1", "amount": 5.0}], holders={"W1"}), _cfg().book)
+    assert any(a.kind == "stop" and a.sniper_id == "s9" for a in plan.actions)
+
+
+def test_the_book_promises_only_what_it_enforces():
+    """A sniper still selling a coin is never stopped, so the daily cap can be overrun by its remaining buys: keep
+    those few (3 a sniper) and say so when the owner switches the book on."""
+    from snipetech.book.switch import book_line
+
+    cfg = Config()
+    assert cfg.book.max_buys_per_sniper == 3
+    line = book_line(cfg)
+    assert "2 SOL a day at risk" in line and "up to 3 more buys" in line

@@ -277,3 +277,17 @@ def test_book_switch_from_telegram(tmp_path):
     reply = asyncio.run(handle_command(_cmd("book", "off"), **ctx))
     assert not book_live(ctx["cfg"], ctx["paths"]) and "off" in reply.lower()
     assert "book: off" in asyncio.run(handle_command(_cmd("book"), **ctx)).lower()
+
+
+def test_book_off_tells_the_truth(tmp_path):
+    """Off stops what the book runs (except a sniper still selling a coin); and when the config file keeps the book on,
+    /book off says so instead of claiming it is off."""
+    svc = FakeSvc(held=[], snipers=[])
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=5.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
+    ctx, sent = _ctx(tmp_path, svc, snap)
+    asyncio.run(handle_command(_cmd("book", "on"), **ctx))
+    reply = asyncio.run(handle_command(_cmd("book", "off"), **ctx)).lower()
+    assert "stops its snipers that hold nothing" in reply and "still on" not in reply
+    ctx["cfg"].book.enabled = True
+    reply = asyncio.run(handle_command(_cmd("book", "off"), **ctx)).lower()
+    assert "still on" in reply and "enabled = true" in reply and "/stop" in reply

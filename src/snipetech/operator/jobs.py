@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from ..ops import Ops, OpsError, _pid_alive
+from .standin import loop_stage
 
 RESEARCH_COMMANDS = frozenset({"lab", "follow", "discover-wallets", "label", "copy-rank", "paper", "study", "copy"})
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
@@ -39,7 +40,9 @@ class OperatorJobs:
                 except OSError as exc:
                     raise PermissionError(f"path not allowed: {a}: {exc}") from exc
                 if not any(r == root or r.is_relative_to(root) for root in roots):
-                    raise PermissionError(f"path not allowed: {a} (only inputs/, reports/, operator/ under the data directory)")
+                    raise PermissionError(
+                        f"path not allowed: {a} (only inputs/, reports/, operator/ under the data directory)"
+                    )
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
         for p in (self.ops.data / "jobs").glob("*.json"):
@@ -56,13 +59,16 @@ class OperatorJobs:
         now = time.time() if now is None else now
         dup = self._recent_identical(argv, now)
         if dup:
-            raise PermissionError(f"already ran: job {dup.get('id')} with these exact arguments finished "
-                                  f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead")
+            raise PermissionError(
+                f"already ran: job {dup.get('id')} with these exact arguments finished "
+                f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"
+            )
         running = self.running()
         if argv[0] == "lab" and any(m.get("argv", [""])[0] == "lab" for m in running):
             raise PermissionError("a lab is already running; one lab at a time")
-        if len(running) >= self.max_jobs:
-            raise PermissionError(f"{len(running)} jobs running, the limit is {self.max_jobs}")
+        research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
+        if len(research) >= self.max_jobs:
+            raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")
         try:
             return self.ops.op_run(argv)
         except OpsError as exc:

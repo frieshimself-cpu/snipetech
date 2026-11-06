@@ -31,7 +31,17 @@ def book_switch(paths: OperatorPaths, on: bool, by: str, now: float | None = Non
     return flag.exists()
 
 
+def book_off_reply(cfg: Config, paths: OperatorPaths) -> str:
+    """What /book off (or `snipetech book off`) actually did, read back from the switch after writing it."""
+    if book_live(cfg, paths):
+        return ("the book is still ON: [book] enabled = true in the server's config file keeps it live. /stop halts "
+                "everything now; turning it off for good needs that line set to false over SSH.")  # fmt: skip
+    return ("book off: it creates and starts nothing, and within 15 minutes it stops its snipers that hold nothing; "
+            "one still selling a coin keeps running until the coin is sold, then it is stopped too.")  # fmt: skip
+
+
 def book_line(cfg: Config) -> str:
     b = cfg.book
     return (f"it copies only wallets that clear every gate and score at least {b.min_score:g} SOL a trade, {b.fill_min_sol:g}-{b.fill_max_sol:g} SOL a fill, "
-            f"at most {b.daily_risk_sol:g} SOL a day at risk; it stops below {b.equity_floor_sol:g} SOL equity or after a {b.day_stop_sol:g} SOL day loss")  # fmt: skip
+            f"at most {b.daily_risk_sol:g} SOL a day at risk; it stops below {b.equity_floor_sol:g} SOL equity or after a {b.day_stop_sol:g} SOL day loss. "
+            f"A stop never strands a coin: the sniper holding one keeps running until it is sold and can make up to {b.max_buys_per_sniper} more buys first")  # fmt: skip

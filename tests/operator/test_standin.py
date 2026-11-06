@@ -22,8 +22,8 @@ def test_inactive_timers_get_their_stage_started():
 
 
 def test_active_timers_are_left_to_systemd():
-    services = {unit: "active" for _, unit, _ in STANDIN}
-    assert due_standins(services, [], NOW) == []
+    services = {unit: "active" for _, unit, _ in STANDIN if unit}
+    assert due_standins(services, [], NOW) == [["events", "scan"]]  # no unit runs the scan: always stood in for
 
 
 def test_recent_or_running_stages_are_not_started_again():
@@ -74,3 +74,65 @@ def test_round_starts_due_stages_but_not_on_a_dry_run(tmp_path, monkeypatch):
     finally:
         st.close()
     assert json.dumps(started)
+
+
+def test_one_unreadable_job_file_does_not_stop_the_loop(tmp_path):
+    import os
+    import sys
+
+    from snipetech import ops as O
+    from snipetech.operator.standin import start_standins
+
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+    (data / "jobs" / "truncated.json").write_text("")
+
+    class Jobs:
+        ops = O.Ops(
+            repo=tmp_path,
+            data=data,
+            db=data / "x.db",
+            keys_file=tmp_path / "k",
+            branch="main",
+            command=[sys.executable, "-c", "pass"],
+        )
+
+    started = []
+    Jobs.ops.op_run = lambda argv: started.append(tuple(argv)) or {"id": "x"}
+    assert start_standins(Jobs(), {}, NOW) and ("measure", "run") in started
+    assert os.path.exists(data / "jobs" / "truncated.json")  # left for a person to look at, never fatal
+
+
+def test_the_event_scan_stands_in_even_while_the_poll_service_runs():
+    """No systemd unit runs `events scan` (snipetech-events only polls the feeds): the round always stands in for it."""
+    argvs = [tuple(a) for a in due_standins({"snipetech-events": "active"}, [], NOW)]
+    assert ("events", "scan") in argvs and ("events", "poll", "--once") not in argvs
+
+
+def test_the_snapshot_timer_is_watched():
+    from snipetech.operator.snapshot import WATCHED_UNITS
+
+    assert "snipetech-snapshot.timer" in WATCHED_UNITS
+
+
+def test_old_finished_stage_jobs_are_pruned(tmp_path):
+    from snipetech.operator.standin import prune_jobs
+
+    jobs = tmp_path / "jobs"
+    jobs.mkdir()
+    day = 86400
+
+    def put(jid, argv, ended, running=False):
+        (jobs / f"{jid}.json").write_text(json.dumps({"id": jid, "argv": argv, "started": ended - 5, "ended": ended,
+                                                      "exit_code": 0, "running": running}))  # fmt: skip
+        (jobs / f"{jid}.log").write_text("x")
+        (jobs / f"{jid}.exit").write_text("0")
+
+    put("old_measure", ["measure", "run"], NOW - 4 * day)
+    put("new_measure", ["measure", "run"], NOW - 1 * day)
+    put("old_lab", ["lab", "--latency", "0"], NOW - 9 * day)  # research output: kept
+    put("old_guard", ["oktech", "guard"], NOW - 9 * day)  # live-test record: kept
+    assert prune_jobs(jobs, NOW, keep_days=3) == 1
+    names = {p.name for p in jobs.iterdir()}
+    assert "old_measure.json" not in names and "old_measure.log" not in names and "old_measure.exit" not in names
+    assert {"new_measure.json", "old_lab.json", "old_guard.log"} <= names

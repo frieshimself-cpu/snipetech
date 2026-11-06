@@ -213,3 +213,32 @@ def test_redact_hides_every_secret_env_value(monkeypatch):
     monkeypatch.setenv("HELIUS_API_KEY", "helius-secret-key")
     text = "key=helius-secret-key token 123456:ABCDEFGHIJK ok"
     assert O.redact(text) == "key=<redacted> token <redacted> ok"
+
+
+def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tmp_path):
+    """Sessions check `remote jobs` before a deploy kills everything: a running guard must stay on the list however
+    many stand-in jobs end after it, and one truncated job file must not break the listing."""
+    import json
+    import os
+
+    data = tmp_path / "d"
+    jobs = data / "jobs"
+    jobs.mkdir(parents=True)
+    ops = O.Ops(
+        repo=tmp_path,
+        data=data,
+        db=data / "x.db",
+        keys_file=tmp_path / "k",
+        branch="main",
+        command=[sys.executable, "-c", "pass"],
+    )
+    (jobs / "guard.json").write_text(json.dumps({"id": "guard", "argv": ["oktech", "guard"], "started": 1, "ended": None,
+                                                "exit_code": None, "running": True, "pid": os.getpid()}))  # fmt: skip
+    os.utime(jobs / "guard.json", (1, 1))  # oldest file in the directory
+    for i in range(40):
+        (jobs / f"m{i:02d}.json").write_text(json.dumps({"id": f"m{i:02d}", "argv": ["measure", "run"], "started": 10 + i,
+                                                         "ended": 11 + i, "exit_code": 0, "running": False, "pid": None}))  # fmt: skip
+    (jobs / "broken.json").write_text("")
+    assert ops._meta("broken") is None
+    listed = ops.op_jobs()["jobs"]
+    assert listed[0]["id"] == "guard" and listed[0]["running"] is True and len(listed) <= 31
