@@ -397,3 +397,9 @@ def test_research_next_dry_run_from_the_command_line_starts_nothing(env, monkeyp
     assert main(["--db", cfg.storage.db_path, "research", "next", "--dry-run"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["would_start"]["unit"] == "qualify" and out["started"] is None
+
+
+def test_the_strategy_search_never_holds_the_lab_for_hours():
+    """On 6 Nov the first search over 72 h of tape held the lab lock for over 77 minutes while the wallet checks the
+    book waits for queued behind it. The search reads the newest 24 h and is stopped after 2 hours at most."""
+    assert RS.SEARCH_TAPE_H == 24.0 and RS.UNITS["search"]["limit"] <= 2 * 3600

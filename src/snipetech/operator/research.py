@@ -49,12 +49,13 @@ BUSY_STATES = ("active", "activating", "deactivating", "reloading")
 # run, and how soon the same unit may start again after its last start
 UNITS: dict[str, dict[str, Any]] = {
     "qualify": {"argv": ("qualify", "run"), "limit": 3 * 3600, "gap": 30 * 60, "name": "wallet checks"},
-    "search": {"argv": ("research", "search"), "limit": 5 * 3600, "gap": 6 * 3600, "name": "strategy search"},
+    "search": {"argv": ("research", "search"), "limit": 2 * 3600, "gap": 6 * 3600, "name": "strategy search"},
     "discover": {"argv": ("discover", "run"), "limit": 3600, "gap": 3 * 3600, "name": "wallet discovery"},
 }
 MAX_QUALIFY_BATCH = 900  # three times [qualify] max_wallets: one qualify lab covers every labelled wallet anyway
 SEARCH_EVERY_H = 24.0
-SEARCH_TAPE_H = 72.0  # the search reads the newest three days of tape, so it never holds the lab lock for long
+# the search reads the newest day of tape: over 72 h it held the lab lock (and the wallet checks behind it) for hours
+SEARCH_TAPE_H = 24.0
 DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pipeline has run dry
 STALE_VERDICT_DAYS = 3.0
 FAILED_BACKOFF_SECS = 6 * 3600  # a unit whose last job failed waits this long before it is tried again
