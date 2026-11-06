@@ -1,16 +1,25 @@
-"""Owner commands over Telegram: /status /stop /resume. Polled once per round; only the owner's chat is obeyed.
-/stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells)."""
+"""Owner commands over Telegram: /status /stop /resume /book /sell. Polled once per round and every minute (`operate
+--commands`); only the owner's chat is obeyed.
+/stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
+/sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
+65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
+(solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task."""
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+import httpx
+
 from ..book.switch import book_bar_reply, book_line, book_live, book_off_reply, book_switch, effective_min_score
 from ..config import Config
+from ..ops import redact
 from ..positions import is_active
+from ..solana.base58 import is_pubkey
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
 from .snapshot import Snapshot
@@ -19,6 +28,7 @@ from .tools import NoteSink
 HELP = (
     "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  "
     "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
+    "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/why <wallet> and /budget (later phase)"
 )
 
@@ -157,8 +167,204 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
     )
 
 
+# -- /sell: the owner's own exit ---------------------------------------------------------------------------------------
+
+SELL_SLIPPAGE = 0.5  # a sale fails rather than take less than half its quote (as `snipetech sweep`): a coin falling
+# fast still sells, and nobody can take more than half of it on the way
+LIST_MAX = 20  # coins a reply names one by one (a Telegram message holds 4,000 characters)
+BY_HAND = "by hand in Axiom or OKTech"
+
+
+def _sell_key(cfg: Config) -> tuple[str | None, str | None]:
+    """(the wallet SNIPER_SECRET signs for, why /sell cannot sell with it, in plain words). The secret is read only to
+    check it: nothing of it is ever repeated in a reply, a note or the log."""
+    secret = os.environ.get("SNIPER_SECRET", "").strip()
+    if not secret:
+        return None, (
+            "the sell key (SNIPER_SECRET) is not on the server. Put it in /etc/snipetech/env over SSH (never send it in chat)"
+        )
+    try:
+        from solders.keypair import Keypair
+
+        wallet = str(Keypair.from_base58_string(secret).pubkey())
+    except Exception:  # noqa: BLE001 - whatever is wrong with it, its error text is not passed on
+        return None, "the sell key (SNIPER_SECRET) in /etc/snipetech/env is not a valid secret key. Fix it over SSH"
+    want = (cfg.operator.wallet or "").strip()
+    if want and wallet != want:  # the list reads the operator's wallet: a sale must come from that one
+        return wallet, (
+            f"the sell key (SNIPER_SECRET) is for wallet {wallet[:6]}…, not the sniper wallet {want[:6]}…. Fix it in "
+            "/etc/snipetech/env over SSH"
+        )
+    return wallet, None
+
+
+def _why(exc: Exception) -> str:
+    """A failed sale in plain words: an RPC error in the node's own words, any other error by its kind only (an HTTP
+    error's text carries the RPC address, and with it the provider's key)."""
+    from ..solana.rpc import RpcError
+
+    if isinstance(exc, RpcError):
+        said = (exc.error or {}).get("message") if isinstance(exc.error, dict) else None
+        what = "Solana refused the sale" if exc.method == "sendTransaction" else "Solana did not answer"
+        return redact(f"{what}: {said or exc}")[:240]
+    if isinstance(exc, httpx.HTTPError):
+        return f"Solana did not answer ({type(exc).__name__})"
+    return type(exc).__name__
+
+
+def _skip_words(skipped: object) -> str:
+    """Why the sweep left a coin, in plain words (its reasons: solana/sell.py)."""
+    s = str(skipped or "")
+    if "migrated" in s or "complete" in s:
+        return "has left the pump.fun curve (it moved to PumpSwap)"
+    if "curve" in s:
+        return "is not a pump.fun curve coin"
+    return f"was left alone ({s})"
+
+
+async def _sell_list(svc, cfg: Config) -> str:
+    """/sell alone: the coins the sniper wallet holds, each with its value and the exact line that sells it. Sells
+    nothing and records nothing."""
+    key_wallet, problem = _sell_key(cfg)
+    wallet = (cfg.operator.wallet or "").strip() or key_wallet
+    warn = f"\nNote: {problem}; until then /sell cannot sell." if problem else ""
+    if not wallet:
+        return (
+            "I do not know the sniper wallet (operator.wallet is empty in the config), so I cannot list its coins."
+            + warn
+        )
+    try:
+        held = await svc.open_positions(wallet)
+    except Exception as exc:  # noqa: BLE001 - the owner hears it; the pass goes on
+        failed = f"I could not read the sniper wallet's coins ({type(exc).__name__}); nothing was sold."
+        return f"{failed} Try /sell again in a minute.{warn}"
+    coins: dict[str, float | None] = {}
+    for h in held or []:
+        m = h.get("mint")
+        if not (isinstance(m, str) and is_pubkey(m)):
+            continue
+        v = None if h.get("value_sol") is None else float(h["value_sol"])
+        if m in coins:  # two token accounts of one coin: one coin, worth both (unknown if either is unpriced)
+            v = None if v is None or coins[m] is None else v + coins[m]
+        coins[m] = v
+    if not coins:
+        return f"The sniper wallet {wallet[:6]}… holds no coins: nothing to sell." + warn
+    order = sorted(coins.items(), key=lambda kv: (kv[1] is None, -(kv[1] or 0.0)))  # the most valuable first
+    lines = [
+        f"The sniper wallet {wallet[:6]}… holds {len(order)} coin(s); nothing was sold. To sell one, send its line:"
+    ]
+    for m, v in order[:LIST_MAX]:
+        worth = f"worth about {v:.4f} SOL" if v is not None else "value not known yet (the tape has not priced it)"
+        lines += [f"{m[:6]}… {worth}", f"/sell {m}"]
+    if len(order) > LIST_MAX:
+        lines.append(f"… and {len(order) - LIST_MAX} more.")
+    lines.append("/sell all sells every one still on the pump.fun curve.")
+    return "\n".join(lines) + warn
+
+
+def _sold_one(mint: str, wallet: str, rows: list[dict], notes: NoteSink) -> str:
+    """The reply to /sell <mint> from what the sweep did, and its decision note."""
+    sold = [r for r in rows if r.get("signature")]
+    if not rows:
+        notes.write(
+            f"owner's /sell {mint} from Telegram: nothing sold, the wallet {wallet} holds none of it", "decision"
+        )
+        return f"Nothing sold: the sniper wallet {wallet[:6]}… holds none of coin {mint}."
+    if not sold:
+        why = _skip_words(rows[0].get("skipped"))
+        notes.write(f"owner's /sell {mint} from Telegram: not sold, the coin {why}", "decision")
+        return f"Not sold: coin {mint} {why}, and /sell only sells coins on the pump.fun curve. Sell it {BY_HAND}."
+    quote = sum(float(r.get("quote_sol") or 0) for r in sold)
+    floor = sum(float(r.get("floor_sol") or 0) for r in sold)
+    sigs = [str(r["signature"]) for r in sold]
+    notes.write(
+        f"owner sold coin {mint} with /sell from Telegram: sent for about {quote:.4f} SOL (floor {floor:.4f} SOL), "
+        f"signature {', '.join(sigs)}",
+        "decision",
+    )
+    head = (
+        f"Sold coin {mint} for about {quote:.4f} SOL, its price when sent. If the price falls below {floor:.4f} SOL "
+        "before the sale lands, the sale fails and you keep the coin."
+    )
+    tail = "Send /sell in a minute: if the coin is still listed, it did not sell."
+    return "\n".join([head, *(f"Signature {s}\nhttps://solscan.io/tx/{s}" for s in sigs), tail])
+
+
+def _sold_all(wallet: str, rows: list[dict], notes: NoteSink) -> str:
+    """The reply to /sell all from what the sweep did, and its decision note."""
+    sold = [r for r in rows if r.get("signature")]
+    left = [r for r in rows if not r.get("signature")]
+    if not rows:
+        notes.write(f"owner's /sell all from Telegram: nothing sold, the wallet {wallet} holds no coins", "decision")
+        return f"Nothing sold: the sniper wallet {wallet[:6]}… holds no coins."
+    quote = sum(float(r.get("quote_sol") or 0) for r in sold)
+    if sold:
+        head = f"/sell all: sent {len(sold)} sale(s) for about {quote:.4f} SOL in all."
+        head += " Each fails rather than take less than half its price."
+    else:
+        head = f"Nothing sold: /sell could sell none of the {len(left)} coin(s) the wallet holds."
+    lines = [head]
+    lines += [
+        f"{r['mint']}: about {float(r.get('quote_sol') or 0):.4f} SOL, signature {r['signature']}"
+        for r in sold[:LIST_MAX]
+    ]
+    if len(sold) > LIST_MAX:
+        lines.append(f"… and {len(sold) - LIST_MAX} more (each in the notes).")
+    if left:
+        why = "; ".join(f"{r.get('mint')} {_skip_words(r.get('skipped'))}" for r in left[:LIST_MAX])
+        more = f"; and {len(left) - LIST_MAX} more" if len(left) > LIST_MAX else ""
+        lines.append(f"Not sold (sell these {BY_HAND}): {why}{more}.")
+    if sold:
+        lines.append("Send /sell in a minute: a coin still listed did not sell.")
+    parts = [f"owner sold with /sell all from Telegram: sent {len(sold)} for about {quote:.4f} SOL"]
+    parts += [f"{r['mint']} {r['signature']}" for r in sold]
+    parts += [f"not sold: {r.get('mint')} {_skip_words(r.get('skipped'))}" for r in left]
+    notes.write("; ".join(parts), "decision")
+    return "\n".join(lines)
+
+
+async def _sell(args: list[str], *, svc, cfg: Config, notes: NoteSink, sweep: Callable | None = None) -> str:
+    """/sell <mint>: sell all of that coin; /sell all: every coin the wallet holds; /sell alone: list them. Only the
+    owner's own message gets here (parse_updates). It sells and never buys, and it asks OKTech nothing."""
+    if not args:
+        return await _sell_list(svc, cfg)
+    send = "Send /sell alone to list the coins held, each with its line to send."
+    if len(args) > 1:
+        return f"Nothing sold: one coin at a time, as /sell <coin address>, or /sell all for every coin. {send}"
+    if args[0] == "all":
+        mints, said = None, "/sell all"
+    elif is_pubkey(args[0]):
+        mints, said = [args[0]], f"/sell {args[0]}"
+    else:  # never repeated: a secret key pasted by mistake must not reach the chat or the log again
+        return f"Nothing sold: that is not a coin address (one word of 32 to 44 letters and digits). {send}"
+    _, problem = _sell_key(cfg)
+    if problem:
+        notes.write(f"owner's {said} from Telegram: nothing sold, {problem}", "decision")
+        return f"Nothing sold: {problem}, then send {said} again. Until then sell it {BY_HAND}."
+    if sweep is None:
+        from ..solana.sell import sweep
+    try:
+        res = await sweep(svc.rpc, mints, SELL_SLIPPAGE)
+    except Exception as exc:  # noqa: BLE001 - the owner hears what happened; the pass goes on
+        why = _why(exc)
+        notes.write(f"owner's {said} from Telegram stopped with an error ({why}); it may not have sold", "decision")
+        if mints is None:
+            return (
+                f"Not sure what sold: /sell all stopped with an error ({why}). Coins before the error may have sold: "
+                "send /sell to see what is still held."
+            )
+        return (
+            f"Not sure it sold: the sale stopped with an error ({why}). Send /sell to see whether the coin is still "
+            f"held; if it is, send {said} again or sell it {BY_HAND}."
+        )
+    wallet = str((res or {}).get("wallet") or "")
+    rows = [r for r in (res or {}).get("results") or [] if isinstance(r, dict)]
+    return _sold_all(wallet, rows, notes) if mints is None else _sold_one(mints[0], wallet, rows, notes)
+
+
 async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths, snap: Snapshot | None, notifier: Notifier,
-                         notes: NoteSink, now: float) -> str:  # fmt: skip
+                         notes: NoteSink, now: float, sweep: Callable | None = None) -> str:  # fmt: skip
+    """Act on one owner command and send the reply. `sweep`: solana.sell.sweep unless a test hands in a fake."""
     if cmd.name == "status":
         reply = _status(cfg, snap, paths, now)
     elif cmd.name == "stop":
@@ -200,6 +406,8 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                 + (" (halted by /stop)" if paths.stop_flag.exists() else "")
                 + (f"; {last_run_line(store, now)}" if store is not None else "")
             )
+    elif cmd.name == "sell":
+        reply = await _sell(cmd.args, svc=svc, cfg=cfg, notes=notes, sweep=sweep)
     elif cmd.name in ("why", "budget"):
         reply = f"/{cmd.name} is available in a later phase."
     else:

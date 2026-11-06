@@ -1,7 +1,11 @@
-"""Telegram commands: owner-only parsing, offset persistence, /status, /stop that never strands a coin, /resume."""
+"""Telegram commands: owner-only parsing, offset persistence, /status, /stop that never strands a coin, /resume, and
+/sell, the owner's own exit for a coin OKTech abandoned."""
 
 import asyncio
 import json
+
+import httpx
+import pytest
 
 from snipetech.config import Config
 from snipetech.operator.commands import Command, handle_command, parse_updates, poll_commands
@@ -321,3 +325,235 @@ def test_book_status_reports_the_last_run(tmp_path):
     record_run(svc.store, {"actions": [], "kill_reason": None}, False, NOW - 120, ranked=0, best={"wallet": "2YDnmMQt", "score": 0.0013})
     reply = asyncio.run(handle_command(_cmd("book", "status"), **ctx))
     assert "last run" in reply and "2YDnmM" in reply and "0.0013" in reply
+
+
+# -- /sell: the owner's own exit, from the phone ---------------------------------------------------------------------
+
+MINT = "5m5hP15rrB5kyF3V9xsbYfCnvKKr6ZzXozYwAd1kirCF"  # 6 Nov 20:33: 0.2 SOL bought, -65 % in a second, no exit fired
+MINT2 = "FkaToq58AyzfWDGST12uUzDjeS2peUXyghTDZ3DLBvMJ"
+MINT3 = "EtWnCDAGDSFH5L8SPvbnYebZJf19gbwRre8R17eg6v8V"
+SIG = "3DavEsdqG12GHdBGLLbyAqx6EDnJwWQFvWq3wfCyAgZZwvQo1eM9ehXCp5QEmrZoEQ1nBZ7z28DBqyJi7HqNVnAT"
+SIG2 = "AeV8FxFdhFkkxGQvNU5yWkgx3pV4ScGj1JFVhZJe1CF9whgyQWRWWNsxZb1pUiFhSVdSnGrTtXiJhPzq9sxgWXy"
+RPC = object()  # the service's RPC client: /sell hands it to the sweep as it is
+MIGRATED = "curve complete: the coin migrated to PumpSwap (not handled yet)"  # solana/sell.py's own words
+NO_CURVE = "no bonding curve account (not a pump.fun curve coin)"
+
+
+class SellSvc(FakeSvc):
+    """The service as /sell sees it: an RPC client for the sweep and the wallet's coins. OKTech is never asked."""
+
+    def __init__(self, held=()):
+        super().__init__(held=list(held), snipers=[])
+        self.rpc = RPC
+        self.asked: list[str] = []
+
+    async def open_positions(self, address):
+        self.asked.append(address)
+        return self._held
+
+    async def oktech_status(self):
+        raise AssertionError("/sell asked OKTech for its tasks")
+
+    async def oktech_task(self, action, task_id):
+        raise AssertionError(f"/sell touched OKTech task {task_id} ({action})")
+
+
+class FakeSweep:
+    """solana.sell.sweep as /sell calls it: records (rpc, mints, slippage) and answers like the real one."""
+
+    def __init__(self, result=None, exc=None):
+        self.calls: list[tuple] = []
+        self.result, self.exc = result, exc
+
+    async def __call__(self, rpc, mints, slippage):
+        self.calls.append((rpc, mints, slippage))
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+def _sold(mint, quote=0.07, sig=SIG):
+    """A sale the real sweep sent: the whole holding, the curve's quote and the floor at half of it."""
+    return {"mint": mint, "amount": 675_849_878_442, "quote_sol": quote, "floor_sol": quote / 2, "signature": sig}
+
+
+def _held(mint, value, raw=675_849_878_442):
+    return {"mint": mint, "amount": raw / 1e6, "raw": raw, "decimals": 6, "account": W, "value_sol": value,
+            "priced": value is not None}  # fmt: skip
+
+
+@pytest.fixture
+def sell_key(monkeypatch):
+    """A throwaway sniper wallet: its secret in SNIPER_SECRET as on the server. Returns (address, secret)."""
+    from solders.keypair import Keypair
+
+    kp = Keypair()
+    monkeypatch.setenv("SNIPER_SECRET", str(kp))
+    return str(kp.pubkey()), str(kp)
+
+
+def _sell_ctx(tmp_path, wallet, sweep, held=()):
+    svc = SellSvc(held)
+    ctx, sent = _ctx(tmp_path, svc)
+    ctx["cfg"].operator.wallet = wallet
+    ctx["sweep"] = sweep
+    return svc, ctx, sent
+
+
+def test_sell_one_coin_sells_all_of_it_and_says_what_it_got(tmp_path, sell_key):
+    wallet, secret = sell_key
+    sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [_sold(MINT)]})
+    svc, ctx, sent = _sell_ctx(tmp_path, wallet, sweep)
+    reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert sweep.calls == [(RPC, [MINT], 0.5)]  # only that coin; the floor at half the quote, as `snipetech sweep`
+    assert MINT in reply and "0.07" in reply and "0.035" in reply and SIG in reply and sent == [reply]
+    notes = ctx["paths"].notes.read_text()
+    assert "[decision]" in notes and MINT in notes and SIG in notes and "/sell" in notes
+    assert secret not in reply and secret not in notes and svc.calls == [] and svc.asked == []
+
+
+def test_sell_all_takes_only_the_literal_word_all(tmp_path, sell_key):
+    wallet, _ = sell_key
+    sweep = FakeSweep({"wallet": wallet, "holdings": 3, "results": [_sold(MINT, 0.07, SIG), _sold(MINT2, 0.05, SIG2),
+                                                                    {"mint": MINT3, "skipped": MIGRATED}]})  # fmt: skip
+    svc, ctx, _ = _sell_ctx(tmp_path, wallet, sweep)
+    for words in (["ALL"], ["All"], ["all", "now"], ["everything"], ["all", MINT], [MINT, MINT2]):
+        reply = asyncio.run(handle_command(_cmd("sell", *words), **ctx))
+        assert sweep.calls == [] and "nothing sold" in reply.lower(), words
+    assert not ctx["paths"].notes.exists()  # nothing was tried, nothing to record
+    reply = asyncio.run(handle_command(_cmd("sell", "all"), **ctx))
+    assert sweep.calls == [(RPC, None, 0.5)]  # every coin the wallet holds
+    assert MINT in reply and MINT2 in reply and SIG in reply and SIG2 in reply and "0.12" in reply  # 0.12 SOL in all
+    assert MINT3 in reply and "Axiom" in reply and "OKTech" in reply  # off the curve: by hand
+    assert "/sell all" in ctx["paths"].notes.read_text() and svc.calls == []
+
+
+def test_sell_alone_lists_the_coins_with_the_line_to_send_and_sells_nothing(tmp_path, sell_key):
+    wallet, _ = sell_key
+    held = [_held(MINT2, 0.012, 10_000_000), _held(MINT, 0.069), _held(MINT3, None, 5_000_000)]
+    sweep = FakeSweep({"wallet": wallet, "holdings": 3, "results": []})
+    svc, ctx, sent = _sell_ctx(tmp_path, wallet, sweep, held)
+    reply = asyncio.run(handle_command(_cmd("sell"), **ctx))
+    assert sweep.calls == [] and svc.asked == [wallet] and sent == [reply]
+    lines = reply.splitlines()
+    at = [lines.index(f"/sell {m}") for m in (MINT, MINT2, MINT3)]  # each coin's own line is the command to send
+    assert at == sorted(at)  # the most valuable first, the unpriced last
+    assert "0.069" in reply and "0.012" in reply and "not known" in reply and "/sell all" in reply
+    assert not ctx["paths"].notes.exists()  # a list decides nothing
+    assert "/sell" in asyncio.run(handle_command(_cmd("help"), **ctx))
+
+
+def test_sell_alone_with_nothing_held_or_an_unreadable_wallet(tmp_path, sell_key):
+    class Unreadable(SellSvc):
+        async def open_positions(self, address):
+            raise httpx.ConnectError("all connection attempts failed")
+
+    wallet, _ = sell_key
+    sweep = FakeSweep()
+    _, ctx, _ = _sell_ctx(tmp_path, wallet, sweep)
+    assert "no coins" in asyncio.run(handle_command(_cmd("sell"), **ctx))
+    ctx["svc"] = Unreadable()
+    reply = asyncio.run(handle_command(_cmd("sell"), **ctx))
+    assert "could not read" in reply and "ConnectError" in reply and sweep.calls == []
+
+
+def test_a_bad_coin_address_is_refused_before_anything(tmp_path, sell_key):
+    wallet, secret = sell_key
+    sweep = FakeSweep({"wallet": wallet, "holdings": 0, "results": []})
+    svc, ctx, _ = _sell_ctx(tmp_path, wallet, sweep)
+    bad = ["abc", MINT + "x", MINT[:31], "z" * 44, MINT.replace("5", "0"), MINT[:-1] + "l", "pump.fun/coin/" + MINT,
+           secret]  # fmt: skip
+    for b in bad:
+        reply = asyncio.run(handle_command(_cmd("sell", b), **ctx))
+        assert "not a coin address" in reply and b not in reply, b  # a pasted secret is never echoed or logged
+    assert sweep.calls == [] and svc.asked == [] and not ctx["paths"].notes.exists()
+
+
+def test_sell_without_the_sell_key_says_where_it_goes(tmp_path, monkeypatch):
+    monkeypatch.delenv("SNIPER_SECRET", raising=False)
+    sweep = FakeSweep({"wallet": W, "holdings": 1, "results": [_sold(MINT)]})
+    _, ctx, _ = _sell_ctx(tmp_path, W, sweep, [_held(MINT, 0.069)])
+    for words in ([MINT], ["all"]):
+        reply = asyncio.run(handle_command(_cmd("sell", *words), **ctx))
+        assert "SNIPER_SECRET" in reply and "/etc/snipetech/env" in reply and "SSH" in reply and "Axiom" in reply
+    assert sweep.calls == [] and "SNIPER_SECRET" in ctx["paths"].notes.read_text()
+    assert "SNIPER_SECRET" in asyncio.run(handle_command(_cmd("sell"), **ctx))  # the list warns before it matters
+    monkeypatch.setenv("SNIPER_SECRET", "  ")  # blank is missing
+    assert "SNIPER_SECRET" in asyncio.run(handle_command(_cmd("sell", MINT), **ctx)) and sweep.calls == []
+
+
+def test_sell_refuses_a_key_that_is_not_the_sniper_wallets(tmp_path, monkeypatch, sell_key):
+    """The list reads the operator's wallet and the sale signs with SNIPER_SECRET: they must be one wallet, or a
+    /sell all could empty a wallet the owner never meant."""
+    wallet, secret = sell_key
+    sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [_sold(MINT)]})
+    _, ctx, _ = _sell_ctx(tmp_path, W, sweep)  # the operator watches W; the key is another wallet's
+    reply = asyncio.run(handle_command(_cmd("sell", "all"), **ctx))
+    assert sweep.calls == [] and W[:6] in reply and wallet[:6] in reply and "/etc/snipetech/env" in reply
+    monkeypatch.setenv("SNIPER_SECRET", "this-is-no-secret-key")
+    reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert sweep.calls == [] and "not a valid" in reply and "this-is-no-secret-key" not in reply
+    monkeypatch.setenv("SNIPER_SECRET", secret)
+    ctx["cfg"].operator.wallet = ""  # no wallet in the config: the key's wallet is the one
+    asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert sweep.calls == [(RPC, [MINT], 0.5)]
+
+
+def test_sell_of_a_coin_off_the_curve_or_not_held(tmp_path, sell_key):
+    wallet, _ = sell_key
+    for skipped, why in ((MIGRATED, "left the pump.fun curve"), (NO_CURVE, "not a pump.fun curve coin")):
+        sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [{"mint": MINT, "skipped": skipped}]})
+        _, ctx, _ = _sell_ctx(tmp_path / why, wallet, sweep)
+        reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+        assert reply.startswith("Not sold") and why in reply and "Axiom" in reply and "OKTech" in reply
+        assert "not sold" in ctx["paths"].notes.read_text()
+    sweep = FakeSweep({"wallet": wallet, "holdings": 0, "results": []})
+    _, ctx, _ = _sell_ctx(tmp_path / "none", wallet, sweep)
+    reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert reply.startswith("Nothing sold") and "holds none" in reply and wallet[:6] in reply
+    assert "holds no coins" in asyncio.run(handle_command(_cmd("sell", "all"), **ctx))
+
+
+def test_a_failed_sale_is_said_in_plain_words_and_leaks_nothing(tmp_path, monkeypatch, sell_key):
+    from snipetech.solana.rpc import RpcError
+
+    wallet, secret = sell_key
+    monkeypatch.setenv("HELIUS_API_KEY", "helius-key-0123456789")
+    refused = RpcError("sendTransaction", {"code": -32002, "message": "Transaction simulation failed: Error processing "
+                                                                      "Instruction 2: custom program error: 0x1772"})  # fmt: skip
+    sweep = FakeSweep(exc=refused)
+    _, ctx, _ = _sell_ctx(tmp_path, wallet, sweep)
+    reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert "refused" in reply and "0x1772" in reply and f"/sell {MINT}" in reply and "Axiom" in reply
+    down = httpx.ConnectError("connection refused: https://mainnet.helius-rpc.com/?api-key=helius-key-0123456789")
+    ctx["sweep"] = FakeSweep(exc=down)
+    reply = asyncio.run(handle_command(_cmd("sell", "all"), **ctx))
+    assert "ConnectError" in reply and "api-key" not in reply and "helius" not in reply.lower()
+    assert "still held" in reply  # how to see what sold before the error
+    notes = ctx["paths"].notes.read_text()
+    assert "0x1772" in notes and "api-key" not in notes and secret not in notes and secret not in reply
+
+
+def test_only_the_owners_sell_is_obeyed(tmp_path, monkeypatch, sell_key):
+    """The one-minute pass acts on /sell from the owner's chat and on nothing else. The real sweep is swapped for the
+    fake where the command finds it."""
+    from snipetech.operator.run import commands_pass
+
+    wallet, _ = sell_key
+    paths, st, svc, cfg = _commands_env(tmp_path)
+    cfg.operator.wallet = wallet
+    svc.rpc = RPC
+    sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [_sold(MINT)]})
+    monkeypatch.setattr("snipetech.solana.sell.sweep", sweep)
+    sent: list[str] = []
+    strangers = {"result": [_msg(5, 9, f"/sell {MINT}"), _msg(6, 9, "/sell all")]}
+    try:
+        asyncio.run(commands_pass(cfg, svc, now=lambda: NOW, send=lambda t: sent.append(t) or True,
+                                  commands_get=lambda url, params: strangers))  # fmt: skip
+        assert sweep.calls == [] and sent == []
+        asyncio.run(commands_pass(cfg, svc, now=lambda: NOW + 60, send=lambda t: sent.append(t) or True,
+                                  commands_get=lambda url, params: {"result": [_msg(7, 7, f"/sell {MINT}")]}))  # fmt: skip
+    finally:
+        st.close()
+    assert sweep.calls == [(RPC, [MINT], 0.5)] and any(SIG in t for t in sent)
+    assert "command /sell" in paths.log.read_text() and svc.calls == []
