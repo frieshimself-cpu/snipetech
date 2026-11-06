@@ -19,6 +19,8 @@ Hard rules (the tools enforce them too):
   worth of time is available.
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
+- Resources (credits, data-API budgets, SOL float, disk, failed sends) are checked and alerted by code every round;
+  the snapshot's `resources` rows are the result. Explain an anomaly if it bears on a decision; never re-alert it.
 
 The three gates a wallet must clear before it is a live candidate (all three, n >= 20 trades):
 1. positive on its own 30-day history (copy-rank);

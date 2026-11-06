@@ -20,6 +20,7 @@ Turn it off on the server with: systemctl disable --now snipetech-ops
 from __future__ import annotations
 
 import base64
+import binascii
 import json
 import os
 import re
@@ -493,9 +494,58 @@ def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> Threadin
             self.end_headers()
             self.wfile.write(raw)
 
+        def _dash_auth(self) -> bool:
+            """HTTP basic auth, password = DASH_TOKEN (any user name). No token configured → the routes do not exist."""
+            import base64
+            import hmac
+
+            token = os.environ.get("DASH_TOKEN", "")
+            if len(token) < 8:
+                self._send(404, {"error": "not found"})
+                return False
+            header = self.headers.get("Authorization") or ""
+            given = ""
+            if header.lower().startswith("basic "):
+                try:
+                    given = base64.b64decode(header[6:].strip()).decode("utf-8", "replace").split(":", 1)[-1]
+                except (ValueError, binascii.Error):
+                    given = ""
+            if not hmac.compare_digest(given.encode(), token.encode()):
+                raw = b'{"error": "unauthorized"}'
+                self.send_response(401)
+                self.send_header("WWW-Authenticate", 'Basic realm="snipetech", charset="UTF-8"')
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                self.wfile.write(raw)
+                return False
+            return True
+
         def do_GET(self):
-            if self.path == "/health":
+            path = self.path.split("?", 1)[0]
+            if path == "/health":
                 return self._send(200, {"ok": True})
+            if path == "/dash":
+                if not self._dash_auth():
+                    return None
+                from .dash import dash_html
+
+                raw = dash_html().encode("utf-8")
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("Content-Length", str(len(raw)))
+                self.end_headers()
+                return self.wfile.write(raw)
+            if path == "/api/dash/state":
+                if not self._dash_auth():
+                    return None
+                from .dash import dash_state
+
+                try:
+                    return self._send(200, dash_state(ops))
+                except Exception as exc:  # noqa: BLE001
+                    return self._send(500, {"error": ops.scrub(f"{type(exc).__name__}: {exc}")})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):

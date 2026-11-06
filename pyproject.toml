@@ -31,6 +31,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "snipetech.solana.idl" = ["*.json"]
+"snipetech" = ["dash.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
