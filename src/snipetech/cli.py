@@ -430,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)"
     )
+    sp.add_argument("--watch-only", action="store_true",
+                    help="guard: watch snipers that are already running without calling start (after a deploy killed the guard)")  # fmt: skip
     sp.add_argument("--force", action="store_true",
                     help="start: even under the owner's /stop; stop/delete: even while the wallet holds a coin (strands it)")  # fmt: skip
     sp.add_argument(
@@ -1139,7 +1141,12 @@ async def _run(args, cfg: Config) -> int:
                 if not (args.id and args.address and args.floor is not None):
                     raise SystemExit("guard: give --id (one or more), --address and --floor")
                 rep = await svc.oktech_guard(
-                    args.id, args.address, args.floor, args.max_minutes, allow_uncapped=args.allow_uncapped
+                    args.id,
+                    args.address,
+                    args.floor,
+                    args.max_minutes,
+                    start=not args.watch_only,
+                    allow_uncapped=args.allow_uncapped,
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0

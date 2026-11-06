@@ -948,3 +948,23 @@ def test_docs_reads_the_api_reference_with_the_key():
     from snipetech.cli import build_parser
 
     assert build_parser().parse_args(["oktech", "docs"]).action == "docs"
+
+
+def test_guard_watch_only_restarts_the_watch_without_starting_anything(tmp_path, monkeypatch):
+    """A deploy kills the guard job; `--watch-only` puts the watch back on running snipers without calling start
+    (OKTech has not said whether start on a running or finished capped sniper resets its buy counter)."""
+    from snipetech import cli
+    from snipetech.service import Service
+
+    seen = {}
+
+    async def fake_guard(self, ids, address, floor_sol, max_minutes, start=True, allow_uncapped=False, **kw):
+        seen.update(ids=ids, start=start, floor=floor_sol, minutes=max_minutes)
+        return {"events": ["watching"]}
+
+    monkeypatch.setattr(Service, "oktech_guard", fake_guard)
+    argv = ["--db", str(tmp_path / "t.db"), "oktech", "guard", "--id", "a", "--id", "b",
+            "--address", "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at", "--floor", "2.0", "--max-minutes", "130"]  # fmt: skip
+    assert cli.main(argv + ["--watch-only"]) == 0
+    assert seen == {"ids": ["a", "b"], "start": False, "floor": 2.0, "minutes": 130.0}
+    assert cli.main(argv) == 0 and seen["start"] is True
