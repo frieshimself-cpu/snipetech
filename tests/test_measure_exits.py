@@ -175,3 +175,44 @@ def test_exit_reasons_are_counted_per_preset_for_the_weeks_evidence():
         assert crossed_sells(st, NOW - 60) == {"crossed": 1, "checked": 4}
     finally:
         st.close()
+
+
+# what closed each of the 12 copy fills OKTech sold on 6 Nov, as the exit audit read them off the tape
+LIVE_6NOV = {"au6jPX": "copy_exit", "A7YsCf": "dead_exit", "H4D5mT": "dead_exit", "3BrEjv": "copy_exit", "7bDNtS": "timer",
+             "9yCWR1": "copy_exit", "Cp2vvB": "dead_exit", "Cmg7tz": "dead_exit", "7Rwma8": "stop_loss",
+             "FqK7tC": "dead_exit", "otdLSd": "copy_exit"}  # fmt: skip
+
+
+def test_the_6_nov_copy_sells_read_as_the_audit_found_them():
+    """Real fills and tape (tests/fixtures/exits_6nov.json.gz): the morning copy test (sells at 0.001, Gfree on
+    hold60, the others on lab) and the fee test (lab, sells at 0.002, a 0.001 and a 0.02 sniper on the same leaders).
+    All 12 sells get the exit the audit found, and exactly the two that paid the other sniper's priority (9yCW sold
+    at 0.001 after the 0.02 sniper bought it, FqK7 at 17:05 the other way round) are crossed."""
+    import gzip
+    import json
+    import time
+    from pathlib import Path
+
+    from snipetech.models import Trade
+
+    with gzip.open(Path(__file__).parent / "fixtures" / "exits_6nov.json.gz", "rt") as fh:
+        data = json.load(fh)
+    gfree = "4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku"
+    morning = {w: _sniper("hold60" if w == gfree else "lab", sell_fee=0.001) for w in
+               (gfree, "4vw54BmAogeRV3vPKWyFet5yf8DTLcREzdSzx4rw9Ud9", "CgaA9a1JwAXJyfHuvZ7VW8YfTVRkdiT5mjBBSKcg7Rz5")}  # fmt: skip
+    control, paid = _sniper(), _sniper(prio=0.02, tip=0.02)
+    fees = fee_pairs([*morning.values(), control, paid])
+    got, crossed = {}, set()
+    for i, c in enumerate(data["cases"]):
+        tape = [Trade(sig=r[10] or f"t{i}-{k}", ev=0, slot=r[1], pos=r[2], ts=r[0], mint=c["mint"], venue=r[9], user=r[3],
+                      is_buy=bool(r[4]), quote=r[5], base=r[6], fee=0, fee_bps=0, q_after=r[7], b_after=r[8])
+                for k, r in enumerate(c["tape"])]  # fmt: skip
+        buy, sell = ({k: (int(v) if k in ("ts", "slot", "priority_lamports", "tip_lamports") else v) for k, v in f.items()}
+                     for f in (c["buy"], c["sell"]))  # fmt: skip
+        spec = morning.get(buy["wallet_copied"]) or (paid if buy["bid_arm"] == "paid" else control)
+        name = f"{c['mint'][:6]} {time.strftime('%H:%M', time.gmtime(sell['ts']))}"
+        got[name] = classify_exit(sell, buy, tape, buy["wallet_copied"], spec, fees)
+        if is_crossed(sell, spec):
+            crossed.add(name)
+    assert len(got) == 12 and all(label == LIVE_6NOV[name[:6]] for name, label in got.items()), got
+    assert crossed == {"9yCWR1 15:52", "FqK7tC 17:05"}
