@@ -6,7 +6,6 @@ or started within its interval is not started again."""
 from __future__ import annotations
 
 import json
-import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
@@ -20,7 +19,8 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("snapshot-db",), "snipetech-snapshot.timer", 60 * 60),
     (("events", "scan"), None, 3 * 3600),  # snipetech-events only polls the feeds; no unit runs the scan
     (("paper", "run"), None, 30 * 60),  # the forward paper test: free learning on live prices, around the clock
-    (("strategist", "run"), "snipetech-strategist.timer", 24 * 3600),  # its own weekly guard decides further
+    # once a day after 05:10 UTC (_strategist_due); its own guard calls Claude only on 20 new live round trips
+    (("strategist", "run"), "snipetech-strategist.timer", 3600),
     # idle-time research (operator/research.py): at every round, the most valuable research unit when nothing heavy
     # runs. Stages start in this order, so it stays after every heavy stage a round may just have started.
     (("research", "next"), None, 10 * 60),
@@ -37,9 +37,13 @@ STAGE_LIMIT_SECS: dict[str, int] = {
 }  # fmt: skip
 
 
-def _sunday_after_five(now: float) -> bool:
-    t = time.gmtime(now)
-    return t.tm_wday == 6 and t.tm_hour >= 5
+STRATEGIST_AT_SECS = 5 * 3600 + 10 * 60  # 05:10 UTC, as snipetech-strategist.timer: after the daily job's night
+
+
+def _strategist_due(now: float, last_start: float) -> bool:
+    """Once a day: today's 05:10 UTC has passed and it has not started since."""
+    slot = int(now // 86400) * 86400 + STRATEGIST_AT_SECS
+    return now >= slot and last_start < slot
 
 
 def due_standins(services: dict[str, str], metas: Iterable[dict], now: float) -> list[list[str]]:
@@ -49,13 +53,13 @@ def due_standins(services: dict[str, str], metas: Iterable[dict], now: float) ->
     for argv, unit, every in STANDIN:
         if unit is not None and services.get(unit) == "active":
             continue
-        if argv[0] == "strategist" and not _sunday_after_five(now):
-            continue
         same = [m for m in metas if tuple((m.get("argv") or [])[: len(argv)]) == argv]
         if any(m.get("running") for m in same):
             continue
         last = max((float(m.get("started") or 0) for m in same), default=0.0)
         if now - last < every:
+            continue
+        if argv[0] == "strategist" and not _strategist_due(now, last):
             continue
         out.append(list(argv))
     return out

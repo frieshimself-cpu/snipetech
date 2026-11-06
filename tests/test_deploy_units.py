@@ -89,7 +89,7 @@ def test_strategist_unit_and_timer():
     timer = (UNITS / "snipetech-strategist.timer").read_text()
     exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
     assert len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" strategist run")
-    assert "OnCalendar=Sun *-*-* 05:00:00 UTC" in timer and "Persistent=true" in timer
+    assert "OnCalendar=*-*-* 05:10:00 UTC" in timer and "Persistent=true" in timer  # daily; Claude only on new trades
     assert {"snipetech-strategist", "snipetech-strategist.timer"} <= set(O.UNITS)
     assert "snipetech-strategist.timer" in (UNITS.parent / "setup.sh").read_text()
 
