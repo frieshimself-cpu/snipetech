@@ -111,9 +111,12 @@ class Birdeye:
                  "first_ts": _int(i.get("firstTradeUnixTime")), "last_ts": _int(i.get("lastTradeUnixTime"))}
                 for i in d.get("items") or [] if i.get("owner")]  # fmt: skip
 
+    def gainers_raw(self, period: str = "1W", sort_by: str = "PnL", limit: int = 100, offset: int = 0, min_trade: int | None = None) -> dict:
+        return self._get("/trader/gainers-losers", {"type": period, "sort_by": sort_by, "limit": min(100, max(1, limit)), "offset": offset,
+                                                    "min_trade": min_trade}, CU["gainers"])  # fmt: skip
+
     def gainers(self, period: str = "1W", sort_by: str = "PnL", limit: int = 100, offset: int = 0, min_trade: int | None = None) -> list[dict]:
-        d = self._get("/trader/gainers-losers", {"type": period, "sort_by": sort_by, "limit": min(100, max(1, limit)), "offset": offset,
-                                                 "min_trade": min_trade}, CU["gainers"])  # fmt: skip
+        d = self.gainers_raw(period, sort_by, limit, offset, min_trade)
         return [{"wallet": i.get("address"), "pnl_usd": _num(i.get("pnl")), "realized_usd": _num(i.get("realized_pnl")),
                  "unrealized_usd": _num(i.get("unrealized_pnl")), "volume_usd": _num(i.get("volume")), "trades": _int(i.get("trade_count"))}
                 for i in d.get("items") or [] if i.get("address")]  # fmt: skip

@@ -265,6 +265,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
 
+    sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
+    sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
+    sp.add_argument("--period", default="1W", help="gainers: yesterday|today|1W|30d|90d")
+    sp.add_argument("--mint", help="top: the coin")
+    sp.add_argument("--wallet", help="pnl: the wallet")
+    sp.add_argument("--frame", default="7d", help="top: time frame")
+    sp.add_argument("--limit", type=int, default=20)
+    sp.add_argument("--raw", action="store_true", help="print Birdeye's response as it came")
+
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
     sp.add_argument("--key", default=os.environ.get("SNIPETECH_OPS_KEY"), help="private key file ($SNIPETECH_OPS_KEY)")
@@ -784,6 +793,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "ops-serve":
         return _ops_serve(args, cfg)
+    if args.cmd == "birdeye":
+        from .birdeye import Birdeye
+
+        be = Birdeye()
+        try:
+            if args.action == "credits":
+                out = be.credits()
+            elif args.action == "gainers":
+                out = be.gainers_raw(args.period, limit=args.limit) if args.raw else be.gainers(args.period, limit=args.limit)
+            elif args.action == "top":
+                out = be.top_traders(args.mint, time_frame=args.frame, limit=min(10, args.limit))
+            else:
+                out = be.wallet_pnl(args.wallet, "30d")
+        finally:
+            be.close()
+        print(json.dumps(out, indent=1, default=str))
+        return 0
     if args.cmd == "operate":
         import subprocess
 

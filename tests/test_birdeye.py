@@ -101,3 +101,22 @@ def test_candidates_merge_sources_and_apply_floor():
     assert a["sources"] == ["gainers", "top_traders"] and a["coins"] == ["M1"]
     c = next(c for c in out if c["wallet"] == "C")
     assert c["coins"] == ["M2", "M3"] and c["sources"] == ["top_traders"]
+
+
+def test_birdeye_cli_actions_parse():
+    from snipetech.cli import build_parser
+
+    a = build_parser().parse_args(["birdeye", "gainers", "--period", "30d", "--limit", "5", "--raw"])
+    assert a.action == "gainers" and a.period == "30d" and a.limit == 5 and a.raw
+    assert build_parser().parse_args(["birdeye", "credits"]).action == "credits"
+    assert build_parser().parse_args(["birdeye", "top", "--mint", "M"]).mint == "M"
+
+
+def test_gainers_raw_passthrough_keeps_unknown_shapes():
+    def handler(req):
+        return httpx.Response(200, json={"success": True, "data": {"items": [{"wallet_address": "X", "pnl": 1}]}})
+
+    b = _client(handler)
+    assert b.gainers() == []  # unknown field names are not silently mapped
+    raw = b.gainers_raw()
+    assert raw["items"][0]["wallet_address"] == "X"
