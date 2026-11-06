@@ -22,17 +22,17 @@ class FakeST:
         if self.fail:
             raise RuntimeError("HTTP 500")
         return [
-            {"mint": "T1", "rank": 1, "source": "solanatracker"},
-            {"mint": "T2", "rank": 2, "source": "solanatracker"},
+            {"mint": "T1pump", "rank": 1, "source": "solanatracker"},
+            {"mint": "T2pump", "rank": 2, "source": "solanatracker"},
         ]
 
     def graduating(self, limit=50):
-        return [{"mint": "G1", "rank": 1, "market_cap_usd": 60000.0, "source": "solanatracker"}]
+        return [{"mint": "G1pump", "rank": 1, "market_cap_usd": 60000.0, "source": "solanatracker"}]
 
 
 class FakeBE:
     def trending(self, limit=20):
-        return [{"mint": "T1", "rank": 1, "source": "birdeye"}, {"mint": "B9", "rank": 2, "source": "birdeye"}]
+        return [{"mint": "T1pump", "rank": 1, "source": "birdeye"}, {"mint": "B9pump", "rank": 2, "source": "birdeye"}]
 
 
 def test_poll_feeds_writes_once_and_persists_state(tmp_path):
@@ -50,7 +50,7 @@ def test_poll_feeds_writes_once_and_persists_state(tmp_path):
         assert out["added"] == 0  # the same lists: nothing new
         ev = st.events(kind="trending")
         assert (
-            {e["mint"] for e in ev} == {"T1", "T2"}
+            {e["mint"] for e in ev} == {"T1pump", "T2pump"}
             and ev[0]["data"]["rank"] in (1, 2)
             and ev[0]["source"] == "solanatracker"
         )
@@ -116,3 +116,16 @@ def test_cli_and_unit():
 
     assert "snipetech-events" in WATCHED_UNITS
     assert "snipetech-events" in (Path(__file__).resolve().parents[1] / "deploy" / "setup.sh").read_text()
+
+
+def test_feeds_keep_only_pump_coins(tmp_path):
+    """Trending lists cover all of Solana; only pump.fun coins (mint ends in "pump", or the tape saw the launch) matter."""
+    from snipetech.events.run import pump_only
+
+    st = Store(tmp_path / "t.db")
+    try:
+        rows = [{"kind": "trending_birdeye", "mint": "Abc" + "1" * 37 + "pump"}, {"kind": "trending_birdeye", "mint": "Ray" + "2" * 41},
+                {"kind": "trending", "mint": "Sol" + "3" * 41}]  # fmt: skip
+        assert [r["mint"][:3] for r in pump_only(st, rows)] == ["Abc"]
+    finally:
+        st.close()

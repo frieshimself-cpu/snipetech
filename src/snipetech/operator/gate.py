@@ -30,10 +30,15 @@ class Decision:
     state_reasons: list[str] = field(default_factory=list)  # keys of the state-type reasons present this round
 
 
-def expected_state(paths: OperatorPaths) -> dict:
-    """What 'all quiet' means right now; the owner or the cloud session changes it when a live test is on."""
+EXPECTED_TTL_SECS = 24 * 3600  # a live test's expectation is written for one afternoon, not forever
+
+
+def expected_state(paths: OperatorPaths, now: float | None = None) -> dict:
+    """What 'all quiet' means right now; the owner or the cloud session changes it when a live test is on
+    (`operate --expect`). It expires after a day and `/resume` resets it."""
     try:
-        d = json.loads(paths.expected.read_text())
+        age = (time.time() if now is None else now) - paths.expected.stat().st_mtime
+        d = json.loads(paths.expected.read_text()) if age <= EXPECTED_TTL_SECS else {}
         exp = {k: int(d.get(k, v)) for k, v in DEFAULT_EXPECTED.items()}
     except (OSError, ValueError, TypeError, AttributeError):
         exp = dict(DEFAULT_EXPECTED)

@@ -22,6 +22,9 @@ What the keys mean:
   landing the labs assume ("+6" = six trades behind the leader, the regime the live copies measured); only move it
   further back when live fills say the landing got worse, never closer.
 
+Fills can come from snipers the owner started by hand (tests such as the fee test) as well as from the book's own
+(`snipetech copy book …`); "book enabled: false" with live fills is normal, not a fault to report.
+
 Rules: at most one propose_patch per turn, with a plain-words reason the owner can read in ten seconds. "No change"
 is a good answer when the week is thin (fewer than 30 live fills per arm, or fewer than 10 per wallet) or the numbers
 disagree. Never propose keys that are not in bounds. Say what you expect the change to do and how next week will

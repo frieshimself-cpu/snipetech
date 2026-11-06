@@ -145,8 +145,10 @@ def test_resume_removes_flag_and_status_reports(tmp_path):
                     resources=[{"name": "disk", "status": "crit", "message": "5 GB free"}, {"name": "sol_float", "status": "ok", "message": "fine"}])  # fmt: skip
     ctx, sent = _ctx(tmp_path, svc, snap)
     ctx["paths"].stop_flag.write_text("x")
+    ctx["paths"].expected.write_text(json.dumps({"snipers_running": 6, "held": 3}))  # a live test's expectation
     reply = asyncio.run(handle_command(_cmd("resume"), **ctx))
     assert not ctx["paths"].stop_flag.exists() and "resum" in reply.lower()
+    assert expected_state(ctx["paths"]) == {"snipers_running": 0, "held": 0}  # /resume also forgets the old expectation
     reply = asyncio.run(handle_command(_cmd("status"), **ctx))
     assert "1.250" in reply and "0.42" in reply and "1 running" in reply and "disk" in reply and "fine" not in reply
     assert "book: off" in reply and "10 min" in reply

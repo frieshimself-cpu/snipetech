@@ -160,9 +160,15 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = await _stop(svc, cfg, paths, notes, now)
     elif cmd.name == "resume":
         try:
+            paths.expected.unlink()  # whatever a live test expected before the stop no longer holds
+        except FileNotFoundError:
+            pass
+        try:
             paths.stop_flag.unlink()
-            notes.write("resumed by owner: stop flag removed", "decision")
-            reply = "resumed: snipers may run again as planned."
+            notes.write(
+                "resumed by owner: stop flag removed; expected state back to none running, none held", "decision"
+            )
+            reply = "resumed: snipers may run again as planned (expected state reset: any sniper running is reported again)."
         except FileNotFoundError:
             reply = "nothing to resume: no stop flag was set."
     elif cmd.name in ("why", "budget"):

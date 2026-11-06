@@ -38,12 +38,24 @@ def feed_functions(clients: dict[str, Any]) -> dict[str, Callable[[], list[dict]
     return feeds
 
 
+def pump_only(store: Store, events: list[dict]) -> list[dict]:
+    """Trending lists cover all of Solana; keep the pump.fun coins: the mint ends in "pump" (pump.fun's vanity suffix)
+    or the tape recorded its launch."""
+    out = []
+    for e in events:
+        mint = str(e.get("mint") or "")
+        if mint.endswith("pump") or (mint and store.launch(mint) is not None):
+            out.append(e)
+    return out
+
+
 def poll_feeds(store: Store, clients: dict[str, Any], now: float, log: Callable[[str], None] = print) -> dict[str, Any]:
     feeds = feed_functions(clients)
     if not feeds:
         return {"added": 0, "by_kind": {}, "errors": {}, "feeds": 0}
     state = FeedState.from_dict(store.coverage(FEEDS_KEY))
     events, errors = poll_once(feeds, state, now, log=log)
+    events = pump_only(store, events)
     added = store.add_events(events)
     by_kind: dict[str, int] = {}
     for e in events:

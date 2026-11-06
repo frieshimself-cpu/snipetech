@@ -46,6 +46,18 @@ def test_expected_state_file_allows_a_running_sniper(paths):
     assert not decide(snap(snipers=[{"id": "a", "name": "x", "status": "running"}]), snap(), NOW, CFG, paths).call
 
 
+def test_expected_state_expires_after_a_day(paths):
+    """A live test's expectation (6 running, 3 held) written for one afternoon must not keep the gate quiet forever."""
+    import os
+    import time
+
+    paths.expected.write_text(json.dumps({"snipers_running": 6, "held": 3}))
+    old = time.time() - 25 * 3600
+    os.utime(paths.expected, (old, old))
+    assert expected_state(paths) == {"snipers_running": 0, "held": 0}
+    assert decide(snap(snipers=[{"id": "a", "name": "x", "status": "running"}]), snap(), NOW, CFG, paths).call
+
+
 def test_held_coin_triggers(paths):
     assert decide(snap(held=[{"mint": "M", "amount": 5.0}]), snap(), NOW, CFG, paths).call
 
