@@ -635,10 +635,21 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                                             [x for r in moments for x in (r.get("rebuys") or ())], floor)  # fmt: skip
             kept = [i for i in idx if rs[i].get("lead_sol") is None or rs[i]["lead_sol"] >= min_sol - 1e-9]
             kept_by[w] = (min_sol, kept)
-        group = None
-        if choose:  # every wallet's older moments: what the menu's exits made for the group, out of every test
-            train = [i for _, kept in kept_by.values() for i in kept[: int(len(kept) * EXIT_TRAIN_SHARE)]]
-            group = m[np.array(train, dtype=int)][:, cols].mean(axis=0) if train else None
+        # the group a wallet's train means are shrunk toward: every wallet's moments older than this wallet's first
+        # held-out moment, so results from its test period never pick the exit then tested on it
+        pool_ts = csum = None
+        if choose and kept_by:
+            pool = np.array(sorted(i for _, kept in kept_by.values() for i in kept), dtype=int)  # rs is sorted by ts
+            pool_ts = np.array([rs[i]["ts"] for i in pool], dtype=float)
+            csum = np.vstack([np.zeros(len(cols)), np.cumsum(m[pool][:, cols], axis=0)])
+
+        def group_before(kept: list[int]) -> np.ndarray | None:
+            cut = int(len(kept) * EXIT_TRAIN_SHARE)
+            if pool_ts is None or cut >= len(kept):
+                return None
+            j = int(np.searchsorted(pool_ts, float(rs[kept[cut]]["ts"]), side="left"))  # strictly older moments
+            return csum[j] / j if j > 0 else None
+
         for w, (min_sol, kept) in kept_by.items():
             if want is not None and w not in want:
                 continue
@@ -651,6 +662,7 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                    "lab_version": LAB_VERSION} | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
             if g is not None:
                 own = cols if choose else [g]
+                group = group_before(kept) if choose else None
                 c = choose_wallet_exit(m[np.array(kept, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
                                        conf, samples)  # fmt: skip
                 ex = exits[own[c["index"]]]

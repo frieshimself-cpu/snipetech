@@ -138,7 +138,9 @@ def test_kol_trigger_wants_the_wallets_first_buy_from_its_label_group():
     launch = store.launch(addr("lab-kol"))
     path = MarketPath.build(store.trades_for_mint(addr("lab-kol")), launch)
     groups = {"kol": {addr("kol-1")}, "wallet": {addr("tracked-1")}}
-    assert path.users[_fire(Trigger("kol"), path, launch, groups)] == addr("kol-1")  # >= 0.1 SOL: fires on the first buy
+    assert path.users[_fire(Trigger("kol"), path, launch, groups)] == addr(
+        "kol-1"
+    )  # >= 0.1 SOL: fires on the first buy
     assert _fire(Trigger("kol", sol=1.0), path, launch, groups) is None  # the 2 SOL buy is a top-up, not its first buy
     assert path.users[_fire(Trigger("kol", sol=1.0, group="wallet"), path, launch, groups)] == addr("tracked-1")
     assert _fire(Trigger("kol"), path, launch, {addr("kol-1")}) is not None  # a bare set still means the KOL group
@@ -477,3 +479,27 @@ def test_the_wallet_exit_never_changes_the_gating_numbers():
     slicer = verdict_for("SLICER", {"trades": None}, menu["SLICER"], 1.0, crowd, True, [], q, 1_800_000_000)
     assert good["status"] == "qualified" and slicer["status"] == "retired"
     assert good["copy_plan"]["exit_name"] == "ride" and slicer["copy_plan"]["exit_name"] == "ride"
+
+
+def test_a_wallet_exit_is_chosen_without_looking_at_its_held_out_period():
+    """The group a wallet's train means are shrunk toward holds only moments older than the wallet's first held-out
+    moment: other wallets' results from that same period must never pick the exit that is then tested on it (the
+    gain shown to the owner would be optimistic)."""
+    from snipetech.analysis.lab import menu_exits, rank_wallets
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    menu = menu_exits(cfg)
+
+    def world(delta):
+        rows = _menu_rows("W", 20, -0.01, lambda k: -0.012 if k < 12 else 0.02, 1000, True)
+        for o in range(4):  # every one of their moments falls in or after W's held-out period (W's 13th moment on)
+            rows += _menu_rows(f"O{o}", 25, 0.0, delta, 1012, True)
+        return {"rows": rows, "exits": list(menu.values()), "triggers": [Trigger("kol", sol=0.1, group="cand")],
+                "tape_hours": 10}  # fmt: skip
+
+    picks = []
+    for delta in (-0.01, 0.03):
+        by = {r["wallet"]: r for r in rank_wallets(world(delta), cfg, top=20, min_n=4, gate=menu["lab"])}
+        picks.append((by["W"]["exit_name"], by["W"]["exit_source"]))
+    assert picks[0] == picks[1] == ("lab", "lab")
