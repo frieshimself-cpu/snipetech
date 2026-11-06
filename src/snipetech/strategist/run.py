@@ -34,11 +34,23 @@ async def run_strategist(svc, cfg: Config, now: float, *, dry_run: bool = False,
     if last and not force and now - float(last) < WEEK - 3600:
         ago = (now - float(last)) / 3600
         return {"skipped": f"ran {ago:.1f} h ago; the strategist runs once a week (--force to run now)", "applied": {}}
-    evidence = week_evidence(store, cfg, now)
     ledger = Ledger(paths.spend, cfg.operator.prices)
-    res = await (turn or run_strategist_turn)(cfg, evidence, ledger, notes, client=client, now=lambda: now)
+    left = cfg.operator.daily_usd - ledger.spent_today(now)
+    if left <= 0:  # the operator's daily budget is shared: none left today, so the week's run is still due
+        notes.write(
+            f"[strategist] daily budget reached ({cfg.operator.daily_usd:.0f} $); the weekly turn waits for the next run",
+            "info",
+        )
+        return {"skipped": "daily budget reached; runs on the next try", "applied": {}}
+    evidence = week_evidence(store, cfg, now)
+    res = await (turn or run_strategist_turn)(
+        cfg, evidence, ledger, notes, client=client, now=lambda: now, turn_usd=left
+    )
     patch, reason = dict(res.get("patch") or {}), str(res.get("reason") or "")
-    accepted, refusals = check_patch(patch, cfg, cfg.autotune) if patch else ({}, [])
+    base = (
+        Config.load(cfg.path, overlay=False) if cfg.path else None
+    )  # relative bounds are measured from the owner's file
+    accepted, refusals = check_patch(patch, cfg, cfg.autotune, base=base) if patch else ({}, [])
     out: dict[str, Any] = {"dry_run": dry_run, "patch": patch, "reason": reason, "refusals": refusals, "applied": {},
                            "usd": res.get("usd"), "stopped": res.get("stopped")}  # fmt: skip
     if dry_run:

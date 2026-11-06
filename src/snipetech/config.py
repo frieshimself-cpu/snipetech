@@ -368,7 +368,8 @@ class Config:
     )  # the strategist's overlay, when it was read
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> Config:
+    def load(cls, path: str | Path | None = None, overlay: bool = True) -> Config:
+        """The owner's file, then the environment, then (unless `overlay` is False) the strategist's overlay."""
         p = Path(path) if path else DEFAULT_PATH
         cfg = cls()
         if p.exists():
@@ -376,7 +377,8 @@ class Config:
                 _apply(cfg, tomllib.load(fh))
         cfg.path = p
         _apply_env(cfg)
-        _apply_overlay(cfg)
+        if overlay:
+            _apply_overlay(cfg)
         return cfg
 
     def to_dict(self) -> dict[str, Any]:
@@ -404,6 +406,8 @@ class Config:
         current = getattr(obj, name)
         coerced = _coerce(value, type(current))
         setattr(obj, name, coerced)
+        if dotted in self.env_keys:  # an explicit set is written to the file even where the environment overrides it
+            self.env_keys.remove(dotted)
         return coerced
 
     def save(self, path: str | Path | None = None) -> Path:
@@ -498,7 +502,15 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
         if dataclasses.is_dataclass(current) and isinstance(value, dict):
             _apply(current, value)
         elif isinstance(current, dict) and isinstance(value, dict):
-            current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
+            if isinstance(obj, AutotuneConfig) and key == "bounds":
+                # per rule: a partial rule keeps the default's other limits; `off = true` (or an empty table) removes it
+                for k, rule in value.items():
+                    if not isinstance(rule, dict) or not rule or rule.get("off"):
+                        current.pop(k, None)
+                    else:
+                        current[k] = {**current.get(k, {}), **rule}
+            else:
+                current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
         else:
             setattr(obj, key, _coerce(value, type(current)))
 

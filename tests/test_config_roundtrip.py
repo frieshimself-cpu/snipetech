@@ -53,3 +53,26 @@ def test_save_uses_a_private_temp_name(tmp_path, monkeypatch):
     monkeypatch.setattr(os, "replace", spy)
     Config().save(p)
     assert seen and str(os.getpid()) in seen[0]
+
+
+def test_config_set_writes_an_environment_overridden_key(tmp_path, monkeypatch):
+    """`config set rpc.http_url X` with HELIUS_API_KEY in the environment used to print "saved" and write the old value."""
+    p = tmp_path / "snipetech.toml"
+    Config().save(p)
+    monkeypatch.setenv("HELIUS_API_KEY", "secret-123")
+    monkeypatch.delenv("SNIPETECH_RPC_URL", raising=False)
+    cfg = Config.load(p)
+    cfg.set("rpc.http_url", "https://rpc.example")
+    cfg.save()
+    text = p.read_text()
+    assert 'http_url = "https://rpc.example"' in text and "secret-123" not in text
+
+
+def test_autotune_bounds_merge_per_rule_and_can_be_removed(tmp_path):
+    p = tmp_path / "snipetech.toml"
+    p.write_text(
+        '[autotune.bounds."book.explore_share"]\nmax = 0.2\n\n[autotune.bounds."qualify.min_n_tape"]\noff = true\n'
+    )
+    b = Config.load(p).autotune.bounds
+    assert b["book.explore_share"] == {"min": 0.0, "max": 0.2}  # the default min survives a partial rule
+    assert "qualify.min_n_tape" not in b and "qualify.max_gap3_pct" in b

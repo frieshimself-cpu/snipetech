@@ -79,7 +79,7 @@ class FakeSvc:
 
 
 def _scripted_turn(patch, reason="because"):
-    async def turn(cfg, evidence, ledger, notes, client=None, now=None):
+    async def turn(cfg, evidence, ledger, notes, client=None, now=None, **kw):
         return {"patch": patch, "reason": reason, "usd": 0.5, "stopped": "end_turn"}
 
     return turn
@@ -191,7 +191,7 @@ def test_a_failed_turn_is_not_the_weeks_run(tmp_path):
     st = Store(tmp_path / "data" / "snipetech.db")
     sent = []
 
-    async def broken(cfg_, evidence, ledger, notes, client=None, now=None):
+    async def broken(cfg_, evidence, ledger, notes, client=None, now=None, **kw):
         return {"patch": {}, "reason": "api error: APIConnectionError", "usd": 0.0, "stopped": "api_error"}
 
     out = asyncio.run(
@@ -200,4 +200,39 @@ def test_a_failed_turn_is_not_the_weeks_run(tmp_path):
         )
     )
     assert out["applied"] == {} and st.coverage("strategist:last") == {} and any("api error" in t for t in sent)
+    st.close()
+
+
+def test_the_daily_cap_is_respected(tmp_path):
+    """The strategist shares the operator's daily ledger: with the day's budget spent it does not run (and the week's
+    run is still due)."""
+    from snipetech.operator.budget import Ledger
+
+    cfg = _cfg_file(tmp_path)
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    Ledger(paths.spend, cfg.operator.prices).record(
+        "operator", {"input_tokens": 10_000_000, "output_tokens": 0}, NOW - 60
+    )  # 30 $ > 15 $
+    called = []
+
+    async def turn(cfg_, evidence, ledger, notes, client=None, now=None, **kw):
+        called.append(True)
+        return {"patch": {}, "reason": "x", "usd": 0.0, "stopped": "end_turn"}
+
+    out = asyncio.run(
+        run_strategist(FakeSvc(st), cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None), turn=turn)
+    )
+    assert out.get("skipped") and "budget" in out["skipped"] and called == [] and st.coverage("strategist:last") == {}
+    st.close()
+
+
+def test_relative_bounds_use_the_owners_file_on_the_server(tmp_path):
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    (tmp_path / "data" / "autotune.toml").write_text("[book]\nmin_score = 0.01\n")  # last week's change
+    st = Store(tmp_path / "data" / "snipetech.db")
+    out = asyncio.run(run_strategist(FakeSvc(st), Config.load(cfg.path), NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                     turn=_scripted_turn({"book.min_score": 0.02})))  # fmt: skip
+    assert out["applied"] == {} and out["refusals"]  # x4 the owner's 0.005: a question, not a change
     st.close()

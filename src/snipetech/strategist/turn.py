@@ -22,7 +22,8 @@ MAX_TOOL_CALLS = 6
 
 
 async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes: NoteSink, client: AsyncAnthropic | None = None,
-                              now: Callable[[], float] = time.time) -> dict[str, Any]:  # fmt: skip
+                              now: Callable[[], float] = time.time, turn_usd: float | None = None) -> dict[str, Any]:  # fmt: skip
+    cap = cfg.autotune.turn_usd if turn_usd is None else min(cfg.autotune.turn_usd, float(turn_usd))
     state: dict[str, Any] = {"patch": {}, "reason": ""}
 
     @beta_async_tool
@@ -76,13 +77,15 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
                 break
             if not tool_uses:
                 break
-            if usd >= cfg.autotune.turn_usd:
+            if usd >= cap:
                 notes.write(
-                    f"[strategist] turn budget reached ({usd:.2f} $ of {cfg.autotune.turn_usd:.2f}); nothing proposed",
+                    f"[strategist] turn budget reached ({usd:.2f} $ of {cap:.2f})"
+                    + ("" if state["patch"] else "; nothing proposed"),
                     "info",
                 )
                 stopped = "turn_usd"
-                state["patch"], state["reason"] = {}, "turn budget reached before a proposal"
+                if not state["patch"]:  # a proposal already made stands; only a turn that never proposed is empty
+                    state["reason"] = "turn budget reached before a proposal"
                 break
             if calls + len(tool_uses) > MAX_TOOL_CALLS:
                 stopped = "tool_calls"

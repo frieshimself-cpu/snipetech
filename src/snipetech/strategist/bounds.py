@@ -27,8 +27,12 @@ def get_path(cfg: Any, dotted: str) -> Any:
     return obj
 
 
-def check_patch(patch: dict[str, Any], current: Config, auto: AutotuneConfig) -> tuple[dict[str, Any], list[str]]:
-    """(accepted, refusals): accepted is the whole patch with values coerced, or empty when any key is refused."""
+def check_patch(
+    patch: dict[str, Any], current: Config, auto: AutotuneConfig, base: Config | None = None
+) -> tuple[dict[str, Any], list[str]]:
+    """(accepted, refusals): accepted is the whole patch with values coerced, or empty when any key is refused.
+    Relative bounds are measured from `base` (the owner's file without the strategist's overlay) so they cannot
+    compound week over week; values are checked after coercion (an int key rounds before the check)."""
     accepted: dict[str, Any] = {}
     refusals: list[str] = []
     for key, value in (patch or {}).items():
@@ -58,17 +62,26 @@ def check_patch(patch: dict[str, Any], current: Config, auto: AutotuneConfig) ->
         except (TypeError, ValueError):
             refusals.append(f"{key}: {value!r} is not a number")
             continue
+        ref = cur
+        if base is not None:
+            try:
+                ref = get_path(base, key)
+            except KeyError:
+                ref = cur
         lo, hi = rule.get("min"), rule.get("max")
         if "rel_min" in rule:
-            lo = float(cur) * float(rule["rel_min"])
+            rel = float(ref) * float(rule["rel_min"])
+            lo = rel if lo is None else max(float(lo), rel)
         if "rel_max" in rule:
-            hi = float(cur) * float(rule["rel_max"])
+            rel = float(ref) * float(rule["rel_max"])
+            hi = rel if hi is None else min(float(hi), rel)
+        v = int(round(v)) if isinstance(cur, int) and not isinstance(cur, bool) else v
         if (lo is not None and v < lo - 1e-12) or (hi is not None and v > hi + 1e-12):
             refusals.append(
-                f"{key}: {value} is outside [{lo if lo is not None else '-inf'}, {hi if hi is not None else 'inf'}] (now {cur})"
+                f"{key}: {v} is outside [{lo if lo is not None else '-inf'}, {hi if hi is not None else 'inf'}] (now {cur})"
             )
             continue
-        accepted[key] = int(round(v)) if isinstance(cur, int) and not isinstance(cur, bool) else v
+        accepted[key] = v
     if refusals:
         return {}, refusals
     return accepted, []

@@ -124,7 +124,9 @@ def test_turn_returns_patch_and_reason(tmp_path):
     lines = [json.loads(ln) for ln in paths.spend.read_text().splitlines() if ln.strip()]
     assert {ln["mode"] for ln in lines} == {"strategist"}  # its own line in the ledger, priced at the analyst rates
     expected = 3 * (10 * cfg.operator.prices["analyst_in"] + 5 * cfg.operator.prices["analyst_out"]) / 1e6
-    assert abs(ledger.spent_today(NOW) - expected) < 1e-9 and abs(out["usd"] - expected) < 1e-4  # usd is rounded to 4 places
+    assert (
+        abs(ledger.spent_today(NOW) - expected) < 1e-9 and abs(out["usd"] - expected) < 1e-4
+    )  # usd is rounded to 4 places
     assert requests[0]["model"] == cfg.operator.analyst_model and "bounds" in requests[0]["system"].lower()
     assert any(t["name"] == "propose_patch" for t in requests[0]["tools"])
 
@@ -161,3 +163,27 @@ def test_turn_budget_stops(tmp_path):
         run_strategist_turn(cfg, {"window_days": 7}, ledger, notes, client=_client(handler), now=lambda: NOW)
     )
     assert out["stopped"] == "turn_usd" and out["patch"] == {} and len(requests) == 1
+
+
+def test_a_proposal_survives_a_later_budget_stop(tmp_path):
+    cfg, ledger, notes, paths = _env(tmp_path)
+    cfg.autotune.turn_usd = 0.5
+    big = {"input_tokens": 1_000_000, "output_tokens": 0}
+    handler, requests = _scripted(
+        (
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "propose_patch",
+                    "input": {"patch": {"book.explore_share": 0.25}, "reason": "x"},
+                }
+            ],
+            "tool_use",
+        ),
+        ([{"type": "tool_use", "id": "t2", "name": "read_evidence", "input": {}}], "tool_use", big),
+    )
+    out = asyncio.run(
+        run_strategist_turn(cfg, {"window_days": 7}, ledger, notes, client=_client(handler), now=lambda: NOW)
+    )
+    assert out["stopped"] == "turn_usd" and out["patch"] == {"book.explore_share": 0.25}

@@ -60,3 +60,20 @@ def test_relative_bounds_and_choices():
     assert ok == {} and "+4" in bad[0] and "+3" in bad[0]
     ok, bad = check_patch({"qualify.min_n_tape": "twenty"}, cfg, cfg.autotune)
     assert ok == {} and "number" in bad[0]
+
+
+def test_bounds_are_checked_after_rounding():
+    cfg = Config()
+    cfg.autotune.bounds["qualify.min_n_tape"] = {"min": 10, "max": 40.6}
+    ok, bad = check_patch({"qualify.min_n_tape": 40.6}, cfg, cfg.autotune)
+    assert ok == {} and "41" in bad[0]  # 40.6 rounds to 41, outside the bound
+
+
+def test_relative_bounds_are_relative_to_the_owners_value_not_last_weeks():
+    """With the overlay the current value drifts each week; a relative bound measured from it would compound."""
+    cfg, base = Config(), Config()
+    cfg.book.min_score = 0.01  # the strategist doubled it last week (base 0.005)
+    ok, bad = check_patch({"book.min_score": 0.02}, cfg, cfg.autotune, base=base)
+    assert ok == {} and bad  # 0.02 is x4 the owner's 0.005
+    ok, bad = check_patch({"book.min_score": 0.009}, cfg, cfg.autotune, base=base)
+    assert ok == {"book.min_score": 0.009} and bad == []
