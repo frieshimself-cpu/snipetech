@@ -281,7 +281,7 @@ def test_a_wallet_is_paused_after_five_losing_live_trips():
     skip = next(a for a in plan.actions if a.wallet == "W1")
     assert skip.kind == "skip" and skip.reason.startswith("live paused")
     assert "n 5" in skip.reason and "-0.058" in skip.reason and "-0.041" in skip.reason
-    assert any("W1" in n and "paused" in n for n in plan.notes)
+    assert any("W1" in n and "paused" in n and "lost 0.058 SOL each" in n for n in plan.notes)
     assert [r["wallet"] for r in plan.ranked] == ["W2", "W3"]  # the next wallet moves up
     four = plan_book(_inp(live={"W1": dict(LOSE5["W1"], n=4)}), cfg.book)
     assert any(a.kind == "create" and a.wallet == "W1" for a in four.actions)

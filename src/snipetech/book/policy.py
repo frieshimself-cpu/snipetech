@@ -136,7 +136,7 @@ def live_pause_reason(lv: dict | None, cfg: BookConfig) -> str | None:
         return None
     mean = float(lv["mean_sol"])
     lower = float(lv["lower_sol"]) if lv.get("lower_sol") is not None else mean
-    upper = 2 * mean - lower
+    upper = mean + abs(mean - lower)  # = 2 x mean - lower; a row with lower above mean never widens it downwards
     if upper >= 0:
         return None
     return f"live paused: n {int(lv['n'])}, mean {mean:.3f}, upper {upper:.3f}"
@@ -245,9 +245,9 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         why = live_pause_reason(inp.live.get(w) if w else None, cfg)
         if w and why:
             plan.actions.append(Action("skip", w, None, None, None, why))
-            lv = inp.live[w]
+            lv = inp.live[w]  # paused means its mean is below zero: the note says the loss as a plain number
             plan.notes.append(
-                f"{w[:6]} paused: its {int(lv['n'])} live copies lost {float(lv['mean_sol']):.3f} SOL each on average; "
+                f"{w[:6]} paused: its {int(lv['n'])} live copies lost {-float(lv['mean_sol']):.3f} SOL each on average; "
                 "not copied until those results are older than the measure window, whatever its paper score"
             )
             dropped[w[:6]] = why
