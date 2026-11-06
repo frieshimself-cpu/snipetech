@@ -47,7 +47,8 @@ ALLOWED = frozenset({
     "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify",
 })  # fmt: skip
 UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily", "snipetech-daily.timer",
-         "snipetech-operator", "snipetech-operator.timer")  # fmt: skip
+         "snipetech-operator", "snipetech-operator.timer", "snipetech-discover", "snipetech-discover.timer",
+         "snipetech-qualify", "snipetech-qualify.timer")  # fmt: skip
 SYSTEMCTL = "/usr/bin/systemctl"
 
 

@@ -72,6 +72,10 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
             states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
     if len(snap.held) > exp["held"]:
         states.append(f"{len(snap.held)} coin(s) held, expected {exp['held']}")
+    if prev is not None:
+        gained = (snap.verdicts or {}).get("qualified", 0) - (getattr(prev, "verdicts", None) or {}).get("qualified", 0)
+        if gained > 0:
+            events.append(f"{gained} newly qualified wallet(s) (read_verdicts)")
     if prev is not None and snap.equity is not None and prev.equity is not None:
         move = snap.equity - prev.equity
         if abs(move) > cfg.equity_alert_sol:

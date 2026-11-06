@@ -587,7 +587,13 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
 
-            data = await asyncio.to_thread(lab_collect, svc.store, cfg, args.buy, args.latency, args.position, args.per_tx)
+            from .analysis.lab_lock import lab_lock
+
+            def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
+                with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
+                    return lab_collect(svc.store, cfg, args.buy, args.latency, args.position, args.per_tx)
+
+            data = await asyncio.to_thread(_collect_locked)
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,
                    "position": args.position, "buy_sol": args.buy, "strategies": lab_rank(data, cfg, args.top)}  # fmt: skip
             if args.by_wallet:

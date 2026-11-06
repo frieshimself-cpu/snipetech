@@ -82,7 +82,7 @@ def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: Operato
             top = [{"wallet": w, "score": sc, "n": n, "mean_sol": m, "lower_sol": lo, "next_review": nr, "source": "qualified"}
                    for w, sc, n, m, lo, nr in con.execute(
                        f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
-                       "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?", (TOP_CANDIDATES,))]  # fmt: skip
+                       "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?", (TOP_CANDIDATES,))]
             last_lab = None
             row = con.execute("SELECT data FROM coverage WHERE key = 'qualify:last_lab'").fetchone()
             if row:

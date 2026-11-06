@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from ..analysis.lab_lock import LabBusy, lab_lock
 from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import crowding, normalise_history, relationship_gate, venue_share, verdict_for
@@ -87,7 +88,12 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             out["labelled"] += 1
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
-    rows = {r["wallet"]: r for r in runner(wallets, q.landing_pos) if r.get("wallet")}
+    try:
+        with lab_lock(Path(jobs_dir).parent, wait=False):
+            rows = {r["wallet"]: r for r in runner(wallets, q.landing_pos) if r.get("wallet")}
+    except LabBusy as exc:
+        out["deferred"], out["reason"] = True, f"lab lock held ({exc}); retry next tick"
+        return out
     store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
     out["lab_wallets"] = len(wallets)
     for c in measurable:

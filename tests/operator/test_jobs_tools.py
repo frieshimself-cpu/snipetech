@@ -143,3 +143,23 @@ def test_read_job_log_tail(toolbox):
     out = _call(tools["read_job_log"], id="abc", tail=5)
     assert out.splitlines() == [f"line {i}" for i in range(295, 300)]
     assert _call(tools["read_job_log"], id="../x").startswith("error")
+
+
+def test_read_verdicts_tool(toolbox):
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        st.upsert_candidate("W1", "solanatracker", {"trades": 100}, 1_793_923_000)
+        st.put_verdict({"wallet": "W1", "computed_at": 1_793_923_100, "status": "qualified", "score": 0.3, "n_tape": 25, "mean_sol": 0.02,
+                        "lower_sol": 0.004, "next_review": 1_794_009_500, "reasons": [], "landing_pos": "+6"})  # fmt: skip
+        st.upsert_candidate("W2", "tape", {}, 1_793_923_000)
+        st.put_verdict({"wallet": "W2", "computed_at": 1_793_923_100, "status": "candidate", "score": 0.0, "n_tape": 3, "next_review": 1_794_182_300,
+                        "reasons": ["n 3 < 20 at +6"]})  # fmt: skip
+    finally:
+        st.close()
+    out = json.loads(_call(tools["read_verdicts"], status="qualified"))
+    assert out["counts"] == {"candidate": 1, "qualified": 1} and [v["wallet"] for v in out["verdicts"]] == ["W1"]
+    assert out["verdicts"][0]["n_tape"] == 25 and out["verdicts"][0]["reasons"] == []
+    out = json.loads(_call(tools["read_verdicts"]))
+    assert len(out["verdicts"]) == 2 and out["verdicts"][0]["wallet"] == "W1"  # by score
+    assert "error" in _call(tools["read_verdicts"], status="bogus")

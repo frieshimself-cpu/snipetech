@@ -1,0 +1,17 @@
+[Unit]
+Description=snipetech qualify: due candidates through the gates at the measured landing, one lab at a time (learning loop, stage 3)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db qualify run
+TimeoutStartSec=3h
+# the lab must not be cut mid-way by a timer overlap; the next tick waits on the lock instead
+KillMode=process

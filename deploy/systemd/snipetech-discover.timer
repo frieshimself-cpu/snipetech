@@ -1,0 +1,10 @@
+[Unit]
+Description=Run snipetech discover every hour
+
+[Timer]
+OnCalendar=*:07
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

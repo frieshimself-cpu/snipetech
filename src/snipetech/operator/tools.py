@@ -5,8 +5,8 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from anthropic import beta_async_tool
 
@@ -158,6 +158,26 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         return f"wrote {len(items)} candidates"
 
     @beta_async_tool
+    async def read_verdicts(status: str | None = None, limit: int = 50) -> str:
+        """The qualify stage's latest verdict per wallet (qualified = all gates passed at the measured landing).
+
+        Args:
+            status: qualified | candidate | retired | banned, or omit for every wallet (best score first).
+            limit: At most this many rows.
+        """
+        if status not in (None, "qualified", "candidate", "retired", "banned"):
+            return "error: status must be qualified, candidate, retired or banned"
+        try:
+            counts = svc.store.verdict_counts()
+            if status == "banned":
+                rows = [{"wallet": c["wallet"], "status": "banned", "sources": c["sources"]} for c in svc.store.candidates(status="banned")]
+            else:
+                rows = svc.store.latest_verdicts(status)
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {type(exc).__name__}: {exc}"
+        return redact(json.dumps({"counts": counts, "verdicts": rows[: max(1, int(limit))]}, default=str))
+
+    @beta_async_tool
     async def write_report(name: str, text: str) -> str:
         """Write a markdown report into operator/ (the analyst's daily output, e.g. name "analyst-2026-11-06").
 
@@ -173,4 +193,4 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         p.write_text(text)
         return f"wrote {p.name}"
 
-    return [read_job_log, read_file, sql, start_job, write_note, set_candidates, write_report]
+    return [read_job_log, read_file, sql, start_job, write_note, set_candidates, write_report, read_verdicts]

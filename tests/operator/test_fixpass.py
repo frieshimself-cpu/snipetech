@@ -31,7 +31,8 @@ def paths(tmp_path):
 # 1. the gate is quiet on a real host: oneshot units read inactive most of the day
 def test_production_services_are_quiet_when_oneshots_are_inactive(paths):
     real = {"snipetech-tape": "active", "snipetech-ops": "active", "snipetech-daily.timer": "active",
-            "snipetech-operator.timer": "active", "snipetech-daily": "inactive", "snipetech-operator": "inactive"}  # fmt: skip
+            "snipetech-operator.timer": "active", "snipetech-discover.timer": "active", "snipetech-qualify.timer": "active",
+            "snipetech-daily": "inactive", "snipetech-operator": "inactive", "snipetech-discover": "inactive", "snipetech-qualify": "inactive"}  # fmt: skip
     assert set(real) >= set(WATCHED_UNITS)
     assert not decide(snap(services=real), snap(services=real), NOW, OperatorConfig(), paths).call
 

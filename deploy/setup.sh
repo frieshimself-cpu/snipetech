@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Bring up snipetech on a Linux server (Ubuntu/Debian): venv, data dir, env file, systemd services.
 #   sudo bash deploy/setup.sh            # from a checkout of the repo (deploy/bootstrap.sh runs this for you)
-# Then put your keys in /etc/snipetech/env and: sudo systemctl enable --now snipetech-tape snipetech-daily.timer snipetech-operator.timer
+# Then put your keys in /etc/snipetech/env and: sudo systemctl enable --now snipetech-tape snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer
 set -euo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 USER_NAME="${SNIPETECH_USER:-snipetech}"
@@ -57,4 +57,4 @@ for unit in "$REPO"/deploy/systemd/*; do
   sed -e "s#@REPO@#$REPO#g" -e "s#@USER@#$USER_NAME#g" -e "s#@DATA@#$DATA#g" "$unit" > "/etc/systemd/system/$(basename "$unit")"
 done
 systemctl daemon-reload
-echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer"
+echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer"

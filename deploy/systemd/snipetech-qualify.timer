@@ -1,0 +1,10 @@
+[Unit]
+Description=Run snipetech qualify every 30 minutes (it defers itself while a lab runs or ran recently)
+
+[Timer]
+OnCalendar=*:0/30
+Persistent=true
+RandomizedDelaySec=90
+
+[Install]
+WantedBy=timers.target

@@ -29,6 +29,11 @@ The three gates a wallet must clear before it is a live candidate (all three, n 
    copy test actually measured (2-4 trades behind the leader, 18-43 % above the leader's price), with a small price gap
    to the second buyer after it (the `follow` output).
 A wallet that clears all three is a decision-level note and goes into set_candidates with its numbers.
+Since the learning loop's phase 2, the server runs these gates itself: `discover` (hourly) fills the candidates table
+from every source and `qualify` (every 30 min, one lab at a time) writes a verdict per wallet at the +6 landing.
+Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound), crowding and relationship
+gates all passed; the snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from
+read_verdicts, not from raw lab logs, and treat a newly qualified wallet as the decision-level event it is.
 
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet clearing all three gates, a
 sniper running or a coin held when none should be, equity moved more than the alert threshold, the tape stalled, a

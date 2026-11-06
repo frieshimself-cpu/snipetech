@@ -20,8 +20,9 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 DUST_TOKENS = 1_000_000.0
 # Long-running services and the timers must be active; the oneshot services (snipetech-daily, snipetech-operator)
 # are inactive most of the day by design and only matter when they are "failed".
-WATCHED_UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer")
-ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator")
+WATCHED_UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer",
+                 "snipetech-discover.timer", "snipetech-qualify.timer")  # fmt: skip
+ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify")
 
 
 @dataclass
@@ -43,6 +44,7 @@ class Snapshot:
     errors: list[str] = field(default_factory=list)
     reason_ts: dict[str, float] = field(default_factory=dict)  # state reason -> when it last triggered a call
     failed_tx_1h: int | None = None  # failed transactions by the wallet in the last hour (None = could not read)
+    verdicts: dict[str, int] = field(default_factory=dict)  # the qualify stage's candidates by effective status
     resources: list[dict] = field(default_factory=list)  # filled by operator.resources after the snapshot
 
     @property
@@ -247,6 +249,10 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         snap.spent_today = Ledger(paths.spend, cfg.operator.prices).spent_today(now)
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"spend: {exc}")
+    try:
+        snap.verdicts = svc.store.verdict_counts()
+    except Exception as exc:  # noqa: BLE001
+        snap.errors.append(f"verdicts: {exc}")
     return snap
 
 
