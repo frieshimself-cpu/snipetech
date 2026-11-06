@@ -275,6 +275,31 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     return None
 
 
+def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
+    """`_fire`'s KOL rule for every wallet of the trigger's group, not only the first one in: the index of each group
+    wallet's first buy in the coin when that buy is at least the trigger's size, in tape order. Each wallet's own copy
+    sniper copies its own first buy, so the qualify lab gives each wallet its own moment in a coin."""
+    if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
+        return []
+    if trig.max_age and launch is None:
+        return []
+    dev = launch.deployers() if launch is not None else set()
+    group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
+    floor = (trig.sol or KOL_MIN_SOL) * LAMPORTS
+    seen: set[str] = set()  # buyers so far: only a wallet's first buy counts, never its top-ups
+    out: list[int] = []
+    for i in range(path.n):
+        if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
+            break
+        u = path.users[i]
+        if not path.is_buy[i] or u in dev or u in seen:
+            continue
+        seen.add(u)
+        if u in group and path.quote[i] >= floor:
+            out.append(i)
+    return out
+
+
 def label_groups(store: Store) -> dict[str, set[str]]:
     """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list,
     `cand` = the qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor)."""
@@ -298,12 +323,21 @@ def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[
     return out
 
 
-def leader_sell_fractions(path: MarketPath, leader: str) -> np.ndarray:
+def _trades_by_user(path: MarketPath) -> dict[str, list[int]]:
+    """Each wallet's trade indices in the path, in order: one pass over the coin for all of its moments."""
+    out: dict[str, list[int]] = {}
+    for j, u in enumerate(path.users):
+        out.setdefault(u, []).append(j)
+    return out
+
+
+def leader_sell_fractions(path: MarketPath, leader: str, at: list[int] | None = None) -> np.ndarray:
     """Per state: the share of its holdings `leader` sold in that trade (0 at every other state). Its holdings are its
-    buys minus its sells since the path's start; a sale of tokens the path never saw it buy counts as all it had."""
+    buys minus its sells since the path's start; a sale of tokens the path never saw it buy counts as all it had.
+    `at`: the leader's trade indices in the path, in order, when already known."""
     out = np.zeros(path.n)
     held = 0.0
-    for i in (j for j, u in enumerate(path.users) if u == leader):
+    for i in at if at is not None else (j for j, u in enumerate(path.users) if u == leader):
         amount = float(path.base[i])
         if path.is_buy[i]:
             held += amount
@@ -313,11 +347,11 @@ def leader_sell_fractions(path: MarketPath, leader: str) -> np.ndarray:
     return out
 
 
-def _leader_profile(path: MarketPath, i: int, frac: np.ndarray) -> dict[str, Any]:
+def _leader_profile(path: MarketPath, i: int, frac: np.ndarray, at: list[int] | None = None) -> dict[str, Any]:
     """How the wallet that fired at state i went on in the coin: its re-buys of 0.1 SOL or more, when its first sale
-    came and what share of its bag it took, and its biggest single sale."""
+    came and what share of its bag it took, and its biggest single sale. `at`: its trade indices, when known."""
     leader = path.users[i]
-    later = [j for j in range(i + 1, path.n) if path.users[j] == leader]
+    later = [j for j in range(i + 1, path.n) if path.users[j] == leader] if at is None else [j for j in at if j > i]
     sells = [j for j in later if not path.is_buy[j]]
     first = sells[0] if sells else None
     return {"rebuys": [round(float(path.quote[j]) / LAMPORTS, 6) for j in later
@@ -347,10 +381,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             kols: dict[str, set[str]] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
-    the qualify stage's lab, a small fraction of the full one. `exits` (default: the search set `exit_set()`) are
-    simulated the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a
-    wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records the trigger buy's size
-    (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`).
+    the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
+    moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
+    search set `exit_set()`) are simulated the way the live sniper sells: at each span's measured slot time, a slot
+    after the exit fires; on a wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records
+    the trigger buy's size (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`).
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken."""
     spans = store.tape_spans()
@@ -372,7 +407,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         ):
             events_by_mint.setdefault(mint, []).append((kind, ts, slot))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
-    rows: list[dict] = []  # one per (token, trigger): pnl per exit
+    rows: list[dict] = []  # one per (token, trigger), with `groups` per (token, trigger, wallet): pnl per exit
     measured: list[float] = []  # seconds per slot of each span simulated
     for a, b in spans:
         if b - a < 600:
@@ -392,23 +427,34 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
             if path.n < min_trades:
                 continue
+            by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
             for ti, trig in triggers:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                i = _fire(trig, path, launch if (launch and a <= launch.ts) else None, kols, events_by_mint.get(mint))
-                if i is None or path.ts[i] > b - 60:
-                    continue
-                e = int(path.landing_index(int(path.slot[i]) + latency_slots, position, i))
-                frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-                prep = prepare(path, e, buy_sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
-                if prep is None:
-                    continue
-                pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
-                row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
-                       "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6)}  # fmt: skip
-                if frac is not None:
-                    row |= _leader_profile(path, i, frac)
-                rows.append(row)
+                in_span = launch if (launch and a <= launch.ts) else None
+                if groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
+                    fired = _first_buys(trig, path, in_span, kols)
+                else:  # once per coin, the way one sniper takes one position per coin
+                    i = _fire(trig, path, in_span, kols, events_by_mint.get(mint))
+                    fired = [] if i is None else [i]
+                for i in fired:
+                    if path.ts[i] > b - 60:
+                        continue
+                    e = int(path.landing_index(int(path.slot[i]) + latency_slots, position, i))
+                    own, frac = None, None
+                    if trig.kind == "kol":  # the copy exit follows this wallet's own sales
+                        by_user = _trades_by_user(path) if by_user is None else by_user
+                        own = by_user[path.users[i]]
+                        frac = leader_sell_fractions(path, path.users[i], own)
+                    prep = prepare(path, e, buy_sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+                    if prep is None:
+                        continue
+                    pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
+                    row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
+                           "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6)}  # fmt: skip
+                    if frac is not None:
+                        row |= _leader_profile(path, i, frac, own)
+                    rows.append(row)
     return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
             "slot_secs": measured}  # fmt: skip
 

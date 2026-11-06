@@ -292,3 +292,71 @@ def test_collect_measures_the_slot_time_and_records_the_leader():
     assert r["max_sell_frac"] == pytest.approx(1.0)
     (w,) = rank_wallets(data, cfg, store.labels(), top=5, min_n=1)
     assert w["min_leader_sol"] == 0.3 and w["leader_style"] == "mixed" and w["n"] == 12
+
+
+def _shared_coins(store: Store) -> tuple[str, str]:
+    """B buys twelve coins at 0.5 SOL; A bought six of them a slot before it. B sells half its bag, then the rest;
+    A sells all of it at once."""
+    a, b = addr("sh-a"), addr("sh-b")
+    for i in range(12):
+        m = Market(store, addr(f"sh-{i}"), addr(f"sh-dev-{i}"), NOW - 6_000 + i * 400, 50_000_000 + i * 1_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        if i % 2 == 0:
+            m.buy(a, 0.5, 2)
+        m.buy(b, 0.5, 3)
+        for k in range(6):
+            m.buy(addr(f"sh-fan-{i}-{k}"), 0.3, 4 + k)
+        m.sell(b, 0.5, 20)
+        if i % 2 == 0:
+            m.sell(a, 1.0, 25)
+        m.sell(b, 1.0, 30)
+        m.commit()
+    store.set_coverage("tape", {"spans": [[NOW - 6_100, NOW]]})
+    store.set_label(a, "cand:a", "cand")
+    store.set_label(b, "cand:b", "cand")
+    return a, b
+
+
+def test_each_candidate_is_scored_on_its_own_first_buy_in_a_shared_coin():
+    """The qualify lab: each candidate's sniper copies that candidate's own first buy, so every candidate gets its own
+    moment in a coin, entered behind its own buy and sold on its own sales, not only the first candidate in."""
+    from snipetech.analysis.lab import LIVE_EXITS, rank_wallets
+
+    store = Store(":memory:")
+    a, b = _shared_coins(store)
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    data = collect(store, cfg, 0.2, 0, "+1", groups=("cand",), exits=[LIVE_EXITS["lab"]])
+    by = {w["wallet"]: w for w in rank_wallets(data, cfg, store.labels(), top=5, min_n=4)}
+    assert (by[b]["n"], by[a]["n"]) == (12, 6)
+    rows = {(r["mint"], r["who"]): r for r in data["rows"]}
+    ra, rb = rows[(addr("sh-0"), a)], rows[(addr("sh-0"), b)]
+    assert rb["order"][0] == ra["order"][0] + 1  # B's moment is its own buy, a slot after A's
+    assert ra["first_sell_frac"] == pytest.approx(1.0) and rb["first_sell_frac"] == pytest.approx(0.5)
+    assert rb["pnl"][0] < ra["pnl"][0]  # B lands behind its own buy, at a higher price
+    # the full lab still fires each trigger once per coin, on the first wallet in
+    full = collect(store, cfg, 0.2, 0, "+1", exits=[LIVE_EXITS["lab"]])
+    cand = next(i for i, t in enumerate(TRIGGERS) if t.kind == "kol" and t.group == "cand")
+    assert sorted(r["who"] for r in full["rows"] if r["trigger"] == cand) == sorted([a] * 6 + [b] * 6)
+
+
+def test_every_wallets_moment_is_its_first_buy_at_the_trigger_size():
+    from snipetech.analysis.lab import _first_buys
+
+    store = Store(":memory:")
+    m = Market(store, addr("fb"), addr("fb-dev"), NOW - 4000, 31_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("fb-1"), 0.5, 2)  # fb-1's first buy: a moment
+    m.buy(addr("fb-2"), 0.05, 3)  # fb-2's first buy is under 0.1 SOL ...
+    m.buy(addr("fb-2"), 2.0, 4)  # ... and its top-up is not a first buy
+    m.buy(addr("fb-1"), 1.0, 5)  # fb-1's top-up: no second moment
+    m.buy(addr("fb-3"), 0.3, 6)  # fb-3: a moment
+    m.buy(addr("fb-x"), 0.4, 7)  # not a candidate
+    m.commit()
+    launch = store.launch(addr("fb"))
+    path = MarketPath.build(store.trades_for_mint(addr("fb")), launch)
+    groups = {"cand": {addr("fb-1"), addr("fb-2"), addr("fb-3"), m.deployer}}
+    trig = Trigger("kol", sol=0.1, group="cand")
+    fired = _first_buys(trig, path, launch, groups)
+    assert [path.users[i] for i in fired] == [addr("fb-1"), addr("fb-3")]  # the dev's buy never counts
+    assert fired[0] == _fire(trig, path, launch, groups)  # the first of them is where the one-per-coin trigger fires
