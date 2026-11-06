@@ -93,7 +93,7 @@ def grind(prefix: str = "", suffix: str = "", ignore_case: bool = True, workers:
         raise ValueError("give --starts-with and/or --ends-with")
     prefix, suffix = check_pattern(prefix, ignore_case), check_pattern(suffix, ignore_case)
     exp = expected_tries(prefix, suffix, ignore_case)
-    ctx = mp.get_context("fork")
+    ctx = mp.get_context("fork" if "fork" in mp.get_all_start_methods() else "spawn")  # Windows has no fork
     found, counter, q = ctx.Event(), ctx.Value("q", 0), ctx.Queue()
     procs = [ctx.Process(target=_run, args=(prefix, suffix, ignore_case, found, counter, q), daemon=True) for _ in range(workers)]
     t0 = time.time()

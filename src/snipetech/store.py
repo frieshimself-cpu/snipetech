@@ -165,17 +165,36 @@ class Store:
         with self.lock:
             return self.conn.execute(sql, tuple(params)).fetchall()
 
+    # Several processes write the one database (tape recorder, daily job, remote jobs). WAL lets
+    # readers through, but a long writer burst can hold the lock past sqlite's own 30 s timeout,
+    # and one "database is locked" used to kill an hour-long analysis job. Writes therefore retry
+    # with backoff for up to LOCK_PATIENCE seconds before giving up.
+    LOCK_PATIENCE = 600.0
+
+    def _write(self, fn) -> None:
+        deadline = time.monotonic() + self.LOCK_PATIENCE
+        delay = 0.5
+        while True:
+            try:
+                with self.lock:
+                    fn()
+                    self.conn.commit()
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" not in str(e) and "busy" not in str(e):
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(delay)
+                delay = min(delay * 2, 10.0)
+
     def _exec(self, sql: str, params: Iterable[Any] = ()) -> None:
-        with self.lock:
-            self.conn.execute(sql, tuple(params))
-            self.conn.commit()
+        self._write(lambda: self.conn.execute(sql, tuple(params)))
 
     def _many(self, sql: str, rows: list[tuple]) -> None:
         if not rows:
             return
-        with self.lock:
-            self.conn.executemany(sql, rows)
-            self.conn.commit()
+        self._write(lambda: self.conn.executemany(sql, rows))
 
     # -- writes ----------------------------------------------------------------
 

@@ -5,6 +5,7 @@ import threading
 import time
 
 import pytest
+from pathlib import Path
 
 from snipetech import ops as O
 
@@ -93,7 +94,7 @@ def test_files_stay_inside_data(env):
     with pytest.raises(O.OpsError):
         req(ops, key, "read", path="snipetech.db")
     r = req(ops, key, "write", name="kols.txt", content="wallet1 alice\n")
-    assert r["path"].endswith("inputs/kols.txt")
+    assert Path(r["path"]).as_posix().endswith("inputs/kols.txt")
     with pytest.raises(O.OpsError, match="inputs"):
         req(ops, key, "write", name="../reports/x.txt", content="x")
 
