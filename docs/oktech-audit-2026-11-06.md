@@ -107,6 +107,27 @@ Left as they are, on purpose:
 - The one "task disappeared" (`6aed00a7…` NOT_FOUND on 6 Nov) was a mistyped id in this session, not drift: a
   reconciliation of the local table against `/tasks` showed every local id present.
 
+## Answers from our own evidence (6 Nov, 15:45 UTC; OKTech's owner will not answer them)
+
+The owner asked us to work these out ourselves. What our 78 fills (39 buys, 39 sells, 5–6 Nov) and the chain say:
+
+| # | Question | Answer from our data | What we do |
+|---|---|---|---|
+| 1 | Sells sent 2–3 times | Yes: 1.56 failed twins per landed sell, each paying the sell priority fee plus the base fee (the reverted tip is not paid). | Counted in each arm's overhead. The fee test sends `globalSendCount: 1`; if its sells still twin, that setting does not govern exits and the twins are a fixed cost of OKTech's exits. |
+| 2 | Untipped buys | 4 of 39 buys carried no tip and landed at positions 0–2, no worse than tipped ones. A buy never landed twice, so the untipped send is a variant of the same buy that won the race. | Nothing: it costs less, not more. |
+| 3 | Compute-unit limit | OKTech's own pre-executed hunt buys on 5 Nov carried limits 1k above their use (68.6k–77.5k), so per-buy limits work on their side. Every copy buy carried 150k and used 50.9k–79.3k. The total priority fee stays at the SOL we set, so a 90k limit bids 1.67× more per compute unit for nothing. | Decided by the fee test: the paid arm bids 20× more per compute unit. If that does not move us up the slot, the limit does not matter; if it does, one capped buy with `computeUnits: 90000` shows whether ctbot honours the field (the fill's `cu_limit` reads 90000). |
+| 4 | Silent acceptance | Known. | We never send a block the mode does not use. |
+| 5 | Preconfs | Not visible from outside. | The flag is sent; nothing depends on it. |
+| 6 | Restarting a finished sniper | Not needed: the book never restarts a spent sniper, it creates a new one with a fresh id. | Nothing. |
+| 7 | Task documents | The chain is the record: the measure stage reads every fill. | Nothing. |
+| 8 | Limits | Raised to 40 running / 200 tasks. | Done. |
+| 9 | In-flight sell after a stop | Not needed: we never stop a sniper while the wallet holds a coin. | Nothing. |
+
+**New finding: the failed transaction after a buy is OKTech's seed-account sweep.** 13 of them on 5–6 Nov
+(100k limit, 6–9k used): a token `TransferChecked` from the temporary account the buy landed in to the wallet's
+token account, failing with "insufficient funds" because the tokens had already moved. Each cost 0.001 SOL; 0.013
+SOL in all. Every sniper we create now has the seed account off, so they should stop; the fee test confirms it.
+
 ## Questions for OKTech's owner (plain words; each one changes what we pay or measure)
 
 1. **Sells go out two or three times.** Each time your bot sells for us, two or three different sell transactions
