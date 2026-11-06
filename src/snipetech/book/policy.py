@@ -10,7 +10,9 @@ from dataclasses import dataclass, field
 
 from ..config import BookConfig
 
-BOOK_NAME_RE = re.compile(r"^snipetech book (?P<w6>\S+) arm:(?P<arm>[A-Za-z0-9_-]+)")
+# the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
+# "snipetech copy book <wallet6> arm:<arm>"; measure.arm_for reads the same tag
+BOOK_NAME_RE = re.compile(r"^snipetech copy book (?P<w6>\S+) arm:(?P<arm>[A-Za-z0-9_-]+)")
 SPENT_STATUSES = ("finished", "stopped", "error", "failed", "completed")
 
 

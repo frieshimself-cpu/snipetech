@@ -107,9 +107,9 @@ def test_plan_creates_one_sniper_per_ranked_wallet():
 def test_keep_replace_and_stop_against_existing_snipers():
     cfg = _cfg()
     snipers = [
-        {"id": "s1", "name": "snipetech book W1 arm:control", "status": "running"},
-        {"id": "s2", "name": "snipetech book W2 arm:control", "status": "finished"},  # spent: replaced
-        {"id": "s9", "name": "snipetech book W9 arm:control", "status": "running"},  # dropped out: stopped
+        {"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"},
+        {"id": "s2", "name": "snipetech copy book W2 arm:control", "status": "finished"},  # spent: replaced
+        {"id": "s9", "name": "snipetech copy book W9 arm:control", "status": "running"},  # dropped out: stopped
         {"id": "x1", "name": "snipetech copy Gfree 4yo9CU paid", "status": "running"},
     ]  # not the book's: untouched
     plan = plan_book(_inp(snipers=snipers), cfg.book)
@@ -120,7 +120,7 @@ def test_keep_replace_and_stop_against_existing_snipers():
 
 def test_never_stops_while_holding():
     cfg = _cfg()
-    snipers = [{"id": "s9", "name": "snipetech book W9 arm:control", "status": "running"}]
+    snipers = [{"id": "s9", "name": "snipetech copy book W9 arm:control", "status": "running"}]
     plan = plan_book(_inp(snipers=snipers, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
     a = next(x for x in plan.actions if x.sniper_id == "s9")
     assert a.kind == "keep" and "hold" in a.reason
@@ -128,7 +128,7 @@ def test_never_stops_while_holding():
 
 def test_equity_floor_edge():
     cfg = _cfg()
-    snipers = [{"id": "s1", "name": "snipetech book W1 arm:control", "status": "running"}]
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
     at_floor = plan_book(_inp(equity_sol=cfg.book.equity_floor_sol, snipers=snipers), cfg.book)
     assert at_floor.kill_reason is None and any(a.kind == "create" for a in at_floor.actions)
     below = plan_book(_inp(equity_sol=cfg.book.equity_floor_sol - 1e-9, snipers=snipers), cfg.book)

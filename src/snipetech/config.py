@@ -265,6 +265,8 @@ class BookConfig:
     send_count: int = 1
     max_fee_share: float = 0.03  # an arm's fee may be at most this share of the fill
     live_n: int = 10  # live fills before a wallet's live mean outranks its paper score
+    max_buys_per_sniper: int = 10  # OKTech totalSnipes per book sniper (the daily risk cap is the real limit)
+    min_copy_sol: float = 0.3  # copy only the wallet's buys of at least this size
 
 
 @dataclass

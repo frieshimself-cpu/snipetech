@@ -389,6 +389,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
+    sp = cmd("book", "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)")
+    sp.add_argument("action", choices=["run"])
+    sp.add_argument("--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)")
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill"])
     sp.add_argument("--since", type=int, default=None, help="unix seconds; run: override the cursor; backfill: required")
@@ -989,6 +992,25 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "book":
+        import time
+
+        from .book.run import run_book
+        from .service import Service
+
+        if args.live and not cfg.book.enabled:
+            raise SystemExit("book: --live refused: [book] enabled is false in the config file")
+        svc = Service(cfg)
+
+        async def go():
+            try:
+                return await run_book(svc, cfg, time.time(), dry=(False if args.live else None))
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        print(json.dumps(asyncio.run(go()), indent=1, default=str))
+        return 0
     if args.cmd == "measure":
         return _measure(args, cfg)
     if args.cmd == "qualify":
