@@ -172,6 +172,32 @@ class AgentConfig:
     max_tokens: int = 16000
 
 
+DEFAULT_OPERATOR_PRICES: dict[str, float] = {  # USD per million tokens
+    "in": 3.0, "out": 15.0, "cache_read": 0.3, "cache_write": 3.75,  # claude-sonnet-5-5
+    "analyst_in": 5.0, "analyst_out": 25.0, "analyst_cache_read": 0.5, "analyst_cache_write": 6.25,  # claude-opus-5-5
+}
+
+
+@dataclass
+class OperatorConfig:
+    """The server-side operator: a 15-minute snapshot, Claude only when something changed (docs/superpowers/specs)."""
+
+    wallet: str = ""  # the sniper wallet to watch (public key)
+    daily_usd: float = 15.0  # no more Claude calls today past this
+    turn_usd: float = 2.0  # one turn stops after the response that crosses this
+    max_jobs: int = 3  # research jobs running at once (one `lab` at a time regardless)
+    max_tool_calls: int = 20
+    equity_alert_sol: float = 0.1
+    tape_stale_secs: int = 300
+    analyst_after_utc: str = "06:00"
+    model: str = "claude-sonnet-5-5"
+    analyst_model: str = "claude-opus-5-5"
+    max_tokens: int = 8000
+    analyst_max_tokens: int = 16000
+    effort: str = "medium"
+    prices: dict[str, float] = field(default_factory=lambda: dict(DEFAULT_OPERATOR_PRICES))
+
+
 @dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
@@ -185,6 +211,7 @@ class Config:
     copier: CopierConfig = field(default_factory=CopierConfig)
     oktech: OktechConfig = field(default_factory=OktechConfig)
     agent: AgentConfig = field(default_factory=AgentConfig)
+    operator: OperatorConfig = field(default_factory=OperatorConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     @classmethod
@@ -254,6 +281,8 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
         current = getattr(obj, key)
         if dataclasses.is_dataclass(current) and isinstance(value, dict):
             _apply(current, value)
+        elif isinstance(current, dict) and isinstance(value, dict):
+            current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
         else:
             setattr(obj, key, _coerce(value, type(current)))
 
