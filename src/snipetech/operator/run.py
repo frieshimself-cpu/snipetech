@@ -124,7 +124,8 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
     )
     try:
         for h in await watch_wallet(cfg, svc, notifier, t0, notes=notes):
-            _log(paths, t0, f"watch: {h['mint']} is not being sold ({h['reason']})")
+            if h.get("alerted"):  # once per coin per 15 minutes, as the owner hears it
+                _log(paths, t0, f"watch: {h['mint']} is not being sold ({h['reason']})")
     except Exception as exc:  # noqa: BLE001 - the watch must never break the one-minute kill switch
         _log(paths, t0, f"watch: skipped: {type(exc).__name__}: {str(exc)[:160]}")
     return 0
