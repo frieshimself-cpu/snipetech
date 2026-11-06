@@ -262,6 +262,29 @@ class BookConfig:
 
 
 @dataclass
+class QualifyConfig:
+    """The qualify stage's gates (docs/superpowers/specs/2026-11-06-learning-loop-design.md, Stage 3)."""
+
+    landing_pos: str = "+6"  # the landing the by-wallet lab measures at (the live copy test's regime)
+    min_hist_trades: int = 20
+    max_hist_trades: int = 3000  # above this the wallet is a bot
+    min_win_rate: float = 35.0  # percent
+    min_realized_usd: float = 500.0
+    max_single_share: float = 0.6  # one coin may not be more than this share of the realized profit
+    min_venue_share: float = 0.5  # share of the wallet's trades on pump.fun venues (curve, amm)
+    min_n_tape: int = 20
+    min_n_tape_strong: int = 10  # enough when the history is strong
+    strong_win_rate: float = 60.0
+    strong_coins: int = 50
+    max_gap3_pct: float = 15.0  # median price gap to the 3rd follower above this = too crowded for our landing
+    review_qualified_h: int = 24
+    review_candidate_h: int = 72
+    review_retired_h: int = 168
+    lab_interval_h: float = 2.0  # at most one qualify lab per this many hours (the lab is the heavy job)
+    max_wallets: int = 300  # due candidates measured per lab
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -278,6 +301,7 @@ class Config:
     birdeye: BirdeyeConfig = field(default_factory=BirdeyeConfig)
     solanatracker: SolanaTrackerConfig = field(default_factory=SolanaTrackerConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    qualify: QualifyConfig = field(default_factory=QualifyConfig)
     book: BookConfig = field(default_factory=BookConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
