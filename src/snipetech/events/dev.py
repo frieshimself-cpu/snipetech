@@ -1,4 +1,4 @@
-"""Dev transfers: for launches whose curve reached `min_curve_sol`, the creator's outgoing SOL in the day around the
+"""Dev transfers: for launches whose curve reached `min_curve_sol` (60 SOL, about a hundred coins an hour), the creator's outgoing SOL in the day around the
 launch. Each becomes a dev_transfer event and a paid_by_dev edge, which the relationship gate reads.
 Bounded (launches per scan, 24 h window) and resumable (cursor on the launch time)."""
 
@@ -14,7 +14,7 @@ WINDOW_SECS = 24 * 3600
 
 
 async def dev_transfers(
-    svc, since_ts: int, now: float | None = None, max_launches: int = 400, min_curve_sol: float = 20.0
+    svc, since_ts: int, now: float | None = None, max_launches: int = 400, min_curve_sol: float = 60.0
 ) -> dict[str, Any]:
     store = svc.store
     now = time.time() if now is None else now

@@ -23,14 +23,19 @@ def curve_crossings(store: Store, since_ts: int, levels: tuple[int, ...] = LEVEL
     for mint in mints:
         launch = store.launch(mint)
         rows = store._q(
-            "SELECT slot, pos, ts, user, q_after FROM trades WHERE mint = ? AND venue = 'curve' ORDER BY slot, pos, ev",
+            "SELECT slot, pos, ts, user, q_after, quote, is_buy FROM trades WHERE mint = ? AND venue = 'curve' ORDER BY slot, pos, ev",
             (mint,),
         )
+        if not rows:
+            continue
+        # the coin's own starting reserves: the first trade's q_after minus what it paid (curves do not all start at 30 SOL)
+        q0, quote0, buy0 = rows[0][4], rows[0][5], rows[0][6]
+        base = (q0 - quote0) if buy0 and q0 - quote0 > 0 else INITIAL_VIRTUAL_SOL_RESERVES
         pending = sorted(levels)
-        for i, (slot, _pos, ts, user, q_after) in enumerate(rows):
+        for i, (slot, _pos, ts, user, q_after, _quote, _is_buy) in enumerate(rows):
             if not pending:
                 break
-            real = (q_after - INITIAL_VIRTUAL_SOL_RESERVES) / LAMPORTS
+            real = (q_after - base) / LAMPORTS
             while pending and real >= pending[0]:
                 level = pending.pop(0)
                 if ts < since_ts:
