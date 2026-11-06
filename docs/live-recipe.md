@@ -373,7 +373,34 @@ transfer, 15:16:51 0.599 SOL back in; equity 2.82 SOL at 15:20 (2.60 SOL + 0.22 
 the SOL balance at 1.997, under its 2.0 floor, valued the wallet at 2.22 SOL with the wrapped SOL and correctly did
 not call an emergency. The owner said they are adding more.
 
-Result: _pending_ (written from `measure report` when the guard ends, about 18:08 UTC).
+**Result (6 Nov 18:10 UTC): paying more did not buy a better landing; both arms lost on what they bought.**
+From `measure report --since 1793977728` (15:08 to 18:08; the window also holds the live book's copies of 2YDn from
+17:01, which ran on the low-fee arm):
+
+| arm | round trips | buys behind the copied wallet | price above its buy | fees, SOL | result, SOL |
+|---|---|---|---|---|---|
+| low fee (0.001 + 0.002) | 9 | 0.22 | +2.3 % | 0.082 (≈0.009 a trip) | −0.282 |
+| paid (0.02 + 0.02) | 4 | 0.5 | +1.6 % | 0.222 (≈0.055 a trip) | −0.325 |
+
+- **Landing:** both arms landed right behind the wallet they copied (under one trade behind, 2 % above its price),
+  against 2.5 behind and +26 % in the 5–6 Nov baseline. The baseline copied crowded wallets (Gfree) with the seed
+  account on; today's leaders (2YDn, G2oZ) were less crowded and every sniper had the seed account off. Paying 20×
+  the fee added nothing measurable on these wallets.
+- **Cost:** the paid arm costs about 0.055 SOL a round trip, six times the low-fee arm. Some of its sells and their
+  failed duplicates went out at the 0.02 buy priority.
+- **Pairing:** none. OKTech buys a coin once per wallet, so when both arms copy the same wallet only the faster one
+  buys; a paired comparison needs two OKTech wallets.
+- **Seed-account sweeps:** gone (0 failed 100k-CU sweeps since the fix; 13 on 5–6 Nov).
+- **Duplicate sells:** still there, about one failed send per landed sell (11 for 9 on the low-fee arm, 4 for 4 on
+  the paid arm).
+- **A last buy left unsold:** the G2oZ paid sniper bought DTAU… at 17:09 with its last allowed buy; its 300 s timer
+  never fired, the coin ran 2.6× and fell back, and the owner sold it by hand at 17:18 (−0.048 SOL). A capped
+  sniper's last position is not reliably managed after it finishes.
+- **What lost the money:** not the landing. The copies buy right behind a large buy (2YDn buys about 3 SOL) and the
+  exit (dead exit after 1 s, stop-loss 30 %, copy exit only when the leader sells half at once, no take-profit) sells
+  seconds later into the dip, or never locks in a run. The live book dropped 2YDn at 17:50 after 10 live fills at
+  −0.045 SOL a trade (its tape verdict had said +0.0146). The OKTech feature audit replays these trades against
+  other exits and entry filters before the next live step.
 
 Deploy during the test: at 15:58 the owner's "go do it" deployed `097cb4c`, which restarts the ops service and killed
 the first guard; a second guard (`oktech guard --watch-only`, job `20261106-155810-0f725c`, same floor, until 18:08)

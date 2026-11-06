@@ -6,6 +6,18 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## First live book day and the fee test (6 Nov, 18:10 UTC) — the landing is fine, the trades are not
+
+- The owner switched the book on (16:30), lowered its bar to 0.001 (17:01), enabled every timer over SSH (17:10)
+  and removed the daily limits. The book copied 2YDn from 17:01: 10 live fills at −0.045 SOL a trade, so it dropped
+  the wallet at 17:50 and waits (no wallet passes). Since 15:08 the wallet lost about 0.6 SOL on 13 round trips.
+- **Fee test:** paying 0.04 SOL a buy did not land earlier than the 0.003 SOL arm; both landed under one trade behind
+  the copied wallet at about +2 % (docs/live-recipe.md). Speed is not what loses the money: the trades and the exits
+  are. The paid arm stays off.
+- **Next:** the OKTech feature audit (exits replayed on every live trade's price path, entry filters, execution
+  settings, how the book and the agents choose them per wallet) becomes the build plan; the forward paper test runs
+  around the clock again; the owner added SOL (7.4 SOL equity) for a capped test once the exits change.
+
 ## The bot runs by itself (6 Nov, 16:00 UTC) — what it waits for
 
 Deployed at 15:58 on the owner's "go do it": every 15-minute operator round now starts the loop's stages itself
