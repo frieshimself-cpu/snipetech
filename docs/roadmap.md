@@ -31,6 +31,26 @@ every fill checked on the tape for its slot relative to the leader's buy. Expect
 +0.04 SOL per trade, ~100 copied buys a day across the list at 0.2 SOL, i.e. 3–5 SOL a day of paper — a
 real but modest product. Not started: needs the owner's go.
 
+
+**Sensitivity to the position inside the slot (6 Nov, 02:50 UTC).** Our own 11 speed-test fills (5 Nov 04:30–05:18)
+landed in the same slot as the last big buy ahead of them in 9 of 11 cases, with 0–3 trades in between. The same
+per-wallet ranking at +6 trades behind the leader (a conservative bound) keeps far less: 8 wallets with a
+positive lower bound instead of 31, top-25 total +5.5 SOL/day instead of +12.9.
+
+| wallet | +1 behind | +6 behind |
+|---|---|---|
+| 0xsolomon `3GzBLpxT` (n 20) | +0.050 | −0.005 |
+| Megga (n 23) | +0.048 | +0.014 |
+| Decu (n 29) | +0.036 | +0.003 |
+| dv (n 34) | +0.029 | +0.001 |
+| Bean Side (n 16) | +0.027 | +0.015 |
+| Pengu, KOL hold 60 s (n 16) | +0.085 | +0.071 |
+| Gfree, KOL hold 60 s (n 18) | — | +0.033 |
+
+So the copy edge lives in the first few trades after the leader's buy. The live test must therefore record,
+for every fill, how many trades sat between the copied buy and ours; the answer decides the list and the size.
+The KOL "first buy, hold 60 s" rows (Pengu, Gfree) are the least position-sensitive and the first to test.
+
 ## Inside the create slot — what the paper edge actually was (6 Nov, 01:05 UTC)
 
 Our-rule launches (a non-dev buy ≥ 2 SOL within 1 s, normal coins), last 8 h of tape, split by where that
