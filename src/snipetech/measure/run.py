@@ -1,5 +1,7 @@
 """`run_measure`: our new trades since the last run → fingerprints → `fills` → round trips → the bid model per arm and
-the live expectancy per copied wallet. Failed sends are rows too (cost). `backfill` replays a past window."""
+the live expectancy per copied wallet. Failed sends are rows too (cost); a sell's failed twins are charged to its trip.
+Each sell records the exit that closed it and the preset its sniper ran (measure/exits.py). `backfill` replays a
+past window."""
 
 from __future__ import annotations
 
@@ -7,11 +9,22 @@ import math
 import statistics
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from ..config import Config
 from ..store import Store
 from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips
+from .exits import (
+    buying_sniper,
+    classify_exit,
+    crossed_sells,
+    exit_reason_counts,
+    exit_spec,
+    fee_pairs,
+    is_crossed,
+    preset_name,
+)
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -105,6 +118,28 @@ def _sells_a_coin(meta) -> bool:
     return meta is not None and any(str(ix.name).startswith("sell") for ix in meta.pump_ixs)
 
 
+def _note(cfg: Config, now: float, notes, text: str) -> None:
+    """One info line in the operator's notes (the book's sink unless one is passed); never fails the measure run."""
+    try:
+        if notes is None:
+            from ..operator.paths import OperatorPaths
+            from ..operator.tools import NoteSink
+
+            notes = NoteSink(OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure(), now=lambda: now)
+        notes.write(text, "info")
+    except Exception:  # noqa: BLE001 - a note that cannot be written loses nothing measure needs
+        return
+
+
+def _crossed_line(sell: dict, buy: dict | None) -> str:
+    paid = (sell.get("priority_lamports") or 0) / 1e9
+    bid = ((buy or {}).get("priority_lamports") or 0) / 1e9
+    leader = str((buy or {}).get("wallet_copied") or "?")[:6]
+    return (f"[measure] the sell of {str(sell.get('mint'))[:6]}… paid another sniper's fee: bought at {bid:g} SOL "
+            f"priority, sold at {paid:g}. Two snipers copy {leader}… from one OKTech wallet, and the other one sold "
+            "it.")  # fmt: skip
+
+
 async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
     """Failed transactions of the wallet since `since_ts` (newest first from the RPC, bounded to a few pages)."""
     out: list[dict] = []
@@ -127,7 +162,7 @@ async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
 async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = None, until_ts: int | None = None,
                       ensure_meta: Callable[[list[str]], Awaitable[int]] | None = None,
                       failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True,
-                      reclassify_arms: bool = False) -> dict[str, Any]:  # fmt: skip
+                      reclassify_arms: bool = False, notes=None) -> dict[str, Any]:  # fmt: skip
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -161,6 +196,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             if (row["side"] == "buy" and not reclassify_arms and existing.get("bid_arm")
                     and existing.get("priority_lamports") is not None):  # fmt: skip
                 row["bid_arm"] = existing["bid_arm"]
+        if row["side"] == "buy" and row.get("wallet_copied") and row.get("exit_name") is None:
+            # the exit preset of the sniper that made this buy, once: the record of what it ran at the time
+            row["exit_name"] = preset_name((buying_sniper(copy_rows, row) or {}).get("payload"))
         store.put_fill(row)
         return row
 
@@ -247,16 +285,31 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
+    sniper_fees = fee_pairs(r.get("payload") for r in store.oktech_snipers(active=False))
+    newly_crossed: list[tuple[dict, dict | None]] = []
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
         if pnl is None:
             continue
         buy = buy_by_sig.get(first_buy_for_sell.get(s["sig"]) or "")
         arm = (buy or {}).get("bid_arm") or s.get("bid_arm")  # a sell belongs to the arm of the buy it closes
-        want = {"pnl_sol": round(pnl, 6), "exit_reason": "sold", "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
-                "twin_fee_sol": round(twins.get(s["sig"], 0.0), 9)}  # fmt: skip
+        payload = (buying_sniper(copy_rows, buy) or {}).get("payload") if buy else None
+        label = s.get("exit_reason")
+        if label in (None, "sold"):  # a label once read is kept: later runs never rewrite it
+            label = "sold"
+            if s.get("priority_lamports") is not None:  # the fee tells a hand sale: wait for the fingerprint
+                tape = store.trades_for_mint(s["mint"], end_ts=int(s["ts"]) + 1) if buy and exit_spec(payload) else []
+                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, sniper_fees)
+        crossed = 0 if label == "manual" else is_crossed(s, payload)
+        want = {"pnl_sol": round(pnl, 6), "exit_reason": label, "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
+                "exit_name": (buy or {}).get("exit_name") or preset_name(payload),
+                "crossed": None if crossed is None else int(crossed), "twin_fee_sol": round(twins.get(s["sig"], 0.0), 9)}  # fmt: skip
+        if want["crossed"] and not s.get("crossed"):
+            newly_crossed.append((s, buy))
         if any(s.get(k) != v for k, v in want.items()):
             store.put_fill(s | want)
+    for s, buy in newly_crossed:
+        _note(cfg, now, notes, _crossed_line(s, buy))
     # aggregates
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
@@ -283,7 +336,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.set_coverage(LAST_KEY, {"ts": int(now)})
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
-            "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts]}  # fmt: skip
+            "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
+            "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
+            "twin_fee_sol": round(sum(twins.values()), 6)}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:

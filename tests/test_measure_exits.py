@@ -151,3 +151,27 @@ def test_a_landed_sell_at_another_snipers_priority_is_crossed():
     assert is_crossed({"priority_lamports": 1_000_000, "tip_lamports": 2_000_000}, _sniper(prio=0.02, tip=0.02)) is True
     assert is_crossed({"priority_lamports": None, "tip_lamports": None}, LAB) is None
     assert is_crossed({"priority_lamports": 20_000_000, "tip_lamports": 0}, None) is None
+
+
+def test_exit_reasons_are_counted_per_preset_for_the_weeks_evidence():
+    from snipetech.measure.exits import crossed_sells, exit_reason_counts
+
+    st = Store(":memory:")
+    try:
+        rows = [("S1", "lab", "dead_exit", 0), ("S2", "lab", "dead_exit", 0), ("S3", "lab", "copy_exit", 1),
+                ("S4", "hold60", "timer", 0), ("S5", None, "sold", None), ("S6", "lab", None, None)]  # fmt: skip
+        for i, (sig, name, reason, crossed) in enumerate(rows):
+            st.put_fill({"sig": sig, "ts": NOW + i, "wallet": ME, "mint": "M", "side": "sell", "sol": 0.2, "tokens": 1.0,
+                         "exit_name": name, "exit_reason": reason, "crossed": crossed})  # fmt: skip
+        st.put_fill(
+            {"sig": "OLD", "ts": NOW - 86400, "wallet": ME, "side": "sell", "exit_name": "lab", "exit_reason": "manual"}
+        )
+        st.put_fill(
+            {"sig": "F1", "ts": NOW, "wallet": ME, "side": "failed", "exit_reason": "{'InstructionError': 6023}"}
+        )
+        assert exit_reason_counts(st, NOW - 60) == {"lab": {"dead_exit": 2, "copy_exit": 1}, "hold60": {"timer": 1},
+                                                    "none": {"sold": 1}}  # fmt: skip
+        assert exit_reason_counts(st, NOW - 2 * 86400)["lab"]["manual"] == 1
+        assert crossed_sells(st, NOW - 60) == {"crossed": 1, "checked": 4}
+    finally:
+        st.close()

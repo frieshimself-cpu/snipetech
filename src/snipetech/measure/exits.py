@@ -19,6 +19,7 @@ from typing import Any
 
 from ..models import Trade
 from ..oktech import EXITS, autosell
+from ..store import Store
 from .classify import snipers_at
 
 # Measured: least-squares fit of block time on slot over 5-6 Nov, 0.212-0.215 in every 6-hour bucket (six 300 s timers
@@ -255,3 +256,25 @@ def classify_exit(sell: dict, buy: dict, tape: list[Trade], leader: str | None, 
     if any(abs(hold - h) <= TIMER_SLACK_SECS for h in ex["hold_secs"]):
         return "timer"
     return "unknown"
+
+
+def exit_reason_counts(store: Store, since_ts: int) -> dict[str, dict[str, int]]:
+    """How our sells since `since_ts` were closed, per exit preset, e.g. {'lab': {'dead_exit': 9, 'copy_exit': 3},
+    'hold60': {'timer': 1}}. Sells with no preset on record count under 'none'; sells measure has not paired with
+    their buy yet are left out."""
+    out: dict[str, dict[str, int]] = {}
+    for f in store.fills(since_ts=int(since_ts), side="sell", limit=1_000_000):
+        reason = f.get("exit_reason")
+        if not reason:
+            continue
+        d = out.setdefault(f.get("exit_name") or "none", {})
+        d[reason] = d.get(reason, 0) + 1
+    return out
+
+
+def crossed_sells(store: Store, since_ts: int) -> dict[str, int]:
+    """Our sells since `since_ts` that paid another sniper's priority fee, out of the sells that could be checked."""
+    rows = [
+        f for f in store.fills(since_ts=int(since_ts), side="sell", limit=1_000_000) if f.get("crossed") is not None
+    ]
+    return {"crossed": sum(1 for f in rows if f["crossed"]), "checked": len(rows)}
