@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 BASE = "https://public-api.birdeye.so"
-CU = {"wallet_pnl": 30, "top_traders": 30, "gainers": 30, "credits": 1, "price": 3, "token_market": 10, "first_buyers": 25}
+CU = {"wallet_pnl": 30, "top_traders": 30, "gainers": 30, "credits": 1, "price": 3, "token_market": 10, "first_buyers": 25, "trending": 30}
 RETRY_STATUSES = (429, 529, 500, 502, 503)
 
 
@@ -114,6 +114,17 @@ class Birdeye:
                  "realized_usd": _num(i.get("realizedPnl")), "total_usd": _num(i.get("totalPnl")),
                  "first_ts": _int(i.get("firstTradeUnixTime")), "last_ts": _int(i.get("lastTradeUnixTime"))}
                 for i in d.get("items") or [] if i.get("owner")]  # fmt: skip
+
+    def trending(self, limit: int = 20, offset: int = 0) -> list[dict]:
+        """Birdeye's trending tokens (rank order). Field names verified on the server with the events feed's --raw."""
+        d = self._get("/defi/token_trending", {"sort_by": "rank", "sort_type": "asc", "offset": offset, "limit": min(20, max(1, limit))}, CU["trending"])
+        out = []
+        for i, t in enumerate(d.get("tokens") or d.get("items") or [], 1):
+            mint = t.get("address") or t.get("mint")
+            if mint:
+                out.append({"mint": mint, "name": t.get("name"), "symbol": t.get("symbol"), "rank": _int(t.get("rank")) or i,
+                            "liquidity_usd": _num(t.get("liquidity")), "volume_24h_usd": _num(t.get("volume24hUSD")), "source": "birdeye"})  # fmt: skip
+        return out
 
     def gainers_raw(self, period: str = "1W", sort_by: str = "PnL", limit: int = 100, offset: int = 0, min_trade: int | None = None) -> dict:
         return self._get("/trader/gainers-losers", {"type": period, "sort_by": sort_by, "limit": min(100, max(1, limit)), "offset": offset,

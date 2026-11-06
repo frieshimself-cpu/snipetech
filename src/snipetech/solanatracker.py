@@ -106,6 +106,42 @@ class SolanaTracker:
         d = self._get(f"/v2/pnl/tokens/{mint}/traders", {"sort": sort, "direction": "desc", "limit": limit})
         return [self._trader_row(t, mint) for t in d.get("traders") or [] if t.get("wallet")]
 
+    @staticmethod
+    def _token_row(t: dict, rank: int) -> dict | None:
+        """SolanaTracker token lists come as {token:{mint,name,symbol}, pools:[{marketCap:{usd}}]} or flat {mint, ...}."""
+        tok = t.get("token") if isinstance(t.get("token"), dict) else t
+        mint = tok.get("mint") or tok.get("address")
+        if not mint:
+            return None
+        mc = None
+        pools = t.get("pools") or []
+        if pools and isinstance(pools[0], dict):
+            mc = _num((pools[0].get("marketCap") or {}).get("usd"))
+        if mc is None:
+            mc = _num(t.get("marketCapUsd") if t.get("marketCapUsd") is not None else tok.get("marketCapUsd"))
+        return {"mint": mint, "name": tok.get("name"), "symbol": tok.get("symbol"), "market_cap_usd": mc, "rank": rank, "source": "solanatracker"}
+
+    def _token_list(self, path: str, params: dict, limit: int) -> list[dict]:
+        body = self._get(path, params)
+        items = body if isinstance(body, list) else (body.get("tokens") or body.get("data") or body.get("items") or [])
+        out = []
+        for t in items:
+            if isinstance(t, dict):
+                row = self._token_row(t, len(out) + 1)
+                if row:
+                    out.append(row)
+            if len(out) >= limit:
+                break
+        return out
+
+    def trending(self, timeframe: str = "1h", limit: int = 50) -> list[dict]:
+        """GET /tokens/trending/{timeframe} (5m, 15m, 30m, 1h, 6h, 12h, 24h)."""
+        return self._token_list(f"/tokens/trending/{timeframe}", {}, limit)
+
+    def graduating(self, limit: int = 50) -> list[dict]:
+        """GET /tokens/multi/graduating: pump.fun curves about to complete (the on-chain 'king of the hill' neighbourhood)."""
+        return self._token_list("/tokens/multi/graduating", {}, limit)
+
     def wallet_pnl(self, wallet: str) -> dict:
         return self._get(f"/v2/pnl/wallets/{wallet}", {})
 
