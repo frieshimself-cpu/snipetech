@@ -176,6 +176,12 @@ def _events(args, cfg) -> int:
                 pass
         svc.store.close()
 
+
+async def dump_transaction(svc, signature: str) -> str:
+    """One getTransaction result (version 1, json encoding) as text; the way real fixtures reach tests/fixtures/tx/."""
+    tx = await svc.rpc.get_transaction(signature)
+    return json.dumps(tx, indent=1, default=str) if tx is not None else json.dumps({"error": "not found", "signature": signature})
+
 def _usage(svc, provider: str):
     """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
 
@@ -459,6 +465,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
     cmd("snapshot-db", "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst", json_flag=False)
+    sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
+    sp.add_argument("signature")
     sp = cmd("events", "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)")
     sp.add_argument("action", choices=["poll", "scan", "edge"])
     sp.add_argument("--landing", default=None, help="edge: the landing position (default: the measured one, else [qualify] landing_pos)")
@@ -1069,6 +1077,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "tx":
+        svc = Service(cfg)
+
+        async def go():
+            try:
+                return await dump_transaction(svc, args.signature)
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        print(asyncio.run(go()))
+        return 0
     if args.cmd == "snapshot-db":
         from .infra.snapshot_db import snapshot_db
 
