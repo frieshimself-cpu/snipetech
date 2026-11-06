@@ -159,11 +159,16 @@ _ADDED_COLUMNS = (
     ("bid_model", "mean_behind", "REAL"),
     ("bid_model", "tipped_share", "REAL"),
     ("bid_model", "mean_overhead_sol", "REAL"),
+    ("verdicts", "copy_plan", "TEXT"),  # JSON: the lab's copy plan for the book (min leader buy, exit, leader style)
+    ("verdicts", "gap3_pct", "REAL"),  # median price gap to the wallet's 3rd follower
 )
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
 
+# in table order: the CREATE TABLE's columns, then the verdict columns of _ADDED_COLUMNS in the order they are added
+# (candidates() reads `v.*` by position, so a fresh and a migrated database must agree)
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
-                 "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons")  # fmt: skip
+                 "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons",
+                 "copy_plan", "gap3_pct")  # fmt: skip
 _LATEST_VERDICT = "SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet ORDER BY computed_at DESC, id DESC LIMIT 1)"
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")
@@ -538,6 +543,11 @@ class Store:
             d["reasons"] = json.loads(d["reasons"]) if d.get("reasons") else []
         except ValueError:
             d["reasons"] = [str(d["reasons"])]
+        try:  # the copy plan is a dict or None (verdicts from before the lab fix of 6 Nov 2026 have none)
+            plan = json.loads(d["copy_plan"]) if d.get("copy_plan") else None
+        except ValueError:
+            plan = None
+        d["copy_plan"] = plan if isinstance(plan, dict) else None
         return d
 
     def candidates(
@@ -571,6 +581,8 @@ class Store:
             x = v.get(c)
             if c == "reasons":
                 x = json.dumps(list(x or []), default=str)
+            elif c == "copy_plan":
+                x = json.dumps(x, default=str) if x else None
             vals.append(x)
         holder: dict[str, int] = {}
 

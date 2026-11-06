@@ -4,6 +4,8 @@
 import json
 import os
 
+import pytest
+
 from snipetech.analysis import lab as L
 from snipetech.cli import build_parser
 from snipetech.config import Config
@@ -217,5 +219,56 @@ def test_collect_can_restrict_to_the_cand_group(tmp_path):
         assert only["tape_hours"] == full["tape_hours"]
         rows = L.rank_wallets(only, cfg, st.labels(), top=10, min_n=1)
         assert [r["wallet"] for r in rows] == ["C1"]
+    finally:
+        st.close()
+
+
+def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypatch):
+    from snipetech.qualify.run import default_lab_runner
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W1"], coins=12)
+        st.set_label("W1", "cand:W1", "cand")
+        cfg = svc.cfg
+        cfg.verdict.bootstrap_samples = 50
+        seen = {}
+        real = L.collect
+
+        def spy(*args, **kw):
+            seen["kw"] = kw
+            return real(*args, **kw)
+
+        monkeypatch.setattr(L, "collect", spy)
+        (row,) = default_lab_runner(svc, cfg)(["W1"], "+6")
+        assert seen["kw"]["exits"] == [L.live_exits(cfg)["lab"]]  # what book/run.py sends: exit_name="lab"
+        assert seen["kw"]["per_tx_sol"] == 0.0035  # no measured round trip yet: the flat cost
+        assert row["wallet"] == "W1" and row["exit_name"] == "lab" and row["lab_version"] == L.LAB_VERSION
+        assert row["exit_params"] == L.LIVE_EXITS["lab"].to_dict() and row["min_leader_sol"] == cfg.book.min_copy_sol
+        # the verdict carries the plan to the book
+        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        run_qualify(svc, cfg, data / "jobs", NOW)
+        plan = st.latest_verdicts()[0]["copy_plan"]
+        assert plan["exit_name"] == "lab" and plan["min_leader_sol"] == 0.3 and plan["lab_version"] == L.LAB_VERSION
+    finally:
+        st.close()
+
+
+def test_the_lab_charges_the_measured_round_trip_once_the_low_bid_has_30_fills():
+    from snipetech.qualify.run import lab_tx_cost
+
+    st, cfg = Store(":memory:"), Config()
+    try:
+        assert lab_tx_cost(st, cfg) == 0.0035
+        arm = {"arm": "control", "n": 20, "failed_n": 33, "mean_fee_sol": 0.003005, "mean_overhead_sol": 0.00335,
+               "updated_at": NOW}  # fmt: skip
+        st.put_bid_model(arm)
+        assert lab_tx_cost(st, cfg) == 0.0035  # 20 fills: not enough yet
+        st.put_bid_model(arm | {"n": 30})  # buy 0.003005 + sell at the same fees + 1.67 failed twins a trade
+        assert lab_tx_cost(st, cfg) == pytest.approx((2 * 0.003005 + 0.00335) / 2)  # 0.0047 a transaction
+        st.put_bid_model(arm | {"n": 30, "mean_fee_sol": 0.001, "mean_overhead_sol": 0.0})
+        assert lab_tx_cost(st, cfg) == 0.0035  # never below the flat cost
+        st.put_bid_model({"arm": "paid", "n": 50, "mean_fee_sol": 0.04, "mean_overhead_sol": 0.02, "updated_at": NOW})
+        assert lab_tx_cost(st, cfg) == 0.0035  # only the low bid sets it
     finally:
         st.close()

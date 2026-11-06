@@ -17,7 +17,7 @@ import numpy as np
 from ..config import Config
 from ..models import Trade
 from ..sim.exits import LAMPORTS, Costs, ExitParams, prepare, run_exit
-from ..sim.market import SLOT_SECS, MarketPath
+from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..store import Store
 from .stats import summarize
 
@@ -206,7 +206,17 @@ def build_cases(store: Store, wallet: str, since_ts: int, pad_secs: int = PAD_SE
             skipped += 1
             continue
         cases.append(CopyCase(pos, path, idxs))
+    slot_secs = cases_slot_secs(cases)
+    for c in cases:  # every case's quiet gaps at the chain's measured slot time
+        c.path.slot_secs = slot_secs
     return cases, skipped
+
+
+def cases_slot_secs(cases: list[CopyCase]) -> float:
+    """Seconds per slot measured on the cases' own trades (the default when they span under 10 minutes)."""
+    if not cases:
+        return DEFAULT_SLOT_SECS
+    return slot_secs_from(np.concatenate([c.path.slot for c in cases]), np.concatenate([c.path.ts for c in cases]))
 
 
 def _run(cases: list[CopyCase], wallet: str, p: CopyParams, costs: Costs, crowd: int) -> list[dict]:
@@ -252,6 +262,7 @@ def copy_report(store: Store, cfg: Config, wallet: str, since_ts: int | None = N
         "positions_found": len(cases) + skipped,
         "positions_unsimulated": skipped,
         "note": "Only pump.fun bonding-curve and PumpSwap trades are simulated.",
+        "slot_secs": cases[0].path.slot_secs if cases else DEFAULT_SLOT_SECS,
     }
     rows = _run(cases, wallet, params, costs, crowd)
     closed = [r for r in rows if r["closed"]]
@@ -290,7 +301,7 @@ def copy_report(store: Store, cfg: Config, wallet: str, since_ts: int | None = N
     for lat in (0, 1, 2, 3, 5, 10):
         rs = [r for r in _run(cases, wallet, replace(params, buy_latency=lat, sell_latency=lat), costs, crowd) if r["closed"]]
         s = summarize([r["copier_pnl_sol"] for r in rs], conf, samples)
-        report["latency_sweep"].append({"latency_slots": lat, "latency_ms": int(lat * SLOT_SECS * 1000), "mean_pnl": s.get("mean", 0.0),
+        report["latency_sweep"].append({"latency_slots": lat, "latency_ms": round(lat * report["slot_secs"] * 1000), "mean_pnl": s.get("mean", 0.0),
                                         "ev_lower": s.get("ev_lower", 0.0), "win_rate": s.get("win_rate", 0.0), "total": s.get("total", 0.0)})  # fmt: skip
     report["size_sweep"] = []
     for size in (0.1, 0.25, 0.5, 1.0, 2.0, 5.0):

@@ -2,6 +2,8 @@
 
 import time
 
+import pytest
+
 from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
 from snipetech.config import Config
 from snipetech.sim.market import MarketPath
@@ -171,3 +173,122 @@ def test_solo_whale_trigger_skips_create_bundles():
         assert _fire(plain, path, launch, set()) is not None
         assert (_fire(solo, path, launch, set()) is not None) is want_solo, mint
     assert "not a create bundle" in solo.label()
+
+
+# -- the lab copies what the live sniper copies, with the exit the book sends (6 Nov audit, items 6 and 7) ---------
+
+
+def test_leader_sell_fraction_counts_its_position_not_the_trade():
+    import numpy as np
+
+    from snipetech.analysis.lab import leader_sell_fractions
+
+    p = MarketPath.__new__(MarketPath)
+    p.n = 6
+    p.users = ["L", "x", "L", "y", "L", "z"]
+    p.is_buy = np.array([True, True, False, False, False, False])
+    p.base = np.array([2.0, 5.0, 0.5, 1.0, 1.5, 3.0])  # it buys 2, sells 0.5, then the 1.5 left
+    assert leader_sell_fractions(p, "L").tolist() == [0.0, 0.0, 0.25, 0.0, 1.0, 0.0]
+    assert leader_sell_fractions(p, "z").tolist() == [0.0] * 5 + [1.0]  # a sale of tokens the tape never saw it buy
+
+
+def test_live_exits_are_the_exits_the_book_sends():
+    from snipetech.analysis.lab import LIVE_EXITS, WATCH_SECS, live_exits
+    from snipetech.oktech import EXITS, autosell
+
+    cfg = Config()
+    assert set(LIVE_EXITS) == set(EXITS)
+    for name, e in EXITS.items():
+        ex = LIVE_EXITS[name]
+        assert ex.stale_secs == float(e.get("stale_secs") or 0) and ex.stop_loss == float(e.get("stop_loss") or 0)
+        assert ex.max_hold_secs == e["max_hold_secs"] and ex.take_profit == 0 and not ex.sell_on_dev_sell
+        assert ex.copy_exit_pct == cfg.oktech.copy_exit_threshold_percent / 100 and ex.watch_secs == WATCH_SECS
+        # one definition: the builder turns the lab's exit into exactly the OKTech settings of the book's preset
+        assert autosell(ex.to_dict() | {"copy_exit": True}, []) == autosell(e | {"copy_exit": True}, [])
+    cfg.oktech.copy_exit_threshold_percent = 20.0
+    assert live_exits(cfg)["lab"].copy_exit_pct == 0.2
+
+
+def test_min_leader_sol_sits_between_the_top_ups_and_the_openers():
+    from snipetech.analysis.lab import choose_min_leader_sol
+
+    openers = [6.52, 7.06, 6.8, 6.6, 7.1]  # G2oZ's first buys into dormant curves
+    top_ups = [0.11] * 359 + [0.05] * 93 + [0.54] * 43  # its re-buys in the same coins
+    floor = choose_min_leader_sol(openers, top_ups, 0.3)
+    assert 0.54 < floor <= 6.5  # every top-up dropped, every opener kept
+    two_ydn = 3.0 / 1.0125  # 2YDn buys 2.963 SOL every time, first buy or not
+    floor = choose_min_leader_sol([two_ydn] * 5, [two_ydn] * 12, 0.3)
+    assert floor == pytest.approx(2.96, abs=0.005) and floor <= two_ydn  # its own buys still pass
+    assert choose_min_leader_sol(openers, [0.54] * 9, 0.3) == 0.3  # under ten re-buys: the book's floor
+    assert choose_min_leader_sol([0.4, 0.5], [0.12] * 20, 0.3) == 0.3  # never below the book's floor
+
+
+def _wallet_rows(who, n, lead_sol, pnl, rebuys=(), first_sell_s=4.0, first_sell_frac=0.05, max_sell_frac=0.999, t0=0):
+    return [{"mint": f"{who}-{t0 + k}", "trigger": 0, "ts": 1_000 + t0 + k, "order": (k, 0), "pnl": [pnl], "who": who,
+             "lead_sol": lead_sol, "rebuys": list(rebuys), "first_sell_s": first_sell_s, "first_sell_frac": first_sell_frac,
+             "max_sell_frac": max_sell_frac} for k in range(n)]  # fmt: skip
+
+
+def test_a_wallet_is_scored_only_on_buys_its_floor_lets_through():
+    from snipetech.analysis.lab import LAB_VERSION, LIVE_EXITS, rank_wallets
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    openers = _wallet_rows("G2", 12, 6.6, 0.02, rebuys=[0.11] * 30 + [0.54] * 4)  # its openers rise
+    small = _wallet_rows("G2", 3, 0.45, -0.05, t0=100)  # small first buys: the book's 0.3 lets them in, its floor not
+    dumps = _wallet_rows("2Y", 10, 2.963, -0.05, rebuys=[2.963] * 2, first_sell_s=3.0, first_sell_frac=1.0,
+                         max_sell_frac=1.0)  # fmt: skip
+    rows = openers + small + dumps
+    trig = [Trigger("kol", sol=0.1, group="cand")]
+    data = {"rows": rows, "exits": [LIVE_EXITS["lab"]], "triggers": trig, "tape_hours": 10}
+    by = {r["wallet"]: r for r in rank_wallets(data, cfg, top=5, min_n=4)}
+    g = by["G2"]
+    assert g["n"] == 12 and g["mean"] == pytest.approx(0.02) and 0.54 < g["min_leader_sol"] < 6.6
+    assert g["rebuy_share"] == 0.0 and g["leader_style"] == "mixed"  # sells in pieces first; its top-ups never copied
+    assert g["exit_name"] == "lab" and g["exit_params"] == LIVE_EXITS["lab"].to_dict()
+    assert g["lab_version"] == LAB_VERSION
+    y = by["2Y"]
+    assert y["n"] == 10 and y["min_leader_sol"] == pytest.approx(2.96, abs=0.005) and y["leader_style"] == "dumper"
+    assert y["rebuy_share"] == 2.0 and y["leader_one_tx_exit_share"] == 1.0 and y["leader_first_sell_p50_s"] == 3.0
+    old = {r["wallet"]: r for r in rank_wallets(data, cfg, top=5, min_n=4, floor=0.0)}
+    assert old["G2"]["n"] == 12  # a wallet's floor comes from its own buys even with no book floor
+
+
+def test_leader_style_from_how_it_sells():
+    from snipetech.analysis.lab import leader_style
+
+    assert leader_style(1.0, 3.0, 1.0) == "dumper"  # 2YDn: everything in one sale within seconds
+    assert leader_style(0.1, 40.0, 0.12) == "slicer"  # never more than a small piece at a time
+    assert leader_style(1.0, 40.0, 1.0) == "holder"  # Gfree: one sale, after 20-55 s
+    assert leader_style(None, None, None) == "holder"  # never sold while the tape watched
+    assert leader_style(0.0, 4.0, 0.999) == "mixed"  # G2oZ: small pieces at once, one big dump at the end
+
+
+def test_collect_measures_the_slot_time_and_records_the_leader():
+    from snipetech.analysis.lab import LIVE_EXITS, rank_wallets
+
+    store = Store(":memory:")
+    lead = addr("cl-lead")
+    for i in range(12):  # one coin every 400 s, 1 000 slots apart: 0.4 s a slot across the tape
+        m = Market(store, addr(f"cl-{i}"), addr(f"cl-dev-{i}"), NOW - 6_000 + i * 400, 40_000_000 + i * 1_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        m.buy(lead, 0.5, 2)
+        for k in range(6):
+            m.buy(addr(f"cl-fan-{i}-{k}"), 0.3, 3 + k)
+        m.buy(lead, 0.2, 9)  # a top-up
+        m.sell(lead, 0.5, 20)  # half its bag
+        m.sell(lead, 1.0, 30)  # the rest
+        m.commit()
+    store.set_coverage("tape", {"spans": [[NOW - 6_100, NOW]]})
+    store.set_label(lead, "cand:lead", "cand")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    data = collect(store, cfg, 0.2, 0, "+1", groups=("cand",), exits=[LIVE_EXITS["lab"]])
+    assert data["exits"] == [LIVE_EXITS["lab"]] and data["slot_secs"] == [pytest.approx(0.4, abs=0.01)]
+    assert len(data["rows"]) == 12
+    r = data["rows"][0]
+    assert r["who"] == lead and r["lead_sol"] == pytest.approx(0.5) and r["rebuys"] == [pytest.approx(0.2)]
+    assert r["first_sell_s"] == pytest.approx(7.0, abs=1.0) and r["first_sell_frac"] == pytest.approx(0.5, abs=1e-6)
+    assert r["max_sell_frac"] == pytest.approx(1.0)
+    (w,) = rank_wallets(data, cfg, store.labels(), top=5, min_n=1)
+    assert w["min_leader_sol"] == 0.3 and w["leader_style"] == "mixed" and w["n"] == 12

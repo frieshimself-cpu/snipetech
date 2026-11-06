@@ -23,7 +23,29 @@ from ..models import AMM, Launch, Trade
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
-SLOT_SECS = 0.4
+# Seconds per slot when nobody measured it. The chain ran at 0.214 s a slot on 5-6 Nov 2026 (least squares over the
+# tape); every lab measures its own tape with `slot_secs_from` and passes the result to `MarketPath.build`.
+DEFAULT_SLOT_SECS = 0.4
+
+
+def slot_secs_from(slots, ts, min_span_secs: float = 600.0) -> float:
+    """Seconds per slot measured from the tape: the least-squares slope of block time on slot over the distinct
+    (slot, block time) pairs. Block times are whole seconds, so it needs `min_span_secs` of them; a shorter or
+    nonsensical sample gives DEFAULT_SLOT_SECS."""
+    s = np.asarray(slots, dtype=np.float64).ravel()
+    t = np.asarray(ts, dtype=np.float64).ravel()
+    if s.size < 2 or s.size != t.size:
+        return DEFAULT_SLOT_SECS
+    pairs = np.unique(np.stack([s, t], axis=1), axis=0)
+    s, t = pairs[:, 0], pairs[:, 1]
+    if float(t.max() - t.min()) < min_span_secs:
+        return DEFAULT_SLOT_SECS
+    sc = s - s.mean()
+    var = float(sc @ sc)
+    if var <= 0:
+        return DEFAULT_SLOT_SECS
+    slope = float(sc @ (t - t.mean())) / var
+    return slope if 0.05 <= slope <= 2.0 else DEFAULT_SLOT_SECS
 
 
 @dataclass
@@ -44,11 +66,13 @@ class MarketPath:
     genesis: bool = False  # index 0 is the synthetic post-create state (no trade)
     launch: Launch | None = None
     meta: dict = field(default_factory=dict)
+    slot_secs: float = DEFAULT_SLOT_SECS  # seconds per slot on this path's chain (the lab measures it)
 
     # -- construction -----------------------------------------------------------
 
     @classmethod
-    def build(cls, trades: list[Trade], launch: Launch | None = None, default_fee_bps: int = 125) -> "MarketPath":
+    def build(cls, trades: list[Trade], launch: Launch | None = None, default_fee_bps: int = 125,
+              slot_secs: float | None = None) -> MarketPath:  # fmt: skip
         trades = sorted(trades, key=lambda t: t.order)
         trades = _fix_slot_order(trades)
         rows: list[tuple] = []
@@ -91,6 +115,7 @@ class MarketPath:
             sigs=list(cols[10]),
             genesis=genesis,
             launch=launch,
+            slot_secs=float(slot_secs) if slot_secs else DEFAULT_SLOT_SECS,
         )
 
     # -- landing model -----------------------------------------------------------

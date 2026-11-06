@@ -241,3 +241,21 @@ def test_verdict_status_matrix(cfg):
         and v["next_review"] == NOW + 72 * 3600
         and v["score"] == 0.0
     )
+
+
+def test_verdict_for_keeps_the_copy_plan_and_gap3(cfg):
+    from snipetech.qualify.gates import COPY_PLAN_KEYS
+
+    lab = {"n": 40, "mean": 0.017, "ev_lower": 0.004, "win_rate": 0.9, "total": 0.66, "exit": "STALE1s SL-30% hold300s",
+           "min_leader_sol": 0.594, "rebuy_share": 0.0, "leader_first_sell_p50_s": 4.0, "leader_one_tx_exit_share": 0.0,
+           "leader_biggest_sell_p50": 0.999, "leader_style": "mixed", "exit_name": "lab",
+           "exit_params": {"stale_secs": 1.0, "stop_loss": 0.3}, "lab_version": 2, "moments_all": 43}  # fmt: skip
+    crowd = {"followers_1s": 1.0, "gap3_pct": 3.5, "n": 40}
+    v = verdict_for("G2oZ", {"trades": None}, lab, 1.0, crowd, True, [], cfg, NOW)
+    assert v["status"] == "qualified" and v["gap3_pct"] == 3.5
+    assert v["copy_plan"] == {k: lab[k] for k in COPY_PLAN_KEYS}
+    assert {"min_leader_sol", "exit_name", "exit_params", "leader_style", "rebuy_share", "leader_first_sell_p50_s",
+            "leader_one_tx_exit_share", "lab_version"} <= set(v["copy_plan"])  # fmt: skip
+    old = {k: lab[k] for k in ("n", "mean", "ev_lower", "win_rate", "total", "exit")}  # a lab row from before the plan
+    assert verdict_for("G2oZ", {"trades": None}, old, 1.0, crowd, True, [], cfg, NOW)["copy_plan"] is None
+    assert verdict_for("G2oZ", {"trades": None}, None, None, crowd, True, [], cfg, NOW)["copy_plan"] is None

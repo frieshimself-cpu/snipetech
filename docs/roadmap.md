@@ -17,6 +17,16 @@ first on the server's recording and only then run live in capped batches.
 - **Next:** the OKTech feature audit (exits replayed on every live trade's price path, entry filters, execution
   settings, how the book and the agents choose them per wallet) becomes the build plan; the forward paper test runs
   around the clock again; the owner added SOL (7.4 SOL equity) for a capped test once the exits change.
+- **The lab now copies what the live sniper does (audit items 6 and 7, built 6 Nov evening).** It counted a block as
+  0.4 s (it is 0.214 s), so its 1 s dead exit sold on half-second pauses OKTech never sells on; it scored wallets with
+  exits the book never sends; it ignored the copied wallet's own sales. Now it measures the block time, waits the
+  1.3 s OKTech waits before it watches a coin, sells when the copied wallet sells half its bag, charges the measured
+  cost of a round trip, and scores each wallet only on the buys its sniper will copy (its own minimum buy, above its
+  top-ups). Checked on the 12 copy trades OKTech sold on 6 Nov: the same exit within 2 blocks on 11, the money within
+  0.2 % (the old lab: 6 of 12, 4 % too rosy). **Every lab number changes from this fix on** (qualify verdicts, the
+  lab, the strategies the paper test freezes, the event edge); older numbers are not comparable. After the deploy,
+  qualify every wallet again: 2YDn's mean should turn negative, and if it does not, no verdict feeds the book until
+  we know why.
 
 ## The bot runs by itself (6 Nov, 16:00 UTC) — what it waits for
 

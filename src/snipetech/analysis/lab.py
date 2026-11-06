@@ -18,18 +18,54 @@ again picked on older and judged on newer moments. Only test numbers count.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from ..config import Config
+from ..oktech import EXITS
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
-from ..sim.market import MarketPath
+from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..store import Store
 from .stats import summarize
 
 LAMPORTS = 1e9
+# 2 = the lab replays what the live sniper does (measured slot time, OKTech's watch delay, the copy exit, sells a slot
+# after their exit) and scores each wallet on the buys its own floor lets through. Older verdicts have no copy plan.
+LAB_VERSION = 2
+# OKTech watches a position about this long after the buy: the 6 Nov copy fills replay right with 1.25-1.4 s
+# (tests/test_lab_replay.py). A sell lands one slot after its exit fires, before the trades of that slot.
+WATCH_SECS = 1.3
+EXIT_LATENCY_SLOTS, EXIT_POSITION = 1, "start"
+REBUY_MIN_N = 10  # re-buys of 0.1 SOL or more before a wallet's floor is read from them
+
+
+def live_exits(cfg: Config | None = None) -> dict[str, ExitParams]:
+    """The exits the live snipers run, by name: `oktech.EXITS` (the one definition the sniper builder sends), read the
+    way OKTech executes them on a copy sniper: its copy exit at `[oktech] copy_exit_threshold_percent`, its watch delay,
+    no dev-sell rule. An exit without a timer holds until the tape ends."""
+    cfg = cfg or Config()
+    pct = float(cfg.oktech.copy_exit_threshold_percent) / 100.0
+    return {
+        name: ExitParams(
+            take_profit=float(e.get("take_profit") or 0),
+            tp_sell_fraction=float(e.get("tp_sell_fraction") or 1),
+            stop_loss=float(e.get("stop_loss") or 0),
+            trailing_stop=float(e.get("trailing_stop") or 0),
+            trailing_activation=float(e.get("trailing_activation") or 0),
+            max_hold_secs=float(e.get("max_hold_secs") or 86_400),
+            sell_on_dev_sell=False,
+            stale_secs=float(e.get("stale_secs") or 0),
+            watch_secs=WATCH_SECS,
+            copy_exit_pct=pct,
+        )
+        for name, e in EXITS.items()
+    }
+
+
+LIVE_EXITS = live_exits()
 
 
 @dataclass(frozen=True)
@@ -262,15 +298,61 @@ def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[
     return out
 
 
+def leader_sell_fractions(path: MarketPath, leader: str) -> np.ndarray:
+    """Per state: the share of its holdings `leader` sold in that trade (0 at every other state). Its holdings are its
+    buys minus its sells since the path's start; a sale of tokens the path never saw it buy counts as all it had."""
+    out = np.zeros(path.n)
+    held = 0.0
+    for i in (j for j, u in enumerate(path.users) if u == leader):
+        amount = float(path.base[i])
+        if path.is_buy[i]:
+            held += amount
+            continue
+        out[i] = min(1.0, amount / held) if held > 0 else 1.0
+        held = max(0.0, held - amount)
+    return out
+
+
+def _leader_profile(path: MarketPath, i: int, frac: np.ndarray) -> dict[str, Any]:
+    """How the wallet that fired at state i went on in the coin: its re-buys of 0.1 SOL or more, when its first sale
+    came and what share of its bag it took, and its biggest single sale."""
+    leader = path.users[i]
+    later = [j for j in range(i + 1, path.n) if path.users[j] == leader]
+    sells = [j for j in later if not path.is_buy[j]]
+    first = sells[0] if sells else None
+    return {"rebuys": [round(float(path.quote[j]) / LAMPORTS, 6) for j in later
+                       if path.is_buy[j] and path.quote[j] >= KOL_MIN_SOL * LAMPORTS],
+            "first_sell_s": None if first is None else float(path.ts[first] - path.ts[i]),
+            "first_sell_frac": None if first is None else round(float(frac[first]), 6),
+            "max_sell_frac": round(float(max(frac[j] for j in sells)), 6) if sells else None}  # fmt: skip
+
+
+def span_slot_secs(store: Store, a: int, b: int, step: int = 60) -> float:
+    """Seconds per slot over the tape span [a, b], measured once: one (slot, block time) pair a minute from the ts
+    index, fitted by least squares (`slot_secs_from`). The default when the span has too little tape."""
+    pairs = []
+    for t in range(int(a), int(b) + 1, step):
+        rows = store._q("SELECT slot, ts FROM trades WHERE ts >= ? AND ts <= ? ORDER BY ts LIMIT 1",
+                        (t, min(int(b), t + step - 1)))  # fmt: skip
+        if rows:
+            pairs.append(rows[0])
+    if not pairs:
+        return DEFAULT_SLOT_SECS
+    return slot_secs_from([s for s, _ in pairs], [ts for _, ts in pairs])
+
+
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
-            event_kinds: tuple[str, ...] | None = None) -> dict[str, Any]:  # fmt: skip
+            event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
-    the qualify stage's lab, a small fraction of the full one."""
+    the qualify stage's lab, a small fraction of the full one. `exits` (default: the search set `exit_set()`) are
+    simulated the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a
+    wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records the trigger buy's size
+    (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`)."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
-    exits = exit_set()
+    exits = list(exits) if exits else exit_set()
     kols = label_groups(store)
     all_triggers = list(TRIGGERS) + [Trigger("event", event=k) for k in (event_kinds or ())]
     triggers = [(ti, t) for ti, t in enumerate(all_triggers)
@@ -288,12 +370,15 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             events_by_mint.setdefault(mint, []).append((kind, ts, slot))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     rows: list[dict] = []  # one per (token, trigger): pnl per exit
+    measured: list[float] = []  # seconds per slot of each span simulated
     for a, b in spans:
         if b - a < 600:
             continue
         wanted = _mints_with_buys_by(store, group_wallets, int(a), int(b)) if group_wallets is not None else None
         if wanted is not None and not wanted:
             continue
+        slot_secs = span_slot_secs(store, int(a), int(b))
+        measured.append(slot_secs)
         for mint, _count in store.active_mints(a, b, min_trades):
             if wanted is not None and mint not in wanted:
                 continue
@@ -301,7 +386,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             if len(trades) < min_trades:
                 continue
             launch = store.launch(mint)
-            path = MarketPath.build(trades, launch if launch and a <= launch.ts else None)
+            path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
             if path.n < min_trades:
                 continue
             for ti, trig in triggers:
@@ -311,13 +396,18 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                 if i is None or path.ts[i] > b - 60:
                     continue
                 e = int(path.landing_index(int(path.slot[i]) + latency_slots, position, i))
-                prep = prepare(path, e, buy_sol, costs, max(1, latency_slots), position)
+                frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
+                prep = prepare(path, e, buy_sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
                 if prep is None:
                     continue
                 pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
-                rows.append({"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
-                             "who": path.users[i]})  # fmt: skip
-    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers}
+                row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
+                       "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6)}  # fmt: skip
+                if frac is not None:
+                    row |= _leader_profile(path, i, frac)
+                rows.append(row)
+    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
+            "slot_secs": measured}  # fmt: skip
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
@@ -347,14 +437,72 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     return out[:top]
 
 
+def choose_min_leader_sol(first_buys, rebuys, floor: float) -> float:
+    """The smallest buy of a wallet its sniper copies (OKTech `ctbotWallets[].minSol`): above its top-ups, below its
+    openers. With at least REBUY_MIN_N re-buys of 0.1 SOL or more: 1.1 x their 90th percentile, capped at the 25th
+    percentile of its first buys and never below `floor` (the book's minimum); otherwise `floor`. Rounded down to
+    0.001 SOL, so an opener of exactly the cap still passes whichever amount OKTech compares."""
+    re = np.array([float(s) for s in rebuys if s is not None and float(s) >= KOL_MIN_SOL])
+    if len(re) < REBUY_MIN_N:
+        return float(floor)
+    cut = 1.1 * float(np.percentile(re, 90))
+    fb = [float(s) for s in first_buys if s is not None and float(s) > 0]
+    if fb:
+        cut = min(cut, float(np.percentile(fb, 25)))
+    return max(float(floor), math.floor(cut * 1000 + 1e-9) / 1000)
+
+
+def leader_style(
+    one_tx_exit_share: float | None, first_sell_p50_s: float | None, biggest_sell_p50: float | None
+) -> str:
+    """How a wallet leaves its coins. dumper: one sale takes its whole bag (>= 80 % of its coins) and its first sale
+    comes within 30 s; slicer: its biggest single sale is usually under 30 % of its bag; holder: it usually holds 30 s
+    or more (or never sold while the tape watched); mixed: the rest (small pieces early, one big dump later)."""
+    if (
+        one_tx_exit_share is not None
+        and one_tx_exit_share >= 0.8
+        and first_sell_p50_s is not None
+        and first_sell_p50_s < 30
+    ):
+        return "dumper"
+    if biggest_sell_p50 is not None and biggest_sell_p50 < 0.3:
+        return "slicer"
+    if first_sell_p50_s is None or first_sell_p50_s >= 30:
+        return "holder"
+    return "mixed"
+
+
+def _median(xs: list) -> float | None:
+    vals = [float(x) for x in xs if x is not None]
+    return float(np.median(vals)) if vals else None
+
+
+def _copy_plan_stats(moments: list[dict], min_leader_sol: float) -> dict[str, Any]:
+    """What the sniper would see of the wallet on the moments it copies: re-buys it would copy too (per moment), when
+    the wallet first sells, how often one sale takes its whole bag, and its style."""
+    firsts = [r.get("first_sell_frac") for r in moments if r.get("first_sell_frac") is not None]
+    one_tx = float(np.mean([f >= 0.9 for f in firsts])) if firsts else None
+    p50 = _median([r.get("first_sell_s") for r in moments])
+    biggest = _median([r.get("max_sell_frac") for r in moments])
+    rebuys = sum(sum(1 for x in (r.get("rebuys") or ()) if x >= min_leader_sol - 1e-9) for r in moments)
+    return {"min_leader_sol": min_leader_sol, "rebuy_share": round(rebuys / len(moments), 4) if moments else None,
+            "leader_first_sell_p50_s": p50, "leader_one_tx_exit_share": None if one_tx is None else round(one_tx, 4),
+            "leader_biggest_sell_p50": biggest, "leader_style": leader_style(one_tx, p50, biggest)}  # fmt: skip
+
+
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
-                 min_n: int = 4) -> list[dict]:  # fmt: skip
+                 min_n: int = 4, floor: float | None = None) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
-    60% of the trigger's moments (as `rank` does); each triggering wallet is then scored on all of its moments with
-    that exit. Wallets with the same address under several triggers keep the best-covered trigger (lowest threshold)."""
+    60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
+    its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
+    `floor`, default the book's `min_copy_sol`). Wallets with the same address under several triggers keep the
+    best-covered trigger. Each row carries the copy plan the book needs: the floor, the leader's style, the exit's name
+    in `live_exits` (None for a search exit), its parameters and LAB_VERSION."""
     rows, exits = data["rows"], data["exits"]
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
+    floor = float(cfg.book.min_copy_sol if floor is None else floor)
+    names = {ex: name for name, ex in live_exits(cfg).items()}
     best: dict[str, dict] = {}
     for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         if trig.kind != "kol":
@@ -364,14 +512,20 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             continue
         m = np.array([r["pnl"] for r in rs])
         k = int(np.argmax(m[: int(len(rs) * 0.6)].mean(axis=0)))
-        by: dict[str, list[float]] = {}
+        by: dict[str, list[tuple[dict, float]]] = {}
         for r, p in zip(rs, m[:, k]):
-            by.setdefault(r["who"], []).append(float(p))
-        for w, pn in by.items():
-            if len(pn) < min_n or (w in best and best[w]["n"] >= len(pn)):
+            by.setdefault(r["who"], []).append((r, float(p)))
+        for w, items in by.items():
+            moments = [r for r, _ in items]
+            min_sol = choose_min_leader_sol([r.get("lead_sol") for r in moments],
+                                            [x for r in moments for x in (r.get("rebuys") or ())], floor)  # fmt: skip
+            kept = [(r, p) for r, p in items if r.get("lead_sol") is None or r["lead_sol"] >= min_sol - 1e-9]
+            if len(kept) < min_n or (w in best and best[w]["n"] >= len(kept)):
                 continue
-            st = summarize(np.array(pn), conf, samples)
-            best[w] = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(pn),
-                       "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total")}  # fmt: skip
+            st = summarize(np.array([p for _, p in kept]), conf, samples)
+            best[w] = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(kept),
+                       "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
+                       "moments_all": len(items), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
+                       "lab_version": LAB_VERSION} | _copy_plan_stats([r for r, _ in kept], min_sol)  # fmt: skip
     out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)
     return out[:top]

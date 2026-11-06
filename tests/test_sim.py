@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -186,3 +187,86 @@ def test_scale_out_ladder_remainder_leaves_on_a_pause():
     plain = run_exit(prep, ExitParams(take_profit=0.1, tp_sell_fraction=0.35, stop_loss=0.08, trailing_stop=0.5,
                                       max_hold_secs=300, sell_on_dev_sell=False), Costs())  # fmt: skip
     assert plain.exit_reason == "take_profit+time" and plain.exit_idx >= r.exit_idx
+
+
+# -- what the live sniper does: measured slot time, the watch delay, the copy exit (6 Nov audit) -------------------
+
+
+def _timed_path(slots, slot_secs, q=None, users=None, is_buy=None, base=None):
+    """A path whose block times follow its slots at `slot_secs` (block times are whole seconds, as on chain)."""
+    slots = np.asarray(slots, dtype=np.int64)
+    n = len(slots)
+    q = np.full(n, 40e9) if q is None else np.asarray(q, dtype=np.float64)
+    return MarketPath(mint="M", n=n, slot=slots, ts=np.floor(1_700_000_000 + slots * slot_secs), q=q,
+                      b=np.full(n, 8e14), fee_bps=np.full(n, 125.0),
+                      is_buy=np.ones(n, dtype=bool) if is_buy is None else np.asarray(is_buy, dtype=bool),
+                      quote=np.full(n, 1e8), base=np.full(n, 1e12) if base is None else np.asarray(base, dtype=np.float64),
+                      amm=np.zeros(n, dtype=bool), users=list(users or [f"u{i}" for i in range(n)]),
+                      sigs=[f"s{i}" for i in range(n)], slot_secs=slot_secs)  # fmt: skip
+
+
+def _sim(path, ex, leader_frac=None):
+    """0.2 SOL bought at the first state; sells land a slot after their exit fires, before that slot's trades."""
+    return run_exit(prepare(path, 0, 0.2, NO_COSTS, 1, "start", leader_frac=leader_frac), ex, NO_COSTS)
+
+
+def test_slot_seconds_are_measured_from_the_tape():
+    from snipetech.sim.market import DEFAULT_SLOT_SECS, slot_secs_from
+
+    slots = np.arange(300_000_000, 300_000_000 + 6_000, 3)  # 1 200 s of chain at 0.2 s a slot
+    ts = np.floor(slots * 0.2)  # block times are whole seconds
+    assert slot_secs_from(slots, ts) == pytest.approx(0.200, abs=0.005)
+    many = slot_secs_from(np.repeat(slots, 4), np.repeat(ts, 4))  # many trades in a slot: each pair counts once
+    assert many == pytest.approx(0.200, abs=0.005)
+    short = slots[:900]  # 540 s: too short to trust
+    assert slot_secs_from(short, np.floor(short * 0.2)) == DEFAULT_SLOT_SECS == 0.4
+    assert slot_secs_from([], []) == DEFAULT_SLOT_SECS
+    trades = [Trade(f"x{i}", 0, 100 + i, 0, 1_000 + i, "M", "curve", f"u{i}", True, 10**8, 10**12, 0, 125,
+                    30 * 10**9 + i * 10**8, 10**15 - i * 10**12) for i in range(5)]  # fmt: skip
+    assert MarketPath.build(trades, None, slot_secs=0.214).slot_secs == 0.214
+    assert MarketPath.build(trades, None).slot_secs == DEFAULT_SLOT_SECS  # nobody measured: the default
+
+
+def test_a_one_second_dead_exit_needs_five_quiet_slots_at_0_2_s():
+    # a trade every slot, then 4 quiet slots (0.8 s) after slot 3, then 5 (1.0 s) after slot 9
+    slots = [0, 1, 2, 3, 7, 8, 9] + list(range(14, 400))
+    ex = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, stale_secs=1.0)
+    at_02 = _sim(_timed_path(slots, 0.2), ex)
+    assert at_02.exit_reason == "stale" and at_02.exit_idx == slots.index(9)
+    # the same slots read at the old 0.4 s a slot: the 0.8 s pause looks like 1.6 s and the dead exit fires early
+    at_04 = _sim(_timed_path(slots, 0.4), ex)
+    assert at_04.exit_reason == "stale" and at_04.exit_idx == slots.index(3)
+
+
+def test_no_exit_fires_inside_the_watch_delay():
+    ex = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=5, sell_on_dev_sell=False, stale_secs=1.0,
+                    watch_secs=1.5)  # fmt: skip
+    every = list(range(120))  # a trade every 0.1 s
+    early = [s for s in every if not 2 < s < 19]  # quiet for 1.7 s from +0.2 s: the sniper is not watching yet
+    assert _sim(_timed_path(early, 0.1), ex).exit_reason == "time"
+    blind = _sim(_timed_path(early, 0.1), replace(ex, watch_secs=0.0))
+    assert blind.exit_reason == "stale" and blind.exit_idx == early.index(2)  # without the delay it would have sold
+    late = [s for s in every if not 16 < s < 33]  # the same pause from +1.6 s: the sniper is watching
+    r = _sim(_timed_path(late, 0.1), ex)
+    assert r.exit_reason == "stale" and r.exit_idx == late.index(16)
+    assert r.exit_slot == 16 + 10 + 1  # the dead exit fires 1 s after the last trade; the sell lands a slot later
+    # a price exit inside the delay does not fire either: a 40 % dip at +0.5 s that is over by +1.0 s
+    q = np.full(len(every), 40e9)
+    q[5:10] = 24e9
+    sl = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=5, sell_on_dev_sell=False, watch_secs=1.5)
+    assert _sim(_timed_path(every, 0.1, q=q), sl).exit_reason == "time"
+    seen = _sim(_timed_path(every, 0.1, q=q), replace(sl, watch_secs=0.0))
+    assert seen.exit_reason == "stop_loss" and seen.exit_idx == 5
+
+
+def test_copy_exit_sells_after_the_leaders_big_sell():
+    slots = [0, 1, 2, 5, 10, 10, 10, 11, 12] + list(range(13, 400))
+    frac = np.zeros(len(slots))
+    frac[4] = 0.6  # the leader sells 60 % of what it holds in the first trade of slot 10; two more trades follow
+    path = _timed_path(slots, 0.2)
+    ex = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, copy_exit_pct=0.5)
+    r = _sim(path, ex, frac)
+    assert r.exit_reason == "copy_exit" and r.exit_idx == 6  # after the whole slot of the leader's sell
+    assert r.exit_slot == 11 and "copy50%" in ex.label()
+    assert _sim(path, replace(ex, copy_exit_pct=0.7), frac).exit_reason == "time"
+    assert _sim(path, ex).exit_reason == "time"  # no leader data: no copy exit

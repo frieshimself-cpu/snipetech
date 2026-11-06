@@ -11,6 +11,16 @@ from ..store import Store
 
 PUMP_VENUES = ("curve", "amm")  # pump.fun's bonding curve and PumpSwap; launchlab is Raydium's
 HISTORY_ORDER = ("solanatracker", "solanatracker30", "birdeye", "vybe")
+# what the book needs from the lab to copy a wallet the way it was scored (analysis/lab.py rank_wallets)
+COPY_PLAN_KEYS = ("min_leader_sol", "rebuy_share", "leader_first_sell_p50_s", "leader_one_tx_exit_share",
+                  "leader_biggest_sell_p50", "leader_style", "exit_name", "exit_params", "lab_version")  # fmt: skip
+
+
+def copy_plan(lab_row: dict | None) -> dict[str, Any] | None:
+    """The lab row's copy plan, or None when the row predates it (no per-wallet floor)."""
+    if not lab_row or lab_row.get("min_leader_sol") is None:
+        return None
+    return {k: lab_row.get(k) for k in COPY_PLAN_KEYS}
 
 
 def _num(v) -> float | None:
@@ -222,4 +232,5 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
             "hist_days": int(hist["days"]) if hist.get("days") is not None else None, "hist_realized_usd": hist.get("realized_usd"),
             "hist_win_rate": hist.get("win_rate"), "hist_trades": hist.get("trades"), "crowding": crowd.get("followers_1s"),
             "venue_share": venue, "score": sc, "status": status, "next_review": int(now) + hours * 3600, "reasons": reasons,
-            "exit": lab_row.get("exit") if lab_row else None, "gap3_pct": crowd.get("gap3_pct")}  # fmt: skip
+            "exit": lab_row.get("exit") if lab_row else None, "gap3_pct": crowd.get("gap3_pct"),
+            "copy_plan": copy_plan(lab_row)}  # fmt: skip
