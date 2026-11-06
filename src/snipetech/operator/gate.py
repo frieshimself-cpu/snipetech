@@ -14,6 +14,11 @@ DEFAULT_EXPECTED = {"snipers_running": 0, "held": 0}
 
 
 STATE_REFIRE_SECS = 3600  # a persisting state (coin held, tape stale, ...) re-triggers at most once an hour
+SERVICE_REFIRE_SECS = 6 * 3600  # a unit the owner has to enable or reset by hand: a reminder every six hours is enough
+
+
+def refire_secs(state_key: str) -> int:
+    return SERVICE_REFIRE_SECS if state_key.startswith("service not active") else STATE_REFIRE_SECS
 
 
 @dataclass
@@ -113,7 +118,7 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
         pass
     prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
     state_keys = [_state_key(r) for r in states]
-    fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= STATE_REFIRE_SECS]
+    fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
     if _analyst_due(paths, now, cfg):
         return Decision(True, "analyst", reasons + ["daily analysis due"], state_keys)

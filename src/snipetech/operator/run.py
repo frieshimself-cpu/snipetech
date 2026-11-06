@@ -15,7 +15,7 @@ from ..ops import _pid_alive
 from .budget import Ledger
 from .commands import handle_command, poll_commands
 from .digest import digest_due, digest_text, mark_sent
-from .gate import Decision, decide
+from .gate import Decision, decide, refire_secs
 from .jobs import OperatorJobs
 from .notify import from_env
 from .paths import OperatorPaths
@@ -118,7 +118,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
         prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
-        snap.reason_ts = {k: (t0 if decision.call and k not in prev_ts or (decision.call and t0 - prev_ts.get(k, 0) >= 3600) else prev_ts.get(k, t0))
+        snap.reason_ts = {k: (t0 if decision.call and k not in prev_ts or (decision.call and t0 - prev_ts.get(k, 0) >= refire_secs(k)) else prev_ts.get(k, t0))
                           for k in decision.state_reasons}  # fmt: skip
         save(snap, paths)
         if decision.reasons == ["budget"]:
