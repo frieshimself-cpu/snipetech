@@ -77,14 +77,31 @@ def best_arm(bid_model: dict[str, dict], cfg: BookConfig, min_n: int = 30) -> st
     return min(candidates)[1]
 
 
+def live_pause_reason(lv: dict | None, cfg: BookConfig) -> str | None:
+    """Why a wallet is paused on its live results, or None. After live_kill_n live trips, a wallet whose one-sided upper
+    bound (2 x mean - lower) is below zero has lost even on the kindest reading of its copies: it is not copied,
+    whatever its paper score, until those trips leave the measure window."""
+    if not lv or lv.get("mean_sol") is None or int(lv.get("n") or 0) < cfg.live_kill_n:
+        return None
+    mean = float(lv["mean_sol"])
+    lower = float(lv["lower_sol"]) if lv.get("lower_sol") is not None else mean
+    upper = 2 * mean - lower
+    if upper >= 0:
+        return None
+    return f"live paused: n {int(lv['n'])}, mean {mean:.3f}, upper {upper:.3f}"
+
+
 def rank_wallets(qualified: list[dict], live: dict[str, dict], cfg: BookConfig) -> list[dict]:
-    """Qualified wallets by live mean (after live_n fills) else paper score; below min_score dropped; top max_wallets."""
+    """Qualified wallets by live mean (after live_n fills) else paper score; paused on live results or below min_score
+    dropped; top max_wallets."""
     rows = []
     for q in qualified:
         w = q.get("wallet")
         if not w:
             continue
         lv = live.get(w) or {}
+        if live_pause_reason(lv, cfg):
+            continue
         if (lv.get("n") or 0) >= cfg.live_n and lv.get("mean_sol") is not None:
             score, basis = float(lv["mean_sol"]), "live"
         else:
@@ -169,6 +186,18 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                     plan.actions.append(Action("stop", s["w6"], s["arm"], None, s["id"], plan.kill_reason))
         return plan
     plan.ranked = rank_wallets(inp.qualified, inp.live, cfg)
+    dropped: dict[str, str] = {}  # wallet[:6] -> why its sniper is no longer wanted, when it is more than the ranking
+    for q in inp.qualified:
+        w = q.get("wallet")
+        why = live_pause_reason(inp.live.get(w) if w else None, cfg)
+        if w and why:
+            plan.actions.append(Action("skip", w, None, None, None, why))
+            lv = inp.live[w]
+            plan.notes.append(
+                f"{w[:6]} paused: its {int(lv['n'])} live copies lost {float(lv['mean_sol']):.3f} SOL each on average; "
+                "not copied until those results are older than the measure window, whatever its paper score"
+            )
+            dropped[w[:6]] = why
     arms = assign_arms(plan.ranked, inp.bid_model, cfg)
     wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in plan.ranked}
     seen_w6: set[str] = set()
@@ -228,7 +257,8 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                         )
                     )
                 else:
-                    plan.actions.append(Action("stop", w6, s["arm"], None, s["id"], "dropped out of the ranking"))
+                    why = dropped.get(w6, "dropped out of the ranking")
+                    plan.actions.append(Action("stop", w6, s["arm"], None, s["id"], why))
     for w6, (wallet, arm) in wanted.items():
         if w6 in seen_w6:
             continue

@@ -235,3 +235,38 @@ def test_the_book_promises_only_what_it_enforces():
     assert cfg.book.max_buys_per_sniper == 3
     line = book_line(cfg)
     assert "2 SOL a day at risk" in line and "up to 3 more buys" in line
+
+
+LOSE5 = {"W1": {"wallet": "W1", "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "status": "warming"}}  # 2YDn, 6 Nov
+
+
+def test_a_wallet_is_paused_after_five_losing_live_trips():
+    """2YDn on 6 Nov: 5 copies, 5 losses (mean -0.058 SOL, lower bound -0.075). Live results outrank paper only after
+    10 fills, but a wallet whose optimistic bound (2 x mean - lower = -0.041) is below zero after 5 is paused whatever
+    its paper score says; with 4 trips it is still ranked on paper."""
+    cfg = _cfg()
+    assert cfg.book.live_kill_n == 5
+    plan = plan_book(_inp(live=LOSE5), cfg.book)
+    assert not any(a.kind == "create" and a.wallet == "W1" for a in plan.actions)
+    skip = next(a for a in plan.actions if a.wallet == "W1")
+    assert skip.kind == "skip" and skip.reason.startswith("live paused")
+    assert "n 5" in skip.reason and "-0.058" in skip.reason and "-0.041" in skip.reason
+    assert any("W1" in n and "paused" in n for n in plan.notes)
+    assert [r["wallet"] for r in plan.ranked] == ["W2", "W3"]  # the next wallet moves up
+    four = plan_book(_inp(live={"W1": dict(LOSE5["W1"], n=4)}), cfg.book)
+    assert any(a.kind == "create" and a.wallet == "W1" for a in four.actions)
+    assert four.ranked[0]["wallet"] == "W1" and four.ranked[0]["basis"] == "paper"
+    mixed = {"W1": {"wallet": "W1", "n": 6, "mean_sol": -0.01, "lower_sol": -0.05}}  # upper +0.03: not proven a loser
+    assert any(a.kind == "create" and a.wallet == "W1" for a in plan_book(_inp(live=mixed), cfg.book).actions)
+
+
+def test_a_paused_wallets_sniper_is_stopped_only_when_it_holds_nothing():
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    flat = plan_book(_inp(live=LOSE5, snipers=snipers), cfg.book)
+    a = next(x for x in flat.actions if x.sniper_id == "s1")
+    assert a.kind == "stop" and "live paused" in a.reason
+    held = plan_book(_inp(live=LOSE5, snipers=snipers, holdings=[{"mint": "M1", "amount": 5.0}]), cfg.book)
+    a = next(x for x in held.actions if x.sniper_id == "s1")
+    assert a.kind == "keep" and "holds a coin" in a.reason
+    assert not any(x.kind in ("create", "start") and x.wallet == "W1" for x in held.actions)

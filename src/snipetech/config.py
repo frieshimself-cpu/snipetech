@@ -304,6 +304,7 @@ class BookConfig:
     send_count: int = 1
     max_fee_share: float = 0.03  # an arm's fee may be at most this share of the fill
     live_n: int = 10  # live fills before a wallet's live mean outranks its paper score
+    live_kill_n: int = 5  # live trips after which a wallet whose upper bound (2 x mean - lower) is below 0 is paused, whatever its paper score
     max_buys_per_sniper: int = 3  # OKTech totalSnipes per book sniper: a sniper still selling a coin is never stopped, so this bounds how far it can overrun a stop (the book replaces spent snipers)
     min_copy_sol: float = 0.3  # copy only the wallet's buys of at least this size
 
