@@ -218,10 +218,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=3.0)
     sp.add_argument("--min-positions", type=int, default=5)
     sp.add_argument("--limit", type=int, default=30)
-    sp.add_argument("--source", choices=["tape", "birdeye"], default="tape",
-                    help="birdeye: market-wide candidates from Birdeye gainers + top traders of the tape's hottest coins")  # fmt: skip
+    sp.add_argument("--source", choices=["tape", "birdeye", "solanatracker"], default="tape",
+                    help="birdeye: Birdeye gainers + top traders of the tape's hottest coins; solanatracker: the 30/90-day realised-PnL leaderboard")  # fmt: skip
     sp.add_argument("--top-coins", type=int, help="birdeye: hottest coins to pull top traders for (default config)")
     sp.add_argument("--pnl-top", type=int, help="birdeye: candidates that get a 30-day PnL summary (default config)")
+    sp.add_argument("--pages", type=int, help="solanatracker: leaderboard pages of 100 (default config)")
 
     sp = cmd("watch", "live indexer + launch/copy signals (websocket)", json_flag=False)
     sp.add_argument("--signals", choices=["all", "known", "none"], default="known")
@@ -264,6 +265,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--telegram-setup", action="store_true", help="store the owner's Telegram chat id and send a hello")
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
+
+    sp = cmd("solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL")
+    sp.add_argument("action", choices=["leaderboard", "first-buyers", "traders", "pnl"])
+    sp.add_argument("--days", type=int, default=90)
+    sp.add_argument("--mint")
+    sp.add_argument("--wallet")
+    sp.add_argument("--limit", type=int, default=20)
 
     sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
     sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
@@ -347,6 +355,20 @@ async def doctor(svc: Service) -> dict:
             out["birdeye"] = {"ok": False, "detail": f"BIRDEYE_API_KEY set but the API answered: {exc}"}
     else:
         out["birdeye"] = {"ok": False, "detail": "BIRDEYE_API_KEY not set (optional: market-wide wallet discovery)"}
+    if os.environ.get("SOLANATRACKER_API_KEY"):
+        try:
+            from .solanatracker import SolanaTracker
+
+            stc = SolanaTracker()
+            try:
+                rows, _ = await asyncio.to_thread(stc.leaderboard, 30, "realized", 1)
+            finally:
+                stc.close()
+            out["solanatracker"] = {"ok": True, "detail": f"leaderboard answers ({len(rows)} row)"}
+        except Exception as exc:  # noqa: BLE001
+            out["solanatracker"] = {"ok": False, "detail": f"SOLANATRACKER_API_KEY set but the API answered: {exc}"}
+    else:
+        out["solanatracker"] = {"ok": False, "detail": "SOLANATRACKER_API_KEY not set (optional: 90-day wallet leaderboard)"}
     out["config"] = {"ok": bool(cfg.path and cfg.path.exists()), "detail": str(cfg.path) if cfg.path and cfg.path.exists() else "no snipetech.toml (defaults in use) — run `snipetech init`"}
     out["database"] = {"ok": True, "detail": f"{svc.store.path}: {svc.store.stats()}"}
     return out
@@ -627,6 +649,15 @@ async def _run(args, cfg: Config) -> int:
                 finally:
                     be.close()
                 _out(args, rows[: args.limit] if args.limit else rows, R.render_birdeye_candidates)
+            elif args.source == "solanatracker":
+                from .solanatracker import SolanaTracker
+
+                stc = SolanaTracker(budget_requests=cfg.solanatracker.daily_requests)
+                try:
+                    rows = await svc.discover_solanatracker(stc, int(args.days) if args.days else None, args.pages)
+                finally:
+                    stc.close()
+                _out(args, rows[: args.limit] if args.limit else rows, R.render_solanatracker_candidates)
             else:
                 rows = await svc.discover_real_traders(args.days, args.min_positions, args.limit)
                 _out(args, rows, R.render_wallets)
@@ -793,6 +824,24 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "ops-serve":
         return _ops_serve(args, cfg)
+    if args.cmd == "solanatracker":
+        from .solanatracker import SolanaTracker
+
+        stc = SolanaTracker()
+        try:
+            if args.action == "leaderboard":
+                rows, cursor = stc.leaderboard(days=args.days, limit=args.limit)
+                out = {"traders": rows, "next_cursor": cursor}
+            elif args.action == "first-buyers":
+                out = stc.first_buyers(args.mint, limit=args.limit)
+            elif args.action == "traders":
+                out = stc.token_traders(args.mint, limit=args.limit)
+            else:
+                out = stc.wallet_pnl(args.wallet)
+        finally:
+            stc.close()
+        print(json.dumps(out, indent=1, default=str))
+        return 0
     if args.cmd == "birdeye":
         from .birdeye import Birdeye
 

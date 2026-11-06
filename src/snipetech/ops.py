@@ -43,7 +43,7 @@ SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_U
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
-    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye",
+    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker",
 })  # fmt: skip
 UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily", "snipetech-daily.timer",
          "snipetech-operator", "snipetech-operator.timer")  # fmt: skip
@@ -138,7 +138,7 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
         proc.send_signal(sig)
 
 
-REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET", "BIRDEYE_API_KEY")
+REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET", "BIRDEYE_API_KEY", "SOLANATRACKER_API_KEY", "VYBE_API_KEY")
 
 
 def redact(text: str) -> str:

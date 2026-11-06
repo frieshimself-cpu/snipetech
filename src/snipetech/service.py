@@ -898,6 +898,30 @@ class Service:
                              (since_ts, limit))  # fmt: skip
         return [m for m, _ in rows]
 
+    async def discover_solanatracker(self, client, days: int | None = None, pages: int | None = None) -> list[dict]:
+        """Whole-market copy candidates from SolanaTracker's realised-PnL leaderboard (30/90 d), paged, minus bots,
+        exchanges and labelled platform wallets; stored under score kind 'solanatracker'. The tape labs decide."""
+        from .solanatracker import human_candidates
+
+        sc = self.cfg.solanatracker
+        days = sc.days if days is None else int(days)
+        pages = sc.pages if pages is None else pages
+        exclude = set(self.store.labels("service")) | set(self.store.labels("platform"))
+        rows: list[dict] = []
+        cursor = None
+        for _ in range(max(1, pages)):
+            page, cursor = await asyncio.to_thread(lambda c=cursor: client.leaderboard(days=days, limit=100, cursor=c, max_single_token_pct=sc.max_single_token_pct))
+            rows += page
+            if not cursor:
+                break
+        cands = [r for r in human_candidates(rows, max_trades=sc.max_trades, min_win_rate=sc.min_win_rate, max_single_share=sc.max_single_share,
+                                             min_realized_usd=sc.min_realized_usd) if r["wallet"] not in exclude]  # fmt: skip
+        now = int(time.time())
+        for c in cands:
+            c["source"], c["days"], c["scanned_at"], c["requests_used"] = "solanatracker", days, now, getattr(client, "requests", None)
+            self.store.put_score("solanatracker", c["wallet"], c)
+        return cands
+
     async def discover_birdeye(self, client, days: float = 7.0, top_coins: int | None = None, pnl_top: int | None = None,
                                now: float | None = None) -> list[dict]:  # fmt: skip
         """Market-wide copy candidates from Birdeye: its gainer lists plus the top traders of the coins our tape saw

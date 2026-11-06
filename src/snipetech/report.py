@@ -615,3 +615,12 @@ def render_birdeye_candidates(rows: list[dict]) -> str:
     out.append(table(body, ["wallet", "found via", "coins", "trades", "30d trades", "30d win", "30d realized $"]))
     out.append("Next: label the good ones, then the tape labs at +1 and +6 decide (docs/roadmap.md).")
     return "\n".join(out)
+
+
+def render_solanatracker_candidates(rows: list[dict]) -> str:
+    out = [f"SolanaTracker copy candidates ({len(rows)}; requests used: {rows[0].get('requests_used') if rows else 0})", "=" * 72]
+    out.append(table([[short(r["wallet"]), r.get("days"), r.get("trades"), r.get("tokens"), f"{(r.get('win_rate') or 0):.0f}%",
+                       f"{(r.get('realized_usd') or 0):,.0f}", f"{(r.get('roi_pct') or 0):.0f}%", ",".join(r.get("tags") or [])[:18]]
+                      for r in rows], ["wallet", "days", "trades", "coins", "win", "realized $", "roi", "tags"]))  # fmt: skip
+    out.append("Next: label the good ones, then the tape labs at +1 and +6 decide (docs/roadmap.md).")
+    return "\n".join(out)

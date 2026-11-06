@@ -211,6 +211,20 @@ class BirdeyeConfig:
 
 
 @dataclass
+class SolanaTrackerConfig:
+    """SolanaTracker Data API (Advanced plan: 200 k requests a month). Key: SOLANATRACKER_API_KEY."""
+
+    daily_requests: int = 6000
+    pages: int = 5  # leaderboard pages of 100 per scan
+    days: int = 90
+    max_trades: int = 3000  # above this a wallet is a bot, not a trader to copy
+    min_win_rate: float = 35.0
+    max_single_share: float = 0.6  # profit share allowed from one coin
+    min_realized_usd: float = 500.0
+    max_single_token_pct: float = 60.0  # server-side filter
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -225,6 +239,7 @@ class Config:
     agent: AgentConfig = field(default_factory=AgentConfig)
     operator: OperatorConfig = field(default_factory=OperatorConfig)
     birdeye: BirdeyeConfig = field(default_factory=BirdeyeConfig)
+    solanatracker: SolanaTrackerConfig = field(default_factory=SolanaTrackerConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     @classmethod
