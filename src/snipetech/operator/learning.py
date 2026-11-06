@@ -270,11 +270,20 @@ def upsert_idea(
         return dict(idea)
 
 
+def _priority(idea: dict[str, Any]) -> int:
+    """The idea's priority, or the default when the file says something else (an idea edited by hand)."""
+    try:
+        p = int(idea.get("priority"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return DEFAULT_PRIORITY
+    return p if 1 <= p <= 5 else DEFAULT_PRIORITY
+
+
 def _rank_key(idea: dict[str, Any]) -> tuple:
     """Most worth testing first: priority, then what is already being tested, then what the agents can do without
     the owner, then the newest."""
-    return (-int(idea.get("priority") or DEFAULT_PRIORITY), idea.get("status") != "testing",
-            bool(idea.get("owner_needed")), -_epoch(idea.get("updated")))  # fmt: skip
+    return (-_priority(idea), idea.get("status") != "testing", bool(idea.get("owner_needed")),
+            -_epoch(idea.get("updated")))  # fmt: skip
 
 
 def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | None = None) -> list[dict[str, Any]]:
@@ -311,10 +320,14 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
     lines += [_cut(f"- {x['ts'][:16]}Z {x['source']}, n {x['n']}: {x['text']} (evidence: {x['evidence']})",
                    CONTEXT_LINE) for x in rows] or ["- nothing yet"]  # fmt: skip
     lines.append("Open ideas, best first (operator/ideas.json; list_ideas for all, upsert_idea to change one):")
-    lines += [_cut(f"- {i['id']} [{i['kind']}, {i['status']}, priority {i['priority']}"
-                   f"{', needs the owner' if i.get('owner_needed') else ''}] {i['title']}. Why: {i['why']} Test: {i['test']}",
-                   CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
+    lines += [_cut(f"- {i.get('id')} [{i.get('kind', '?')}, {i.get('status')}, priority {_priority(i)}"
+                   f"{', needs the owner' if i.get('owner_needed') else ''}] {_title(i)}. Why: {i.get('why', '?')} "
+                   f"Test: {i.get('test', '?')}", CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
     return _cut("\n".join(lines), max_chars)
+
+
+def _title(idea: dict[str, Any]) -> str:
+    return str(idea.get("title") or idea.get("id"))
 
 
 def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:
@@ -335,7 +348,7 @@ def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:
     out.append("Testing next:")
     for i in top:
         flags = _idea_flags(i)
-        out.append(_cut(f"- {i['title']}" + (f" ({flags})" if flags else ""), DIGEST_LINE))
+        out.append(_cut(f"- {_title(i)}" + (f" ({flags})" if flags else ""), DIGEST_LINE))
     return out
 
 

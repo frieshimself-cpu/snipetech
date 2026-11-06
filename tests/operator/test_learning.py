@@ -165,6 +165,17 @@ def test_a_broken_ideas_file_is_kept_aside_not_lost(paths):
     assert [i["id"] for i in L.list_ideas(paths)] == ["I1"]
 
 
+def test_an_idea_edited_by_hand_never_breaks_a_turn(paths):
+    """Every turn's message is built from ideas.json: an idea someone edited by hand (a field missing, a priority in
+    words) still lists, ranks and shows, so a bad edit can never stop the rounds."""
+    (paths.root / "ideas.json").write_text(json.dumps([{"id": "I7", "title": "by hand", "priority": "high", "status": "open"},
+                                                       {"id": "I8", "status": "open", "priority": 4}]))  # fmt: skip
+    assert [i["id"] for i in L.list_ideas(paths)] == ["I8", "I7"]
+    text = L.context(paths)
+    assert "I7" in text and "by hand" in text and "I8" in text
+    assert L.digest_lines(paths, NOW - 6 * H, NOW)[-2:] == ["- I8", "- by hand"]
+
+
 def test_the_idea_list_is_capped_by_dropping_the_oldest_closed_idea(paths, monkeypatch):
     monkeypatch.setattr(L, "MAX_IDEAS", 3)
     L.upsert_idea(paths, IDEA | {"title": "a", "status": "rejected"}, source="analyst", now=NOW)
