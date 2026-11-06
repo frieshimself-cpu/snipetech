@@ -36,6 +36,24 @@ def expected_state(paths: OperatorPaths) -> dict:
     return exp
 
 
+def write_expected(cfg, spec: str) -> dict:
+    """`snipetech operate --expect snipers=6,held=3`: what the gate treats as quiet while a live test runs."""
+    from pathlib import Path
+
+    values = dict(DEFAULT_EXPECTED)
+    for part in str(spec).split(","):
+        if not part.strip():
+            continue
+        k, _, v = part.partition("=")
+        key = {"snipers": "snipers_running", "snipers_running": "snipers_running", "held": "held"}.get(k.strip())
+        if key is None:
+            raise SystemExit(f"--expect: unknown key {k.strip()!r} (snipers, held)")
+        values[key] = int(v)
+    paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
+    paths.expected.write_text(json.dumps(values))
+    return values
+
+
 def _day(ts: float) -> str:
     return time.strftime("%Y-%m-%d", time.gmtime(ts))
 

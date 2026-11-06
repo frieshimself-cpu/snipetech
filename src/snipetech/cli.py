@@ -373,6 +373,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--telegram-setup", action="store_true", help="store the owner's Telegram chat id and send a hello")
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
+    sp.add_argument("--expect", metavar="snipers=N,held=M",
+                    help="write operator/expected.json (what 'all quiet' means during a live test) and exit")
 
     sp = cmd("solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL")
     sp.add_argument("action", choices=["leaderboard", "first-buyers", "traders", "pnl"])
@@ -1030,6 +1032,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.telegram_setup:
             return telegram_setup_cli(cfg)
+        if args.expect:
+            from .operator.gate import write_expected
+
+            print(json.dumps(write_expected(cfg, args.expect)))
+            return 0
         repo = Path(args.repo or Path(__file__).resolve().parents[2])
         branch = args.branch or subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
                                                capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip

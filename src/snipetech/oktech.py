@@ -15,12 +15,11 @@ starting" creates snipers idle: start them on the Sniper page.
 
 from __future__ import annotations
 
-import math
-
 import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import time
 from dataclasses import dataclass, field
@@ -291,14 +290,18 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         "buyAmount": _round(max(0.001, buy_sol)), "priorityFee": prio, "tipAmount": tip,
         "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))), "speedMode": cfg.oktech.jetstream,
     }  # fmt: skip
-    if send_count is not None:
-        config["extraParams"] = {"globalSendCount": max(1, int(send_count))}
+    # OKTech's backend sends every transaction several times when globalSendCount is omitted (measured: two failed
+    # duplicates per fill, each paying its fee); one send is the default here. Preconfs: ask when the account has them.
+    config["extraParams"] = {"globalSendCount": max(1, int(send_count)) if send_count is not None else 1}
+    if cfg.oktech.preconf:
+        config["preconf"] = True
     sell = autosell(ex | {"copy_exit": True}, notes, sell_fee_sol=max(prio, tip))
     if sell:
         config["autoSell"] = sell
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL, {buy_sol:g} SOL per copy, stops after "
                f"{config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
-               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy" + (f", send count {config['extraParams']['globalSendCount']}" if send_count is not None else ""),
+               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, send count {config['extraParams']['globalSendCount']}"
+               + (", preconfs requested" if config.get("preconf") else ""),
                "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy"]  # fmt: skip
     name = f"snipetech copy {label[:18]} {address[:6]}" + (f" {tag}" if tag else "")
     return PlannedSniper("copy", address, name[:60], config, summary, notes)
@@ -405,7 +408,7 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
             "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],  # OKTech needs >= 1 stage; the timer rules
             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
     base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
-            "totalSnipes": int(snipes), "autoSell": sell}  # fmt: skip
+            "totalSnipes": int(snipes), "autoSell": sell, "extraParams": {"globalSendCount": 1}, "preconf": True}  # fmt: skip
     out = [PlannedSniper("probe", "launch", f"snipetech speed test: next {snipes} pump.fun launches",
                          {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, **base},
                          summary=[f"buys {buy_sol:g} SOL of each of the next {snipes} pump.fun launches, then stops",
@@ -429,8 +432,9 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
 #   account was never initialised), each paying the priority fee, and each counted toward totalSnipes. preexec runs the
 #   create + our buy locally first and does not send a buy that fails there.
 EXECUTION: dict[str, Any] = {
-    "extraParams": {"seedAccount": False},
+    "extraParams": {"seedAccount": False, "globalSendCount": 1},  # one send per transaction (see list_copy_sniper)
     "preexec": {"enabled": True},
+    "preconf": True,  # the account is approved; ignored by OKTech where a task type is gated
 }
 
 

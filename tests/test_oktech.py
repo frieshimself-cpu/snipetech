@@ -33,7 +33,9 @@ def test_autosell_mapping():
     a = autosell(DEV_SCORE["recommended"]["exit"], notes)
     assert a["enabled"] and a["stages"] == [{"gainPercent": 50.0, "sellPercent": 100.0, "delaySellAllSeconds": 0}]
     assert a["stopLoss"]["stages"] == [{"percentLoss": 30.0, "sellPercent": 100}]
-    assert a["trailingStopLoss"]["percentFromPeak"] == 18.0 and a["trailingStopLoss"]["activateAfterGainPercent"] == 60.0
+    assert (
+        a["trailingStopLoss"]["percentFromPeak"] == 18.0 and a["trailingStopLoss"]["activateAfterGainPercent"] == 60.0
+    )
     assert a["sellAfterSeconds"] == 120.0 and a["sellPercent"] == 100
     assert any("dev sells" in n for n in notes)
     # only a stop-loss: OKTech still needs one stage
@@ -91,16 +93,22 @@ def test_requests_sent_to_oktech():
             if body["externalId"].startswith("st:dev"):
                 return httpx.Response(409, json={"success": False, "code": "DUPLICATE_EXTERNAL_ID", "error": "exists",
                                                  "task": {"id": "existing", "status": "idle"}})  # fmt: skip
-            return httpx.Response(201, json={"success": True, "started": False, "task": {"id": "new1", "status": "idle"}})
+            return httpx.Response(
+                201, json={"success": True, "started": False, "task": {"id": "new1", "status": "idle"}}
+            )
         return httpx.Response(200, json={"success": True})
 
     store = Store(":memory:")
     store.put_score("deployer", DEV, DEV_SCORE)
     store.put_score("copy", TARGET, COPY_SCORE)
-    store.add_oktech_sniper({"id": "old-copy", "kind": "copy", "source": TARGET, "name": "old", "config_hash": "stale", "payload": {}})
+    store.add_oktech_sniper(
+        {"id": "old-copy", "kind": "copy", "source": TARGET, "name": "old", "config_hash": "stale", "payload": {}}
+    )
 
     async def go():
-        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="oks_test", transport=httpx.MockTransport(handler))
+        client = OktechClient(
+            "https://oktech.test/api/sniper-api/v1", key="oks_test", transport=httpx.MockTransport(handler)
+        )
         plan = diff(build_plan(store, Config(), sol_usd=150.0), store.oktech_snipers())
         res = await apply(client, store, plan, wallet="SNIPER")
         await client.close()
@@ -120,7 +128,9 @@ def test_errors_and_missing_key(monkeypatch):
         OktechClient("https://oktech.test")
 
     def handler(request):
-        return httpx.Response(400, json={"success": False, "code": "UNKNOWN_FIELD", "error": "config.foo is not a field"})
+        return httpx.Response(
+            400, json={"success": False, "code": "UNKNOWN_FIELD", "error": "config.foo is not a field"}
+        )
 
     async def go():
         c = OktechClient("https://oktech.test", key="k", transport=httpx.MockTransport(handler))
@@ -152,16 +162,26 @@ def test_replica_from_study_maps_the_discriminating_rules():
     c = p.config
     assert c["mode"] == "normal" and c["monitorProgram"] and c["pumpFilters"]["nonSolQuoteOnly"] and c["pumpAutoSwap"]
     assert c["metadataFilter"]["conditions"][0]["value"] == "/status/" and c["crowdBuys"]["minSigners"] == 2
-    assert c["maxMcapUsd"] == 12_700 and c["autoSell"]["deadExit"] == {"enabled": True, "staleSeconds": 1, "sellPercent": 100}
+    assert c["maxMcapUsd"] == 12_700 and c["autoSell"]["deadExit"] == {
+        "enabled": True,
+        "staleSeconds": 1,
+        "sellPercent": 100,
+    }
     assert p.kind == "replica" and p.external_id.startswith(f"st:replica:{TARGET}:")
 
 
 def test_dev_sniper_entry_rules():
     cfg = Config()
     rec = DEV_SCORE["recommended"]
-    confirm = dev_sniper(DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "confirm", "gain": 0.25, "within_secs": 15}}}, cfg)
+    confirm = dev_sniper(
+        DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "confirm", "gain": 0.25, "within_secs": 15}}}, cfg
+    )
     trig = confirm.config["walletTriggers"]["configs"][0]
-    assert trig["wallet"] == DEV and trig["stages"] == [{"percentGain": 25.0, "withinMs": 15000}] and trig["maxWaitMs"] == 15000
+    assert (
+        trig["wallet"] == DEV
+        and trig["stages"] == [{"percentGain": 25.0, "withinMs": 15000}]
+        and trig["maxWaitMs"] == 15000
+    )
     streak = dev_sniper(DEV_SCORE | {"recommended": rec | {"entry_rule": {"kind": "streak", "after_dumps": 2}}}, cfg)
     assert "walletTriggers" not in streak.config and any("dumps in a row" in n for n in streak.notes)
 
@@ -174,7 +194,9 @@ def test_speedtest_snipers_are_capped():
     for p in ps:
         c = p.config
         assert c["singleSnipe"] is True and c["totalSnipes"] == 5 and c["buyAmount"] == 0.01
-        assert c["autoSell"]["enabled"] and c["autoSell"]["sellAfterSeconds"] == 10 and c["autoSell"]["sellPercent"] == 100
+        assert (
+            c["autoSell"]["enabled"] and c["autoSell"]["sellAfterSeconds"] == 10 and c["autoSell"]["sellPercent"] == 100
+        )
         assert c["autoSell"]["stages"], "OKTech refuses auto-sell without a stage"
     assert ps[0].config["monitorProgram"] is True
     assert ps[1].config["ctbotWallets"][0]["address"].startswith("6Z91")
@@ -214,8 +236,17 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
         async def call(self, method, params):
             if method == "getBalance":
                 return {"value": int(next(self.balances) * 1e9)}
-            mint = "Mint1111111111111111111111111111111111111111" if params[1]["programId"] == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb" else None
-            accts = [{"pubkey": "acct", "account": {"data": {"parsed": {"info": {"mint": mint, "tokenAmount": {"uiAmount": 1000.0}}}}}}]
+            mint = (
+                "Mint1111111111111111111111111111111111111111"
+                if params[1]["programId"] == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
+                else None
+            )
+            accts = [
+                {
+                    "pubkey": "acct",
+                    "account": {"data": {"parsed": {"info": {"mint": mint, "tokenAmount": {"uiAmount": 1000.0}}}}},
+                }
+            ]
             return {"value": accts if mint else []}
 
     async def no_sleep(_):
@@ -223,7 +254,9 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
 
     store = Store(":memory:")
     for i in ("a", "b"):
-        store.add_oktech_sniper({"id": i, "kind": "strategy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 3}})
+        store.add_oktech_sniper(
+            {"id": i, "kind": "strategy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 3}}
+        )
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
@@ -260,7 +293,9 @@ def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
              "buy_sol": 0.2}  # fmt: skip
     cfg = strategy_sniper(strat, 10).config
     assert cfg["extraParams"]["seedAccount"] is False  # 6023 NotEnoughTokensToSell: a stop-loss raced the seed sweep
-    assert cfg["preexec"]["enabled"] is True  # 6010 on-chain failures are caught by the local dry run instead of paid for
+    assert (
+        cfg["preexec"]["enabled"] is True
+    )  # 6010 on-chain failures are caught by the local dry run instead of paid for
 
 
 def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
@@ -269,7 +304,14 @@ def test_strategy_sniper_crowd_variant_gates_on_the_create_transactions_buys():
     strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
              "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
     cfg = strategy_sniper(strat, 5, via="crowd").config
-    assert cfg["crowdBuys"] == {"enabled": True, "minSigners": 2, "minTotalQuote": 2.0, "platforms": ["pumpfun"], "signal": False, "buy": True}
+    assert cfg["crowdBuys"] == {
+        "enabled": True,
+        "minSigners": 2,
+        "minTotalQuote": 2.0,
+        "platforms": ["pumpfun"],
+        "signal": False,
+        "buy": True,
+    }
     assert "hunt" not in cfg
     hunt = strategy_sniper(strat, 5).config
     assert "hunt" in hunt and hunt["mode"] == "hunt"
@@ -293,8 +335,12 @@ def test_list_copy_sniper_is_capped_and_copies_only_big_buys():
 def test_list_copy_sniper_hold60_exit():
     from snipetech.oktech import list_copy_sniper
 
-    c = list_copy_sniper("JAunzNqs3bVBcWDjDxfq9rgLzJMCadNXoaCgfzLGMtYs", "Pengu", 0.1, 0.05, 5, exit_name="hold60").config
-    assert c["autoSell"]["sellAfterSeconds"] == 60 and "stopLoss" not in c["autoSell"] and "deadExit" not in c["autoSell"]
+    c = list_copy_sniper(
+        "JAunzNqs3bVBcWDjDxfq9rgLzJMCadNXoaCgfzLGMtYs", "Pengu", 0.1, 0.05, 5, exit_name="hold60"
+    ).config
+    assert (
+        c["autoSell"]["sellAfterSeconds"] == 60 and "stopLoss" not in c["autoSell"] and "deadExit" not in c["autoSell"]
+    )
     assert c["ctbotWallets"][0]["minSol"] == 0.1
 
 
@@ -309,7 +355,8 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     assert c["autoSell"]["sellPriorityFeeSol"] == 0.02 and c["autoSell"]["sellTipAmount"] == 0.02  # exits bid the same
     assert "paid" in p.name and any("0.02" in s for s in p.summary)
     base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
-    assert "extraParams" not in base.config and base.config["priorityFee"] == 0.001 and base.config["tipAmount"] == 0.002
+    assert base.config["extraParams"] == {"globalSendCount": 1}  # one send unless asked otherwise
+    assert base.config["priorityFee"] == 0.001 and base.config["tipAmount"] == 0.002
 
 
 def test_copylist_cli_accepts_fee_test_flags():
@@ -318,3 +365,23 @@ def test_copylist_cli_accepts_fee_test_flags():
     a = build_parser().parse_args(["oktech", "copylist", "--copy", "W:Gfree:0.5", "--buy", "0.2", "--priority", "0.02", "--tip", "0.02",
                                    "--send-count", "1", "--tag", "paid"])  # fmt: skip
     assert a.priority == 0.02 and a.tip == 0.02 and a.send_count == 1 and a.tag == "paid"
+
+
+def test_builders_send_once_and_ask_for_preconfs_by_default():
+    """OKTech's backend sent every transaction three times when globalSendCount was omitted (two failed, both paid);
+    the account is approved for preconfs. Every builder now says both explicitly."""
+    from snipetech.oktech import list_copy_sniper, speedtest_snipers, strategy_sniper
+
+    cfg = Config()
+    assert cfg.oktech.preconf is True
+    p = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg)
+    assert p.config["extraParams"]["globalSendCount"] == 1 and p.config["preconf"] is True
+    assert "send count 1" in " ".join(p.summary)
+    cfg.oktech.preconf = False
+    p = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, send_count=2)
+    assert p.config["extraParams"]["globalSendCount"] == 2 and "preconf" not in p.config
+    for s in speedtest_snipers(0.01, 3, None):
+        assert s.config["extraParams"]["globalSendCount"] == 1 and s.config["preconf"] is True
+    s = strategy_sniper({"id": "x", "label": "whale 2", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+                         "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}, 5, "hunt", True, 60)  # fmt: skip
+    assert s.config["extraParams"]["globalSendCount"] == 1 and s.config["preconf"] is True

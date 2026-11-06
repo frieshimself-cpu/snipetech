@@ -99,3 +99,18 @@ def test_first_round_without_previous_is_quiet(paths):
 
 def test_decision_is_plain_data():
     assert Decision(True, "operator", ["x"]).reasons == ["x"]
+
+
+def test_write_expected_sets_what_quiet_means(tmp_path):
+    from snipetech.config import Config
+    from snipetech.operator.gate import expected_state, write_expected
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    assert write_expected(cfg, "snipers=6,held=3") == {"snipers_running": 6, "held": 3}
+    assert expected_state(OperatorPaths(tmp_path / "data")) == {"snipers_running": 6, "held": 3}
+    assert write_expected(cfg, "snipers=0") == {"snipers_running": 0, "held": 0}
+    import pytest
+
+    with pytest.raises(SystemExit):
+        write_expected(cfg, "bogus=1")

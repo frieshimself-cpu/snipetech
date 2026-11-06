@@ -161,7 +161,7 @@ class OktechConfig:
     copy_min_wallets: int = 1  # ctbot: copied wallets that must buy within the window
     copy_time_window_ms: int = 10_000
     jetstream: bool = True  # ctbot speedMode
-    preconf: bool = False  # only if your OKTech account is approved for preconfs
+    preconf: bool = True  # the account is approved; OKTech ignores the flag on task types it gates (harmless to ask)
     max_snipers: int = 20  # never plan more than this many (OKTech runs at most 20 at once)
 
 
