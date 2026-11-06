@@ -184,9 +184,18 @@ snipetech oktech push --wallet SNIPER          # apply (asks first); --prune als
 ```
 
 Each sniper's `externalId` comes from its settings, so pushing twice never duplicates; a changed
-verdict replaces the sniper (the old one is stopped and deleted). Unless "Allow starting" is on for
-the key, snipers are created idle: start them on the Sniper page. Settings OKTech can't express
-(e.g. "at most N other buyers") are listed as notes in the plan rather than silently dropped.
+verdict replaces the sniper (the old one is stopped and deleted). Snipers are always created idle:
+start capped ones with `oktech guard` (or `oktech start`); the key's "Allow starting" only permits
+that. Settings OKTech can't express (e.g. "at most N other buyers") are listed as notes in the plan
+rather than silently dropped.
+
+What every sniper we make sends (audited against the chain and OKTech's app on 6 Nov, see
+`docs/oktech-audit-2026-11-06.md`): seed account off (the tokens are in the wallet from the first
+slot; with it on every fill was two transactions and a 6023 race), one send per transaction, sells at
+`[oktech] sell_fee_sol` (0.002 SOL) whatever the buy bid, preconfs requested, and a compute-unit limit
+only when `[oktech] compute_units` or a bid arm's `cu` says so. `oktech holdings --address W` lists the
+wallet's *positions* by the one rule every stop decision uses (`positions.py`: WSOL and stablecoins
+never count, dust is anything under 0.001 SOL at the tape's price, unpriced tokens are listed apart).
 
 ### 3d. Run it 24/7 on a server
 

@@ -4,6 +4,7 @@
 |---|---|---|
 | `roadmap.md` | Where we stand and what is next; the top section is always current | Claude, after every finding |
 | `live-recipe.md` | Every live test with numbers: what ran, what filled, what it cost, the verdict | Claude, the same day |
+| `oktech-audit-2026-11-06.md` | The 6 Nov audit of our OKTech integration: what was wrong on our side (fixed), what is known about OKTech, the questions for its owner | Claude, 6 Nov |
 | `oktech-features.md` | Every OKTech feature, gated or not, what it does and how it is built | Claude, from the client bundle |
 | `oktech-settings.md` | What each sniper setting means and the values we use | Claude |
 | `oktech-browser-handoff.md` | Brief for a local Claude session that can see oktech.me in Chrome | Claude |

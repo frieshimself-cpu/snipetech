@@ -43,14 +43,22 @@ position 3.75) — the next live step will be measured the moment it happens, wi
 
 Later the same day (12:45 UTC): the book runs in dry mode every five minutes (it writes what it would do; it said
 "equity below floor" once, correctly, at 3 SOL) and the events stage is live — trending and graduating feeds, exact
-curve crossings and dev-payment edges (1 141 in the first scan) feeding the relationship gate. The OKTech audit found
-two settings we never sent (one send per transaction, preconfs) — both are defaults now — and the fee test is
-prepared for the owner to start (docs/live-recipe.md).
+curve crossings and dev-payment edges (1 141 in the first scan) feeding the relationship gate.
 
-Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers and the events
-service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
-bot; top up Vultr and say "resize now" between jobs; fund the wallet (6–10 SOL) and say yes to the fee test when
-you want the first measured live step.
+The OKTech audit (13:30 UTC, `docs/oktech-audit-2026-11-06.md`) checked our integration against the chain and
+OKTech's own app and found fifteen things wrong on our side; all are fixed and deployed (`5e24154`+). The ones that
+would have cost money or hidden it: every copy sniper still bought through OKTech's seed account (two transactions
+and parked rent per fill, and the 6023 race); `/stop` refused every stop because of 0.0006 USDC while the gate said
+nothing was held; the measure stage could not have told the fee-test arms apart and credited two copy fills to a bot
+instead of the leader; tips to the relays OKTech really uses (not Jito) read as zero. The re-measured baseline over
+5–6 Nov: 2.5 buys behind the copied wallet, +26 % price gap, 0.0028 SOL of fees per buy plus 0.0020 in failed sends.
+What only OKTech can answer (why every sell goes out two or three times, why one buy in three carries no tip,
+compute units, silent acceptance of ungranted features) is a nine-question list at the end of that file.
+
+Still yours, in order: start the fee test with the three commands in docs/live-recipe.md ("Fee test, 6 Nov"); send
+the nine questions to OKTech's owner; run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers
+and the events service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; top
+up Vultr and say "resize now" between jobs; fund the wallet to 6–10 SOL when you want the book on.
 
 ## The wallet labs at both landings (6 Nov, 08:00 UTC) — one survivor, and it is small
 

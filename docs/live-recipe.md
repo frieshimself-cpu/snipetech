@@ -305,24 +305,50 @@ Bid model, arm `control`: n 28, failed 62, mean position 1.7, p75 position 3.75,
 Failed sends carry no fee fields yet (the fingerprinter skips errored transactions); their count is the cost signal.
 From here on this table writes itself every five minutes once `snipetech-measure.timer` is enabled.
 
-## Fee test, 6 Nov 2026 (prepared 12:20 UTC; the owner starts it)
+## Fee test, 6 Nov 2026 (prepared 12:20 UTC, revised 13:40 after the audit; the owner starts it)
 
 Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 12:00 UTC.
 
 - **Question:** does paying for position move us up inside the leader's slot? Two arms on the same leaders:
-  `control` (priority 0.001, tip 0.002, OKTech's minimums) and `paid` (priority 0.02, tip 0.02). Both with one send
-  per transaction (`globalSendCount 1`, new default) and preconfs requested.
+  `control` (priority 0.001, tip 0.002, OKTech's minimums) and `paid` (priority 0.02, tip 0.02). Sells bid 0.002 on
+  both arms (OKTech sends every sell 2–3 times; the losers pay the sell priority fee, so a 0.02 sell bid would cost
+  0.02 per twin). Seed account off, one send requested, preconfs requested (OKTech gates them per task type).
 - **Leaders:** `2YDnmMQt…` (qualified at +6, n 93), `G2oZrd1k…` (n 40, +0.017 at +6), `4yo9CUuT…` Gfree (active,
   the loudest copier crowd). Copy only their buys ≥ 0.3 SOL (Gfree ≥ 0.5).
-- **Size and caps:** 0.2 SOL a fill, 2 buys per sniper, 6 snipers → at most 12 fills (2.4 SOL notional, sequential;
-  the lab exit returns the SOL: dead exit 1 s, stop-loss 30 %, 300 s max). Fees at most 0.24 SOL on the paid arm.
-- **Stop rules:** `oktech guard` stops everything below a 1.2 SOL balance or after 180 minutes, and never stops a
-  sniper that holds a coin. `operator/expected.json` = 6 running, 3 held, so the operator reports deviations, not the
-  test itself. `/stop` on Telegram works the same way.
-- **Measurement:** the measure stage writes every fill (position in the slot, trades behind the leader, gap, fees)
-  and the bid model per arm; the comparison is `bid_model`: p75 position and mean gap, control vs paid.
-- **Why the owner runs the two create commands and the guard:** the cloud session's safety layer refuses to start
-  real-money transactions itself; the commands are in the chat of 6 Nov 12:25 UTC.
+- **Size and caps:** 0.2 SOL a fill, 2 buys per sniper, 6 snipers → at most 12 fills (2.4 SOL notional; the lab exit
+  returns the SOL: dead exit 1 s, stop-loss 30 %, 300 s max). Fees: the paid arm pays 0.04 SOL per buy, the control
+  arm 0.003; each sell ≈ 0.004 plus 1–2 failed twins at ≈ 0.003 each. Budget ≈ 0.4 SOL of fees for the whole test.
+- **Design caveat (accepted):** both arms copy the same leaders from one wallet, so each leader buy triggers two
+  fills (0.4 SOL a signal) and the positions share one token account. That is also the point: each signal gives a
+  matched pair, control and paid, in the same market moment. The measure stage counts only *other* wallets' trades
+  between the leader and each fill, so our own second fill does not make the arm that went second look worse.
+- **Stop rules:** `oktech guard --floor 1.2 --max-minutes 180` stops everything if **equity** (SOL + the tape value of
+  the coins held) falls below 1.2 SOL or the SOL balance below 0.05, and otherwise never stops a sniper (they are
+  capped). A floor breach is the emergency: it strands whatever is held, and the guard lists it for the owner to
+  sell by hand. `operator/expected.json` = 6 running, 3 held, so the operator reports deviations, not the test
+  itself. `/stop` on Telegram stops the snipers only while nothing is held.
+- **Measurement:** every fill becomes a `fills` row with its arm read from the fee it paid (both arms share the
+  wallet; OKTech's task documents carry no fills), the copied wallet, buys behind it, price gap, priority, tip and
+  relay, and PnL; `bid_model` per arm: n, failed sends, mean/p75 position, mean buys behind, mean gap, mean fee,
+  tipped share, overhead. The comparison is the paired one: for each leader signal, where did control land, where
+  did paid land.
+- **Baseline before the test** (re-measured 13:25 UTC over 5–6 Nov, 39 buys at the minimum fees): mean 2.5 buys
+  behind the copied wallet, price gap +26 %, p75 position 4 in the slot, 0.0028 SOL of fees per buy, +0.0020 SOL per
+  buy in failed sends, 90 % of buys tipped.
+- **Why the owner runs the create commands and the guard:** the cloud session's safety layer refuses to start
+  real-money transactions itself. The commands (from a checkout with the ops key):
+
+```
+snipetech remote --wait run oktech copylist --create --buy 0.2 --snipes 2 --tag arm:control \
+  --copy 2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH:2YDn:0.3 \
+  --copy G2oZrd1kAUrWE1E4YPZoMi9euBeGgvtKVj5CHSdwazx:G2oZ:0.3 \
+  --copy 4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku:Gfree:0.5
+snipetech remote --wait run oktech copylist --create --buy 0.2 --snipes 2 --priority 0.02 --tip 0.02 --tag arm:paid \
+  --copy 2YDnmMQt7x7Y3VFounzsnZ3s8TdozqWyK9qeQPWY9saH:2YDn:0.3 \
+  --copy G2oZrd1kAUrWE1E4YPZoMi9euBeGgvtKVj5CHSdwazx:G2oZ:0.3 \
+  --copy 4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku:Gfree:0.5
+snipetech remote run oktech guard --id <the six ids printed above> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --floor 1.2 --max-minutes 180
+```
 
 Result: _pending_.
 
