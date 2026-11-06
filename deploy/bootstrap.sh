@@ -66,7 +66,7 @@ PY
 }
 set_key HELIUS_API_KEY "Helius API key"
 set_key OKS_KEY "OKTech Sniper API key (make a NEW one in OKTech, with 'Allow starting' on)"
-chmod 600 "$ENVF"
+chmod 640 "$ENVF"; chgrp "${SNIPETECH_USER:-snipetech}" "$ENVF" 2>/dev/null || true
 if ! grep -qE '^SNIPETECH_RETAIN_DAYS=' "$ENVF"; then
   # the market tape grows ~7 GB/day: keep as many days as fit in ~60% of the disk (3..30)
   # (and no more than ~70% of what is free now, when the server already runs other things)

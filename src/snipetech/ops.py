@@ -139,8 +139,8 @@ def _job_env() -> dict[str, str]:
             k, v = k.strip(), v.strip().strip('"').strip("'")
             if k and v and k not in env:
                 env[k] = v
-    except OSError:
-        pass
+    except OSError as e:  # the file must be group-readable by the service user (setup.sh: root:snipetech 640)
+        print(f"[ops] cannot read {ENV_FILE}: {e.strerror}; jobs only see keys the service started with", file=sys.stderr, flush=True)
     return env
 
 

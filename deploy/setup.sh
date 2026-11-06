@@ -32,13 +32,13 @@ SNIPETECH_CONFIG=/etc/snipetech/snipetech.toml
 # serves a trading bot on this machine, so snipetech never eats the bot's rate limit:
 # SNIPETECH_RPC_RPS=15
 ENV
-  chmod 600 /etc/snipetech/env
+  chmod 640 /etc/snipetech/env
 fi
 if [ ! -f /etc/snipetech/snipetech.toml ]; then
   "$REPO/.venv/bin/snipetech" --config /etc/snipetech/snipetech.toml init >/dev/null || true
 fi
 chown -R root:"$USER_NAME" /etc/snipetech && chmod 640 /etc/snipetech/snipetech.toml 2>/dev/null || true
-chmod 600 /etc/snipetech/env
+chmod 640 /etc/snipetech/env  # root writes, the service user reads (jobs load new keys without a restart)
 
 # snipetech-ops may restart snipetech's own services after an update, and nothing else.
 cat > /etc/sudoers.d/snipetech <<EOF
