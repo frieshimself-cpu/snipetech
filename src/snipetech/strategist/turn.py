@@ -67,7 +67,9 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
                 if learn or t.name != "add_lesson"
             ],
         ],  # a dry-run preview leaves the shared memory alone
-        messages=[{"role": "user", "content": user_message(evidence, learned=learning_context(notes.paths))}],
+        messages=[
+            {"role": "user", "content": user_message(evidence, learned=learning_context(notes.paths, book=cfg.book))}
+        ],
         thinking={"type": "adaptive"},
         output_config={"effort": cfg.operator.effort},
         cache_control={"type": "ephemeral"},

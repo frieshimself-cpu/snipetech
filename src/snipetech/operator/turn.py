@@ -43,7 +43,12 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,
         system=ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM,
         tools=tools,
-        messages=[{"role": "user", "content": user_message(snap, decision, inbox, learned=learning_context(paths))}],
+        messages=[
+            {
+                "role": "user",
+                "content": user_message(snap, decision, inbox, learned=learning_context(paths, book=cfg.book)),
+            }
+        ],
         thinking={"type": "adaptive"},
         output_config={"effort": op.effort},
         cache_control={"type": "ephemeral"},
@@ -74,9 +79,14 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     except anthropic.APIError as exc:
         stopped = "api_error"
         if not notes.has_today("api error", now()):
-            notes.write(f"api error: {type(exc).__name__}: {str(exc)[:160]} — no more Claude rounds until this clears", "decision")
+            notes.write(
+                f"api error: {type(exc).__name__}: {str(exc)[:160]} — no more Claude rounds until this clears",
+                "decision",
+            )
     finally:
-        close = getattr(runner, "close", None)  # the SDK's runner must be closed when a turn ends early (every end_turn is)
+        close = getattr(
+            runner, "close", None
+        )  # the SDK's runner must be closed when a turn ends early (every end_turn is)
         if close is not None:
             try:
                 await close()
@@ -84,14 +94,18 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                 pass
     ran = stopped not in ("api_error", "refusal")
     if stopped in ("tool_calls",) or (ran and message_stop_reason == "max_tokens"):
-        notes.write(f"round cut off ({stopped if stopped != 'end_turn' else 'max_tokens'}) before the model finished", "info")
+        notes.write(
+            f"round cut off ({stopped if stopped != 'end_turn' else 'max_tokens'}) before the model finished", "info"
+        )
     if notes.count == notes_before and ran:
         notes.write(f"turn ended without a note (stopped: {stopped}, reasons: {'; '.join(decision.reasons)})", "info")
     if decision.mode == "analyst" and ran:  # a post-mortem never stands in for the day's analysis
         marker = paths.report(f"analyst-{time.strftime('%Y-%m-%d', time.gmtime(now()))}")
         if not marker.exists():  # the model did not write the report: mark the day done anyway, with what happened
-            marker.write_text(f"# analyst {time.strftime('%Y-%m-%d', time.gmtime(now()))}\n\nTurn ended with stopped={stopped} after "
-                              f"{calls} tool calls and {notes.count - notes_before} notes; no report was written by the model.\n")
+            marker.write_text(
+                f"# analyst {time.strftime('%Y-%m-%d', time.gmtime(now()))}\n\nTurn ended with stopped={stopped} after "
+                f"{calls} tool calls and {notes.count - notes_before} notes; no report was written by the model.\n"
+            )
     if inbox.strip() and ran:
         try:
             paths.inbox.write_text("")

@@ -312,11 +312,30 @@ def _idea_flags(idea: dict[str, Any]) -> str:
     return ", ".join(flags + (["needs your yes"] if idea.get("owner_needed") else []))
 
 
+def book_line(book: Any) -> str:
+    """The book's current settings in one line, so a turn never asks the owner for what is already so."""
+    arms = book.bid_arms or {}
+    live = [a for a, v in arms.items() if not (isinstance(v, dict) and v.get("retired"))]
+    gone = [a for a, v in arms.items() if isinstance(v, dict) and v.get("retired")]
+    per_wallet = str(getattr(book, "exit_mode", "fixed")) == "per_wallet"
+    parts = [
+        f"bid arms used: {', '.join(live) or 'none'}" + (f" ({', '.join(gone)} arm retired)" if gone else ""),
+        f"a wallet is paused after {getattr(book, 'live_kill_n', 5)} losing live copies (and stays paused)",
+        "each sniper is relied on for its first buy, then replaced once the wallet holds nothing",
+        "one sniper per leader; each wallet copied only on buys of its own floor",
+        "only verdicts of the fixed lab are booked",
+        "exits: each wallet's own verified exit" if per_wallet else "exits: lab for every wallet (exit_mode fixed)",
+    ]
+    return "What the book does now (do not propose what is already so): " + "; ".join(parts) + "."
+
+
 def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,
-            max_chars: int = CONTEXT_MAX_CHARS) -> str:  # fmt: skip
-    """The block every turn's message carries: the last lessons (newest last) and the best open ideas, each line cut
-    short and the whole capped, so a long memory never crowds out the round."""
-    lines = ["What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):"]
+            max_chars: int = CONTEXT_MAX_CHARS, book: Any = None) -> str:  # fmt: skip
+    """The block every turn's message carries: the book's current settings (when given), the last lessons (newest
+    last) and the best open ideas, each line cut short and the whole capped, so a long memory never crowds out the
+    round."""
+    lines = [book_line(book)] if book is not None else []
+    lines.append("What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):")
     rows = read_lessons(paths, lessons)
     lines += [_cut(f"- {x['ts'][:16]}Z {x['source']}, n {x['n']}: {x['text']} (evidence: {x['evidence']})",
                    CONTEXT_LINE) for x in rows] or ["- nothing yet"]  # fmt: skip

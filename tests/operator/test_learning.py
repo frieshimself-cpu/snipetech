@@ -416,3 +416,19 @@ def test_a_failed_trip_count_keeps_the_last_reviewed_sell(paths):
     L.mark_postmortem(paths, NOW, {"newest_ts": None, "n": 0}, "analyst")
     state = json.loads(L._state_path(paths).read_text())
     assert state["postmortem"]["sell_ts"] == NOW - 4 * H and state["postmortem"]["ts"] == NOW
+
+
+def test_every_turn_sees_what_the_book_already_does(paths):
+    """An idea the owner would only be asked for again (retire the paid arm, pause a losing wallet) is avoided when the
+    turn sees the book's current settings first."""
+    from snipetech.config import Config
+
+    book = Config().book
+    text = L.context(paths, book=book)
+    head = text.splitlines()[0]
+    assert head.startswith("What the book does now")
+    assert "paid arm retired" in head and "paused after 5 losing" in head and "first buy" in head
+    assert "exits: lab for every wallet" in head
+    book.exit_mode = "per_wallet"
+    assert "exits: each wallet's own" in L.context(paths, book=book).splitlines()[0]
+    assert not L.context(paths).startswith("What the book does now")  # without the config: as before
