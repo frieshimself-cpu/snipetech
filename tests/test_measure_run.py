@@ -237,3 +237,38 @@ def test_failed_sends_take_their_arm_from_the_fee_and_count_as_overhead(tmp_path
     )  # one failed twin over two buys
     assert model["paid"]["mean_fee_sol"] == round((20_000_000 + 20_000_000 + 5000) / 1e9, 6)
     st.close()
+
+
+def test_sells_inherit_the_arm_of_the_buy_they_close(tmp_path):
+    """Sells bid the same fixed fee on every arm, so the fee cannot tell the arms apart: a sell belongs to the arm of
+    the buy lot it closes (FIFO), and so does its realised PnL."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=2)
+        metas = {b: _meta(b, priority=20_000_000, tip=20_000_000) for b, _ in sigs} | {
+            s_: _meta(s_, priority=1_000_000, tip=0) for _, s_ in sigs
+        }
+        asyncio.run(run_measure(svc, cfg, NOW, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        for _, s_ in sigs:
+            row = st.fill(s_)
+            assert row["bid_arm"] == "paid" and row["pnl_sol"] is not None and row["buy_sig"] in {b for b, _ in sigs}
+    finally:
+        st.close()
+
+
+def test_reclassifying_an_old_window_keeps_the_recorded_pnl(tmp_path):
+    """A backfill of a window older than lookback_days re-reads the trades; it must not wipe the PnL that an earlier
+    run wrote on those sells."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.lookback_days = 0.01  # 14 minutes
+        t0 = NOW - 3 * 86400
+        sigs = _copy_world(st, coins=2, t0=t0)
+        metas = {b: _meta(b) for b, _ in sigs} | {s_: _meta(s_, tip=0) for _, s_ in sigs}
+        asyncio.run(backfill(svc, cfg, t0 - 60, t0 + 3600, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        before = {s_: st.fill(s_)["pnl_sol"] for _, s_ in sigs}
+        assert all(v is not None for v in before.values())
+        asyncio.run(backfill(svc, cfg, t0 - 60, t0 + 3600, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        assert {s_: st.fill(s_)["pnl_sol"] for _, s_ in sigs} == before
+    finally:
+        st.close()

@@ -251,3 +251,12 @@ def test_cli_operate_commands_parses():
 
     a = build_parser().parse_args(["operate", "--commands"])
     assert a.cmd == "operate" and a.commands is True
+
+
+def test_status_counts_a_starting_sniper_as_running(tmp_path):
+    svc = FakeSvc(
+        held=[], snipers=[{"id": "s1", "name": "a", "status": "starting"}, {"id": "s2", "name": "b", "status": "idle"}]
+    )
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=1.0, wsol=0.0, held=[], snipers=svc._snipers, spent_today=0.0)
+    ctx, _ = _ctx(tmp_path, svc, snap)
+    assert "1 running" in asyncio.run(handle_command(_cmd("status"), **ctx))

@@ -186,3 +186,26 @@ def test_owner_stop_flag_kills_the_book_even_when_live(tmp_path):
         assert not any(c[0] in ("create", "start") for c in svc.calls)
     finally:
         st.close()
+
+
+def test_book_equity_counts_the_coins_held(tmp_path):
+    """The book's own buys move SOL into coins; equity = SOL + WSOL + the tape value of the coins held, or the book
+    would trip its own floor after a few fills."""
+    st, cfg = _env(tmp_path)
+    svc = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "value_sol": 2.5, "priced": True}])
+    try:
+        out = asyncio.run(
+            run_book(
+                svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None), balances=lambda w: (1.0, 0.0, [])
+            )
+        )
+        assert out["kill_reason"] is None  # 1.0 + 2.5 = 3.5 SOL, above the 3.0 floor
+        unpriced = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "value_sol": None, "priced": False}])
+        out2 = asyncio.run(
+            run_book(
+                unpriced, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None), balances=lambda w: (1.0, 0.0, [])
+            )
+        )
+        assert out2["kill_reason"] == "equity unknown"  # an unpriced coin: no number to compare with the floor
+    finally:
+        st.close()

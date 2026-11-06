@@ -41,11 +41,16 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         native, wsol, held_from_balances = res
     except Exception as exc:  # noqa: BLE001
         notes.write(f"book: balances failed: {type(exc).__name__}: {exc}", "info")
-    equity = (native + wsol) if native is not None and wsol is not None else None
     try:
         holdings = await svc.open_positions(wallet)
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
+    # equity = SOL + wrapped SOL + the tape value of the coins held; a coin the tape has not priced makes it unknown
+    # (the kill path then creates nothing and stops nothing), never a false floor breach after the book's own buys
+    if native is None or wsol is None or any(not h.get("priced", True) for h in holdings or []):
+        equity = None
+    else:
+        equity = native + wsol + sum(float(h.get("value_sol") or 0) for h in holdings or [])
     try:
         snipers = list((await svc.oktech_status()).get("snipers") or [])
     except Exception as exc:  # noqa: BLE001

@@ -657,3 +657,38 @@ def test_task_actions_continue_past_a_failing_id_and_delete_retires_a_missing_ro
     ans = asyncio.run(svc.oktech_task("delete", "gone"))
     assert ans["not_found"] is True and store.oktech_snipers(active=True) == []
     store.close()
+
+
+def test_guard_waits_for_the_tape_instead_of_tripping_on_an_unpriced_coin(monkeypatch):
+    """The SOL balance drops after a buy before the tape has priced the coin: equity cannot be known for a few
+    seconds. The guard must not call that an emergency and stop the sniper that manages the coin."""
+    import asyncio
+    import itertools
+
+    calls = []
+
+    class Client:
+        async def start(self, i):
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            calls.append(("stop", i))
+            return {}
+
+        async def tasks(self):
+            return [{"id": "a", "status": "running"}]
+
+        async def close(self):
+            pass
+
+    svc, store = _guard_env(
+        monkeypatch,
+        itertools.chain([2.9, 2.9], itertools.repeat(0.5)),
+        Client(),
+        holdings_value=2_400_000_000,
+        price=None,
+    )
+    rep = asyncio.run(svc.oktech_guard(["a"], W6, 1.2, 0.0001))
+    assert not rep["stopped"] and calls == [] and any("unpriced" in e for e in rep["events"])
+    assert rep["held"] and rep["held"][0]["priced"] is False
+    store.close()

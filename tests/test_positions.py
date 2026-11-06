@@ -28,13 +28,17 @@ def test_real_coin_is_valued_with_the_tape_price():
     assert price  # noqa: the mapping above documents the units
 
 
-def test_dust_by_value_and_unknown_tokens_are_not_positions():
+def test_dust_by_value_is_not_a_position_but_an_unpriced_coin_is():
+    """A coin the tape has not priced yet (bought seconds ago, or during a recorder outage) is held: stopping its
+    sniper would strand it (the 5 Nov 22:14 incident). It is reported as unpriced and worth nothing for equity."""
     tiny = _acct(COIN, 50.0, 50_000_000)  # 50 tokens at 1e-5 SOL = 0.0005 SOL: below the 0.001 floor
     unknown = _acct(JUNK, 1_000_000.0, 10**12)  # never traded on the tape
-    assert filter_positions([tiny, unknown], lambda m: 0.01 if m == COIN else None) == []
-    assert filter_positions([tiny], lambda m: 0.01, dust_sol=0.0001)[0]["mint"] == COIN
     out = filter_positions([tiny, unknown], lambda m: 0.01 if m == COIN else None, unknown=(lst := []))
-    assert out == [] and [a["mint"] for a in lst] == [JUNK]
+    assert [a["mint"] for a in out] == [JUNK] and out[0]["value_sol"] is None and out[0]["priced"] is False
+    assert [a["mint"] for a in lst] == [JUNK]
+    assert filter_positions([tiny], lambda m: 0.01, dust_sol=0.0001)[0]["mint"] == COIN
+    priced = filter_positions([_acct(COIN, 1e6, 10**12)], lambda m: 10.0)
+    assert priced[0]["priced"] is True and priced[0]["value_sol"] == 10_000.0
 
 
 def test_ignored_mints_are_left_out():

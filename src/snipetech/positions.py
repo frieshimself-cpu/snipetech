@@ -5,8 +5,8 @@ the snapshot's token-count rule hid a real 675,850-token position).
 * WSOL and stablecoins are never positions.
 * A token is a position when its value at the tape's last price is at least `DUST_SOL` (a pump.fun sell leaves a few
   tokens behind; by value they are nothing).
-* A token the tape has never priced is not a position (the sniper wallet only buys pump coins, which the tape
-  records); it is reported separately so the owner can see it.
+* A token the tape has not priced (bought seconds ago, or during a recorder outage) is a position with no value:
+  it blocks every stop decision and counts for nothing in equity until the tape prices it.
 
 Statuses: OKTech's tasks are idle / starting / running / stopping / finished / failed. A starting or stopping sniper
 is active (it can still buy or is still managing its position); only `running` was counted before."""
@@ -45,11 +45,14 @@ def filter_positions(accounts: list[dict], price_lamports_per_raw: Callable[[str
             continue
         price = price_lamports_per_raw(mint)
         if price is None:
+            # bought seconds ago (the tape lags) or during a recorder outage: held, worth nothing for equity until
+            # the tape prices it, and never a reason to stop the sniper that manages it
             if unknown is not None:
                 unknown.append(a)
+            out.append(dict(a, value_sol=None, priced=False))
             continue
         value = raw * float(price) / 1e9
         if value < dust_sol:
             continue
-        out.append(dict(a, value_sol=round(value, 6)))
+        out.append(dict(a, value_sol=round(value, 6), priced=True))
     return out

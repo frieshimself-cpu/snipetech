@@ -83,7 +83,7 @@ def _ago(secs: float) -> str:
 def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float) -> str:
     if snap is None:
         return "no snapshot yet; the next round (within 15 min) will have one"
-    running = [s for s in snap.snipers or [] if str(s.get("status")) == "running"]
+    running = [s for s in snap.snipers or [] if is_active(s.get("status"))]
     eq = f"{snap.equity:.3f} SOL" if snap.equity is not None else "unknown"
     bad = [r for r in snap.resources if r.get("status") not in ("ok", None)][:3]
     stopped = paths.stop_flag.exists()

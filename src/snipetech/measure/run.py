@@ -115,6 +115,13 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     buys = sells = 0
     for t in trades:
         row = classify_trade(store, t, leaders, metas.get(t.sig), arms=cfg.book.bid_arms)
+        existing = store.fill(t.sig)
+        if existing:  # a re-read of the same trade keeps what pairing wrote: PnL, exit, the buy lot, a sell's arm
+            for k in ("pnl_sol", "exit_reason", "buy_sig"):
+                if row.get(k) is None:
+                    row[k] = existing.get(k)
+            if row["side"] == "sell" and existing.get("buy_sig") and existing.get("bid_arm"):
+                row["bid_arm"] = existing["bid_arm"]
         store.put_fill(row)
         buys += row["side"] == "buy"
         sells += row["side"] == "sell"
@@ -148,7 +155,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.put_fill(row)
         failed_rows.append(row)
     # round trips over the lookback window
-    look = int(now - m.lookback_days * 86400)
+    look = min(int(now - m.lookback_days * 86400), int(since_ts))  # a backfilled window is paired too
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
     paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
@@ -162,9 +169,19 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
-        if pnl is not None and (s.get("pnl_sol") != round(pnl, 6) or s.get("exit_reason") != "sold"):
+        if pnl is None:
+            continue
+        buy = buy_by_sig.get(first_buy_for_sell.get(s["sig"]) or "")
+        arm = (buy or {}).get("bid_arm") or s.get("bid_arm")  # a sell belongs to the arm of the buy it closes
+        if s.get("pnl_sol") != round(pnl, 6) or s.get("exit_reason") != "sold" or s.get("bid_arm") != arm:
             store.put_fill(
-                s | {"pnl_sol": round(pnl, 6), "exit_reason": "sold", "buy_sig": first_buy_for_sell.get(s["sig"])}
+                s
+                | {
+                    "pnl_sol": round(pnl, 6),
+                    "exit_reason": "sold",
+                    "buy_sig": first_buy_for_sell.get(s["sig"]),
+                    "bid_arm": arm,
+                }
             )
     # aggregates
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)

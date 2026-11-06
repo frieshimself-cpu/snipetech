@@ -685,11 +685,28 @@ class Service:
             await self.holdings(address), self.store.last_price, ignore=tuple(ignore or ()), unknown=unknown
         )
 
+    async def wsol_balance(self, address: str) -> float:
+        from .positions import WSOL
+        from .solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
+
+        total = 0.0
+        for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
+            r = await self.rpc.call(
+                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}]
+            )
+            for a in r["value"]:
+                info = a["account"]["data"]["parsed"]["info"]
+                if info["mint"] == WSOL:
+                    total += float(info["tokenAmount"].get("uiAmount") or 0)
+        return total
+
     async def equity(self, address: str, ignore: list[str] | None = None) -> tuple[float, float, list[dict]]:
-        """(equity in SOL = balance + value of open positions, the SOL balance, the positions)."""
+        """(equity in SOL = SOL + wrapped SOL + the tape value of the priced positions, the SOL balance, the positions).
+        An unpriced position (`priced` False) counts for nothing here; callers must not call an emergency on it."""
         b = (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+        wsol = await self.wsol_balance(address)
         held = await self.open_positions(address, ignore=ignore)
-        return b + sum(float(h.get("value_sol") or 0) for h in held), b, held
+        return b + wsol + sum(float(h.get("value_sol") or 0) for h in held), b, held
 
     async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
                            allow_uncapped: bool = False, native_reserve_sol: float = 0.05) -> dict:  # fmt: skip
@@ -752,6 +769,11 @@ class Service:
                     except Exception as exc:
                         log(f"equity check failed ({exc}); still watching")
                         continue
+                    unpriced = [h for h in held if not h.get("priced", True)]
+                    if unpriced:
+                        log(f"balance {b:.4f} SOL below the floor but {len(unpriced)} unpriced coin(s) held "
+                            f"({', '.join(str(h['mint'])[:8] for h in unpriced)}): waiting for the tape to price them, no emergency")  # fmt: skip
+                        continue
                     if eq < floor_sol or b < native_reserve_sol:
                         reason = f"EMERGENCY: equity {eq:.4f} SOL (balance {b:.4f}) below the floor {floor_sol}"
                         for i in ids:
@@ -788,7 +810,10 @@ class Service:
                 log(
                     what
                     + ": "
-                    + ", ".join(f"{h['mint']} ({h['amount']:,.0f}, {h.get('value_sol', 0):.4f} SOL)" for h in held)
+                    + ", ".join(
+                        f"{h['mint']} ({h['amount']:,.0f}, {(h['value_sol'] if h.get('value_sol') is not None else 0):.4f} SOL{'' if h.get('value_sol') is not None else ', unpriced'})"
+                        for h in held
+                    )
                 )
             else:
                 log("no coins held")
