@@ -74,12 +74,17 @@ class Vybe:
                 "win_rate": _num(t.get("winRate")), "volume_usd": _num(t.get("tradesVolumeUsd")), "trades": _int(t.get("tradesCount")),
                 "tokens": _int(t.get("uniqueTokensTraded")), "seven_day_usd": _num(t.get("sevenDayPnl"))}  # fmt: skip
 
-    def top_traders(self, resolution: str = "30d", limit: int = 1000, sort: str = "realizedPnlUsd", page: int | None = None,
-                    label: str | None = None, mint: str | None = None) -> list[dict]:  # fmt: skip
-        """The market-wide board for 1d/7d/30d, sorted descending by `sort` (realizedPnlUsd, winRate, tradesVolumeUsd, tradesCount)."""
+    def top_traders_raw(self, resolution: str = "30d", limit: int = 1000, sort: str = "realizedPnlUsd", page: int | None = None,
+                        label: str | None = None, mint: str | None = None) -> list[dict]:  # fmt: skip
+        """The board's rows exactly as Vybe sends them (to check field names against the docs)."""
         body = self._get("/v4/wallets/top-traders", {"resolution": resolution, "limit": limit, "sortByDesc": sort, "page": page,
                                                       "label": label, "mintAddress": mint})  # fmt: skip
         rows = body.get("data") if isinstance(body, dict) else body
         if isinstance(rows, dict):
             rows = rows.get("traders") or rows.get("data") or []
-        return [self._trader(t) for t in rows or [] if isinstance(t, dict)]
+        return [t for t in rows or [] if isinstance(t, dict)]
+
+    def top_traders(self, resolution: str = "30d", limit: int = 1000, sort: str = "realizedPnlUsd", page: int | None = None,
+                    label: str | None = None, mint: str | None = None) -> list[dict]:  # fmt: skip
+        """The market-wide board for 1d/7d/30d, sorted descending by `sort` (realizedPnlUsd, winRate, tradesVolumeUsd, tradesCount)."""
+        return [self._trader(t) for t in self.top_traders_raw(resolution, limit, sort, page, label, mint)]

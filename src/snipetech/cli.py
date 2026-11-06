@@ -368,6 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
     sp.add_argument("--limit", type=int, default=50)
     sp.add_argument("--sort", default="realizedPnlUsd", choices=["realizedPnlUsd", "unrealizedPnlUsd", "winRate", "tradesVolumeUsd", "tradesCount"])
+    sp.add_argument("--raw", action="store_true", help="print Vybe's rows unparsed (field names)")
     sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
     sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
     sp.add_argument("--period", default="1W", help="gainers: yesterday|today|1W|30d|90d")
@@ -971,7 +972,8 @@ def main(argv: list[str] | None = None) -> int:
 
         vy = Vybe(counter=_usage_from_cfg(cfg, "vybe"))
         try:
-            out = vy.top_traders(resolution=args.resolution, limit=args.limit, sort=args.sort)
+            fn = vy.top_traders_raw if args.raw else vy.top_traders
+            out = fn(resolution=args.resolution, limit=args.limit, sort=args.sort)
         finally:
             vy.close()
         print(json.dumps(out, indent=1, default=str))

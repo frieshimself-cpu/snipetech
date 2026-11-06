@@ -87,3 +87,18 @@ def test_retries_on_429():
         return httpx.Response(200, json={"data": []})
 
     assert _client(handler).top_traders() == [] and calls["n"] == 2
+
+
+def test_raw_passthrough_keeps_unknown_shapes():
+    def handler(req):
+        return httpx.Response(200, json={"data": [{"accountAddress": "W1", "pnlUsd": 5.0, "weird": {"x": 1}}]})
+
+    rows = _client(handler).top_traders_raw(resolution="30d", limit=1)
+    assert rows == [{"accountAddress": "W1", "pnlUsd": 5.0, "weird": {"x": 1}}]
+
+
+def test_cli_vybe_raw_parses():
+    from snipetech.cli import build_parser
+
+    a = build_parser().parse_args(["vybe", "--raw", "--limit", "2"])
+    assert a.raw is True and a.limit == 2
