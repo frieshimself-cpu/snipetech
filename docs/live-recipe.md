@@ -173,3 +173,27 @@ Two slots after the trigger (`--latency 2 --position start`, 25.1 h): the same p
 our trigger −0.0131/trade (n 861, 7 % wins), solo −0.0120 (n 758), best launch trigger −0.0072 (momentum,
 n 702); only the two tiny KOL first-buy rows are positive (+0.011 / +0.008, n 59 / 75, lower bounds
 negative). No positive lower bound with n ≥ 200 at either landing.
+
+### Wallet copies at the realistic landing (`--by-wallet --latency 1 --position start`, 25.6 h, 6 Nov 00:45 UTC)
+
+97 wallets scored (first buy ≥ 1 or ≥ 2 SOL, or a KOL's first buy ≥ 0.1 SOL), best exit each, out of sample:
+
+| wallet | n | SOL/trade | lower bound | wins | 25 h total |
+|---|---|---|---|---|---|
+| Washy dev | 6 | +0.102 | +0.015 | 67 % | +0.61 |
+| Pengu (KOL, hold 60 s) | 16 | +0.069 | +0.009 | 38 % | +1.10 |
+| ottabag | 10 | +0.044 | −0.004 | 30 % | +0.44 |
+| Cupseyy | 6 | +0.042 | −0.010 | 33 % | +0.25 |
+| clukz | 5 | +0.026 | +0.013 | 60 % | +0.13 |
+| Bean Side (≥ 2 SOL) | 16 | +0.016 | +0.002 | 56 % | +0.26 |
+| Megga | 23 | +0.015 | −0.004 | 30 % | +0.34 |
+| theo side (≥ 2 SOL) | 32 | +0.008 | −0.008 | 38 % | +0.25 |
+| Decu | 29 | +0.002 | −0.006 | 45 % | +0.05 |
+| dv (≥ 2 SOL) | 33 | +0.001 | −0.021 | 30 % | +0.05 |
+| Solprop (≥ 2 SOL) | 54 | +0.001 | −0.006 | 31 % | +0.06 |
+
+Everything positive is small and thin: the top 25 wallets together made about +4 SOL of paper in 25 hours at
+0.2 SOL a trade, most of it from a handful of fills, and only three rows have a positive lower bound (n ≤ 16).
+A copy bot on these wallets is a few SOL a day at best at this size, not a path to 100. The fairer landing for
+copies — one trade behind the leader in the same slot, which the speed tests measured — is being re-run now with
+the corrected staleness (`--latency 0 --position +1 --by-wallet`).
