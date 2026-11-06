@@ -52,7 +52,11 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
-    raw = json.dumps([trigger, exit_params, position, latency, buy_sol], sort_keys=True)
+    """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
+    so a strategy frozen before it existed keeps its id and is not frozen a second time."""
+    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
+    ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
+    raw = json.dumps([trigger, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
 

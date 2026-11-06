@@ -212,7 +212,11 @@ class Store:
             for table, col, typ in _ADDED_COLUMNS:
                 have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
                 if col not in have:
-                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                    try:
+                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                    except sqlite3.OperationalError as e:  # another process opening it added the column first
+                        if "duplicate column name" not in str(e):
+                            raise
             self.conn.commit()
 
     def close(self) -> None:

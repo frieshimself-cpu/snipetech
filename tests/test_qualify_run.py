@@ -254,6 +254,56 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
         st.close()
 
 
+def test_the_lab_measures_due_wallets_the_hourly_copy_has_no_cand_label_for(tmp_path):
+    """The lab reads its tape from the hourly read-only copy, but run_qualify labels a newly due wallet `cand` in the
+    live database seconds before the lab runs, and never relabels a wallet that already has another label (a KOL).
+    Both are measured on their first run: the trigger wallets come from the live labels plus the due list."""
+    from snipetech.infra.snapshot_db import snapshot_db
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["NEW", "KOL"], coins=12)
+        st.set_label("KOL", "a kol", "kol")
+        for w in ("NEW", "KOL"):
+            st.upsert_candidate(w, "tape", {"positions": 12}, NOW - 3600)
+        snapshot_db(data / "snipetech.db")  # the hourly copy, taken before this run labels anything
+        svc.cfg.verdict.bootstrap_samples = 50
+        assert svc.tape_store.path != st.path  # the lab reads the copy
+        run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert {w: by[w]["n_tape"] for w in by} == {"NEW": 12, "KOL": 12}, {w: by[w]["reasons"] for w in by}
+        assert st.labels("kol") == {"KOL": "a kol"}  # the KOL keeps its label
+    finally:
+        svc.reset_tape_store()
+        st.close()
+
+
+def test_a_due_loser_keeps_its_lab_row_behind_a_thousand_better_candidates(tmp_path, monkeypatch):
+    """The lab ranks every measured candidate. With more than 1 000 of them, the runner kept the best 1 000 before it
+    picked the due wallets, so a due loser lost its lab row and read 'no tape data' instead of 'loses'."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["LOSER"])
+        st.upsert_candidate("LOSER", "tape", {"positions": 25}, NOW - 3600)
+        cfg = svc.cfg
+        cfg.verdict.bootstrap_samples = 20
+
+        def moments(w, n, pnl):
+            return [{"mint": f"{w}:{k}", "trigger": 0, "ts": NOW - 7000 + k, "order": (k, 0), "pnl": [pnl], "who": w,
+                     "lead_sol": 0.5} for k in range(n)]  # fmt: skip
+
+        rows = [r for k in range(1000) for r in moments(f"WIN{k}", 4, 0.02)] + moments("LOSER", 25, -0.05)
+        trig = L.Trigger("kol", sol=L.KOL_MIN_SOL, group="cand")
+        lab = {"rows": rows, "exits": [L.live_exits(cfg)["lab"]], "triggers": [trig], "tape_hours": 2.0}
+        monkeypatch.setattr(L, "collect", lambda *a, **kw: lab)
+        run_qualify(svc, cfg, data / "jobs", NOW)
+        v = st.latest_verdicts()[0]
+        assert (v["status"], v["n_tape"]) == ("retired", 25), v["reasons"]
+        assert any(r.startswith("loses at +6: mean -0.0500 SOL over 25") for r in v["reasons"])
+    finally:
+        st.close()
+
+
 def test_the_lab_charges_the_measured_round_trip_once_the_low_bid_has_30_fills():
     from snipetech.qualify.run import lab_tx_cost
 
