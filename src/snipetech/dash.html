@@ -94,6 +94,12 @@
     const fills = s.fills || [];
     parts.push(`<section><h2>Fills</h2><table>${fills.map(f => `<tr><td class="dim">${ago(f.ts, now)}</td><td>${esc(f.side)}</td><td class="mono">${esc(String(f.mint || "").slice(0, 8))}…</td><td class="right">${num(f.sol, 3)} SOL</td></tr>`).join("") || "<tr><td class='dim'>no fills table yet (phase 3)</td></tr>"}</table></section>`);
 
+    const evs = s.events || {counts_24h: {}, recent: []};
+    parts.push(`<section><h2>Events</h2>
+      <div class="dim">${Object.entries(evs.counts_24h || {}).map(([k,v]) => v + " " + k).join(", ") || "none in 24 h"}${evs.last_poll ? " · last poll " + ago(evs.last_poll.ts, now) : ""}</div>
+      ${evs.edge && evs.edge.rows && evs.edge.rows.length ? `<table><tr><th>event kind</th><th class="right">moments</th><th class="right">lower bound</th></tr>${evs.edge.rows.slice(0, 8).map(r => `<tr><td>${esc(r.kind)}</td><td class="right">${esc(r.moments)}</td><td class="right">${r.ev_lower == null ? "" : num(r.ev_lower, 4)}</td></tr>`).join("")}</table>` : `<div class="dim">no event-expectancy table yet (nightly)</div>`}
+      <table>${(evs.recent || []).slice(0, 10).map(e => `<tr><td class="dim">${ago(e.ts, now)}</td><td>${esc(e.kind)}</td><td class="mono">${esc(String(e.mint || "").slice(0, 8))}…</td><td class="dim">${esc(e.source || "")}</td></tr>`).join("")}</table></section>`);
+
     parts.push(`<section><h2>Recent notes</h2><ul class="mono">${(op.notes || []).slice().reverse().map(l => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || "<li class='dim'>none yet</li>"}</ul></section>`);
 
     $("main").innerHTML = parts.join("");

@@ -45,7 +45,9 @@ class NoteSink:
     def has_today(self, prefix: str, now: float) -> bool:
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         try:
-            return any(line.startswith(f"- {day}") and prefix in line for line in self.paths.notes.read_text().splitlines())
+            return any(
+                line.startswith(f"- {day}") and prefix in line for line in self.paths.notes.read_text().splitlines()
+            )
         except OSError:
             return False
 
@@ -76,7 +78,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.exists():
             return f"error: no log for job {id}"
         lines = p.read_text(errors="replace").splitlines()
-        return redact("\n".join(lines[-max(1, int(tail)):]))
+        return redact("\n".join(lines[-max(1, int(tail)) :]))
 
     @beta_async_tool
     async def read_file(path: str) -> str:
@@ -115,7 +117,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return f"error: sql: {exc}"
         finally:
             con.close()
-        return redact(json.dumps({"columns": cols, "rows": [list(r) for r in rows[:200]], "truncated": len(rows) > 200}, default=str))
+        return redact(
+            json.dumps(
+                {"columns": cols, "rows": [list(r) for r in rows[:200]], "truncated": len(rows) > 200}, default=str
+            )
+        )
 
     @beta_async_tool
     async def start_job(argv: list[str]) -> str:
@@ -171,7 +177,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         try:
             counts = svc.store.verdict_counts()
             if status == "banned":
-                rows = [{"wallet": c["wallet"], "status": "banned", "sources": c["sources"]} for c in svc.store.candidates(status="banned")]
+                rows = [
+                    {"wallet": c["wallet"], "status": "banned", "sources": c["sources"]}
+                    for c in svc.store.candidates(status="banned")
+                ]
             else:
                 rows = svc.store.latest_verdicts(status)
         except Exception as exc:  # noqa: BLE001
@@ -194,7 +203,30 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": sum(r["side"] == "sell" for r in rows),
                        "failed": sum(r["side"] == "failed" for r in rows),
                        "pnl_sol": round(sum(r["pnl_sol"] or 0.0 for r in rows if r["side"] == "sell"), 6)}  # fmt: skip
-            out = {"summary": summary, "fills": rows, "bid_model": svc.store.bid_model(), "wallet_live": svc.store.wallet_live()}
+            out = {
+                "summary": summary,
+                "fills": rows,
+                "bid_model": svc.store.bid_model(),
+                "wallet_live": svc.store.wallet_live(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {type(exc).__name__}: {exc}"
+        return redact(json.dumps(out, default=str))
+
+    @beta_async_tool
+    async def read_events(kind: str | None = None, hours: int = 24, limit: int = 50) -> str:
+        """The events stage: trending / graduating / curve_cross:<sol> / dev_transfer rows of the last `hours`, counts by
+        kind, and the nightly event-expectancy table (which event kinds carried edge at the measured landing).
+
+        Args:
+            kind: One event kind, or omit for all.
+            hours: Look back this many hours (default 24).
+            limit: At most this many event rows, newest first.
+        """
+        try:
+            since = int(now_fn() - max(1, int(hours)) * 3600)
+            out = {"counts": svc.store.event_counts(since), "events": svc.store.events(kind=kind, since_ts=since, limit=max(1, int(limit))),
+                   "edge": svc.store.coverage("events:edge"), "last_poll": svc.store.coverage("events:last_poll")}  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))
@@ -215,4 +247,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         p.write_text(text)
         return f"wrote {p.name}"
 
-    return [read_job_log, read_file, sql, start_job, write_note, set_candidates, write_report, read_verdicts, read_fills]
+    return [
+        read_job_log,
+        read_file,
+        sql,
+        start_job,
+        write_note,
+        set_candidates,
+        write_report,
+        read_verdicts,
+        read_fills,
+        read_events,
+    ]

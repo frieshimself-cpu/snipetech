@@ -326,3 +326,10 @@ Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 
 
 Result: _pending_.
 
+## Operator outage, 6 Nov 12:16–12:45 UTC — fixed
+
+Two rounds (12:16, 12:30) crashed before the snapshot: a local `from .service import Service` inside the CLI's new
+`book` branch shadowed the module-level name for the whole `main()`, and the `operate` branch raised
+`UnboundLocalError`. Fixed in `35c8580` with a regression test on the dispatch functions; the 12:45 round ran.
+Lesson recorded in the test's docstring.
+

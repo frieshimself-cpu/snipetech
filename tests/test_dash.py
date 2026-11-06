@@ -168,3 +168,18 @@ def test_state_has_no_secret_values(ops, monkeypatch):
         "helius-secret-key-9876" not in text and "123456:ABCDEFGHIJKLMN" not in text and "dash-token-abcdef" not in text
     )
     assert "<redacted>" in text
+
+
+def test_state_has_events_section(ops):
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        st.add_events([{"ts": NOW - 60, "slot": 1, "kind": "graduating", "mint": "M1", "wallet": None, "data": {"rank": 2}, "source": "solanatracker"}])
+        st.set_coverage("events:last_poll", {"ts": NOW - 30, "added": 1, "errors": {}})
+        st.set_coverage("events:edge", {"ts": NOW - 3600, "landing": "+6", "rows": [{"kind": "graduating", "moments": 12, "ev_lower": -0.001}]})
+    finally:
+        st.close()
+    s = dash_state(ops, now=NOW)
+    assert s["events"]["counts_24h"] == {"graduating": 1} and s["events"]["last_poll"]["added"] == 1 and s["events"]["edge"]["rows"][0]["kind"] == "graduating"
+    assert s["events"]["recent"][0]["mint"] == "M1"

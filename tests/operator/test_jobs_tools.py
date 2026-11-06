@@ -184,3 +184,21 @@ def test_read_fills_tool(toolbox):
     assert [f["sig"] for f in out["fills"]] == ["S1", "B1"] and out["bid_model"][0]["arm"] == "control"
     assert out["wallet_live"][0]["wallet"] == "LEAD" and out["summary"] == {"buys": 1, "sells": 1, "failed": 0, "pnl_sol": 0.045}
     assert len(json.loads(_call(tools["read_fills"], hours=24 * 7))["fills"]) == 3
+
+
+def test_read_events_tool(toolbox):
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        now = 1_793_923_200
+        st.add_events([{"ts": now - 600, "slot": 1, "kind": "trending", "mint": "M1", "wallet": None, "data": {"rank": 1}, "source": "solanatracker"},
+                       {"ts": now - 300, "slot": 2, "kind": "curve_cross:30", "mint": "M2", "wallet": "W", "data": {}, "source": "tape"},
+                       {"ts": now - 3 * 86400, "slot": 0, "kind": "trending", "mint": "OLD", "wallet": None, "data": {}, "source": "solanatracker"}])  # fmt: skip
+        st.set_coverage("events:edge", {"ts": now, "landing": "+6", "rows": [{"kind": "trending", "moments": 40, "mean": 0.01, "ev_lower": 0.002}]})
+    finally:
+        st.close()
+    out = json.loads(_call(tools["read_events"], hours=24))
+    assert out["counts"] == {"curve_cross:30": 1, "trending": 1} and [e["mint"] for e in out["events"]] == ["M2", "M1"]
+    assert out["edge"]["rows"][0]["kind"] == "trending"
+    out = json.loads(_call(tools["read_events"], kind="trending", hours=24 * 7))
+    assert [e["mint"] for e in out["events"]] == ["M1", "OLD"]

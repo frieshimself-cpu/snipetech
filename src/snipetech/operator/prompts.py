@@ -37,6 +37,9 @@ read_verdicts, not from raw lab logs, and treat a newly qualified wallet as the 
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. Once a
 wallet has 10 live fills, its live mean outranks any paper number; say so when the two disagree.
+Events (read_events): trending and graduating lists, exact curve crossings and dev transfers, and the nightly table of
+which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
+decision-level note, not a sniper — snipers are the owner's call.
 
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet clearing all three gates, a
 sniper running or a coin held when none should be, equity moved more than the alert threshold, the tape stalled, a

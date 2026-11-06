@@ -79,10 +79,22 @@ def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: Operato
                     f"FROM candidates c LEFT JOIN ({latest}) v ON v.wallet = c.wallet GROUP BY s"
                 )
             }
-            top = [{"wallet": w, "score": sc, "n": n, "mean_sol": m, "lower_sol": lo, "next_review": nr, "source": "qualified"}
-                   for w, sc, n, m, lo, nr in con.execute(
-                       f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
-                       "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?", (TOP_CANDIDATES,))]
+            top = [
+                {
+                    "wallet": w,
+                    "score": sc,
+                    "n": n,
+                    "mean_sol": m,
+                    "lower_sol": lo,
+                    "next_review": nr,
+                    "source": "qualified",
+                }
+                for w, sc, n, m, lo, nr in con.execute(
+                    f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
+                    "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?",
+                    (TOP_CANDIDATES,),
+                )
+            ]
             last_lab = None
             row = con.execute("SELECT data FROM coverage WHERE key = 'qualify:last_lab'").fetchone()
             if row:
@@ -109,6 +121,31 @@ def _fills(con: sqlite3.Connection | None, tables: set[str]) -> list[dict]:
         return [dict(zip(cols, r)) for r in rows]
     except sqlite3.Error:
         return []
+
+
+def _events(con: sqlite3.Connection | None, tables: set[str], now: float) -> dict:
+    out: dict[str, Any] = {"counts_24h": {}, "recent": [], "last_poll": None, "edge": None}
+    if con is None or "events" not in tables:
+        return out
+    try:
+        since = int(now - 86400)
+        out["counts_24h"] = {
+            str(k): int(n)
+            for k, n in con.execute("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (since,))
+        }
+        out["recent"] = [
+            {"ts": ts, "kind": k, "mint": m, "wallet": w, "source": src}
+            for ts, k, m, w, src in con.execute(
+                "SELECT ts, kind, mint, wallet, source FROM events ORDER BY ts DESC, id DESC LIMIT 20"
+            )
+        ]
+        for key, field_name in (("events:last_poll", "last_poll"), ("events:edge", "edge")):
+            row = con.execute("SELECT data FROM coverage WHERE key = ?", (key,)).fetchone()
+            if row:
+                out[field_name] = json.loads(row[0])
+    except (sqlite3.Error, ValueError):
+        pass
+    return out
 
 
 def dash_state(ops, now: float | None = None) -> dict[str, Any]:
@@ -151,6 +188,7 @@ def dash_state(ops, now: float | None = None) -> dict[str, Any]:
             "candidates": _candidates(con, tables, paths),
             "fills": _fills(con, tables),
             "book": {"enabled": bool(cfg_book.get("enabled", False)), "stopped": paths.stop_flag.exists()},
+            "events": _events(con, tables, now),
         }
     finally:
         if con is not None:
