@@ -89,3 +89,9 @@ inferred from the field names and must be confirmed in the app before money depe
 3. Dev sniping should combine `devWallets` + `web.tracking` (rotating wallets) + `blockedCreators` (our rinse list) + `walletTriggers` (confirm rule).
 4. Tweet sniping exists natively (Twitter task + `tweetBinding` + `maxTweetAgeSec`).
 5. Speed: keep `preexec` (+ `complement`) and `preconf` on, as PROJECT SNIPE does.
+
+**Exits per wallet (6 Nov):** `src/snipetech/exits_menu.py` holds the exits the book may send (lab, hold60 verified;
+ride unverified). `oktech.validate_exit` refuses an exit without a stop-loss of at most 35 %, a hold over 600 s, a
+dead exit under 1 s or a take-profit under +5 %; a partial take-profit always ends with a final 100 % stage; no
+builder sends `autoStop`. The book sends a wallet's own exit only with `[book] exit_mode = "per_wallet"`, set by the
+owner.

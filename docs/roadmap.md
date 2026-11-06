@@ -52,6 +52,13 @@ What changed (code on the branch, each piece with its tests; README "How the boo
   lesson and starts one research job to test the top idea; the strategist may tune daily, but only after 20 new live
   round trips; the 6-hour digest says what was learned and what is tested next. Code ideas are built and deployed by
   the hourly autopilot session; live tests still need the owner's yes. Nothing in the loop trades.
+- **Exits per wallet, shadowed first** (audit item 11): a menu of three OKTech exits (lab: dead exit 1 s, stop-loss
+  30 %, 300 s, copy exit 50 %; hold60: 60 s timer, copy exit; ride: trailing stop 25 % after +20 %, stop-loss 30 %,
+  300 s, copy exit, no dead exit). The lab scores every wallet on all three and keeps a wallet's own exit only when it
+  beat lab on moments it was not chosen on; the gating numbers stay lab's. Measure replays every live copy buy under
+  each exit six minutes after it (table exit_shadow), so the post-mortems say which exit would have done better and by
+  how much. The book still sends lab to every wallet (`[book] exit_mode = "fixed"`); only the owner switches it to
+  `per_wallet`, and only exits in `verified_exits` (lab, hold60) are ever sent; ride needs one capped live fill first.
 - **`/sell <coin>` in Telegram**: the owner sells a coin OKTech abandoned with one message (it needs SNIPER_SECRET
   in /etc/snipetech/env); `/sell` alone lists the coins held with the line to send.
 
