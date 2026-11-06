@@ -3,6 +3,8 @@ payload, our buys and the coin's trades from the tape, and flags a held coin a m
 and nothing sold, or once its sniper is gone or unknown and the coin has been held past the timer. It alerts, once per
 coin per 15 minutes; it never sells."""
 
+import pytest
+
 from snipetech.book.watch import (
     GRACE_SECS,
     SLOT_SECS,
@@ -247,6 +249,40 @@ def test_the_watch_sends_one_line_per_coin_every_15_minutes_and_never_sells(tmp_
         assert ev[0]["data"]["reason"] == "exits_not_acted_on"
         assert watch_pass(cfg, st, notifier, W, [], FINISHED, t1 + 16 * 60) == []  # sold by hand
         assert current_hits(paths, t1 + 16 * 60) == [] and len(sent) == 2
+    finally:
+        st.close()
+
+
+def test_a_failed_record_neither_repeats_the_alert_nor_is_lost(tmp_path, monkeypatch):
+    """The events row is written after the alert and after operator/watch.json: a busy database can delay or fail it
+    (the one-minute unit has 2 minutes), but the owner is not told twice and the row is written on a later pass."""
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    st = Store(cfg.storage.db_path)
+    sent: list[str] = []
+    notifier = Notifier("T", 7, post=lambda url, data: sent.append(data["text"]))
+    try:
+        _sniper(st, G)
+        m, ours = dtau(st)
+        held = [_held(m, ours)]
+        real = st.add_events
+
+        def killed(rows):  # the unit's 2-minute timeout ends the process while the write waits
+            raise SystemExit("timeout")
+
+        def locked(rows):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(st, "add_events", killed)
+        with pytest.raises(SystemExit):
+            watch_pass(cfg, st, notifier, W, held, FINISHED, ours.ts + 280)
+        assert len(sent) == 1
+        monkeypatch.setattr(st, "add_events", locked)
+        second = watch_pass(cfg, st, notifier, W, held, FINISHED, ours.ts + 340)
+        assert len(sent) == 1 and "database is locked" in second[0]["record_error"]  # not told twice
+        monkeypatch.setattr(st, "add_events", real)
+        watch_pass(cfg, st, notifier, W, held, FINISHED, ours.ts + 400)
+        assert len(sent) == 1 and len(st.events(kind="unmanaged")) == 1  # the record, a pass later
     finally:
         st.close()
 

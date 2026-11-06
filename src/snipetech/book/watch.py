@@ -450,20 +450,26 @@ def watch_pass(cfg: Config, store: Store, notifier: Notifier, wallet: str, holdi
         if h["alerted"]:
             notifier.send(notes.write(alert_line(h, migrated=_migrated(store, h["mint"])), "decision"))
             alerted[h["mint"]] = float(now)
-        key = f"{h['mint']}|{h.get('buy_sig') or int(h['start'])}"
-        if key not in recorded:
-            data = {k: h.get(k) for k in ("reason", "due", "sniper_id", "sniper_status", "buy_sig", "buy_sol",
-                                          "value_sol", "flag_at", "start")}  # fmt: skip
-            try:
-                store.add_events([{"ts": int(now), "kind": "unmanaged", "mint": h["mint"], "wallet": h.get("leader"),
-                                   "slot": h["buy_slot"] if h.get("buy_slot") is not None else int(h["start"]),
-                                   "data": data, "source": "watch"}])  # fmt: skip
-            except Exception as exc:  # noqa: BLE001 - the record is retried next pass; the alert already went out
-                h["record_error"] = f"{type(exc).__name__}: {exc}"[:200]
-            else:
-                recorded.append(key)
-    _save(paths, {"ts": float(now), "wallet": wallet, "first_seen": seen, "alerted": alerted, "recorded": recorded,
-                  "hits": hits})  # fmt: skip
+
+    def save() -> None:
+        _save(paths, {"ts": float(now), "wallet": wallet, "first_seen": seen, "alerted": alerted, "recorded": recorded,
+                      "hits": hits})  # fmt: skip
+
+    save()  # before the database write below, which can wait on a busy database: an alert sent is never sent twice
+    new = [h for h in hits if f"{h['mint']}|{h.get('buy_sig') or int(h['start'])}" not in recorded]
+    for h in new:
+        data = {k: h.get(k) for k in ("reason", "due", "sniper_id", "sniper_status", "buy_sig", "buy_sol", "value_sol",
+                                      "flag_at", "start")}  # fmt: skip
+        try:
+            store.add_events([{"ts": int(now), "kind": "unmanaged", "mint": h["mint"], "wallet": h.get("leader"),
+                               "slot": h["buy_slot"] if h.get("buy_slot") is not None else int(h["start"]),
+                               "data": data, "source": "watch"}])  # fmt: skip
+        except Exception as exc:  # noqa: BLE001 - the record is retried next pass; the alert already went out
+            h["record_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        else:
+            recorded.append(f"{h['mint']}|{h.get('buy_sig') or int(h['start'])}")
+    if new:
+        save()
     return hits
 
 
