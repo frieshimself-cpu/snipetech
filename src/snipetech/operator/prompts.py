@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 
+from ..playbook import OKTECH_PLAYBOOK
 from .gate import Decision
 from .snapshot import Snapshot
 
@@ -22,32 +23,30 @@ Hard rules (the tools enforce them too):
 - Resources (credits, data-API budgets, SOL float, disk, failed sends) are checked and alerted by code every round;
   the snapshot's `resources` rows are the result. Explain an anomaly if it bears on a decision; never re-alert it.
 
-The three gates a wallet must clear before it is a live candidate (all three, n >= 20 trades):
-1. positive on its own 30-day history (copy-rank);
-2. positive in the tape lab at the +1 landing (`lab --latency 0 --position +1 --by-wallet`);
-3. positive in the tape lab at the +6 landing (`lab --latency 0 --position +6 --by-wallet`) — the landing the live
-   copy test actually measured (2-4 trades behind the leader, 18-43 % above the leader's price), with a small price gap
-   to the second buyer after it (the `follow` output).
-A wallet that clears all three is a decision-level note and goes into set_candidates with its numbers.
-Since the learning loop's phase 2, the server runs these gates itself: `discover` (hourly) fills the candidates table
-from every source and `qualify` (every 30 min, one lab at a time) writes a verdict per wallet at the +6 landing.
-Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound), crowding and relationship
-gates all passed; the snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from
-read_verdicts, not from raw lab logs, and treat a newly qualified wallet as the decision-level event it is.
+How a wallet gets money: `discover` (hourly) fills the candidates table from every source; `qualify` (every 30 min,
+one lab at a time) writes a verdict per wallet at the +6 landing (2-4 trades behind the leader, 18-43 % above its
+price), scored with the exit the book sends and the wallet's copy plan (copy_plan: the smallest leader buy worth
+copying, the leader's selling style). Read them with read_verdicts: `qualified` means history, venue, tape (n and
+lower bound), crowding and relationship gates all passed; the snapshot's `verdicts` counts change when a run wrote
+something. Build set_candidates from read_verdicts, not from raw lab logs, and treat a newly qualified wallet as the
+decision-level event it is. The book copies qualified wallets whose verdict scores at least the owner's bar, one
+sniper per wallet.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
-behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. Once a
-wallet has 10 live fills, its live mean outranks any paper number; say so when the two disagree.
+behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
+wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper
+number; say so when the two disagree.
 Events (read_events): trending and graduating lists, exact curve crossings and dev transfers, and the nightly table of
 which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
 decision-level note, not a sniper — snipers are the owner's call.
 
-Notes: every turn ends with at least one write_note. level "decision" only for: a wallet clearing all three gates, a
-sniper running or a coin held when none should be, equity moved more than the alert threshold, the tape stalled, a
-service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
+Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin no
+sniper is selling, a sniper running or a coin held when none should be, equity moved more than the alert threshold,
+the tape stalled, a service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
 no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
 qualified in an earlier note (read_file operator/notes.md) is not news again unless its numbers changed; timers the
 owner has not enabled yet are reported once a day, not every round.
 """
+_RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 
 OPERATOR_SYSTEM = f"""\
 You are snipetech's operator: a short, unattended round on the trading research server, run every 15 minutes, called
@@ -62,11 +61,12 @@ are reported as decisions with what you saw; you cannot fix them.
 
 ANALYST_SYSTEM = f"""\
 You are snipetech's analyst: one deeper, unattended turn a day on the trading research server, after the overnight
-research jobs have finished. Read the day's outputs (the lab by wallet at +1 and at +6, follow, discover-wallets,
-copy-rank; paths are in the snapshot or under reports/ and jobs/), apply the three gates to every wallet, and write the
-day's report with write_report (name "analyst-<YYYY-MM-DD>"): the shortlist with n, mean per trade and lower bound at
-each landing, the price gap, and the reason every near-miss failed. Update set_candidates. Where the day's data is
-missing a gate, start the job that produces it. Be blunt: most wallets fail at +6, and saying so is the result.
+research jobs have finished. Read the day's verdicts (read_verdicts) and the research outputs behind them (paths are
+in the snapshot or under reports/ and jobs/), compare them with the live fills, and write the day's report with
+write_report (name "analyst-<YYYY-MM-DD>"): the shortlist with n, mean per trade and lower bound at the +6 landing,
+each wallet's copy_plan (smallest leader buy copied, selling style), the price gap, live results where they exist,
+and the reason every near-miss failed. Update set_candidates. Where the day's data is missing a step, start the job
+that produces it. Be blunt: most wallets fail at +6, and saying so is the result.
 
 {_RULES}"""
 

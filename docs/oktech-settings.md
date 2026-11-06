@@ -22,7 +22,7 @@ inferred from the field names and must be confirmed in the app before money depe
 |---|---|---|
 | `buyAmount` (0.001–100) | SOL per buy, main wallet | position size; the lab's edge scales with size minus fixed fees (~0.007 SOL per round trip measured) |
 | `priorityFee` (≥0.001), `tipAmount` (≥0.002) | per-buy fees | landing position. PROJECT SNIPE pays 0.25 + 1.3 SOL per 15 SOL buy — sized to win the creation slot |
-| `singleSnipe` + `totalSnipes` (1–100) | stop after N buys | **the safe cap**: the task keeps managing its exits until positions close. Stopping a task by hand also stops its auto-sell (learned live: 3 positions stranded) |
+| `singleSnipe` + `totalSnipes` (1–100) | stop after N buys | **the cap**: the task stops buying after N buys and earlier positions keep their exits, but the buy that uses up the cap can be left with no exit at all (DTAU 6 Nov, 4siK 5 Nov: 2 of 4 such buys). The book relies on each sniper's first buy only and replaces it once the wallet holds nothing; the watchdog flags any coin nobody sells. Stopping a task by hand also stops its auto-sell (learned live: 3 positions stranded) |
 | `additionalSnipers` (≤9) | more wallets buying alongside, own sizes / exits | spread size across wallets |
 | `maxMcapUsd` | buy carries a min-out so it fails above this cap | never chase a launch that already ran |
 | `blockedCreators` (≤100) | dev blacklist on every venue | feed snipetech's AVOID / rinse devs |

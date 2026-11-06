@@ -258,10 +258,8 @@ class AutotuneConfig:
         "book.fill_max_sol": {"min": 0.1, "max": 1.0},
         "book.min_score": {"rel_min": 0.5, "rel_max": 2.0},
         "book.explore_share": {"min": 0.0, "max": 0.3},
-        "book.bid_arms.control.priority": {"min": 0.001, "max": 0.05},
-        "book.bid_arms.control.tip": {"min": 0.002, "max": 0.05},
-        "book.bid_arms.paid.priority": {"min": 0.001, "max": 0.05},
-        "book.bid_arms.paid.tip": {"min": 0.002, "max": 0.05},
+        # a bid is raised only through the tip: OKTech charges the buy priority fee again on every exit (never tunable)
+        "book.bid_arms.control.tip": {"min": 0.002, "max": 0.02},
         "qualify.max_gap3_pct": {"min": 5, "max": 30},
         "qualify.min_n_tape": {"min": 10, "max": 40},
         "qualify.landing_pos": {"choices": ["+3", "+6", "+9"]},
@@ -434,6 +432,25 @@ class Config:
 
 OVERLAY_SECTIONS = ("book", "qualify")
 OVERLAY_FORBIDDEN_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
+# the owner's limits: never changed by the strategist or its overlay, whatever [autotune] bounds lists
+NEVER_TUNABLE_KEYS = frozenset({
+    "book.max_buys_per_sniper", "book.retire_after_buys", "book.daily_risk_sol", "book.day_stop_sol",
+    "book.equity_floor_sol", "book.max_wallets", "book.exit_mode", "book.verified_exits",
+})  # fmt: skip
+
+
+def never_tunable(key: str) -> str | None:
+    """Why the strategist may never change `key`, or None. The daily caps, the wallet count and the buys a sniper may
+    make stay the owner's; so does the buy priority fee, which OKTech charges again on the landed sell of every exit
+    (7 of 7 fee-test sells, 6 Nov), so raising it raises the cost of every exit; switches, wallets and keys too."""
+    k = key.lower()
+    if key in NEVER_TUNABLE_KEYS:
+        return "an owner-only limit"
+    if k.startswith("book.bid_arms.") and k.endswith(".priority"):
+        return "the buy priority fee is charged again on every exit"
+    if any(w in k for w in OVERLAY_FORBIDDEN_WORDS):
+        return "switches, wallets, keys and paths are the owner's"
+    return None
 
 
 def overlay_path_for(cfg: Config) -> Path:
@@ -444,9 +461,36 @@ def overlay_path_for(cfg: Config) -> Path:
     )
 
 
+def _leaves(d: dict[str, Any], prefix: str) -> list[tuple[str, Any]]:
+    out: list[tuple[str, Any]] = []
+    for k, v in d.items():
+        out += _leaves(v, f"{prefix}.{k}") if isinstance(v, dict) else [(f"{prefix}.{k}", v)]
+    return out
+
+
+def _set_leaf(cfg: Any, dotted: str, value: Any) -> bool:
+    """Set one existing leaf (a dataclass field or a key of a dict field), coerced to its current type; siblings stay."""
+    obj: Any = cfg
+    *parents, last = dotted.split(".")
+    for part in parents:
+        obj = obj.get(part) if isinstance(obj, dict) else getattr(obj, part, None)
+        if obj is None:
+            return False
+    if isinstance(obj, dict):
+        if last not in obj or isinstance(obj[last], dict):
+            return False
+        obj[last] = _coerce(value, type(obj[last]))
+        return True
+    if dataclasses.is_dataclass(obj) and hasattr(obj, last) and not isinstance(getattr(obj, last), dict):
+        setattr(obj, last, _coerce(value, type(getattr(obj, last))))
+        return True
+    return False
+
+
 def _apply_overlay(cfg: Config) -> None:
-    """The strategist's changes (autotune.toml in the data directory) on top of the owner's file: [book] and [qualify]
-    only; anything else in that file is ignored."""
+    """The strategist's changes (autotune.toml in the data directory) on top of the owner's file, leaf by leaf: only
+    [book] and [qualify] keys that the owner's [autotune] bounds list and that are not owner-only (`never_tunable`).
+    Anything else in that file is ignored, so a hand-edited or stale overlay cannot lift a daily cap."""
     try:
         path = overlay_path_for(cfg)
         if not path.exists():
@@ -457,9 +501,9 @@ def _apply_overlay(cfg: Config) -> None:
         return
     for section in OVERLAY_SECTIONS:
         if isinstance(data.get(section), dict):
-            # never from the overlay: switching the book on, wallets, keys (the owner's file decides those)
-            safe = {k: v for k, v in data[section].items() if not any(w in k.lower() for w in OVERLAY_FORBIDDEN_WORDS)}
-            _apply(getattr(cfg, section), safe)
+            for key, value in _leaves(data[section], section):
+                if key in cfg.autotune.bounds and never_tunable(key) is None:
+                    _set_leaf(cfg, key, value)
     cfg.overlay_path = str(path)
 
 

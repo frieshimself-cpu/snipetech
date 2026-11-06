@@ -602,7 +602,7 @@ def strategy_sniper(
     if not preexec:
         config["preexec"] = {"enabled": False}
     summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
-               f"stops buying by itself after {config['totalSnipes']} buys and keeps selling until those positions close",
+               f"stops buying by itself after {config['totalSnipes']} buys; earlier positions keep their exits, but the buy that uses up the cap can be left with no exit (DTAU, 4siK)",
                "buys straight into the wallet (no seed account)" + (" and only after a local dry run of the create + buy succeeds" if preexec else ", no local dry run")]  # fmt: skip
     kind = trig.get("kind")
     if kind in ("whale", "burst"):
@@ -691,7 +691,7 @@ def replica_from_study(
                               "priorityFee": prio, "tipAmount": tip, "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))),
                               "extraParams": execution_params(compute_units=cfg.oktech.compute_units)}  # fmt: skip
     summary.append(
-        f"capped: stops buying after {config['totalSnipes']} buys and keeps selling until those positions close"
+        f"capped: stops buying after {config['totalSnipes']} buys; earlier positions keep their exits, but the buy that uses up the cap can be left with no exit (DTAU, 4siK)"
     )
     # what it buys: the quote asset
     sol_share = sum(c["chosen_share"] for c in cats if c["factor"] == "quote" and c["value"] == "SOL")

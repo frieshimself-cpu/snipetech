@@ -246,3 +246,20 @@ def test_the_overlay_can_never_switch_the_book_on(tmp_path):
     (tmp_path / "data" / "autotune.toml").write_text("[book]\nenabled = true\nexplore_share = 0.25\n")
     loaded = Config.load(cfg.path)
     assert loaded.book.enabled is False and loaded.book.explore_share == 0.25
+
+
+def test_the_overlay_applies_only_keys_listed_in_bounds(tmp_path):
+    """The strategist's file is merged leaf by leaf against the owner's [autotune] bounds: the daily caps, the buys a
+    sniper may make and the buy priority fee stay the owner's even when the overlay names them, and tuning one arm's
+    tip keeps that arm's priority."""
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    (tmp_path / "data" / "autotune.toml").write_text(
+        "[book]\ndaily_risk_sol = 100\nmax_buys_per_sniper = 50\nmin_score = 0.006\n"
+        "[book.bid_arms.control]\npriority = 0.05\ntip = 0.01\n"
+    )
+    loaded, default = Config.load(cfg.path), Config()
+    assert loaded.book.daily_risk_sol == default.book.daily_risk_sol
+    assert loaded.book.max_buys_per_sniper == default.book.max_buys_per_sniper
+    assert loaded.book.min_score == 0.006 and loaded.book.bid_arms["control"]["tip"] == 0.01
+    assert loaded.book.bid_arms["control"]["priority"] == default.book.bid_arms["control"]["priority"]

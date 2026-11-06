@@ -25,6 +25,7 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
                 "failed": 0,
                 "realised_sol": 0.0,
                 "fees_sol": 0.0,
+                "sell_fees_sol": 0.0,
                 "_behind": [],
                 "_gap": [],
                 "_pos": [],
@@ -39,6 +40,8 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
                     d[dst].append(float(f[src]))
         elif side == "sell":
             d["sells"] += 1
+            # the landed sell pays the buy priority fee again (OKTech, 7 of 7 fee-test sells) plus the sell tip
+            d["sell_fees_sol"] += ((f.get("priority_lamports") or 0) + (f.get("tip_lamports") or 0) + BASE_FEE) / 1e9
             if f.get("pnl_sol") is not None:
                 d["realised_sol"] += float(f["pnl_sol"])
         elif side == "failed":
@@ -50,6 +53,7 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
         q = statistics.quantiles(pos, n=4) if len(pos) >= 2 else None
         behind, gap = d.pop("_behind"), d.pop("_gap")
         out[a] = {**d, "realised_sol": round(d["realised_sol"], 6), "fees_sol": round(d["fees_sol"], 6),
+                  "sell_fees_sol": round(d["sell_fees_sol"], 6),
                   "mean_behind": round(statistics.fmean(behind), 2) if behind else None,
                   "mean_gap_pct": round(statistics.fmean(gap), 1) if gap else None,
                   "p75_pos": (q[2] if q else (pos[0] if pos else None))}  # fmt: skip
@@ -60,16 +64,42 @@ def _compact_live(r: dict) -> dict:
     return {k: r.get(k) for k in ("wallet", "n", "mean_sol", "lower_sol", "status")}
 
 
+def _round_trip_cost(arm: dict[str, Any]) -> float | None:
+    """What one round trip cost on this arm: the buy, the landed sell and the failed sends, over the sells."""
+    if not arm.get("sells"):
+        return None
+    return round((arm["fees_sol"] + arm["sell_fees_sol"]) / arm["sells"], 6)
+
+
+def _live_vs_paper(live: list[dict], verdicts: list[dict], kill_n: int) -> list[dict]:
+    """Each wallet's live copies next to its paper score; paused = at least `kill_n` copies and even the optimistic
+    end of the live range (mean + (mean - lower)) below zero, the book's live pause."""
+    paper = {v.get("wallet"): v.get("score") for v in verdicts}
+    out = []
+    for r in live:
+        n, mean, lower = int(r.get("n") or 0), r.get("mean_sol"), r.get("lower_sol")
+        upper = round(2 * float(mean) - float(lower), 6) if mean is not None and lower is not None else None
+        out.append({"wallet": r.get("wallet"), "n": n, "live_mean_sol": mean, "upper_sol": upper,
+                    "paper_score": paper.get(r.get("wallet")),
+                    "paused": bool(n >= kill_n and upper is not None and upper < 0)})  # fmt: skip
+    return out
+
+
 def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[str, Any]:
     since = int(now - days * 86400)
     wallet = cfg.operator.wallet
     fills = store.fills(wallet=wallet, since_ts=since, limit=100_000) if wallet else []
     live = sorted(store.wallet_live(), key=lambda r: -(r.get("mean_sol") or 0))
     qualified = sorted(store.latest_verdicts("qualified"), key=lambda r: -(r.get("score") or 0))
+    arms = _arm_rows(fills)
     return {
         "now_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(now)),
         "window_days": days,
-        "arms": _arm_rows(fills),
+        "arms": arms,
+        "round_trip_cost_by_arm": {a: _round_trip_cost(r) for a, r in arms.items()},
+        "wallets_live_vs_paper": _live_vs_paper(
+            live, store.latest_verdicts(), int(getattr(cfg.book, "live_kill_n", 5))
+        ),
         "bid_model": {r["arm"]: r for r in store.bid_model()},
         "wallets_live_top": [_compact_live(r) for r in live[:10]],
         "wallets_live_bottom": [_compact_live(r) for r in live[-5:]] if len(live) > 10 else [],

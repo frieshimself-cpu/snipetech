@@ -1,15 +1,14 @@
 """Pure: what a proposed patch may change. Only keys listed in [autotune] bounds, each inside its rule; one key outside
 and the whole patch is refused (it becomes a question for the owner). A few things are never tunable whatever the
-table says: anything that switches the book on, names a wallet or a key, or points at a URL."""
+table says (`config.never_tunable`): the owner's daily caps and buys per sniper, the buy priority fee, and anything
+that switches the book on, names a wallet or a key, or points at a URL."""
 
 from __future__ import annotations
 
 import dataclasses
 from typing import Any
 
-from ..config import AutotuneConfig, Config
-
-NEVER_TUNABLE_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
+from ..config import AutotuneConfig, Config, never_tunable
 
 
 def get_path(cfg: Any, dotted: str) -> Any:
@@ -40,8 +39,9 @@ def check_patch(
         if rule is None:
             refusals.append(f"{key}: not in [autotune] bounds")
             continue
-        if any(w in key.lower() for w in NEVER_TUNABLE_WORDS):
-            refusals.append(f"{key}: never tunable")
+        why = never_tunable(key)
+        if why:
+            refusals.append(f"{key}: never tunable ({why})")
             continue
         try:
             cur = get_path(current, key)

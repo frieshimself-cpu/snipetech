@@ -10,7 +10,9 @@ def test_defaults_are_the_spec_bounds():
     b = a.bounds
     assert b["book.fill_max_sol"]["max"] == 1.0 and b["book.explore_share"] == {"min": 0.0, "max": 0.3}
     assert b["book.min_score"] == {"rel_min": 0.5, "rel_max": 2.0}
-    assert b["book.bid_arms.paid.priority"]["max"] == 0.05 and b["book.bid_arms.control.tip"]["max"] == 0.05
+    assert b["book.bid_arms.control.tip"] == {"min": 0.002, "max": 0.02}
+    # OKTech charges the buy priority fee again on every exit, and the paid arm is retired: neither is tunable
+    assert not [k for k in b if k.endswith(".priority") or ".paid." in k]
     assert b["qualify.max_gap3_pct"] == {"min": 5, "max": 30} and b["qualify.min_n_tape"] == {"min": 10, "max": 40}
     assert b["qualify.landing_pos"] == {"choices": ["+3", "+6", "+9"]}
     assert a.turn_usd == 10.0 and a.enabled is True
@@ -77,3 +79,24 @@ def test_relative_bounds_are_relative_to_the_owners_value_not_last_weeks():
     assert ok == {} and bad  # 0.02 is x4 the owner's 0.005
     ok, bad = check_patch({"book.min_score": 0.009}, cfg, cfg.autotune, base=base)
     assert ok == {"book.min_score": 0.009} and bad == []
+
+
+def test_a_priority_fee_patch_is_refused_even_when_the_owners_table_lists_it():
+    """The buy priority fee is charged again on the landed sell of every exit (7 of 7 fee-test sells): raising it
+    raises the cost of every exit, so the strategist may raise a bid only through the tip."""
+    auto = AutotuneConfig()
+    auto.bounds["book.bid_arms.control.priority"] = {"min": 0.001, "max": 0.05}
+    accepted, refusals = check_patch({"book.bid_arms.control.priority": 0.002}, Config(), auto)
+    assert accepted == {} and "never tunable" in refusals[0]
+    accepted, _ = check_patch({"book.bid_arms.control.tip": 0.004}, Config(), auto)
+    assert accepted == {"book.bid_arms.control.tip": 0.004}
+
+
+def test_never_tunable_keys_are_refused_even_when_listed():
+    """The daily caps, the wallet count and the buys a sniper may make stay the owner's whatever [autotune] lists."""
+    auto = AutotuneConfig()
+    for key, value in (("book.max_buys_per_sniper", 5), ("book.daily_risk_sol", 100.0), ("book.day_stop_sol", 50.0),
+                       ("book.equity_floor_sol", 0.5), ("book.max_wallets", 40)):  # fmt: skip
+        auto.bounds[key] = {"min": 0, "max": 1000}
+        accepted, refusals = check_patch({key: value}, Config(), auto)
+        assert accepted == {} and "never tunable" in refusals[0], key

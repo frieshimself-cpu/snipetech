@@ -90,6 +90,26 @@ def test_week_evidence_is_a_compact_document_from_the_tables():
     st.close()
 
 
+def test_evidence_carries_round_trip_costs_and_live_against_paper():
+    """The weekly turn sees what a whole round trip cost per arm (the buy, the landed sell, the failed sends) and each
+    wallet's live result next to its paper score, with the 5-copy pause."""
+    st = _store()
+    st.put_fill({"sig": "s2", "ts": NOW - 2900, "slot": 4, "wallet": W, "mint": "M1", "side": "sell", "sol": 0.0, "tokens": 0.0,
+                 "bid_arm": "control", "priority_lamports": 1_000_000, "tip_lamports": 1_000_000})  # fmt: skip
+    st.put_wallet_live({"wallet": "L2", "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "last_fill": NOW - 100,
+                        "status": "live", "updated_at": NOW})  # fmt: skip
+    cfg = Config()
+    cfg.operator.wallet = W
+    ev = week_evidence(st, cfg, NOW)
+    # control: buy 0.003 + 5000 lamports, sells 0.000005 and 0.002005, over 2 round trips
+    assert abs(ev["round_trip_cost_by_arm"]["control"] - (0.003005 + 0.000005 + 0.002005) / 2) < 2e-6
+    assert ev["round_trip_cost_by_arm"]["paid"] is None  # a failed send and no round trip
+    rows = {r["wallet"]: r for r in ev["wallets_live_vs_paper"]}
+    assert rows["L1"]["paper_score"] == 0.01 and rows["L1"]["paused"] is False
+    assert rows["L2"]["upper_sol"] == -0.041 and rows["L2"]["paused"] is True and rows["L2"]["paper_score"] is None
+    st.close()
+
+
 def _env(tmp_path):
     paths = OperatorPaths(tmp_path / "data").ensure()
     cfg = Config()

@@ -744,7 +744,7 @@ class Service:
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
         if uncapped and not allow_uncapped:
             raise SystemExit(f"refusing to start {uncapped}: not capped (singleSnipe + totalSnipes) or not made by snipetech. "
-                             "A capped sniper stops buying by itself and keeps selling until its positions are closed.")  # fmt: skip
+                             "A capped sniper stops buying by itself; its last buy can be left with no exit, so watch it.")  # fmt: skip
         client = self._oktech()
         events: list[str] = []
 
@@ -756,7 +756,7 @@ class Service:
         async def balance() -> float:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
-        reason = "time limit: still running (capped; it keeps selling until its positions close)"
+        reason = "time limit: still running (capped; its exits run, but a last buy can be left unsold: check the wallet)"
         stopped, stop_failed = False, []
         try:
             b0 = await balance()
