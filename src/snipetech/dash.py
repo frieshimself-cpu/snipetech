@@ -67,25 +67,37 @@ def _jobs(ops) -> list[dict]:
 
 
 def _candidates(con: sqlite3.Connection | None, tables: set[str], paths: OperatorPaths) -> dict:
-    """Phase 2's `candidates` table when it exists; until then the operator's own candidates.json."""
-    if con is not None and "candidates" in tables:
+    """Phase 2's candidates/verdicts tables when they exist; until then the operator's own candidates.json."""
+    if con is not None and {"candidates", "verdicts"} <= tables:
         try:
+            latest = ("SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet "
+                      "ORDER BY computed_at DESC, id DESC LIMIT 1)")  # fmt: skip
             counts = {
-                r[0] or "unknown": r[1] for r in con.execute("SELECT status, count(*) FROM candidates GROUP BY status")
-            }
-            top = [
-                {"wallet": w, "source": s, "score": sc, "updated": u}
-                for w, s, sc, u in con.execute(
-                    "SELECT wallet, source, score, updated FROM candidates WHERE status='qualified' ORDER BY score DESC LIMIT ?",
-                    (TOP_CANDIDATES,),
+                str(k): int(n)
+                for k, n in con.execute(
+                    "SELECT CASE WHEN c.status = 'banned' THEN 'banned' ELSE COALESCE(v.status, c.status) END AS s, count(*) "
+                    f"FROM candidates c LEFT JOIN ({latest}) v ON v.wallet = c.wallet GROUP BY s"
                 )
-            ]
-            return {"counts": counts, "top": top, "source": "table"}
+            }
+            top = [{"wallet": w, "score": sc, "n": n, "mean_sol": m, "lower_sol": lo, "next_review": nr, "source": "qualified"}
+                   for w, sc, n, m, lo, nr in con.execute(
+                       f"SELECT wallet, score, n_tape, mean_sol, lower_sol, next_review FROM ({latest}) v "
+                       "WHERE v.status = 'qualified' ORDER BY score DESC LIMIT ?", (TOP_CANDIDATES,))]  # fmt: skip
+            last_lab = None
+            row = con.execute("SELECT data FROM coverage WHERE key = 'qualify:last_lab'").fetchone()
+            if row:
+                last_lab = json.loads(row[0])
+            return {"counts": counts, "top": top, "source": "table", "last_lab": last_lab}
         except sqlite3.Error:
             pass
     items = _read_json(paths.candidates, [])
     items = items if isinstance(items, list) else []
-    return {"counts": {"operator": len(items)} if items else {}, "top": items[:TOP_CANDIDATES], "source": "operator"}
+    return {
+        "counts": {"operator": len(items)} if items else {},
+        "top": items[:TOP_CANDIDATES],
+        "source": "operator",
+        "last_lab": None,
+    }
 
 
 def _fills(con: sqlite3.Connection | None, tables: set[str]) -> list[dict]:

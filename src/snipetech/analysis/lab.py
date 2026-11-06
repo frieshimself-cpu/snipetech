@@ -75,6 +75,8 @@ TRIGGERS = (
     + [Trigger("kol")]
     # the KOLs' small buys are top-ups after a 2-4 SOL first buy (decu: 4 buys/coin): the first buy is the signal
     + [Trigger("kol", sol=1.0)] + [Trigger("kol", sol=s, group="wallet") for s in (1.0, 2.0)]
+    # the qualify stage's candidates (and the tracked list) at the KOL floor: every first buy >= 0.1 SOL counts
+    + [Trigger("kol", sol=KOL_MIN_SOL, group="cand")]
     # forward paper trading: the >= 5 / 2 SOL edge is all in big buys within ~1 s of the launch, on normal coins
     + [Trigger("whale", sol=s, max_age=1.0, plain=True) for s in (2.0, 5.0)]
     # the part of that edge OKTech can reach: the big buy arrives on its own, not as part of a create bundle
@@ -206,8 +208,10 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols) -> int | None:
 
 
 def label_groups(store: Store) -> dict[str, set[str]]:
-    """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list."""
-    return {"kol": set(store.labels("kol")), "wallet": set(store.labels("wallet"))}
+    """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list,
+    `cand` = the qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor)."""
+    wallet = set(store.labels("wallet"))
+    return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet}
 
 
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",

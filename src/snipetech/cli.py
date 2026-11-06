@@ -361,6 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("discover", "the learning loop's discover stage: every source's wallets into the candidates table")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--sources", default=None, help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe (default: all with a key)")
+    sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
+    sp.add_argument("action", choices=["run"])
+    sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
     sp = cmd("vybe", "query Vybe directly: the free 1d/7d/30d top-traders board")
     sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
     sp.add_argument("--limit", type=int, default=50)
@@ -951,6 +954,12 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "qualify":
+        from .qualify.run import run_qualify_cli
+
+        out = run_qualify_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs")
+        print(json.dumps(out, indent=1, default=str))
+        return 0
     if args.cmd == "vybe":
         from .vybe import Vybe
 

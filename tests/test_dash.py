@@ -97,28 +97,34 @@ def test_state_reads_snapshot_notes_spend_jobs_and_flag(ops):
 
 
 def test_state_uses_phase2_tables_when_present(ops):
-    con = sqlite3.connect(ops.db)
-    con.execute(
-        "CREATE TABLE candidates (wallet TEXT PRIMARY KEY, source TEXT, status TEXT, score REAL, updated INTEGER)"
-    )
-    con.executemany(
-        "INSERT INTO candidates VALUES (?,?,?,?,?)",
-        [("W1", "st", "qualified", 0.9, NOW), ("W2", "be", "rejected", 0.1, NOW), ("W3", "st", "qualified", 0.7, NOW)],
-    )
-    con.execute(
-        "CREATE TABLE fills (id INTEGER PRIMARY KEY, ts INTEGER, wallet TEXT, mint TEXT, side TEXT, sol REAL, sniper TEXT)"
-    )
-    con.execute(
-        "INSERT INTO fills (ts, wallet, mint, side, sol, sniper) VALUES (?,?,?,?,?,?)",
-        (NOW - 10, "W1", "M1", "buy", 0.2, "s1"),
-    )
-    con.commit()
-    con.close()
-    st = dash_state(ops, now=NOW)
-    assert st["candidates"]["counts"] == {"qualified": 2, "rejected": 1} and [
-        c["wallet"] for c in st["candidates"]["top"]
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        for w, status in (("W1", "qualified"), ("W2", "retired"), ("W3", "qualified")):
+            st.upsert_candidate(w, "solanatracker", {"trades": 100}, NOW - 100)
+            st.put_verdict({"wallet": w, "computed_at": NOW - 50, "status": status, "score": {"W1": 0.9, "W2": 0.1, "W3": 0.7}[w],
+                            "n_tape": 25, "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
+        st.upsert_candidate("W4", "tape", {}, NOW - 100, status="banned")
+        st.set_coverage("qualify:last_lab", {"ts": NOW - 50, "wallets": 3})
+        con = sqlite3.connect(ops.db)
+        con.execute(
+            "CREATE TABLE fills (id INTEGER PRIMARY KEY, ts INTEGER, wallet TEXT, mint TEXT, side TEXT, sol REAL, sniper TEXT)"
+        )
+        con.execute(
+            "INSERT INTO fills (ts, wallet, mint, side, sol, sniper) VALUES (?,?,?,?,?,?)",
+            (NOW - 10, "W1", "M1", "buy", 0.2, "s1"),
+        )
+        con.commit()
+        con.close()
+    finally:
+        st.close()
+    s = dash_state(ops, now=NOW)
+    assert s["candidates"]["counts"] == {"banned": 1, "qualified": 2, "retired": 1} and [
+        c["wallet"] for c in s["candidates"]["top"]
     ] == ["W1", "W3"]
-    assert st["fills"][0]["mint"] == "M1" and st["fills"][0]["sol"] == 0.2
+    assert s["candidates"]["source"] == "table" and s["candidates"]["last_lab"] == {"ts": NOW - 50, "wallets": 3}
+    assert s["fills"][0]["mint"] == "M1" and s["fills"][0]["sol"] == 0.2
 
 
 def _serve(ops):
