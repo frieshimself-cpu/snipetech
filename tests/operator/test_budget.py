@@ -36,3 +36,8 @@ def test_record_returns_usd_and_writes_one_line(tmp_path):
 
 def test_missing_file_means_zero(tmp_path):
     assert Ledger(tmp_path / "none.jsonl", DEFAULT_OPERATOR_PRICES).spent_today(DAY) == 0.0
+
+
+def test_none_token_counts_count_as_zero():
+    usage = {"input_tokens": 1_000_000, "output_tokens": None, "cache_read_input_tokens": None, "cache_creation_input_tokens": None}
+    assert cost_usd(usage, DEFAULT_OPERATOR_PRICES, analyst=False) == pytest.approx(3.0)
