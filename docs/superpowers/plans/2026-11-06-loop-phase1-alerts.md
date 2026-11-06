@@ -145,3 +145,17 @@ async def test_status_reply_has_equity_and_spend(...): ...
 
 - [ ] **Step 1:** docs + prompt line; suite green; commit `docs: operator alerts, digest and commands`.
 - [ ] **Step 2:** deploy and run the acceptance list; record results in `docs/live-recipe.md` under "Operator phase 1".
+
+### Task 6: Live dashboard
+
+**Files:**
+- Create: `src/snipetech/dash.py` (state aggregation), `src/snipetech/dash.html` (single page, no framework, auto-refresh 15 s, phone layout)
+- Modify: `src/snipetech/api.py` (routes `GET /dash` → the HTML, `GET /api/dash/state` → JSON; HTTP basic auth with password from env `DASH_TOKEN`; both refuse without it), `deploy/systemd/snipetech-api.service` (enabled by setup), `deploy/Caddyfile` or `bootstrap.sh` (proxy `/dash*` and `/api/dash*` to the api port), `deploy/setup.sh` env template (`DASH_TOKEN=`)
+- Test: `tests/test_dash.py`
+
+**Interfaces:**
+- Produces: `dash_state(svc, paths: OperatorPaths, cfg, now) -> dict` with keys `services`, `jobs` (running + last 10 ended with argv/exit), `operator` (last 20 notes, last 5 decisions, spend today / 7 d, next timer run), `resources` (from the last snapshot), `snapshot` (equity, held, snipers by status, tape lag), `candidates` (counts by status, top 10 qualified by score when the tables exist), `fills` (last 20 when the table exists), `book` (enabled, stop flag), `version` (git short hash from `deploy`), `generated_at`.
+- The page renders those sections; red/amber/green by status; never shows a secret (state is built from the snapshot and tables only).
+
+- [ ] **Step 1: Tests**: `test_state_without_tables_is_complete` (keys present, empty lists), `test_dash_requires_token` (401 without, 200 with), `test_state_has_no_secret_values` (monkeypatched env keys never appear in the JSON).
+- [ ] **Step 2–5:** implement, suite, commit `feat: live dashboard at /dash`; deploy: `DASH_TOKEN` set by the owner over SSH, `systemctl enable --now snipetech-api`, Caddy reload; open `https://snipetech.45-77-66-186.sslip.io/dash` on the phone.
