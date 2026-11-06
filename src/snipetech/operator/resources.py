@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from ..config import Config
 from ..store import Store
@@ -105,7 +106,15 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
     # SOL float: what the book needs plus a margin.
     try:
         b = cfg.book
-        needed = (b.max_wallets * b.fill_max_sol * 2 + rc.sol_float_margin) if b.enabled else rc.sol_float_margin
+        live = b.enabled
+        try:
+            from ..book.switch import book_flag
+            from .paths import OperatorPaths
+
+            live = live or book_flag(OperatorPaths(Path(cfg.storage.db_path).resolve().parent)).exists()
+        except Exception:  # noqa: BLE001
+            pass
+        needed = (b.max_wallets * b.fill_max_sol * 2 + rc.sol_float_margin) if live else rc.sol_float_margin
         eq = snap.equity
         if eq is None:
             out.append(Resource("sol_float", None, "sol", needed, "unknown", "wallet balance not read this round"))

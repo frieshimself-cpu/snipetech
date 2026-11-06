@@ -260,3 +260,20 @@ def test_status_counts_a_starting_sniper_as_running(tmp_path):
     snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=1.0, wsol=0.0, held=[], snipers=svc._snipers, spent_today=0.0)
     ctx, _ = _ctx(tmp_path, svc, snap)
     assert "1 running" in asyncio.run(handle_command(_cmd("status"), **ctx))
+
+
+def test_book_switch_from_telegram(tmp_path):
+    """The owner switches the book on and off from Telegram; /status shows it; /stop still halts it."""
+    from snipetech.book.switch import book_live
+
+    svc = FakeSvc(held=[], snipers=[])
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=5.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
+    ctx, sent = _ctx(tmp_path, svc, snap)
+    assert not book_live(ctx["cfg"], ctx["paths"])
+    reply = asyncio.run(handle_command(_cmd("book", "on"), **ctx))
+    assert book_live(ctx["cfg"], ctx["paths"]) and "on" in reply.lower() and "/book off" in reply
+    assert "book: on" in asyncio.run(handle_command(_cmd("status"), **ctx))
+    assert "switched the book on" in ctx["paths"].notes.read_text()
+    reply = asyncio.run(handle_command(_cmd("book", "off"), **ctx))
+    assert not book_live(ctx["cfg"], ctx["paths"]) and "off" in reply.lower()
+    assert "book: off" in asyncio.run(handle_command(_cmd("book"), **ctx)).lower()

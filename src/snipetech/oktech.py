@@ -127,6 +127,21 @@ class OktechClient:
     async def delete(self, task_id: str) -> dict:
         return await self._req("DELETE", f"/tasks/{task_id}")
 
+    async def docs(self) -> dict:
+        """OKTech's own API reference (modes, fields, defaults, errors), as its Sniper page shows it. Read-only."""
+        url = self.base.rsplit("/v1", 1)[0] + "/docs"
+        try:
+            r = await self.http.get(url)
+        except httpx.HTTPError as exc:
+            raise OktechError(0, "NETWORK", f"network error: {type(exc).__name__}: {exc}") from exc
+        try:
+            data = r.json()
+        except ValueError:
+            data = {"success": False, "error": r.text[:200]}
+        if r.status_code >= 400 or data.get("success") is False:
+            raise OktechError(r.status_code, data.get("code", ""), data.get("error", r.reason_phrase), data)
+        return data
+
     async def close(self) -> None:
         await self.http.aclose()
 

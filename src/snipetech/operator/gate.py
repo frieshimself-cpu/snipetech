@@ -19,7 +19,20 @@ SERVICE_REFIRE_SECS = 6 * 3600  # a unit the owner has to enable or reset by han
 
 
 def refire_secs(state_key: str) -> int:
-    return SERVICE_REFIRE_SECS if state_key.startswith("service not active") else STATE_REFIRE_SECS
+    slow = state_key.startswith("service not active") or state_key.startswith("loop stage failed")
+    return SERVICE_REFIRE_SECS if slow else STATE_REFIRE_SECS
+
+
+def loop_stage(argv) -> str | None:
+    """The learning-loop stage a job runs (`measure run`, `book run`, ...), or None for anything else. The round
+    starts these itself while their timers are inactive, so they end every round: routine, not news."""
+    from .standin import STANDIN
+
+    argv = tuple(argv or ())
+    for stage, _unit, _every in STANDIN:
+        if argv[: len(stage)] == stage:
+            return " ".join(stage)
+    return None
 
 
 @dataclass
@@ -84,19 +97,23 @@ def _state_key(reason: str) -> str:
 
 
 def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) -> Decision:
-    """Events (a job ended, equity moved, inbox, analysis due) always call. States (sniper running, coin held, OKTech
-    unknown, tape stale, service down) call when they appear and then at most once per STATE_REFIRE_SECS."""
+    """Events (a research job ended, equity moved, inbox, analysis due) always call. States (sniper running, coin held,
+    OKTech unknown, tape stale, service down, a loop stage failing) call when they appear and then at most once per
+    `refire_secs`. A loop stage that ended cleanly is neither."""
     if snap.spent_today >= cfg.daily_usd:
         return Decision(False, "none", ["budget"])
     events: list[str] = []
     states: list[str] = []
-    if snap.jobs_ended:
+    ended = [j for j in snap.jobs_ended if loop_stage(j.get("argv")) is None]
+    if ended:
         events.append(
             "job ended: "
-            + ", ".join(
-                f"{j.get('id')} ({' '.join(j.get('argv', [])[:2])}, exit {j.get('exit_code')})" for j in snap.jobs_ended
-            )
+            + ", ".join(f"{j.get('id')} ({' '.join(j.get('argv', [])[:2])}, exit {j.get('exit_code')})" for j in ended)
         )
+    failed = sorted({loop_stage(j.get("argv")) for j in snap.jobs_ended
+                     if loop_stage(j.get("argv")) is not None and j.get("exit_code") != 0})  # fmt: skip
+    if failed:
+        states.append("loop stage failed: " + ", ".join(failed))
     exp = expected_state(paths)
     if snap.snipers is None:
         states.append("oktech state unknown")

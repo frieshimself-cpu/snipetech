@@ -1,7 +1,6 @@
 import asyncio
 import json
 import os
-import sys
 
 import pytest
 
@@ -68,6 +67,15 @@ def test_quiet_round_calls_no_runner(tmp_env):
     _op(tmp_env)
     assert tmp_env["calls"] == [] and tmp_env["paths"].snapshot_prev.exists()
     assert tmp_env["paths"].log.read_text().count("quiet") == 2
+
+
+def test_a_loop_stage_ending_between_rounds_keeps_the_round_quiet(tmp_env):
+    """The stand-in starts measure every round; its clean end must not wake the paid operator every 15 minutes."""
+    _op(tmp_env)
+    meta = {"id": "m1", "argv": ["measure", "run"], "running": False, "started": NOW - 60, "ended": NOW, "exit_code": 0}
+    (tmp_env["paths"].jobs / "m1.json").write_text(json.dumps(meta))
+    _op(tmp_env)
+    assert tmp_env["calls"] == []
 
 
 def test_changed_round_calls_runner(tmp_env):

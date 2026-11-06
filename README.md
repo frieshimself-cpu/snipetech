@@ -328,6 +328,15 @@ snipetech remote update                                    # pull, reinstall, re
 
 Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 
+**Runs without the timers, and a book switch without SSH.** Until the loop's timers are enabled, every operator
+round (every 15 minutes, already enabled) starts the stages that are due as background jobs: measure and the book every
+round, the event feeds, discover hourly, qualify every 30 minutes (one lab at a time), the read-only database copy
+hourly, the event scan every 3 hours, the strategist on Sundays. A stage whose timer is active is left to systemd. A
+stage that ends cleanly wakes nobody; a failed one is a decision note, repeated every six hours while it keeps failing.
+The live book is switched on by `[book] enabled = true` in the owner's config file or, without SSH, by `/book on` in
+Telegram from the owner's chat (or `snipetech book on`); `/book off` and `/stop` halt it. The strategist can never
+switch it on.
+
 **The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
 the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`
 takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock

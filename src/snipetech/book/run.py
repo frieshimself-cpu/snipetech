@@ -14,6 +14,7 @@ from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from .policy import BookInputs, BookPlan, plan_book
 from .state import day_accounting, record_run
+from .switch import book_live
 
 
 def _bookable(store) -> list[dict]:
@@ -68,7 +69,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
                      stopped=paths.stop_flag.exists())  # fmt: skip
     plan: BookPlan = plan_book(inp, b)
-    live_mode = b.enabled if dry is None else not dry
+    live_mode = book_live(cfg, paths) if dry is None else not dry
     effective_dry = (not live_mode) or plan.kill_reason is not None
     if plan.kill_reason and not notes.has_today(f"[book] kill: {plan.kill_reason}", now):
         notifier.send(

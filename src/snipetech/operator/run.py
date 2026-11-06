@@ -23,6 +23,7 @@ from .notify import from_env
 from .paths import OperatorPaths
 from .resources import alert_lines, check_resources, disk_free_gb_at, status_line
 from .snapshot import load_current, save, take_snapshot
+from .standin import start_standins
 from .tools import NoteSink
 from .turn import run_turn
 
@@ -146,6 +147,12 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if balances is not None:
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
+        if not dry_run:  # loop stages whose timers are not enabled run from here
+            try:
+                start_standins(OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch),
+                               dict(snap.services or {}), t0, log=lambda m: _log(paths, t0, m))  # fmt: skip
+            except Exception as exc:  # noqa: BLE001
+                _log(paths, t0, f"stand-in: failed: {type(exc).__name__}: {exc}")
         if paths.stop_flag.exists():
             _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.

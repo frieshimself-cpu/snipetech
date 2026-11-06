@@ -426,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
     sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "copylist", "copyaudit", "guard", "cycle", "holdings", "show", "start",
-                                       "stop", "delete"])  # fmt: skip
+                                       "stop", "delete", "docs"])  # fmt: skip
     sp.add_argument(
         "--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)"
     )
@@ -656,10 +656,9 @@ def build_parser() -> argparse.ArgumentParser:
         "book",
         "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
     )
-    sp.add_argument("action", choices=["run"])
-    sp.add_argument(
-        "--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)"
-    )
+    sp.add_argument("action", choices=["run", "on", "off", "status"],
+                    help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status")  # fmt: skip
+    sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
     sp = cmd(
         "strategist",
         "the learning loop's strategist: one bounded parameter change a week to [book] / [qualify] (Sundays)",
@@ -1144,6 +1143,13 @@ async def _run(args, cfg: Config) -> int:
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
+            if args.action == "docs":
+                client = svc._oktech()
+                try:
+                    print(json.dumps(await client.docs(), indent=1, default=str))
+                finally:
+                    await client.close()
+                return 0
             if args.action in ("show", "start", "stop", "delete"):
                 if not args.id:
                     raise SystemExit(f"{args.action}: give --id (see `snipetech oktech status`)")
@@ -1422,9 +1428,24 @@ def main(argv: list[str] | None = None) -> int:
         return _events(args, cfg)
     if args.cmd == "book":
         from .book.run import run_book
+        from .book.switch import book_line, book_live, book_switch
+        from .operator.paths import OperatorPaths
 
-        if args.live and not cfg.book.enabled:
-            raise SystemExit("book: --live refused: [book] enabled is false in the config file")
+        bpaths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
+        if args.action in ("on", "off"):
+            book_switch(bpaths, args.action == "on", "cli", time.time())
+            print(
+                f"book {args.action}: " + (book_line(cfg) if args.action == "on" else "it creates and starts nothing")
+            )
+            return 0
+        if args.action == "status":
+            print(
+                f"book: {'on' if book_live(cfg, bpaths) else 'off'}"
+                + (" (halted by /stop)" if bpaths.stop_flag.exists() else "")
+            )
+            return 0
+        if args.live and not book_live(cfg, bpaths):
+            raise SystemExit("book: --live refused: the book is off ([book] enabled false and no /book on)")
         svc = Service(cfg)
 
         async def go():

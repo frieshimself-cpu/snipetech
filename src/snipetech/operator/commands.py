@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from ..book.switch import book_line, book_live, book_switch
 from ..config import Config
 from ..positions import is_active
 from .notify import API, Notifier, get_updates
@@ -15,7 +16,10 @@ from .paths import OperatorPaths
 from .snapshot import Snapshot
 from .tools import NoteSink
 
-HELP = "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  /why <wallet> and /budget (later phase)"
+HELP = (
+    "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  "
+    "/book on|off (the live book, no SSH needed)  /why <wallet> and /budget (later phase)"
+)
 
 
 @dataclass
@@ -94,7 +98,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         if snap.snipers is not None
         else "snipers: unknown (OKTech not answering)",
         f"claude spend today {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.0f} $",
-        f"book: {'on' if cfg.book.enabled else 'off'}",
+        f"book: {'on' if book_live(cfg, paths) else 'off'}",
     ]
     if snap.fills:
         lines.append(f"fills since last round: {len(snap.fills)}")
@@ -171,6 +175,21 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
             reply = "resumed: snipers may run again as planned (expected state reset: any sniper running is reported again)."
         except FileNotFoundError:
             reply = "nothing to resume: no stop flag was set."
+    elif cmd.name == "book":
+        arg = cmd.args[0].lower() if cmd.args else "status"
+        if arg in ("on", "off"):
+            book_switch(paths, arg == "on", "telegram", now)
+            if arg == "on":
+                notes.write("owner switched the book on (/book on)", "decision")
+                reply = ("book on: " + book_line(cfg) + ". /book off or /stop halts it"
+                         + (" (the /stop flag is set: it stays halted until /resume)" if paths.stop_flag.exists() else "") + ".")  # fmt: skip
+            else:
+                notes.write("owner switched the book off (/book off)", "decision")
+                reply = "book off: it creates and starts nothing; snipers it already runs keep selling what they hold."
+        else:
+            reply = f"book: {'on' if book_live(cfg, paths) else 'off'}" + (
+                " (halted by /stop)" if paths.stop_flag.exists() else ""
+            )
     elif cmd.name in ("why", "budget"):
         reply = f"/{cmd.name} is available in a later phase."
     else:

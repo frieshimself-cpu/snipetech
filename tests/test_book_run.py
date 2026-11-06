@@ -226,3 +226,26 @@ def test_a_banned_wallet_is_never_booked(tmp_path):
         assert created and all(not any(spec.startswith(L1) for spec in c[1]) for c in created)
     finally:
         st.close()
+
+
+def test_the_owners_book_switch_makes_the_book_live(tmp_path):
+    from snipetech.book.switch import book_switch
+
+    st, cfg = _env(tmp_path)  # [book] enabled is false in the config
+    book_switch(OperatorPaths(tmp_path / "data"), True, "test", NOW)
+    svc = FakeSvc(st)
+    try:
+        out = asyncio.run(
+            run_book(
+                svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None), balances=lambda w: (10.0, 0.0, [])
+            )
+        )
+        assert out["dry"] is False and any(c[0] == "create" for c in svc.calls)
+    finally:
+        st.close()
+
+
+def test_cli_book_switch_parses():
+    p = build_parser()
+    assert p.parse_args(["book", "on"]).action == "on" and p.parse_args(["book", "off"]).action == "off"
+    assert p.parse_args(["book", "status"]).action == "status"

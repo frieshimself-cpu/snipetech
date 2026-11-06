@@ -157,3 +157,32 @@ def test_a_starting_sniper_counts_as_running_for_the_gate(tmp_path):
     paths = OperatorPaths(tmp_path / "data").ensure()
     d = decide(snap(snipers=[{"id": "a", "name": "x", "status": "starting"}]), snap(), NOW, CFG, paths)
     assert d.call and any("1 sniper(s) running" in r for r in d.reasons)
+
+
+def test_a_loop_stage_that_ended_cleanly_is_quiet(paths):
+    """The operator round stands in for inactive loop timers: measure and the book end every round. A clean run is
+    routine, not news; calling Claude for it would spend the day's budget by noon."""
+    ended = [{"id": "m", "argv": ["measure", "run"], "exit_code": 0}, {"id": "b", "argv": ["book", "run"], "exit_code": 0},
+             {"id": "e", "argv": ["events", "poll", "--once"], "exit_code": 0}]  # fmt: skip
+    assert not decide(snap(jobs_ended=ended), snap(), NOW, CFG, paths).call
+
+
+def test_a_failed_loop_stage_is_raised_then_reminded_every_six_hours(paths):
+    from snipetech.operator.gate import refire_secs
+
+    failed = [{"id": "m", "argv": ["measure", "run"], "exit_code": 1}]
+    d = decide(snap(jobs_ended=failed), snap(), NOW, CFG, paths)
+    assert d.call and any("loop stage failed: measure run" in r for r in d.reasons)
+    key = d.state_reasons[0]
+    assert refire_secs(key) == 6 * 3600
+    prev = snap()
+    prev.reason_ts = {key: NOW}
+    later = NOW + 2 * 3600
+    assert not decide(snap(jobs_ended=failed, tape_last_ts=later), prev, later, CFG, paths).call
+    later = NOW + 6 * 3600
+    assert decide(snap(jobs_ended=failed, tape_last_ts=later), prev, later, CFG, paths).call
+
+
+def test_a_research_job_ending_still_calls(paths):
+    d = decide(snap(jobs_ended=[{"id": "x", "argv": ["follow", "W"], "exit_code": 0}]), snap(), NOW, CFG, paths)
+    assert d.call and any("job ended" in r for r in d.reasons)

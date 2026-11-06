@@ -923,3 +923,28 @@ def test_the_owners_stop_flag_blocks_every_start_path(monkeypatch, tmp_path):
         asyncio.run(svc.oktech_cycle(["a"], W6, 0.5, 1))
     assert calls == []
     store.close()
+
+
+def test_docs_reads_the_api_reference_with_the_key():
+    seen = {}
+
+    def handler(request):
+        seen["path"], seen["auth"] = request.url.path, request.headers.get("Authorization")
+        return httpx.Response(200, json={"success": True, "docs": {"modes": [{"value": "ctbot"}]}})
+
+    async def go():
+        client = OktechClient(
+            "https://oktech.test/api/sniper-api/v1", key="oks_k", transport=httpx.MockTransport(handler)
+        )
+        try:
+            return await client.docs()
+        finally:
+            await client.close()
+
+    out = asyncio.run(go())
+    assert (
+        seen == {"path": "/api/sniper-api/docs", "auth": "Bearer oks_k"} and out["docs"]["modes"][0]["value"] == "ctbot"
+    )
+    from snipetech.cli import build_parser
+
+    assert build_parser().parse_args(["oktech", "docs"]).action == "docs"
