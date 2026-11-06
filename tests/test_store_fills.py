@@ -85,3 +85,44 @@ def test_bid_model_and_wallet_live_roundtrip(tmp_path):
         assert [r["wallet"] for r in st.wallet_live(status="live")] == ["LEAD"]
     finally:
         st.close()
+
+
+# the fills table as it first shipped (24 columns); later columns are only ever appended through _ADDED_COLUMNS
+_OLD_FILLS = """CREATE TABLE fills (
+    sig TEXT PRIMARY KEY, ts INTEGER, slot INTEGER, pos_in_slot INTEGER, slot_txs INTEGER, wallet TEXT, wallet_copied TEXT,
+    event_kind TEXT, mint TEXT, side TEXT, sol REAL, tokens REAL, trades_behind INTEGER, price_gap_pct REAL,
+    priority_lamports INTEGER, tip_lamports INTEGER, cu_limit INTEGER, cu_used INTEGER, landing_service TEXT, pnl_sol REAL,
+    exit_reason TEXT, sniper_id TEXT, bid_arm TEXT, buy_sig TEXT
+)"""
+
+
+def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
+    """A database made before measure recorded exits: opening it appends exit_name, crossed and twin_fee_sol to fills,
+    keeps the old rows (the new columns read None), and ends with the same column order as a fresh database."""
+    import sqlite3
+
+    con = sqlite3.connect(tmp_path / "old.db")
+    con.execute(_OLD_FILLS)
+    con.execute("INSERT INTO fills (sig, ts, side, sol, exit_reason) VALUES ('S0', ?, 'sell', 0.19, 'sold')", (NOW,))
+    con.commit()
+    con.close()
+    st = Store(tmp_path / "old.db")
+    try:
+        old = st.fill("S0")
+        assert old["exit_reason"] == "sold" and old["sol"] == 0.19
+        assert old["exit_name"] is None and old["crossed"] is None and old["twin_fee_sol"] is None
+        st.put_fill(
+            _fill("S1", NOW + 1, side="sell", exit_reason="dead_exit", exit_name="lab", crossed=1, twin_fee_sol=0.00401)
+        )
+        new = st.fill("S1")
+        assert new["exit_name"] == "lab" and new["crossed"] == 1 and new["twin_fee_sol"] == 0.00401
+        assert [r["sig"] for r in st.fills(side="sell")] == ["S1", "S0"]
+        migrated = [r[1] for r in st._q("PRAGMA table_info(fills)")]
+    finally:
+        st.close()
+    fresh = Store(tmp_path / "fresh.db")
+    try:
+        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
+        assert migrated[-3:] == ["exit_name", "crossed", "twin_fee_sol"]
+    finally:
+        fresh.close()
