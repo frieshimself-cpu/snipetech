@@ -254,8 +254,8 @@ left, Birdeye compute units, SolanaTracker and Vybe monthly requests, the wallet
 needs, disk, failed transactions in the last hour — and sends one Telegram line per critical item per day with the
 exact thing to do (`[resources]` thresholds in the config; `snipetech config set resources.anthropic_credit_usd <n>`
 after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a digest: wallet and its change since the
-last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys three commands
-from your chat only: `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
+last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys these commands
+from your chat only (also `/book` and `/sell`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
 snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
 alone), `/resume`. `/sell <coin address>` sells all of that coin from the sniper wallet within a minute (pump.fun
 curve coins only, signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin off the curve is sold by hand in

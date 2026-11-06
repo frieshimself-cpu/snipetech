@@ -1,5 +1,5 @@
 [Unit]
-Description=snipetech commands: act on the owner's Telegram /stop /resume /status within a minute (no snapshot, no Claude)
+Description=snipetech commands: act on the owner's Telegram /stop /resume /status /book /sell within a minute (no snapshot, no Claude)
 After=network-online.target
 
 [Service]

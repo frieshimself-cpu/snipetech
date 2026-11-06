@@ -39,6 +39,10 @@ class Command:
     args: list[str]
     chat_id: int
     update_id: int
+    date: int | None = None  # when the owner sent it (Telegram's message date, unix seconds)
+
+
+SELL_MAX_AGE_SECS = 300  # a /sell older than this (it waited out an outage) is refused: send it again
 
 
 def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command], int | None]:
@@ -58,7 +62,13 @@ def parse_updates(updates: list[dict], owner_chat_id: int) -> tuple[list[Command
         name = parts[0][1:].split("@", 1)[0].lower()
         if name:
             cmds.append(
-                Command(name=name, args=parts[1:], chat_id=int(chat), update_id=int(uid) if isinstance(uid, int) else 0)
+                Command(
+                    name=name,
+                    args=parts[1:],
+                    chat_id=int(chat),
+                    update_id=int(uid) if isinstance(uid, int) else 0,
+                    date=int(msg["date"]) if isinstance(msg.get("date"), int) else None,
+                )
             )
     return cmds, last
 
@@ -406,6 +416,13 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                 + (" (halted by /stop)" if paths.stop_flag.exists() else "")
                 + (f"; {last_run_line(store, now)}" if store is not None else "")
             )
+    elif cmd.name == "sell" and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
+        # it waited in Telegram's queue (an outage, a restart): the coins held now may not be the ones meant
+        mins = int((now - cmd.date) // 60)
+        notes.write(
+            f"owner's /sell {' '.join(cmd.args)} from Telegram was {mins} min old when read: nothing sold", "decision"
+        )
+        reply = f"Nothing sold: this /sell is {mins} min old (it waited while the bot was not reading). Send it again if you still mean it."
     elif cmd.name == "sell":
         reply = await _sell(cmd.args, svc=svc, cfg=cfg, notes=notes, sweep=sweep)
     elif cmd.name in ("why", "budget"):

@@ -322,7 +322,14 @@ def test_book_status_reports_the_last_run(tmp_path):
     svc.store = Store(tmp_path / "s.db")
     snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=5.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
     ctx, sent = _ctx(tmp_path, svc, snap)
-    record_run(svc.store, {"actions": [], "kill_reason": None}, False, NOW - 120, ranked=0, best={"wallet": "2YDnmMQt", "score": 0.0013})
+    record_run(
+        svc.store,
+        {"actions": [], "kill_reason": None},
+        False,
+        NOW - 120,
+        ranked=0,
+        best={"wallet": "2YDnmMQt", "score": 0.0013},
+    )
     reply = asyncio.run(handle_command(_cmd("book", "status"), **ctx))
     assert "last run" in reply and "2YDnmM" in reply and "0.0013" in reply
 
@@ -557,3 +564,26 @@ def test_only_the_owners_sell_is_obeyed(tmp_path, monkeypatch, sell_key):
         st.close()
     assert sweep.calls == [(RPC, [MINT], 0.5)] and any(SIG in t for t in sent)
     assert "command /sell" in paths.log.read_text() and svc.calls == []
+
+
+def test_an_old_sell_message_is_refused(tmp_path, sell_key):
+    """A /sell that waited in Telegram's queue (an outage, a restart) is never acted on late: the coins held now may not
+    be the ones the owner meant. It is refused with its age; the owner sends it again if they still mean it."""
+    wallet, _ = sell_key
+    sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [_sold(MINT)]})
+    svc, ctx, sent = _sell_ctx(tmp_path, wallet, sweep)
+    old = _cmd("sell", "all")
+    old.date = int(ctx["now"]) - 3600
+    reply = asyncio.run(handle_command(old, **ctx))
+    assert sweep.calls == [] and "60 min old" in reply and "again" in reply
+    fresh = _cmd("sell", "all")
+    fresh.date = int(ctx["now"]) - 20
+    asyncio.run(handle_command(fresh, **ctx))
+    assert sweep.calls == [(RPC, None, 0.5)]
+
+
+def test_a_command_carries_the_time_the_owner_sent_it():
+    cmds, _ = parse_updates(
+        [{"update_id": 5, "message": {"chat": {"id": 7}, "text": "/sell all", "date": 1_794_000_000}}], 7
+    )
+    assert cmds[0].date == 1_794_000_000

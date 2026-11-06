@@ -607,7 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--commands",
         action="store_true",
-        help="only poll Telegram and act on /stop /resume /status (the one-minute timer)",
+        help="only poll Telegram and act on /stop /resume /status /book /sell (the one-minute timer)",
     )
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")

@@ -123,7 +123,9 @@ class Seller:
 
         secret = secret_b58 or os.environ.get("SNIPER_SECRET", "")
         if not secret:
-            raise RuntimeError("SNIPER_SECRET is not set (base58 secret key of the selling wallet, in /etc/snipetech/env)")
+            raise RuntimeError(
+                "SNIPER_SECRET is not set (base58 secret key of the selling wallet, in /etc/snipetech/env)"
+            )
         self.kp = Keypair.from_base58_string(secret.strip())
         self.user = str(self.kp.pubkey())
         self.rpc = rpc
@@ -131,7 +133,9 @@ class Seller:
     async def holdings(self, min_amount: int = 1) -> list[Holding]:
         out = []
         for prog in (TOKEN_2022_PROGRAM, TOKEN_PROGRAM):
-            res = await self.rpc.call("getTokenAccountsByOwner", [self.user, {"programId": prog}, {"encoding": "jsonParsed"}])
+            res = await self.rpc.call(
+                "getTokenAccountsByOwner", [self.user, {"programId": prog}, {"encoding": "jsonParsed"}]
+            )
             for a in (res or {}).get("value", []):
                 info = a["account"]["data"]["parsed"]["info"]
                 amt = int(info["tokenAmount"]["amount"])
@@ -152,7 +156,10 @@ class Seller:
         from solders.message import Message
         from solders.transaction import Transaction
 
-        metas = [AccountMeta(_pk(k), is_signer=s, is_writable=w) for k, s, w in sell_v3_accounts(self.user, holding.mint, holding.token_program)]
+        metas = [
+            AccountMeta(_pk(k), is_signer=s, is_writable=w)
+            for k, s, w in sell_v3_accounts(self.user, holding.mint, holding.token_program)
+        ]
         ix = Instruction(_pk(PUMP_PROGRAM), sell_v3_data(holding.amount, min_sol_output), metas)
         msg = Message.new_with_blockhash([set_compute_unit_limit(cu_limit), set_compute_unit_price(cu_price_micro), ix],
                                          self.kp.pubkey(), Hash.from_string(blockhash))  # fmt: skip
@@ -168,7 +175,12 @@ class Seller:
             return {"mint": holding.mint, "skipped": "curve complete: the coin migrated to PumpSwap (not handled yet)"}
         quote = c.sol_out(holding.amount)
         floor = max(1, int(quote * (1 - slippage)))
-        row: dict[str, Any] = {"mint": holding.mint, "amount": holding.amount, "quote_sol": quote / LAMPORTS, "floor_sol": floor / LAMPORTS}
+        row: dict[str, Any] = {
+            "mint": holding.mint,
+            "amount": holding.amount,
+            "quote_sol": quote / LAMPORTS,
+            "floor_sol": floor / LAMPORTS,
+        }
         if dry_run:
             return row | {"dry_run": True}
         bh = (await self.rpc.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]
@@ -187,5 +199,21 @@ async def sweep(rpc, mints: list[str] | None = None, slippage: float = 0.5, dry_
     held = await s.holdings()
     if mints:
         held = [h for h in held if h.mint in set(mints)]
-    results = [await s.sell(h, slippage, dry_run) for h in held]
+    results = []
+    for h in held:
+        try:
+            results.append(await s.sell(h, slippage, dry_run))
+        except Exception as exc:  # noqa: BLE001 - one refused coin (dust, sold a moment ago) never stops the others
+            results.append({"mint": h.mint, "skipped": f"refused: {_refused(exc)}"})
     return {"wallet": s.user, "holdings": len(held), "results": results}
+
+
+def _refused(exc: Exception) -> str:
+    """Why the chain refused one sale: a node's own words, any other error by its kind only (an HTTP error's text
+    carries the RPC address, and with it the provider's key)."""
+    from .rpc import RpcError
+
+    if isinstance(exc, RpcError):
+        said = (exc.error or {}).get("message") if isinstance(exc.error, dict) else None
+        return str(said or exc)[:200]
+    return type(exc).__name__
