@@ -98,7 +98,7 @@ def test_one_unreadable_job_file_does_not_stop_the_loop(tmp_path):
         )
 
     started = []
-    Jobs.ops.op_run = lambda argv: started.append(tuple(argv)) or {"id": "x"}
+    Jobs.ops.op_run = lambda argv, timeout=None: started.append(tuple(argv)) or {"id": "x"}
     assert start_standins(Jobs(), {}, NOW) and ("measure", "run") in started
     assert os.path.exists(data / "jobs" / "truncated.json")  # left for a person to look at, never fatal
 
@@ -136,3 +136,23 @@ def test_old_finished_stage_jobs_are_pruned(tmp_path):
     names = {p.name for p in jobs.iterdir()}
     assert "old_measure.json" not in names and "old_measure.log" not in names and "old_measure.exit" not in names
     assert {"new_measure.json", "old_lab.json", "old_guard.log"} <= names
+
+
+def test_each_stage_runs_under_its_own_time_limit(tmp_path):
+    """A hung stage must not hold its slot for the ops service's 6-hour default: measure and the book get minutes."""
+    import sys
+
+    from snipetech import ops as O
+    from snipetech.operator.standin import start_standins
+
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+
+    class Jobs:
+        ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main", command=[sys.executable, "-c", "pass"])
+
+    limits = {}
+    Jobs.ops.op_run = lambda argv, timeout=6 * 3600: limits.update({" ".join(argv): timeout}) or {"id": "x"}
+    start_standins(Jobs(), {}, NOW)
+    assert limits["measure run"] <= 30 * 60 and limits["book run"] <= 30 * 60 and limits["qualify run"] <= 3 * 3600
+    assert all(t < 6 * 3600 for t in limits.values())

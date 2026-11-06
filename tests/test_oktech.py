@@ -968,3 +968,15 @@ def test_guard_watch_only_restarts_the_watch_without_starting_anything(tmp_path,
     assert cli.main(argv + ["--watch-only"]) == 0
     assert seen == {"ids": ["a", "b"], "start": False, "floor": 2.0, "minutes": 130.0}
     assert cli.main(argv) == 0 and seen["start"] is True
+
+
+def test_docs_answers_that_are_not_a_json_object_do_not_crash():
+    async def go(resp):
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="oks_k", transport=httpx.MockTransport(lambda r: resp))
+        try:
+            return await client.docs()
+        finally:
+            await client.close()
+
+    assert asyncio.run(go(httpx.Response(200, text="<!doctype html><h1>API</h1>")))["raw"].startswith("<!doctype")
+    assert asyncio.run(go(httpx.Response(200, json=[{"mode": "ctbot"}])))["docs"][0]["mode"] == "ctbot"

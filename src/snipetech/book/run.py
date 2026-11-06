@@ -91,13 +91,19 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
     if plan.kill_reason and not notes.has_today(f"[book] kill: {plan.kill_reason}", now):
-        notifier.send(
-            notes.write(
-                f"[book] kill: {plan.kill_reason}"
-                + (" (stopping its snipers that hold nothing)" if act_on_stops and stops else ""),
-                "decision",
-            )
+        line = f"[book] kill: {plan.kill_reason}" + (
+            " (stopping its snipers that hold nothing)" if act_on_stops and stops else ""
         )
+        if live_mode or (
+            act_on_stops and stops
+        ):  # the owner hears about a live book or a stop; an idle off book is a note
+            notifier.send(notes.write(line, "decision"))
+        else:
+            notes.write(line, "info")
+    qualified = inp.qualified
+    best_q = max(qualified, key=lambda v: float(v.get("score") or 0), default=None)
+    seen = {"ranked": len(plan.ranked),
+            "best": {"wallet": best_q.get("wallet"), "score": best_q.get("score")} if best_q else None}  # fmt: skip
     counts: dict[str, int] = {}
     for a in plan.actions:
         counts[a.kind] = counts.get(a.kind, 0) + 1
@@ -112,7 +118,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
                 await _do(svc, notifier, notes, "stop", a)
-        record_run(store, plan, True, now)
+        record_run(store, plan, True, now, **seen)
         return {
             "dry": True,
             "kill_reason": plan.kill_reason,
@@ -154,7 +160,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     for a in plan.actions:
         if a.kind == "start" and a.sniper_id:
             await _do(svc, notifier, notes, "start", a)
-    record_run(store, plan, False, now)
+    record_run(store, plan, False, now, **seen)
     return {
         "dry": False,
         "kill_reason": plan.kill_reason,

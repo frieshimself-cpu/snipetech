@@ -314,3 +314,49 @@ def test_cli_book_bar_parses():
     a = build_parser().parse_args(["book", "bar", "0.001"])
     assert a.action == "bar" and a.value == "0.001"
     assert build_parser().parse_args(["book", "bar"]).value is None
+
+
+def test_book_status_says_why_it_is_not_buying(tmp_path):
+    """The owner asks "is it running?": the last run's line says what the book saw, e.g. no wallet above the bar and
+    the best one it has."""
+    from snipetech.book.state import last_run_line
+    from snipetech.book.switch import book_bar
+
+    st, cfg = _env(tmp_path, enabled=True)  # L1 0.03, L2 0.02
+    paths = OperatorPaths(tmp_path / "data")
+    svc = FakeSvc(st)
+    try:
+        assert "has not run yet" in last_run_line(st)
+        book_bar(paths, 0.05, "test", NOW)
+        asyncio.run(run_book(svc, cfg, NOW, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        line = last_run_line(st)
+        assert "no qualified wallet scores at least the bar" in line and L1[:6] in line and "0.03" in line
+        book_bar(paths, None, "test", NOW)
+        asyncio.run(run_book(svc, cfg, NOW + 300, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        assert "2 wallet(s) above the bar" in last_run_line(st)
+        asyncio.run(run_book(svc, cfg, NOW + 600, dry=True, balances=lambda w: (1.0, 0.0, [])))
+        assert "halted: equity below floor" in last_run_line(st)
+    finally:
+        st.close()
+
+
+def test_a_book_that_is_off_does_not_page_the_owner_about_its_floor(tmp_path):
+    """Off and below the floor with nothing of its own running: a note, not a Telegram message every day."""
+    st, cfg = _env(tmp_path)  # off
+    sent = []
+    try:
+        out = asyncio.run(run_book(FakeSvc(st), cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (1.0, 0.0, [])))  # fmt: skip
+        assert out["kill_reason"] == "equity below floor" and sent == []
+        assert "[book] kill: equity below floor" in (tmp_path / "data" / "operator" / "notes.md").read_text()
+    finally:
+        st.close()
+
+
+def test_cli_book_run_live_is_refused_while_the_book_is_off(tmp_path):
+    import pytest
+
+    from snipetech import cli
+
+    with pytest.raises(SystemExit, match="refused"):
+        cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "book", "run", "--live"])

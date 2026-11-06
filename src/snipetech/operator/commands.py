@@ -192,9 +192,13 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
             if len(cmd.args) > 1 and not reply.startswith("bar not changed"):
                 notes.write(f"owner set the book's bar: {reply}", "decision")
         else:
+            from ..book.state import last_run_line
+
+            store = getattr(svc, "store", None)
             reply = (
                 f"book: {'on' if book_live(cfg, paths) else 'off'}, bar {effective_min_score(cfg, paths):g} SOL a trade"
                 + (" (halted by /stop)" if paths.stop_flag.exists() else "")
+                + (f"; {last_run_line(store)}" if store is not None else "")
             )
     elif cmd.name in ("why", "budget"):
         reply = f"/{cmd.name} is available in a later phase."

@@ -340,6 +340,11 @@ Telegram from the owner's chat (or `snipetech remote --wait run book on`). `/boo
 within 15 minutes, except a sniper still selling a coin, which keeps running until the coin is sold (a stop never
 strands a coin); each book sniper makes at most 3 buys, so that is all it can add after a stop. `/stop` halts
 everything. If the config file keeps the book on, `/book off` says so. The strategist can never switch it on.
+`/book bar 0.001` (or `snipetech remote --wait run book bar 0.001`) sets the score a qualified wallet needs to be
+copied, in SOL a trade at our landing; `/book bar default` goes back to the config's 0.005. `/book status` says
+whether the book is on, its bar, and what its last run saw (halted and why, or no wallet above the bar and the best
+one it has, or how many wallets it copies). Each loop stage runs under its own time limit (minutes for measure and
+the book, two hours for qualify), so a hung stage cannot hold its slot.
 
 **The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
 the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`

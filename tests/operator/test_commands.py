@@ -307,3 +307,17 @@ def test_book_bar_from_telegram(tmp_path):
     assert "not changed" in reply and effective_min_score(ctx["cfg"], ctx["paths"]) == 0.001
     asyncio.run(handle_command(_cmd("book", "bar", "default"), **ctx))
     assert effective_min_score(ctx["cfg"], ctx["paths"]) == ctx["cfg"].book.min_score
+
+
+def test_book_status_reports_the_last_run(tmp_path):
+    from snipetech.book.state import record_run
+
+    from snipetech.store import Store
+
+    svc = FakeSvc(held=[], snipers=[])
+    svc.store = Store(tmp_path / "s.db")
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=5.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
+    ctx, sent = _ctx(tmp_path, svc, snap)
+    record_run(svc.store, {"actions": [], "kill_reason": None}, False, NOW - 120, ranked=0, best={"wallet": "2YDnmMQt", "score": 0.0013})
+    reply = asyncio.run(handle_command(_cmd("book", "status"), **ctx))
+    assert "last run" in reply and "2YDnmM" in reply and "0.0013" in reply

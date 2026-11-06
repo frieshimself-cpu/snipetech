@@ -1452,9 +1452,18 @@ def main(argv: list[str] | None = None) -> int:
             print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
             return 0
         if args.action == "status":
+            from .book.state import last_run_line
+            from .store import Store
+
+            st = Store(cfg.storage.db_path)
+            try:
+                last = last_run_line(st)
+            finally:
+                st.close()
             print(
                 f"book: {'on' if book_live(cfg, bpaths) else 'off'}"
                 + (" (halted by /stop)" if bpaths.stop_flag.exists() else "")
+                + f"; {last}"
             )
             return 0
         if args.live and not book_live(cfg, bpaths):

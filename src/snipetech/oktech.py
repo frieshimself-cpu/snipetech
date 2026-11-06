@@ -137,8 +137,15 @@ class OktechClient:
         try:
             data = r.json()
         except ValueError:
-            data = {"success": False, "error": r.text[:200]}
-        if r.status_code >= 400 or data.get("success") is False:
+            data = None
+        if r.status_code >= 400:
+            d = data if isinstance(data, dict) else {}
+            raise OktechError(r.status_code, d.get("code", ""), d.get("error", r.text[:200] or r.reason_phrase), d)
+        if data is None:  # a 2xx page that is not JSON (HTML or Markdown): hand it back as it came
+            return {"raw": r.text}
+        if not isinstance(data, dict):
+            return {"docs": data}
+        if data.get("success") is False:
             raise OktechError(r.status_code, data.get("code", ""), data.get("error", r.reason_phrase), data)
         return data
 

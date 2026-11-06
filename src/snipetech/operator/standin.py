@@ -23,6 +23,14 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
 )
 
 
+# how long each stage may run before the ops service kills it (its default is 6 hours): a hung stage must not hold
+# its slot, since the round never starts a stage that is still running
+STAGE_LIMIT_SECS: dict[str, int] = {
+    "measure run": 20 * 60, "book run": 10 * 60, "events poll --once": 10 * 60, "discover run": 60 * 60,
+    "qualify run": 2 * 3600, "snapshot-db": 60 * 60, "events scan": 60 * 60, "strategist run": 60 * 60,
+}  # fmt: skip
+
+
 def _sunday_after_five(now: float) -> bool:
     t = time.gmtime(now)
     return t.tm_wday == 6 and t.tm_hour >= 5
@@ -101,7 +109,7 @@ def start_standins(
     started = []
     for argv in due_standins(services, metas, now):
         try:
-            jobs.ops.op_run(argv)
+            jobs.ops.op_run(argv, timeout=STAGE_LIMIT_SECS.get(" ".join(argv), 60 * 60))
             started.append(argv)
         except Exception as exc:  # noqa: BLE001 - one stage failing to start must not stop the round
             if log:
