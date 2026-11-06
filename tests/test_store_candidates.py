@@ -94,3 +94,47 @@ def test_verdict_counts(tmp_path):
         assert st.verdict_counts()["banned"] == 1
     finally:
         st.close()
+
+
+OLD_VERDICTS = """
+CREATE TABLE candidates (wallet TEXT PRIMARY KEY, first_seen INTEGER, last_seen INTEGER,
+    sources TEXT NOT NULL DEFAULT '[]', stats TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'candidate');
+CREATE TABLE verdicts (id INTEGER PRIMARY KEY, wallet TEXT NOT NULL, computed_at INTEGER NOT NULL, landing_pos TEXT,
+    n_tape INTEGER, mean_sol REAL, lower_sol REAL, hist_days INTEGER, hist_realized_usd REAL, hist_win_rate REAL,
+    hist_trades INTEGER, crowding REAL, venue_share REAL, score REAL, status TEXT NOT NULL, next_review INTEGER,
+    reasons TEXT);
+INSERT INTO candidates VALUES ('W1', 1, 1, '["tape"]', '{}', 'candidate');
+INSERT INTO verdicts (wallet, computed_at, landing_pos, n_tape, mean_sol, lower_sol, score, status, next_review, reasons)
+    VALUES ('W1', 100, '+6', 93, 0.0146, 0.0019, 0.0013, 'qualified', 200, '[]');
+"""
+
+
+def test_verdict_copy_plan_round_trips_and_an_old_table_migrates(tmp_path):
+    import sqlite3
+
+    con = sqlite3.connect(tmp_path / "old.db")  # the verdicts table as it first shipped: 17 columns, one row
+    con.executescript(OLD_VERDICTS)
+    con.commit()
+    con.close()
+    st, fresh = Store(tmp_path / "old.db"), Store(tmp_path / "fresh.db")
+    try:
+        cols = [r[1] for r in st._q("PRAGMA table_info(verdicts)")]
+        assert cols == [r[1] for r in fresh._q("PRAGMA table_info(verdicts)")]
+        assert len(cols) == 19 and cols[-2:] == ["copy_plan", "gap3_pct"]
+        v = st.latest_verdicts()[0]
+        assert v["n_tape"] == 93 and v["reasons"] == [] and v["copy_plan"] is None and v["gap3_pct"] is None
+        due = st.candidates(due_before=300)  # candidates() reads the verdict's columns by position
+        assert [c["wallet"] for c in due] == ["W1"] and due[0]["verdict"]["status"] == "qualified"
+        assert due[0]["verdict"]["copy_plan"] is None and due[0]["verdict"]["score"] == 0.0013
+        plan = {"min_leader_sol": 0.594, "rebuy_share": 0.0, "leader_style": "mixed", "leader_first_sell_p50_s": 4.0,
+                "leader_one_tx_exit_share": 0.0, "exit_name": "lab", "exit_params": {"stale_secs": 1.0}, "lab_version": 2}  # fmt: skip
+        st.put_verdict({"wallet": "W1", "computed_at": NOW, "status": "qualified", "next_review": NOW + 10, "score": 0.01,
+                        "reasons": [], "copy_plan": plan, "gap3_pct": 4.2})  # fmt: skip
+        v = st.latest_verdicts()[0]
+        assert v["copy_plan"] == plan and v["gap3_pct"] == 4.2
+        assert st.candidates()[0]["verdict"]["copy_plan"] == plan
+        st.put_verdict({"wallet": "W1", "computed_at": NOW + 1, "status": "candidate", "next_review": NOW + 9, "score": 0})
+        assert st.latest_verdicts()[0]["copy_plan"] is None  # no plan stays no plan
+    finally:
+        st.close()
+        fresh.close()
