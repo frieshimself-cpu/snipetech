@@ -6,6 +6,31 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## Wallet copies at the measured copy landing (6 Nov, 01:50 UTC) — the one positive result
+
+`lab --latency 0 --position +1 --by-wallet`, 26 h of tape, 0.2 SOL a trade, 99 wallets scored, exits
+simulated, out of sample. This is the landing the speed tests measured for copies (one trade behind the
+leader, same slot) — unlike launch triggers, a KOL's buy is its own transaction, so +1 behind it is a real
+place to land. 31 wallets have a positive lower bound; the top 25 together made +12.9 SOL of paper in 26 h.
+
+| wallet | trigger | n | SOL/trade | lower bound | wins | 26 h total |
+|---|---|---|---|---|---|---|
+| Pengu (KOL) | first buy ≥ 0.1 SOL, hold 60 s | 16 | +0.085 | +0.016 | 38 % | +1.35 |
+| 0xsolomon `3GzBLpxT` | first buy ≥ 1 SOL, STALE1s SL-30% | 20 | +0.050 | +0.044 | 95 % | +1.00 |
+| Megga `H31vEBxS` | same | 23 | +0.048 | +0.029 | 78 % | +1.10 |
+| Decu `4vw54BmA` | same | 29 | +0.036 | +0.028 | 72 % | +1.04 |
+| dv `BCagckXe` | first buy ≥ 2 SOL, STALE2s SL-30% | 34 | +0.029 | +0.007 | 50 % | +0.99 |
+| theo side `Bi4rd5FH` | same | 34 | +0.027 | +0.011 | 56 % | +0.92 |
+| Bean Side `VJSDW6S7` | same | 16 | +0.027 | +0.013 | 69 % | +0.44 |
+| Washy dev, Cupseyy, 0xsolomon `DEdEW3SM`, clukz, Limfork, Art diddy bundle | ≥ 1 SOL | 4–9 each | +0.045…+0.13 | > 0 | 80–100 % | +0.2…+0.8 each |
+
+At the next-slot landing the same wallets fall to +0.00…+0.015 (see live-recipe.md), so **the copy edge also
+lives in the same-slot landing**. That landing was measured on five copies of one wallet (speed test, 5 Nov);
+it is the assumption to verify before any size: a live copy test on the four n ≥ 20 wallets at 0.05 SOL, with
+every fill checked on the tape for its slot relative to the leader's buy. Expected if the landing holds: about
++0.04 SOL per trade, ~100 copied buys a day across the list at 0.2 SOL, i.e. 3–5 SOL a day of paper — a
+real but modest product. Not started: needs the owner's go.
+
 ## Inside the create slot — what the paper edge actually was (6 Nov, 01:05 UTC)
 
 Our-rule launches (a non-dev buy ≥ 2 SOL within 1 s, normal coins), last 8 h of tape, split by where that
