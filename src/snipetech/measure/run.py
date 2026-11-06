@@ -71,6 +71,40 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
     return out
 
 
+TWIN_WINDOW_SECS = 3.0  # the losing variants of one exit land in the winner's slot or up to 5 slots later (6 Nov)
+
+
+def twin_fees_by_sell(
+    failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
+) -> dict[str, float]:
+    """What each landed sell's failed twins cost, in SOL. OKTech sends every exit as one tipped and up to two untipped
+    variants; the losers fail on chain and still pay their priority fee and the 5,000-lamport base fee (a failed
+    send's tip is rolled back). A failed send carrying a sell instruction (`is_sell`) on the same coin within
+    `window_s` seconds of a landed sell is that sell's twin; with several landed sells in reach, the nearest one."""
+    by_mint: dict[str, list[dict]] = {}
+    for s in sells:
+        if s.get("mint"):
+            by_mint.setdefault(s["mint"], []).append(s)
+    out: dict[str, float] = {}
+    for f in failed_rows:
+        if not f.get("is_sell") or not f.get("mint") or f.get("priority_lamports") is None:
+            continue
+        near = [s for s in by_mint.get(f["mint"], []) if abs(float(f["ts"]) - float(s["ts"])) <= window_s]
+        if not near:
+            continue
+        slot = f.get("slot")
+        best = min(near, key=lambda s: (abs(float(f["ts"]) - float(s["ts"])),
+                                        abs(int(slot) - int(s["slot"])) if slot is not None and s.get("slot") is not None else 0,
+                                        s["sig"]))  # fmt: skip
+        out[best["sig"]] = out.get(best["sig"], 0.0) + (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9
+    return out
+
+
+def _sells_a_coin(meta) -> bool:
+    """The (failed) transaction carries a pump.fun sell instruction."""
+    return meta is not None and any(str(ix.name).startswith("sell") for ix in meta.pump_ixs)
+
+
 async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
     """Failed transactions of the wallet since `since_ts` (newest first from the RPC, bounded to a few pages)."""
     out: list[dict] = []
@@ -119,7 +153,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms)
         existing = store.fill(t.sig)
         if existing:  # a re-read of the same trade keeps what pairing wrote and the arm it bid at fill time
-            for k in ("pnl_sol", "exit_reason", "buy_sig"):
+            for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
                 if row.get(k) is None:
                     row[k] = existing.get(k)
             if row["side"] == "sell" and existing.get("buy_sig") and existing.get("bid_arm"):
@@ -195,9 +229,20 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
     paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
     buy_by_sig = {b["sig"]: b for b in all_buys}
+    # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
+    all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
+    failed_meta = store.tx_meta([f["sig"] for f in all_failed]) if all_failed else {}
+    twins = twin_fees_by_sell(
+        [f | {"is_sell": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed], all_sells
+    )
+    closed: dict[str, float] = {}
+    for t in paired["trips"]:
+        closed[t["sell_sig"]] = closed.get(t["sell_sig"], 0.0) + float(t["tokens"])
     trips = []
     for t in paired["trips"]:
         t["wallet_copied"] = buy_by_sig.get(t["buy_sig"], {}).get("wallet_copied")
+        if twins.get(t["sell_sig"]) and closed.get(t["sell_sig"]):  # shared like the sell's own fee, by tokens closed
+            t["pnl_sol"] -= twins[t["sell_sig"]] * float(t["tokens"]) / closed[t["sell_sig"]]
         trips.append(t)
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
@@ -208,18 +253,11 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             continue
         buy = buy_by_sig.get(first_buy_for_sell.get(s["sig"]) or "")
         arm = (buy or {}).get("bid_arm") or s.get("bid_arm")  # a sell belongs to the arm of the buy it closes
-        if s.get("pnl_sol") != round(pnl, 6) or s.get("exit_reason") != "sold" or s.get("bid_arm") != arm:
-            store.put_fill(
-                s
-                | {
-                    "pnl_sol": round(pnl, 6),
-                    "exit_reason": "sold",
-                    "buy_sig": first_buy_for_sell.get(s["sig"]),
-                    "bid_arm": arm,
-                }
-            )
+        want = {"pnl_sol": round(pnl, 6), "exit_reason": "sold", "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
+                "twin_fee_sol": round(twins.get(s["sig"], 0.0), 9)}  # fmt: skip
+        if any(s.get(k) != v for k, v in want.items()):
+            store.put_fill(s | want)
     # aggregates
-    all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
         store.put_bid_model(row)

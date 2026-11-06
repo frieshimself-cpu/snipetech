@@ -4,6 +4,8 @@ the bid model and live expectancy update; the measured landing reaches the quali
 import asyncio
 import math
 
+import pytest
+
 from snipetech.cli import build_parser
 from snipetech.config import Config
 from snipetech.measure.run import backfill, run_measure, wallet_live_rows
@@ -397,5 +399,69 @@ def test_stale_bid_model_rows_and_an_old_landing_are_dropped(tmp_path):
         )  # a month-old measurement no longer moves the labs
         st.set_coverage("measure:landing_pos", {"pos": "+9"})
         assert effective_landing_pos(st, cfg.qualify, now=NOW) == "+6"  # no timestamp: not trusted
+    finally:
+        st.close()
+
+
+def test_twin_fees_go_to_the_nearest_landed_sell_of_the_same_coin():
+    """A failed send carrying a sell of the same coin within 3 s of a landed sell is that sell's twin and costs its
+    priority fee + 5,000 lamports; failed buys, other coins, sends further away and unread sends are not twins."""
+    from snipetech.measure.run import twin_fees_by_sell
+
+    sells = [
+        {"sig": "S1", "ts": NOW, "slot": SLOT, "mint": "M1"},
+        {"sig": "S2", "ts": NOW + 2, "slot": SLOT + 9, "mint": "M1"},
+        {"sig": "S3", "ts": NOW, "slot": SLOT, "mint": "M2"},
+    ]
+    failed = [
+        {"sig": "F1", "ts": NOW, "slot": SLOT, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F2", "ts": NOW + 3, "slot": SLOT + 14, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F3", "ts": NOW + 4, "slot": SLOT + 19, "mint": "M2", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F4", "ts": NOW, "slot": SLOT, "mint": "M2", "priority_lamports": 2_000_000, "is_sell": False},
+        {"sig": "F5", "ts": NOW, "slot": SLOT, "mint": "M3", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F6", "ts": NOW, "slot": SLOT, "mint": None, "priority_lamports": None, "is_sell": False},
+    ]
+    out = twin_fees_by_sell(failed, sells)
+    assert out == pytest.approx({"S1": 0.002005, "S2": 0.002005})
+    assert twin_fees_by_sell(failed, sells, window_s=5)["S3"] == pytest.approx(0.002005)
+
+
+def test_failed_sell_twins_are_charged_to_their_trip(tmp_path):
+    """OKTech sends every exit as up to three variants; the losers fail and still pay their priority fee + 5,000
+    lamports. Two failed 0.002 twins of a landed sell cost 0.00401 SOL: that goes on the sell row and into the copied
+    wallet's live expectancy (the sell's own PnL keeps only the trip's own fees)."""
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, s_ = sigs[0]
+        metas = {b: _meta(b), s_: _meta(s_)}
+
+        def run(failed):
+            return asyncio.run(
+                run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed)
+            )
+
+        run(_no_failed)
+        before, pnl = st.wallet_live()[0]["mean_sol"], st.fill(s_)["pnl_sol"]
+        sell = st.fill(s_)
+        assert sell["twin_fee_sol"] == 0.0
+        sends = []
+        for k, (name, ix) in enumerate((("TWIN1", "sell"), ("TWIN2", "sell"), ("FAILBUY", "buy"))):
+            m = _meta(name, priority=2_000_000, tip=0)
+            m.pump_ixs = [PumpIx("pump", ix, ME, {}, None, addr("c0"))]
+            metas[name] = m
+            sends.append({"signature": name, "blockTime": sell["ts"] + min(k, 1), "slot": sell["slot"] + k,
+                          "err": {"InstructionError": [3, {"Custom": 6023}]}})  # fmt: skip
+
+        async def failed(wallet, since):
+            return sends
+
+        out = run(failed)
+        assert out["failed"] == 3
+        assert st.fill(s_)["twin_fee_sol"] == pytest.approx(0.00401)
+        assert st.fill(s_)["pnl_sol"] == pnl  # the trip's own fees only; the twins are kept apart
+        assert st.wallet_live()[0]["mean_sol"] == pytest.approx(before - 0.00401, abs=1e-6)
     finally:
         st.close()
