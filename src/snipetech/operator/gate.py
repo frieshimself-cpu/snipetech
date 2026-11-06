@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 
 from ..config import OperatorConfig
+from ..positions import is_active
 from .paths import OperatorPaths
 
 ACTIVE = ("active", "activating")
@@ -85,12 +86,17 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
     events: list[str] = []
     states: list[str] = []
     if snap.jobs_ended:
-        events.append("job ended: " + ", ".join(f"{j.get('id')} ({' '.join(j.get('argv', [])[:2])}, exit {j.get('exit_code')})" for j in snap.jobs_ended))
+        events.append(
+            "job ended: "
+            + ", ".join(
+                f"{j.get('id')} ({' '.join(j.get('argv', [])[:2])}, exit {j.get('exit_code')})" for j in snap.jobs_ended
+            )
+        )
     exp = expected_state(paths)
     if snap.snipers is None:
         states.append("oktech state unknown")
     else:
-        running = [s for s in snap.snipers if str(s.get("status")) == "running"]
+        running = [s for s in snap.snipers if is_active(s.get("status"))]
         if len(running) > exp["snipers_running"]:
             states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
     if len(snap.held) > exp["held"]:

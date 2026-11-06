@@ -145,3 +145,45 @@ def test_day_stop_and_daily_risk():
     risk = plan_book(_inp(day_risk_used_sol=cfg.book.daily_risk_sol), cfg.book)
     assert risk.kill_reason == "daily risk used" and not any(a.kind == "create" for a in risk.actions)
     assert all(isinstance(a, Action) and a.reason for a in risk.actions)
+
+
+def test_starting_and_stopping_snipers_are_neither_replaced_nor_doubled():
+    cfg = _cfg()
+    snipers = [
+        {"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "starting"},
+        {"id": "s2", "name": "snipetech copy book W2 arm:control", "status": "stopping"},
+    ]
+    plan = plan_book(_inp(snipers=snipers), cfg.book)
+    by = {a.sniper_id: a for a in plan.actions if a.sniper_id}
+    assert by["s1"].kind == "keep" and by["s2"].kind == "keep"
+    assert not any(a.kind == "create" and a.wallet in ("W1", "W2") for a in plan.actions)
+    assert any(a.kind == "create" and a.wallet == "W3" for a in plan.actions)
+
+
+def test_failed_sniper_is_not_recreated_every_run():
+    """A sniper OKTech could not start stays on the account as `failed`; recreating it every 5 minutes would loop.
+    It is skipped with a note until someone looks at it."""
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "failed"}]
+    plan = plan_book(_inp(snipers=snipers), cfg.book)
+    a = next(x for x in plan.actions if x.sniper_id == "s1")
+    assert a.kind == "skip" and "failed" in a.reason
+    assert not any(x.kind == "create" and x.wallet == "W1" for x in plan.actions)
+    assert any("failed" in n and "W1" in n for n in plan.notes)
+
+
+def test_kill_mode_stops_starting_snipers_too():
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "starting"}]
+    plan = plan_book(_inp(equity_sol=0.5, snipers=snipers), cfg.book)
+    assert any(a.kind == "stop" and a.sniper_id == "s1" for a in plan.actions)
+
+
+def test_owner_stop_is_a_kill_reason():
+    cfg = _cfg()
+    snipers = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    plan = plan_book(_inp(snipers=snipers, stopped=True), cfg.book)
+    assert plan.kill_reason == "owner /stop" and any(a.kind == "stop" and a.sniper_id == "s1" for a in plan.actions)
+    assert not any(a.kind in ("create", "start") for a in plan.actions)
+    holding = plan_book(_inp(snipers=snipers, stopped=True, holdings=[{"mint": "M", "amount": 1.0}]), cfg.book)
+    assert any(a.kind == "keep" and a.sniper_id == "s1" for a in holding.actions)  # still never strands a coin

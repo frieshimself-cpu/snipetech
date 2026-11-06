@@ -622,7 +622,9 @@ class Service:
         return out
 
     async def holdings(self, address: str) -> list[dict]:
-        """Every token the wallet holds (both token programs). Raises if the RPC can't answer: never 'nothing held' by mistake."""
+        """Every token the wallet holds (both token programs), WSOL aside: mint, amount (ui), raw, decimals, account.
+        Raises if the RPC can't answer: never 'nothing held' by mistake."""
+        from .positions import WSOL
         from .solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
         out = []
@@ -632,16 +634,42 @@ class Service:
             )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
-                amt = float(info["tokenAmount"]["uiAmount"] or 0)
-                if amt > 0 and info["mint"] != "So11111111111111111111111111111111111111112":
-                    out.append({"mint": info["mint"], "amount": amt, "account": a["pubkey"]})
+                ta = info["tokenAmount"]
+                amt = float(ta.get("uiAmount") or 0)
+                decimals = int(ta.get("decimals") if ta.get("decimals") is not None else 6)
+                raw = int(ta["amount"]) if ta.get("amount") is not None else int(round(amt * 10**decimals))
+                if amt > 0 and info["mint"] != WSOL:
+                    out.append(
+                        {"mint": info["mint"], "amount": amt, "raw": raw, "decimals": decimals, "account": a["pubkey"]}
+                    )
         return out
 
+    async def open_positions(self, address: str, ignore: list[str] | tuple[str, ...] | None = None,
+                             unknown: list[dict] | None = None) -> list[dict]:  # fmt: skip
+        """The coins the wallet really holds (see positions.py): valued at the tape's last price, dust and stablecoins
+        out, unpriced tokens reported in `unknown`. The one rule every stop decision uses."""
+        from .positions import filter_positions
+
+        return filter_positions(
+            await self.holdings(address), self.store.last_price, ignore=tuple(ignore or ()), unknown=unknown
+        )
+
+    async def equity(self, address: str, ignore: list[str] | None = None) -> tuple[float, float, list[dict]]:
+        """(equity in SOL = balance + value of open positions, the SOL balance, the positions)."""
+        b = (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+        held = await self.open_positions(address, ignore=ignore)
+        return b + sum(float(h.get("value_sol") or 0) for h in held), b, held
+
     async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
-                           allow_uncapped: bool = False) -> dict:  # fmt: skip
+                           allow_uncapped: bool = False, native_reserve_sol: float = 0.05) -> dict:  # fmt: skip
         """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions,
-        so this never stops one except in an emergency (balance below `floor_sol`: runaway buying), and then lists
-        exactly what is left to sell. At `max_minutes` it stops watching and leaves them running (they are capped)."""
+        so this never stops one except in an emergency, and then lists exactly what is left to sell. The emergency is
+        *equity* (SOL + the tape value of the coins held) below `floor_sol`, or the SOL balance below
+        `native_reserve_sol` (nothing left to pay sells with): buying coins moves SOL into positions, only losing
+        money moves equity. At `max_minutes` it stops watching and leaves them running (they are capped).
+        Stops that fail are reported as such, never as "stopped"."""
+        from .positions import is_active
+
         address = self._check(address)
         mine = {r["id"]: r for r in self.store.oktech_snipers()}
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
@@ -659,18 +687,22 @@ class Service:
         async def balance() -> float:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
-        reason, stopped = "time limit: still running (capped; it keeps selling until its positions close)", False
+        reason = "time limit: still running (capped; it keeps selling until its positions close)"
+        stopped, stop_failed = False, []
         try:
             b0 = await balance()
-            log(
-                f"wallet {address[:6]}… holds {b0:.4f} SOL; emergency floor {floor_sol} SOL; watching {max_minutes:g} min"
-            )
-            if b0 <= floor_sol:
-                raise SystemExit(f"balance {b0:.4f} is already at or below the floor {floor_sol}")
+            eq0, _, held0 = await self.equity(address)
+            log(f"wallet {address[:6]}… holds {b0:.4f} SOL, equity {eq0:.4f} SOL ({len(held0)} coin(s)); emergency floor "
+                f"{floor_sol} SOL equity / {native_reserve_sol} SOL balance; watching {max_minutes:g} min")  # fmt: skip
+            if eq0 <= floor_sol:
+                raise SystemExit(f"equity {eq0:.4f} is already at or below the floor {floor_sol}")
             if start:
                 for i in ids:
-                    ans = await client.start(i)
-                    log(f"started {i}: {ans.get('task', {}).get('status', ans)}")
+                    try:
+                        ans = await client.start(i)
+                        log(f"started {i}: {ans.get('task', {}).get('status', ans)}")
+                    except Exception as exc:  # the others are started and watched all the same
+                        log(f"start {i} FAILED ({exc}); watching the rest")
             t0, low = time.time(), b0
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(2)
@@ -682,36 +714,55 @@ class Service:
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
-                if b < floor_sol:
-                    reason = f"EMERGENCY: balance {b:.4f} fell below the floor {floor_sol}; stopped buying"
-                    for i in ids:
-                        with contextlib.suppress(Exception):
-                            await client.stop(i)
-                    stopped = True
-                    break
+                if b < floor_sol or b < native_reserve_sol:
+                    # the SOL balance alone says nothing while coins are held: value them
+                    try:
+                        eq, _, held = await self.equity(address)
+                    except Exception as exc:
+                        log(f"equity check failed ({exc}); still watching")
+                        continue
+                    if eq < floor_sol or b < native_reserve_sol:
+                        reason = f"EMERGENCY: equity {eq:.4f} SOL (balance {b:.4f}) below the floor {floor_sol}"
+                        for i in ids:
+                            try:
+                                await client.stop(i)
+                            except Exception as exc:
+                                stop_failed.append(i)
+                                log(f"stop {i} FAILED ({exc})")
+                        stopped = not stop_failed
+                        reason += (
+                            f"; NOT stopped: {stop_failed} (stop them by hand)" if stop_failed else "; stopped buying"
+                        )
+                        break
                 if int(time.time() - t0) % 20 < 2:
-                    states = {t["id"]: t.get("status") for t in await client.tasks() if t["id"] in ids}
-                    if states and all(st != "running" for st in states.values()):
+                    try:
+                        states = {t["id"]: t.get("status") for t in await client.tasks() if t["id"] in ids}
+                    except Exception as exc:  # OKTech not answering is no reason to stop watching
+                        log(f"OKTech status check failed ({exc}); still watching")
+                        continue
+                    if states and not any(is_active(st) for st in states.values()):
                         reason = f"all finished on their own ({states})"
                         break
             log(reason)
             b1 = await balance()
-            log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f})")
-            held = await self.holdings(address)
+            try:
+                eq1, _, held = await self.equity(address)
+            except Exception as exc:
+                eq1, held = b1, []
+                log(f"final holdings check failed ({exc}): list them with `oktech holdings`")
+            log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); equity {eq0:.4f} -> {eq1:.4f}")
             if held:
-                what = "STILL HELD, sell these by hand (the stopped sniper no longer manages them)" if stopped else \
-                       "still held (the sniper is managing them)"  # fmt: skip
-                log(what + ": " + ", ".join(f"{h['mint']} ({h['amount']:,.0f})" for h in held))
+                what = ("STILL HELD, sell these by hand (the stopped sniper no longer manages them)" if stopped or stop_failed
+                        else "still held (the sniper is managing them)")  # fmt: skip
+                log(
+                    what
+                    + ": "
+                    + ", ".join(f"{h['mint']} ({h['amount']:,.0f}, {h.get('value_sol', 0):.4f} SOL)" for h in held)
+                )
             else:
-                log("no tokens held")
-            return {
-                "start_sol": b0,
-                "end_sol": b1,
-                "reason": reason,
-                "stopped": stopped,
-                "held": held,
-                "events": events,
-            }
+                log("no coins held")
+            return {"start_sol": b0, "end_sol": b1, "equity_sol": eq1, "reason": reason, "stopped": stopped,
+                    "stop_failed": stop_failed, "held": held, "events": events}  # fmt: skip
         finally:
             await client.close()
 
@@ -742,21 +793,22 @@ class Service:
         def fills_since(ts: float) -> int:
             return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
 
-        STABLE = {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-                  "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB"}  # fmt: skip
-
         async def open_positions() -> list[dict]:
             # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
-            # only stablecoin dust is ignored
-            skip = STABLE | set(ignore_mints or [])  # ignore_mints: positions no sniper manages (to be sold by hand)
-            return [h for h in await self.holdings(address) if h["mint"] not in skip and h["amount"] >= 1]
+            # ignore_mints: positions no sniper manages (to be sold by hand)
+            return await self.open_positions(address, ignore=ignore_mints)
 
         t0 = time.time()
         reason, restarts = "time limit", 0
         armed_at: dict[str, float] = {}
         try:
             b0 = await balance()
+            held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
+            if held0:
+                raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({h.get('value_sol', 0):.4f} SOL)" for h in held0)
+                                 + ": not cycling (stopping a sniper strands its coin). Sell by hand, or pass --ignore MINT "
+                                 "for a position no sniper manages.")  # fmt: skip
             log(
                 f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min"
             )
@@ -781,8 +833,8 @@ class Service:
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
-                if b < floor_sol:
-                    reason = f"EMERGENCY: balance {b:.4f} below floor {floor_sol}; stopped re-arming (snipers left running to sell)"
+                if b < floor_sol and b + sum(float(h.get("value_sol") or 0) for h in held) < floor_sol:
+                    reason = f"EMERGENCY: equity below floor {floor_sol} (balance {b:.4f}); stopped re-arming (snipers left running to sell)"
                     break
                 fills = fills_since(t0)
                 if fills >= max_fills:
@@ -933,6 +985,8 @@ class Service:
         return {"wallet": wallet, "snipers": out}
 
     async def oktech_task(self, action: str, task_id: str) -> dict:
+        from .oktech import OktechError
+
         client = self._oktech()
         try:
             if action == "start":
@@ -940,7 +994,13 @@ class Service:
             if action == "stop":
                 return await client.stop(task_id)
             if action == "delete":
-                ans = await client.delete(task_id)
+                try:
+                    ans = await client.delete(task_id)
+                except OktechError as exc:
+                    if exc.code != "NOT_FOUND":
+                        raise
+                    self.store.remove_oktech_sniper(task_id)  # gone on OKTech already: the local row retires too
+                    return {"id": task_id, "not_found": True, "removed_locally": True}
                 self.store.remove_oktech_sniper(task_id)
                 return ans
             return await client.get(task_id)
@@ -1184,3 +1244,15 @@ def _redact(url: str) -> str:
         head, _, _ = url.partition("api-key=")
         return head + "api-key=***"
     return url
+
+
+async def oktech_tasks(svc: Service, action: str, ids: list[str]) -> tuple[list[dict], list[tuple[str, str]]]:
+    """`action` on every id, continuing past failures: (answers as {id, answer}, failures as (id, reason))."""
+    results: list[dict] = []
+    failures: list[tuple[str, str]] = []
+    for i in ids:
+        try:
+            results.append({"id": i, "answer": await svc.oktech_task(action, i)})
+        except Exception as exc:  # noqa: BLE001 - one bad id must not leave the others untouched
+            failures.append((i, str(exc)))
+    return results, failures

@@ -9,11 +9,11 @@ import re
 from dataclasses import dataclass, field
 
 from ..config import BookConfig
+from ..positions import SPENT_STATUSES, is_active
 
 # the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
 # "snipetech copy book <wallet6> arm:<arm>"; measure.arm_for reads the same tag
 BOOK_NAME_RE = re.compile(r"^snipetech copy book (?P<w6>\S+) arm:(?P<arm>[A-Za-z0-9_-]+)")
-SPENT_STATUSES = ("finished", "stopped", "error", "failed", "completed")
 
 
 @dataclass
@@ -27,6 +27,7 @@ class BookInputs:
     snipers: list[dict]  # OKTech tasks: id, name, status
     holdings: list[dict]
     now: float
+    stopped: bool = False  # the owner's /stop flag is set: kill mode until /resume
 
 
 @dataclass
@@ -127,7 +128,9 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             plan.notes.append(f"{name} arm skipped: its fee {arm_fee_sol(arm):g} SOL needs a {need:.2f} SOL fill to stay under "
                               f"{cfg.max_fee_share:.0%}; fill_max_sol is {cfg.fill_max_sol:g}")  # fmt: skip
     # stops
-    if inp.equity_sol is None:
+    if inp.stopped:
+        plan.kill_reason = "owner /stop"
+    elif inp.equity_sol is None:
         plan.kill_reason = "equity unknown"
     elif inp.equity_sol < cfg.equity_floor_sol:
         plan.kill_reason = "equity below floor"
@@ -140,7 +143,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     if plan.kill_reason:
         plan.actions.append(Action("kill", None, None, None, None, plan.kill_reason))
         for s in mine:
-            if str(s.get("status")) == "running":
+            if is_active(s.get("status")):
                 if holding:
                     plan.actions.append(
                         Action(
@@ -163,14 +166,35 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         w6, status = s["w6"], str(s.get("status"))
         if w6 in wanted and wanted[w6][1] is not None:
             wallet, arm = wanted[w6]
-            if status == "running" and s["arm"] == arm:
-                plan.actions.append(Action("keep", wallet, arm, None, s["id"], "ranked and running on its arm"))
+            if status in ("running", "starting") and s["arm"] == arm:
+                plan.actions.append(Action("keep", wallet, arm, None, s["id"], f"ranked and {status} on its arm"))
                 seen_w6.add(w6)
-            elif status == "running" and s["arm"] != arm:
+            elif status in ("running", "starting") and s["arm"] != arm:
                 plan.actions.append(
                     Action(
                         "keep", wallet, s["arm"], None, s["id"], f"ranked; arm changes to {arm} when this one is spent"
                     )
+                )
+                seen_w6.add(w6)
+            elif status == "stopping":
+                plan.actions.append(
+                    Action("keep", wallet, s["arm"], None, s["id"], "stopping; replaced once it has stopped")
+                )
+                seen_w6.add(w6)
+            elif status == "failed":
+                # OKTech could not start it; recreating it every run would loop. Someone has to look at it.
+                plan.actions.append(
+                    Action(
+                        "skip",
+                        wallet,
+                        s["arm"],
+                        None,
+                        s["id"],
+                        "failed on OKTech: not recreated until someone looks at it",
+                    )
+                )
+                plan.notes.append(
+                    f"{wallet[:6]} sniper {s['id']} failed on OKTech; the book leaves it and does not recreate it"
                 )
                 seen_w6.add(w6)
             elif status in SPENT_STATUSES:
@@ -179,7 +203,9 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 plan.actions.append(Action("start", wallet, s["arm"], None, s["id"], "ranked and idle"))
                 seen_w6.add(w6)
         else:
-            if status == "running":
+            if status == "stopping":
+                plan.actions.append(Action("keep", w6, s["arm"], None, s["id"], "already stopping"))
+            elif is_active(status):
                 if holding:
                     plan.actions.append(
                         Action(

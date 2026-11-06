@@ -23,7 +23,7 @@ class FakeSvc:
     async def oktech_status(self):
         return {"snipers": list(self._snipers)}
 
-    async def holdings(self, address):
+    async def open_positions(self, address):
         return list(self._held)
 
     async def oktech_task(self, action, task_id):
@@ -170,3 +170,19 @@ def test_cli_book_parses_and_refuses_live_when_disabled():
     assert a.cmd == "book" and a.action == "run" and a.live is False
     a = p.parse_args(["book", "run", "--live"])
     assert a.live is True
+
+
+def test_owner_stop_flag_kills_the_book_even_when_live(tmp_path):
+    """/stop writes operator/STOP; a live book must not create or start anything while it exists, and stops its own
+    non-holding snipers (the kill path)."""
+    st, cfg = _env(tmp_path, enabled=True)
+    OperatorPaths(tmp_path / "data").stop_flag.write_text(str(NOW))
+    svc = FakeSvc(st, snipers=[{"id": "b1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"}])
+    sent = []
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert out["kill_reason"] == "owner /stop" and ("stop", "b1") in svc.calls
+        assert not any(c[0] in ("create", "start") for c in svc.calls)
+    finally:
+        st.close()

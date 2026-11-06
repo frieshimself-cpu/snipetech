@@ -261,16 +261,19 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(
+        store, "last_price", lambda mint: 0.002
+    )  # the held coin is worth 0.002 SOL: above dust, below the floor
     w = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
     # runaway buying: emergency stop, and the leftovers are named
-    svc._rpc = FakeRpc([1.0, 0.99, 0.95, 0.7, 0.7, 0.7])
+    import itertools
+
+    svc._rpc = FakeRpc(itertools.chain([1.0, 0.99, 0.95], itertools.repeat(0.7)))
     rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.8, 5))
     assert rep["stopped"] and "EMERGENCY" in rep["reason"] and rep["held"][0]["mint"].startswith("Mint")
     assert ("stop", "a") in calls and ("stop", "b") in calls
     # normal run past the time limit: nothing is stopped (the snipers keep selling)
     calls.clear()
-    import itertools
-
     svc._rpc = FakeRpc(itertools.chain([1.0], itertools.repeat(0.98)))
     rep = asyncio.run(svc.oktech_guard(["a", "b"], w, 0.5, 0.0001))
     assert not rep["stopped"] and not any(c[0] == "stop" for c in calls)
@@ -467,3 +470,190 @@ def test_replica_is_capped_and_never_sends_crowd_buys_outside_shapes_mode():
              "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
     with pytest.raises(ValueError, match="shapes"):
         strategy_sniper(strat, 5, via="crowd")
+
+
+def _guard_env(monkeypatch, balances, client, holdings_value=None, price=None):
+    """A Service with a fake OKTech client and RPC for the guard / cycle tests. `holdings_value` is the raw amount of
+    one token-2022 coin the wallet holds (None: nothing); `price` its tape price in lamports per raw unit."""
+    import itertools
+
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    class FakeRpc:
+        def __init__(self):
+            self.balances = iter(balances) if not isinstance(balances, itertools.chain) else balances
+
+        async def call(self, method, params):
+            if method == "getBalance":
+                return {"value": int(next(self.balances) * 1e9)}
+            if holdings_value is None or params[1]["programId"] != "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb":
+                return {"value": []}
+            info = {"mint": "Mint1111111111111111111111111111111111111111",
+                    "tokenAmount": {"uiAmount": holdings_value / 1e6, "amount": str(holdings_value), "decimals": 6}}  # fmt: skip
+            return {"value": [{"pubkey": "acct", "account": {"data": {"parsed": {"info": info}}}}]}
+
+    async def no_sleep(_):
+        return None
+
+    store = Store(":memory:")
+    for i in ("a", "b"):
+        store.add_oktech_sniper(
+            {"id": i, "kind": "strategy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 3}}
+        )
+    if price is not None:
+        monkeypatch.setattr(store, "last_price", lambda mint: price)
+    svc = Service(Config(), store=store)
+    monkeypatch.setattr(svc, "_oktech", lambda: client)
+    monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    svc._rpc = FakeRpc()
+    return svc, store
+
+
+W6 = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
+
+
+def test_guard_floor_is_on_equity_not_on_the_sol_balance(monkeypatch):
+    """The fee test buys 12 x 0.2 SOL from a 2.9 SOL wallet: the SOL balance falls below any sensible floor while
+    the coins bought are worth what was paid. The floor is on equity (SOL + the tape value of open positions);
+    only a real loss trips the emergency stop."""
+    import asyncio
+    import itertools
+
+    calls = []
+
+    class Client:
+        async def start(self, i):
+            calls.append(("start", i))
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            calls.append(("stop", i))
+            return {}
+
+        async def tasks(self):
+            return [{"id": "a", "status": "running"}, {"id": "b", "status": "running"}]
+
+        async def close(self):
+            pass
+
+    # balance 2.9 -> 0.5 while the wallet holds 2.4 SOL worth of coin: equity 2.9, no emergency
+    svc, store = _guard_env(
+        monkeypatch,
+        itertools.chain([2.9, 2.9], itertools.repeat(0.5)),
+        Client(),
+        holdings_value=2_400_000_000,
+        price=1.0,
+    )  # 2.4e9 raw units at 1 lamport each = 2.4 SOL
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 1.2, 0.0001))
+    assert not rep["stopped"] and not any(c[0] == "stop" for c in calls) and rep["equity_sol"] >= 2.8
+    # the same balances with worthless coins: equity 0.5 < floor -> emergency
+    calls.clear()
+    svc, store = _guard_env(
+        monkeypatch,
+        itertools.chain([2.9, 2.9], itertools.repeat(0.5)),
+        Client(),
+        holdings_value=2_400_000_000,
+        price=0.0,
+    )
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 1.2, 5))
+    assert rep["stopped"] and "EMERGENCY" in rep["reason"] and ("stop", "a") in calls
+    store.close()
+
+
+def test_guard_reports_failed_stops_and_survives_oktech_errors(monkeypatch):
+    import asyncio
+    import itertools
+
+    class Client:
+        def __init__(self):
+            self.tasks_calls = 0
+
+        async def start(self, i):
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            raise OktechError(500, "SERVER", "boom")
+
+        async def tasks(self):
+            self.tasks_calls += 1
+            raise OktechError(502, "BAD_GATEWAY", "down")
+
+        async def close(self):
+            pass
+
+    client = Client()
+    svc, store = _guard_env(monkeypatch, itertools.chain([1.0, 0.99, 0.5], itertools.repeat(0.5)), client)
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 0.8, 5))
+    assert rep["stopped"] is False and rep["stop_failed"] == ["a", "b"] and "NOT stopped" in rep["reason"]
+    store.close()
+    # OKTech's task list failing is logged and watched through, not a reason to end the guard
+    client = Client()
+    svc, store = _guard_env(monkeypatch, itertools.chain([1.0, 1.0], itertools.repeat(0.95)), client)
+    rep = asyncio.run(svc.oktech_guard(["a", "b"], W6, 0.8, 0.0001))
+    assert client.tasks_calls >= 1 and not rep["stopped"] and rep["stop_failed"] == []
+    assert any("status check failed" in e for e in rep["events"])
+    store.close()
+
+
+def test_cycle_reads_holdings_before_touching_any_sniper(monkeypatch):
+    """Rule 1: a stopped sniper strands its coin. The cycler used to stop every sniper at arm time and only then
+    look at the wallet; now a held coin means it refuses to start."""
+    import asyncio
+    import itertools
+
+    import pytest
+
+    calls = []
+
+    class Client:
+        async def start(self, i):
+            calls.append(("start", i))
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            calls.append(("stop", i))
+            return {}
+
+        async def tasks(self):
+            return []
+
+        async def close(self):
+            pass
+
+    svc, store = _guard_env(monkeypatch, itertools.repeat(2.0), Client(), holdings_value=5_000_000_000, price=1.0)
+    with pytest.raises(SystemExit, match="holds"):
+        asyncio.run(svc.oktech_cycle(["a", "b"], W6, 0.5, 0.0001))
+    assert calls == []
+    store.close()
+
+
+def test_task_actions_continue_past_a_failing_id_and_delete_retires_a_missing_row(monkeypatch):
+    import asyncio
+
+    from snipetech.config import Config
+    from snipetech.service import Service, oktech_tasks
+    from snipetech.store import Store
+
+    class Client:
+        async def stop(self, i):
+            if i == "bad":
+                raise OktechError(404, "NOT_FOUND", "no such task")
+            return {"task": {"id": i, "status": "idle"}}
+
+        async def delete(self, i):
+            raise OktechError(404, "NOT_FOUND", "no such task")
+
+        async def close(self):
+            pass
+
+    store = Store(":memory:")
+    store.add_oktech_sniper({"id": "gone", "kind": "copy", "source": "x", "payload": {"singleSnipe": True}})
+    svc = Service(Config(), store=store)
+    monkeypatch.setattr(svc, "_oktech", lambda: Client())
+    results, failures = asyncio.run(oktech_tasks(svc, "stop", ["bad", "ok"]))
+    assert [r["id"] for r in results] == ["ok"] and failures == [("bad", "NOT_FOUND: no such task")]
+    ans = asyncio.run(svc.oktech_task("delete", "gone"))
+    assert ans["not_found"] is True and store.oktech_snipers(active=True) == []
+    store.close()

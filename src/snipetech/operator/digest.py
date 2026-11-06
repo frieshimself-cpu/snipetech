@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 
+from ..positions import is_active
 from ..store import Store
 from .budget import Ledger
 from .paths import OperatorPaths
@@ -69,7 +70,7 @@ def digest_text(
     if snap.snipers is None:
         lines.append("snipers: unknown (OKTech not answering)")
     else:
-        running = sum(1 for s in snap.snipers if str(s.get("status")) == "running")
+        running = sum(1 for s in snap.snipers if is_active(s.get("status")))
         lines.append(f"snipers: {running} running of {len(snap.snipers)}")
     # Spend.
     try:

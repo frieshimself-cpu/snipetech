@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from ..config import Config
+from ..positions import is_active
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
 from .snapshot import Snapshot
@@ -108,7 +109,7 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
     paths.ensure()
     paths.stop_flag.write_text(str(int(now)))
     try:
-        held = await svc.holdings(cfg.operator.wallet)
+        held = await svc.open_positions(cfg.operator.wallet)
     except Exception as exc:  # noqa: BLE001
         notes.write(
             f"stopped by owner: flag set, but holdings could not be read ({type(exc).__name__}); no sniper stopped",
@@ -117,7 +118,7 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
         return "stop flag set (no new snipers expected), but I could not read the wallet's holdings, so no sniper was stopped. Try again in a minute."
     try:
         st = await svc.oktech_status()
-        running = [s for s in st.get("snipers", []) if str(s.get("status")) == "running"]
+        running = [s for s in st.get("snipers", []) if is_active(s.get("status"))]
     except Exception as exc:  # noqa: BLE001
         notes.write(f"stopped by owner: flag set, but OKTech did not answer ({type(exc).__name__})", "decision")
         return "stop flag set, but OKTech did not answer; nothing stopped. Try again in a minute."

@@ -1081,12 +1081,20 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "holdings":
                 if not args.address:
                     raise SystemExit("holdings: give --address")
-                held = await svc.holdings(args.address)
-                print(
-                    json.dumps(held, indent=1)
-                    if args.json
-                    else "\n".join(f"{h['mint']}  {h['amount']:,.4f}" for h in held) or "no tokens held"
-                )
+                unknown: list[dict] = []
+                held = await svc.open_positions(args.address, unknown=unknown)
+                if args.json:
+                    print(json.dumps({"positions": held, "unpriced": unknown}, indent=1))
+                else:
+                    print(
+                        "\n".join(f"{h['mint']}  {h['amount']:,.4f}  ({h['value_sol']:.4f} SOL)" for h in held)
+                        or "no coins held"
+                    )
+                    if unknown:
+                        print(
+                            "not on the tape (ignored): "
+                            + ", ".join(f"{h['mint']} ({h['amount']:,.4f})" for h in unknown)
+                        )
                 return 0
             if args.action == "cycle":
                 if not (args.id and args.address and args.floor is not None):
@@ -1113,9 +1121,14 @@ async def _run(args, cfg: Config) -> int:
             if args.action in ("show", "start", "stop", "delete"):
                 if not args.id:
                     raise SystemExit(f"{args.action}: give --id (see `snipetech oktech status`)")
-                for i in args.id:
-                    print(json.dumps(await svc.oktech_task(args.action, i), indent=1, default=str))
-                return 0
+                from .service import oktech_tasks
+
+                results, failures = await oktech_tasks(svc, args.action, args.id)
+                for r in results:
+                    print(json.dumps(r, indent=1, default=str))
+                for i, err in failures:
+                    print(f"{args.action} {i} failed: {err}", file=sys.stderr)
+                return 1 if failures else 0
             if args.action == "replica":
                 if not args.from_study:
                     raise SystemExit("replica: give --from-study WALLET (run `snipetech study WALLET` first)")

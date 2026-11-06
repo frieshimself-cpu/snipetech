@@ -43,7 +43,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         notes.write(f"book: balances failed: {type(exc).__name__}: {exc}", "info")
     equity = (native + wsol) if native is not None and wsol is not None else None
     try:
-        holdings = await svc.holdings(wallet)
+        holdings = await svc.open_positions(wallet)
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
     try:
@@ -54,7 +54,8 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     acc = day_accounting(store, wallet, now, equity_now=equity)
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=store.latest_verdicts("qualified"), live={r["wallet"]: r for r in store.wallet_live()},
-                     bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now)  # fmt: skip
+                     bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
+                     stopped=paths.stop_flag.exists())  # fmt: skip
     plan: BookPlan = plan_book(inp, b)
     live_mode = b.enabled if dry is None else not dry
     effective_dry = (not live_mode) or plan.kill_reason is not None

@@ -445,6 +445,20 @@ class Store:
         sql += " ORDER BY slot, pos, ev"
         return [_trade(r) for r in self._q(sql, params)]
 
+    def last_price(self, mint: str) -> float | None:
+        """The tape's latest price of a coin in lamports per raw token unit (the reserves after its last trade), or
+        None when the tape has never seen it."""
+        rows = self._q(
+            "SELECT q_after, b_after, quote, base FROM trades WHERE mint=? ORDER BY slot DESC, pos DESC, ev DESC LIMIT 1",
+            (mint,),
+        )
+        if not rows:
+            return None
+        q_after, b_after, quote, base = rows[0]
+        if q_after and b_after:
+            return float(q_after) / float(b_after)
+        return float(quote) / float(base) if base else None
+
     def trades_for_user(self, user: str, since_ts: int = 0) -> list[Trade]:
         rows = self._q(
             f"SELECT {_TRADE_COLS} FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev", (user, since_ts)

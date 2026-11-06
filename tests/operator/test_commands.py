@@ -65,7 +65,7 @@ class FakeSvc:
     def __init__(self, held, snipers):
         self._held, self._snipers, self.calls = held, snipers, []
 
-    async def holdings(self, address):
+    async def open_positions(self, address):
         return self._held
 
     async def oktech_status(self):
@@ -116,9 +116,21 @@ def test_stop_keeps_holders_running(tmp_path):
     assert ctx["paths"].stop_flag.exists()  # the flag still stops new snipers from being expected
 
 
+def test_stop_treats_a_starting_sniper_as_running(tmp_path):
+    """OKTech's statuses are idle / starting / running / stopping / finished / failed; a sniper that is starting is
+    about to buy and must be stopped by /stop like a running one."""
+    svc = FakeSvc(
+        held=[],
+        snipers=[{"id": "s1", "name": "a", "status": "starting"}, {"id": "s2", "name": "b", "status": "finished"}],
+    )
+    ctx, _ = _ctx(tmp_path, svc)
+    reply = asyncio.run(handle_command(_cmd("stop"), **ctx))
+    assert svc.calls == [("stop", "s1")] and "s1" in reply
+
+
 def test_stop_when_holdings_cannot_be_read_stops_nothing(tmp_path):
     class Broken(FakeSvc):
-        async def holdings(self, address):
+        async def open_positions(self, address):
             raise RuntimeError("rpc down")
 
     svc = Broken(held=[], snipers=[{"id": "s1", "name": "a", "status": "running"}])

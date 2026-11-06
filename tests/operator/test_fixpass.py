@@ -97,11 +97,12 @@ def test_job_ended_fires_even_with_a_recent_identical_state(paths):
 
 
 def test_token_residue_below_dust_is_not_held():
-    from snipetech.operator.snapshot import DUST_TOKENS
+    from snipetech.positions import DUST_SOL, filter_positions
 
-    assert (
-        DUST_TOKENS >= 1_000_000
-    )  # the residue a pump.fun sell leaves (tens of thousands of tokens) is not a position
+    # the residue a pump.fun sell leaves is worth nothing: dust is measured by value, not by token count
+    assert DUST_SOL == 0.001
+    residue = [{"mint": "M" * 44, "amount": 40_000.0, "raw": 40_000_000_000, "decimals": 6}]
+    assert filter_positions(residue, lambda m: 0.00001) == []  # 40,000 tokens at 1e-8 SOL each = 0.0004 SOL
 
 
 # 8. start_job cannot read files outside the data directory; outputs are redacted

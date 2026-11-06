@@ -120,8 +120,13 @@ def test_service_states_refire_every_six_hours_not_hourly(paths):
     """An inactive timer or a failed oneshot is a standing condition the owner fixes by hand; once an hour was noise."""
     from snipetech.operator.gate import refire_secs
 
-    assert refire_secs("service not active: snipetech-daily") == 6 * 3600 and refire_secs("coin(s) held, expected") == 3600
-    svc = dict(ALL_ACTIVE, **{"snipetech-daily.timer": "active", "snipetech-operator.timer": "active", "snipetech-daily": "failed"})
+    assert (
+        refire_secs("service not active: snipetech-daily") == 6 * 3600 and refire_secs("coin(s) held, expected") == 3600
+    )
+    svc = dict(
+        ALL_ACTIVE,
+        **{"snipetech-daily.timer": "active", "snipetech-operator.timer": "active", "snipetech-daily": "failed"},
+    )
     cfg = OperatorConfig()
     d0 = decide(snap(services=svc), snap(services=svc), NOW, cfg, paths)
     assert d0.call and any("service not active" in r for r in d0.reasons)
@@ -129,6 +134,14 @@ def test_service_states_refire_every_six_hours_not_hourly(paths):
     prev = snap(services=svc)
     prev.reason_ts = {key: NOW}
     later = NOW + 2 * 3600
-    assert not decide(snap(services=svc, tape_last_ts=later), prev, later, cfg, paths).call  # two hours later: still quiet
+    assert not decide(
+        snap(services=svc, tape_last_ts=later), prev, later, cfg, paths
+    ).call  # two hours later: still quiet
     later = NOW + 6 * 3600
     assert decide(snap(services=svc, tape_last_ts=later), prev, later, cfg, paths).call  # six hours later: a reminder
+
+
+def test_a_starting_sniper_counts_as_running_for_the_gate(tmp_path):
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    d = decide(snap(snipers=[{"id": "a", "name": "x", "status": "starting"}]), snap(), NOW, CFG, paths)
+    assert d.call and any("1 sniper(s) running" in r for r in d.reasons)

@@ -16,14 +16,19 @@ from .budget import Ledger
 from .paths import OperatorPaths
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
-# A pump.fun sell leaves tens of thousands of tokens behind (1e9 supplies); below this it is residue, not a position.
-DUST_TOKENS = 1_000_000.0
 # Long-running services and the timers must be active; the oneshot services (snipetech-daily, snipetech-operator)
 # are inactive most of the day by design and only matter when they are "failed".
 WATCHED_UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer",
                  "snipetech-discover.timer", "snipetech-qualify.timer", "snipetech-measure.timer", "snipetech-book.timer",
                  "snipetech-events")  # fmt: skip
-ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify", "snipetech-measure", "snipetech-book")
+ONESHOT_UNITS = (
+    "snipetech-daily",
+    "snipetech-operator",
+    "snipetech-discover",
+    "snipetech-qualify",
+    "snipetech-measure",
+    "snipetech-book",
+)
 
 
 @dataclass
@@ -170,20 +175,27 @@ async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) 
 
 
 async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, list[dict]]:
-    """(native SOL, wrapped SOL, held tokens above dust) from the RPC."""
+    """(native SOL, wrapped SOL, open positions) from the RPC; positions by the one shared rule (positions.py)."""
+    from ..positions import filter_positions
     from ..solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
 
     native = (await svc.rpc.call("getBalance", [wallet]))["value"] / 1e9
-    wsol, held = 0.0, []
+    wsol, accounts = 0.0, []
     for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
         r = await svc.rpc.call("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed"}])
         for a in r["value"]:
             info = a["account"]["data"]["parsed"]["info"]
-            amt = float(info["tokenAmount"]["uiAmount"] or 0)
+            ta = info["tokenAmount"]
+            amt = float(ta.get("uiAmount") or 0)
             if info["mint"] == WSOL_MINT:
                 wsol += amt
-            elif amt > DUST_TOKENS:
-                held.append({"mint": info["mint"], "amount": amt})
+                continue
+            decimals = int(ta.get("decimals") if ta.get("decimals") is not None else 6)
+            raw = int(ta["amount"]) if ta.get("amount") is not None else int(round(amt * 10**decimals))
+            accounts.append(
+                {"mint": info["mint"], "amount": amt, "raw": raw, "decimals": decimals, "account": a.get("pubkey")}
+            )
+    held = filter_positions(accounts, svc.store.last_price)
     return native, wsol, held
 
 
