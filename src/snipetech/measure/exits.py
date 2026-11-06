@@ -30,6 +30,7 @@ PRICE_EXIT_SLOTS = 2  # a price exit's trigger at most this many slots before ou
 DEAD_EXIT_LAG_SECS = 4.0  # our sell at most this long after a quiet gap reached staleSeconds
 TIMER_SLACK_SECS = 3.0  # the hold within this of a timer
 UNREACHABLE_GAIN_PCT = 10_000.0  # the dummy take-profit stage that satisfies OKTech's "at least one stage"
+# the labels classify_exit writes to fills.exit_reason; 'sold' means not read (no exit settings or no fee on record)
 REASONS = ("manual", "copy_exit", "stop_loss", "trailing", "take_profit", "dead_exit", "timer", "unknown")
 
 
