@@ -238,7 +238,7 @@ def test_the_watch_sends_one_line_per_coin_every_15_minutes_and_never_sells(tmp_
         assert "Nobody is selling" in line and m.mint in line and G[:6] in line and "17:09:13" in line
         assert "no trade for 1 s at 17:09:15" in line and "sold at least 50 % of its coins at 17:13:34" in line
         assert "0.260 SOL" in line and "+28 %" in line
-        assert "OKTech or Axiom" in line and f"snipetech remote run sweep --mint {m.mint}" in line
+        assert "OKTech or Axiom" in line and line.endswith(f"Sell it now: /sell {m.mint}")  # the command to send
         assert len(watch_pass(cfg, st, notifier, W, held, FINISHED, t1 + 60)) == 1 and len(sent) == 1  # not repeated
         watch_pass(cfg, st, notifier, W, held, FINISHED, t1 + 15 * 60)
         assert len(sent) == 2  # still held 15 minutes later: said again
@@ -317,9 +317,27 @@ def test_a_coin_off_the_curve_is_sold_by_hand_not_by_sweep(tmp_path):
         watch_pass(cfg, st, Notifier("T", 7, post=lambda u, d: sent.append(d["text"])), W, [_held(m, ours)], FINISHED,
                    ours.ts + 400)  # fmt: skip
         assert len(sent) == 1 and "OKTech or Axiom" in sent[0] and "left the pump.fun curve" in sent[0]
-        assert "remote run sweep" not in sent[0]  # sweep sells curve coins only
+        assert "remote run sweep" not in sent[0] and "Sell it now" not in sent[0]  # /sell sells curve coins only
     finally:
         st.close()
+
+
+def test_every_alert_ends_with_the_sell_command_to_send():
+    """The owner is often only on the phone: whatever the reason a coin is flagged, the alert's last line is the exact
+    Telegram command that sells it, with nothing after the coin's address (a full stop there would make the copied
+    command invalid). A coin off the curve gets no such line: /sell sells curve coins only."""
+    from snipetech.book.watch import REASONS, alert_line
+
+    mint = addr("5m5h-shaped coin")
+    hit = {"mint": mint, "bought_at": T0, "buy_sol": 0.2, "leader": G, "held_secs": 95.0, "value_sol": 0.07,
+           "sniper_id": "paid-g2oz", "sniper_status": "finished", "timer_secs": 300,
+           "due": [{"exit": "stop_loss", "after_secs": 0.6, "at": T0 + 0.6, "what": "the price fell 30 % below our buy"}]}  # fmt: skip
+    for reason in REASONS:
+        line = alert_line(hit | {"reason": reason})
+        assert line.splitlines()[-1] == f"Sell it now: /sell {mint}", reason
+        assert "snipetech remote run sweep" not in line  # one way to sell from the phone, not two
+    off = alert_line(hit | {"reason": "exits_not_acted_on"}, migrated=True)
+    assert f"/sell {mint}" not in off and "OKTech or Axiom" in off and "left the pump.fun curve" in off
 
 
 def test_exit_spec_reads_the_snipers_own_payload():

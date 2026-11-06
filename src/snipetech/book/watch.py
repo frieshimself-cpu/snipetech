@@ -355,7 +355,8 @@ def _dur(secs: float) -> str:
 
 def alert_line(hit: dict, *, migrated: bool = False) -> str:
     """One decision line for the owner: the coin, the leader, which exits were due and when, its value now, how to
-    sell it. Plain words; nothing here sells."""
+    sell it, and last the Telegram command that sells it (a coin still on the curve). Plain words; nothing here sells:
+    only the owner's own /sell does."""
     mint = hit["mint"]
     head = f"[watch] Nobody is selling coin {mint}"
     if hit.get("bought_at") is not None:
@@ -384,11 +385,16 @@ def alert_line(hit: dict, *, migrated: bool = False) -> str:
     else:
         worth += f", worth about {value:.3f} SOL now"
         worth += f" ({(value / hit['buy_sol'] - 1) * 100:+.0f} %)" if hit.get("buy_sol") else ""
+    worth = f"{worth[0].upper()}{worth[1:]}"
     if migrated:
-        how = "It has left the pump.fun curve, so sell it by hand in OKTech or Axiom (the sweep command only sells curve coins)"
-    else:
-        how = f"Sell it by hand in OKTech or Axiom, or run: snipetech remote run sweep --mint {mint}"
-    return f"{head}. {why}. {worth[0].upper()}{worth[1:]}. {how}. Nothing sells it unless you do."
+        how = "It has left the pump.fun curve, so sell it by hand in OKTech or Axiom (/sell only sells curve coins)"
+        return f"{head}. {why}. {worth}. {how}. Nothing sells it unless you do."
+    # the last line is the owner's Telegram command that sells it (operator/commands.py): nothing after the address,
+    # so the line copied from the alert is the command
+    return (
+        f"{head}. {why}. {worth}. Nothing sells it unless you do (by hand in OKTech or Axiom, or from here).\n"
+        f"Sell it now: /sell {mint}"
+    )
 
 
 def _migrated(store: Store, mint: str) -> bool:
