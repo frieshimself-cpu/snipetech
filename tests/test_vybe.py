@@ -50,6 +50,8 @@ def test_top_traders_headers_params_parsing_and_counter():
         "trades": 80,
         "tokens": 25,
         "seven_day_usd": 300.0,
+        "labels": ["kol"],
+        "name": "one",
     }
     assert (
         rows[1]["wallet"] == "W2"
