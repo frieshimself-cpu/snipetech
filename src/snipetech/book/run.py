@@ -4,6 +4,7 @@ calls (stop → create → start), one Telegram line per action. Dry is the defa
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +15,7 @@ from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from .policy import BookInputs, BookPlan, plan_book
 from .state import day_accounting, record_run
-from .switch import book_live
+from .switch import book_live, effective_min_score
 
 
 def _bookable(store) -> list[dict]:
@@ -46,7 +47,8 @@ def _line(a) -> str:
 async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = None, dry: bool | None = None,
                    balances: Callable | None = None, notes: NoteSink | None = None) -> dict[str, Any]:  # fmt: skip
     store = svc.store
-    b = cfg.book
+    paths0 = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
+    b = replace(cfg.book, min_score=effective_min_score(cfg, paths0))  # the owner's /book bar, if set
     wallet = cfg.operator.wallet
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     notes = notes or NoteSink(paths, now=lambda: now)

@@ -8,7 +8,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..book.switch import book_line, book_live, book_off_reply, book_switch
+from ..book.switch import book_bar_reply, book_line, book_live, book_off_reply, book_switch, effective_min_score
 from ..config import Config
 from ..positions import is_active
 from .notify import API, Notifier, get_updates
@@ -18,7 +18,8 @@ from .tools import NoteSink
 
 HELP = (
     "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  "
-    "/book on|off (the live book, no SSH needed)  /why <wallet> and /budget (later phase)"
+    "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
+    "/why <wallet> and /budget (later phase)"
 )
 
 
@@ -181,14 +182,19 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
             book_switch(paths, arg == "on", "telegram", now)
             if arg == "on":
                 notes.write("owner switched the book on (/book on)", "decision")
-                reply = ("book on: " + book_line(cfg) + ". /book off or /stop halts it"
+                reply = ("book on: " + book_line(cfg, paths) + ". /book off or /stop halts it"
                          + (" (the /stop flag is set: it stays halted until /resume)" if paths.stop_flag.exists() else "") + ".")  # fmt: skip
             else:
                 notes.write("owner switched the book off (/book off)", "decision")
                 reply = book_off_reply(cfg, paths)
+        elif arg == "bar":
+            reply = book_bar_reply(cfg, paths, cmd.args[1] if len(cmd.args) > 1 else None, "telegram", now)
+            if len(cmd.args) > 1 and not reply.startswith("bar not changed"):
+                notes.write(f"owner set the book's bar: {reply}", "decision")
         else:
-            reply = f"book: {'on' if book_live(cfg, paths) else 'off'}" + (
-                " (halted by /stop)" if paths.stop_flag.exists() else ""
+            reply = (
+                f"book: {'on' if book_live(cfg, paths) else 'off'}, bar {effective_min_score(cfg, paths):g} SOL a trade"
+                + (" (halted by /stop)" if paths.stop_flag.exists() else "")
             )
     elif cmd.name in ("why", "budget"):
         reply = f"/{cmd.name} is available in a later phase."

@@ -658,8 +658,10 @@ def build_parser() -> argparse.ArgumentParser:
         "book",
         "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
     )
-    sp.add_argument("action", choices=["run", "on", "off", "status"],
-                    help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status")  # fmt: skip
+    sp.add_argument("action", choices=["run", "on", "off", "status", "bar"],
+                    help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status; "
+                         "bar [SOL a trade|default]: the score a wallet needs to be copied")  # fmt: skip
+    sp.add_argument("value", nargs="?", help="bar: SOL a trade (e.g. 0.001) or 'default'")
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
     sp = cmd(
         "strategist",
@@ -1435,7 +1437,7 @@ def main(argv: list[str] | None = None) -> int:
         return _events(args, cfg)
     if args.cmd == "book":
         from .book.run import run_book
-        from .book.switch import book_flag, book_line, book_live, book_off_reply, book_switch
+        from .book.switch import book_bar_reply, book_flag, book_line, book_live, book_off_reply, book_switch
         from .operator.paths import OperatorPaths
 
         bpaths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
@@ -1444,7 +1446,10 @@ def main(argv: list[str] | None = None) -> int:
             # the switch is a file next to this machine's database: run it on the server (`snipetech remote --wait run
             # book on|off`) or with /book on|off in Telegram
             print(f"switch file {book_flag(bpaths)} on this machine")
-            print(f"book on: {book_line(cfg)}" if args.action == "on" else book_off_reply(cfg, bpaths))
+            print(f"book on: {book_line(cfg, bpaths)}" if args.action == "on" else book_off_reply(cfg, bpaths))
+            return 0
+        if args.action == "bar":
+            print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
             return 0
         if args.action == "status":
             print(

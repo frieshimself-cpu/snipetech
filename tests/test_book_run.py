@@ -288,3 +288,29 @@ def test_cli_book_off_says_where_the_switch_is_and_whether_it_held(tmp_path, cap
     assert cli.main(["--db", str(db), "book", "off"]) == 0
     out = capsys.readouterr().out
     assert str(tmp_path / "data" / "operator" / "BOOK_ON") in out and "stops its snipers that hold nothing" in out
+
+
+def test_the_owners_bar_decides_which_wallets_the_book_copies(tmp_path):
+    """`book bar 0.025` (or /book bar 0.025 in Telegram) copies only wallets scoring at least that; `default` goes back
+    to the config's min_score. Only the owner sets it: the strategist's overlay has no access to this file."""
+    from snipetech.book.switch import book_bar, effective_min_score
+
+    st, cfg = _env(tmp_path)  # L1 scores 0.03, L2 0.02; the config's bar is 0.005
+    paths = OperatorPaths(tmp_path / "data")
+    svc = FakeSvc(st)
+    try:
+        assert effective_min_score(cfg, paths) == 0.005
+        book_bar(paths, 0.025, "test", NOW)
+        assert effective_min_score(cfg, paths) == 0.025
+        out = asyncio.run(run_book(svc, cfg, NOW, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        assert out["ranked"] == 1 and out["actions"].get("create") == 1
+        book_bar(paths, None, "test", NOW)
+        assert effective_min_score(cfg, paths) == 0.005
+    finally:
+        st.close()
+
+
+def test_cli_book_bar_parses():
+    a = build_parser().parse_args(["book", "bar", "0.001"])
+    assert a.action == "bar" and a.value == "0.001"
+    assert build_parser().parse_args(["book", "bar"]).value is None

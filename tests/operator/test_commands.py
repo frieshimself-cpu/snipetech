@@ -291,3 +291,19 @@ def test_book_off_tells_the_truth(tmp_path):
     ctx["cfg"].book.enabled = True
     reply = asyncio.run(handle_command(_cmd("book", "off"), **ctx)).lower()
     assert "still on" in reply and "enabled = true" in reply and "/stop" in reply
+
+
+def test_book_bar_from_telegram(tmp_path):
+    from snipetech.book.switch import effective_min_score
+
+    svc = FakeSvc(held=[], snipers=[])
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=5.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
+    ctx, sent = _ctx(tmp_path, svc, snap)
+    reply = asyncio.run(handle_command(_cmd("book", "bar", "0.001"), **ctx))
+    assert "0.001" in reply and effective_min_score(ctx["cfg"], ctx["paths"]) == 0.001
+    assert "owner set the book's bar" in ctx["paths"].notes.read_text()
+    assert "bar 0.001" in asyncio.run(handle_command(_cmd("book", "status"), **ctx))
+    reply = asyncio.run(handle_command(_cmd("book", "bar", "-1"), **ctx)).lower()
+    assert "not changed" in reply and effective_min_score(ctx["cfg"], ctx["paths"]) == 0.001
+    asyncio.run(handle_command(_cmd("book", "bar", "default"), **ctx))
+    assert effective_min_score(ctx["cfg"], ctx["paths"]) == ctx["cfg"].book.min_score
