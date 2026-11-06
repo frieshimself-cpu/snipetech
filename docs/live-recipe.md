@@ -276,3 +276,12 @@ failing (the 6-hour timeout above). `/status`, `/stop`, `/resume` are live but n
 phone to be seen in the log; the dashboard needs `DASH_TOKEN` in the env file. Phase 2 (`discover`, `qualify`)
 deployed right after; the timers wait for `setup.sh` on the box.
 
+## Learning loop phase 2 on the server (6 Nov, 10:38–11:05 UTC) — accepted
+
+`discover run` (job 20261106-103747): 4 338 new candidates, no source error, 223 s. `qualify run` (job
+20261106-104525): 300 evaluated, 126 through one restricted lab (cand group only), 777 s; 1 qualified
+(`2YDnmMQt…`, n 93, +0.0146 / +0.0019 SOL, crowding 3), 22 retired, 277 candidate, 174 without tape data.
+Vybe source after the field fix (job 20261106-110247): 344 rows, 311 new. The operator's 11:01 round flagged the
+qualified wallet as a decision note. Timers `snipetech-discover.timer` / `snipetech-qualify.timer` are installed
+by `setup.sh` and still need the owner's `enable --now`; until then the hourly cloud round stands in.
+

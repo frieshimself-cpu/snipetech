@@ -28,6 +28,14 @@ What the day's data said:
   `qualify`, and every lab takes the same lock. The resize to 16 GB / 6 CPU is still the right move once the Vultr
   balance is topped up.
 
+First runs on the server (6 Nov, 10:38–11:05 UTC): `discover` put 4 338 wallets into the candidates table in
+four minutes (tape 299, your tracked list 2 681, SolanaTracker 33, Birdeye 226, coin-first 1 280; Vybe added 344
+once its field names were fixed). `qualify` measured the first 300 in 13 minutes: 174 had never traded in the
+tape (review in 72 h), 22 retired (bundle members in 2–44 launches, or trading off pump.fun), 277 wait for more
+evidence, and **one qualified**: `2YDnmMQt…` — n 93 at +6, +0.0146 SOL a trade, lower bound +0.0019, median 3
+followers within a second, no API history (a tape-only wallet). The operator reported it on Telegram at 11:01
+with the right caveat (history unverified). That is the loop working end to end without a hand on it.
+
 Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the two new timers (the
 exact lines are in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
 bot; top up Vultr and say "resize now" between jobs; fund the wallet (6–10 SOL) and say yes to the fee test when
