@@ -42,7 +42,7 @@ class IngestResult:
     trades: int = 0
     unresolved_pools: set[str] = field(default_factory=set)
 
-    def add(self, other: "IngestResult") -> None:
+    def add(self, other: IngestResult) -> None:
         self.fetched += other.fetched
         self.launches += other.launches
         self.trades += other.trades
@@ -129,15 +129,17 @@ class Ingestor:
             self.store.conn.executemany("UPDATE trades SET pos=? WHERE sig=?", rows)
             self.store.conn.commit()
 
-    async def ensure_tx_meta(self, sigs: list[str]) -> int:
-        """Fingerprint already-ingested transactions that have no tx_meta yet (re-fetches them)."""
+    async def ensure_tx_meta(self, sigs: list[str], include_failed: bool = False) -> int:
+        """Fingerprint already-ingested transactions that have no tx_meta yet (re-fetches them).
+        Errored transactions are skipped unless `include_failed` (the measure stage wants the fee a failed send paid)."""
         missing = self.store.missing_tx_meta(sigs)
         services = self.store.labels("service")
         done = 0
         for start in range(0, len(missing), FETCH_CHUNK):
             chunk = missing[start : start + FETCH_CHUNK]
             txs = await self.rpc.get_transactions(chunk)
-            metas = [extract_tx_meta(tx, sig, services) for sig, tx in txs.items() if tx and not (tx.get("meta") or {}).get("err")]
+            metas = [extract_tx_meta(tx, sig, services) for sig, tx in txs.items()
+                     if tx and (include_failed or not (tx.get("meta") or {}).get("err"))]  # fmt: skip
             self.store.add_tx_meta(metas)
             done += len(metas)
             self.progress(f"fingerprinted {done}/{len(missing)} transactions")
@@ -379,4 +381,4 @@ def incoming_sol_transfer(tx: dict[str, Any], wallet: str) -> tuple[str, int] | 
     return best
 
 
-__all__ = ["Ingestor", "IngestResult", "assign_positions", "incoming_sol_transfer", "WSOL_MINT"]
+__all__ = ["WSOL_MINT", "IngestResult", "Ingestor", "assign_positions", "incoming_sol_transfer"]

@@ -121,9 +121,10 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             svc.progress(f"measure: failed-signature scan failed: {type(exc).__name__}: {exc}")
     fsigs = [f.get("signature") for f in failed_list if f.get("signature")]
     if fsigs:
+        ensure_failed = ensure_meta or (lambda sigs: svc.ingestor.ensure_tx_meta(sigs, include_failed=True))
         try:
-            await ensure(fsigs)
-        except Exception:  # noqa: BLE001
+            await ensure_failed(fsigs)
+        except Exception:  # noqa: BLE001 - a failed send without fee fields is still counted
             pass
     fmetas = store.tx_meta(fsigs) if fsigs else {}
     for f in failed_list:

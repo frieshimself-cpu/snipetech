@@ -85,6 +85,7 @@ class TxMeta:
     template: list[str] = field(default_factory=list)
     nonce: bool = False
     lookup_tables: int = 0
+    failed: bool = False  # the transaction landed but errored (fees were still paid)
 
     @property
     def tip_lamports(self) -> int:
@@ -100,7 +101,7 @@ class TxMeta:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict) -> "TxMeta":
+    def from_dict(cls, d: dict) -> TxMeta:
         d = dict(d)
         d["pump_ixs"] = [PumpIx(**p) for p in d.get("pump_ixs", [])]
         return cls(**d)
@@ -162,6 +163,7 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
         cu_price=None,
         cu_consumed=meta.get("computeUnitsConsumed"),
         lookup_tables=len(msg.get("addressTableLookups") or []),
+        failed=meta.get("err") is not None,
     )
     own_token_accounts = {
         keys[b["accountIndex"]]
