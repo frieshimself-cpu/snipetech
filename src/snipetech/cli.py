@@ -107,6 +107,54 @@ def _measure(args, cfg) -> int:
     print(json.dumps(asyncio.run(go()), indent=1, default=str))
     return 0
 
+
+def _events(args, cfg) -> int:
+    import time
+
+    from .events.run import poll_feeds, poll_loop, scan_tape
+    from .service import Service
+
+    svc = Service(cfg)
+    clients: dict = {}
+    try:
+        if args.action == "scan":
+            print(json.dumps(scan_tape(svc.store, time.time(), hours=args.hours), indent=1))
+            return 0
+        if os.environ.get("SOLANATRACKER_API_KEY"):
+            from .solanatracker import SolanaTracker
+
+            clients["solanatracker"] = SolanaTracker(counter=_usage(svc, "solanatracker"))
+        if os.environ.get("BIRDEYE_API_KEY"):
+            from .birdeye import Birdeye
+
+            clients["birdeye"] = Birdeye(budget_cu=cfg.birdeye.daily_cu, counter=_usage(svc, "birdeye"))
+        if args.raw:
+            out = {}
+            st = clients.get("solanatracker")
+            be = clients.get("birdeye")
+            if st is not None:
+                out["solanatracker_trending"] = st._get("/tokens/trending/1h", {})
+                out["solanatracker_graduating"] = st._get("/tokens/multi/graduating", {})
+            if be is not None:
+                out["birdeye_trending"] = be._get("/defi/token_trending", {"sort_by": "rank", "sort_type": "asc", "offset": 0, "limit": 3}, 30)
+            text = json.dumps(out, indent=1, default=str)
+            print(text[:6000])
+            return 0
+        if args.once:
+            print(json.dumps(poll_feeds(svc.store, clients, time.time(), log=lambda m: print(m, file=sys.stderr, flush=True)), indent=1))
+            return 0
+        poll_loop(svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True))
+        return 0
+    except KeyboardInterrupt:
+        return 0
+    finally:
+        for c in clients.values():
+            try:
+                c.close()
+            except Exception:  # noqa: BLE001
+                pass
+        svc.store.close()
+
 def _usage(svc, provider: str):
     """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
 
@@ -389,6 +437,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
+    sp = cmd("events", "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)")
+    sp.add_argument("action", choices=["poll", "scan"])
+    sp.add_argument("--once", action="store_true", help="poll: one pass instead of the service loop")
+    sp.add_argument("--interval", type=float, default=60, help="poll: seconds between passes (service: 60)")
+    sp.add_argument("--raw", action="store_true", help="poll: print the first rows of each feed as the API sends them, then exit")
+    sp.add_argument("--hours", type=float, default=6.0, help="scan: how far back to look for curve crossings")
     sp = cmd("book", "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless [book] enabled = true in the config file)")
@@ -992,6 +1046,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "events":
+        return _events(args, cfg)
     if args.cmd == "book":
         import time
 

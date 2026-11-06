@@ -1,0 +1,18 @@
+[Unit]
+Description=snipetech events: trending and graduating feeds into the events table, once a minute (learning loop, stage 5)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db events poll --interval 60
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
