@@ -86,7 +86,28 @@ def test_retries_on_429():
         calls["n"] += 1
         if calls["n"] == 1:
             return httpx.Response(429, json={})
-        return httpx.Response(200, json={"data": []})
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "accountAddress": "W1",
+                        "accountName": "one",
+                        "accountLabels": ["kol"],
+                        "metrics": {
+                            "realizedPnlUsd": 1234.5,
+                            "unrealizedPnlUsd": -10.0,
+                            "winRate": 61.0,
+                            "tradesVolumeUsd": 50000.0,
+                            "tradesCount": 80,
+                            "uniqueTokensTraded": 25,
+                            "sevenDayPnl": [[1793404800000.0, 100.0], [1793491200000.0, 200.0]],
+                        },
+                    },
+                    {"accountAddress": "W2", "realizedPnlUsd": "99.5", "winRate": None, "tradesCount": "7"},
+                ]
+            },
+        )  # the older flat shape still parses
 
     assert _client(handler).top_traders() == [] and calls["n"] == 2
 
