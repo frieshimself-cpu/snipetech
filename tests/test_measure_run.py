@@ -25,8 +25,18 @@ def _svc(tmp_path):
     return Service(cfg, store=st), st, cfg
 
 
-def _copy_world(st, coins=3, t0=NOW - 3600):
+def _copy_row(st, leader=LEAD, created=NOW - 3 * 86400, removed=None, sid="cs1"):
+    """A copy sniper on `leader` in the local table, alive from `created` (and until `removed`)."""
+    st.add_oktech_sniper({"id": sid, "external_id": sid, "kind": "copy", "source": leader, "name": f"snipetech copy x {leader[:6]}",
+                          "config_hash": "h", "payload": {"ctbotWallets": [{"address": leader}]}, "created_at": created})  # fmt: skip
+    if removed is not None:
+        st._exec("UPDATE oktech_snipers SET removed_at=? WHERE id=?", (removed, sid))
+
+
+def _copy_world(st, coins=3, t0=NOW - 3600, with_sniper=True):
     """We copy LEAD in `coins` coins: leader buys, two others, we buy 0.2, we sell everything later."""
+    if with_sniper:
+        _copy_row(st, created=t0 - 3600)
     sigs = []
     for k in range(coins):
         m = Market(st, addr(f"c{k}"), D, t0 + k * 600, SLOT + k * 1500)
@@ -158,8 +168,8 @@ def test_landing_override_after_30_fills(tmp_path):
         # the measured landing never moves the labs closer than the configured one (rule 2: paper results at a
         # better landing are not evidence); it can only push them further back
         assert effective_landing_pos(st, cfg.qualify) == "+6"
-        st.set_coverage("measure:landing_pos", {"pos": "+9"})
-        assert effective_landing_pos(st, cfg.qualify) == "+9"
+        st.set_coverage("measure:landing_pos", {"pos": "+9", "ts": NOW})
+        assert effective_landing_pos(st, cfg.qualify, now=NOW) == "+9"
         st.set_coverage("measure:landing_pos", {})
         assert effective_landing_pos(st, cfg.qualify) == "+6"
     finally:
@@ -270,5 +280,122 @@ def test_reclassifying_an_old_window_keeps_the_recorded_pnl(tmp_path):
         assert all(v is not None for v in before.values())
         asyncio.run(backfill(svc, cfg, t0 - 60, t0 + 3600, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
         assert {s_: st.fill(s_)["pnl_sol"] for _, s_ in sigs} == before
+    finally:
+        st.close()
+
+
+def test_leaders_are_the_copy_snipers_alive_at_the_fill(tmp_path):
+    """A buy is credited to a wallet only if a copy sniper on it existed at that moment; labels alone are not leaders
+    (the old fallback to every labelled wallet credited strategy fills to whichever candidate bought before us)."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 2
+        sigs = _copy_world(st, coins=2, with_sniper=False)  # LEAD is labelled kol, but no sniper copies it
+        metas = {b: _meta(b) for b, _ in sigs}
+        run = lambda t: asyncio.run(
+            run_measure(svc, cfg, t, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        run(NOW)
+        assert [st.fill(b)["wallet_copied"] for b, _ in sigs] == [None, None]
+        _copy_row(st, created=NOW - 3300)  # created between the two coins (buys at NOW-3599 and NOW-2999)
+        out = run(NOW + 60)
+        assert [st.fill(b)["wallet_copied"] for b, _ in sigs] == [None, LEAD]
+        assert out["landing_pos"] is None  # one buy with a leader is not the two the landing needs
+        _copy_row(st, created=NOW - 7200, removed=NOW - 3500, sid="cs1")  # alive for the first coin only
+        run(NOW + 120)
+        assert [st.fill(b)["wallet_copied"] for b, _ in sigs] == [LEAD, None]
+    finally:
+        st.close()
+
+
+def test_failed_sell_twin_belongs_to_the_arm_of_the_coin_it_sells(tmp_path):
+    """Sell twins bid the fixed sell fee on both arms, so the fee cannot place them: a failed sell belongs to the arm
+    that bought the coin it was selling."""
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, s_ = sigs[0]
+        twin = _meta("TWIN", priority=2_000_000, tip=0)
+        twin.pump_ixs = [PumpIx("pump", "sell", ME, {}, None, addr("c0"))]
+        metas = {
+            b: _meta(b, priority=20_000_000, tip=20_000_000),
+            s_: _meta(s_, priority=2_000_000, tip=0),
+            "TWIN": twin,
+        }
+
+        async def failed(wallet, since):
+            return [
+                {
+                    "signature": "TWIN",
+                    "blockTime": NOW - 3580,
+                    "slot": SLOT + 40,
+                    "err": {"InstructionError": [3, {"Custom": 6023}]},
+                }
+            ]
+
+        asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed))
+        row = st.fill("TWIN")
+        assert row["bid_arm"] == "paid" and row["mint"] == addr("c0")
+    finally:
+        st.close()
+
+
+def test_a_fill_without_a_fingerprint_is_retried(tmp_path):
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, _ = sigs[0]
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, {}), failed_sigs=_no_failed)
+        )
+        assert st.fill(b)["priority_lamports"] is None and st.fill(b)["bid_arm"] == "control"
+        metas = {b: _meta(b, priority=20_000_000, tip=20_000_000)}
+        asyncio.run(
+            run_measure(svc, cfg, NOW + 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )  # cursor past the trade
+        assert st.fill(b)["priority_lamports"] == 20_000_000 and st.fill(b)["bid_arm"] == "paid"
+    finally:
+        st.close()
+
+
+def test_a_fingerprinted_fill_keeps_its_arm_when_the_arms_change(tmp_path):
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, _ = sigs[0]
+        metas = {b: _meta(b, priority=20_000_000, tip=20_000_000)}
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert st.fill(b)["bid_arm"] == "paid"
+        cfg.book.bid_arms = {"control": {"priority": 0.001, "tip": 0.002}, "rich": {"priority": 0.02, "tip": 0.02}}
+        asyncio.run(
+            run_measure(svc, cfg, NOW + 60, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert st.fill(b)["bid_arm"] == "paid"  # the arm it bid at fill time
+    finally:
+        st.close()
+
+
+def test_stale_bid_model_rows_and_an_old_landing_are_dropped(tmp_path):
+    from snipetech.qualify.run import effective_landing_pos
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        st.put_bid_model({"arm": "gone", "n": 5, "failed_n": 0, "updated_at": NOW - 86400})
+        sigs = _copy_world(st, coins=1)
+        metas = {b: _meta(b) for b, _ in sigs}
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert [r["arm"] for r in st.bid_model()] == ["control"]
+        st.set_coverage("measure:landing_pos", {"pos": "+9", "ts": NOW - 30 * 86400})
+        assert (
+            effective_landing_pos(st, cfg.qualify, now=NOW) == "+6"
+        )  # a month-old measurement no longer moves the labs
+        st.set_coverage("measure:landing_pos", {"pos": "+9"})
+        assert effective_landing_pos(st, cfg.qualify, now=NOW) == "+6"  # no timestamp: not trusted
     finally:
         st.close()

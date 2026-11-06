@@ -29,13 +29,13 @@ def _world(st):
     return tl, tme, tsell, tfirst
 
 
-def test_leaders_from_snipers_else_labels():
+def test_leaders_are_copy_snipers_only():
     st = Store(":memory:")
     st.set_label("K1", "kol", "kol")
     st.set_label("T1", "tracked", "wallet")
     st.set_label("C1", "cand:C1", "cand")
     st.set_label("S1", "axiom", "service")
-    assert leaders_for(st) == {"K1", "T1", "C1"}
+    assert leaders_for(st) == set()  # labels alone are not leaders
     st.add_oktech_sniper({"id": "s1", "external_id": "e1", "kind": "copy", "source": "copylist", "name": "copy LEAD arm:paid", "config_hash": "h",
                           "payload": {"ctbotWallets": [{"address": LEAD, "label": "x", "minSol": 1.0}, {"address": "L2"}]}})  # fmt: skip
     # the 4 Nov speed-test probe copied a sniper bot (6Z91…) that itself sits between the leaders and us: a probe row is

@@ -11,7 +11,7 @@ from typing import Any
 
 from ..config import Config
 from ..store import Store
-from .classify import arm_from_fee, classify_trade, leaders_for, pair_round_trips
+from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -92,7 +92,8 @@ async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
 
 async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = None, until_ts: int | None = None,
                       ensure_meta: Callable[[list[str]], Awaitable[int]] | None = None,
-                      failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True) -> dict[str, Any]:  # fmt: skip
+                      failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True,
+                      reclassify_arms: bool = False) -> dict[str, Any]:  # fmt: skip
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -111,20 +112,43 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     except Exception as exc:  # noqa: BLE001 - fees unknown is better than no fills
         svc.progress(f"measure: fingerprints failed: {type(exc).__name__}: {exc}") if hasattr(svc, "progress") else None
     metas = store.tx_meta(sigs) if sigs else {}
-    leaders = leaders_for(store)
-    buys = sells = 0
-    for t in trades:
-        row = classify_trade(store, t, leaders, metas.get(t.sig), arms=cfg.book.bid_arms)
+    copy_rows = copy_sniper_rows(store)
+    look = min(int(now - m.lookback_days * 86400), int(since_ts))  # a backfilled window is paired too
+
+    def store_fill(t, meta) -> dict:
+        row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms)
         existing = store.fill(t.sig)
-        if existing:  # a re-read of the same trade keeps what pairing wrote: PnL, exit, the buy lot, a sell's arm
+        if existing:  # a re-read of the same trade keeps what pairing wrote and the arm it bid at fill time
             for k in ("pnl_sol", "exit_reason", "buy_sig"):
                 if row.get(k) is None:
                     row[k] = existing.get(k)
             if row["side"] == "sell" and existing.get("buy_sig") and existing.get("bid_arm"):
                 row["bid_arm"] = existing["bid_arm"]
+            if (row["side"] == "buy" and not reclassify_arms and existing.get("bid_arm")
+                    and existing.get("priority_lamports") is not None):  # fmt: skip
+                row["bid_arm"] = existing["bid_arm"]
         store.put_fill(row)
+        return row
+
+    buys = sells = 0
+    for t in trades:
+        row = store_fill(t, metas.get(t.sig))
         buys += row["side"] == "buy"
         sells += row["side"] == "sell"
+    # fills whose fingerprint was missing when they were first read: try again while they are in the window
+    retry = [f["sig"] for f in store.fills(wallet=wallet, since_ts=look, limit=100_000)
+             if f["side"] in ("buy", "sell") and f.get("priority_lamports") is None and f["sig"] not in metas]  # fmt: skip
+    if retry:
+        try:
+            await ensure(retry)
+        except Exception:  # noqa: BLE001 - still unknown: tried again next run
+            pass
+        found = store.tx_meta(retry)
+        if found:
+            oldest = min(int(f["ts"]) for f in (store.fill(sg) for sg in found) if f)
+            for t in store.trades_for_user(wallet, oldest):
+                if t.sig in found:
+                    store_fill(t, found[t.sig])
     # failed sends in the window (cost)
     failed_rows: list[dict] = []
     try:
@@ -147,15 +171,26 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         if not sig or (f.get("blockTime") or 0) > until_ts:
             continue
         meta = fmetas.get(sig)
-        row = {"sig": sig, "ts": int(f.get("blockTime") or 0), "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0,
-               "tokens": 0.0, "bid_arm": arm_from_fee(meta.priority_lamports, meta.tip_lamports, cfg.book.bid_arms) if meta else "control",
-               "priority_lamports": int(meta.priority_lamports) if meta else None,
+        ts = int(f.get("blockTime") or 0)
+        mint, arm = None, "control"
+        if meta is not None:
+            sells_ix = [ix for ix in meta.pump_ixs if str(ix.name).startswith("sell")]
+            any_ix = sells_ix or list(meta.pump_ixs)
+            mint = (any_ix[0].mint or None) if any_ix else None
+            arm = arm_from_fee(meta.priority_lamports, meta.tip_lamports, cfg.book.bid_arms)
+            if sells_ix and mint:
+                # a sell twin bids the fixed sell fee on every arm: it belongs to the arm that bought the coin
+                prev = store._q("SELECT bid_arm FROM fills WHERE wallet=? AND mint=? AND side='buy' AND ts<=? ORDER BY ts DESC LIMIT 1",
+                                (wallet, mint, ts))  # fmt: skip
+                if prev and prev[0][0]:
+                    arm = prev[0][0]
+        row = {"sig": sig, "ts": ts, "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0, "tokens": 0.0, "mint": mint,
+               "bid_arm": arm, "priority_lamports": int(meta.priority_lamports) if meta else None,
                "tip_lamports": int(meta.tip_lamports) if meta else None, "cu_limit": meta.cu_limit if meta else None,
                "cu_used": meta.cu_consumed if meta else None, "exit_reason": str(f.get("err"))[:80]}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
     # round trips over the lookback window
-    look = min(int(now - m.lookback_days * 86400), int(since_ts))  # a backfilled window is paired too
     all_buys = store.fills(wallet=wallet, since_ts=look, side="buy", limit=100_000)
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
     paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
@@ -188,6 +223,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
         store.put_bid_model(row)
+    store.prune_bid_model([row["arm"] for row in arms])
     live = wallet_live_rows(trips, now, m.half_life_days)
     for row in live:
         store.put_wallet_live(row)
@@ -197,7 +233,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     if best and best["n"] >= m.min_arm_fills:
         behind = sorted(int(b["trades_behind"]) for b in all_buys if (b.get("bid_arm") or "control") == best["arm"]
                         and b.get("trades_behind") is not None)  # fmt: skip
-        if behind:
+        if len(behind) >= m.min_arm_fills:
             # the lab's "+N" counts every trade after the leader's; the 6 Nov copy test landed 2-4 buys behind at the
             # price gaps the lab shows at +6, hence the offset of 3 between "buys behind" and the lab position
             q = statistics.quantiles(behind, n=4) if len(behind) >= 2 else None
@@ -213,7 +249,15 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:
-    """Replay a past window (the 6 Nov copy test) without moving the live cursor."""
+    """Replay a past window (the 6 Nov copy test) without moving the live cursor; arms are re-derived from the fees
+    (explicit history repair), PnL already written is kept."""
     return await run_measure(
-        svc, cfg, time.time(), since_ts=int(since_ts), until_ts=int(until_ts), move_cursor=False, **kw
+        svc,
+        cfg,
+        time.time(),
+        since_ts=int(since_ts),
+        until_ts=int(until_ts),
+        move_cursor=False,
+        reclassify_arms=True,
+        **kw,
     )

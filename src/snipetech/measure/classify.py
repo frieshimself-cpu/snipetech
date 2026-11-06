@@ -14,10 +14,45 @@ from ..store import Store
 ARM_RE = re.compile(r"arm:([A-Za-z0-9_-]+)")
 
 
-def leaders_for(store: Store) -> set[str]:
-    """The wallets the book copies: every active OKTech *copy* sniper's `ctbotWallets`; without any, the labelled sets.
-    Probe / strategy rows are not leaders: the 4 Nov speed-test probe copied a sniper bot that lands between the real
-    leaders and us, and 2 of the 6 Nov fills were credited to it (audit)."""
+LEADER_GRACE_SECS = 60  # a buy in flight when the sniper was made or removed still counts
+
+
+def copy_sniper_rows(store: Store) -> list[dict]:
+    """Every copy sniper we ever made (removed ones too), with the wallets it copies and when it lived."""
+    out = []
+    for rec in store.oktech_snipers(active=False):
+        if rec.get("kind") != "copy":
+            continue
+        wallets = {
+            str(w["address"])
+            for w in (rec.get("payload") or {}).get("ctbotWallets") or []
+            if isinstance(w, dict) and w.get("address")
+        }
+        if wallets:
+            out.append({"wallets": wallets, "created_at": rec.get("created_at"), "removed_at": rec.get("removed_at")})
+    return out
+
+
+def leaders_at(rows: list[dict], ts: float) -> set[str]:
+    """The wallets copied by a sniper alive at `ts`."""
+    out: set[str] = set()
+    for r in rows:
+        born, gone = r.get("created_at"), r.get("removed_at")
+        if born is not None and ts < float(born) - LEADER_GRACE_SECS:
+            continue
+        if gone is not None and ts > float(gone) + LEADER_GRACE_SECS:
+            continue
+        out |= r["wallets"]
+    return out
+
+
+def leaders_for(store: Store, ts: float | None = None) -> set[str]:
+    """The wallets our copy snipers copy: those alive at `ts`, or (no `ts`) the active ones. Only copy snipers: probe
+    and strategy rows are not leaders (the 4 Nov speed-test probe copied a sniper bot that lands between the real
+    leaders and us, and 2 of the 6 Nov fills were credited to it), and labels alone are not leaders either (a strategy
+    fill would be credited to whichever labelled wallet bought before us)."""
+    if ts is not None:
+        return leaders_at(copy_sniper_rows(store), ts)
     out: set[str] = set()
     for rec in store.oktech_snipers(active=True):
         if rec.get("kind") != "copy":
@@ -25,10 +60,6 @@ def leaders_for(store: Store) -> set[str]:
         for w in (rec.get("payload") or {}).get("ctbotWallets") or []:
             if isinstance(w, dict) and w.get("address"):
                 out.add(str(w["address"]))
-    if out:
-        return out
-    for kind in ("kol", "wallet", "cand"):
-        out |= set(store.labels(kind))
     return out
 
 
@@ -110,11 +141,12 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
     """One `fills` row. `sol` is what left the wallet on a buy (quote + protocol fee) and what came back on a sell.
     The arm: as given, else from the sniper's name, else from the fee paid (`arms` = the book's bid arms)."""
     rank, size = _position_in_slot(store, trade.mint, trade.slot, trade.sig)
+    fees = fee_fields(meta)
     if bid_arm is None:
         bid_arm = (
             arm_for(store, sniper_id)
             if sniper_id
-            else arm_from_fee(meta.priority_lamports if meta else None, meta.tip_lamports if meta else None, arms)
+            else arm_from_fee(fees["priority_lamports"], fees["tip_lamports"], arms)
         )
     row: dict[str, Any] = {
         "sig": trade.sig, "ts": int(trade.ts), "slot": int(trade.slot), "pos_in_slot": rank, "slot_txs": size, "wallet": trade.user,
@@ -123,7 +155,7 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
         "tokens": float(trade.base), "trades_behind": None, "price_gap_pct": None, "pnl_sol": None, "exit_reason": None,
         "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None,
     }  # fmt: skip
-    row.update(fee_fields(meta))
+    row.update(fees)
     if trade.is_buy:
         lead = _leader_buy(store, trade, leaders)
         if lead is not None:

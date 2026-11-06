@@ -35,15 +35,18 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     return run
 
 
-def effective_landing_pos(store, q) -> str:
+def effective_landing_pos(store, q, now: float | None = None, max_age_secs: float = 7 * 86400) -> str:
     """The configured landing, or the measured one (coverage measure:landing_pos, written by the measure stage after
-    enough fills) when that is *further back*. A measured landing never moves the labs closer than the config: paper
-    results at a better landing than the one we get are not evidence (CLAUDE.md rule 2)."""
+    enough fills) when that is *further back* and was measured within `max_age_secs`. A measured landing never moves
+    the labs closer than the config: paper results at a better landing than the one we get are not evidence
+    (CLAUDE.md rule 2). An untimed or old measurement is ignored."""
     try:
-        pos = store.coverage("measure:landing_pos").get("pos")
+        cov = store.coverage("measure:landing_pos") or {}
     except Exception:  # noqa: BLE001
-        pos = None
-    if not pos:
+        cov = {}
+    pos, ts = cov.get("pos"), cov.get("ts")
+    now = time.time() if now is None else now
+    if not pos or ts is None or now - float(ts) > max_age_secs:
         return q.landing_pos
     try:
         return str(pos) if int(str(pos).lstrip("+")) > int(str(q.landing_pos).lstrip("+")) else q.landing_pos
@@ -106,7 +109,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             out["labelled"] += 1
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
-    landing = effective_landing_pos(store, q)
+    landing = effective_landing_pos(store, q, now=now)
     try:
         with lab_lock(Path(jobs_dir).parent, wait=False):
             rows = {r["wallet"]: r for r in runner(wallets, landing) if r.get("wallet")}

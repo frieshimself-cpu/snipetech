@@ -637,6 +637,13 @@ class Store:
         self._exec(f"INSERT OR REPLACE INTO wallet_live ({', '.join(_LIVE_COLS)}) VALUES ({', '.join('?' * len(_LIVE_COLS))})",
                    [row.get(c) for c in _LIVE_COLS])  # fmt: skip
 
+    def prune_bid_model(self, keep: list[str]) -> None:
+        """Drop bid-model rows of arms with no fills in the last measure run's window."""
+        if keep:
+            self._exec(f"DELETE FROM bid_model WHERE arm NOT IN ({','.join('?' * len(keep))})", list(keep))
+        else:
+            self._exec("DELETE FROM bid_model")
+
     def prune_wallet_live(self, keep: list[str]) -> None:
         """Drop live-expectancy rows of wallets the last measure run did not see (no longer leaders, or misattributed)."""
         if keep:
