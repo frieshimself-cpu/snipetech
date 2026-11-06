@@ -257,8 +257,12 @@ after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a dig
 last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys three commands
 from your chat only: `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
 snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
-alone), `/resume`. A live page at `https://<host>/dash` shows services, resources, the wallet, jobs, the last
-decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
+alone), `/resume`. `/sell <coin address>` sells all of that coin from the sniper wallet within a minute (pump.fun
+curve coins only, signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin off the curve is sold by hand in
+Axiom or OKTech), `/sell` alone lists the coins held with the exact line to send for each, `/sell all` sells every
+curve coin, none of them ever buys or touches a sniper, and the watchdog's alert for a coin nobody is selling ends
+with that coin's `/sell` line. A live page at `https://<host>/dash` shows services, resources, the wallet, jobs,
+the last decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
 password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until that token is set.
 
 **Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
