@@ -21,6 +21,10 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("events", "scan"), None, 3 * 3600),  # snipetech-events only polls the feeds; no unit runs the scan
     (("paper", "run"), None, 30 * 60),  # the forward paper test: free learning on live prices, around the clock
     (("strategist", "run"), "snipetech-strategist.timer", 24 * 3600),  # its own weekly guard decides further
+    # idle-time research (operator/research.py): at every round, the most valuable research unit when nothing heavy
+    # runs. Stages start in this order, so it stays after every heavy stage a round may just have started.
+    (("research", "next"), None, 10 * 60),
+    (("research", "digest"), None, 6 * 3600),  # the owner's research digest by Telegram, every six hours
 )
 
 
@@ -29,7 +33,7 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
 STAGE_LIMIT_SECS: dict[str, int] = {
     "measure run": 20 * 60, "book run": 10 * 60, "events poll --once": 10 * 60, "discover run": 60 * 60,
     "qualify run": 2 * 3600, "snapshot-db": 60 * 60, "events scan": 60 * 60, "strategist run": 60 * 60,
-    "paper run": 30 * 60,
+    "paper run": 30 * 60, "research next": 10 * 60, "research digest": 10 * 60,
 }  # fmt: skip
 
 
@@ -59,12 +63,27 @@ def due_standins(services: dict[str, str], metas: Iterable[dict], now: float) ->
 
 def loop_stage(argv) -> str | None:
     """The learning-loop stage a job runs (`measure run`, `book run`, ...), or None for anything else (research jobs,
-    live-test guards, one-off commands)."""
+    live-test guards, one-off commands). The idle-time rotation's own units (`research search`, ...) are stages too:
+    started by code several times a day, reported by its digest, never a reason to wake the operator's Claude."""
     argv = tuple(argv or ())
     for stage, _unit, _every in STANDIN:
         if argv[: len(stage)] == stage:
             return " ".join(stage)
+    if argv[:1] == ("research",):
+        return " ".join(argv[:2])
     return None
+
+
+def job_metas(ops) -> list[dict]:
+    """Every job file the ops runner keeps, `running` only while the job has not written its exit file. One file that
+    cannot be read is skipped, never fatal."""
+    metas = []
+    for p in sorted((ops.data / "jobs").glob("*.json")):
+        meta = ops._meta(p.stem)
+        if meta:
+            alive = meta.get("running") and not (ops.data / "jobs" / f"{p.stem}.exit").exists()
+            metas.append(meta | {"running": bool(alive)})
+    return metas
 
 
 KEEP_STAGE_JOBS_DAYS = 3
@@ -102,12 +121,7 @@ def start_standins(
     except OSError as exc:
         if log:
             log(f"stand-in: pruning old job files failed: {exc}")
-    metas = []
-    for p in sorted((jobs.ops.data / "jobs").glob("*.json")):
-        meta = jobs.ops._meta(p.stem)
-        if meta:
-            alive = meta.get("running") and not (jobs.ops.data / "jobs" / f"{p.stem}.exit").exists()
-            metas.append(meta | {"running": bool(alive)})
+    metas = job_metas(jobs.ops)
     started = []
     for argv in due_standins(services, metas, now):
         try:

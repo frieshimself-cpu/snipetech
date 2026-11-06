@@ -671,6 +671,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--dry-run", action="store_true", help="show the evidence and the proposal; apply nothing")
     sp.add_argument("--force", action="store_true", help="run even if it ran less than a week ago")
+    sp = cmd(
+        "research",
+        "idle-time research: next (when nothing heavy runs, start the research the pipeline lacks most), search (the "
+        "strategy lab at the live copy landing; what pays goes into the paper test), digest (the six-hour Telegram "
+        "summary), backlog (what is waiting)",
+        json_flag=False,
+    )
+    sp.add_argument("action", choices=["next", "search", "digest", "backlog"])
+    sp.add_argument("--dry-run", action="store_true", help="next: say what it would start; digest: print, send nothing")
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill", "report"])
     sp.add_argument(
@@ -1498,6 +1507,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "measure":
         return _measure(args, cfg)
+    if args.cmd == "research":
+        from .operator.research import research_cli
+
+        return research_cli(args, cfg)
     if args.cmd == "qualify":
         from .qualify.run import run_qualify_cli
 

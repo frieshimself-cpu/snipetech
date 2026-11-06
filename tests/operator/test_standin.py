@@ -26,6 +26,8 @@ def test_active_timers_are_left_to_systemd():
     assert due_standins(services, [], NOW) == [
         ["events", "scan"],
         ["paper", "run"],
+        ["research", "next"],
+        ["research", "digest"],
     ]  # no unit runs these: always stood in for
 
 
@@ -179,3 +181,43 @@ def test_the_forward_paper_test_runs_around_the_clock():
     assert ("paper", "run") not in [tuple(a) for a in due_standins({}, [_meta(["paper", "run"], NOW - 600)], NOW)]
     assert loop_stage(["paper", "run"]) == "paper run" and loop_stage(["paper", "freeze"]) is None
     assert STAGE_LIMIT_SECS["paper run"] <= 3600
+
+
+def test_idle_time_research_runs_every_round_and_the_digest_every_six_hours():
+    """`research next` looks for idle time at every round (a 15-minute round must never skip it for a few seconds of
+    timer jitter); the owner's research digest goes out every six hours. Both are quick, under their own limits."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS
+
+    everything_on = {unit: "active" for _, unit, _ in STANDIN if unit}
+    nxt, dig = ("research", "next"), ("research", "digest")
+    argvs = [tuple(a) for a in due_standins(everything_on, [], NOW)]
+    assert nxt in argvs and dig in argvs
+    round_ago = [_meta(nxt, NOW - 15 * 60 + 5), _meta(dig, NOW - 2 * 3600)]
+    argvs = [tuple(a) for a in due_standins(everything_on, round_ago, NOW)]
+    assert nxt in argvs and dig not in argvs
+    assert nxt not in [tuple(a) for a in due_standins(everything_on, [_meta(nxt, NOW - 900, running=True)], NOW)]
+    assert dig in [tuple(a) for a in due_standins(everything_on, [_meta(dig, NOW - 6 * 3600 - 60)], NOW)]
+    assert STAGE_LIMIT_SECS["research next"] <= 15 * 60 and STAGE_LIMIT_SECS["research digest"] <= 15 * 60
+
+
+def test_research_next_comes_after_every_heavy_stage_of_the_round():
+    """Stages start in table order: a qualify or paper run started in the same round is already a running job when
+    `research next` looks, so the rotation never starts a second heavy job beside it."""
+    from snipetech.operator.research import is_heavy
+
+    order = [argv for argv, _unit, _every in STANDIN]
+    nxt = order.index(("research", "next"))
+    assert any(is_heavy(argv) for argv in order)
+    assert all(i < nxt for i, argv in enumerate(order) if is_heavy(argv))
+
+
+def test_research_units_are_loop_stages_so_their_end_calls_no_claude():
+    """The rotation's units end several times a day: as loop stages they never wake the operator's Claude turn
+    (a failure still does, once per stage), and their job files are pruned like every stage's."""
+    from snipetech.operator.standin import loop_stage
+
+    assert loop_stage(["research", "search"]) == "research search"
+    assert loop_stage(["research", "next"]) == "research next"
+    assert loop_stage(["qualify", "run", "--max", "900"]) == "qualify run"
+    assert loop_stage(["discover", "run", "--sources", "coinfirst"]) == "discover run"
+    assert loop_stage(["paper", "freeze"]) is None and loop_stage(["lab", "--latency", "0"]) is None
