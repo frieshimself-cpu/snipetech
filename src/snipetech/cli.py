@@ -117,6 +117,16 @@ def _events(args, cfg) -> int:
     svc = Service(cfg)
     clients: dict = {}
     try:
+        if args.action == "edge":
+            from .analysis.lab_lock import lab_lock
+            from .events.run import event_edge
+            from .qualify.run import effective_landing_pos
+
+            landing = args.landing or effective_landing_pos(svc.store, cfg.qualify)
+            with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
+                out = event_edge(svc.store, cfg, time.time(), landing=landing)
+            print(json.dumps(out, indent=1, default=str))
+            return 0
         if args.action == "scan":
             from .events.dev import dev_transfers
 
@@ -450,7 +460,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
     cmd("snapshot-db", "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst", json_flag=False)
     sp = cmd("events", "the learning loop's events: trending/graduating feeds (poll) and curve crossings from the tape (scan)")
-    sp.add_argument("action", choices=["poll", "scan"])
+    sp.add_argument("action", choices=["poll", "scan", "edge"])
+    sp.add_argument("--landing", default=None, help="edge: the landing position (default: the measured one, else [qualify] landing_pos)")
     sp.add_argument("--once", action="store_true", help="poll: one pass instead of the service loop")
     sp.add_argument("--interval", type=float, default=60, help="poll: seconds between passes (service: 60)")
     sp.add_argument("--raw", action="store_true", help="poll: print the first rows of each feed as the API sends them, then exit")

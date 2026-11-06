@@ -45,6 +45,7 @@ class Trigger:
     plain: bool = False  # only normal coins (no mayhem, no holder-reward)
     group: str = "kol"  # kol: which label kind the wallets come from (kol = labeled KOLs, wallet = the tracked list)
     solo: bool = False  # whale: the buy is not inside the create tx and at most 2 wallets bought in the create slot
+    event: str = ""  # event: the events-table kind this trigger fires on (first trade of the coin after the event)
 
     def label(self) -> str:
         base = self._label()
@@ -63,6 +64,8 @@ class Trigger:
             return f"burst >= {self.buyers} buyers & {self.sol:g} SOL in {self.window:g}s"
         if self.kind == "whale":
             return f"buy >= {self.sol:g} SOL by a non-dev"
+        if self.kind == "event":
+            return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
             who = "a KOL" if self.group == "kol" else f"a tracked wallet ({self.group})"
             return f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
@@ -172,7 +175,17 @@ def exit_set() -> list[ExitParams]:
     return out
 
 
-def _fire(trig: Trigger, path: MarketPath, launch, kols) -> int | None:
+def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None) -> int | None:
+    if trig.kind == "event":
+        # events: [(kind, ts, slot)] for this coin; fire on the first trade at or after the earliest event of the kind
+        hits = sorted((ts, slot or 0) for kind, ts, slot in (events or []) if kind == trig.event)
+        if not hits:
+            return None
+        ev_ts, ev_slot = hits[0]
+        for i in range(1, path.n):
+            if path.ts[i] >= ev_ts and path.slot[i] >= ev_slot:
+                return i
+        return None
     """Index of the trade at which `trig` fires on this token (first time only).
     `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}."""
     dev = launch.deployers() if launch is not None else set()
@@ -250,7 +263,8 @@ def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[
 
 
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
-            per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None) -> dict[str, Any]:  # fmt: skip
+            per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
+            event_kinds: tuple[str, ...] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one."""
@@ -258,7 +272,20 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = exit_set()
     kols = label_groups(store)
-    triggers = [(ti, t) for ti, t in enumerate(TRIGGERS) if groups is None or (t.kind == "kol" and t.group in groups)]
+    all_triggers = list(TRIGGERS) + [Trigger("event", event=k) for k in (event_kinds or ())]
+    triggers = [(ti, t) for ti, t in enumerate(all_triggers)
+                if (groups is None or (t.kind == "kol" and t.group in groups)) and (t.kind != "event" or event_kinds)]  # fmt: skip
+    if groups is not None and event_kinds:
+        triggers = [
+            (ti, t) for ti, t in enumerate(all_triggers) if (t.kind == "kol" and t.group in groups) or t.kind == "event"
+        ]
+    events_by_mint: dict[str, list[tuple]] = {}
+    if event_kinds:
+        marks = ",".join("?" * len(event_kinds))
+        for kind, ts, slot, mint in store._q(
+            f"SELECT kind, ts, slot, mint FROM events WHERE kind IN ({marks})", list(event_kinds)
+        ):
+            events_by_mint.setdefault(mint, []).append((kind, ts, slot))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     rows: list[dict] = []  # one per (token, trigger): pnl per exit
     for a, b in spans:
@@ -280,7 +307,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             for ti, trig in triggers:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                i = _fire(trig, path, launch if (launch and a <= launch.ts) else None, kols)
+                i = _fire(trig, path, launch if (launch and a <= launch.ts) else None, kols, events_by_mint.get(mint))
                 if i is None or path.ts[i] > b - 60:
                     continue
                 e = int(path.landing_index(int(path.slot[i]) + latency_slots, position, i))
@@ -290,7 +317,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                 pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
                 rows.append({"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
                              "who": path.users[i]})  # fmt: skip
-    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600}
+    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers}
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
@@ -299,7 +326,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     hours = max(data["tape_hours"], 1e-6)
     out = []
-    for ti, trig in enumerate(TRIGGERS):
+    for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
         if len(rs) < min_train + 5:
             continue
@@ -329,7 +356,7 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
     best: dict[str, dict] = {}
-    for ti, trig in enumerate(TRIGGERS):
+    for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         if trig.kind != "kol":
             continue
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])

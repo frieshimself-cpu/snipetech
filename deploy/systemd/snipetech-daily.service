@@ -16,5 +16,6 @@ ExecStart=/bin/sh -c '\
   $S $DB profitable-devs --backfill 20 > $D/profitable-devs.txt 2>&1; \
   $S $DB follow --kols --days 1 > $D/follow-kols.txt 2>&1; \
   $S $DB lab --latency 0 --position +1 > $D/lab-0-+1.txt 2>&1; \
+  $S $DB events edge > $D/event-edge.txt 2>&1; \
   $S $DB oktech plan > $D/oktech-plan.txt 2>&1'
 TimeoutStartSec=6h

@@ -11,6 +11,16 @@ from .curve import curve_crossings
 from .feeds import FeedState, poll_once
 
 FEEDS_KEY = "events:feeds"
+EDGE_KEY = "events:edge"
+DEFAULT_EDGE_KINDS = (
+    "trending",
+    "graduating",
+    "trending_birdeye",
+    "curve_cross:10",
+    "curve_cross:30",
+    "curve_cross:60",
+    "dev_transfer",
+)
 LAST_POLL_KEY = "events:last_poll"
 LAST_SCAN_KEY = "events:last_scan"
 
@@ -64,3 +74,27 @@ def poll_loop(store: Store, clients: dict[str, Any], interval: float = 60.0, onc
         if once:
             return
         sleep(interval)
+
+
+def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = None, landing: str = "+6",
+               min_train: int = 15) -> dict[str, Any]:  # fmt: skip
+    """The lab with each event kind as a trigger at the measured landing: which kinds carry edge for us.
+    Written to coverage events:edge; the analyst reads it, the strategist may propose a sniper for a kind with
+    a positive lower bound over enough moments."""
+    from ..analysis import lab as L
+
+    kinds = tuple(kinds or DEFAULT_EDGE_KINDS)
+    data = L.collect(store, cfg, cfg.book.fill_min_sol, 0, landing, 0.0035, groups=(), event_kinds=kinds)
+    ranked = L.rank(data, cfg, top=200, min_train=min_train)
+    rows = []
+    for r in ranked:
+        spec = r.get("trigger_spec") or {}
+        if spec.get("kind") != "event":
+            continue
+        t = r.get("test") or {}
+        rows.append({"kind": spec.get("event"), "moments": r.get("moments"), "per_hour": r.get("per_hour"), "exit": r.get("exit"),
+                     "n": t.get("n"), "mean": t.get("mean"), "ev_lower": t.get("ev_lower"), "win_rate": t.get("win_rate"),
+                     "total": t.get("total"), "sol_per_day": r.get("test_sol_per_day")})  # fmt: skip
+    out = {"ts": int(now), "landing": landing, "tape_hours": data["tape_hours"], "rows": rows}
+    store.set_coverage(EDGE_KEY, out)
+    return out
