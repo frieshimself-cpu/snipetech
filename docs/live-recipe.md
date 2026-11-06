@@ -305,3 +305,24 @@ Bid model, arm `control`: n 28, failed 62, mean position 1.7, p75 position 3.75,
 Failed sends carry no fee fields yet (the fingerprinter skips errored transactions); their count is the cost signal.
 From here on this table writes itself every five minutes once `snipetech-measure.timer` is enabled.
 
+## Fee test, 6 Nov 2026 (prepared 12:20 UTC; the owner starts it)
+
+Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 12:00 UTC.
+
+- **Question:** does paying for position move us up inside the leader's slot? Two arms on the same leaders:
+  `control` (priority 0.001, tip 0.002, OKTech's minimums) and `paid` (priority 0.02, tip 0.02). Both with one send
+  per transaction (`globalSendCount 1`, new default) and preconfs requested.
+- **Leaders:** `2YDnmMQt…` (qualified at +6, n 93), `G2oZrd1k…` (n 40, +0.017 at +6), `4yo9CUuT…` Gfree (active,
+  the loudest copier crowd). Copy only their buys ≥ 0.3 SOL (Gfree ≥ 0.5).
+- **Size and caps:** 0.2 SOL a fill, 2 buys per sniper, 6 snipers → at most 12 fills (2.4 SOL notional, sequential;
+  the lab exit returns the SOL: dead exit 1 s, stop-loss 30 %, 300 s max). Fees at most 0.24 SOL on the paid arm.
+- **Stop rules:** `oktech guard` stops everything below a 1.2 SOL balance or after 180 minutes, and never stops a
+  sniper that holds a coin. `operator/expected.json` = 6 running, 3 held, so the operator reports deviations, not the
+  test itself. `/stop` on Telegram works the same way.
+- **Measurement:** the measure stage writes every fill (position in the slot, trades behind the leader, gap, fees)
+  and the bid model per arm; the comparison is `bid_model`: p75 position and mean gap, control vs paid.
+- **Why the owner runs the two create commands and the guard:** the cloud session's safety layer refuses to start
+  real-money transactions itself; the commands are in the chat of 6 Nov 12:25 UTC.
+
+Result: _pending_.
+
