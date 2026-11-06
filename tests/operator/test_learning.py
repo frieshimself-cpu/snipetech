@@ -370,3 +370,23 @@ def test_a_post_mortem_cannot_write_the_days_analyst_report(toolbox):
         _call(tools["write_report"], name="postmortem-2026-11-06-1800", text="# pm")
         == "wrote postmortem-2026-11-06-1800.md"
     )
+
+
+def test_no_report_can_overwrite_the_lessons_or_the_notes(toolbox):
+    """lessons.md is append-only through add_lesson (each line checked for evidence, n, size and secrets): write_report
+    writes operator/<name>.md, so it refuses the names of the shared files."""
+    tools, paths, _ = toolbox
+    _call(tools["add_lesson"], text="Fees ate the small wins", evidence="6 of 9 wins under 0.009 SOL", n=9)
+    before = (paths.root / "lessons.md").read_text()
+    for name in ("lessons", "notes", "inbox", "LESSONS"):
+        assert _call(tools["write_report"], name=name, text="# gone").startswith("error"), name
+    assert (paths.root / "lessons.md").read_text() == before
+
+
+def test_a_failed_trip_count_keeps_the_last_reviewed_sell(paths):
+    """When the round could not count the trips, the record of what was already reviewed stays: a later post-mortem
+    never reviews (and pays for) the same old trips again."""
+    L.mark_postmortem(paths, NOW - 4 * H, {"newest_ts": NOW - 4 * H, "n": 6}, "postmortem")
+    L.mark_postmortem(paths, NOW, {"newest_ts": None, "n": 0}, "analyst")
+    state = json.loads(L._state_path(paths).read_text())
+    assert state["postmortem"]["sell_ts"] == NOW - 4 * H and state["postmortem"]["ts"] == NOW

@@ -673,7 +673,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
     sp = cmd(
         "strategist",
-        "the learning loop's strategist: one bounded parameter change a week to [book] / [qualify] (Sundays)",
+        "the learning loop's strategist: at most one bounded change a day to [book] / [qualify], only after 20 new trips",
         json_flag=False,
     )
     sp.add_argument("action", choices=["run"])

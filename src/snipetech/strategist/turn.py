@@ -23,7 +23,8 @@ MAX_TOOL_CALLS = 8  # the evidence, a look at the lessons and ideas, a lesson or
 
 
 async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes: NoteSink, client: AsyncAnthropic | None = None,
-                              now: Callable[[], float] = time.time, turn_usd: float | None = None) -> dict[str, Any]:  # fmt: skip
+                              now: Callable[[], float] = time.time, turn_usd: float | None = None,
+                              learn: bool = True) -> dict[str, Any]:  # fmt: skip
     cap = cfg.autotune.turn_usd if turn_usd is None else min(cfg.autotune.turn_usd, float(turn_usd))
     state: dict[str, Any] = {"patch": {}, "reason": ""}
 
@@ -57,7 +58,15 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
         model=cfg.operator.analyst_model,
         max_tokens=cfg.operator.analyst_max_tokens,
         system=STRATEGIST_SYSTEM,
-        tools=[read_evidence, propose_patch, *make_learning_tools(notes.paths, now, "strategist", ideas=False)],
+        tools=[
+            read_evidence,
+            propose_patch,
+            *[
+                t
+                for t in make_learning_tools(notes.paths, now, "strategist", ideas=False)
+                if learn or t.name != "add_lesson"
+            ],
+        ],  # a dry-run preview leaves the shared memory alone
         messages=[{"role": "user", "content": user_message(evidence, learned=learning_context(notes.paths))}],
         thinking={"type": "adaptive"},
         output_config={"effort": cfg.operator.effort},

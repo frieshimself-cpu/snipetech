@@ -76,7 +76,7 @@ async def run_strategist(svc, cfg: Config, now: float, *, dry_run: bool = False,
     last_turn = time.strftime("%Y-%m-%d %H:%M", time.gmtime(trips["since_ts"])) if trips["on_record"] else None
     evidence["since_last_turn"] = {"last_turn_utc": last_turn, "round_trips": trips["n"]}
     res = await (turn or run_strategist_turn)(
-        cfg, evidence, ledger, notes, client=client, now=lambda: now, turn_usd=left
+        cfg, evidence, ledger, notes, client=client, now=lambda: now, turn_usd=left, learn=not dry_run
     )
     patch, reason = dict(res.get("patch") or {}), str(res.get("reason") or "")
     base = (

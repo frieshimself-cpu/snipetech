@@ -19,6 +19,9 @@ from .paths import OperatorPaths
 LEVELS = ("info", "decision")
 
 
+SHARED_FILES = frozenset({"lessons.md", "notes.md", "inbox.md"})  # never overwritten by write_report
+
+
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
 
@@ -347,6 +350,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             p = paths.report(name)
         except ValueError as exc:
             return f"error: {exc}"
+        if p.name.lower() in SHARED_FILES:  # lessons are added one checked line at a time; notes and inbox are shared
+            return f"error: operator/{p.name} cannot be written as a report; use add_lesson or write_note"
         if source == "postmortem" and str(name).startswith("analyst-"):  # that file marks the day's analysis done
             return "error: a post-mortem writes postmortem-<YYYY-MM-DD-HHMM>, never the day's analyst report"
         paths.ensure()

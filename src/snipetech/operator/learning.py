@@ -395,7 +395,8 @@ def mark_postmortem(paths: OperatorPaths, now: float, trips: dict[str, Any], mod
     except (OSError, ValueError):
         data = {}
     prev = data.get("postmortem") if isinstance(data.get("postmortem"), dict) else {}
-    data["postmortem"] = {"ts": int(now), "sell_ts": trips.get("newest_ts") if reviewed else prev.get("sell_ts"),
+    newest = trips.get("newest_ts") if reviewed else None  # a failed count keeps what was already reviewed
+    data["postmortem"] = {"ts": int(now), "sell_ts": newest if newest is not None else prev.get("sell_ts"),
                           "n": int(trips.get("n") or 0), "mode": str(mode)}  # fmt: skip
     paths.ensure()
     p = _state_path(paths)

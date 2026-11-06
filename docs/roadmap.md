@@ -43,6 +43,18 @@ What changed (code on the branch, each piece with its tests; README "How the boo
 - **5m5h (20:33):** a third coin OKTech abandoned (docs/live-recipe.md). Our own sell was refused by the cloud
   session's safety layer; the owner sells by hand. Next: `/sell <coin>` in Telegram and the self-learning loop.
 
+- **The agents learn by themselves** (the owner's "configure it so the agents automatically learn by themselves and
+  consistently think about why, what to improve"): a shared memory (operator/lessons.md, one dated lesson a line with
+  its evidence and n; operator/ideas.json, ranked improvement ideas each with its evidence and a concrete test) that
+  every operator, analyst and strategist turn reads first; a post-mortem turn after every 5 new live round trips
+  (at most every 3 hours) that puts each loss in one cause (late or crowded landing, a leader that dumps, an exit too
+  early, an exit too late or none fired, fees and failed duplicate sends, a bad coin), counts the causes, writes the
+  lesson and starts one research job to test the top idea; the strategist may tune daily, but only after 20 new live
+  round trips; the 6-hour digest says what was learned and what is tested next. Code ideas are built and deployed by
+  the hourly autopilot session; live tests still need the owner's yes. Nothing in the loop trades.
+- **`/sell <coin>` in Telegram**: the owner sells a coin OKTech abandoned with one message (it needs SNIPER_SECRET
+  in /etc/snipetech/env); `/sell` alone lists the coins held with the line to send.
+
 What happens after this deploy: the first runs re-qualify old-lab verdicts (qualified first), the book copies only
 verdicts of the fixed lab, the research rotation keeps one lab busy whenever the server is idle, and a digest goes
 to Telegram every 6 hours. Honest outlook: this closes the leaks; it does not make money by itself. No copied

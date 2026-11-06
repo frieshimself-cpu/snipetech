@@ -244,3 +244,11 @@ def test_the_strategist_sees_what_was_learned_and_adds_to_it(tmp_path):
     assert {"read_evidence", "propose_patch", "read_lessons", "list_ideas", "add_lesson"} <= names
     assert "upsert_idea" not in names and out["patch"] == {} and out["stopped"] == "end_turn"
     assert "[strategist, n=10] A lower bar copied more losers" in (paths.root / "lessons.md").read_text()
+
+
+def test_a_turn_that_must_not_learn_gets_no_add_lesson(tmp_path):
+    cfg, ledger, notes, paths = _env(tmp_path)
+    handler, requests = _scripted(([{"type": "text", "text": "no change"}], "end_turn"))
+    asyncio.run(run_strategist_turn(cfg, {}, ledger, notes, client=_client(handler), now=lambda: NOW, learn=False))
+    names = {t["name"] for t in requests[0]["tools"]}
+    assert "add_lesson" not in names and "read_lessons" in names

@@ -338,3 +338,22 @@ def test_the_overlay_rechecks_every_value_against_todays_bounds(tmp_path):
     loaded, default = Config.load(cfg.path), Config()
     assert loaded.book.min_score == default.book.min_score and loaded.book.explore_share == 0.25
     assert loaded.book.bid_arms["control"]["tip"] == default.book.bid_arms["control"]["tip"]
+
+
+def test_a_dry_run_preview_writes_no_lesson(tmp_path):
+    """`strategist run --dry-run` applies nothing, and that includes the shared memory: the turn is told not to learn."""
+    seen = {}
+
+    async def turn(cfg, evidence, ledger, notes, client=None, now=None, **kw):
+        seen.update(kw)
+        return {"patch": {}, "reason": "x", "usd": 0.0, "stopped": "end_turn"}
+
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    try:
+        asyncio.run(run_strategist(FakeSvc(st), cfg, NOW, dry_run=True, force=True,
+                                   notifier=Notifier("T", 7, post=lambda u, d: None), turn=turn))  # fmt: skip
+        assert seen.get("learn") is False
+    finally:
+        st.close()

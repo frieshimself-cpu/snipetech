@@ -247,13 +247,13 @@ class SolanaTrackerConfig:
 
 @dataclass
 class AutotuneConfig:
-    """What the weekly strategist (`snipetech strategist run`, Sundays 05:00 UTC) may change by itself, and how far.
+    """What the strategist (`snipetech strategist run`, daily 05:10 UTC once 20 new round trips arrived) may change by itself, and how far.
     A key not in `bounds` is never touched; a proposal outside them becomes a question on Telegram instead of a
     change. `min`/`max` are absolute, `rel_min`/`rel_max` multiply the current value, `choices` lists the allowed
     strings. `book.enabled`, wallets, keys and sizes above these ceilings are never tunable."""
 
     enabled: bool = True
-    turn_usd: float = 10.0  # one Opus turn a week, cut off at this
+    turn_usd: float = 10.0  # one Opus turn a day at most (only with 20 new trips), cut off at this
     # where the strategist writes its changes: a small TOML next to the database (the owner's file under /etc stays
     # untouched and root-owned); merged over the file for [book] and [qualify] only. Empty = <db dir>/autotune.toml
     overlay: str = ""

@@ -1,5 +1,5 @@
 [Unit]
-Description=snipetech strategist: one bounded parameter change a week to [book] / [qualify] from the week's numbers (learning loop, stage 6)
+Description=snipetech strategist: at most one bounded change a day to [book] / [qualify], only after 20 new live round trips (learning loop, stage 6)
 After=network-online.target
 
 [Service]
