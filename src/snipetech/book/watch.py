@@ -24,6 +24,7 @@ are not watched at all. operator/watch.json keeps the current hits; the operator
 
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -56,6 +57,7 @@ LOOKBACK_SECS = 3 * 86400  # our buys are looked up this far back
 WINDOW_SLOTS = int(15 * 60 / SLOT_SECS) + 1  # a buy's exits are looked for in its first 15 minutes
 MAX_ROWS = 20_000  # trades read per position, at most
 TAPE_LAG_SECS = 60  # the tape's newest trade older than this: the tape lags
+OKTECH_WAIT_SECS = 8  # OKTech's tasks waited for this long at most; past it the tape and the payloads judge the coin
 OPEN_SHARE = 0.01  # a buy with less than 1 % of its tokens left is closed (a full sale leaves a few tokens behind)
 STATE_FILE = "watch.json"  # in operator/: current hits, when each coin was first seen and last reported
 HIT_MAX_AGE_SECS = 30 * 60  # the gate ignores hits the watch wrote longer ago than this
@@ -517,8 +519,8 @@ def watch_pass(cfg: Config, store: Store, notifier: Notifier, wallet: str, holdi
 
 async def watch_wallet(cfg: Config, svc, notifier: Notifier, now: float, *, notes=None) -> list[dict]:
     """The one-minute pass's watch: the wallet's holdings by the book's rule (Service.open_positions, without the
-    owner's ignored coins), OKTech's tasks only while a coin is held, then `watch_pass`. Raises when the holdings
-    cannot be read (the caller logs it)."""
+    owner's ignored coins), OKTech's tasks only while a coin is held (for `OKTECH_WAIT_SECS` at most), then
+    `watch_pass`. Raises when the holdings cannot be read (the caller logs it)."""
     wallet = cfg.operator.wallet
     if not wallet:
         return []
@@ -526,7 +528,7 @@ async def watch_wallet(cfg: Config, svc, notifier: Notifier, now: float, *, note
     tasks = None
     if any(_is_mint(h.get("mint")) for h in holdings):
         try:
-            tasks = list((await svc.oktech_status()).get("snipers") or [])
+            tasks = list((await asyncio.wait_for(svc.oktech_status(), OKTECH_WAIT_SECS)).get("snipers") or [])
         except Exception:  # noqa: BLE001 - OKTech not answering: the tape and the payloads still judge the coin
             tasks = None
     return watch_pass(cfg, svc.store, notifier, wallet, holdings, tasks, now, notes=notes)
