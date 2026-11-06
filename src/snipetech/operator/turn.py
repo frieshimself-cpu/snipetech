@@ -74,6 +74,13 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         stopped = "api_error"
         if not notes.has_today("api error", now()):
             notes.write(f"api error: {type(exc).__name__}: {str(exc)[:160]} — no more Claude rounds until this clears", "decision")
+    finally:
+        close = getattr(runner, "close", None)  # the SDK's runner must be closed when a turn ends early (every end_turn is)
+        if close is not None:
+            try:
+                await close()
+            except Exception:  # noqa: BLE001 - closing is a courtesy to the SDK, never a reason to fail the round
+                pass
     ran = stopped not in ("api_error", "refusal")
     if stopped in ("tool_calls",) or (ran and message_stop_reason == "max_tokens"):
         notes.write(f"round cut off ({stopped if stopped != 'end_turn' else 'max_tokens'}) before the model finished", "info")

@@ -111,7 +111,7 @@ def test_turn_stops_at_turn_usd(env):
 
 def test_turn_stops_at_max_tool_calls(env):
     env["cfg"].operator.max_tool_calls = 2
-    tool = lambda i: ([{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}], "tool_use")  # noqa: E731
+    tool = lambda i: ([{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}], "tool_use")
     handler, requests = _scripted(tool(1), tool(2), tool(3), tool(4))
     out = _run(env, Decision(True, "operator", ["x"]), handler)
     assert out["stopped"] == "tool_calls" and out["tool_calls"] == 2
@@ -144,3 +144,21 @@ def test_inbox_text_is_included_and_cleared(env):
     _run(env, Decision(True, "operator", ["inbox has a request"]), handler)
     assert "please check wallet Q" in requests[0]["messages"][0]["content"]
     assert not env["paths"].inbox.exists() or env["paths"].inbox.read_text().strip() == ""
+
+
+def test_runner_is_closed_after_the_turn(env, monkeypatch):
+    """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
+    'generator didn't stop after athrow()' on the server. The turn closes it itself."""
+    from anthropic.lib.tools import _beta_runner as R
+
+    closed = []
+    orig = R.BaseAsyncToolRunner.close
+
+    async def close(self):
+        closed.append(True)
+        return await orig(self)
+
+    monkeypatch.setattr(R.BaseAsyncToolRunner, "close", close)
+    handler, _ = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    assert out["stopped"] == "end_turn" and closed == [True]
