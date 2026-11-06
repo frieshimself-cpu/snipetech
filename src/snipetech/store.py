@@ -147,6 +147,10 @@ CREATE TABLE IF NOT EXISTS bid_model (
 CREATE TABLE IF NOT EXISTS wallet_live (
     wallet TEXT PRIMARY KEY, n INTEGER, mean_sol REAL, lower_sol REAL, last_fill INTEGER, status TEXT, updated_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS exit_shadow (
+    buy_sig TEXT NOT NULL, exit_name TEXT NOT NULL, menu_version TEXT NOT NULL, sim_pnl_sol REAL, sim_reason TEXT,
+    computed_at INTEGER, PRIMARY KEY (buy_sig, exit_name, menu_version)
+);
 """
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
@@ -168,6 +172,7 @@ _ADDED_COLUMNS = (
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
+_SHADOW_COLS = ("buy_sig", "exit_name", "menu_version", "sim_pnl_sol", "sim_reason", "computed_at")
 
 # in table order: the CREATE TABLE's columns, then the verdict columns of _ADDED_COLUMNS in the order they are added
 # (candidates() reads `v.*` by position, so a fresh and a migrated database must agree)
@@ -683,6 +688,35 @@ class Store:
             params = (status,)
         sql += " ORDER BY mean_sol DESC, wallet"
         return [dict(zip(_LIVE_COLS, r)) for r in self._q(sql, params)]
+
+    def put_exit_shadow(self, rows: list[dict[str, Any]]) -> None:
+        """What each exit on the menu would have made of a live buy (measure/exits.py shadow_exits); one row per buy,
+        exit and menu version, a newer computation replacing the older."""
+        self._many(f"INSERT OR REPLACE INTO exit_shadow ({', '.join(_SHADOW_COLS)}) VALUES ({', '.join('?' * len(_SHADOW_COLS))})",
+                   [tuple(r.get(c) for c in _SHADOW_COLS) for r in rows])  # fmt: skip
+
+    def exit_shadow(self, buy_sigs: list[str] | None = None, menu_version: str | None = None) -> list[dict[str, Any]]:
+        """Shadow rows, of these buys only when given (chunked IN lists), of one menu version when given."""
+        where, params = [], []
+        if menu_version is not None:
+            where.append("menu_version = ?")
+            params.append(menu_version)
+        sql = f"SELECT {', '.join(_SHADOW_COLS)} FROM exit_shadow"
+        chunks: list[list[str] | None] = [None]
+        if buy_sigs is not None:
+            sigs = list(buy_sigs)
+            chunks = [sigs[i : i + 500] for i in range(0, len(sigs), 500)]
+        out: list[dict[str, Any]] = []
+        for chunk in chunks:
+            w = where + ([f"buy_sig IN ({','.join('?' * len(chunk))})"] if chunk is not None else [])
+            rows = self._q(sql + (" WHERE " + " AND ".join(w) if w else "") + " ORDER BY buy_sig, rowid",
+                           params + (chunk or []))  # fmt: skip
+            out += [dict(zip(_SHADOW_COLS, r)) for r in rows]
+        return out
+
+    def shadowed_buys(self, menu_version: str) -> set[str]:
+        """The buys already replayed under this menu version."""
+        return {r[0] for r in self._q("SELECT DISTINCT buy_sig FROM exit_shadow WHERE menu_version=?", (menu_version,))}
 
     def set_coverage(self, key: str, data: dict[str, Any]) -> None:
         self._exec(

@@ -427,3 +427,96 @@ def test_a_paused_wallet_stays_paused_after_its_losses_age_out():
     newer = dict(q1, copy_plan={"min_leader_sol": 0.6, "lab_version": 3})
     lifted = plan_book(_inp(qualified=[newer, _q("W2", 0.02)], paused=was), cfg.book)
     assert any(a.kind == "create" and a.wallet == "W1" for a in lifted.actions)
+
+
+# -- each wallet's own exit (audit item 11): the owner's switch, verified families, validate_exit ------------------------
+
+
+def _exit_plan(name="ride", source="wallet", menu="copy-menu-v1", **over):
+    """A verdict's copy plan whose lab chose `name` for the wallet (its parameters in the lab's form)."""
+    from snipetech.analysis.lab import menu_exits
+
+    return {"min_leader_sol": 0.6, "lab_version": 2, "exit_name": name, "exit_params": menu_exits(Config())[name].to_dict(),
+            "exit_source": source, "exit_menu": menu, "exit_candidate": name if source == "wallet" else None,
+            "exit_test_n": 10, "exit_gain_sol": 0.012, "exit_gain_lower": 0.004} | over  # fmt: skip
+
+
+def test_exit_falls_back_to_lab_when_fixed_unverified_or_invalid():
+    """The book sends a wallet's own exit only in per_wallet mode, only when the lab kept it on unseen moments of today's
+    menu, its family has been seen working live ([book] verified_exits) and validate_exit passes; otherwise lab, sent
+    by name exactly as today, with the reason in plain words. fixed (the default) sends lab to every wallet."""
+    from snipetech.analysis.lab import menu_exits
+    from snipetech.book.policy import exit_for
+
+    cfg = BookConfig()
+    assert cfg.exit_mode == "fixed" and cfg.verified_exits == ["lab", "hold60"]
+    fixed = exit_for(_exit_plan("ride"), cfg)
+    assert (fixed.name, fixed.params, fixed.source) == ("lab", None, "fixed")
+    cfg.exit_mode = "per_wallet"
+    cases = {
+        "not been seen working live": _exit_plan("ride"),  # never run on a copy sniper yet
+        "lab did best": _exit_plan("lab", source="lab"),
+        "did not beat lab": _exit_plan("lab", source="lab", exit_candidate="ride", exit_gain_sol=-0.002),
+        "another exit menu": _exit_plan("hold60", menu="copy-menu-v0"),
+        "no stop-loss": _exit_plan("hold60"),  # verified, but the live hold60 runs without one
+        "no exit choice": {"min_leader_sol": 0.6, "exit_name": "lab", "exit_params": {}},  # a plan from before the menu
+    }
+    for why, plan in cases.items():
+        c = exit_for(plan, cfg)
+        assert (c.name, c.params, c.source) == ("lab", None, "lab") and why in c.reason, (why, c)
+    assert exit_for(None, cfg).name == "lab" and exit_for('{"exit_name": "ride"}', cfg).name == "lab"
+    cfg.verified_exits = ["lab", "hold60", "ride"]  # the owner verified ride; unsafe parameters still go nowhere
+    wide = _exit_plan("ride", exit_params=menu_exits(Config())["ride"].to_dict() | {"stop_loss": 0.5})
+    c = exit_for(wide, cfg)
+    assert c.name == "lab" and "stop-loss at -50% is wider than -35%" in c.reason
+    cfg.exit_mode = "per-wallet"  # anything but the exact word is fixed
+    assert exit_for(_exit_plan("ride"), cfg).source == "fixed"
+
+
+def test_a_verified_wallet_exit_is_sent_in_per_wallet_mode():
+    """per_wallet: a wallet whose own exit beat lab on unseen moments, of a family the owner verified, gets it on its
+    next new sniper, with the held-out numbers that chose it; the others get lab. A running sniper keeps the exit it was
+    made with: it is never stopped or replaced because its verdict's exit changed."""
+    from snipetech.analysis.lab import menu_exits
+
+    cfg = _cfg(exit_mode="per_wallet", verified_exits=["lab", "hold60", "ride"])
+    q1 = dict(_q("W1", 0.03), copy_plan=_exit_plan("ride"))
+    q2 = dict(_q("W2", 0.02), copy_plan=_exit_plan("lab", source="lab"))
+    creates = {a.wallet: a for a in plan_book(_inp(qualified=[q1, q2]), cfg.book).actions if a.kind == "create"}
+    ride = creates["W1"].exit
+    assert (ride.name, ride.source, ride.params) == ("ride", "wallet", menu_exits(Config())["ride"].to_dict())
+    assert "+0.012 SOL a trade" in ride.reason and "10 unseen" in ride.reason
+    assert (creates["W2"].exit.name, creates["W2"].exit.params) == ("lab", None)
+    assert creates["W1"].min_sol == 0.6  # the floor still comes with it
+    fixed = plan_book(_inp(qualified=[q1, q2]), _cfg().book)  # the same verdicts, the owner's default
+    assert {(a.exit.name, a.exit.source) for a in fixed.actions if a.kind == "create"} == {("lab", "fixed")}
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]  # made with lab
+    kept = plan_book(_inp(qualified=[q1, q2], snipers=running), cfg.book)
+    assert _one(kept, "s1").kind == "keep" and not any(a.kind in ("stop", "retire") for a in kept.actions)
+    assert not any(a.kind == "create" and a.wallet == "W1" for a in kept.actions)
+
+
+def test_only_the_owner_switches_the_exit_mode():
+    """book.exit_mode and book.verified_exits are the owner's: the strategist cannot change them even if [autotune]
+    bounds lists them, and an overlay that sets them is ignored."""
+    from snipetech.config import never_tunable
+    from snipetech.strategist.bounds import check_patch
+
+    cfg = Config()
+    assert never_tunable("book.exit_mode") and never_tunable("book.verified_exits")
+    cfg.autotune.bounds["book.exit_mode"] = {"choices": ["fixed", "per_wallet"]}  # even if someone lists it
+    accepted, refusals = check_patch({"book.exit_mode": "per_wallet"}, cfg, cfg.autotune)
+    assert accepted == {} and refusals
+    cfg.set("book.verified_exits", "lab,hold60,ride")  # the owner's own `config set` reads a list
+    assert cfg.book.verified_exits == ["lab", "hold60", "ride"]
+
+
+def test_an_overlay_never_switches_the_exit_mode(tmp_path):
+    from snipetech.config import _apply_overlay
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    cfg.autotune.bounds["book.exit_mode"] = {"choices": ["fixed", "per_wallet"]}
+    (tmp_path / "autotune.toml").write_text('[book]\nexit_mode = "per_wallet"\nverified_exits = ["lab", "ride"]\n')
+    _apply_overlay(cfg)
+    assert cfg.book.exit_mode == "fixed" and cfg.book.verified_exits == ["lab", "hold60"]

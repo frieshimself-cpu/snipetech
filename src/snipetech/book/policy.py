@@ -10,12 +10,81 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from ..analysis.lab import EXIT_MIN_TEST
 from ..config import BookConfig
+from ..exits_menu import EXIT_MENU_VERSION, exit_family
+from ..oktech import validate_exit
 from ..positions import SPENT_STATUSES, is_active
 
 # the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
 # "snipetech copy book <wallet6> arm:<arm>"; measure.arm_for reads the same tag
 BOOK_NAME_RE = re.compile(r"^snipetech copy book (?P<w6>\S+) arm:(?P<arm>[A-Za-z0-9_-]+)")
+
+
+@dataclass(frozen=True)
+class ExitChoice:
+    """The exit a new book sniper gets. `params` None means the preset by name: lab, the very call the book always
+    made. `source`: "fixed" ([book] exit_mode fixed), "lab" (per_wallet, lab kept, `reason` says why) or "wallet" (the
+    wallet's own exit, `params` in the lab's form, `reason` with the held-out numbers that chose it)."""
+
+    name: str
+    params: dict | None
+    source: str
+    reason: str
+
+
+FIXED_EXIT = ExitChoice("lab", None, "fixed", "lab for every wallet ([book] exit_mode fixed)")
+
+
+def _plan_dict(copy_plan: dict | str | None) -> dict | None:
+    if isinstance(copy_plan, str):
+        try:
+            copy_plan = json.loads(copy_plan)
+        except ValueError:
+            return None
+    return copy_plan if isinstance(copy_plan, dict) else None
+
+
+def _sol(x) -> str:
+    return f"{float(x):+.3g}"
+
+
+def exit_for(copy_plan: dict | str | None, cfg: BookConfig) -> ExitChoice:
+    """The exit a wallet's next new sniper gets. With [book] exit_mode "fixed" (the default, and any other word): lab.
+    With "per_wallet": the wallet's own exit from its verdict's copy plan only when the lab kept it on unseen moments
+    of today's exit menu, its family is in [book] verified_exits and oktech.validate_exit finds nothing unsafe in it;
+    otherwise lab, sent by name, with the reason in plain words. Only new snipers get it: a running one is never
+    stopped because its verdict's exit changed."""
+    if cfg.exit_mode != "per_wallet":
+        return FIXED_EXIT
+    plan = _plan_dict(copy_plan) or {}
+    name, n, gain = plan.get("exit_name"), plan.get("exit_test_n"), plan.get("exit_gain_sol")
+
+    def lab(why: str) -> ExitChoice:
+        return ExitChoice("lab", None, "lab", why)
+
+    if plan.get("exit_source") is None:
+        return lab("no exit choice in its verdict")
+    if plan["exit_source"] != "wallet" or not name or name == "lab":
+        if plan.get("exit_candidate"):
+            nums = f" ({_sol(gain)} SOL a trade, n {n})" if gain is not None else ""
+            return lab(f"{plan['exit_candidate']} did not beat lab on its unseen trades{nums}")
+        if n is not None and int(n) < EXIT_MIN_TEST:
+            return lab(f"too few unseen trades ({int(n)}) to choose another exit")
+        return lab("lab did best for it")
+    if plan.get("exit_menu") != EXIT_MENU_VERSION:
+        return lab(f"its exit {name} was chosen on another exit menu ({plan.get('exit_menu')})")
+    if exit_family(name) not in set(cfg.verified_exits or ()):
+        return lab(f"{name} has not been seen working live yet")
+    params = plan.get("exit_params") if isinstance(plan.get("exit_params"), dict) else None
+    problems = validate_exit(params)
+    if problems or params is None:
+        return lab(f"{name} cannot be sent: {'; '.join(problems)}")
+    lower = plan.get("exit_gain_lower")
+    why = f"its own: {_sol(gain or 0)} SOL a trade over lab on {n} unseen trades" + (
+        f", at least {_sol(lower)}" if lower is not None else ""
+    )
+    return ExitChoice(str(name), dict(params), "wallet", why)
 
 
 @dataclass
@@ -70,6 +139,7 @@ class Action:
     sniper_id: str | None
     reason: str
     min_sol: float | None = None  # create: the wallet's own floor from its verdict's copy plan (SOL); None = the book's
+    exit: ExitChoice | None = None  # create: the exit the new sniper gets (exit_for); a running sniper keeps its own
 
 
 @dataclass
@@ -373,7 +443,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         if arm is None:
             plan.actions.append(Action("skip", wallet, None, None, None, "no bid arm can keep its fee under the limit"))
             continue
-        # a new sniper gets the wallet's own floor; a running one keeps the floor it was made with (no churn)
+        # a new sniper gets the wallet's own floor and exit; a running one keeps those it was made with (no churn)
         plan.actions.append(
             Action(
                 "create",
@@ -383,6 +453,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 None,
                 f"ranked #{[r['wallet'] for r in plan.ranked].index(wallet) + 1}",
                 min_sol=plan_floor(plans.get(wallet)),
+                exit=exit_for(plans.get(wallet), cfg),
             )
         )
     return plan

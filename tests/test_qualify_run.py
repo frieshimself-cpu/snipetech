@@ -241,15 +241,19 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
 
         monkeypatch.setattr(L, "collect", spy)
         (row,) = default_lab_runner(svc, cfg)(["W1"], "+6")
-        assert seen["kw"]["exits"] == [L.live_exits(cfg)["lab"]]  # what book/run.py sends: exit_name="lab"
+        # every exit on the menu is scored, lab first; the gating numbers are lab's, what book/run.py sends by default
+        assert seen["kw"]["exits"] == list(L.menu_exits(cfg).values())
+        assert seen["kw"]["exits"][0] == L.live_exits(cfg)["lab"] and row["exit"] == L.live_exits(cfg)["lab"].label()
         assert seen["kw"]["per_tx_sol"] == 0.0035  # no measured round trip yet: the flat cost
         assert row["wallet"] == "W1" and row["exit_name"] == "lab" and row["lab_version"] == L.LAB_VERSION
         assert row["exit_params"] == L.LIVE_EXITS["lab"].to_dict() and row["min_leader_sol"] == cfg.book.min_copy_sol
+        assert row["exit_source"] == "lab" and row["exit_test_n"] == 5  # 12 moments: 5 held out, too few for its own
         # the verdict carries the plan to the book
         st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
         run_qualify(svc, cfg, data / "jobs", NOW)
         plan = st.latest_verdicts()[0]["copy_plan"]
         assert plan["exit_name"] == "lab" and plan["min_leader_sol"] == 0.3 and plan["lab_version"] == L.LAB_VERSION
+        assert plan["exit_source"] == "lab" and plan["exit_menu"] == "copy-menu-v1"
     finally:
         st.close()
 

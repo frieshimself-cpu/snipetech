@@ -9,16 +9,26 @@ fingerprint), the coin's trades around the sale (the tape) and the sniper's own 
 - timers: 300 s +- 2 s (n 6); the 60 s one at 61.2 s (n 1);
 - a sale by hand pays fees no sniper of ours pays (4siK: 12,951 + 2,166,730 lamports; CAT: 90,828 + 7,192,159).
 Only a live sell classified as fired by an exit proves that OKTech runs it: the API accepts and silently ignores
-settings it does not apply."""
+settings it does not apply.
+
+The shadow (`shadow_exits`): every exit on the menu replayed from each live buy's real entry, so every live trip is
+also a paired comparison of the whole menu at the landing we really got (the exit_shadow table)."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import time
+from collections.abc import Iterable, Sequence
+from dataclasses import replace
 from itertools import pairwise
 from typing import Any
 
+from ..analysis.lab import EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_sell_fractions, menu_exits, span_slot_secs
+from ..config import Config
+from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MenuExit
 from ..models import Trade
 from ..oktech import EXITS, autosell
+from ..sim.exits import Costs, prepare, run_exit
+from ..sim.market import MarketPath
 from ..store import Store
 from .classify import snipers_at
 
@@ -108,13 +118,21 @@ def _shape(spec: dict[str, Any]) -> tuple:
             tuple(r(g) for g in spec["tp_pcts"]), r(spec["trail_pct"]), r(spec["trail_act_pct"]))  # fmt: skip
 
 
+def named_exits() -> dict[str, dict]:
+    """Every exit with a name: the presets sent today (`oktech.EXITS`), then the rest of the exit menu (exits_menu.py)."""
+    out = {name: dict(params) for name, params in EXITS.items()}
+    for m in COPY_EXIT_MENU:
+        out.setdefault(m.name, dict(m.params))
+    return out
+
+
 def preset_name(payload: dict | None) -> str | None:
-    """The exit preset (`oktech.EXITS`) a sniper ran, read back from its config: 'custom' for an exit no preset has,
-    None when no exit settings are on record."""
+    """The exit preset a sniper ran (`oktech.EXITS`, or another exit on the menu), read back from its config: 'custom'
+    for an exit no preset has, None when no exit settings are on record."""
     spec = exit_spec(payload)
     if spec is None:
         return None
-    for name, params in EXITS.items():
+    for name, params in named_exits().items():
         ref = exit_spec({"autoSell": autosell(dict(params) | {"copy_exit": True}, [])})
         if ref is not None and _shape(ref) == _shape(spec):
             return name
@@ -280,3 +298,82 @@ def crossed_sells(store: Store, since_ts: int) -> dict[str, int]:
         f for f in store.fills(since_ts=int(since_ts), side="sell", limit=1_000_000) if f.get("crossed") is not None
     ]
     return {"crossed": sum(1 for f in rows if f["crossed"]), "checked": len(rows)}
+
+
+# -- the shadow: every exit on the menu replayed from each live buy ---------------------------------------------------
+
+# A buy is replayed once it is this old: the longest hold on the menu (300 s) and a minute for the tape's late rows.
+SHADOW_AFTER_SECS = 360
+SHADOW_TX_SOL = 0.0035  # SOL a transaction when the buy's own fee is unknown (the qualify lab's flat cost)
+BASE_FEE_LAMPORTS = 5000
+# the simulator's exit reasons in the words classify_exit gives a live sell, so a replay reads like a live exit
+_SIM_TO_LIVE = {"stale": "dead_exit", "time": "timer", "trailing_stop": "trailing"}
+
+
+def tape_without(trades: Iterable[Trade], wallet: str) -> list[Trade]:
+    """A coin's tape as if `wallet` had never traded it: its trades dropped, and every later state's reserves given back
+    the tokens it held at that point (each state's q x b kept), so a replay is never priced on a curve our own buy or
+    sell moved (the 6 Nov replay tape was built the same way). The trades passed in are left as they are."""
+    out: list[Trade] = []
+    held = 0  # the wallet's tokens after the trades so far: out of the pool
+    for t in sorted(trades, key=lambda t: t.order):
+        if t.user == wallet:
+            held += int(t.base) if t.is_buy else -int(t.base)
+            continue
+        b = int(t.b_after) + held
+        if held and t.b_after and b > 0:
+            t = replace(t, q_after=(int(t.q_after) * int(t.b_after) + b // 2) // b, b_after=b)
+        out.append(t)
+    return out
+
+
+def _fee_sol(fill: dict) -> float:
+    """What the buy paid to land (priority + tip + base fee): what the replay charges a transaction; the flat cost when
+    its fingerprint is unknown."""
+    if fill.get("priority_lamports") is None:
+        return SHADOW_TX_SOL
+    return (int(fill["priority_lamports"]) + int(fill.get("tip_lamports") or 0) + BASE_FEE_LAMPORTS) / 1e9
+
+
+def shadow_exits(store: Store, buy_fill: dict, menu: Sequence[MenuExit] = COPY_EXIT_MENU, *, cfg: Config | None = None,
+                 now: float | None = None, slot_secs: float | None = None) -> list[dict[str, Any]]:  # fmt: skip
+    """What every exit on the menu would have made of one live copy buy, replayed from its real entry: the coin's tape as
+    if we had never traded it (`tape_without`), entered at the state just before our buy with the SOL we spent, the
+    copied wallet's own sales for the copy exit, each exit as the live sniper runs it (analysis/lab.py menu_exits: the
+    watch delay, a sell a slot after its exit), at the buy's own fee a transaction. One row per exit (buy_sig,
+    exit_name, menu_version, sim_pnl_sol, sim_reason in classify_exit's words, computed_at), written to exit_shadow in
+    place of an earlier replay. Nothing for a buy younger than SHADOW_AFTER_SECS at `now`, one the tape did not record
+    the whole time after, one that copied nobody, or one with no trade before it on the tape."""
+    sig, mint, wallet, leader = (buy_fill.get(k) for k in ("sig", "mint", "wallet", "wallet_copied"))
+    if buy_fill.get("side") not in (None, "buy") or not (sig and mint and wallet and leader):
+        return []
+    if buy_fill.get("ts") is None:
+        return []
+    ts, sol = float(buy_fill["ts"]), float(buy_fill.get("sol") or 0)
+    now = time.time() if now is None else float(now)
+    end = ts + SHADOW_AFTER_SECS
+    if sol <= 0 or now < end or not any(a <= ts and end <= b for a, b in store.tape_spans()):
+        return []
+    trades = store.trades_for_mint(mint, None, int(end))
+    ours = next((t for t in trades if t.sig == sig and t.user == wallet and t.is_buy), None)
+    if ours is None:
+        return []
+    tape = tape_without(trades, wallet)
+    before = {t.sig for t in tape if t.order < ours.order}
+    path = MarketPath.build(tape, None, slot_secs=slot_secs or span_slot_secs(store, int(ts) - 1800, int(end)))
+    entry = max((i for i in range(path.n) if path.sigs[i] in before), default=None)
+    if entry is None:
+        return []
+    costs = Costs(per_tx_lamports=_fee_sol(buy_fill) * 1e9)
+    prep = prepare(path, entry, sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION,
+                   leader_frac=leader_sell_fractions(path, leader))  # fmt: skip
+    if prep is None:
+        return []
+    rows = []
+    for name, ex in menu_exits(cfg, menu).items():
+        r = run_exit(prep, ex, costs, end_ts=end)
+        reason = "+".join(_SIM_TO_LIVE.get(part, part) for part in r.exit_reason.split("+"))
+        rows.append({"buy_sig": sig, "exit_name": name, "menu_version": EXIT_MENU_VERSION, "sim_pnl_sol": round(r.pnl_sol, 6),
+                     "sim_reason": reason, "computed_at": int(now)})  # fmt: skip
+    store.put_exit_shadow(rows)
+    return rows

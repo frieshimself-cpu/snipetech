@@ -80,12 +80,14 @@ the last post-mortem; the window is in the round's reasons, and read_round_trips
 its exit, its fees and what the wallet's verdict predicted. Say why each trip won or lost. Put each loss in exactly
 one cause: late or crowded landing (trades behind the leader, price gap), a leader that dumps (the copied wallet sold
 into us), an exit too early, an exit too late or none fired, fees and failed duplicate sends, a bad coin. Count the
-causes. Compare each wallet's live result with what its verdict predicted (mean_sol at the landing, copy_plan) and
-say where they disagree and by how much. Then learn: add_lesson at least once, each with its evidence and n, or say
-in the note why these trips teach nothing new; upsert_idea for what to try next, each with its evidence and a concrete
-test (a lab run, a paper strategy, a live measure, or a code change), and move an idea to testing, adopted or rejected
-when a result decides it. You may start one research job (start_job) to test the top research idea. A postmortem
-round writes its report with write_report named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
+causes. Each trip's shadow says what every exit on the menu would have made from the same entry: say when another
+exit would have done better and by how much; a pattern needs many trips, never one. Compare each wallet's live result
+with what its verdict predicted (mean_sol at the landing, copy_plan) and say where they disagree and by how much. Then
+learn: add_lesson at least once, each with its evidence and n, or say in the note why these trips teach nothing new;
+upsert_idea for what to try next, each with its evidence and a concrete test (a lab run, a paper strategy, a live
+measure, or a code change), and move an idea to testing, adopted or rejected when a result decides it. You may start
+one research job (start_job) to test the top research idea. A postmortem round writes its report with write_report
+named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
 
 {_RULES}"""
 

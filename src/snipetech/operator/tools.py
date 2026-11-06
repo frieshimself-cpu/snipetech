@@ -148,8 +148,10 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
     async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
         """Each live round trip of the last `hours`, newest first, for a post-mortem: the copied wallet, the landing
         (trades behind it, price gap, place in the slot), the exit that fired (exit_reason, exit_name, crossed,
-        failed duplicate sends in twin_fee_sol), the money (pnl_sol), and what the wallet's latest verdict predicted
-        (mean_sol and lower_sol at the landing, copy_plan); plus wins, losses and the total.
+        failed duplicate sends in twin_fee_sol), the money (pnl_sol), what the wallet's latest verdict predicted
+        (mean_sol and lower_sol at the landing, copy_plan), and what every exit on the menu would have made of the
+        same entry (shadow: exit name -> pnl_sol and the exit that would have sold; shadow_best: the best of them;
+        None until the buy is six minutes old); plus wins, losses and the total.
 
         Args:
             hours: Look back this many hours (the post-mortem window is in the round's reasons).

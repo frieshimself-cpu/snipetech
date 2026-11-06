@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from .config import Config
+from .exits_menu import MENU
 from .store import Store
 
 KINDS = ("copy", "dev")  # what `oktech plan --only` names; verdict copies are recorded as kind "vcopy"
@@ -227,8 +228,13 @@ def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[f
     return _round(prio, 6), _round(tip, 6)
 
 
+UNREACHABLE_STAGE = {"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}
+
+
 def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0.001) -> dict | None:
-    """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell."""
+    """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell. A take-profit that
+    sells part of the position is followed by an unreachable 100 % stage (OKTech's app: "100 % must be last"). Never
+    sends autoStop: it switches the exits off on a fast pump (playbook 9)."""
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = (
@@ -249,12 +255,15 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
                 "delaySellAllSeconds": 0,
             }
         )
+        if stages[-1]["sellPercent"] < 100:  # the rest stays with the timer and the stops, behind an unreachable gain
+            stages.append(dict(UNREACHABLE_STAGE))
+            notes.append("partial take-profit: a +10000% stage selling 100 % comes last (OKTech: 100 % must be last)")
     elif 0 < hold <= 60:
         stages.append(
             {"gainPercent": None, "sellPercent": 100, "delaySellAllSeconds": 0, "sellAfterMs": int(hold * 1000)}
         )
     else:  # OKTech needs at least one stage; an unreachable gain keeps the timer / stop-loss in charge
-        stages.append({"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0})
+        stages.append(dict(UNREACHABLE_STAGE))
         notes.append(
             "no take-profit: exit by stop-loss / timer (one +10000% stage satisfies OKTech's 'at least one stage')"
         )
@@ -375,10 +384,54 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     return PlannedSniper("vcopy", a, f"snipetech verdict copy {a[:6]}", config, summary, notes)
 
 
-EXITS = {
-    "lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},  # the lab's usual best exit for copies
-    "hold60": {"max_hold_secs": 60},
-}  # the KOL "first buy, hold 60 s" rows (Pengu, Gfree)
+# The exit presets snipers run today, by name (`oktech copylist --exit`; `lab` on every book sniper): the exit menu's
+# entries (exits_menu.py), so the lab scores and measure names exactly what is sent. `ride` is on the menu too, scored
+# and shadowed, but no sniper runs it until the owner verifies it ([book] verified_exits).
+EXITS = {name: dict(MENU[name].params) for name in ("lab", "hold60")}
+
+# What any exit a live sniper is given must have (validate_exit). A price stop is the one exit we have not seen fail on a
+# sniper's last buy (DTAU: dead exit, copy exit and timer all silent); one wider than 35 % sells after the crash, not
+# before it (5 Nov: a 15 % stop filled at -57 % and -70 % on bundle dumps).
+EXIT_MAX_STOP_LOSS = 0.35
+EXIT_MAX_HOLD_SECS = 600.0  # the longest hold the lab scores (exit_set, default_grid)
+EXIT_MIN_STALE_SECS = 1.0  # OKTech's deadExit takes whole seconds, 1 at least
+EXIT_MIN_TAKE_PROFIT = 0.05  # a take-profit under +5 % sells on noise and pays a second transaction to do it
+
+
+def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
+    """What is unsafe about an exit before a live sniper may run it, in plain words; empty when it may be sent: a
+    stop-loss of at most 35 %, a sell-all timer of at most 600 s, a dead exit (if any) of 1 s or more, a take-profit
+    (if any) of +5 % or more. With the config, an exit in the lab's form (it carries `copy_exit_pct`, the copy exit it
+    was scored with) must have the copy exit copy snipers send ([oktech] copy_exit_threshold_percent)."""
+    e = params or {}
+
+    def num(key: str) -> float:
+        try:
+            v = float(e.get(key) or 0)
+        except (TypeError, ValueError):
+            return float("nan")
+        return v if math.isfinite(v) else float("nan")
+
+    out: list[str] = []
+    sl, hold, stale, tp = num("stop_loss"), num("max_hold_secs"), num("stale_secs"), num("take_profit")
+    if not sl > 0:
+        out.append("no stop-loss")
+    elif sl > EXIT_MAX_STOP_LOSS + 1e-9:
+        out.append(f"stop-loss at -{sl:.0%} is wider than -{EXIT_MAX_STOP_LOSS:.0%}")
+    if not hold > 0:
+        out.append("no sell-all timer")
+    elif hold > EXIT_MAX_HOLD_SECS + 1e-9:
+        out.append(f"holds up to {hold:g} s, longer than {EXIT_MAX_HOLD_SECS:g} s")
+    if not stale >= 0 or 0 < stale < EXIT_MIN_STALE_SECS - 1e-9:
+        out.append(f"dead exit after {stale:g} s: OKTech's shortest is {EXIT_MIN_STALE_SECS:g} s")
+    if not tp >= 0 or 0 < tp < EXIT_MIN_TAKE_PROFIT - 1e-9:
+        out.append(f"take-profit at +{tp:.0%} sells on noise (at least +{EXIT_MIN_TAKE_PROFIT:.0%})")
+    if cfg is not None and e.get("copy_exit_pct") is not None:
+        scored, sent = num("copy_exit_pct"), float(cfg.oktech.copy_exit_threshold_percent) / 100.0
+        if not abs(scored - sent) <= 1e-9:
+            out.append(f"scored with the copy exit at {scored:.0%}, but snipers send {sent:.0%} "
+                       "([oktech] copy_exit_threshold_percent)")  # fmt: skip
+    return out
 
 
 def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, max_buys: int = 5,

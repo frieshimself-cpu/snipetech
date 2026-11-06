@@ -365,6 +365,20 @@ run: a coin still held a minute after one of its exits was due (dead exit, copy 
 6 minutes by a sniper that is gone, gets one Telegram line (`[watch] Nobody is selling …`: the coin, the leader, the
 exits that were due, its value, how to sell it) and again every 15 minutes while held. It never sells.
 
+**Exits per wallet (off until you switch it on).** Every new book sniper sells with `lab`: when nothing trades for 1 s,
+at −30 %, after 300 s, or when the copied wallet sells half its bag. The qualify lab also scores every wallet on a small
+menu of exits OKTech can run (`src/snipetech/exits_menu.py`: `lab`, `hold60`, `ride`) and keeps a wallet's own exit
+only when it beat `lab` on the wallet's newer trades, the ones it was not picked on; the verdict's `copy_plan` says
+which (`exit_name`, `exit_source`), and the choice never changes whether a wallet qualifies. Measure replays every exit
+on the menu from each live buy six minutes after it (table `exit_shadow`), so each post-mortem can say which exit would
+have done better. Only you switch the book over (`snipetech config set book.exit_mode per_wallet`; the strategist
+cannot): it then sends a wallet's own exit only if its family is in `book.verified_exits` (`lab, hold60`: each of their
+rules has sold one of our live coins) and it passes the safety check (a stop-loss of at most 35 %, a timer of at most
+600 s). The live `hold60` has no stop-loss, so it is never sent per wallet until one is added; `ride` joins the list
+only after one small capped test fill (your yes on wallet, size and duration) shows its trailing stop selling a live
+coin, and the switch is worth making once 20 or more shadowed live trips show a wallet's exit ahead of `lab`. A
+running sniper keeps its exit; the new one comes with its replacement, and the Telegram create line names it.
+
 **The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
 the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`
 takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock

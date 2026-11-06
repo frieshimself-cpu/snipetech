@@ -545,6 +545,42 @@ def test_sell_rows_carry_the_exit_that_fired_and_the_preset(tmp_path):
         st.close()
 
 
+def test_every_copy_buy_is_shadowed_once_six_minutes_after_it(tmp_path):
+    """measure replays every exit on the menu from each copy buy of ours once the buy is 6 minutes old and the tape
+    recorded the whole time after it (the exit_shadow table), once per buy and menu version; a younger buy waits for
+    a later run."""
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _book_sniper(st)
+        coins = _exit_world(st)  # bought an hour and 50 minutes ago
+        m = Market(st, addr("young"), D, NOW - 200, SLOT + 3000)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 2.0, 0)
+        young = m.buy(ME, 0.2, 0)
+        m.buy(addr("young-f1"), 0.05, 1)
+        m.commit()
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+        metas = {s: _meta(s) for pair in coins.values() for s in pair} | {young.sig: _meta(young.sig)}
+
+        def run(t):
+            return asyncio.run(
+                run_measure(svc, cfg, t, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+            )
+
+        assert run(NOW)["shadowed"] == 2
+        rows = st.exit_shadow()
+        assert {r["buy_sig"] for r in rows} == {coins["dead"][0], coins["copy"][0]} and len(rows) == 6
+        assert {r["menu_version"] for r in rows} == {EXIT_MENU_VERSION}
+        assert {r["exit_name"] for r in rows} == {"lab", "hold60", "ride"}
+        assert run(NOW + 60)["shadowed"] == 0 and len(st.exit_shadow()) == 6  # once per buy
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW + 400]]})
+        assert run(NOW + 400)["shadowed"] == 1 and young.sig in {r["buy_sig"] for r in st.exit_shadow()}
+    finally:
+        st.close()
+
+
 def test_a_sell_paying_another_snipers_priority_is_flagged_crossed(tmp_path):
     """Two snipers copy LEAD from one OKTech wallet. A coin bought at the 0.001 sniper's fee and sold at the 0.02
     sniper's priority was sold by the other sniper: the sell is flagged crossed, counted, and noted once."""

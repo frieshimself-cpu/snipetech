@@ -372,3 +372,108 @@ def test_every_wallets_moment_is_its_first_buy_at_the_trigger_size():
     fired = _first_buys(trig, path, launch, groups)
     assert [path.users[i] for i in fired] == [addr("fb-1"), addr("fb-3")]  # the dev's buy never counts
     assert fired[0] == _fire(trig, path, launch, groups)  # the first of them is where the one-per-coin trigger fires
+
+
+# -- each wallet's own exit from the menu (audit item 11) -------------------------------------------------------------
+
+
+def _menu_rows(who, n, lab, ride, t0=0, menu=True):
+    """`n` moments of `who`, oldest first, with what lab, hold60 and ride made on each (`lab` and `ride`: a number, or a
+    function of the moment's index; hold60 always 0.005 SOL under lab). menu=False: lab's column only."""
+
+    def v(x, k):
+        return float(x(k)) if callable(x) else float(x)
+
+    return [{"mint": f"{who}-{k}", "trigger": 0, "ts": 1_000 + t0 + k, "order": (t0 + k, 0), "who": who, "lead_sol": 1.0,
+             "pnl": [v(lab, k), v(lab, k) - 0.005, v(ride, k)] if menu else [v(lab, k)], "rebuys": [], "first_sell_s": 40.0,
+             "first_sell_frac": 0.05, "max_sell_frac": 0.999} for k in range(n)]  # fmt: skip
+
+
+def _exit_world(menu=True):
+    """Six dumpers (lab -0.05, ride -0.09: riding a dump loses more) make up most of the group. SLICER gains by riding
+    on its older and its newer moments, FADER only on its older ones, FEW has 15 moments (6 held out), CLOSE rides a
+    hair better (+0.004) on both, GOOD wins with lab and more with ride."""
+    rows = []
+    for d in range(6):
+        rows += _menu_rows(f"DUMP{d}", 25, -0.05, -0.09, t0=100 * d, menu=menu)
+    rows += _menu_rows("SLICER", 25, lambda k: -0.01 - 0.002 * (k % 2), lambda k: 0.02 + 0.01 * (k % 2), 1000, menu)
+    rows += _menu_rows("FADER", 25, -0.01, lambda k: 0.02 if k < 15 else -0.03, 2000, menu)
+    rows += _menu_rows("FEW", 15, -0.01, 0.02, 3000, menu)
+    rows += _menu_rows("CLOSE", 25, 0.0, 0.004, 4000, menu)
+    rows += _menu_rows("GOOD", 25, lambda k: 0.02 + 0.004 * (k % 3), lambda k: 0.05 + 0.004 * (k % 3), 5000, menu)
+    return rows
+
+
+def _exit_data(menu=True) -> dict:
+    from snipetech.analysis.lab import LIVE_EXITS, menu_exits
+
+    exits = list(menu_exits(Config()).values()) if menu else [LIVE_EXITS["lab"]]
+    return {"rows": _exit_world(menu), "exits": exits, "triggers": [Trigger("kol", sol=0.1, group="cand")],
+            "tape_hours": 10}  # fmt: skip
+
+
+def test_a_wallet_exit_is_kept_only_when_it_beats_lab_out_of_sample():
+    """Each wallet is scored on the whole menu. Its own exit replaces lab only when it did best on the wallet's older
+    60 % of moments (each train mean shrunk toward the group's by 10 pseudo-moments) and then beat lab on the newer
+    40 %: at least 8 held-out moments, a positive mean paired difference and a positive bootstrap lower bound on it."""
+    from snipetech.analysis.lab import EXIT_MIN_TEST, EXIT_SHRINK_K, LIVE_EXITS, menu_exits, rank_wallets
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+    from snipetech.qualify.gates import copy_plan
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    assert (EXIT_SHRINK_K, EXIT_MIN_TEST) == (10.0, 8)
+    menu = menu_exits(cfg)
+    assert list(menu) == ["lab", "hold60", "ride"] and menu["lab"] == LIVE_EXITS["lab"]
+    by = {r["wallet"]: r for r in rank_wallets(_exit_data(), cfg, top=20, min_n=4, gate=menu["lab"])}
+    s = by["SLICER"]  # rides better on the moments that picked it and on the ones held out
+    assert (s["exit_name"], s["exit_source"], s["exit_menu"]) == ("ride", "wallet", EXIT_MENU_VERSION)
+    assert s["exit_params"] == menu["ride"].to_dict() and s["exit_test_n"] == 10
+    assert s["exit_gain_sol"] == pytest.approx(0.036) and s["exit_gain_lower"] > 0
+    plan = copy_plan(s)
+    assert plan["exit_name"] == "ride" and plan["exit_source"] == "wallet" and plan["exit_menu"] == EXIT_MENU_VERSION
+    f = by["FADER"]  # rode better on its older moments, worse on the newer: lab stays
+    assert (f["exit_name"], f["exit_source"], f["exit_candidate"]) == ("lab", "lab", "ride") and f["exit_gain_sol"] < 0
+    assert f["exit_params"] == menu["lab"].to_dict()
+    few = by["FEW"]  # 6 moments held out: too few to replace lab, however good
+    assert (few["exit_name"], few["exit_source"], few["exit_test_n"]) == ("lab", "lab", 6)
+    c = by["CLOSE"]  # +0.004 a trade on its own moments, but the group says riding loses: shrunk, lab stays
+    assert (c["exit_name"], c["exit_source"], c["exit_candidate"]) == ("lab", "lab", None)
+    alone = {r["wallet"]: r for r in rank_wallets(_exit_data(), cfg, top=20, min_n=4, gate=menu["lab"], shrink_k=0)}
+    assert (alone["CLOSE"]["exit_name"], alone["CLOSE"]["exit_source"]) == ("ride", "wallet")  # not shrunk: it rides
+    assert all(by[f"DUMP{d}"]["exit_name"] == "lab" and by[f"DUMP{d}"]["exit_source"] == "lab" for d in range(6))
+    assert by["GOOD"]["exit_name"] == "ride"
+    # only lab scored: no other exit to choose
+    only = {r["wallet"]: r for r in rank_wallets(_exit_data(menu=False), cfg, top=20, min_n=4, gate=LIVE_EXITS["lab"])}
+    assert only["SLICER"]["exit_name"] == "lab" and only["SLICER"]["exit_source"] == "lab"
+
+
+def test_the_wallet_exit_never_changes_the_gating_numbers():
+    """The gating numbers (n, mean, lower bound, win rate, total, and so the verdict's status and score) are lab's
+    whether one exit or the whole menu was scored: a wallet's own exit changes how it is traded, never whether it
+    qualifies. SLICER loses with lab (-0.011 a trade) and stays retired although riding would have made +0.025."""
+    from snipetech.analysis.lab import LIVE_EXITS, menu_exits, rank_wallets
+    from snipetech.config import QualifyConfig
+    from snipetech.qualify.gates import verdict_for
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    one = rank_wallets(_exit_data(menu=False), cfg, top=20, min_n=4, gate=LIVE_EXITS["lab"])
+    lab_only = {r["wallet"]: r for r in one}
+    menu = {r["wallet"]: r for r in rank_wallets(_exit_data(), cfg, top=20, min_n=4, gate=menu_exits(cfg)["lab"])}
+    assert set(menu) == set(lab_only) and menu["SLICER"]["exit_name"] == "ride" == menu["GOOD"]["exit_name"]
+    crowd = {"followers_1s": 1.0, "gap3_pct": 3.5, "n": 25}
+    for w, row in menu.items():
+        for key in ("n", "mean", "ev_lower", "win_rate", "total", "exit", "min_leader_sol"):
+            assert row[key] == lab_only[w][key], (w, key)
+        a, b = (verdict_for(w, {"trades": None}, r, 1.0, crowd, True, [], QualifyConfig(), 1_800_000_000)
+                for r in (row, lab_only[w]))  # fmt: skip
+        assert {k: a[k] for k in ("status", "score", "mean_sol", "lower_sol", "n_tape", "reasons")} == {
+            k: b[k] for k in ("status", "score", "mean_sol", "lower_sol", "n_tape", "reasons")
+        }, w
+    assert menu["SLICER"]["mean"] == pytest.approx(-0.01096)
+    q = QualifyConfig()
+    good = verdict_for("GOOD", {"trades": None}, menu["GOOD"], 1.0, crowd, True, [], q, 1_800_000_000)
+    slicer = verdict_for("SLICER", {"trades": None}, menu["SLICER"], 1.0, crowd, True, [], q, 1_800_000_000)
+    assert good["status"] == "qualified" and slicer["status"] == "retired"
+    assert good["copy_plan"]["exit_name"] == "ride" and slicer["copy_plan"]["exit_name"] == "ride"

@@ -317,6 +317,12 @@ class BookConfig:
     max_buys_per_sniper: int = 3  # OKTech totalSnipes per book sniper: a sniper still selling a coin is never stopped, so this bounds how far it can overrun a stop (the book replaces spent snipers)
     retire_after_buys: int = 1  # buys the book relies on per sniper (used as 1 to max_buys_per_sniper - 1): after them, once the wallet holds nothing, the sniper is deleted and replaced, so its spare buys and the cap-using last one are never relied on
     min_copy_sol: float = 0.3  # copy only the wallet's buys of at least this size
+    # The exit a new book sniper gets (book/policy.exit_for). "fixed": lab for every wallet, as always. "per_wallet": the
+    # wallet's own exit from its verdict when the lab kept one on unseen moments, its family is in verified_exits and it
+    # passes oktech.validate_exit; lab otherwise. A running sniper keeps its exit until it is replaced. Only the owner
+    # switches either (config.NEVER_TUNABLE_KEYS). verified_exits: the families each of whose rules has sold a live coin.
+    exit_mode: str = "fixed"
+    verified_exits: list[str] = field(default_factory=lambda: ["lab", "hold60"])
 
 
 @dataclass

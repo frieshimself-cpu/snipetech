@@ -1049,10 +1049,12 @@ class Service:
     async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
                               max_buys: int = 5, exit_name: str = "lab", priority_fee: float | None = None,
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
-                              compute_units: int | None = None, salt: str = "", allow_overlap: bool = False) -> dict:  # fmt: skip
+                              compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
+                              exit_params: dict | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
-        is made, naming that sniper, unless `allow_overlap`."""
+        is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
+        (the book's per-wallet exit, book/policy.exit_for), for every spec."""
         from .oktech import list_copy_sniper
 
         out = []
@@ -1076,7 +1078,7 @@ class Service:
                 ex_name = parts[3] if len(parts) > 3 and parts[3] else exit_name
                 p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name,
                                      priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
-                                     compute_units=compute_units, salt=salt)  # fmt: skip
+                                     compute_units=compute_units, salt=salt, exit_params=exit_params)  # fmt: skip
                 row = {
                     "id": address,
                     "label": label,

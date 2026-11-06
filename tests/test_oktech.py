@@ -1047,3 +1047,133 @@ def test_push_refuses_a_verdict_sniper_on_a_leader_another_sniper_copies(monkeyp
     res = asyncio.run(svc.oktech_push({"_sync": SyncPlan(create=[p])}, allow_overlap=True))
     assert created == [TARGET] and any(r["action"] == "created" for r in res)
     store.close()
+
+
+# -- the exit menu (audit item 11): what the lab scores, what the book may send, what measure shadows ----------------
+
+# what each menu feature looks like in a sniper's config, read back the way measure reads it (measure/exits.exit_spec)
+_FEATURE_IN_SPEC = {
+    "dead_exit": lambda s: s["stale_secs"] is not None,
+    "stop_loss": lambda s: s["stop_loss_pct"] is not None,
+    "timer": lambda s: bool(s["hold_secs"]),
+    "trailing": lambda s: s["trail_pct"] is not None,
+    "take_profit": lambda s: bool(s["tp_pcts"]),
+    "copy_exit": lambda s: s["copy_pct"] is not None,
+}
+
+
+def test_menu_exits_are_expressible_valid_and_carry_a_stop_loss():
+    """Every exit on the menu becomes OKTech settings that carry exactly the sell rules it claims, read back under its
+    own name, never with autoStop. lab and ride pass validate_exit with a stop-loss of at most 35 %. hold60 runs as the
+    live preset does (a 60 s timer and the copy exit, no stop-loss): adding one is a later choice, so until then
+    validate_exit refuses it and the book never sends it per wallet."""
+    from snipetech.exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, exit_family
+    from snipetech.measure.exits import exit_spec, preset_name
+    from snipetech.oktech import EXITS, list_copy_sniper, validate_exit
+
+    assert EXIT_MENU_VERSION == "copy-menu-v1" and [m.name for m in COPY_EXIT_MENU] == ["lab", "hold60", "ride"]
+    assert set(MENU) == {"lab", "hold60", "ride"}
+    assert all(exit_family(m.name) == m.family == m.name for m in COPY_EXIT_MENU)
+    assert {m.name for m in COPY_EXIT_MENU if m.verified} == {"lab", "hold60"} and all(m.note for m in COPY_EXIT_MENU)
+    for m in COPY_EXIT_MENU:
+        config = list_copy_sniper("W" * 32, "book", 0.3, 0.2, 3, exit_name=m.name, exit_params=dict(m.params)).config
+        spec = exit_spec(config)
+        assert {f for f, has in _FEATURE_IN_SPEC.items() if has(spec)} == set(m.features), m.name
+        assert preset_name(config) == m.name and "autoStop" not in json.dumps(config)
+        if m.name == "hold60":
+            assert validate_exit(dict(m.params)) == ["no stop-loss"]
+        else:
+            assert validate_exit(dict(m.params)) == [] and 0 < m.params["stop_loss"] <= 0.35
+    with pytest.raises(TypeError):
+        MENU["lab"].params["stop_loss"] = 0.9  # the menu cannot be changed by whoever reads it
+    assert len(set(COPY_EXIT_MENU)) == 3  # and its exits can be kept in a set
+    # the presets sent today are the menu's lab and hold60, value for value
+    assert EXITS == {
+        "lab": {"stale_secs": 1.0, "stop_loss": 0.30, "max_hold_secs": 300},
+        "hold60": {"max_hold_secs": 60},
+    }
+
+
+def test_validate_exit_names_what_is_unsafe_in_plain_words():
+    from snipetech.analysis.lab import LIVE_EXITS
+    from snipetech.oktech import validate_exit
+
+    ok = {"stale_secs": 1.0, "stop_loss": 0.3, "max_hold_secs": 300}
+    assert validate_exit(ok) == [] and validate_exit(ok, Config()) == []
+    assert validate_exit(None) == ["no stop-loss", "no sell-all timer"]
+    assert validate_exit(ok | {"stop_loss": 0.5}) == ["stop-loss at -50% is wider than -35%"]
+    assert validate_exit(ok | {"max_hold_secs": 900}) == ["holds up to 900 s, longer than 600 s"]
+    assert validate_exit(ok | {"stale_secs": 0.5}) == ["dead exit after 0.5 s: OKTech's shortest is 1 s"]
+    assert validate_exit(ok | {"take_profit": 0.02}) == ["take-profit at +2% sells on noise (at least +5%)"]
+    assert validate_exit(ok | {"take_profit": 0.3, "tp_sell_fraction": 0.5}) == []
+    # the lab's form of an exit carries the copy exit it was scored with: snipers must send that one
+    lab = LIVE_EXITS["lab"].to_dict()
+    cfg = Config()
+    assert validate_exit(lab) == [] and validate_exit(lab, cfg) == []
+    cfg.oktech.copy_exit_threshold_percent = 20.0
+    assert validate_exit(lab, cfg) == [
+        "scored with the copy exit at 50%, but snipers send 20% ([oktech] copy_exit_threshold_percent)"
+    ]
+
+
+def test_partial_take_profit_ends_with_a_100_percent_stage():
+    """OKTech's app says a 100 % stage must be last: a take-profit that sells part of the position is followed by an
+    unreachable 100 % stage, so the rest stays with the timer and the stops; a full take-profit is left as it is. No
+    builder ever sends autoStop (it turns the exits off)."""
+    from snipetech.oktech import strategy_sniper
+
+    notes: list[str] = []
+    a = autosell({"take_profit": 0.2, "tp_sell_fraction": 0.5, "stop_loss": 0.15, "max_hold_secs": 300}, notes)
+    assert a["stages"] == [{"gainPercent": 20.0, "sellPercent": 50.0, "delaySellAllSeconds": 0},
+                           {"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}]  # fmt: skip
+    assert any("100 %" in n for n in notes)
+    full = autosell({"take_profit": 0.5, "stop_loss": 0.3, "max_hold_secs": 120}, [])
+    assert full["stages"] == [{"gainPercent": 50.0, "sellPercent": 100.0, "delaySellAllSeconds": 0}]
+    # the scale-out ladder the lab found on 6Z91, frozen as a paper strategy, goes out with the final stage too
+    ladder = {"take_profit": 0.1, "tp_sell_fraction": 0.35, "stop_loss": 0.08, "trailing_stop": 0.1,
+              "max_hold_secs": 300}  # fmt: skip
+    s = strategy_sniper({"id": "x", "label": "ladder", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+                         "exit": ladder, "buy_sol": 0.2}, 5)  # fmt: skip
+    stages = s.config["autoSell"]["stages"]
+    assert stages[0]["sellPercent"] == 35.0
+    assert stages[-1] == {"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}
+    for name, p in _every_builder().items():
+        assert "autoStop" not in json.dumps(p.config), name
+
+
+def test_the_presets_sent_today_are_byte_identical_to_before_the_menu():
+    """EXITS is built from the menu now; the book's lab sniper and the hold60 copy sniper are byte for byte what they
+    were before (their externalIds too), so nothing a running book sends changed."""
+    import hashlib
+
+    from snipetech.oktech import list_copy_sniper
+
+    want = {"lab": ("9defc929458a5c17", "993a74e05ae2"), "hold60": ("44229e54aef52436", "498aa4cf393c")}
+    for name, (digest, config_hash) in want.items():
+        p = list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, cfg=Config(), exit_name=name, priority_fee=0.001,
+                             tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
+        assert hashlib.sha256(json.dumps(p.config).encode()).hexdigest()[:16] == digest, name
+        assert p.external_id.endswith(f":{config_hash}:g1") and p.name == "snipetech copy book LLLLLL arm:control"
+
+
+def test_copylist_sends_an_exit_given_as_parameters():
+    """The book's per-wallet exit reaches OKTech through oktech_copylist(exit_params=...), in the lab's form: ride goes
+    out as a trailing stop with its stop-loss and timer and no dead exit. Without exit_params the spec's preset name is
+    used, as before."""
+    from snipetech.analysis.lab import menu_exits
+    from snipetech.service import Service
+
+    store = Store(":memory:")
+    svc = Service(Config(), store=store)
+    try:
+        ride = menu_exits(Config())["ride"].to_dict()
+        spec = f"{TARGET}:book:0.6:ride"
+        rep = asyncio.run(svc.oktech_copylist([spec], "SNIPER", exit_name="ride", exit_params=ride))
+        sell = rep["snipers"][0]["config"]["autoSell"]
+        trail = sell["trailingStopLoss"]
+        assert (trail["percentFromPeak"], trail["activateAfterGainPercent"]) == (25.0, 20.0) and "deadExit" not in sell
+        assert sell["stopLoss"]["stages"][0]["percentLoss"] == 30.0 and sell["sellAfterSeconds"] == 300.0
+        lab = asyncio.run(svc.oktech_copylist([f"{TARGET}:book:0.6:lab"], "SNIPER"))["snipers"][0]["config"]["autoSell"]
+        assert lab["deadExit"]["staleSeconds"] == 1 and "trailingStopLoss" not in lab
+    finally:
+        store.close()

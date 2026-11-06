@@ -37,9 +37,10 @@ class FakeSvc:
         return {"ok": True}
 
     async def oktech_copylist(self, specs, wallet, create=False, buy_sol=0.05, max_buys=5, exit_name="lab", priority_fee=None, tip=None,
-                              send_count=None, tag="", compute_units=None, salt=""):  # fmt: skip
+                              send_count=None, tag="", compute_units=None, salt="", **kw):  # fmt: skip
         self.calls.append(("create", tuple(specs), wallet, buy_sol, max_buys, priority_fee, tip, send_count, tag))
         self.salts = getattr(self, "salts", []) + [salt]
+        self.exits = getattr(self, "exits", []) + [(exit_name, kw)]  # the exit asked for, and any exit_params
         return {
             "snipers": [
                 {
@@ -606,6 +607,52 @@ def test_create_sends_the_wallets_own_floor(tmp_path, monkeypatch):
         svc2, quiet = FakeSvc(st), Notifier("T", 7, post=lambda u, d: None)
         asyncio.run(run_book(svc2, cfg, NOW + 1, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
         assert next(c[1] for c in svc2.calls if c[0] == "create") == (f"{L1}:book:0.3:lab",)
+    finally:
+        st.close()
+
+
+def test_the_create_line_names_the_exit_and_only_per_wallet_mode_sends_a_wallets_own(tmp_path, monkeypatch):
+    """[book] exit_mode fixed (the default): every new sniper gets lab by name, the very call the book always made, and
+    the Telegram line says so. per_wallet: a wallet whose verdict kept its own exit, of a family the owner verified,
+    gets it as exit_params; the line names it with the numbers that chose it. If the copy exit snipers send is no
+    longer the one the lab scored, the full config's last check sends lab and says why."""
+    from snipetech.analysis.lab import menu_exits
+
+    st, cfg = _env(tmp_path, enabled=True)
+    ride = {"min_leader_sol": 0.6, "lab_version": 2, "exit_name": "ride", "exit_params": menu_exits(cfg)["ride"].to_dict(),
+            "exit_source": "wallet", "exit_menu": "copy-menu-v1", "exit_candidate": "ride", "exit_test_n": 10,
+            "exit_gain_sol": 0.012, "exit_gain_lower": 0.004}  # fmt: skip
+    plans = {L1: ride, L2: {"min_leader_sol": 0.3, "exit_name": "lab", "exit_source": "lab"}}
+    stored = st.latest_verdicts
+
+    def with_plans(status=None):
+        return [dict(v, copy_plan=plans.get(v["wallet"])) for v in stored(status)]
+
+    monkeypatch.setattr(st, "latest_verdicts", with_plans)
+
+    def run(t):
+        svc, sent = FakeSvc(st), []
+        asyncio.run(run_book(svc, cfg, t, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        return svc, [t for t in sent if "[book] create" in t]
+
+    try:
+        svc, lines = run(NOW)  # fixed: lab for both, as before
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L1}:book:0.6:lab",), (f"{L2}:book:0.3:lab",)]
+        assert svc.exits == [("lab", {}), ("lab", {})] and len(lines) == 2 and all("exit lab" in t for t in lines)
+        cfg.book.exit_mode = "per_wallet"
+        svc, lines = run(NOW + 1)  # ride is not verified yet: lab, and the line says why
+        assert svc.exits == [("lab", {}), ("lab", {})]
+        assert any("exit lab" in t and "ride has not been seen working live yet" in t for t in lines)
+        cfg.book.verified_exits = ["lab", "hold60", "ride"]
+        svc, lines = run(NOW + 2)
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L1}:book:0.6:ride",), (f"{L2}:book:0.3:lab",)]
+        assert svc.exits == [("ride", {"exit_params": ride["exit_params"]}), ("lab", {})]
+        assert any(f"[book] create {L1[:6]}" in t and "exit ride" in t and "+0.012 SOL a trade" in t for t in lines)
+        cfg.oktech.copy_exit_threshold_percent = 20.0  # snipers would now sell on a 20 % sale: not what was scored
+        svc, lines = run(NOW + 3)
+        assert svc.exits == [("lab", {}), ("lab", {})]
+        assert any("exit lab" in t and "copy exit at 50%" in t for t in lines)
     finally:
         st.close()
 

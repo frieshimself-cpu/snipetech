@@ -1,7 +1,7 @@
 """`run_measure`: our new trades since the last run → fingerprints → `fills` → round trips → the bid model per arm and
 the live expectancy per copied wallet. Failed sends are rows too (cost); a sell's failed twins are charged to its trip.
-Each sell records the exit that closed it and the preset its sniper ran (measure/exits.py). `backfill` replays a
-past window."""
+Each sell records the exit that closed it and the preset its sniper ran (measure/exits.py), and every copy buy, once
+six minutes old, is replayed under every exit on the menu (exit_shadow). `backfill` replays a past window."""
 
 from __future__ import annotations
 
@@ -12,10 +12,13 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from ..analysis.lab import span_slot_secs
 from ..config import Config
+from ..exits_menu import EXIT_MENU_VERSION
 from ..store import Store
 from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
 from .exits import (
+    SHADOW_AFTER_SECS,
     buying_sniper,
     classify_exit,
     crossed_sells,
@@ -24,12 +27,30 @@ from .exits import (
     fee_pairs,
     is_crossed,
     preset_name,
+    shadow_exits,
 )
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
 LANDING_OFFSET = 3  # lab position = buys behind the leader + 3 (calibrated on the 6 Nov copy test)
 BASE_FEE_LAMPORTS = 5000
+SHADOW_MAX_PER_RUN = 200  # buys replayed in one run at most, newest first (a replay reads the coin's tape)
+
+
+def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts: int,
+                    limit: int = SHADOW_MAX_PER_RUN) -> int:  # fmt: skip
+    """Replay every exit on the menu from each copy buy of ours since `since_ts` that is old enough and not replayed
+    under this menu yet (measure/exits.py shadow_exits); how many were. Newest first, so an old buy the tape missed
+    never holds up a new one; one slot time, measured around the newest, for all of them."""
+    done = store.shadowed_buys(EXIT_MENU_VERSION)
+    due = [b for b in store.fills(wallet=wallet, since_ts=int(since_ts), side="buy", limit=100_000)
+           if b.get("wallet_copied") and b["sig"] not in done and float(b["ts"]) <= now - SHADOW_AFTER_SECS]  # fmt: skip
+    if not due:
+        return 0
+    due.sort(key=lambda b: (-float(b["ts"]), b["sig"]))
+    newest = int(float(due[0]["ts"]))
+    slot_secs = span_slot_secs(store, newest - 1800, newest + SHADOW_AFTER_SECS)
+    return sum(1 for b in due[:limit] if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs))
 
 
 def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[float]:
@@ -324,6 +345,13 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             store.put_fill(s | want)
     for s, buy in newly_crossed:
         _note(cfg, now, notes, _crossed_line(s, buy))
+    # every exit on the menu replayed from each copy buy six minutes old: what another exit would have made of it
+    try:
+        shadowed = shadow_new_buys(store, cfg, wallet, now, look)
+    except Exception as exc:  # noqa: BLE001 - a replay that fails never fails the measure run
+        shadowed = 0
+        if hasattr(svc, "progress"):
+            svc.progress(f"measure: exit shadow failed: {type(exc).__name__}: {exc}")
     # aggregates
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
@@ -352,7 +380,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
-            "twin_fee_sol": round(sum(twins.values()), 6)}  # fmt: skip
+            "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:
