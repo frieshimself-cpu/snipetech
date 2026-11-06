@@ -40,6 +40,23 @@ class OktechError(Exception):
         self.status, self.code, self.message, self.body = status, code, message, body or {}
 
 
+def _retry_after(value: str | None, default: float = 5.0, cap: float = 60.0) -> float:
+    """Retry-After as seconds or as an HTTP date; anything unreadable waits `default`. Never more than `cap`."""
+    if not value:
+        return default
+    try:
+        return max(0.0, min(cap, float(value)))
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        secs = parsedate_to_datetime(value).timestamp() - time.time()
+        return max(1.0, min(cap, secs)) if secs > 0 else 1.0
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return default
+
+
 class OktechClient:
     def __init__(self, base_url: str, key: str | None = None, timeout: float = 20.0,
                  transport: httpx.AsyncBaseTransport | None = None) -> None:  # fmt: skip
@@ -51,14 +68,23 @@ class OktechClient:
 
     async def _req(self, method: str, path: str, body: dict | None = None) -> dict:
         for attempt in range(4):
-            r = await self.http.request(method, self.base + path, json=body)
+            try:
+                r = await self.http.request(method, self.base + path, json=body)
+            except httpx.HTTPError as exc:  # network errors and timeouts are OKTech failures like any other
+                raise OktechError(0, "NETWORK", f"network error: {type(exc).__name__}: {exc}") from exc
             if r.status_code == 429 and attempt < 3:
-                await asyncio.sleep(float(r.headers.get("Retry-After") or 5))
+                await asyncio.sleep(_retry_after(r.headers.get("Retry-After")))
                 continue
+            if 200 <= r.status_code < 300 and not r.content.strip():
+                return {"success": True}  # an empty 2xx answer (a stop or delete with no body) is a success
             try:
                 data = r.json()
             except ValueError:
-                data = {"success": False, "error": r.text[:200]}
+                data = (
+                    {"success": r.status_code < 400, "error": r.text[:200]}
+                    if r.status_code >= 400
+                    else {"success": True, "raw": r.text[:200]}
+                )
             if r.status_code >= 400 or data.get("success") is False:
                 raise OktechError(r.status_code, data.get("code", ""), data.get("error", r.reason_phrase), data)
             return data

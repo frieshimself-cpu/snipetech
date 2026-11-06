@@ -430,6 +430,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)"
     )
+    sp.add_argument("--force", action="store_true",
+                    help="start: even under the owner's /stop; stop/delete: even while the wallet holds a coin (strands it)")  # fmt: skip
     sp.add_argument(
         "--id",
         action="append",
@@ -494,7 +496,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--buy", type=float, help="SOL per buy: replica (default 0.05), probe (0.01), strategy (the frozen size)"
     )
     sp.add_argument(
-        "--create", action="store_true", help="replica: create it on OKTech (idle unless your key may start it)"
+        "--create", action="store_true", help="replica: create it on OKTech (idle; start it with `oktech guard`)"
     )
     sp.add_argument(
         "--wallet", help="OKTech wallet name that buys (default: [oktech] wallet, else your OKTech default)"
@@ -1147,7 +1149,7 @@ async def _run(args, cfg: Config) -> int:
                     raise SystemExit(f"{args.action}: give --id (see `snipetech oktech status`)")
                 from .service import oktech_tasks
 
-                results, failures = await oktech_tasks(svc, args.action, args.id)
+                results, failures = await oktech_tasks(svc, args.action, args.id, force=getattr(args, "force", False))
                 for r in results:
                     print(json.dumps(r, indent=1, default=str))
                 for i, err in failures:

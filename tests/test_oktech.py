@@ -799,3 +799,127 @@ def test_duplicate_answer_without_a_task_id_is_looked_up_by_external_id():
         and res[0]["action"] == "kept (already there)"
         and store.oktech_snipers()[0]["id"] == "found1"
     )
+
+
+def test_client_reads_an_empty_success_and_wraps_network_errors(monkeypatch):
+    """An empty 2xx answer (a stop or delete with no body) is a success, not an error; a network error or timeout is an
+    OktechError, so every caller that handles OKTech failures handles it too."""
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if request.url.path.endswith("/stop"):
+            return httpx.Response(204)
+        if request.url.path.endswith("/start"):
+            raise httpx.ConnectError("boom", request=request)
+        return httpx.Response(200, json={"success": True})
+
+    async def go():
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="k", transport=httpx.MockTransport(handler))
+        try:
+            ok = await client.stop("t1")
+            with pytest.raises(OktechError, match="network"):
+                await client.start("t1")
+            return ok
+        finally:
+            await client.close()
+
+    assert asyncio.run(go())["success"] is True
+
+
+def test_retry_after_accepts_an_http_date(monkeypatch):
+    waits = []
+
+    async def fake_sleep(s):
+        waits.append(s)
+
+    monkeypatch.setattr("snipetech.oktech.asyncio.sleep", fake_sleep)
+    answers = iter(
+        [
+            httpx.Response(429, headers={"Retry-After": "Wed, 21 Oct 2015 07:28:00 GMT"}),
+            httpx.Response(200, json={"success": True}),
+        ]
+    )
+
+    def handler(request):
+        return next(answers)
+
+    async def go():
+        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="k", transport=httpx.MockTransport(handler))
+        try:
+            return await client.status()
+        finally:
+            await client.close()
+
+    assert asyncio.run(go())["success"] is True and len(waits) == 1 and 0 < waits[0] <= 60
+
+
+def _stop_env(monkeypatch, tmp_path, held):
+    from snipetech.config import Config
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    calls = []
+
+    class Client:
+        async def start(self, i):
+            calls.append(("start", i))
+            return {"task": {"status": "running"}}
+
+        async def stop(self, i):
+            calls.append(("stop", i))
+            return {"success": True}
+
+        async def delete(self, i):
+            calls.append(("delete", i))
+            return {"success": True}
+
+        async def close(self):
+            pass
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    cfg.operator.wallet = W6
+    store = Store(cfg.storage.db_path)
+    svc = Service(cfg, store=store)
+    monkeypatch.setattr(svc, "_oktech", lambda: Client())
+
+    async def positions(address, **kw):
+        return list(held)
+
+    monkeypatch.setattr(svc, "open_positions", positions)
+    return svc, store, calls
+
+
+def test_manual_stop_and_delete_refuse_while_a_coin_is_held(monkeypatch, tmp_path):
+    from snipetech.service import oktech_tasks
+
+    svc, store, calls = _stop_env(
+        monkeypatch, tmp_path, held=[{"mint": "M1", "amount": 5.0, "priced": True, "value_sol": 0.2}]
+    )
+    results, failures = asyncio.run(oktech_tasks(svc, "stop", ["a"]))
+    assert calls == [] and failures and "held" in failures[0][1]
+    results, failures = asyncio.run(oktech_tasks(svc, "stop", ["a"], force=True))
+    assert calls == [("stop", "a")] and not failures
+    store.close()
+
+
+def test_the_owners_stop_flag_blocks_every_start_path(monkeypatch, tmp_path):
+    import pytest
+
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.service import oktech_tasks
+
+    svc, store, calls = _stop_env(monkeypatch, tmp_path, held=[])
+    OperatorPaths(tmp_path / "data").ensure().stop_flag.write_text("1")
+    results, failures = asyncio.run(oktech_tasks(svc, "start", ["a"]))
+    assert calls == [] and failures and "/stop" in failures[0][1]
+    store.add_oktech_sniper(
+        {"id": "a", "kind": "copy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 2}}
+    )
+    with pytest.raises(SystemExit, match="/stop"):
+        asyncio.run(svc.oktech_guard(["a"], W6, 0.5, 1))
+    with pytest.raises(SystemExit, match="/stop"):
+        asyncio.run(svc.oktech_cycle(["a"], W6, 0.5, 1))
+    assert calls == []
+    store.close()

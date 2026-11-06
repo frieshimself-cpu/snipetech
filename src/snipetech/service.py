@@ -102,6 +102,15 @@ class Service:
                 self._tape_store = self.store
         return self._tape_store
 
+    def stop_flag_set(self) -> bool:
+        """The owner's /stop flag (operator/STOP next to the database): no start path runs while it exists."""
+        try:
+            from .operator.paths import OperatorPaths
+
+            return OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent).stop_flag.exists()
+        except Exception:  # noqa: BLE001
+            return False
+
     def reset_tape_store(self) -> None:
         if self._tape_store is not None and self._tape_store is not self.store:
             self._tape_store.close()
@@ -729,6 +738,8 @@ class Service:
         from .positions import is_active
 
         address = self._check(address)
+        if start and self.stop_flag_set():
+            raise SystemExit("the owner's /stop flag is set: /resume first; nothing started")
         mine = {r["id"]: r for r in self.store.oktech_snipers()}
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
         if uncapped and not allow_uncapped:
@@ -841,6 +852,8 @@ class Service:
         re-arming once `max_fills` buys have been seen since the cycler started, on the emergency floor, or at the time
         limit; in every case the snipers are left running so they finish selling."""
         address = self._check(address)
+        if self.stop_flag_set():
+            raise SystemExit("the owner's /stop flag is set: /resume first; nothing cycled")
         mine = {r["id"]: r for r in self.store.oktech_snipers()}
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
         if uncapped:
@@ -1312,10 +1325,30 @@ def _redact(url: str) -> str:
     return url
 
 
-async def oktech_tasks(svc: Service, action: str, ids: list[str]) -> tuple[list[dict], list[tuple[str, str]]]:
-    """`action` on every id, continuing past failures: (answers as {id, answer}, failures as (id, reason))."""
+async def oktech_tasks(
+    svc: Service, action: str, ids: list[str], force: bool = False
+) -> tuple[list[dict], list[tuple[str, str]]]:
+    """`action` on every id, continuing past failures: (answers as {id, answer}, failures as (id, reason)).
+    `start` is refused while the owner's /stop flag is set; `stop` and `delete` are refused while the sniper wallet
+    holds a coin (a stopped sniper strands it) unless `force`."""
     results: list[dict] = []
     failures: list[tuple[str, str]] = []
+    if action == "start" and not force and svc.stop_flag_set():
+        return [], [(i, "the owner's /stop flag is set: /resume first (or --force)") for i in ids]
+    if action in ("stop", "delete") and not force and svc.cfg.operator.wallet:
+        try:
+            held = await svc.open_positions(svc.cfg.operator.wallet)
+        except Exception as exc:  # noqa: BLE001 - unknown holdings: refuse, like /stop
+            return [], [
+                (i, f"holdings could not be read ({type(exc).__name__}): nothing {action}ped; --force to override")
+                for i in ids
+            ]
+        if held:
+            coins = ", ".join(f"{str(h.get('mint'))[:8]}" for h in held[:5])
+            return [], [
+                (i, f"coin(s) held ({coins}): a stopped sniper strands its coin; sell first or pass --force")
+                for i in ids
+            ]
     for i in ids:
         try:
             results.append({"id": i, "answer": await svc.oktech_task(action, i)})
