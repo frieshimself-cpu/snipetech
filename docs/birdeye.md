@@ -33,7 +33,13 @@ not for mirroring the tape (the tape is free and already live).
 Not on Starter: the "multiple" variants (PnL multiple, net-worth multiple, holder batch, token meta/trading multiple)
 and websockets. Each wallet is one call.
 
-## Where it plugs in
+## Where it plugs in (built 6 Nov, commit 1c1669a)
+
+`snipetech discover-wallets --source birdeye [--days 7] [--top-coins 30] [--pnl-top 100]`: gainers for 1 week and 30 days,
+plus the top traders of the coins our tape saw pump most, minus labelled platform wallets, each with a 30-day PnL
+summary; rows stored under score kind `birdeye`. `snipetech copy-rank --source birdeye W1 W2 …` gives the 30-day
+summary for named wallets. `snipetech doctor` shows the CU left in the cycle. A default scan costs ≈ 4 000 CU.
+
 
 1. `copy-rank` and `discover-wallets` get a `--source birdeye` path: candidates from top traders + gainers, the
    30-day gate from PnL summary, history from seek_by_time; the tape labs at +1/+6 stay the last two gates.
