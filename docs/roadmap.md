@@ -6,6 +6,21 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The wallet labs at both landings (6 Nov, 08:00 UTC) — one survivor, and it is small
+
+Same 32 h of tape, 132 wallets, best exit each, 0.2 SOL a trade:
+
+| landing | wallets positive | positive lower bound | top-25 together |
+|---|---|---|---|
+| +1 (one trade behind, the optimistic case) | 64 | 45 | +16.3 SOL |
+| +6 (where the live copies actually landed) | 34 | 11 | +4.6 SOL |
+
+Only **one** wallet has n ≥ 20 and a positive lower bound at both landings: `G2oZrd…` (found by the discovery
+pass), n 37, +0.017 SOL per trade at +6 with a 92 % win rate — about 0.6 SOL a day at 0.2 SOL a trade. Every
+wallet from the paid KOL lists (Gfree, Pengu, Decu, Cupseyy, Megga…) drops to zero or below at +6, which is what
+the live test said. G2oZrd still needs the 30-day gate (Birdeye) and a quiet-landing check before any live step,
+and 0.6 SOL a day is a data point, not a business.
+
 ## Copy landing measured live (6 Nov, 05:45 UTC) — the known wallets are the +6 regime
 
 > Operator (6 Nov, built): a 15-minute round on the server that calls Claude only on change, with no trading tools;
