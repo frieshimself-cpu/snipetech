@@ -6,6 +6,40 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## Inside the create slot — what the paper edge actually was (6 Nov, 01:05 UTC)
+
+Our-rule launches (a non-dev buy ≥ 2 SOL within 1 s, normal coins), last 8 h of tape, split by where that
+buy sat. "+1" is the paper entry: right behind the trigger buy, inside its slot. "next slot" is the first
+trade of the following slot, the best any outside sender can do. Mark to market after 120 s.
+
+| class | n | +1 entry (paper) | next-slot entry | price gap +1 → next slot | spike ≥ 30 % after next-slot entry |
+|---|---|---|---|---|---|
+| big buy inside the create tx | 25 | +715 % | +14 % | +11 % | 17 % |
+| big buy in the create's slot, own tx | 864 | +67 % | −17.5 % | +76 % | 42 % |
+| big buy in a later slot | 79 | −9 % | −13 % | +7 % | 35 % |
+
+The whole edge is the **+76 % that happens inside the trigger's own slot**: after the ≥ 2 SOL buy, the rest
+of the bundle or burst keeps buying before the slot closes, and by the first trade of the next slot the
+price has already moved 76 % on average. Paper bought at +1 and sold into that move; a real sender buys
+after it and holds the bag. 864 of 968 cases (89 %) are this class.
+
+What "being inside the slot" would take:
+
+- **Be the bundle.** The buyers inside the create slot are the launch's own wallets or bots co-submitting
+  with the create (Jito bundle to the create's leader). Joining that means being the launcher or paying for
+  a slot in someone's bundle — a different business (and the one the "Mayhem" product sells).
+- **Same-slot landing from outside.** A tx seen in the shreds of slot N is already executed; to land in slot N
+  you must build, sign and deliver a tx to the same leader before it seals the block, i.e. well under 400 ms
+  including network, and the leader must still accept it. Colocated bundlers do this sometimes; it is not a
+  reliable entry, and every competitor with the same idea is in front of us.
+- **The 11 % class** (big buy inside the create tx, n = 25, +14 % next slot) is the only slice where a
+  next-slot entry is positive, and it is 25 launches in 8 h with a 17 % spike rate — too thin to build on.
+
+Conclusion: the ≥ 2 SOL first-second trigger is not a strategy an outside sniper can run. Launch triggers are
+closed. What remains measurable from our seat: wallet copies at the measured copy landing (running now), and
+anything that fires *after* the create-slot move has already happened (momentum-type entries, all negative so
+far at the next slot).
+
 ## Where we stand (5 Nov, night) — the landing reality
 
 Live with Hunt approved (21:13–22:40 UTC, 13 fills at 0.02 and 0.2 SOL) settled the question the paper
