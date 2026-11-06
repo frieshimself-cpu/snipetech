@@ -13,3 +13,4 @@ snipetech.toml
 *.db-shm
 snipetech-rules.json
 .env
+.superpowers/
