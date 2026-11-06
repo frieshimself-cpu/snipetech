@@ -1,5 +1,7 @@
 """`run_measure`: our new trades since the last run → fingerprints → `fills` → round trips → the bid model per arm and
-the live expectancy per copied wallet. Failed sends are rows too (cost). `backfill` replays a past window."""
+the live expectancy per copied wallet. Failed sends are rows too (cost); a sell's failed twins are charged to its trip.
+Each sell records the exit that closed it and the preset its sniper ran (measure/exits.py). `backfill` replays a
+past window."""
 
 from __future__ import annotations
 
@@ -7,11 +9,22 @@ import math
 import statistics
 import time
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 from ..config import Config
 from ..store import Store
 from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips
+from .exits import (
+    buying_sniper,
+    classify_exit,
+    crossed_sells,
+    exit_reason_counts,
+    exit_spec,
+    fee_pairs,
+    is_crossed,
+    preset_name,
+)
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -71,6 +84,62 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
     return out
 
 
+TWIN_WINDOW_SECS = 3.0  # the losing variants of one exit land in the winner's slot or up to 5 slots later (6 Nov)
+
+
+def twin_fees_by_sell(
+    failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
+) -> dict[str, float]:
+    """What each landed sell's failed twins cost, in SOL. OKTech sends every exit as one tipped and up to two untipped
+    variants; the losers fail on chain and still pay their priority fee and the 5,000-lamport base fee (a failed
+    send's tip is rolled back). A failed send carrying a sell instruction (`is_sell`) on the same coin within
+    `window_s` seconds of a landed sell is that sell's twin; with several landed sells in reach, the nearest one."""
+    by_mint: dict[str, list[dict]] = {}
+    for s in sells:
+        if s.get("mint"):
+            by_mint.setdefault(s["mint"], []).append(s)
+    out: dict[str, float] = {}
+    for f in failed_rows:
+        if not f.get("is_sell") or not f.get("mint") or f.get("priority_lamports") is None:
+            continue
+        near = [s for s in by_mint.get(f["mint"], []) if abs(float(f["ts"]) - float(s["ts"])) <= window_s]
+        if not near:
+            continue
+        slot = f.get("slot")
+        best = min(near, key=lambda s: (abs(float(f["ts"]) - float(s["ts"])),
+                                        abs(int(slot) - int(s["slot"])) if slot is not None and s.get("slot") is not None else 0,
+                                        s["sig"]))  # fmt: skip
+        out[best["sig"]] = out.get(best["sig"], 0.0) + (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9
+    return out
+
+
+def _sells_a_coin(meta) -> bool:
+    """The (failed) transaction carries a pump.fun sell instruction."""
+    return meta is not None and any(str(ix.name).startswith("sell") for ix in meta.pump_ixs)
+
+
+def _note(cfg: Config, now: float, notes, text: str) -> None:
+    """One info line in the operator's notes (the book's sink unless one is passed); never fails the measure run."""
+    try:
+        if notes is None:
+            from ..operator.paths import OperatorPaths
+            from ..operator.tools import NoteSink
+
+            notes = NoteSink(OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure(), now=lambda: now)
+        notes.write(text, "info")
+    except Exception:  # noqa: BLE001 - a note that cannot be written loses nothing measure needs
+        return
+
+
+def _crossed_line(sell: dict, buy: dict | None) -> str:
+    """The owner's line for a crossed sell: which coin, what it paid against its own sniper's fee, and why."""
+    paid = (sell.get("priority_lamports") or 0) / 1e9
+    own = ((buy or {}).get("priority_lamports") or 0) / 1e9
+    leader = str((buy or {}).get("wallet_copied") or "?")[:6]
+    return (f"[measure] coin {str(sell.get('mint'))[:6]}…: its sell paid another sniper's fee, {paid:g} SOL instead of "
+            f"{own:g}. Two snipers copy {leader}… from one OKTech wallet.")  # fmt: skip
+
+
 async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
     """Failed transactions of the wallet since `since_ts` (newest first from the RPC, bounded to a few pages)."""
     out: list[dict] = []
@@ -93,7 +162,7 @@ async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
 async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = None, until_ts: int | None = None,
                       ensure_meta: Callable[[list[str]], Awaitable[int]] | None = None,
                       failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True,
-                      reclassify_arms: bool = False) -> dict[str, Any]:  # fmt: skip
+                      reclassify_arms: bool = False, notes=None) -> dict[str, Any]:  # fmt: skip
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -119,7 +188,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms)
         existing = store.fill(t.sig)
         if existing:  # a re-read of the same trade keeps what pairing wrote and the arm it bid at fill time
-            for k in ("pnl_sol", "exit_reason", "buy_sig"):
+            for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
                 if row.get(k) is None:
                     row[k] = existing.get(k)
             if row["side"] == "sell" and existing.get("buy_sig") and existing.get("bid_arm"):
@@ -127,6 +196,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             if (row["side"] == "buy" and not reclassify_arms and existing.get("bid_arm")
                     and existing.get("priority_lamports") is not None):  # fmt: skip
                 row["bid_arm"] = existing["bid_arm"]
+        if row["side"] == "buy" and row.get("wallet_copied") and row.get("exit_name") is None:
+            # the exit preset of the sniper that made this buy, once: the record of what it ran at the time
+            row["exit_name"] = preset_name((buying_sniper(copy_rows, row) or {}).get("payload"))
         store.put_fill(row)
         return row
 
@@ -195,31 +267,50 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     all_sells = store.fills(wallet=wallet, since_ts=look, side="sell", limit=100_000)
     paired = pair_round_trips(all_buys, all_sells, cfg.costs.per_tx_sol())
     buy_by_sig = {b["sig"]: b for b in all_buys}
+    # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
+    all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
+    failed_meta = store.tx_meta([f["sig"] for f in all_failed]) if all_failed else {}
+    twins = twin_fees_by_sell(
+        [f | {"is_sell": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed], all_sells
+    )
+    closed: dict[str, float] = {}
+    for t in paired["trips"]:
+        closed[t["sell_sig"]] = closed.get(t["sell_sig"], 0.0) + float(t["tokens"])
     trips = []
     for t in paired["trips"]:
         t["wallet_copied"] = buy_by_sig.get(t["buy_sig"], {}).get("wallet_copied")
+        if twins.get(t["sell_sig"]) and closed.get(t["sell_sig"]):  # shared like the sell's own fee, by tokens closed
+            t["pnl_sol"] -= twins[t["sell_sig"]] * float(t["tokens"]) / closed[t["sell_sig"]]
         trips.append(t)
     first_buy_for_sell: dict[str, str] = {}
     for t in paired["trips"]:
         first_buy_for_sell.setdefault(t["sell_sig"], t["buy_sig"])
+    sniper_fees = fee_pairs(r.get("payload") for r in store.oktech_snipers(active=False))
+    newly_crossed: list[tuple[dict, dict | None]] = []
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
         if pnl is None:
             continue
         buy = buy_by_sig.get(first_buy_for_sell.get(s["sig"]) or "")
         arm = (buy or {}).get("bid_arm") or s.get("bid_arm")  # a sell belongs to the arm of the buy it closes
-        if s.get("pnl_sol") != round(pnl, 6) or s.get("exit_reason") != "sold" or s.get("bid_arm") != arm:
-            store.put_fill(
-                s
-                | {
-                    "pnl_sol": round(pnl, 6),
-                    "exit_reason": "sold",
-                    "buy_sig": first_buy_for_sell.get(s["sig"]),
-                    "bid_arm": arm,
-                }
-            )
+        payload = (buying_sniper(copy_rows, buy) or {}).get("payload") if buy else None
+        label = s.get("exit_reason")
+        if label in (None, "sold"):  # a label once read is kept: later runs never rewrite it
+            label = "sold"
+            if s.get("priority_lamports") is not None:  # the fee tells a hand sale: wait for the fingerprint
+                tape = store.trades_for_mint(s["mint"], end_ts=int(s["ts"]) + 1) if buy and exit_spec(payload) else []
+                label = classify_exit(s, buy or {}, tape, (buy or {}).get("wallet_copied"), payload, sniper_fees)
+        crossed = 0 if label == "manual" else is_crossed(s, payload)
+        want = {"pnl_sol": round(pnl, 6), "exit_reason": label, "buy_sig": first_buy_for_sell.get(s["sig"]), "bid_arm": arm,
+                "exit_name": (buy or {}).get("exit_name") or preset_name(payload),
+                "crossed": None if crossed is None else int(crossed), "twin_fee_sol": round(twins.get(s["sig"], 0.0), 9)}  # fmt: skip
+        if want["crossed"] and not s.get("crossed"):
+            newly_crossed.append((s, buy))
+        if any(s.get(k) != v for k, v in want.items()):
+            store.put_fill(s | want)
+    for s, buy in newly_crossed:
+        _note(cfg, now, notes, _crossed_line(s, buy))
     # aggregates
-    all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
         store.put_bid_model(row)
@@ -245,7 +336,9 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.set_coverage(LAST_KEY, {"ts": int(now)})
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
-            "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts]}  # fmt: skip
+            "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
+            "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
+            "twin_fee_sol": round(sum(twins.values()), 6)}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:

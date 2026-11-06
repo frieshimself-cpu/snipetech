@@ -4,6 +4,8 @@ the bid model and live expectancy update; the measured landing reaches the quali
 import asyncio
 import math
 
+import pytest
+
 from snipetech.cli import build_parser
 from snipetech.config import Config
 from snipetech.measure.run import backfill, run_measure, wallet_live_rows
@@ -397,5 +399,180 @@ def test_stale_bid_model_rows_and_an_old_landing_are_dropped(tmp_path):
         )  # a month-old measurement no longer moves the labs
         st.set_coverage("measure:landing_pos", {"pos": "+9"})
         assert effective_landing_pos(st, cfg.qualify, now=NOW) == "+6"  # no timestamp: not trusted
+    finally:
+        st.close()
+
+
+def test_twin_fees_go_to_the_nearest_landed_sell_of_the_same_coin():
+    """A failed send carrying a sell of the same coin within 3 s of a landed sell is that sell's twin and costs its
+    priority fee + 5,000 lamports; failed buys, other coins, sends further away and unread sends are not twins."""
+    from snipetech.measure.run import twin_fees_by_sell
+
+    sells = [
+        {"sig": "S1", "ts": NOW, "slot": SLOT, "mint": "M1"},
+        {"sig": "S2", "ts": NOW + 2, "slot": SLOT + 9, "mint": "M1"},
+        {"sig": "S3", "ts": NOW, "slot": SLOT, "mint": "M2"},
+    ]
+    failed = [
+        {"sig": "F1", "ts": NOW, "slot": SLOT, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F2", "ts": NOW + 3, "slot": SLOT + 14, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F3", "ts": NOW + 4, "slot": SLOT + 19, "mint": "M2", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F4", "ts": NOW, "slot": SLOT, "mint": "M2", "priority_lamports": 2_000_000, "is_sell": False},
+        {"sig": "F5", "ts": NOW, "slot": SLOT, "mint": "M3", "priority_lamports": 2_000_000, "is_sell": True},
+        {"sig": "F6", "ts": NOW, "slot": SLOT, "mint": None, "priority_lamports": None, "is_sell": False},
+    ]
+    out = twin_fees_by_sell(failed, sells)
+    assert out == pytest.approx({"S1": 0.002005, "S2": 0.002005})
+    assert twin_fees_by_sell(failed, sells, window_s=5)["S3"] == pytest.approx(0.002005)
+
+
+def test_failed_sell_twins_are_charged_to_their_trip(tmp_path):
+    """OKTech sends every exit as up to three variants; the losers fail and still pay their priority fee + 5,000
+    lamports. Two failed 0.002 twins of a landed sell cost 0.00401 SOL: that goes on the sell row and into the copied
+    wallet's live expectancy (the sell's own PnL keeps only the trip's own fees)."""
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, s_ = sigs[0]
+        metas = {b: _meta(b), s_: _meta(s_)}
+
+        def run(failed):
+            return asyncio.run(
+                run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed)
+            )
+
+        run(_no_failed)
+        before, pnl = st.wallet_live()[0]["mean_sol"], st.fill(s_)["pnl_sol"]
+        sell = st.fill(s_)
+        assert sell["twin_fee_sol"] == 0.0
+        sends = []
+        for k, (name, ix) in enumerate((("TWIN1", "sell"), ("TWIN2", "sell"), ("FAILBUY", "buy"))):
+            m = _meta(name, priority=2_000_000, tip=0)
+            m.pump_ixs = [PumpIx("pump", ix, ME, {}, None, addr("c0"))]
+            metas[name] = m
+            sends.append({"signature": name, "blockTime": sell["ts"] + min(k, 1), "slot": sell["slot"] + k,
+                          "err": {"InstructionError": [3, {"Custom": 6023}]}})  # fmt: skip
+
+        async def failed(wallet, since):
+            return sends
+
+        out = run(failed)
+        assert out["failed"] == 3
+        assert st.fill(s_)["twin_fee_sol"] == pytest.approx(0.00401)
+        assert st.fill(s_)["pnl_sol"] == pnl  # the trip's own fees only; the twins are kept apart
+        assert st.wallet_live()[0]["mean_sol"] == pytest.approx(before - 0.00401, abs=1e-6)
+    finally:
+        st.close()
+
+
+def _book_sniper(st, sid="bk1", priority=0.001, tip=0.002, exit_name="lab"):
+    """A book copy sniper on LEAD as the local table keeps it: the OKTech config it was created with."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(LEAD, "book", 0.3, 0.2, cfg=Config(), exit_name=exit_name, priority_fee=priority, tip=tip,
+                         tag=f"arm:{sid}")  # fmt: skip
+    st.add_oktech_sniper({"id": sid, "external_id": sid, "kind": "copy", "source": LEAD, "name": p.name,
+                          "config_hash": p.config_hash, "payload": p.config, "created_at": NOW - 86400})  # fmt: skip
+
+
+def _exit_world(st):
+    """Two coins we copied from LEAD: one sold by the dead exit (6 quiet slots after the last trade), one by the copy
+    exit (LEAD sells its whole bag, we sell the slot after)."""
+    out = {}
+    m = Market(st, addr("dead"), D, NOW - 3600, SLOT)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 2.0, 0)
+    b = m.buy(ME, 0.2, 0)
+    m.buy(addr("dead-f1"), 0.05, 1)
+    m.buy(addr("dead-f2"), 0.05, 2)
+    out["dead"] = (b.sig, m.sell(ME, 1.0, 8).sig)
+    m.commit()
+    m = Market(st, addr("copy"), D, NOW - 3000, SLOT + 1500)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 2.0, 0)
+    b = m.buy(ME, 0.2, 0)
+    for k in range(1, 10):
+        m.buy(addr(f"copy-f{k}"), 0.05, k)
+    m.sell(LEAD, 1.0, 10)
+    out["copy"] = (b.sig, m.sell(ME, 1.0, 11).sig)
+    m.commit()
+    return out
+
+
+def test_sell_rows_carry_the_exit_that_fired_and_the_preset(tmp_path):
+    """Every sell says which exit closed it (not just 'sold') and the preset its sniper ran; a later run never
+    rewrites a label, even when the local record of the sniper changes."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _book_sniper(st)
+        coins = _exit_world(st)
+        metas = {s: _meta(s) for pair in coins.values() for s in pair}  # 0.001 priority + 0.002 tip, buys and sells
+
+        def run(t):
+            return asyncio.run(
+                run_measure(svc, cfg, t, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+            )
+
+        out = run(NOW)
+        (db, ds), (cb, cs) = coins["dead"], coins["copy"]
+        assert st.fill(db)["exit_name"] == "lab" and st.fill(cb)["exit_name"] == "lab"
+        assert st.fill(ds)["exit_reason"] == "dead_exit" and st.fill(cs)["exit_reason"] == "copy_exit"
+        assert st.fill(ds)["exit_name"] == "lab" and st.fill(ds)["crossed"] == 0
+        assert out["exits"] == {"lab": {"dead_exit": 1, "copy_exit": 1}} and out["crossed"] == 0
+        _book_sniper(st, exit_name="hold60")  # the same sniper id, now recorded with the 60 s preset
+        run(NOW + 60)
+        assert st.fill(ds)["exit_reason"] == "dead_exit" and st.fill(cs)["exit_reason"] == "copy_exit"
+        assert st.fill(db)["exit_name"] == "lab" and st.fill(ds)["exit_name"] == "lab"
+    finally:
+        st.close()
+
+
+def test_a_sell_paying_another_snipers_priority_is_flagged_crossed(tmp_path):
+    """Two snipers copy LEAD from one OKTech wallet. A coin bought at the 0.001 sniper's fee and sold at the 0.02
+    sniper's priority was sold by the other sniper: the sell is flagged crossed, counted, and noted once."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _book_sniper(st, "low", 0.001, 0.002)
+        _book_sniper(st, "high", 0.02, 0.02)
+        coins = _exit_world(st)
+        (db, ds), (cb, cs) = coins["dead"], coins["copy"]
+        metas = {db: _meta(db), cb: _meta(cb), cs: _meta(cs), ds: _meta(ds, priority=20_000_000, tip=2_000_000)}
+
+        def run(t):
+            return asyncio.run(
+                run_measure(svc, cfg, t, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+            )
+
+        out = run(NOW)
+        assert st.fill(ds)["crossed"] == 1 and st.fill(cs)["crossed"] == 0
+        assert (
+            st.fill(ds)["exit_reason"] == "dead_exit"
+        )  # another sniper's fee is still a sniper's sell, not a hand sale
+        assert st.fill(ds)["bid_arm"] == "control" and out["crossed"] == 1
+        notes = (tmp_path / "operator" / "notes.md").read_text()
+        assert notes.count("another sniper") == 1 and addr("dead")[:6] in notes
+        run(NOW + 60)
+        assert (tmp_path / "operator" / "notes.md").read_text().count("another sniper") == 1
+    finally:
+        st.close()
+
+
+def test_an_exit_is_read_only_once_the_sells_fee_is_known(tmp_path):
+    """The label is written once, and the fee decides whether a sale was by hand: a sell whose fingerprint is not
+    in yet stays 'sold' and is read on a later run, when the fingerprint has arrived."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _book_sniper(st)
+        (db, ds), _ = _exit_world(st).values()
+        metas = {db: _meta(db)}
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert st.fill(ds)["exit_reason"] == "sold" and st.fill(ds)["pnl_sol"] is not None
+        metas[ds] = _meta(ds, priority=12_951, tip=2_166_730)  # the owner's hand sale (4siK's fees)
+        asyncio.run(run_measure(svc, cfg, NOW + 60, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        assert st.fill(ds)["exit_reason"] == "manual" and st.fill(ds)["crossed"] == 0
     finally:
         st.close()

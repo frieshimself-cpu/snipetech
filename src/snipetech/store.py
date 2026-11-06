@@ -151,7 +151,7 @@ CREATE TABLE IF NOT EXISTS wallet_live (
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
-              "exit_reason", "sniper_id", "bid_arm", "buy_sig")  # fmt: skip
+              "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -161,6 +161,9 @@ _ADDED_COLUMNS = (
     ("bid_model", "mean_overhead_sol", "REAL"),
     ("verdicts", "copy_plan", "TEXT"),  # JSON: the lab's copy plan for the book (min leader buy, exit, leader style)
     ("verdicts", "gap3_pct", "REAL"),  # median price gap to the wallet's 3rd follower
+    ("fills", "exit_name", "TEXT"),  # the exit preset of the sniper that bought (measure/exits.py)
+    ("fills", "crossed", "INTEGER"),  # 1: the landed sell paid another sniper's priority fee
+    ("fills", "twin_fee_sol", "REAL"),  # what the sell's failed twins cost (priority + base fee each)
 )
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
 
