@@ -43,6 +43,40 @@ Still open on our side: `computeUnits` per arm is plumbed but unset. Measured ov
 decision for the data, not a default. The guard's emergency stop strands by design (this repo never sells);
 `remote update` still kills running jobs (the rule stands: check `remote jobs` first).
 
+## Second pass: a review of the day's own fixes (6 Nov, afternoon)
+
+Four fresh reviewers read everything committed after the morning's audit, and each finding went to a skeptic to
+refute. Partway through, the account hit its monthly spend limit: the first findings were verified (all real), the
+rest were checked against the code and fixed test-first without a second opinion. Fixed and deployed (`d748fda` to
+`68f5aa7`):
+
+| What was wrong | Now |
+|---|---|
+| A coin the tape had not priced yet (bought seconds ago, or during a recorder outage) counted as "not held": `/stop`, the book, the cycler and the guard could stop the sniper managing it (the 5 Nov 22:14 incident again) | an unpriced coin is held, worth nothing for equity until priced; the guard waits for the tape instead of calling an emergency |
+| `Config.save` wrote `compute_units = "None"`: after any save every sniper builder raised; lists came back as text | None is left out of the file, lists round-trip, optional keys coerce from text |
+| The strategist could never write `/etc/snipetech/snipetech.toml` (root-owned) | it writes `autotune.toml` next to the database, merged over the owner's file for `[book]` and `[qualify]` only |
+| Every sell was booked to the control arm (sells bid the same fee on both arms); failed sell twins too | a sell belongs to the arm of the buy it closes; a failed sell twin to the arm that bought its coin |
+| Without a copy sniper, the leader set fell back to every labelled wallet (thousands of candidates) | leaders are the copy snipers alive at each fill; none means no leader |
+| Round trips subtracted a flat 0.0012 SOL | each fill's real priority, tip and base fee |
+| `oktech push` matched snipers by kind and source only: a verdict could replace a hand-made copy sniper, `--prune` would have deleted the fee-test and book snipers, holdings unchecked; verdict snipers were uncapped and sized up to 5 SOL; a SOL price tick flipped every market-cap filter to "replace" | verdict snipers are their own kind; push never touches copylist, book, probe or strategy snipers; nothing is retired while a coin is held or before its replacement exists; capped at 5 buys and 1 SOL a buy; the filter is rounded to two significant figures |
+| `/stop` blocked nothing that starts snipers; a manual `oktech stop` stranded coins silently | `oktech start`, `guard` and `cycle` refuse while the STOP flag is set; `stop` and `delete` refuse while a coin is held unless `--force` |
+| The OKTech client read an empty 2xx answer as an error, let network errors escape every handler, and crashed on a dated `Retry-After` | all three handled |
+| The book's equity ignored the coins it bought; a banned wallet that had qualified could still be booked | equity = SOL + WSOL + coins at the tape price; banned wallets are never booked |
+| The failure alert fired on OKTech's normal sell twins | two failures per landed sell in the hour are expected; only the excess alarms |
+| Strategist: relative bounds compounded week over week, a partial bound rule lost its other limit, rounding could cross a bound, an API error counted as the week's run, a proposal was dropped by a later budget stop, the daily cap was ignored | all fixed; relative bounds are measured from the owner's file |
+| A missed fingerprint locked a fill to control; arms were re-derived with today's arm table; stale bid-model rows and old landings never expired; a backfill wiped recorded PnL | all fixed (a backfill re-derives arms on purpose and keeps PnL) |
+
+Re-measured with real fees (5–6 Nov, 39 round trips at the minimum bids): **−0.199 SOL realised** (the flat cost
+had said −0.097), 0.188 SOL of it fees and failed sends.
+
+Left as they are, on purpose:
+- The lab's "+N" counts trades inside the leader's slot and never passes that slot's last trade, while live copies
+  often land in later slots. The measured-landing override can therefore only make the labs more conservative, never
+  more optimistic; modelling slot latency in `qualify` is a bigger change for when live fills say it matters.
+- `/stop` stops every active sniper on the account but checks the holdings of the sniper wallet only: OKTech's task
+  documents carry no wallet. Every sniper we make buys with that wallet.
+- `config set` rewrites the owner's file without its comments (the strategist no longer does).
+
 ## What is now known about OKTech (from the bundle, the API and the chain)
 
 - Snipers are always created **idle**; `"start": true` on the create, or `POST /tasks/{id}/start`, starts them (the

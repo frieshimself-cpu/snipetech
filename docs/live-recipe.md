@@ -332,9 +332,14 @@ Owner's yes in chat: "it's funded, I say yes to everything". Wallet 2.92 SOL at 
   relay, and PnL; `bid_model` per arm: n, failed sends, mean/p75 position, mean buys behind, mean gap, mean fee,
   tipped share, overhead. The comparison is the paired one: for each leader signal, where did control land, where
   did paid land.
-- **Baseline before the test** (re-measured 13:25 UTC over 5–6 Nov, 39 buys at the minimum fees): mean 2.5 buys
+- **Baseline before the test** (re-measured 6 Nov over 5–6 Nov, 39 round trips at the minimum fees): mean 2.5 buys
   behind the copied wallet, price gap +26 %, p75 position 4 in the slot, 0.0028 SOL of fees per buy, +0.0020 SOL per
-  buy in failed sends, 90 % of buys tipped.
+  buy in failed sends, 90 % of buys tipped; realised −0.199 SOL with every fill's real fees.
+- **Reading the result:** `snipetech remote --wait run measure report --since <start>` pairs each control fill with
+  the paid fill on the same coin within 20 s and says in one line whether paying landed earlier and what it cost.
+- **Safety while it runs:** `/stop` acts within a minute once `snipetech-commands.timer` is enabled; a manual
+  `oktech stop` refuses while a coin is held (add `--force` only to strand it on purpose); `guard` and `start` refuse
+  while the `/stop` flag is set.
 - **Why the owner runs the create commands and the guard:** the cloud session's safety layer refuses to start
   real-money transactions itself. The commands (from a checkout with the ops key):
 

@@ -189,6 +189,13 @@ start capped ones with `oktech guard` (or `oktech start`); the key's "Allow star
 that. Settings OKTech can't express (e.g. "at most N other buyers") are listed as notes in the plan
 rather than silently dropped.
 
+`push` only ever changes its own snipers (verdict copies are recorded as kind `vcopy`, dev snipers as `dev`):
+snipers made with `copylist`, the book's, probes and strategies are never replaced or pruned by it. It retires an
+old sniper only after its replacement exists and never while the sniper wallet holds a coin. Verdict snipers are
+capped (`[oktech] verdict_max_buys`, 5) and never bigger than `[oktech] max_buy_sol` (1 SOL) a buy. `oktech stop`
+and `delete` refuse while a coin is held (`--force` strands it on purpose); `oktech start`, `guard` and `cycle`
+refuse while the owner's `/stop` flag is set.
+
 What every sniper we make sends (audited against the chain and OKTech's app on 6 Nov, see
 `docs/oktech-audit-2026-11-06.md`): seed account off (the tokens are in the wallet from the first
 slot; with it on every fill was two transactions and a 6023 race), one send per transaction, sells at
@@ -332,7 +339,8 @@ counts, the event-edge table, past parameter changes — and proposes at most on
 owner's `[autotune]` table says which keys it may touch and how far (`book.fill_max_sol` ≤ 1 SOL, `book.min_score` within
 ×0.5–×2, `book.explore_share` 0–0.3, the bid arms' priority and tip ≤ 0.05 SOL, `qualify.max_gap3_pct` 5–30,
 `qualify.min_n_tape` 10–40, `qualify.landing_pos` in +3/+6/+9); `book.enabled`, wallets and keys are never tunable. A
-patch inside the bounds is applied (the config file is rewritten atomically, each change is an `events` row of kind
+patch inside the bounds is applied (written to `autotune.toml` next to the database, which is merged over the owner's
+file for `[book]` and `[qualify]` only; the owner's file is never touched; each change is an `events` row of kind
 `param_change` and a Telegram line); one key outside the bounds turns the whole patch into a question on Telegram and
 nothing changes. `snipetech strategist run --dry-run` shows the evidence and the proposal without applying; the turn is
 capped at `[autotune] turn_usd` (10 $) and shares the operator's daily ledger.

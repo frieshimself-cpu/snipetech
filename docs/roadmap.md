@@ -66,6 +66,11 @@ Later (15:30 UTC): `/stop` now acts within a minute (a one-minute Telegram pass 
 fee claims are decoded from the chain and become events; the labs read the hourly read-only copy of the database when
 it is fresh, so research no longer competes with the recorder for the live file. The wallet showed 4.76 SOL at 14:00.
 
+A second review of the day's own fixes (afternoon) found and closed another set of holes, the worst two being that
+`oktech push --prune` would have deleted the fee-test snipers and that a coin bought seconds earlier was invisible to
+every stop decision (docs/oktech-audit-2026-11-06.md, "Second pass"). With every fill's real fees, the 39 round trips
+of 5–6 Nov lost 0.199 SOL, nearly all of it fees: the case for measuring whether paying more for position is worth it.
+
 Still yours, in order: start the fee test with the three commands in docs/live-recipe.md ("Fee test, 6 Nov"); send
 the nine questions to OKTech's owner; run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers
 and the events service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; top
