@@ -254,6 +254,30 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
         st.close()
 
 
+def test_the_lab_measures_due_wallets_the_hourly_copy_has_no_cand_label_for(tmp_path):
+    """The lab reads its tape from the hourly read-only copy, but run_qualify labels a newly due wallet `cand` in the
+    live database seconds before the lab runs, and never relabels a wallet that already has another label (a KOL).
+    Both are measured on their first run: the trigger wallets come from the live labels plus the due list."""
+    from snipetech.infra.snapshot_db import snapshot_db
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["NEW", "KOL"], coins=12)
+        st.set_label("KOL", "a kol", "kol")
+        for w in ("NEW", "KOL"):
+            st.upsert_candidate(w, "tape", {"positions": 12}, NOW - 3600)
+        snapshot_db(data / "snipetech.db")  # the hourly copy, taken before this run labels anything
+        svc.cfg.verdict.bootstrap_samples = 50
+        assert svc.tape_store.path != st.path  # the lab reads the copy
+        run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert {w: by[w]["n_tape"] for w in by} == {"NEW": 12, "KOL": 12}, {w: by[w]["reasons"] for w in by}
+        assert st.labels("kol") == {"KOL": "a kol"}  # the KOL keeps its label
+    finally:
+        svc.reset_tape_store()
+        st.close()
+
+
 def test_the_lab_charges_the_measured_round_trip_once_the_low_bid_has_30_fills():
     from snipetech.qualify.run import lab_tx_cost
 

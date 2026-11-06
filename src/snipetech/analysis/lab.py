@@ -343,17 +343,20 @@ def span_slot_secs(store: Store, a: int, b: int, step: int = 60) -> float:
 
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
-            event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None) -> dict[str, Any]:  # fmt: skip
+            event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None,
+            kols: dict[str, set[str]] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. `exits` (default: the search set `exit_set()`) are
     simulated the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a
     wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records the trigger buy's size
-    (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`)."""
+    (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`).
+    `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
+    tape may be the hourly read-only copy, which has none of the labels written since it was taken."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = list(exits) if exits else exit_set()
-    kols = label_groups(store)
+    kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS) + [Trigger("event", event=k) for k in (event_kinds or ())]
     triggers = [(ti, t) for ti, t in enumerate(all_triggers)
                 if (groups is None or (t.kind == "kol" and t.group in groups)) and (t.kind != "event" or event_kinds)]  # fmt: skip
