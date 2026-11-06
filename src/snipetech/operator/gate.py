@@ -28,9 +28,12 @@ def expected_state(paths: OperatorPaths) -> dict:
     """What 'all quiet' means right now; the owner or the cloud session changes it when a live test is on."""
     try:
         d = json.loads(paths.expected.read_text())
-        return {k: int(d.get(k, v)) for k, v in DEFAULT_EXPECTED.items()}
+        exp = {k: int(d.get(k, v)) for k, v in DEFAULT_EXPECTED.items()}
     except (OSError, ValueError, TypeError, AttributeError):
-        return dict(DEFAULT_EXPECTED)
+        exp = dict(DEFAULT_EXPECTED)
+    if paths.stop_flag.exists():  # the owner said /stop: a running sniper is a deviation until /resume
+        exp["snipers_running"] = 0
+    return exp
 
 
 def _day(ts: float) -> str:

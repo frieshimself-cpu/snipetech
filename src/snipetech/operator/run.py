@@ -13,6 +13,7 @@ from pathlib import Path
 from ..config import Config
 from ..ops import _pid_alive
 from .budget import Ledger
+from .commands import handle_command, poll_commands
 from .gate import Decision, decide
 from .jobs import OperatorJobs
 from .notify import from_env
@@ -55,7 +56,8 @@ def _acquire_lock(paths: OperatorPaths, now: float) -> bool:
 
 async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = False, repo: Path, branch: str,
                   now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None,
-                  disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None) -> int:  # fmt: skip
+                  disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None,
+                  commands_get: Callable[[str, dict], dict] | None = None) -> int:  # fmt: skip
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     t0 = now()
     if not _acquire_lock(paths, t0):
@@ -63,16 +65,26 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         return 0
     try:
         prev = load_current(paths)
+        notes = NoteSink(paths, now=now)
+        notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
+        if send is not None:
+            notifier.send = send  # type: ignore[method-assign]
+        # Owner commands first, so a /stop acts before anything else this round.
+        token = os.environ.get("TELEGRAM_BOT_TOKEN")
+        for cmd in poll_commands(token, paths, get=commands_get) if token or commands_get else []:
+            try:
+                reply = await handle_command(cmd, svc=svc, cfg=cfg, paths=paths, snap=prev, notifier=notifier, notes=notes, now=t0)
+                _log(paths, t0, f"command /{cmd.name}: {reply.splitlines()[0][:120]}")
+            except Exception as exc:  # noqa: BLE001
+                _log(paths, t0, f"command /{cmd.name} failed: {type(exc).__name__}: {exc}")
         kw = {}
         if services is not None:
             kw["services"] = services
         if balances is not None:
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
-        notes = NoteSink(paths, now=now)
-        notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
-        if send is not None:
-            notifier.send = send  # type: ignore[method-assign]
+        if paths.stop_flag.exists():
+            _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.
         try:
             ledger0 = Ledger(paths.spend, cfg.operator.prices)

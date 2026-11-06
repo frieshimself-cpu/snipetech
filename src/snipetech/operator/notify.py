@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Callable
+from collections.abc import Callable
 
 import httpx
 
@@ -22,6 +22,12 @@ def _post(url: str, data: dict) -> object:
 
 def _get(url: str) -> dict:
     r = httpx.get(url, timeout=10)
+    r.raise_for_status()
+    return r.json()
+
+
+def get_updates(url: str, params: dict) -> dict:
+    r = httpx.get(url, params=params, timeout=10)
     r.raise_for_status()
     return r.json()
 

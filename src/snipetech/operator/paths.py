@@ -55,6 +55,11 @@ class OperatorPaths:
         return self.root / "telegram.json"
 
     @property
+    def stop_flag(self) -> Path:
+        """Written by the owner's /stop: while it exists, no running sniper is expected."""
+        return self.root / "STOP"
+
+    @property
     def jobs(self) -> Path:
         return self.data / "jobs"
 
@@ -62,7 +67,7 @@ class OperatorPaths:
     def reports(self) -> Path:
         return self.data / "reports"
 
-    def ensure(self) -> "OperatorPaths":
+    def ensure(self) -> OperatorPaths:
         self.root.mkdir(parents=True, exist_ok=True)
         return self
 
