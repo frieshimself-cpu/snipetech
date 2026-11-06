@@ -52,3 +52,11 @@ every live result goes into `docs/` and is pushed, so the next session starts fr
    `remote kill`, `remote run oktech*` or anything that trades.
 2. PreToolUse hook on Edit/Write that refuses paths matching `/etc/snipetech/env`, `.env`, `ops_key`, `*.key`.
 3. PostToolUse hook on Edit/Write of `src/**/*.py`: run `.venv/bin/pytest -q -x` and surface failures.
+4. PostToolUse hook on Edit/Write of `src/**/*.py` and `tests/**/*.py`: `ruff format <file>` then `ruff check --fix <file>`
+   (Ruff is configured in pyproject.toml; CI runs the tests).
+5. Skill `.claude/skills/server-ops/SKILL.md` (`user-invocable: false`): the `snipetech remote` command set, "never
+   `update` while a job runs", how to read a job's JSON output, secrets only in /etc/snipetech/env.
+6. Skill `.claude/skills/live-step/SKILL.md` (`disable-model-invocation: true`): the checklist for any step that spends
+   SOL — wallet, size, cap, duration, stop rule, the owner's explicit yes in chat, and the docs/live-recipe.md entry.
+7. Subagent `.claude/agents/trade-safety-reviewer.md`: reviews diffs touching oktech.py, operator/, ops.py, deploy/ for
+   anything that could start a sniper, move SOL, widen the job allowlist or print a secret.
