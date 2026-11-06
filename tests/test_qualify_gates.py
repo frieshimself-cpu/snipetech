@@ -146,10 +146,11 @@ def test_relationship_gate_vetoes_bundle_members():
 
 def test_relationship_gate_reads_edges_table_when_present():
     st = Store(":memory:")
-    st._exec("CREATE TABLE edges (src TEXT, dst TEXT, kind TEXT, mint TEXT, ts INTEGER)")
-    st._exec("INSERT INTO edges VALUES (?,?,?,?,?)", (addr("dev"), addr("paid"), "paid_by_dev", addr("m"), NOW))
+    st.upsert_edge(addr("dev"), addr("paid"), "paid_by_dev", NOW, 10)
     ok, why = relationship_gate(st, addr("paid"))
     assert ok is False and any("paid_by_dev" in r for r in why)
+    ok, _ = relationship_gate(st, addr("clean"))
+    assert ok is True
     st.close()
 
 

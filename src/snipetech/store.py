@@ -796,3 +796,91 @@ class Store:
                 )
             self.conn.commit()
         return {"trades": trades, "launches": launches, "protected_addresses": len(protected)}
+
+
+# -- phase 5: events and edges (appended so earlier line numbers stay put) --------------------------
+
+SCHEMA_EVENTS = """
+CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY, ts INTEGER NOT NULL, slot INTEGER, kind TEXT NOT NULL, mint TEXT, wallet TEXT, data TEXT, source TEXT,
+    dedupe TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS events_mint_ts ON events(mint, ts);
+CREATE INDEX IF NOT EXISTS events_wallet_ts ON events(wallet, ts);
+CREATE INDEX IF NOT EXISTS events_kind_ts ON events(kind, ts);
+CREATE TABLE IF NOT EXISTS edges (
+    src TEXT NOT NULL, dst TEXT NOT NULL, kind TEXT NOT NULL, first_ts INTEGER, last_ts INTEGER, lamports INTEGER DEFAULT 0,
+    n INTEGER DEFAULT 0, PRIMARY KEY (src, dst, kind)
+);
+CREATE INDEX IF NOT EXISTS edges_dst ON edges(dst, kind);
+"""
+SCHEMA = SCHEMA + SCHEMA_EVENTS
+
+_EVENT_COLS = ("id", "ts", "slot", "kind", "mint", "wallet", "data", "source")
+
+
+def _event_dedupe(e: dict) -> str:
+    return "|".join(str(e.get(k) if e.get(k) is not None else "") for k in ("kind", "mint", "wallet", "slot"))
+
+
+def _add_events(self, rows: list[dict]) -> int:
+    """INSERT OR IGNORE by (kind, mint, wallet, slot); returns how many were new."""
+    if not rows:
+        return 0
+    before = self._q("SELECT count(*) FROM events")[0][0]
+    self._many(
+        "INSERT OR IGNORE INTO events (ts, slot, kind, mint, wallet, data, source, dedupe) VALUES (?,?,?,?,?,?,?,?)",
+        [(int(e["ts"]), e.get("slot"), str(e["kind"]), e.get("mint"), e.get("wallet"), json.dumps(e.get("data") or {}, default=str),
+          e.get("source"), _event_dedupe(e)) for e in rows],  # fmt: skip
+    )
+    return int(self._q("SELECT count(*) FROM events")[0][0] - before)
+
+
+def _events(self, kind: str | None = None, mint: str | None = None, wallet: str | None = None, since_ts: int = 0,
+            limit: int = 1000) -> list[dict[str, Any]]:  # fmt: skip
+    where, params = ["ts >= ?"], [int(since_ts)]
+    for col, val in (("kind", kind), ("mint", mint), ("wallet", wallet)):
+        if val is not None:
+            where.append(f"{col} = ?")
+            params.append(val)
+    params.append(int(limit))
+    rows = self._q(f"SELECT {', '.join(_EVENT_COLS)} FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?", params)
+    out = []
+    for r in rows:
+        d = dict(zip(_EVENT_COLS, r))
+        try:
+            d["data"] = json.loads(d["data"]) if d.get("data") else {}
+        except ValueError:
+            d["data"] = {}
+        out.append(d)
+    return out
+
+
+def _event_counts(self, since_ts: int = 0) -> dict[str, int]:
+    return {str(k): int(n) for k, n in self._q("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (int(since_ts),))}
+
+
+def _upsert_edge(self, src: str, dst: str, kind: str, ts: int, lamports: int = 0) -> None:
+    self._exec(
+        "INSERT INTO edges (src, dst, kind, first_ts, last_ts, lamports, n) VALUES (?,?,?,?,?,?,1) "
+        "ON CONFLICT(src, dst, kind) DO UPDATE SET first_ts = min(first_ts, excluded.first_ts), last_ts = max(last_ts, excluded.last_ts), "
+        "lamports = lamports + excluded.lamports, n = n + 1",
+        (src, dst, kind, int(ts), int(ts), int(lamports)),
+    )
+
+
+def _edges_to(self, dst: str, kind: str | None = None) -> list[dict[str, Any]]:
+    sql = "SELECT src, dst, kind, first_ts, last_ts, lamports, n FROM edges WHERE dst = ?"
+    params: list = [dst]
+    if kind is not None:
+        sql += " AND kind = ?"
+        params.append(kind)
+    sql += " ORDER BY last_ts DESC"
+    return [dict(zip(("src", "dst", "kind", "first_ts", "last_ts", "lamports", "n"), r)) for r in self._q(sql, params)]
+
+
+Store.add_events = _add_events
+Store.events = _events
+Store.event_counts = _event_counts
+Store.upsert_edge = _upsert_edge
+Store.edges_to = _edges_to
