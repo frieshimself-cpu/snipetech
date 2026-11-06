@@ -53,6 +53,7 @@ UNITS: dict[str, dict[str, Any]] = {
 }
 MAX_QUALIFY_BATCH = 900  # three times [qualify] max_wallets: one qualify lab covers every labelled wallet anyway
 SEARCH_EVERY_H = 24.0
+SEARCH_TAPE_H = 72.0  # the search reads the newest three days of tape, so it never holds the lab lock for long
 DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pipeline has run dry
 STALE_VERDICT_DAYS = 3.0
 FAILED_BACKOFF_SECS = 6 * 3600  # a unit whose last job failed waits this long before it is tried again
@@ -261,9 +262,30 @@ def run_next(store: Store, cfg: Config, now: float, *, metas: Iterable[dict], se
 # -- the strategy search unit -------------------------------------------------------------------------------------------
 
 
+class _TapeWindow:
+    """A store seen through a window: `tape_spans` (what the lab walks) clipped to start at `start_ts`; every other
+    read goes to the store itself."""
+
+    def __init__(self, store: Store, start_ts: float):
+        self._store, self._start = store, int(start_ts)
+
+    def tape_spans(self) -> list[tuple[int, int]]:
+        return [(max(int(a), self._start), int(b)) for a, b in self._store.tape_spans() if b > self._start]
+
+    def __getattr__(self, name: str):
+        return getattr(self._store, name)
+
+
+def recent_tape(store: Store, hours: float = SEARCH_TAPE_H):
+    """The newest `hours` of the tape: the search's cost stays flat while the tape grows for weeks."""
+    spans = store.tape_spans()
+    return _TapeWindow(store, max(b for _a, b in spans) - hours * 3600) if spans else store
+
+
 def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> dict[str, Any]:
-    """The full lab at the live copy landing (one lab, under the lab lock): strategies and labelled wallets ranked where
-    our copies land, and the strategies with a positive lower bound there frozen into the forward paper test."""
+    """The full lab at the live copy landing (one lab, under the lab lock) on the newest tape: strategies and labelled
+    wallets ranked where our copies land, and the strategies with a positive lower bound there frozen into the forward
+    paper test."""
     from ..analysis import lab as L
     from ..analysis import paper
 
@@ -271,7 +293,7 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
     with _lab_lock(data_dir, wait=True):
-        data = L.collect(svc.tape_store, cfg, buy, 0, copy_pos, 0.0035)
+        data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, 0.0035)
     # a launch trigger at the copy landing would buy inside the create slot, where no launch snipe lands
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)

@@ -225,6 +225,18 @@ def test_the_search_ranks_at_the_live_copy_landing_and_paper_tests_what_pays_the
     assert [f["id"] for f in cov["frozen"]] == [s["id"] for s in frozen]
 
 
+def test_the_search_reads_only_the_newest_tape_so_its_cost_stays_flat(env):
+    """The tape keeps growing for weeks; a search over all of it would run longer every day and hold the lab lock
+    (and the qualify lab behind it) for hours. It reads the newest SEARCH_TAPE_H hours only."""
+    st, _cfg, _ = env
+    st.set_coverage("tape", {"spans": [[NOW - 10 * 24 * H, NOW - 9 * 24 * H], [NOW - 100 * H, NOW]]})
+    window = RS.recent_tape(st, 72)
+    assert window.tape_spans() == [(NOW - 72 * H, NOW)]
+    assert window.labels() == st.labels() and window.launch("x") is None  # everything else reads the store itself
+    st.set_coverage("tape", {"spans": [[NOW - 10 * H, NOW]]})
+    assert RS.recent_tape(st, 72).tape_spans() == [(NOW - 10 * H, NOW)]
+
+
 def _digest_world(st, data):
     _pipeline(st)
     for i, (status, n, mean, lower) in enumerate([("qualified", 40, 0.017, 0.004), ("candidate", 54, 0.006, 0.0002),
