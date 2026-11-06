@@ -123,7 +123,21 @@ CREATE TABLE IF NOT EXISTS paper_trades (
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS candidates (
+    wallet TEXT PRIMARY KEY, first_seen INTEGER, last_seen INTEGER, sources TEXT NOT NULL DEFAULT '[]',
+    stats TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL DEFAULT 'candidate'
+);
+CREATE TABLE IF NOT EXISTS verdicts (
+    id INTEGER PRIMARY KEY, wallet TEXT NOT NULL, computed_at INTEGER NOT NULL, landing_pos TEXT, n_tape INTEGER,
+    mean_sol REAL, lower_sol REAL, hist_days INTEGER, hist_realized_usd REAL, hist_win_rate REAL, hist_trades INTEGER,
+    crowding REAL, venue_share REAL, score REAL, status TEXT NOT NULL, next_review INTEGER, reasons TEXT
+);
+CREATE INDEX IF NOT EXISTS verdicts_wallet ON verdicts(wallet, computed_at);
 """
+
+_VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
+                 "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons")  # fmt: skip
+_LATEST_VERDICT = "SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet ORDER BY computed_at DESC, id DESC LIMIT 1)"
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")
 
@@ -446,6 +460,91 @@ class Store:
     def usage_month(self, provider: str, now: float | None = None) -> int:
         key = f"api_usage:{provider}:{time.strftime('%Y-%m', time.gmtime(now if now is not None else time.time()))}"
         return int(self.coverage(key).get("n", 0))
+
+    # -- candidates and verdicts (the learning loop's discover / qualify stages) ------------------
+
+    def upsert_candidate(self, wallet: str, source: str, stats: dict, now: int, status: str | None = None) -> None:
+        """One row per wallet: sources merge as a sorted unique list, stats[source] is replaced, status only when given."""
+
+        def do():
+            row = self.conn.execute("SELECT first_seen, sources, stats, status FROM candidates WHERE wallet=?", (wallet,)).fetchone()
+            if row is None:
+                self.conn.execute("INSERT INTO candidates (wallet, first_seen, last_seen, sources, stats, status) VALUES (?,?,?,?,?,?)",
+                                  (wallet, int(now), int(now), json.dumps([source]), json.dumps({source: stats}, default=str), status or "candidate"))  # fmt: skip
+                return
+            sources = sorted(set(json.loads(row[1] or "[]")) | {source})
+            all_stats = json.loads(row[2] or "{}")
+            all_stats[source] = stats
+            self.conn.execute("UPDATE candidates SET last_seen=?, sources=?, stats=?, status=? WHERE wallet=?",
+                              (max(int(now), int(row[0] or 0)), json.dumps(sources), json.dumps(all_stats, default=str), status or row[3], wallet))  # fmt: skip
+
+        self._write(do)
+
+    def set_candidate_status(self, wallet: str, status: str) -> None:
+        self._exec("UPDATE candidates SET status=? WHERE wallet=?", (status, wallet))
+
+    @staticmethod
+    def _verdict_dict(row: tuple) -> dict[str, Any]:
+        d = dict(zip(("id", *_VERDICT_COLS), row))
+        try:
+            d["reasons"] = json.loads(d["reasons"]) if d.get("reasons") else []
+        except ValueError:
+            d["reasons"] = [str(d["reasons"])]
+        return d
+
+    def candidates(self, status: str | None = None, due_before: int | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        """Candidates with their latest verdict. `due_before` keeps those never evaluated or whose review date has come,
+        never-evaluated first, then the oldest review date."""
+        sql = f"SELECT c.wallet, c.first_seen, c.last_seen, c.sources, c.stats, c.status, v.* FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet"
+        where: list[str] = []
+        params: list[Any] = []
+        if status is not None:
+            where.append("c.status = ?")
+            params.append(status)
+        if due_before is not None:
+            where.append("(v.id IS NULL OR v.next_review IS NULL OR v.next_review <= ?)")
+            params.append(int(due_before))
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += " ORDER BY (v.id IS NOT NULL), v.next_review, c.first_seen, c.wallet LIMIT ?"
+        params.append(int(limit))
+        out = []
+        for row in self._q(sql, params):
+            verdict = self._verdict_dict(row[6:]) if row[6] is not None else None
+            out.append({"wallet": row[0], "first_seen": row[1], "last_seen": row[2], "sources": json.loads(row[3] or "[]"),
+                        "stats": json.loads(row[4] or "{}"), "status": row[5], "verdict": verdict})  # fmt: skip
+        return out
+
+    def put_verdict(self, v: dict[str, Any]) -> int:
+        vals = []
+        for c in _VERDICT_COLS:
+            x = v.get(c)
+            if c == "reasons":
+                x = json.dumps(list(x or []), default=str)
+            vals.append(x)
+        holder: dict[str, int] = {}
+
+        def do():
+            cur = self.conn.execute(f"INSERT INTO verdicts ({', '.join(_VERDICT_COLS)}) VALUES ({', '.join('?' * len(_VERDICT_COLS))})", vals)
+            holder["id"] = int(cur.lastrowid)
+
+        self._write(do)
+        return holder["id"]
+
+    def latest_verdicts(self, status: str | None = None) -> list[dict[str, Any]]:
+        sql = f"SELECT * FROM ({_LATEST_VERDICT}) v"
+        params: tuple = ()
+        if status is not None:
+            sql += " WHERE v.status = ?"
+            params = (status,)
+        sql += " ORDER BY v.score DESC, v.computed_at DESC"
+        return [self._verdict_dict(r) for r in self._q(sql, params)]
+
+    def verdict_counts(self) -> dict[str, int]:
+        """Candidates by effective status: banned rows stay banned, else the latest verdict's status, else the row's own."""
+        sql = (f"SELECT CASE WHEN c.status = 'banned' THEN 'banned' ELSE COALESCE(v.status, c.status) END AS s, count(*) "
+               f"FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet GROUP BY s")  # fmt: skip
+        return {str(k): int(n) for k, n in self._q(sql)}
 
     def set_coverage(self, key: str, data: dict[str, Any]) -> None:
         self._exec(
