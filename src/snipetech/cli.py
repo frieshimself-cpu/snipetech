@@ -1449,6 +1449,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"book on: {book_line(cfg, bpaths)}" if args.action == "on" else book_off_reply(cfg, bpaths))
             return 0
         if args.action == "bar":
+            from .book.switch import book_bar_file
+
+            print(f"bar file {book_bar_file(bpaths)} on this machine")
             print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
             return 0
         if args.action == "status":
@@ -1457,7 +1460,7 @@ def main(argv: list[str] | None = None) -> int:
 
             st = Store(cfg.storage.db_path)
             try:
-                last = last_run_line(st)
+                last = last_run_line(st, time.time())
             finally:
                 st.close()
             print(

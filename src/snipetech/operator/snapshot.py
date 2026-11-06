@@ -270,6 +270,9 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"balances: {exc}")
+            snap.equity_ref = (
+                getattr(prev, "equity_ref", None) if prev is not None else None
+            )  # keep the last valued equity
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
             snap.failed_tx_1h, snap.ok_tx_1h = await transaction_counts(svc, wallet, now)
         try:

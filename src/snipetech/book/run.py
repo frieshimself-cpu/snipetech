@@ -24,21 +24,6 @@ def _bookable(store) -> list[dict]:
     return [v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned]
 
 
-def _holders(store, wallet: str, holdings: list[dict]) -> set[str] | None:
-    """The leaders (first six characters, as in the book's sniper names) whose buys the held coins copied, from the
-    measured fills; None when a held coin cannot be traced (the measure stage has not recorded its buy yet)."""
-    out: set[str] = set()
-    for h in holdings or []:
-        rows = store._q(
-            "SELECT wallet_copied FROM fills WHERE wallet=? AND mint=? AND side='buy' ORDER BY ts DESC LIMIT 1",
-            (wallet, h.get("mint")),
-        )
-        if not rows or not rows[0][0]:
-            return None
-        out.add(str(rows[0][0])[:6])
-    return out
-
-
 def _line(a) -> str:
     bits = [a.kind, (a.wallet or "")[:6], a.arm or "", f"{a.fill_sol:g} SOL" if a.fill_sol else "", a.sniper_id or ""]
     return " ".join(b for b in bits if b) + f" — {a.reason}"
@@ -79,6 +64,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         snipers = list((await svc.oktech_status()).get("snipers") or [])
     except Exception as exc:  # noqa: BLE001
         notes.write(f"book: OKTech did not answer ({type(exc).__name__}); no action this run", "info")
+        record_run(store, {"actions": [], "kill_reason": "oktech unknown"}, True, now)
         return {"dry": True, "kill_reason": "oktech unknown", "actions": {}, "ranked": 0}
     acc = day_accounting(store, wallet, now, equity_now=equity)
     live_mode = book_live(cfg, paths) if dry is None else not dry
@@ -86,19 +72,24 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
-                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=_holders(store, wallet, holdings))  # fmt: skip
+                     stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None)  # fmt: skip
+    # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
+    # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
+    # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
-    if plan.kill_reason and not notes.has_today(f"[book] kill: {plan.kill_reason}", now):
-        line = f"[book] kill: {plan.kill_reason}" + (
-            " (stopping its snipers that hold nothing)" if act_on_stops and stops else ""
-        )
-        if live_mode or (
-            act_on_stops and stops
-        ):  # the owner hears about a live book or a stop; an idle off book is a note
+    kept = [a for a in plan.actions if a.kind == "keep" and "never stop a holder" in a.reason]
+    if plan.kill_reason and not notes.has_today(f"[decision] [book] kill: {plan.kill_reason}", now):
+        line = (
+            f"[book] kill: {plan.kill_reason}"
+            + (" (stopping its snipers that hold nothing)" if act_on_stops and stops else "")
+            + (f"; {len(kept)} book sniper(s) kept running while the wallet holds a coin (each can still buy up to "
+               f"{b.max_buys_per_sniper})" if kept else "")
+        )  # fmt: skip
+        if live_mode or (act_on_stops and stops) or kept:  # the owner hears it; an idle off book only notes it
             notifier.send(notes.write(line, "decision"))
-        else:
+        elif not notes.has_today(f"[book] kill: {plan.kill_reason}", now):
             notes.write(line, "info")
     qualified = inp.qualified
     best_q = max(qualified, key=lambda v: float(v.get("score") or 0), default=None)

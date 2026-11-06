@@ -130,7 +130,7 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
         states.append(f"{len(snap.held)} coin(s) held, expected {allowed_held}")
     stuck = [h for h in snap.held if now - float(h.get("since", now)) > STUCK_SECS]
     if stuck:
-        states.append(f"coin(s) held over {STUCK_SECS // 60} min: " + ", ".join(str(h.get("mint"))[:8] for h in stuck))
+        states.append(f"coin(s) held over {STUCK_SECS // 60} min: {len(stuck)}")  # which: the snapshot's held coins
     if prev is not None:
         gained = (snap.verdicts or {}).get("qualified", 0) - (getattr(prev, "verdicts", None) or {}).get("qualified", 0)
         if gained > 0:

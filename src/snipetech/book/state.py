@@ -45,7 +45,7 @@ def record_run(store: Store, plan, dry: bool, now: float, **extra: Any) -> dict[
     return rec
 
 
-def last_run_line(store: Store) -> str:
+def last_run_line(store: Store, now: float | None = None) -> str:
     """What the book saw on its last run, in one line for /book status: halted and why, no wallet above the bar (and
     the best one it has), or how many wallets it copies and what it did."""
     import time as _time
@@ -54,6 +54,9 @@ def last_run_line(store: Store) -> str:
     if not rec.get("ts"):
         return "the book has not run yet"
     when = _time.strftime("%H:%M UTC", _time.gmtime(int(rec["ts"])))
+    if now is not None:
+        age = max(0.0, float(now) - float(rec["ts"]))
+        when += f" ({int(age // 60)} min ago)" if age < 90 * 60 else f" ({age / 3600:.0f} h ago)"
     if rec.get("kill_reason"):
         return f"last run {when}: halted: {rec['kill_reason']}"
     ranked = rec.get("ranked")

@@ -271,3 +271,13 @@ def test_the_books_own_buys_and_sells_do_not_count_as_equity_moves(paths):
 def test_a_stand_in_that_cannot_start_stages_is_raised(paths):
     d = decide(snap(errors=["stand-in: measure run did not start: OpsError: busy"]), snap(), NOW, CFG, paths)
     assert d.call and any("loop stages not starting" in r for r in d.reasons)
+
+
+
+def test_the_stuck_coin_reminder_key_does_not_change_with_the_coins(paths):
+    """Which coins are stuck, and in which order, must not make the state look new inside its six-hour window."""
+    a = snap(held=[{"mint": "AAA111", "amount": 1.0, "since": NOW - 3600}, {"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
+    b = snap(held=[{"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
+    ka = [k for k in decide(a, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
+    kb = [k for k in decide(b, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
+    assert ka and ka == kb

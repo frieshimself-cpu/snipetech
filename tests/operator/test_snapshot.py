@@ -151,3 +151,18 @@ def test_the_snapshot_keeps_the_last_equity_it_could_value(tmp_path, fake_servic
         take_snapshot(fake_service, paths, cfg, prev=first, now=2_900, balances=lambda w: (1.8, 0.1, unpriced), **kw)
     )
     assert later.total_equity is None and later.equity_ref == pytest.approx(2.1)  # carried until it can be valued
+
+
+
+def test_a_failed_balance_read_keeps_the_last_valued_equity(tmp_path, fake_service):
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "t.db")
+    cfg.operator.wallet = W
+    paths = OperatorPaths(tmp_path).ensure()
+    first = asyncio.run(take_snapshot(fake_service, paths, cfg, prev=None, now=2_000, services=lambda: {}, balances=lambda w: (2.0, 0.1, [])))
+
+    def broken(w):
+        raise RuntimeError("rpc down")
+
+    later = asyncio.run(take_snapshot(fake_service, paths, cfg, prev=first, now=2_900, services=lambda: {}, balances=broken))
+    assert later.equity_ref == pytest.approx(2.1)

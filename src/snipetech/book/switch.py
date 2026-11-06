@@ -83,8 +83,9 @@ def book_off_reply(cfg: Config, paths: OperatorPaths) -> str:
     if book_live(cfg, paths):
         return ("the book is still ON: [book] enabled = true in the server's config file keeps it live. /stop halts "
                 "everything now; turning it off for good needs that line set to false over SSH.")  # fmt: skip
-    return ("book off: it creates and starts nothing, and within 15 minutes it stops its snipers that hold nothing; "
-            "one still selling a coin keeps running until the coin is sold, then it is stopped too.")  # fmt: skip
+    return ("book off: it creates and starts nothing, and within 15 minutes it stops its snipers that hold nothing. "
+            "While the wallet holds any coin, every book sniper keeps running (each can still buy up to "
+            f"{cfg.book.max_buys_per_sniper}) until the coin is sold; /stop does the same.")  # fmt: skip
 
 
 def book_line(cfg: Config, paths: OperatorPaths | None = None) -> str:

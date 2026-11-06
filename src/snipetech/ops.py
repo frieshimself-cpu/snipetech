@@ -314,7 +314,15 @@ class Ops:
     def op_jobs(self) -> dict[str, Any]:
         """Every running job first, however old (a session checks this list before a deploy kills running jobs: a
         live test's guard must never drop off it), then the 30 newest ended ones."""
-        paths = sorted((self.data / "jobs").glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+        def _mtime(p: Path) -> float | None:
+            try:
+                return p.stat().st_mtime
+            except OSError:  # pruned by the round between the listing and here
+                return None
+
+        found = [(m, p) for p in (self.data / "jobs").glob("*.json") if (m := _mtime(p)) is not None]
+        paths = [p for _m, p in sorted(found, key=lambda x: x[0], reverse=True)]
         running, ended = [], []
         for p in paths:
             jid = p.stem
@@ -414,8 +422,16 @@ class Ops:
         fh = log.open("wb")
         # A wrapper shell writes the exit code to <id>.exit so the outcome survives the starting process going away
         # (the operator is a short-lived timer run; the ops service may restart): _meta() reconciles from that file.
-        env = _job_env() | {"SNIPETECH_JOB_EXIT": str(self.data / "jobs" / f"{jid}.exit")}
-        wrapped = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$SNIPETECH_JOB_EXIT"; exit "$rc"', "sh", *cmd]
+        env = _job_env() | {
+            "SNIPETECH_JOB_EXIT": str(self.data / "jobs" / f"{jid}.exit"),
+            "SNIPETECH_JOB_TIMEOUT": str(int(timeout)),
+        }
+        # the limit is enforced inside the job (coreutils timeout, exit 124), so it holds even when the process that
+        # started it is gone (the operator round's own Ops object); the watch thread below is the fallback
+        limit = (
+            'timeout --foreground -k 30 "$SNIPETECH_JOB_TIMEOUT" ' if shutil.which("timeout") else ""
+        )  # same process group: op_kill still reaches the job
+        wrapped = ["/bin/sh", "-c", limit + '"$@"; rc=$?; echo "$rc" > "$SNIPETECH_JOB_EXIT"; exit "$rc"', "sh", *cmd]
         job.proc = subprocess.Popen(wrapped, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=self.data,
                                     start_new_session=True, env=env)  # fmt: skip
         fh.close()
@@ -424,7 +440,7 @@ class Ops:
 
         def watch():
             try:
-                job.code = job.proc.wait(timeout=timeout)
+                job.code = job.proc.wait(timeout=timeout + 60)  # the job's own limit fires first
             except subprocess.TimeoutExpired:
                 _signal_group(job.proc, signal.SIGKILL)
                 job.code = job.proc.wait()

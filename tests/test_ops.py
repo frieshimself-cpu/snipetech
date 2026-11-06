@@ -242,3 +242,40 @@ def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tm
     assert ops._meta("broken") is None
     listed = ops.op_jobs()["jobs"]
     assert listed[0]["id"] == "guard" and listed[0]["running"] is True and len(listed) <= 31
+
+
+
+def test_a_job_enforces_its_own_time_limit(tmp_path):
+    """The operator round starts stages through a short-lived Ops object whose watch thread dies with the round: the
+    limit must hold without it (coreutils timeout inside the job's own wrapper, exit code 124)."""
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "import time; time.sleep(30)"])  # fmt: skip
+    st = ops.op_run(["lab"], timeout=1)
+    exit_file = data / "jobs" / f"{st['id']}.exit"
+    for _ in range(100):
+        if exit_file.exists() and exit_file.read_text().strip():
+            break
+        time.sleep(0.1)
+    assert exit_file.read_text().strip() == "124"
+
+
+def test_op_jobs_survives_a_job_file_pruned_mid_listing(tmp_path, monkeypatch):
+    import json
+    import pathlib
+
+    data = tmp_path / "d"
+    jobs = data / "jobs"
+    jobs.mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main", command=[sys.executable, "-c", "pass"])
+    (jobs / "a.json").write_text(json.dumps({"id": "a", "argv": ["measure", "run"], "started": 1, "ended": 2, "exit_code": 0, "running": False}))
+    real_glob = pathlib.Path.glob
+
+    def glob(self, pattern):
+        yield from real_glob(self, pattern)
+        if pattern == "*.json":
+            yield self / "gone.json"  # deleted by the round's prune between the listing and the stat
+
+    monkeypatch.setattr(pathlib.Path, "glob", glob)
+    assert [j["id"] for j in ops.op_jobs()["jobs"]] == ["a"]

@@ -101,17 +101,22 @@ def test_a_book_that_is_off_stops_its_own_snipers(tmp_path):
         st.close()
 
 
-def test_the_book_keeps_only_the_sniper_whose_coin_is_held(tmp_path):
-    """Below the floor with a coin held: the measured fill says the coin copied L1, so L2's sniper is stopped."""
+def test_while_a_coin_is_held_the_book_stops_none_of_its_snipers(tmp_path):
+    """A measured fill can name the wrong leader (a co-buying leader, a failed leader attempt, an older closed position
+    in the same coin), so the book never narrows "who holds the coin" from fills: while the wallet holds any coin, it
+    keeps every book sniper and tells the owner, since each can still buy up to its cap."""
     st, cfg = _env(tmp_path, enabled=True)
     st.put_fill({"sig": "b1", "ts": NOW - 60, "slot": 1, "wallet": W, "wallet_copied": L1, "mint": "M", "side": "buy",
                  "sol": 0.2, "tokens": 1000.0})  # fmt: skip
     snipers = [{"id": "k1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"},
                {"id": "k2", "name": f"snipetech copy book {L2[:6]} arm:control", "status": "running"}]  # fmt: skip
     svc = FakeSvc(st, snipers=snipers, held=[{"mint": "M", "amount": 3.0, "value_sol": 0.1}])
+    sent = []
     try:
-        out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (1.0, 0.0, [{"mint": "M"}])))
-        assert out["kill_reason"] == "equity below floor" and svc.calls == [("stop", "k2")]
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (1.0, 0.0, [{"mint": "M"}])))  # fmt: skip
+        assert out["kill_reason"] == "equity below floor" and svc.calls == []
+        assert len(sent) == 1 and "2 book sniper(s) kept running" in sent[0] and "up to 3" in sent[0]
     finally:
         st.close()
 
@@ -360,3 +365,41 @@ def test_cli_book_run_live_is_refused_while_the_book_is_off(tmp_path):
 
     with pytest.raises(SystemExit, match="refused"):
         cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "book", "run", "--live"])
+
+
+
+def test_an_off_book_note_does_not_swallow_the_live_books_page(tmp_path):
+    """Off in the morning below the floor (a note), then /book on: the halt must still reach the owner once."""
+    st, cfg = _env(tmp_path)
+    sent = []
+    note = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+    try:
+        asyncio.run(run_book(FakeSvc(st), cfg, NOW, notifier=note, balances=lambda w: (1.0, 0.0, [])))
+        assert sent == []
+        from snipetech.book.switch import book_switch
+
+        book_switch(OperatorPaths(tmp_path / "data"), True, "test", NOW)
+        asyncio.run(run_book(FakeSvc(st), cfg, NOW + 300, notifier=note, balances=lambda w: (1.0, 0.0, [])))
+        assert len(sent) == 1 and "equity below floor" in sent[0]
+    finally:
+        st.close()
+
+
+def test_book_status_says_how_old_the_last_run_is(tmp_path):
+    from snipetech.book.state import last_run_line, record_run
+
+    st, cfg = _env(tmp_path)
+    try:
+        record_run(st, {"actions": [], "kill_reason": "oktech unknown"}, True, NOW - 2 * 3600)
+        assert "2 h ago" in last_run_line(st, now=NOW)
+    finally:
+        st.close()
+
+
+def test_cli_book_bar_says_where_the_bar_lives(tmp_path, capsys):
+    from snipetech import cli
+
+    db = tmp_path / "data" / "snipetech.db"
+    assert cli.main(["--db", str(db), "book", "bar", "0.002"]) == 0
+    out = capsys.readouterr().out
+    assert str(tmp_path / "data" / "operator" / "BOOK_MIN_SCORE") in out and "0.002" in out
