@@ -133,7 +133,27 @@ CREATE TABLE IF NOT EXISTS verdicts (
     crowding REAL, venue_share REAL, score REAL, status TEXT NOT NULL, next_review INTEGER, reasons TEXT
 );
 CREATE INDEX IF NOT EXISTS verdicts_wallet ON verdicts(wallet, computed_at);
+CREATE TABLE IF NOT EXISTS fills (
+    sig TEXT PRIMARY KEY, ts INTEGER, slot INTEGER, pos_in_slot INTEGER, slot_txs INTEGER, wallet TEXT, wallet_copied TEXT,
+    event_kind TEXT, mint TEXT, side TEXT, sol REAL, tokens REAL, trades_behind INTEGER, price_gap_pct REAL,
+    priority_lamports INTEGER, tip_lamports INTEGER, cu_limit INTEGER, cu_used INTEGER, landing_service TEXT, pnl_sol REAL,
+    exit_reason TEXT, sniper_id TEXT, bid_arm TEXT, buy_sig TEXT
+);
+CREATE INDEX IF NOT EXISTS fills_wallet_ts ON fills(wallet, ts);
+CREATE TABLE IF NOT EXISTS bid_model (
+    arm TEXT PRIMARY KEY, n INTEGER, failed_n INTEGER, mean_pos REAL, p25_pos REAL, p75_pos REAL, mean_gap_pct REAL,
+    mean_fee_sol REAL, updated_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS wallet_live (
+    wallet TEXT PRIMARY KEY, n INTEGER, mean_sol REAL, lower_sol REAL, last_fill INTEGER, status TEXT, updated_at INTEGER
+);
 """
+
+_FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
+              "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
+              "exit_reason", "sniper_id", "bid_arm", "buy_sig")  # fmt: skip
+_BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at")
+_LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
 
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
                  "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons")  # fmt: skip
@@ -545,6 +565,48 @@ class Store:
         sql = (f"SELECT CASE WHEN c.status = 'banned' THEN 'banned' ELSE COALESCE(v.status, c.status) END AS s, count(*) "
                f"FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet GROUP BY s")  # fmt: skip
         return {str(k): int(n) for k, n in self._q(sql)}
+
+    # -- fills, bid model, live expectancy (the learning loop's measure stage) ----------------------
+
+    def put_fill(self, row: dict[str, Any]) -> None:
+        self._exec(f"INSERT OR REPLACE INTO fills ({', '.join(_FILL_COLS)}) VALUES ({', '.join('?' * len(_FILL_COLS))})",
+                   [row.get(c) for c in _FILL_COLS])  # fmt: skip
+
+    def fill(self, sig: str) -> dict[str, Any] | None:
+        rows = self._q(f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE sig=?", (sig,))
+        return dict(zip(_FILL_COLS, rows[0])) if rows else None
+
+    def fills(self, wallet: str | None = None, since_ts: int = 0, side: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        where, params = ["ts >= ?"], [int(since_ts)]
+        if wallet is not None:
+            where.append("wallet = ?")
+            params.append(wallet)
+        if side is not None:
+            where.append("side = ?")
+            params.append(side)
+        params.append(int(limit))
+        rows = self._q(f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE {' AND '.join(where)} ORDER BY ts DESC, sig LIMIT ?", params)
+        return [dict(zip(_FILL_COLS, r)) for r in rows]
+
+    def put_bid_model(self, row: dict[str, Any]) -> None:
+        self._exec(f"INSERT OR REPLACE INTO bid_model ({', '.join(_BID_COLS)}) VALUES ({', '.join('?' * len(_BID_COLS))})",
+                   [row.get(c) for c in _BID_COLS])  # fmt: skip
+
+    def bid_model(self) -> list[dict[str, Any]]:
+        return [dict(zip(_BID_COLS, r)) for r in self._q(f"SELECT {', '.join(_BID_COLS)} FROM bid_model ORDER BY arm")]
+
+    def put_wallet_live(self, row: dict[str, Any]) -> None:
+        self._exec(f"INSERT OR REPLACE INTO wallet_live ({', '.join(_LIVE_COLS)}) VALUES ({', '.join('?' * len(_LIVE_COLS))})",
+                   [row.get(c) for c in _LIVE_COLS])  # fmt: skip
+
+    def wallet_live(self, status: str | None = None) -> list[dict[str, Any]]:
+        sql = f"SELECT {', '.join(_LIVE_COLS)} FROM wallet_live"
+        params: tuple = ()
+        if status is not None:
+            sql += " WHERE status = ?"
+            params = (status,)
+        sql += " ORDER BY mean_sol DESC, wallet"
+        return [dict(zip(_LIVE_COLS, r)) for r in self._q(sql, params)]
 
     def set_coverage(self, key: str, data: dict[str, Any]) -> None:
         self._exec(
