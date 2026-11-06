@@ -254,6 +254,18 @@ def test_a_wallet_is_scored_only_on_buys_its_floor_lets_through():
     assert old["G2"]["n"] == 12  # a wallet's floor comes from its own buys even with no book floor
 
 
+def test_rank_wallets_can_score_only_the_wallets_asked_for():
+    from snipetech.analysis.lab import LIVE_EXITS, rank_wallets
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    rows = _wallet_rows("GOOD", 5, 1.0, 0.02) + _wallet_rows("BAD", 5, 1.0, -0.05, t0=100)
+    trig = [Trigger("kol", sol=0.1, group="cand")]
+    data = {"rows": rows, "exits": [LIVE_EXITS["lab"]], "triggers": trig, "tape_hours": 10}
+    assert [r["wallet"] for r in rank_wallets(data, cfg, top=1, min_n=4)] == ["GOOD"]
+    assert [r["wallet"] for r in rank_wallets(data, cfg, top=1, min_n=4, wallets=["BAD"])] == ["BAD"]  # before the cut
+
+
 def test_leader_style_from_how_it_sells():
     from snipetech.analysis.lab import leader_style
 

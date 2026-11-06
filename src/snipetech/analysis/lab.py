@@ -540,16 +540,18 @@ def _copy_plan_stats(moments: list[dict], min_leader_sol: float) -> dict[str, An
 
 
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
-                 min_n: int = 4, floor: float | None = None) -> list[dict]:  # fmt: skip
+                 min_n: int = 4, floor: float | None = None, wallets=None) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
     60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
     its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
     `floor`, default the book's `min_copy_sol`). Wallets with the same address under several triggers keep the
     best-covered trigger. Each row carries the copy plan the book needs: the floor, the leader's style, the exit's name
-    in `live_exits` (None for a search exit), its parameters and LAB_VERSION."""
+    in `live_exits` (None for a search exit), its parameters and LAB_VERSION. `wallets`: score only these (the qualify
+    stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about."""
     rows, exits = data["rows"], data["exits"]
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
+    want = None if wallets is None else set(wallets)
     floor = float(cfg.book.min_copy_sol if floor is None else floor)
     names = {ex: name for name, ex in live_exits(cfg).items()}
     best: dict[str, dict] = {}
@@ -565,6 +567,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
         for r, p in zip(rs, m[:, k]):
             by.setdefault(r["who"], []).append((r, float(p)))
         for w, items in by.items():
+            if want is not None and w not in want:
+                continue
             moments = [r for r, _ in items]
             min_sol = choose_min_leader_sol([r.get("lead_sol") for r in moments],
                                             [x for r in moments for x in (r.get("rebuys") or ())], floor)  # fmt: skip

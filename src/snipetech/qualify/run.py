@@ -50,9 +50,7 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         kols["cand"] = kols["cand"] | set(wallets)
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                          groups=("cand",), exits=[L.live_exits(cfg)["lab"]], kols=kols)  # fmt: skip
-        rows = L.rank_wallets(data, cfg, svc.store.labels(), top=max(1000, len(wallets)), min_n=4)
-        want = set(wallets)
-        return [r for r in rows if r.get("wallet") in want]
+        return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets)
 
     return run
 
