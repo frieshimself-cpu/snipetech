@@ -1077,10 +1077,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "events":
         return _events(args, cfg)
     if args.cmd == "book":
-        import time
-
         from .book.run import run_book
-        from .service import Service
 
         if args.live and not cfg.book.enabled:
             raise SystemExit("book: --live refused: [book] enabled is false in the config file")
