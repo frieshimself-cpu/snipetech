@@ -17,17 +17,35 @@ from .gates import crowding, normalise_history, relationship_gate, venue_share, 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
 EMPTY_CROWD = {"followers_1s": None, "gap3_pct": None, "n": 0}
+FLAT_TX_SOL = 0.0035  # SOL a transaction the lab charges until the low bid's round trip is measured
+LOW_BID_ARM = "control"
+
+
+def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
+    """SOL a transaction for the qualify lab: the flat 0.0035 until the low-bid arm has `[measure] min_arm_fills`
+    measured fills, then half its measured round trip (the buy's fees, the sale at the same fees, and the failed
+    duplicate sends per buy: 0.0094 SOL on 6 Nov), never below the flat cost."""
+    try:
+        row = next((r for r in store.bid_model() if r.get("arm") == arm), None)
+    except Exception:  # noqa: BLE001 - no measure stage yet: the flat cost
+        return FLAT_TX_SOL
+    if not row or (row.get("n") or 0) < cfg.measure.min_arm_fills or row.get("mean_fee_sol") is None:
+        return FLAT_TX_SOL
+    trip = 2.0 * float(row["mean_fee_sol"]) + float(row.get("mean_overhead_sol") or 0.0)
+    return max(FLAT_TX_SOL, round(trip / 2.0, 6))
 
 
 def default_lab_runner(svc, cfg: Config) -> LabRunner:
     """The by-wallet lab in-process at the book's smallest fill: every candidate's first buys >= 0.1 SOL (the `cand`
-    trigger group), ranked per wallet with the exit chosen on the first 60 % of moments."""
+    trigger group), each wallet scored on the buys its own floor lets through, with the exit the book sends
+    (`live_exits(cfg)["lab"]`, book/run.py) at the measured cost of a transaction."""
 
     def run(wallets: list[str], position: str) -> list[dict]:
         from ..analysis import lab as L
 
         tape = getattr(svc, "tape_store", svc.store)  # the hourly read-only copy when fresh, else the live database
-        data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, 0.0035, groups=("cand",))
+        data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
+                         groups=("cand",), exits=[L.live_exits(cfg)["lab"]])  # fmt: skip
         rows = L.rank_wallets(data, cfg, tape.labels(), top=max(1000, len(wallets)), min_n=4)
         want = set(wallets)
         return [r for r in rows if r.get("wallet") in want]
