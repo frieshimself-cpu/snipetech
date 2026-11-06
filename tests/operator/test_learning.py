@@ -278,3 +278,72 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     assert trip["verdict"]["mean_sol"] == 0.009 and trip["verdict"]["copy_plan"]["min_leader_sol"] == 0.5
     assert trip["sig"] == "S" * 12 and "B" * 20 not in json.dumps(out)  # short signatures only
     st.close()
+
+
+# -- the tools the turns get ------------------------------------------------------------------------------------------
+
+
+@pytest.fixture
+def toolbox(tmp_path):
+    import sys
+
+    from snipetech import ops as O
+    from snipetech.config import OperatorConfig
+    from snipetech.operator.jobs import OperatorJobs
+    from snipetech.operator.tools import NoteSink, make_operator_tools
+    from snipetech.store import Store
+
+    data = tmp_path / "data"
+    paths = OperatorPaths(data).ensure()
+    st = Store(data / "snipetech.db")
+
+    class Svc:
+        store = st
+
+    jobs = OperatorJobs(repo=tmp_path, data=data, db=data / "snipetech.db", branch="main")
+    jobs.ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=tmp_path / "k", branch="main",
+                     command=[sys.executable, "-c", "pass"])  # fmt: skip
+    cfg = OperatorConfig(wallet="W")
+    tools = {
+        t.name: t
+        for t in make_operator_tools(Svc(), paths, jobs, cfg, NoteSink(paths, now=lambda: NOW), source="postmortem")
+    }
+    yield tools, paths, st
+    st.close()
+
+
+def _call(tool, **kw):
+    import asyncio
+
+    return asyncio.run(tool.call(kw))
+
+
+def test_the_operator_and_the_analyst_can_read_and_write_what_was_learned(toolbox):
+    tools, paths, _ = toolbox
+    assert {"read_lessons", "add_lesson", "list_ideas", "upsert_idea", "read_round_trips"} <= set(tools)
+    out = _call(tools["add_lesson"], text="Fees ate the small wins", evidence="6 of 9 wins under 0.009 SOL", n=9)
+    assert out.startswith("recorded")
+    assert _call(tools["add_lesson"], text="Fees ate the small wins", evidence="again", n=9) == "already recorded"
+    (lesson,) = json.loads(_call(tools["read_lessons"], n=5))
+    assert lesson["source"] == "postmortem" and lesson["n"] == 9 and lesson["ts"] == "2026-11-06T18:00:00Z"
+    assert "Fees ate the small wins" in (paths.root / "lessons.md").read_text()
+    assert _call(tools["add_lesson"], text="x", evidence="", n=3).startswith("error: evidence")
+    idea = json.loads(_call(tools["upsert_idea"], **IDEA))
+    assert idea["id"] == "I1" and idea["source"] == "postmortem"
+    moved = json.loads(_call(tools["upsert_idea"], id="I1", status="testing"))
+    assert moved["status"] == "testing" and moved["title"] == IDEA["title"]
+    assert _call(tools["upsert_idea"], title="half an idea").startswith("error: a new idea needs")
+    listed = json.loads(_call(tools["list_ideas"]))
+    assert [i["id"] for i in listed["ideas"]] == ["I1"] and listed["counts"] == {"testing": 1}
+    assert _call(tools["list_ideas"], status="bogus").startswith("error")
+
+
+def test_the_post_mortem_reads_each_round_trip_in_one_call(toolbox):
+    tools, _, st = toolbox
+    st.put_fill({"sig": "B1", "ts": NOW - 400, "wallet": "W", "wallet_copied": "LEAD", "mint": "M1", "side": "buy", "sol": 0.2,
+                 "tokens": 1.0, "trades_behind": 3, "price_gap_pct": 31.0})  # fmt: skip
+    _sell(st, "S1", NOW - 100, buy_sig="B1", pnl_sol=-0.041, exit_reason="dead_exit")
+    _sell(st, "S0", NOW - 30 * H, pnl_sol=0.01)
+    out = json.loads(_call(tools["read_round_trips"], hours=6))
+    assert out["summary"]["trips"] == 1 and out["trips"][0]["leader"] == "LEAD"
+    assert json.loads(_call(tools["read_round_trips"], hours=48))["summary"]["trips"] == 2
