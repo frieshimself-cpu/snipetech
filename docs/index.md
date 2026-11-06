@@ -17,4 +17,5 @@
 | `../CLAUDE.md` | Rules and map for any Claude session in this repo | Claude |
 
 Live state that is not in a document: the server's `operator/notes.md` (what the operator saw each round) and
-`operator/candidates.json` (wallets that cleared the three gates), both readable with `snipetech remote read`.
+`operator/candidates.json` (wallets that cleared the three gates), both readable with `snipetech remote read`; the
+live dashboard at `https://<host>/dash` (password `DASH_TOKEN`) shows the same plus services, jobs and resources.

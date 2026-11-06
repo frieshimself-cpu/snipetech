@@ -233,6 +233,18 @@ Config (`/etc/snipetech/snipetech.toml`): `[operator] wallet = "<sniper wallet>"
 drop into `operator/inbox.md` is read on the next round. The design is in
 `docs/superpowers/specs/2026-11-06-operator-agent-design.md`.
 
+**Alerts, digest, commands, dashboard.** Every round also checks, in code, what you pay for — Anthropic credit
+left, Birdeye compute units, SolanaTracker and Vybe monthly requests, the wallet's SOL float against the book's
+needs, disk, failed transactions in the last hour — and sends one Telegram line per critical item per day with the
+exact thing to do (`[resources]` thresholds in the config; `snipetech config set resources.anthropic_credit_usd <n>`
+after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a digest: wallet and its change since the
+last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys three commands
+from your chat only: `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
+snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
+alone), `/resume`. A live page at `https://<host>/dash` shows services, resources, the wallet, jobs, the last
+decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
+password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until that token is set.
+
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses
 anything older than 5 minutes or replayed. It can: show status, run allowlisted snipetech commands as

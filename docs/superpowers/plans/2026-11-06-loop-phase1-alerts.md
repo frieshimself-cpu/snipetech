@@ -10,6 +10,9 @@
 
 **Spec:** `docs/superpowers/specs/2026-11-06-learning-loop-design.md` (sections "Resources and alerts", "Safety", "Stage 6 — think").
 
+**Status (6 Nov 2026):** Tasks 1–4 and 6 built with tests (resources, commands, digest, counters + Vybe,
+dashboard on the ops endpoint); Task 5 docs done, server deploy and acceptance pending the running lab job.
+
 ## Global Constraints
 
 - No tool or command may start a sniper, move SOL or change a wallet; `/stop` only stops snipers that hold nothing.
@@ -147,6 +150,12 @@ async def test_status_reply_has_equity_and_spend(...): ...
 - [ ] **Step 2:** deploy and run the acceptance list; record results in `docs/live-recipe.md` under "Operator phase 1".
 
 ### Task 6: Live dashboard
+
+> **Ruling (6 Nov, while executing):** the dashboard is served by `snipetech-ops` (`GET /dash`, `GET /api/dash/state`),
+> which Caddy already proxies over TLS, instead of `api.py` + a Caddy path rule + enabling `snipetech-api`. Same
+> token gate (`DASH_TOKEN`, HTTP basic auth, routes absent until set), no server configuration change beyond the env
+> line and `remote update`. Cost if wrong: the ops endpoint gains two read-only GET routes.
+
 
 **Files:**
 - Create: `src/snipetech/dash.py` (state aggregation), `src/snipetech/dash.html` (single page, no framework, auto-refresh 15 s, phone layout)

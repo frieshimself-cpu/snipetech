@@ -30,6 +30,8 @@ OKS_KEY=
 # the operator (snipetech operate, every 15 min) needs the Anthropic key; Telegram is optional (decision notes)
 ANTHROPIC_API_KEY=
 TELEGRAM_BOT_TOKEN=
+# the live dashboard at https://<host>/dash: any user name, this as the password (8+ characters; empty = no page)
+DASH_TOKEN=
 SNIPETECH_CONFIG=/etc/snipetech/snipetech.toml
 # Helius requests per second snipetech may use (default 40). Lower it when the same Helius plan also
 # serves a trading bot on this machine, so snipetech never eats the bot's rate limit:
