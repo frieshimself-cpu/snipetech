@@ -45,6 +45,22 @@ async def run_strategist(svc, cfg: Config, now: float, *, dry_run: bool = False,
         out["would_apply"] = accepted
         out["evidence"] = evidence
         return out
+    if res.get("stopped") in ("api_error", "refusal"):
+        # transient: not this week's run (the next round retries); the owner hears about it once
+        notifier.send(
+            notes.write(
+                f"[strategist] the weekly turn failed ({res.get('stopped')}: {reason}); it will retry on the next run",
+                "decision",
+            )
+        )
+        return out
+    if res.get("stopped") in ("turn_usd", "tool_calls"):
+        notifier.send(
+            notes.write(
+                f"[strategist] the weekly turn was cut off ({res.get('stopped')}) before a proposal; nothing changed",
+                "decision",
+            )
+        )
     if not patch:
         notes.write(f"[strategist] no change this week — {reason}"[:600], "info")
     elif refusals:

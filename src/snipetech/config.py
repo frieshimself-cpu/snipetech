@@ -248,6 +248,9 @@ class AutotuneConfig:
 
     enabled: bool = True
     turn_usd: float = 10.0  # one Opus turn a week, cut off at this
+    # where the strategist writes its changes: a small TOML next to the database (the owner's file under /etc stays
+    # untouched and root-owned); merged over the file for [book] and [qualify] only. Empty = <db dir>/autotune.toml
+    overlay: str = ""
     bounds: dict[str, dict] = field(default_factory=lambda: {
         "book.fill_max_sol": {"min": 0.1, "max": 1.0},
         "book.min_score": {"rel_min": 0.5, "rel_max": 2.0},
@@ -360,6 +363,9 @@ class Config:
     env_keys: list[str] = field(
         default_factory=list, compare=False, repr=False
     )  # values that came from the environment
+    overlay_path: str | None = field(
+        default=None, compare=False, repr=False
+    )  # the strategist's overlay, when it was read
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Config:
@@ -370,12 +376,14 @@ class Config:
                 _apply(cfg, tomllib.load(fh))
         cfg.path = p
         _apply_env(cfg)
+        _apply_overlay(cfg)
         return cfg
 
     def to_dict(self) -> dict[str, Any]:
         d = dataclasses.asdict(self)
         d.pop("path", None)
         d.pop("env_keys", None)
+        d.pop("overlay_path", None)
         return d
 
     def get(self, dotted: str) -> Any:
@@ -410,11 +418,39 @@ class Config:
                     _apply(base, tomllib.load(fh))
             for dotted in self.env_keys:
                 _set_nested(data, dotted, base.get(dotted))
-        tmp = p.with_name(p.name + ".tmp")
+        tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
         tmp.write_text(dump_toml(data))
         os.replace(tmp, p)
         self.path = p
         return p
+
+
+OVERLAY_SECTIONS = ("book", "qualify")
+
+
+def overlay_path_for(cfg: Config) -> Path:
+    return (
+        Path(cfg.autotune.overlay)
+        if cfg.autotune.overlay
+        else Path(cfg.storage.db_path).resolve().parent / "autotune.toml"
+    )
+
+
+def _apply_overlay(cfg: Config) -> None:
+    """The strategist's changes (autotune.toml in the data directory) on top of the owner's file: [book] and [qualify]
+    only; anything else in that file is ignored."""
+    try:
+        path = overlay_path_for(cfg)
+        if not path.exists():
+            return
+        with path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return
+    for section in OVERLAY_SECTIONS:
+        if isinstance(data.get(section), dict):
+            _apply(getattr(cfg, section), data[section])
+    cfg.overlay_path = str(path)
 
 
 def _set_nested(d: dict[str, Any], dotted: str, value: Any) -> None:
@@ -425,6 +461,19 @@ def _set_nested(d: dict[str, Any], dotted: str, value: Any) -> None:
 
 
 def _coerce(value: Any, target: type) -> Any:
+    if target is type(None):  # an optional field (e.g. oktech.compute_units): a number when the text is one
+        if value is None or (isinstance(value, str) and value.strip().lower() in ("", "none", "null")):
+            return None
+        for cast in (int, float):
+            try:
+                return cast(value)
+            except (TypeError, ValueError):
+                continue
+        return value
+    if target in (list, tuple):
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return [v.strip() for v in str(value).split(",") if v.strip()]
     if target is bool:
         if isinstance(value, str):
             v = value.strip().lower()
@@ -502,7 +551,9 @@ def _toml_key(k: str) -> str:
 
 
 def dump_toml(data: dict[str, Any], prefix: str = "") -> str:
-    scalars = {k: v for k, v in data.items() if not isinstance(v, dict)}
+    scalars = {
+        k: v for k, v in data.items() if not isinstance(v, dict) and v is not None
+    }  # TOML has no null: a None is left out
     tables = {k: v for k, v in data.items() if isinstance(v, dict)}
     lines: list[str] = []
     if prefix and scalars:

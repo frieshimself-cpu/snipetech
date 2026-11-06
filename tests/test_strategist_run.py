@@ -161,3 +161,43 @@ def test_config_save_never_writes_environment_values(tmp_path, monkeypatch):
     text = p.read_text()
     assert "helius-secret-123" not in text and "explore_share = 0.25" in text
     assert tomllib.loads(text)["rpc"]["http_url"] == Config().rpc.http_url
+
+
+def test_apply_patch_writes_the_overlay_not_the_owners_file(tmp_path):
+    """On the server /etc/snipetech is root-owned: the strategist writes its changes to autotune.toml in the data
+    directory, which Config.load merges over the owner's file for [book] and [qualify] only."""
+    cfg = _cfg_file(tmp_path)
+    before = cfg.path.read_text()
+    OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    apply_patch(cfg.path, {"book.explore_share": 0.25}, "r", st, Notifier("T", 7, post=lambda u, d: None), NOW)
+    assert cfg.path.read_text() == before  # the owner's file is untouched
+    overlay = tmp_path / "data" / "autotune.toml"
+    assert overlay.exists() and tomllib.loads(overlay.read_text()) == {"book": {"explore_share": 0.25}}
+    assert Config.load(cfg.path).book.explore_share == 0.25 and Config.load(cfg.path).overlay_path == str(overlay)
+    # a second change merges; a key outside [book]/[qualify] in the overlay is ignored
+    apply_patch(cfg.path, {"qualify.landing_pos": "+9"}, "r", st, Notifier("T", 7, post=lambda u, d: None), NOW + 1)
+    assert tomllib.loads(overlay.read_text()) == {"book": {"explore_share": 0.25}, "qualify": {"landing_pos": "+9"}}
+    overlay.write_text(overlay.read_text() + '\n[oktech]\nwallet = "MAIN"\n')
+    assert Config.load(cfg.path).oktech.wallet == "" and Config.load(cfg.path).book.explore_share == 0.25
+    st.close()
+
+
+def test_a_failed_turn_is_not_the_weeks_run(tmp_path):
+    """An API error (or a budget stop) must not count as this week's strategist run: it retries next time and tells
+    the owner once."""
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    sent = []
+
+    async def broken(cfg_, evidence, ledger, notes, client=None, now=None):
+        return {"patch": {}, "reason": "api error: APIConnectionError", "usd": 0.0, "stopped": "api_error"}
+
+    out = asyncio.run(
+        run_strategist(
+            FakeSvc(st), cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])), turn=broken
+        )
+    )
+    assert out["applied"] == {} and st.coverage("strategist:last") == {} and any("api error" in t for t in sent)
+    st.close()
