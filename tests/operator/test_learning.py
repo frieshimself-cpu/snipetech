@@ -291,6 +291,32 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     st.close()
 
 
+def test_a_round_trip_says_what_every_exit_on_the_menu_would_have_made(paths):
+    """The post-mortem sees, next to what the trip made, what each exit on the menu would have made from the same entry
+    (measure's shadow replay, this menu's version only) and which did best, so it can say whether another exit would
+    have done better; a trip whose buy is not replayed yet says so with None."""
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    st.put_fill({"sig": "B" * 88, "ts": NOW - 400, "wallet": "W", "wallet_copied": "LEAD", "mint": "M1", "side": "buy",
+                 "sol": 0.2, "tokens": 1.0})  # fmt: skip
+    _sell(st, "S" * 88, NOW - 100, buy_sig="B" * 88, pnl_sol=-0.041, exit_reason="dead_exit", exit_name="lab")
+    _sell(st, "S2", NOW - 90, buy_sig="B2", pnl_sol=0.01, exit_reason="copy_exit", exit_name="lab")
+    shadow = [("lab", -0.038, "dead_exit"), ("hold60", -0.05, "timer"), ("ride", 0.012, "trailing")]
+    st.put_exit_shadow([{"buy_sig": "B" * 88, "exit_name": n, "menu_version": EXIT_MENU_VERSION, "sim_pnl_sol": p,
+                         "sim_reason": r, "computed_at": NOW} for n, p, r in shadow]
+                       + [{"buy_sig": "B" * 88, "exit_name": "lab", "menu_version": "copy-menu-v0", "sim_pnl_sol": 9.0,
+                           "sim_reason": "timer", "computed_at": NOW}])  # fmt: skip
+    trips = {t["sig"]: t for t in L.round_trips(st, "W", NOW - 6 * H)["trips"]}
+    t = trips["S" * 12]
+    assert t["shadow"] == {"lab": {"pnl_sol": -0.038, "exit": "dead_exit"}, "hold60": {"pnl_sol": -0.05, "exit": "timer"},
+                           "ride": {"pnl_sol": 0.012, "exit": "trailing"}}  # fmt: skip
+    assert t["shadow_best"] == "ride" and "B" * 20 not in json.dumps(t)
+    assert trips["S2"]["shadow"] is None and trips["S2"]["shadow_best"] is None
+    st.close()
+
+
 # -- the tools the turns get ------------------------------------------------------------------------------------------
 
 

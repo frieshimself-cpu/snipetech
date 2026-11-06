@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+from ..exits_menu import EXIT_MENU_VERSION
 from ..ops import redact
 from ..store import _LATEST_VERDICT, Store
 from .paths import OperatorPaths
@@ -405,12 +406,23 @@ def mark_postmortem(paths: OperatorPaths, now: float, trips: dict[str, Any], mod
     os.replace(tmp, p)
 
 
+def _sol_or_worst(v: Any) -> float:
+    return float("-inf") if v is None else float(v)
+
+
 def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> dict[str, Any]:
     """Each live round trip since `since_ts`, newest first, read for a post-mortem: the landing (the buy's trades
     behind the copied wallet, price gap, place in the slot), the exit (which one fired, crossed, failed duplicate
-    sends), the money, and what the copied wallet's latest verdict predicted (mean at the landing, copy plan)."""
+    sends), the money, what the copied wallet's latest verdict predicted (mean at the landing, copy plan), and what
+    every exit on the menu would have made of the whole position from the same entry (`shadow`: measure's replay,
+    exit name -> its SOL and the exit that would have sold; `shadow_best`: the exit that did best; None until the buy
+    is six minutes old and replayed)."""
     sells = store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=max(1, int(limit)))
     verdicts: dict[str, dict[str, Any] | None] = {}
+    shadows: dict[str, dict[str, dict[str, Any]]] = {}
+    buy_sigs = sorted({s["buy_sig"] for s in sells if s.get("buy_sig")})
+    for r in store.exit_shadow(buy_sigs, EXIT_MENU_VERSION) if buy_sigs else []:
+        shadows.setdefault(r["buy_sig"], {})[r["exit_name"]] = {"pnl_sol": r["sim_pnl_sol"], "exit": r["sim_reason"]}
     trips = []
     for s in sells:
         buy = (store.fill(s["buy_sig"]) if s.get("buy_sig") else None) or {}
@@ -427,12 +439,15 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> 
                 else None
             )
         held = int(s["ts"]) - int(buy["ts"]) if buy.get("ts") is not None and s.get("ts") is not None else None
+        shadow = shadows.get(s.get("buy_sig") or "") or None
+        best = max(shadow, key=lambda n: _sol_or_worst(shadow[n]["pnl_sol"])) if shadow else None
         trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
                       "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
                       "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
                       "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
                       "exit_reason": s.get("exit_reason"), "exit_name": s.get("exit_name"), "crossed": s.get("crossed"),
-                      "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None})  # fmt: skip
+                      "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None,
+                      "shadow": shadow, "shadow_best": best})  # fmt: skip
     pnl = [float(t["pnl_sol"]) for t in trips if t["pnl_sol"] is not None]
     summary = {"trips": len(trips), "wins": sum(p > 0 for p in pnl), "losses": sum(p <= 0 for p in pnl),
                "pnl_sol": round(sum(pnl), 6)}  # fmt: skip

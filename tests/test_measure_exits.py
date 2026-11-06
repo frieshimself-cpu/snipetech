@@ -217,3 +217,77 @@ def test_the_6_nov_copy_sells_read_as_the_audit_found_them():
             crossed.add(name)
     assert len(got) == 12 and all(label == LIVE_6NOV[name[:6]] for name, label in got.items()), got
     assert crossed == {"9yCWR1 15:52", "FqK7tC 17:05"}
+
+
+# -- the shadow: every exit on the menu replayed from each live buy (audit item 11) ---------------------------------
+
+
+def test_the_shadow_replays_the_tape_as_if_we_had_never_traded():
+    """Our own trades come out of the coin's tape, and the pool gets back the tokens we held at each later state (its
+    product q x b kept), so a replay is never priced on a curve our own buy or sell moved; the stored trades stay as
+    they are."""
+    from snipetech.measure.exits import tape_without
+
+    m = Tape(Store(":memory:"), addr("without"), D, NOW, SLOT)
+    dev, lead = m.buy(D, 1.0, 0), m.buy(LEAD, 2.0, 0)
+    ours = m.buy(ME, 0.2, 0)
+    a = m.buy(addr("without-a"), 0.5, 1)
+    sold = m.sell(ME, 1.0, 2)
+    b = m.buy(addr("without-b"), 0.5, 3)
+    out = tape_without(m.trades, ME)
+    assert [t.sig for t in out] == [dev.sig, lead.sig, a.sig, b.sig] and ours.base == sold.base
+    oa, ob = out[2], out[3]
+    assert (out[1].q_after, out[1].b_after) == (lead.q_after, lead.b_after)  # before our buy: as recorded
+    assert oa.b_after == a.b_after + ours.base  # while we held: our tokens are back in the pool
+    assert abs(oa.q_after * oa.b_after - a.q_after * a.b_after) <= oa.b_after
+    assert (ob.q_after, ob.b_after) == (b.q_after, b.b_after)  # after our sell we held nothing
+    assert m.trades[3] is a and a.b_after == oa.b_after - ours.base  # the recorded trade is untouched
+
+
+def test_shadow_exits_rescore_a_live_entry_under_every_menu_exit():
+    """Six minutes after a live buy, measure replays every exit on the menu from that buy's real entry: the state just
+    before our buy, our SOL, the coin's tape as if we had never traded it, the copied wallet's own sales, each exit as
+    the live sniper runs it. Here 10 SOL lift the price 70 % in nine seconds of busy trading and are sold back as fast:
+    ride sells on the way down, 25 % under the top; lab's dead exit and hold60's timer both sell after the dump."""
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+    from snipetech.measure.exits import SHADOW_AFTER_SECS, shadow_exits
+
+    assert SHADOW_AFTER_SECS == 360  # the longest hold on the menu (300 s) and a minute of late tape
+    st = Store(":memory:")
+    try:
+        m = Tape(st, addr("shadow"), D, NOW, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 2.0, 0)
+        ours = m.buy(ME, 0.2, 0)
+        for k in range(1, 11):  # a buy every 4 slots (0.86 s): never the 1 s pause the dead exit waits for
+            m.buy(addr(f"shadow-up{k}"), 1.0, 4 * k)
+        for k in range(1, 11):  # then they sell, as fast
+            m.sell(addr(f"shadow-up{k}"), 1.0, 40 + 4 * k)
+        m.sell(ME, 1.0, 90)  # our own live sell: not part of the replay
+        m.buy(addr("shadow-late"), 0.05, 300)  # 64 s after the buy
+        m.buy(addr("shadow-later"), 0.05, 1450)  # 310 s
+        m.commit()
+        st.set_coverage("tape", {"spans": [[NOW - 60, NOW + 4000]]})
+        buy = {"sig": ours.sig, "ts": ours.ts, "slot": ours.slot, "mint": ours.mint, "side": "buy", "sol": 0.2025,
+               "tokens": float(ours.base), "wallet": ME, "wallet_copied": LEAD, "priority_lamports": 1_000_000,
+               "tip_lamports": 2_000_000}  # fmt: skip
+        assert shadow_exits(st, buy, now=NOW + 300, slot_secs=0.214) == [] and st.exit_shadow([ours.sig]) == []
+        rows = shadow_exits(st, buy, now=NOW + 400, slot_secs=0.214)
+        by = {r["exit_name"]: r for r in rows}
+        assert list(by) == ["lab", "hold60", "ride"] and {r["menu_version"] for r in rows} == {EXIT_MENU_VERSION}
+        reasons = {n: r["sim_reason"] for n, r in by.items()}
+        assert reasons == {"lab": "dead_exit", "hold60": "timer", "ride": "trailing"}
+        assert by["ride"]["sim_pnl_sol"] > 0.03 and by["lab"]["sim_pnl_sol"] < 0 and by["hold60"]["sim_pnl_sol"] < 0
+        stored = {r["exit_name"]: r for r in st.exit_shadow([ours.sig])}
+        assert {n: (r["sim_pnl_sol"], r["sim_reason"]) for n, r in stored.items()} == {
+            n: (r["sim_pnl_sol"], r["sim_reason"]) for n, r in by.items()
+        }
+        assert st.shadowed_buys(EXIT_MENU_VERSION) == {ours.sig} and st.shadowed_buys("another-menu") == set()
+        shadow_exits(st, buy, now=NOW + 500, slot_secs=0.214)  # again: replaced, never doubled
+        assert len(st.exit_shadow([ours.sig])) == 3
+        # nothing for a buy that copied nobody, or one the tape did not record the whole time after
+        assert shadow_exits(st, buy | {"wallet_copied": None}, now=NOW + 400, slot_secs=0.214) == []
+        st.set_coverage("tape", {"spans": [[NOW - 60, NOW + 100]]})
+        assert shadow_exits(st, buy, now=NOW + 400, slot_secs=0.214) == []
+    finally:
+        st.close()
