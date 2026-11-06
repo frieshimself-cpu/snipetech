@@ -68,7 +68,7 @@ def landing_text(latency: int, position: str) -> str:
     if (latency, position) == LAUNCH_LANDING:
         return "the first trade of the slot after the create"
     if latency == 0 and position.startswith("+") and position[1:].isdigit():
-        return f"{position}: {position[1:]} trades behind the trigger in its slot"
+        return f"{position}: up to {position[1:]} trades behind the trigger, in its slot"
     return f"{position} of the slot {latency} after the trigger"
 
 
@@ -77,8 +77,8 @@ def landings(copy_pos: str) -> dict[str, str]:
 
 
 def landing_note(copy_pos: str) -> str:
-    return (f"Scored where live trades land: copies at {copy_pos} ({copy_pos[1:]} trades behind the leader in its "
-            f"slot, the live copy regime), launch snipes at the slot after the create.")  # fmt: skip
+    return (f"Scored where live trades land: copies at {copy_pos} (up to {copy_pos[1:]} trades behind the leader, in its "
+            f"slot: the regime live copies measured), launch snipes at the slot after the create.")  # fmt: skip
 
 
 def _scored(store: Store, sid: str) -> bool:
@@ -234,11 +234,11 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "per_hour": len(pnl) / hours if hours else None, "lab_mean": s["lab"].get("mean"),
                     "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing")})  # fmt: skip
     superseded = []
-    for s in cov.get("superseded", []):
-        pnl, st = _stats(store, s["id"], conf, samples)
+    for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
+        pnl = np.array([r["pnl"] for r in store.paper_trades(s["id"])], dtype=np.float64)
         superseded.append({"id": s["id"], "label": s["label"], "position": s.get("position"), "latency": s.get("latency"),
                            "landing": landing_text(int(s.get("latency", 0)), str(s.get("position"))),
-                           "superseded_at": s.get("superseded_at"), "n": len(pnl), "mean": st.get("mean"),
-                           "total": float(pnl.sum())})  # fmt: skip
+                           "superseded_at": s.get("superseded_at"), "n": len(pnl),
+                           "mean": float(pnl.mean()) if len(pnl) else None, "total": float(pnl.sum())})  # fmt: skip
     return {"strategies": out, "scored_until": done_until, "landing": landings(copy_pos),
             "landing_note": landing_note(copy_pos), "superseded": superseded}  # fmt: skip
