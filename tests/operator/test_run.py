@@ -109,3 +109,79 @@ def test_cli_has_operate_and_ops_allows_it():
     a = build_parser().parse_args(["operate", "--dry-run"])
     assert a.dry_run and not a.analyst and not a.telegram_setup
     assert build_parser().parse_args(["operate", "--analyst", "--telegram-setup"]).telegram_setup
+
+
+def _watch_env(tmp_path, monkeypatch):
+    """A DTAU-shaped coin held by the book wallet, bought by a sniper OKTech reports finished (tests/test_book_watch)."""
+    from tests.test_book_watch import FINISHED, G, W, _held, _sniper, dtau
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    data = tmp_path / "data"
+    paths = OperatorPaths(data).ensure()
+    st = Store(data / "snipetech.db")
+    cfg = Config()
+    cfg.storage.db_path = str(data / "snipetech.db")
+    cfg.operator.wallet = W
+    _sniper(st, G)
+    m, ours = dtau(st)
+
+    class Svc:  # what the one-minute pass may use: holdings and OKTech's task list; nothing that trades
+        store = st
+
+        def __init__(self):
+            self.held, self.status_calls = [_held(m, ours)], 0
+
+        async def open_positions(self, address):
+            assert address == W
+            return list(self.held)
+
+        async def oktech_status(self):
+            self.status_calls += 1
+            return {"snipers": FINISHED}
+
+    return paths, st, cfg, Svc(), m, ours
+
+
+def test_the_one_minute_pass_alerts_on_a_coin_nobody_is_selling(tmp_path, monkeypatch):
+    """`operate --commands` runs the watchdog after the owner's commands: no Claude, OKTech asked only while a coin is
+    held, one Telegram line per coin per 15 minutes. It never sells: the service it gets cannot."""
+    from snipetech.operator.run import commands_pass
+
+    paths, st, cfg, svc, m, ours = _watch_env(tmp_path, monkeypatch)
+    sent: list[str] = []
+
+    def run(t):
+        return asyncio.run(commands_pass(cfg, svc, now=lambda: t, send=lambda x: sent.append(x) or True,
+                                         commands_get=lambda url, params: {"result": []}))  # fmt: skip
+
+    try:
+        assert run(ours.ts + 30) == 0 and sent == []  # bought 30 s ago: its dead exit was due, OKTech has its minute
+        assert run(ours.ts + 70) == 0 and len(sent) == 1 and m.mint in sent[0] and "Nobody is selling" in sent[0]
+        run(ours.ts + 130)
+        assert len(sent) == 1  # a minute later: not repeated
+        run(ours.ts + 70 + 15 * 60)
+        assert len(sent) == 2  # 15 minutes on and still held: said again
+        svc.held, calls = [], svc.status_calls
+        run(ours.ts + 2000)
+        assert len(sent) == 2 and svc.status_calls == calls  # nothing held: OKTech is not even asked
+    finally:
+        st.close()
+    assert "watch: " in paths.log.read_text()
+
+
+def test_a_watch_that_cannot_read_the_wallet_never_breaks_the_kill_switch(tmp_path, monkeypatch):
+    from snipetech.operator.run import commands_pass
+
+    paths, st, cfg, svc, _m, ours = _watch_env(tmp_path, monkeypatch)
+
+    async def broken(address):
+        raise RuntimeError("rpc down")
+
+    svc.open_positions = broken
+    try:
+        rc = asyncio.run(commands_pass(cfg, svc, now=lambda: ours.ts + 70, send=lambda x: True,
+                                       commands_get=lambda url, params: {"result": []}))  # fmt: skip
+    finally:
+        st.close()
+    assert rc == 0 and "watch: skipped: RuntimeError: rpc down" in paths.log.read_text()
