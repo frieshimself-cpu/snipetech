@@ -6,6 +6,48 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The OKTech audit, built (6 Nov, evening UTC) — the leaks are closed; no wallet has proven itself live yet
+
+What the audit found on today's live trades (docs/oktech-audit-2026-11-06.md, the plan in the audit workflow):
+
+- **2YDn sells everything a few seconds after it buys.** All its copies lost (5 of 5 in the audit window, 10 live
+  fills at −0.045 SOL a trade by 17:50). No exit could have saved it: the best price reachable after one second still
+  loses. The lab rated it +0.0146 SOL a trade because it assumed a block takes 0.4 s (the tape says 0.214 s), had no
+  watch delay before OKTech's exits act, no copy exit, and scored a different exit than the book sends.
+- **DTAU was a sniper's last allowed buy, and OKTech never sold it** (no dead exit, no copy exit when G2oZ sold
+  99.9 % at once, no 300 s timer). The same happened to 4siK on 5 Nov: 2 of 4 such buys.
+- **Paying 20× the fee landed no earlier** and OKTech charges the buy priority fee again on every exit.
+- **Two snipers on one leader from one wallet get one buy between them** and both try to sell it.
+- **Every wallet got the same floor (0.3 SOL)**, so we also copied G2oZ's small top-ups (one lost 34 %), not only its
+  big opening buys (+17 % and +26 % at one minute, n 2).
+
+What changed (code on the branch, each piece with its tests; README "How the book uses OKTech"):
+
+- The book relies on each sniper's **first buy only** and replaces the sniper once the wallet holds nothing; a wallet
+  is **paused after 5 losing live copies**; **one sniper per leader**; each wallet is copied only on **buys of its own
+  floor or more** (the lab's `copy_plan.min_leader_sol`); the paid arm is retired.
+- **The unsold-coin watch**: a Telegram line within about a minute when a held coin's exit was due and nothing sold
+  it, repeated every 15 minutes while held. It never sells.
+- **The lab simulates the live sniper**: measured slot time, OKTech's watch delay (1.3 s), the copy exit, the exit the
+  book sends, the real round-trip cost. It reproduces 11 of 12 of today's OKTech-sold copies within 2 slots and their
+  proceeds within 0.2 %. Every verdict written before this fix is re-qualified first; until then the book copies none.
+- **Measure** labels which exit sold each coin and charges each sell its failed duplicate sends.
+- **The agents** (operator, analyst, strategist) get one OKTech playbook of twelve measured facts; the daily caps, the
+  buys per sniper and the buy priority fee can never be tuned by the strategist.
+- **A review of the merged build** (four reviewers, a skeptic per lens) confirmed 15 defects, all fixed with tests
+  before the deploy. The two that mattered most: a retire could stop the sniper that had just bought (the wallet read
+  lags our own tape by seconds), and the qualify lab never measured newly labelled wallets (they got "no tape data").
+  Now a fresh buy on the tape counts as holding, holdings are read at the confirmed level and again after the stop,
+  nothing new starts while the tape lags, each candidate is scored on its own first buy in a shared coin, and a
+  live pause is remembered.
+- **5m5h (20:33):** a third coin OKTech abandoned (docs/live-recipe.md). Our own sell was refused by the cloud
+  session's safety layer; the owner sells by hand. Next: `/sell <coin>` in Telegram and the self-learning loop.
+
+What happens after this deploy: the first runs re-qualify old-lab verdicts (qualified first), the book copies only
+verdicts of the fixed lab, the research rotation keeps one lab busy whenever the server is idle, and a digest goes
+to Telegram every 6 hours. Honest outlook: this closes the leaks; it does not make money by itself. No copied
+wallet has proven itself live yet; G2oZ's opening buys are the best lead (2 of 2 rose after we bought).
+
 ## First live book day and the fee test (6 Nov, 18:10 UTC) — the landing is fine, the trades are not
 
 - The owner switched the book on (16:30), lowered its bar to 0.001 (17:01), enabled every timer over SSH (17:10)

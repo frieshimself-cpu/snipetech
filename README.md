@@ -346,6 +346,21 @@ whether the book is on, its bar, and what its last run saw (halted and why, or n
 one it has, or how many wallets it copies). Each loop stage runs under its own time limit (minutes for measure and
 the book, two hours for qualify), so a hung stage cannot hold its slot.
 
+How the book uses OKTech since the 6 Nov feature audit (docs/oktech-audit-2026-11-06.md, the playbook in
+`src/snipetech/playbook.py`): **one copy sniper per leader** across the account (OKTech buys a coin once per wallet, so
+a second sniper only crosses exits; `oktech copylist --create` and `oktech push` refuse a leader another active sniper
+copies unless `--allow-overlap`); **each sniper is relied on for its first buy** and keeps two spares
+(`retire_after_buys` 1 of `max_buys_per_sniper` 3): once it has bought and the wallet holds nothing, the book stops and
+deletes it and creates a fresh one, because the buy that uses up OKTech's cap can be left with no exit (DTAU, 4siK);
+**a wallet is paused after 5 losing live copies** (`live_kill_n`: even the optimistic end of its live range is below
+zero), whatever its verdict says; **each wallet is copied only on buys of its own floor or more**
+(`copy_plan.min_leader_sol` from the lab, never below `min_copy_sol`); only verdicts written by the lab since it
+simulates the live sniper are booked (older ones are re-qualified first, and `/book status` counts them); the paid bid
+arm is retired. **The unsold-coin watch** (`book/watch.py`) runs in the one-minute pass and at the end of every book
+run: a coin still held a minute after one of its exits was due (dead exit, copy exit, stop-loss, timer), or held over
+6 minutes by a sniper that is gone, gets one Telegram line (`[watch] Nobody is selling …`: the coin, the leader, the
+exits that were due, its value, how to sell it) and again every 15 minutes while held. It never sells.
+
 **The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
 the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`
 takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock
@@ -355,10 +370,12 @@ takes effect within a minute instead of at the next 15-minute round. The round a
 reads the week's numbers from the tables — fills and the bid model per arm, live expectancy per copied wallet, verdict
 counts, the event-edge table, past parameter changes — and proposes at most one change to `[book]` / `[qualify]`. The
 owner's `[autotune]` table says which keys it may touch and how far (`book.fill_max_sol` ≤ 1 SOL, `book.min_score` within
-×0.5–×2, `book.explore_share` 0–0.3, the bid arms' priority and tip ≤ 0.05 SOL, `qualify.max_gap3_pct` 5–30,
-`qualify.min_n_tape` 10–40, `qualify.landing_pos` in +3/+6/+9); `book.enabled`, wallets and keys are never tunable. A
-patch inside the bounds is applied (written to `autotune.toml` next to the database, which is merged over the owner's
-file for `[book]` and `[qualify]` only; the owner's file is never touched; each change is an `events` row of kind
+×0.5–×2, `book.explore_share` 0–0.3, the control arm's tip 0.002–0.02 SOL, `book.live_kill_n` 5–15, `book.min_copy_sol`
+0.1–2 SOL, `qualify.max_gap3_pct` 5–30, `qualify.min_n_tape` 10–40, `qualify.landing_pos` in +3/+6/+9). Never tunable,
+whatever the table lists (`config.never_tunable`): `book.enabled`, wallets and keys, the daily caps, the wallet count,
+the buys per sniper, and the buy priority fee (OKTech charges it again on every exit). A patch inside the bounds is
+applied (written to `autotune.toml` next to the database, which is merged over the owner's file leaf by leaf, only for
+keys the bounds list; the owner's file is never touched; each change is an `events` row of kind
 `param_change` and a Telegram line); one key outside the bounds turns the whole patch into a question on Telegram and
 nothing changes. `snipetech strategist run --dry-run` shows the evidence and the proposal without applying; the turn is
 capped at `[autotune] turn_usd` (10 $) and shares the operator's daily ledger.
