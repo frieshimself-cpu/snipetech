@@ -426,6 +426,22 @@ def test_twin_fees_go_to_the_nearest_landed_sell_of_the_same_coin():
     assert twin_fees_by_sell(failed, sells, window_s=5)["S3"] == pytest.approx(0.002005)
 
 
+def test_a_twin_is_charged_to_the_sell_before_it_never_to_a_later_one():
+    """A failed twin lands in its winner's slot or up to 5 slots after it, never before. Lot 1 (copying A) is sold at
+    slot S; its losing variant fails at S+4, a second later; lot 2 (copying B) is sold at S+6 in that same second. The
+    0.020005 SOL twin is lot 1's, although lot 2's sell is nearer in seconds. Without slots the seconds decide."""
+    from snipetech.measure.run import twin_fees_by_sell
+
+    sells = [
+        {"sig": "A", "ts": NOW, "slot": SLOT, "mint": "M"},
+        {"sig": "B", "ts": NOW + 1, "slot": SLOT + 6, "mint": "M"},
+    ]
+    twin = {"sig": "F", "ts": NOW + 1, "slot": SLOT + 4, "mint": "M", "priority_lamports": 20_000_000, "is_sell": True}
+    assert twin_fees_by_sell([twin], sells) == pytest.approx({"A": 0.020005})
+    later = [dict(sells[0], slot=None), dict(sells[1], ts=NOW + 3, slot=None)]
+    assert twin_fees_by_sell([dict(twin, ts=NOW + 2, slot=None)], later) == pytest.approx({"A": 0.020005})
+
+
 def test_failed_sell_twins_are_charged_to_their_trip(tmp_path):
     """OKTech sends every exit as up to three variants; the losers fail and still pay their priority fee + 5,000
     lamports. Two failed 0.002 twins of a landed sell cost 0.00401 SOL: that goes on the sell row and into the copied

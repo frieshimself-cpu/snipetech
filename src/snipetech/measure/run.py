@@ -87,13 +87,21 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
 TWIN_WINDOW_SECS = 3.0  # the losing variants of one exit land in the winner's slot or up to 5 slots later (6 Nov)
 
 
+def _landed_before(sell: dict, failed: dict) -> bool:
+    """The landed sell went in at or before the failed send: by slot when both are known, else by the second."""
+    if failed.get("slot") is not None and sell.get("slot") is not None:
+        return int(sell["slot"]) <= int(failed["slot"])
+    return float(sell["ts"]) <= float(failed["ts"])
+
+
 def twin_fees_by_sell(
     failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
 ) -> dict[str, float]:
     """What each landed sell's failed twins cost, in SOL. OKTech sends every exit as one tipped and up to two untipped
     variants; the losers fail on chain and still pay their priority fee and the 5,000-lamport base fee (a failed
     send's tip is rolled back). A failed send carrying a sell instruction (`is_sell`) on the same coin within
-    `window_s` seconds of a landed sell is that sell's twin; with several landed sells in reach, the nearest one."""
+    `window_s` seconds after a landed sell is that sell's twin; with several landed sells in reach, the nearest one.
+    A twin never lands before its winner, so a sell that landed after the failed send is never its winner."""
     by_mint: dict[str, list[dict]] = {}
     for s in sells:
         if s.get("mint"):
@@ -102,7 +110,8 @@ def twin_fees_by_sell(
     for f in failed_rows:
         if not f.get("is_sell") or not f.get("mint") or f.get("priority_lamports") is None:
             continue
-        near = [s for s in by_mint.get(f["mint"], []) if abs(float(f["ts"]) - float(s["ts"])) <= window_s]
+        near = [s for s in by_mint.get(f["mint"], [])
+                if abs(float(f["ts"]) - float(s["ts"])) <= window_s and _landed_before(s, f)]  # fmt: skip
         if not near:
             continue
         slot = f.get("slot")
