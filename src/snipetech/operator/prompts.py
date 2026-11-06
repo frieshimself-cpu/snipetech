@@ -44,7 +44,9 @@ decision-level note, not a sniper — snipers are the owner's call.
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet clearing all three gates, a
 sniper running or a coin held when none should be, equity moved more than the alert threshold, the tape stalled, a
 service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
-no jargon, two sentences where two will do.
+no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
+qualified in an earlier note (read_file operator/notes.md) is not news again unless its numbers changed; timers the
+owner has not enabled yet are reported once a day, not every round.
 """
 
 OPERATOR_SYSTEM = f"""\
