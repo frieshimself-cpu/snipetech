@@ -189,3 +189,65 @@ def test_round_handles_a_stop_command_before_the_snapshot(tmp_path, monkeypatch)
     assert svc.calls == [("stop", "s1")] and paths.stop_flag.exists()
     log = paths.log.read_text()
     assert "command /stop" in log and "stopped by owner" in log and any("stopped 1 sniper" in t for t in sent)
+
+
+def _commands_env(tmp_path):
+    from snipetech.store import Store
+
+    data = tmp_path / "data"
+    paths = OperatorPaths(data).ensure()
+    paths.telegram.write_text(json.dumps({"chat_id": 7, "offset": 5}))
+    st = Store(data / "snipetech.db")
+    svc = FakeSvc(held=[], snipers=[{"id": "s1", "name": "a", "status": "running"}])
+    svc.store = st
+    cfg = Config()
+    cfg.storage.db_path = str(data / "snipetech.db")
+    cfg.operator.wallet = W
+    return paths, st, svc, cfg
+
+
+def test_commands_pass_handles_stop_within_a_minute_without_claude(tmp_path, monkeypatch):
+    """`operate --commands` (a one-minute timer) polls Telegram and acts on /stop at once: no snapshot, no Claude,
+    no API key needed. Before this the kill switch waited for the next 15-minute operator round."""
+    from snipetech.operator.run import commands_pass
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    paths, st, svc, cfg = _commands_env(tmp_path)
+    sent = []
+    try:
+        rc = asyncio.run(commands_pass(cfg, svc, now=lambda: NOW, send=lambda t: sent.append(t) or True,
+                                       commands_get=lambda url, params: {"result": [_msg(5, 7, "/stop")]}))  # fmt: skip
+    finally:
+        st.close()
+    assert rc == 0 and svc.calls == [("stop", "s1")] and paths.stop_flag.exists()
+    assert "command /stop" in paths.log.read_text() and any("stopped 1 sniper" in t for t in sent)
+    assert json.loads(paths.telegram.read_text())["offset"] == 6
+
+
+def test_commands_lock_serializes_the_pollers(tmp_path):
+    """The operator round and the one-minute pass share one Telegram offset: whoever holds operator/commands.lock
+    polls, the other skips (and the updates are still there for the holder)."""
+    import fcntl
+
+    from snipetech.operator.run import COMMANDS_LOCK, commands_pass
+
+    paths, st, svc, cfg = _commands_env(tmp_path)
+    lock = paths.root / COMMANDS_LOCK
+    fd = open(lock, "w")
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        rc = asyncio.run(commands_pass(cfg, svc, now=lambda: NOW, send=lambda t: True,
+                                       commands_get=lambda url, params: {"result": [_msg(5, 7, "/stop")]}))  # fmt: skip
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        fd.close()
+        st.close()
+    assert rc == 0 and svc.calls == [] and not paths.stop_flag.exists()
+    assert json.loads(paths.telegram.read_text())["offset"] == 5 and "skipped" in paths.log.read_text()
+
+
+def test_cli_operate_commands_parses():
+    from snipetech.cli import build_parser
+
+    a = build_parser().parse_args(["operate", "--commands"])
+    assert a.cmd == "operate" and a.commands is True

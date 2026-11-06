@@ -1,0 +1,10 @@
+[Unit]
+Description=Poll the owner's Telegram commands every minute (the kill switch)
+
+[Timer]
+OnCalendar=minutely
+AccuracySec=5s
+Persistent=false
+
+[Install]
+WantedBy=timers.target

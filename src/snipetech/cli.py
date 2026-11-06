@@ -581,6 +581,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="print the snapshot and the gate's decision; never call Claude"
     )
     sp.add_argument("--telegram-setup", action="store_true", help="store the owner's Telegram chat id and send a hello")
+    sp.add_argument(
+        "--commands",
+        action="store_true",
+        help="only poll Telegram and act on /stop /resume /status (the one-minute timer)",
+    )
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
     sp.add_argument(
@@ -1479,6 +1484,19 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.telegram_setup:
             return telegram_setup_cli(cfg)
+        if args.commands:
+            from .operator.run import commands_pass
+
+            svc = Service(cfg)
+
+            async def go_commands():
+                try:
+                    return await commands_pass(cfg, svc)
+                finally:
+                    await svc.close()
+                    svc.store.close()
+
+            return asyncio.run(go_commands())
         if args.expect:
             from .operator.gate import write_expected
 

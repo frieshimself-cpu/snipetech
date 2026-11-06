@@ -30,9 +30,9 @@ def paths(tmp_path):
 def test_production_services_are_quiet_when_oneshots_are_inactive(paths):
     real = {"snipetech-tape": "active", "snipetech-ops": "active", "snipetech-daily.timer": "active",
             "snipetech-operator.timer": "active", "snipetech-discover.timer": "active", "snipetech-qualify.timer": "active", "snipetech-measure.timer": "active", "snipetech-book.timer": "active", "snipetech-events": "active",
-            "snipetech-strategist.timer": "active",
+            "snipetech-strategist.timer": "active", "snipetech-commands.timer": "active",
             "snipetech-daily": "inactive", "snipetech-operator": "inactive", "snipetech-discover": "inactive", "snipetech-qualify": "inactive", "snipetech-measure": "inactive", "snipetech-book": "inactive",
-            "snipetech-strategist": "inactive"}  # fmt: skip
+            "snipetech-strategist": "inactive", "snipetech-commands": "inactive"}  # fmt: skip
     assert set(real) >= set(WATCHED_UNITS)
     assert not decide(snap(services=real), snap(services=real), NOW, OperatorConfig(), paths).call
 

@@ -1,0 +1,15 @@
+[Unit]
+Description=snipetech commands: act on the owner's Telegram /stop /resume /status within a minute (no snapshot, no Claude)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=5
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db operate --commands
+TimeoutStartSec=2m

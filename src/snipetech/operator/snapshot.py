@@ -21,11 +21,11 @@ WSOL_MINT = "So11111111111111111111111111111111111111112"
 WATCHED_UNITS = (
     "snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer",
     "snipetech-discover.timer", "snipetech-qualify.timer", "snipetech-measure.timer", "snipetech-book.timer",
-    "snipetech-events", "snipetech-strategist.timer",
+    "snipetech-events", "snipetech-strategist.timer", "snipetech-commands.timer",
 )  # fmt: skip
 ONESHOT_UNITS = (
     "snipetech-daily", "snipetech-operator", "snipetech-discover", "snipetech-qualify",
-    "snipetech-measure", "snipetech-book", "snipetech-strategist",
+    "snipetech-measure", "snipetech-book", "snipetech-strategist", "snipetech-commands",
 )  # fmt: skip
 
 

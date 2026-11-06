@@ -92,3 +92,13 @@ def test_strategist_unit_and_timer():
     assert "OnCalendar=Sun *-*-* 05:00:00 UTC" in timer and "Persistent=true" in timer
     assert {"snipetech-strategist", "snipetech-strategist.timer"} <= set(O.UNITS)
     assert "snipetech-strategist.timer" in (UNITS.parent / "setup.sh").read_text()
+
+
+def test_commands_unit_and_timer():
+    service = (UNITS / "snipetech-commands.service").read_text()
+    timer = (UNITS / "snipetech-commands.timer").read_text()
+    exec_lines = [ln for ln in service.splitlines() if ln.startswith("ExecStart=")]
+    assert len(exec_lines) == 1 and exec_lines[0].rstrip().endswith(" operate --commands")
+    assert "OnCalendar=minutely" in timer
+    assert {"snipetech-commands", "snipetech-commands.timer"} <= set(O.UNITS)
+    assert "snipetech-commands.timer" in (UNITS.parent / "setup.sh").read_text()

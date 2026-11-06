@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
 
@@ -55,6 +57,70 @@ def _acquire_lock(paths: OperatorPaths, now: float) -> bool:
     return True
 
 
+COMMANDS_LOCK = "commands.lock"
+
+
+@contextmanager
+def _commands_lock(paths: OperatorPaths) -> Iterator[bool]:
+    """Non-blocking file lock shared by every Telegram poller (the 15-minute round and the one-minute pass): they
+    share one getUpdates offset, so only one of them may poll at a time; the other skips and the holder handles."""
+    path = paths.root / COMMANDS_LOCK
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    held = False
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            held = True
+        except BlockingIOError:
+            held = False
+        yield held
+    finally:
+        try:
+            if held:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+async def run_commands(cfg: Config, svc, paths: OperatorPaths, *, now: float, notifier, notes: NoteSink, snap=None,
+                       commands_get: Callable[[str, dict], dict] | None = None) -> list[str]:  # fmt: skip
+    """Poll Telegram once and act on the owner's commands (/stop, /resume, /status). Returns the replies."""
+    token = os.environ.get("TELEGRAM_BOT_TOKEN")
+    if not (token or commands_get):
+        return []
+    replies: list[str] = []
+    with _commands_lock(paths) as held:
+        if not held:
+            _log(paths, now, "commands: another poller holds the lock; skipped this pass")
+            return []
+        for cmd in poll_commands(token or "", paths, get=commands_get):
+            try:
+                reply = await handle_command(
+                    cmd, svc=svc, cfg=cfg, paths=paths, snap=snap, notifier=notifier, notes=notes, now=now
+                )
+                _log(paths, now, f"command /{cmd.name}: {reply.splitlines()[0][:120]}")
+                replies.append(reply)
+            except Exception as exc:  # noqa: BLE001
+                _log(paths, now, f"command /{cmd.name} failed: {type(exc).__name__}: {exc}")
+    return replies
+
+
+async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.time, send: Callable[[str], bool] | None = None,
+                        commands_get: Callable[[str, dict], dict] | None = None) -> int:  # fmt: skip
+    """`snipetech operate --commands`: the one-minute kill-switch poll. No snapshot, no Claude, no API key: just the
+    owner's Telegram commands, acted on within a minute instead of at the next 15-minute round."""
+    paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
+    t0 = now()
+    notes = NoteSink(paths, now=now)
+    notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
+    if send is not None:
+        notifier.send = send  # type: ignore[method-assign]
+    await run_commands(
+        cfg, svc, paths, now=t0, notifier=notifier, notes=notes, snap=load_current(paths), commands_get=commands_get
+    )
+    return 0
+
+
 async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = False, repo: Path, branch: str,
                   now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None,
                   disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None,
@@ -71,13 +137,9 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if send is not None:
             notifier.send = send  # type: ignore[method-assign]
         # Owner commands first, so a /stop acts before anything else this round.
-        token = os.environ.get("TELEGRAM_BOT_TOKEN")
-        for cmd in poll_commands(token, paths, get=commands_get) if token or commands_get else []:
-            try:
-                reply = await handle_command(cmd, svc=svc, cfg=cfg, paths=paths, snap=prev, notifier=notifier, notes=notes, now=t0)
-                _log(paths, t0, f"command /{cmd.name}: {reply.splitlines()[0][:120]}")
-            except Exception as exc:  # noqa: BLE001
-                _log(paths, t0, f"command /{cmd.name} failed: {type(exc).__name__}: {exc}")
+        await run_commands(
+            cfg, svc, paths, now=t0, notifier=notifier, notes=notes, snap=prev, commands_get=commands_get
+        )
         kw = {}
         if services is not None:
             kw["services"] = services
@@ -103,7 +165,9 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         # Daily digest: once a day after the configured hour; the marker is written only after a successful send.
         try:
             if digest_due(paths, t0, cfg.operator.digest_hour_utc):
-                text = digest_text(snap, snap.resources, Ledger(paths.spend, cfg.operator.prices), svc.store, t0, paths=paths)
+                text = digest_text(
+                    snap, snap.resources, Ledger(paths.spend, cfg.operator.prices), svc.store, t0, paths=paths
+                )
                 if notifier.send(text):
                     mark_sent(paths, t0, store=svc.store, snap=snap)
                     _log(paths, t0, "digest sent")

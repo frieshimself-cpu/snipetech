@@ -321,6 +321,11 @@ snipetech remote update                                    # pull, reinstall, re
 
 Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 
+**The kill switch within a minute.** `snipetech-commands.timer` runs `operate --commands` every minute: it only polls
+the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, no snapshot and no Claude, so a `/stop`
+takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock
+(`operator/commands.lock`) and one Telegram offset, so a command is handled exactly once.
+
 **The strategist (learning loop, stage 6).** Once a week (`snipetech-strategist.timer`, Sundays 05:00 UTC) one Opus turn
 reads the week's numbers from the tables — fills and the bid model per arm, live expectancy per copied wallet, verdict
 counts, the event-edge table, past parameter changes — and proposes at most one change to `[book]` / `[qualify]`. The
