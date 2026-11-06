@@ -210,8 +210,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
 
     With `ex.watch_secs` the seller starts watching that long after the entry: price and copy exits are checked from
     the state then in effect, and a pause counts only when its dead exit would fire after the watch starts (OKTech on
-    6 Nov ignored a 1.7 s pause that began 0.2 s after a buy, and sold 1.5-2.4 s after its buys on later pauses). A
-    copied wallet's sale inside the delay is not lost: the copy exit fires when the watch starts."""
+    6 Nov ignored a 1.7 s pause that began 0.2 s after a buy, and sold 1.5-2.4 s after its buys on later pauses)."""
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
@@ -236,9 +235,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         if t is not None:
             triggers["take_profit"] = t
     if ex.copy_exit_pct > 0 and p.leader_frac is not None:
-        sold = p.leader_frac >= ex.copy_exit_pct
-        # a sale made before the watch starts is acted on when it starts (state lo), not dropped
-        t = lo if lo <= last_rel and sold[1:lo].any() else _first(sold, lo, last_rel)
+        t = _first(p.leader_frac >= ex.copy_exit_pct, lo, last_rel)
         if t is not None:
             triggers["copy_exit"] = t
     if ex.stop_loss > 0:

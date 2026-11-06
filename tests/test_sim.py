@@ -270,21 +270,3 @@ def test_copy_exit_sells_after_the_leaders_big_sell():
     assert r.exit_slot == 11 and "copy50%" in ex.label()
     assert _sim(path, replace(ex, copy_exit_pct=0.7), frac).exit_reason == "time"
     assert _sim(path, ex).exit_reason == "time"  # no leader data: no copy exit
-
-
-def test_a_leader_sale_inside_the_watch_delay_sells_when_the_watch_starts():
-    """The copied wallet dumps its whole bag 3 slots (0.64 s) after our buy, before the sniper watches the coin (1.3 s).
-    The sale is not lost: the copy exit fires when the watch starts. The price stays above the stop-loss and a trade
-    every slot keeps the coin from going quiet, so without it the position would ride to the dead exit at the end."""
-    from snipetech.analysis.lab import LIVE_EXITS
-
-    ex = LIVE_EXITS["lab"]  # dead exit 1 s, stop-loss 30 %, 300 s, watch 1.3 s, copy exit at 50 %
-    path = _timed_path(list(range(400)), 0.214)  # a trade every slot
-    frac = np.zeros(path.n)
-    frac[3] = 1.0
-    r = _sim(path, ex, frac)
-    assert (r.exit_reason, r.exit_slot, r.exit_idx) == ("copy_exit", 7, 6)  # watch from +6 slots, sold the next one
-    frac[3] = 0.3  # a sale under the threshold still does nothing
-    assert _sim(path, ex, frac).exit_reason == "stale"
-    frac[3], frac[10] = 0.0, 1.0  # a sale while it watches sells a slot after it, as before
-    assert (_sim(path, ex, frac).exit_reason, _sim(path, ex, frac).exit_slot) == ("copy_exit", 11)
