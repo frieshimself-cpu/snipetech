@@ -158,6 +158,17 @@ def test_a_dry_run_says_what_it_would_start_and_starts_nothing(env):
     assert out["would_start"]["unit"] == "qualify" and out["started"] is None and out["backlog"]["waiting"]["new"] == 2
 
 
+def test_when_nothing_can_start_it_says_what_waits_and_until_when(env):
+    st, cfg, _ = env
+    _pipeline(st)
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 3 * H})
+    st.set_coverage("qualify:last_lab", {"ts": NOW - 80 * 60, "wallets": 300})  # the qualify lab may run in 40 min
+    out = RS.run_next(st, cfg, NOW, metas=[], services={}, lab_held=False, start=lambda *a: pytest.fail("started"))
+    assert out["started"] is None
+    assert "3 wallets wait for the qualify lab, allowed again in 40 min" in out["idle"]
+    assert "strategy search ran 3 h ago, next in 21 h" in out["idle"]
+
+
 def test_nothing_pending_means_nothing_started(env):
     st, cfg, _ = env
     st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - H})
@@ -253,6 +264,24 @@ def test_the_digest_says_what_ran_what_was_checked_the_best_wallets_and_why_the_
     assert "Strategy search at +6" in text and "-0.0030" in text
     assert "Book: on but not trading" in text and "0.005" in text and W[8][:6] in text
     assert "Next:" in text
+
+
+def test_with_the_timers_on_the_digest_reads_what_ran_from_the_store(env):
+    """systemd runs qualify and discovery without a job file: the digest still says they ran, from what they wrote; a
+    wallet checked without any trade on our tape is said apart from the ones measured; when nothing can start, it says
+    what waits and until when."""
+    st, cfg, data = env
+    paths = OperatorPaths(data).ensure()
+    st.upsert_candidate(W[0], "coinfirst", {}, NOW - 2 * H)
+    _verdict(st, W[0], NOW - H, "candidate", n=0, next_review=NOW + 71 * H, reasons=["no tape data"])
+    st.upsert_candidate(W[1], "tape", {}, NOW - 2 * H)
+    _verdict(st, W[1], NOW - H, "candidate", n=8, mean=0.002, lower=-0.001, next_review=NOW + 71 * H)
+    st.set_coverage("qualify:last_lab", {"ts": NOW - H, "wallets": 2})
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 30 * H})
+    text = RS.digest_text(st, cfg, paths, NOW, NOW - 6 * H, [_meta(["research", "search"], NOW - 3 * H, running=True)])
+    assert "Ran: strategy search once, wallet checks, wallet discovery" in text
+    assert "Wallets checked: 2 (2 need more evidence; 1 of them not yet trading on our tape)" in text
+    assert "Next: nothing to start yet (no wallet waits for a check; strategy search already running" in text
 
 
 def test_the_book_line_says_why_it_is_or_is_not_trading(env):

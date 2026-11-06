@@ -215,6 +215,24 @@ def plan(backlog: dict, metas: Iterable[dict], cfg: Config, now: float) -> list[
     return sorted((o for o in out if _waits(o["unit"], metas, now) is None), key=lambda o: -o["value"])
 
 
+def not_now(backlog: dict, metas: Iterable[dict], now: float) -> str:
+    """Why no unit is pending, and when the next one is, in words."""
+    metas = list(metas)
+    w = backlog["waiting"]
+    due = int(w["new"]) + int(w["due"])
+    parts = ["no wallet waits for a check"]
+    if due:
+        wait_h = max(0.0, (backlog["qualify_lab_due_at"] - now) / 3600)
+        parts = [
+            f"{_n(due, 'wallet')} wait for the qualify lab" + (f", allowed again in {_age(wait_h)}" if wait_h else "")
+        ]
+    age = _hours(now, backlog["last"]["search"])
+    if age is not None and age < SEARCH_EVERY_H:
+        parts.append(f"the strategy search ran {_age(age)} ago, next in {_age(SEARCH_EVERY_H - age)}")
+    parts += [f"{UNITS[u]['name']} {why}" for u in UNITS if (why := _waits(u, metas, now))]
+    return "; ".join(parts)
+
+
 def run_next(store: Store, cfg: Config, now: float, *, metas: Iterable[dict], services: dict[str, str],
              lab_held: bool | Callable[[], bool], start: Callable[[list[str], int], Any],
              dry_run: bool = False) -> dict[str, Any]:  # fmt: skip
@@ -232,8 +250,7 @@ def run_next(store: Store, cfg: Config, now: float, *, metas: Iterable[dict], se
     if busy:
         return out | {"busy": busy, "would_start": None}
     if not options:
-        return out | {"idle": "nothing pending: no wallet waits for a check the qualify lab may run now, the strategy "
-                              "search is fresh, discovery is alive"}  # fmt: skip
+        return out | {"idle": "nothing to start: " + not_now(backlog, metas, now)}
     top = options[0]
     if dry_run:
         return out | {"would_start": top}
@@ -316,7 +333,9 @@ def book_reason(store: Store, cfg: Config, paths: OperatorPaths) -> str:
     return f"Book: on and copying {ranked} wallet(s){' (dry run)' if rec.get('dry') else ''}."
 
 
-def _ran(metas: Iterable[dict], since: float, now: float) -> str:
+def _ran(metas: Iterable[dict], since: float, now: float, evidenced: Iterable[str] = ()) -> str:
+    """The research that ran in the window: jobs by name and count, failures named. `evidenced`: research the store
+    shows happened in the window (a systemd timer runs qualify and discovery without a job file)."""
     counts: dict[str, int] = {}
     failed: list[str] = []
     for m in metas:
@@ -337,18 +356,26 @@ def _ran(metas: Iterable[dict], since: float, now: float) -> str:
             failed.append(f"{name} failed (exit {m.get('exit_code')})")
             continue
         counts[name] = counts.get(name, 0) + 1
-    ran = ", ".join(f"{k} {_times(v)}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1]))
-    return "Ran: " + (ran or "no research job on the server") + ("; " + "; ".join(failed) if failed else "")
+    ran = [f"{k} {_times(v)}" for k, v in sorted(counts.items(), key=lambda kv: -kv[1])]
+    ran += [k for k in evidenced if k not in counts and not any(f.startswith(k + " ") for f in failed)]
+    return "Ran: " + (", ".join(ran) or "no research") + ("; " + "; ".join(failed) if failed else "")
 
 
-def _checked(store: Store, since: float, now: float) -> str:
+def _checked(store: Store, since: float, now: float) -> tuple[int, str]:
+    """(wallets checked in the window, the line saying so)."""
     window = (int(since), int(now))
-    rows = store._q("SELECT status, count(DISTINCT wallet) FROM verdicts WHERE computed_at > ? AND computed_at <= ? "
-                    "GROUP BY status", window)  # fmt: skip
-    total = store._q("SELECT count(DISTINCT wallet) FROM verdicts WHERE computed_at > ? AND computed_at <= ?", window)
-    by = {str(s): int(n) for s, n in rows}
+    rows = store._q("SELECT status, COALESCE(n_tape, 0) > 0, count(DISTINCT wallet) FROM verdicts WHERE computed_at > ? "
+                    "AND computed_at <= ? GROUP BY 1, 2", window)  # fmt: skip
+    total = int(store._q("SELECT count(DISTINCT wallet) FROM verdicts WHERE computed_at > ? AND computed_at <= ?",
+                         window)[0][0] or 0)  # fmt: skip
+    by: dict[str, int] = {}
+    unseen = 0
+    for status, on_tape, n in rows:
+        by[str(status)] = by.get(str(status), 0) + int(n)
+        unseen += int(n) if not on_tape else 0
     parts = [f"{by[s]} {STATUS_WORDS[s][by[s] != 1]}" for s in ("qualified", "candidate", "retired") if by.get(s)]
-    return f"Wallets checked: {int(total[0][0] or 0)}" + (f" ({', '.join(parts)})" if parts else "")
+    tail = f"; {unseen} of them not yet trading on our tape" if unseen else ""
+    return total, f"Wallets checked: {total}" + (f" ({', '.join(parts)}{tail})" if parts else "")
 
 
 def _found(store: Store, since: float) -> str | None:
@@ -420,8 +447,16 @@ def digest_text(store: Store, cfg: Config, paths: OperatorPaths, now: float, sin
     metas = list(metas)
     b = measure_backlog(store, cfg, now)
     w = b["waiting"]
+    checked, checked_line = _checked(store, since, now)
+
+    def in_window(ts) -> bool:
+        return ts is not None and since < float(ts) <= now
+
+    evidenced = [name for name, yes in (("wallet checks", checked > 0), ("wallet discovery", in_window(b["last"]["discover"])),
+                                        ("strategy search", in_window(b["last"]["search"])),
+                                        ("forward paper test", in_window(b["last"]["paper"]))) if yes]  # fmt: skip
     day = time.strftime("%d %b", time.gmtime(now))
-    lines = [f"Research {day}, {_hm(since)}-{_hm(now)} UTC", _ran(metas, since, now), _checked(store, since, now)]
+    lines = [f"Research {day}, {_hm(since)}-{_hm(now)} UTC", _ran(metas, since, now, evidenced), checked_line]
     lines.append(f"Waiting: {_n(w['new'], 'wallet')} never checked"
                  + (f" (the oldest for {_age(w['new_oldest_h'])})" if w["new"] else "")
                  + f", {w['due']} due for a re-check; {b['verdicts']['older_than_3d']} last checked over 3 days ago")  # fmt: skip
@@ -430,7 +465,7 @@ def digest_text(store: Store, cfg: Config, paths: OperatorPaths, now: float, sin
     lines += [x for x in (_search_line(store, since), _paper_line(store, since, now)) if x]
     lines.append(book_reason(store, cfg, paths))
     options = plan(b, metas, cfg, now)
-    lines.append(f"Next: {options[0]['why']}" if options else "Next: nothing pending")
+    lines.append(f"Next: {options[0]['why']}" if options else f"Next: nothing to start yet ({not_now(b, metas, now)})")
     text = "\n".join(lines)
     return text if len(text) <= MAX_CHARS else text[: MAX_CHARS - 1] + "…"
 
