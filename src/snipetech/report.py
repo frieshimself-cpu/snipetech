@@ -762,7 +762,12 @@ def render_paper(action: str, r: dict) -> str:
     if action == "run":
         if r.get("note"):
             return r["note"]
-        return f"scored {r['new_trades']} new paper trades (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        at = (
+            f" at the live landing (copies {r['landing']['copies']}, launch snipes a slot after the create)"
+            if r.get("landing")
+            else ""
+        )
+        return f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
     rows = r["strategies"]
     if not rows:
         return "nothing frozen yet: run `snipetech paper freeze`"
@@ -771,6 +776,7 @@ def render_paper(action: str, r: dict) -> str:
         return "-" if x is None else f"{x:+.{nd}f}"
 
     out = ["Forward paper-trading (only tape recorded after each strategy was frozen)", "=" * 72]
+    out += [r["landing_note"]] if r.get("landing_note") else []
     out.append(table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]), f(s["total"], 3),
                        pct(s["win_rate"]), f(s["lab_mean"])] for s in rows],
                      ["id", "strategy", "hours", "trades", "mean", "bound", "total", "win", "lab said"]))  # fmt: skip
@@ -778,6 +784,10 @@ def render_paper(action: str, r: dict) -> str:
     out.append(
         "mean / bound / total in SOL per trade at the frozen size; 'lab said' is what the lab predicted when it was frozen."
     )
+    if r.get("superseded"):
+        out.append(
+            f"{len(r['superseded'])} earlier run(s) scored at a landing no live trade gets are kept apart (--json)."
+        )
     return "\n".join(out)
 
 
