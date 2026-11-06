@@ -63,9 +63,8 @@ def _env(tmp_path, **book):
         setattr(cfg.book, k, v)
     for w, score in ((L1, 0.03), (L2, 0.02)):
         st.upsert_candidate(w, "tape", {}, NOW - 3600)
-        st.put_verdict(
-            {"wallet": w, "computed_at": NOW - 3600, "status": "qualified", "score": score, "next_review": NOW + 86400}
-        )
+        st.put_verdict({"wallet": w, "computed_at": NOW - 3600, "status": "qualified", "score": score, "next_review": NOW + 86400,
+                        "n_tape": 30, "copy_plan": {"min_leader_sol": 0.3, "exit_name": "lab"}})  # fmt: skip
     return st, cfg
 
 
@@ -552,9 +551,9 @@ def test_a_retire_waits_when_a_coin_is_bought_before_it_runs(tmp_path):
 
 def test_create_sends_the_wallets_own_floor(tmp_path, monkeypatch):
     """The sniper copies only the leader's buys of at least its verdict's min_leader_sol, never below [book]
-    min_copy_sol; a verdict without a copy plan keeps the book's 0.3. The Telegram line says which buys are copied."""
+    min_copy_sol; a copy plan without a floor keeps the book's 0.3. The Telegram line says which buys are copied."""
     st, cfg = _env(tmp_path, enabled=True)
-    plans = {L1: {"min_leader_sol": 0.6}, L2: None}  # verdicts built by hand: the store's copy_plan column is not here
+    plans = {L1: {"min_leader_sol": 0.6}, L2: {"exit_name": "lab"}}
     stored = st.latest_verdicts
 
     def with_plans(status=None):
@@ -571,5 +570,74 @@ def test_create_sends_the_wallets_own_floor(tmp_path, monkeypatch):
         svc2, quiet = FakeSvc(st), Notifier("T", 7, post=lambda u, d: None)
         asyncio.run(run_book(svc2, cfg, NOW + 1, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
         assert next(c[1] for c in svc2.calls if c[0] == "create") == (f"{L1}:book:0.3:lab",)
+    finally:
+        st.close()
+
+
+def test_a_verdict_from_the_old_lab_waits_for_the_fixed_lab(tmp_path):
+    """A qualified verdict written before the lab simulated the live sniper (no copy plan) is not copied: that lab
+    rated 2YDn at +0.0146 a trade and it lost 5 of 5 live. The run says how many wait for a re-qualify."""
+    st, cfg = _env(tmp_path)
+    st.upsert_candidate("L3" + "z" * 30, "tape", {}, NOW - 3600)
+    st.put_verdict({"wallet": "L3" + "z" * 30, "computed_at": NOW - 3600, "status": "qualified", "score": 0.05,
+                    "next_review": NOW + 86400, "n_tape": 30})  # fmt: skip
+    svc = FakeSvc(st, snipers=[])
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert out["ranked"] == 2  # L1 and L2; the old-lab wallet scores best and is still left out
+        assert st.coverage("book:last_run")["stale"] == 1
+        from snipetech.book.state import last_run_line
+
+        assert "1 qualified by the old lab" in last_run_line(st, NOW)
+    finally:
+        st.close()
+
+
+def test_the_book_watches_for_unsold_coins_unless_the_minute_pass_just_did(tmp_path, monkeypatch):
+    """The unmanaged-coin watch runs at the end of every book run (dry, live, or OKTech not answering) unless the
+    one-minute pass watched in the last 3 minutes; a failing watch never breaks the book."""
+    import snipetech.book.run as R
+
+    st, cfg = _env(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        R,
+        "watch_pass",
+        lambda cfg, store, notifier, wallet, holdings, tasks, now, notes=None: calls.append((wallet, tasks)) or [],
+    )
+    monkeypatch.setattr(R, "watched_within", lambda paths, now, secs=180: False)
+    try:
+        asyncio.run(run_book(FakeSvc(st, snipers=[]), cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert calls == [(W, [])]
+
+        class Down(FakeSvc):
+            async def oktech_status(self):
+                raise RuntimeError("OKTech down")
+
+        asyncio.run(run_book(Down(st), cfg, NOW + 60, balances=lambda w: (10.0, 0.0, [])))
+        assert calls[-1] == (W, None)  # OKTech's tasks unknown: the watch still judges the tape
+        monkeypatch.setattr(R, "watched_within", lambda paths, now, secs=180: True)
+        asyncio.run(run_book(FakeSvc(st, snipers=[]), cfg, NOW + 120, balances=lambda w: (10.0, 0.0, [])))
+        assert len(calls) == 2
+        monkeypatch.setattr(R, "watched_within", lambda paths, now, secs=180: False)
+        monkeypatch.setattr(R, "watch_pass", lambda *a, **k: 1 / 0)
+        out = asyncio.run(run_book(FakeSvc(st, snipers=[]), cfg, NOW + 180, balances=lambda w: (10.0, 0.0, [])))
+        assert out["dry"] is True and "watch failed" in (tmp_path / "data" / "operator" / "notes.md").read_text()
+    finally:
+        st.close()
+
+
+def test_the_day_stop_counts_the_failed_twin_sells(tmp_path):
+    """A sell's failed duplicate sends cost real SOL (about one per sell, 6 Nov): the day's realised result counts them."""
+    st, _ = _env(tmp_path)
+    try:
+        st.put_fill(
+            {"sig": "b", "ts": NOW - 60, "slot": 1, "wallet": W, "mint": "M", "side": "buy", "sol": 0.2, "tokens": 1.0}
+        )
+        st.put_fill({"sig": "s", "ts": NOW - 30, "slot": 2, "wallet": W, "mint": "M", "side": "sell", "sol": 0.19, "tokens": 1.0,
+                     "pnl_sol": -0.013, "twin_fee_sol": 0.002005})  # fmt: skip
+        assert day_accounting(st, W, NOW)["realised_sol"] == round(-0.013 - 0.002005, 6)
     finally:
         st.close()

@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from ..config import Config
+from ..measure.exits import crossed_sells, exit_reason_counts
 from ..store import Store
 
 BASE_FEE = 5000
@@ -97,6 +98,17 @@ def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[
         "window_days": days,
         "arms": arms,
         "round_trip_cost_by_arm": {a: _round_trip_cost(r) for a, r in arms.items()},
+        "exit_reasons": exit_reason_counts(store, since),
+        "crossed_sells": crossed_sells(store, since),
+        "unmanaged": [
+            {
+                "mint": e.get("mint"),
+                "leader": e.get("wallet"),
+                "ts": e.get("ts"),
+                **{k: (e.get("data") or {}).get(k) for k in ("reason", "value_sol", "sniper_id")},
+            }
+            for e in store.events(kind="unmanaged", since_ts=since, limit=50)
+        ],
         "wallets_live_vs_paper": _live_vs_paper(
             live, store.latest_verdicts(), int(getattr(cfg.book, "live_kill_n", 5))
         ),

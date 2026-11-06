@@ -110,6 +110,18 @@ def test_evidence_carries_round_trip_costs_and_live_against_paper():
     st.close()
 
 
+def test_evidence_carries_exit_reasons_crossed_sells_and_unmanaged_coins():
+    st = _store()
+    st.add_events([{"ts": NOW - 600, "slot": 5, "kind": "unmanaged", "wallet": "L1", "mint": "M9",
+                    "data": {"reason": "due_exit", "value_sol": 0.15}, "source": "watch"}])  # fmt: skip
+    cfg = Config()
+    cfg.operator.wallet = W
+    ev = week_evidence(st, cfg, NOW)
+    assert "exit_reasons" in ev and "crossed_sells" in ev
+    assert ev["unmanaged"] and ev["unmanaged"][0]["mint"] == "M9" and ev["unmanaged"][0]["reason"] == "due_exit"
+    st.close()
+
+
 def _env(tmp_path):
     paths = OperatorPaths(tmp_path / "data").ensure()
     cfg = Config()

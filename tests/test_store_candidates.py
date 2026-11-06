@@ -133,8 +133,32 @@ def test_verdict_copy_plan_round_trips_and_an_old_table_migrates(tmp_path):
         v = st.latest_verdicts()[0]
         assert v["copy_plan"] == plan and v["gap3_pct"] == 4.2
         assert st.candidates()[0]["verdict"]["copy_plan"] == plan
-        st.put_verdict({"wallet": "W1", "computed_at": NOW + 1, "status": "candidate", "next_review": NOW + 9, "score": 0})
+        st.put_verdict(
+            {"wallet": "W1", "computed_at": NOW + 1, "status": "candidate", "next_review": NOW + 9, "score": 0}
+        )
         assert st.latest_verdicts()[0]["copy_plan"] is None  # no plan stays no plan
     finally:
         st.close()
         fresh.close()
+
+
+def test_old_lab_verdicts_are_due_again_qualified_first():
+    """Verdicts the lab wrote before it simulated the live sniper (a tape verdict with no copy plan) are due for a
+    re-qualify at once, the qualified ones before never-evaluated wallets; a no-tape verdict waits for its review."""
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    now = 1_794_000_000
+    for w in ("NEW", "OLDQ", "OLDC", "NOTAPE", "FRESH"):
+        st.upsert_candidate(w, "tape", {}, now - 86400)
+    st.put_verdict({"wallet": "OLDQ", "computed_at": now - 3600, "status": "qualified", "score": 0.01, "n_tape": 30,
+                    "next_review": now + 86400})  # fmt: skip
+    st.put_verdict({"wallet": "OLDC", "computed_at": now - 3600, "status": "candidate", "score": 0.0, "n_tape": 12,
+                    "next_review": now + 3 * 86400})  # fmt: skip
+    st.put_verdict({"wallet": "NOTAPE", "computed_at": now - 3600, "status": "candidate", "n_tape": None,
+                    "next_review": now + 3 * 86400})  # fmt: skip
+    st.put_verdict({"wallet": "FRESH", "computed_at": now - 60, "status": "candidate", "n_tape": 25, "next_review": now + 86400,
+                    "copy_plan": {"min_leader_sol": 0.5}})  # fmt: skip
+    due = [c["wallet"] for c in st.candidates(due_before=now)]
+    assert due == ["OLDQ", "NEW", "OLDC"]
+    st.close()

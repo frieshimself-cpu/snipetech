@@ -256,6 +256,9 @@ def test_verdict_for_keeps_the_copy_plan_and_gap3(cfg):
     assert v["copy_plan"] == {k: lab[k] for k in COPY_PLAN_KEYS}
     assert {"min_leader_sol", "exit_name", "exit_params", "leader_style", "rebuy_share", "leader_first_sell_p50_s",
             "leader_one_tx_exit_share", "lab_version"} <= set(v["copy_plan"])  # fmt: skip
-    old = {k: lab[k] for k in ("n", "mean", "ev_lower", "win_rate", "total", "exit")}  # a lab row from before the plan
-    assert verdict_for("G2oZ", {"trades": None}, old, 1.0, crowd, True, [], cfg, NOW)["copy_plan"] is None
+    # a lab row without a floor still gets a copy plan (with no floor): a lab verdict always carries one, so the store
+    # never takes it for a verdict of the old lab and queues it again (store.candidates' old-lab rule)
+    old = {k: lab[k] for k in ("n", "mean", "ev_lower", "win_rate", "total", "exit")}
+    plan = verdict_for("G2oZ", {"trades": None}, old, 1.0, crowd, True, [], cfg, NOW)["copy_plan"]
+    assert plan is not None and plan["min_leader_sol"] is None and plan["lab_version"] is None
     assert verdict_for("G2oZ", {"trades": None}, None, None, crowd, True, [], cfg, NOW)["copy_plan"] is None

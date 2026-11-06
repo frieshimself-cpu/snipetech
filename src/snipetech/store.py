@@ -165,6 +165,8 @@ _ADDED_COLUMNS = (
     ("fills", "crossed", "INTEGER"),  # 1: the landed sell paid another sniper's priority fee
     ("fills", "twin_fee_sol", "REAL"),  # what the sell's failed twins cost (priority + base fee each)
 )
+# a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
+_OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
 
 # in table order: the CREATE TABLE's columns, then the verdict columns of _ADDED_COLUMNS in the order they are added
@@ -565,11 +567,14 @@ class Store:
             where.append("c.status = ?")
             params.append(status)
         if due_before is not None:
-            where.append("(v.id IS NULL OR v.next_review IS NULL OR v.next_review <= ?)")
+            # a tape verdict the lab wrote before it simulated the live sniper (no copy plan) is due at once
+            where.append(f"(v.id IS NULL OR v.next_review IS NULL OR v.next_review <= ? OR {_OLD_LAB})")
             params.append(int(due_before))
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += " ORDER BY (v.id IS NOT NULL), v.next_review, c.first_seen, c.wallet LIMIT ?"
+        # never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
+        sql += (f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
+                f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?")
         params.append(int(limit))
         out = []
         for row in self._q(sql, params):

@@ -20,12 +20,31 @@ from ..positions import is_active
 from .policy import BOOK_NAME_RE, BookInputs, BookPlan, copied_leaders, plan_book
 from .state import day_accounting, record_run
 from .switch import book_live, effective_min_score
+from .watch import watch_pass, watched_within
+
+
+def _qualified(store) -> list[dict]:
+    """Qualified verdicts of wallets that are not banned (a wallet banned after it qualified keeps its verdict)."""
+    banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}
+    return [v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned]
 
 
 def _bookable(store) -> list[dict]:
-    """Qualified wallets the book may copy: a wallet banned after it qualified keeps its verdict but is never booked."""
-    banned = {r["wallet"] for r in store.candidates(status="banned", limit=1_000_000)}
-    return [v for v in store.latest_verdicts("qualified") if v.get("wallet") not in banned]
+    """Qualified wallets the book may copy: only verdicts the lab wrote since it simulates the live sniper (they carry
+    a copy plan). The older lab rated 2YDn at +0.0146 SOL a trade and it lost 5 of 5 live copies, so its verdicts wait
+    for a re-qualify (store.candidates makes them due at once)."""
+    return [v for v in _qualified(store) if v.get("copy_plan")]
+
+
+def _watch(cfg: Config, store, notifier: Notifier, notes: NoteSink, wallet: str, holdings: list[dict] | None,
+           tasks: list[dict] | None, now: float) -> None:  # fmt: skip
+    """The unmanaged-coin watch at the end of the run, unless the one-minute pass watched in the last 3 minutes. It
+    only reports (book/watch.py never sells) and a failure never breaks the book."""
+    try:
+        if not watched_within(OperatorPaths(Path(cfg.storage.db_path).resolve().parent), now):
+            watch_pass(cfg, store, notifier, wallet, list(holdings or []), tasks, now, notes=notes)
+    except Exception as exc:  # noqa: BLE001
+        notes.write(f"book: the unsold-coin watch failed: {type(exc).__name__}: {str(exc)[:120]}", "info")
 
 
 def _other_copies(store, tasks: list[dict]) -> set[str]:
@@ -134,6 +153,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     except Exception as exc:  # noqa: BLE001
         notes.write(f"book: OKTech did not answer ({type(exc).__name__}); no action this run", "info")
         record_run(store, {"actions": [], "kill_reason": "oktech unknown"}, True, now)
+        _watch(cfg, store, notifier, notes, wallet, holdings, None, now)
         return {"dry": True, "kill_reason": "oktech unknown", "actions": {}, "ranked": 0}
     acc = day_accounting(store, wallet, now, equity_now=equity)
     live_mode = book_live(cfg, paths) if dry is None else not dry
@@ -170,7 +190,8 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
     qualified = inp.qualified
     best_q = max(qualified, key=lambda v: float(v.get("score") or 0), default=None)
     seen = {"ranked": len(plan.ranked),
-            "best": {"wallet": best_q.get("wallet"), "score": best_q.get("score")} if best_q else None}  # fmt: skip
+            "best": {"wallet": best_q.get("wallet"), "score": best_q.get("score")} if best_q else None,
+            "stale": len(_qualified(store)) - len(qualified)}  # fmt: skip
     counts: dict[str, int] = {}
     for a in plan.actions:
         counts[a.kind] = counts.get(a.kind, 0) + 1
@@ -186,6 +207,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             for a in stops:
                 await _do(svc, notifier, notes, "stop", a)
         record_run(store, plan, True, now, **seen)
+        _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
         return {
             "dry": True,
             "kill_reason": plan.kill_reason,
@@ -235,6 +257,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         if a.kind == "start" and a.sniper_id:
             await _do(svc, notifier, notes, "start", a)
     record_run(store, plan, False, now, **seen)
+    _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
     return {
         "dry": False,
         "kill_reason": plan.kill_reason,

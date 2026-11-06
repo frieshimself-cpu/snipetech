@@ -16,7 +16,9 @@ def day_accounting(store: Store, wallet: str, now: float, equity_now: float | No
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     day_start = int(now // 86400) * 86400
     fills = store.fills(wallet=wallet, since_ts=day_start, limit=100_000)
-    realised = round(sum(float(f.get("pnl_sol") or 0.0) for f in fills if f.get("side") == "sell"), 6)
+    # a sell's failed duplicate sends (twin_fee_sol, measure) are part of what it cost
+    realised = round(sum(float(f.get("pnl_sol") or 0.0) - float(f.get("twin_fee_sol") or 0.0)
+                         for f in fills if f.get("side") == "sell"), 6)  # fmt: skip
     risk = round(sum(float(f.get("sol") or 0.0) for f in fills if f.get("side") == "buy"), 6)
     rec = store.coverage(DAY_KEY)
     if rec.get("day") != day:
@@ -59,6 +61,8 @@ def last_run_line(store: Store, now: float | None = None) -> str:
         when += f" ({int(age // 60)} min ago)" if age < 90 * 60 else f" ({age / 3600:.0f} h ago)"
     if rec.get("kill_reason"):
         return f"last run {when}: halted: {rec['kill_reason']}"
+    stale = int(rec.get("stale") or 0)
+    wait = f"; {stale} qualified by the old lab wait for a re-qualify" if stale else ""
     ranked = rec.get("ranked")
     if ranked == 0:
         best = rec.get("best") or {}
@@ -67,6 +71,7 @@ def last_run_line(store: Store, now: float | None = None) -> str:
             if best.get("score") is not None
             else " (none qualified yet)"
         )
-        return f"last run {when}: no qualified wallet scores at least the bar{tail}"
+        return f"last run {when}: no qualified wallet scores at least the bar{tail}{wait}"
     did = ", ".join(f"{k} {v}" for k, v in sorted((rec.get("actions") or {}).items())) or "nothing to change"
-    return f"last run {when}: {ranked if ranked is not None else '?'} wallet(s) above the bar, {'dry' if rec.get('dry') else 'live'}: {did}"
+    return (f"last run {when}: {ranked if ranked is not None else '?'} wallet(s) above the bar, "
+            f"{'dry' if rec.get('dry') else 'live'}: {did}{wait}")  # fmt: skip

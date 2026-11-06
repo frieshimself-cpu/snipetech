@@ -17,8 +17,10 @@ COPY_PLAN_KEYS = ("min_leader_sol", "rebuy_share", "leader_first_sell_p50_s", "l
 
 
 def copy_plan(lab_row: dict | None) -> dict[str, Any] | None:
-    """The lab row's copy plan, or None when the row predates it (no per-wallet floor)."""
-    if not lab_row or lab_row.get("min_leader_sol") is None:
+    """The lab row's copy plan (None without a lab row). A row without a per-wallet floor still gets one, its fields
+    None: a verdict with a lab number always carries a plan, so store.candidates never mistakes it for a verdict of the
+    old lab and queues it again and again."""
+    if not lab_row:
         return None
     return {k: lab_row.get(k) for k in COPY_PLAN_KEYS}
 

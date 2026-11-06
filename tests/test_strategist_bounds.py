@@ -100,3 +100,14 @@ def test_never_tunable_keys_are_refused_even_when_listed():
         auto.bounds[key] = {"min": 0, "max": 1000}
         accepted, refusals = check_patch({key: value}, Config(), auto)
         assert accepted == {} and "never tunable" in refusals[0], key
+
+
+def test_the_live_pause_and_the_copy_floor_are_tunable_within_bounds_retire_is_not():
+    b = AutotuneConfig().bounds
+    assert b["book.live_kill_n"] == {"min": 5, "max": 15} and b["book.min_copy_sol"] == {"min": 0.1, "max": 2.0}
+    accepted, _ = check_patch({"book.live_kill_n": 8}, Config(), AutotuneConfig())
+    assert accepted == {"book.live_kill_n": 8}
+    auto = AutotuneConfig()
+    auto.bounds["book.retire_after_buys"] = {"min": 1, "max": 3}
+    accepted, refusals = check_patch({"book.retire_after_buys": 2}, Config(), auto)
+    assert accepted == {} and "never tunable" in refusals[0]

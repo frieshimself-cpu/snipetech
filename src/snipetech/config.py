@@ -260,6 +260,8 @@ class AutotuneConfig:
         "book.explore_share": {"min": 0.0, "max": 0.3},
         # a bid is raised only through the tip: OKTech charges the buy priority fee again on every exit (never tunable)
         "book.bid_arms.control.tip": {"min": 0.002, "max": 0.02},
+        "book.live_kill_n": {"min": 5, "max": 15},  # live copies before a losing wallet is paused
+        "book.min_copy_sol": {"min": 0.1, "max": 2.0},  # the smallest leader buy copied (a wallet's own floor wins)
         "qualify.max_gap3_pct": {"min": 5, "max": 30},
         "qualify.min_n_tape": {"min": 10, "max": 40},
         "qualify.landing_pos": {"choices": ["+3", "+6", "+9"]},
