@@ -256,13 +256,15 @@ def test_a_dropped_sniper_is_stopped_while_another_sniper_holds_the_coin():
 
 def test_the_book_promises_only_what_it_enforces():
     """A sniper still selling a coin is never stopped, so the daily cap can be overrun by its remaining buys: keep
-    those few (3 a sniper) and say so when the owner switches the book on."""
+    those few (3 a sniper) and say so when the owner switches the book on. Each sniper is relied on for one buy: the
+    other two are spares, and it is replaced once the wallet holds nothing (holders are never narrowed)."""
     from snipetech.book.switch import book_line
 
     cfg = Config()
     assert cfg.book.max_buys_per_sniper == 3
     line = book_line(cfg)
     assert "2 SOL a day at risk" in line and "up to 3 more buys" in line
+    assert "relied on for one buy, keeps two spares, and is replaced once the wallet holds nothing" in line
 
 
 LOSE5 = {"W1": {"wallet": "W1", "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "status": "warming"}}  # 2YDn, 6 Nov
