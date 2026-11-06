@@ -19,12 +19,14 @@ again picked on older and judged on newer moments. Only test numbers count.
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 
 from ..config import Config
+from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..oktech import EXITS
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
@@ -40,6 +42,28 @@ LAB_VERSION = 2
 WATCH_SECS = 1.3
 EXIT_LATENCY_SLOTS, EXIT_POSITION = 1, "start"
 REBUY_MIN_N = 10  # re-buys of 0.1 SOL or more before a wallet's floor is read from them
+# A wallet's own exit (choose_wallet_exit): picked on its older 60 % of moments, each train mean shrunk toward the
+# group's by EXIT_SHRINK_K pseudo-moments, and kept only if it then beats lab on at least EXIT_MIN_TEST newer moments.
+EXIT_TRAIN_SHARE = 0.6
+EXIT_SHRINK_K = 10.0
+EXIT_MIN_TEST = 8
+
+
+def _as_live(e: Mapping[str, Any], copy_exit_pct: float) -> ExitParams:
+    """A snipetech exit read the way OKTech executes it on a copy sniper: its copy exit, its watch delay, no dev-sell
+    rule. An exit without a timer holds until the tape ends."""
+    return ExitParams(
+        take_profit=float(e.get("take_profit") or 0),
+        tp_sell_fraction=float(e.get("tp_sell_fraction") or 1),
+        stop_loss=float(e.get("stop_loss") or 0),
+        trailing_stop=float(e.get("trailing_stop") or 0),
+        trailing_activation=float(e.get("trailing_activation") or 0),
+        max_hold_secs=float(e.get("max_hold_secs") or 86_400),
+        sell_on_dev_sell=False,
+        stale_secs=float(e.get("stale_secs") or 0),
+        watch_secs=WATCH_SECS,
+        copy_exit_pct=copy_exit_pct,
+    )
 
 
 def live_exits(cfg: Config | None = None) -> dict[str, ExitParams]:
@@ -48,21 +72,15 @@ def live_exits(cfg: Config | None = None) -> dict[str, ExitParams]:
     no dev-sell rule. An exit without a timer holds until the tape ends."""
     cfg = cfg or Config()
     pct = float(cfg.oktech.copy_exit_threshold_percent) / 100.0
-    return {
-        name: ExitParams(
-            take_profit=float(e.get("take_profit") or 0),
-            tp_sell_fraction=float(e.get("tp_sell_fraction") or 1),
-            stop_loss=float(e.get("stop_loss") or 0),
-            trailing_stop=float(e.get("trailing_stop") or 0),
-            trailing_activation=float(e.get("trailing_activation") or 0),
-            max_hold_secs=float(e.get("max_hold_secs") or 86_400),
-            sell_on_dev_sell=False,
-            stale_secs=float(e.get("stale_secs") or 0),
-            watch_secs=WATCH_SECS,
-            copy_exit_pct=pct,
-        )
-        for name, e in EXITS.items()
-    }
+    return {name: _as_live(e, pct) for name, e in EXITS.items()}
+
+
+def menu_exits(cfg: Config | None = None, menu: Sequence[MenuExit] = COPY_EXIT_MENU) -> dict[str, ExitParams]:
+    """Every exit on the menu (exits_menu.py) by name, read the way the live sniper runs it (as `live_exits`): what the
+    qualify lab scores each wallet on, lab first."""
+    cfg = cfg or Config()
+    pct = float(cfg.oktech.copy_exit_threshold_percent) / 100.0
+    return {m.name: _as_live(m.params, pct) for m in menu}
 
 
 LIVE_EXITS = live_exits()
@@ -539,21 +557,63 @@ def _copy_plan_stats(moments: list[dict], min_leader_sol: float) -> dict[str, An
             "leader_biggest_sell_p50": biggest, "leader_style": leader_style(one_tx, p50, biggest)}  # fmt: skip
 
 
+def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
+                       conf: float = 0.8, samples: int = 2000) -> dict[str, Any]:  # fmt: skip
+    """Which exit a wallet's sniper should run: a column of `pnl` (the wallet's moments, oldest first, x the exits of
+    the menu). Column j replaces `gate` (lab) only when j has the best train mean on the wallet's older 60 % of moments,
+    each train mean shrunk toward the group's (`group_train`: the same exits on every wallet's older moments; None = no
+    group) by `shrink_k` pseudo-moments, and then beats `gate` on the newer 40 %: at least `min_test` moments, a positive
+    mean paired difference and a positive bootstrap lower bound on it. Returns the column ("index"), "source" ("wallet"
+    or "lab"), the column that did best on the older moments ("candidate", None when the gate did), and on the held-out
+    moments: how many ("test_n") and the candidate's mean gain over the gate a trade ("gain", SOL) with its lower bound
+    ("lower")."""
+    pnl = np.asarray(pnl, dtype=np.float64)
+    n = len(pnl)
+    cut = int(n * EXIT_TRAIN_SHARE)
+    out: dict[str, Any] = {"index": gate, "source": "lab", "candidate": None, "test_n": n - cut, "gain": None,
+                           "lower": None}  # fmt: skip
+    if pnl.ndim != 2 or pnl.shape[1] < 2 or cut < 1 or n - cut < min_test:
+        return out
+    train = pnl[:cut].mean(axis=0)
+    group = train if group_train is None else np.asarray(group_train, dtype=np.float64)
+    shrunk = (cut * train + shrink_k * group) / (cut + shrink_k)
+    j = int(np.argmax(shrunk))
+    if j == gate or not shrunk[j] > shrunk[gate]:
+        return out
+    st = summarize(pnl[cut:, j] - pnl[cut:, gate], conf, samples)
+    out |= {"candidate": j, "gain": st["mean"], "lower": st["ev_lower"]}
+    if st["mean"] > 0 and st["ev_lower"] > 0:
+        out |= {"index": j, "source": "wallet"}
+    return out
+
+
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
-                 min_n: int = 4, floor: float | None = None, wallets=None) -> list[dict]:  # fmt: skip
+                 min_n: int = 4, floor: float | None = None, wallets=None, gate: ExitParams | None = None,
+                 shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
     60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
     its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
     `floor`, default the book's `min_copy_sol`). Wallets with the same address under several triggers keep the
     best-covered trigger. Each row carries the copy plan the book needs: the floor, the leader's style, the exit's name
     in `live_exits` (None for a search exit), its parameters and LAB_VERSION. `wallets`: score only these (the qualify
-    stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about."""
-    rows, exits = data["rows"], data["exits"]
+    stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about.
+
+    `gate` (the qualify stage passes lab, what the book sends by default): every wallet is judged with it instead of
+    an exit picked per trigger; when `data` also holds other exits of the menu, each wallet gets its own exit from them
+    (`choose_wallet_exit`, shrunk toward every wallet's older moments): `exit_name`, `exit_params` and `exit_source`
+    ("wallet" or "lab") say what its sniper should run, with `exit_menu`, `exit_candidate`, `exit_test_n`,
+    `exit_gain_sol` and `exit_gain_lower`. The gating numbers (`n`, `mean`, `ev_lower`, `win_rate`, `total`, `exit`)
+    stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies."""
+    rows, exits = data["rows"], list(data["exits"])
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
     want = None if wallets is None else set(wallets)
     floor = float(cfg.book.min_copy_sol if floor is None else floor)
-    names = {ex: name for name, ex in live_exits(cfg).items()}
+    names = {ex: name for name, ex in menu_exits(cfg).items()} | {ex: name for name, ex in live_exits(cfg).items()}
+    g = exits.index(gate) if gate is not None and gate in exits else None
+    # the exits a wallet may get as its own: the gate and the other exits of the menu that were scored
+    cols = [j for j, ex in enumerate(exits) if j == g or names.get(ex) in MENU] if g is not None else []
+    choose = len(cols) > 1
     best: dict[str, dict] = {}
     for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         if trig.kind != "kol":
@@ -562,23 +622,42 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
         if len(rs) < 10:
             continue
         m = np.array([r["pnl"] for r in rs])
-        k = int(np.argmax(m[: int(len(rs) * 0.6)].mean(axis=0)))
-        by: dict[str, list[tuple[dict, float]]] = {}
-        for r, p in zip(rs, m[:, k]):
-            by.setdefault(r["who"], []).append((r, float(p)))
-        for w, items in by.items():
-            if want is not None and w not in want:
-                continue
-            moments = [r for r, _ in items]
+        k = g if g is not None else int(np.argmax(m[: int(len(rs) * 0.6)].mean(axis=0)))
+        by: dict[str, list[int]] = {}  # each wallet's moments (indices into rs), oldest first
+        for i, r in enumerate(rs):
+            by.setdefault(r["who"], []).append(i)
+        kept_by: dict[str, tuple[float, list[int]]] = {}  # the floor and the moments its sniper would copy
+        for w, idx in by.items():
+            if not choose and want is not None and w not in want:
+                continue  # without a choice to make, only the wallets asked for (the group needs every wallet)
+            moments = [rs[i] for i in idx]
             min_sol = choose_min_leader_sol([r.get("lead_sol") for r in moments],
                                             [x for r in moments for x in (r.get("rebuys") or ())], floor)  # fmt: skip
-            kept = [(r, p) for r, p in items if r.get("lead_sol") is None or r["lead_sol"] >= min_sol - 1e-9]
+            kept = [i for i in idx if rs[i].get("lead_sol") is None or rs[i]["lead_sol"] >= min_sol - 1e-9]
+            kept_by[w] = (min_sol, kept)
+        group = None
+        if choose:  # every wallet's older moments: what the menu's exits made for the group, out of every test
+            train = [i for _, kept in kept_by.values() for i in kept[: int(len(kept) * EXIT_TRAIN_SHARE)]]
+            group = m[np.array(train, dtype=int)][:, cols].mean(axis=0) if train else None
+        for w, (min_sol, kept) in kept_by.items():
+            if want is not None and w not in want:
+                continue
             if len(kept) < min_n or (w in best and best[w]["n"] >= len(kept)):
                 continue
-            st = summarize(np.array([p for _, p in kept]), conf, samples)
-            best[w] = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(kept),
-                       "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
-                       "moments_all": len(items), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
-                       "lab_version": LAB_VERSION} | _copy_plan_stats([r for r, _ in kept], min_sol)  # fmt: skip
+            st = summarize(m[np.array(kept, dtype=int), k], conf, samples)
+            row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(kept),
+                   "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
+                   "moments_all": len(by[w]), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
+                   "lab_version": LAB_VERSION} | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
+            if g is not None:
+                own = cols if choose else [g]
+                c = choose_wallet_exit(m[np.array(kept, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
+                                       conf, samples)  # fmt: skip
+                ex = exits[own[c["index"]]]
+                row |= {"exit_name": names.get(ex), "exit_params": ex.to_dict(), "exit_source": c["source"],
+                        "exit_menu": EXIT_MENU_VERSION if choose else None,
+                        "exit_candidate": None if c["candidate"] is None else names.get(exits[own[c["candidate"]]]),
+                        "exit_test_n": c["test_n"], "exit_gain_sol": c["gain"], "exit_gain_lower": c["lower"]}  # fmt: skip
+            best[w] = row
     out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)
     return out[:top]

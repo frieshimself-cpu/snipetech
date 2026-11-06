@@ -37,10 +37,12 @@ def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
 
 def default_lab_runner(svc, cfg: Config) -> LabRunner:
     """The by-wallet lab in-process at the book's smallest fill: every candidate's first buys >= 0.1 SOL (the `cand`
-    trigger group), each wallet scored on the buys its own floor lets through, with the exit the book sends
-    (`live_exits(cfg)["lab"]`, book/run.py) at the measured cost of a transaction. Only the trades come from the
-    hourly copy: the wallets come from the live database plus the due list, since the copy has none of the `cand`
-    labels this run just wrote, and a due wallet with another label (a KOL) is never labelled `cand`."""
+    trigger group), each wallet scored on the buys its own floor lets through, on every exit of the menu
+    (exits_menu.py) at the measured cost of a transaction. Its numbers, the verdict's, are those of the exit the book
+    sends by default (`live_exits(cfg)["lab"]`, book/run.py); the menu only picks the wallet's own exit for its copy plan
+    (rank_wallets with a gate). Only the trades come from the hourly copy: the wallets come from the live database plus
+    the due list, since the copy has none of the `cand` labels this run just wrote, and a due wallet with another label
+    (a KOL) is never labelled `cand`."""
 
     def run(wallets: list[str], position: str) -> list[dict]:
         from ..analysis import lab as L
@@ -48,9 +50,11 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         tape = getattr(svc, "tape_store", svc.store)  # the hourly read-only copy when fresh, else the live database
         kols = L.label_groups(svc.store)
         kols["cand"] = kols["cand"] | set(wallets)
+        menu = L.menu_exits(cfg)
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
-                         groups=("cand",), exits=[L.live_exits(cfg)["lab"]], kols=kols)  # fmt: skip
-        return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets)
+                         groups=("cand",), exits=list(menu.values()), kols=kols)  # fmt: skip
+        return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
+                              gate=menu["lab"])  # fmt: skip
 
     return run
 

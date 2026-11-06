@@ -14,15 +14,18 @@ HISTORY_ORDER = ("solanatracker", "solanatracker30", "birdeye", "vybe")
 # what the book needs from the lab to copy a wallet the way it was scored (analysis/lab.py rank_wallets)
 COPY_PLAN_KEYS = ("min_leader_sol", "rebuy_share", "leader_first_sell_p50_s", "leader_one_tx_exit_share",
                   "leader_biggest_sell_p50", "leader_style", "exit_name", "exit_params", "lab_version")  # fmt: skip
+# the lab's choice of the wallet's own exit from the menu (rank_wallets with a gate): exit_name / exit_params above are
+# then the exit its sniper should run, and these say why (book/policy.exit_for sends it only when the owner allows)
+EXIT_CHOICE_KEYS = ("exit_source", "exit_menu", "exit_candidate", "exit_test_n", "exit_gain_sol", "exit_gain_lower")
 
 
 def copy_plan(lab_row: dict | None) -> dict[str, Any] | None:
     """The lab row's copy plan (None without a lab row). A row without a per-wallet floor still gets one, its fields
     None: a verdict with a lab number always carries a plan, so store.candidates never mistakes it for a verdict of the
-    old lab and queues it again and again."""
+    old lab and queues it again and again. The exit choice comes along when the lab made one."""
     if not lab_row:
         return None
-    return {k: lab_row.get(k) for k in COPY_PLAN_KEYS}
+    return {k: lab_row.get(k) for k in COPY_PLAN_KEYS} | {k: lab_row[k] for k in EXIT_CHOICE_KEYS if k in lab_row}
 
 
 def _num(v) -> float | None:
