@@ -6,9 +6,9 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import Callable
 
 from ..config import Config
 from ..ops import _pid_alive
@@ -17,6 +17,7 @@ from .gate import Decision, decide
 from .jobs import OperatorJobs
 from .notify import from_env
 from .paths import OperatorPaths
+from .resources import alert_lines, check_resources, disk_free_gb_at, status_line
 from .snapshot import load_current, save, take_snapshot
 from .tools import NoteSink
 from .turn import run_turn
@@ -53,7 +54,8 @@ def _acquire_lock(paths: OperatorPaths, now: float) -> bool:
 
 
 async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = False, repo: Path, branch: str,
-                  now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None) -> int:  # fmt: skip
+                  now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None,
+                  disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None) -> int:  # fmt: skip
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     t0 = now()
     if not _acquire_lock(paths, t0):
@@ -67,6 +69,24 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if balances is not None:
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
+        notes = NoteSink(paths, now=now)
+        notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
+        if send is not None:
+            notifier.send = send  # type: ignore[method-assign]
+        # Resources: checked by code, alerted once a day per resource, no model involved.
+        try:
+            ledger0 = Ledger(paths.spend, cfg.operator.prices)
+            birdeye_probe = _birdeye_credits_probe() if os.environ.get("BIRDEYE_API_KEY") else None
+            resources = check_resources(cfg, svc.store, snap, ledger0, disk_free_gb=disk_free_gb or (lambda: disk_free_gb_at(str(paths.data))),
+                                        birdeye_credits=birdeye_probe, now=t0)  # fmt: skip
+            snap.resources = [r.to_dict() for r in resources]
+            _log(paths, t0, "resources: " + status_line(resources))
+            for line in alert_lines(resources):
+                name = line.split(":", 1)[0]
+                if not notes.has_today(f"resource {name}", t0):
+                    notifier.send(notes.write(f"resource {line}", "decision"))
+        except Exception as exc:  # noqa: BLE001
+            _log(paths, t0, f"resources: failed: {type(exc).__name__}: {exc}")
         decision = decide(snap, prev, t0, cfg.operator, paths)
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
@@ -74,12 +94,13 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         snap.reason_ts = {k: (t0 if decision.call and k not in prev_ts or (decision.call and t0 - prev_ts.get(k, 0) >= 3600) else prev_ts.get(k, t0))
                           for k in decision.state_reasons}  # fmt: skip
         save(snap, paths)
-        notes = NoteSink(paths, now=now)
-        notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
         if decision.reasons == ["budget"]:
             _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} spent today")
             if not notes.has_today("budget reached", t0):
-                line = notes.write(f"budget reached: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} $ today; no more Claude rounds until tomorrow", "decision")
+                line = notes.write(
+                    f"budget reached: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} $ today; no more Claude rounds until tomorrow",
+                    "decision",
+                )
                 notifier.send(line)
             return 0
         if not decision.call:
@@ -87,14 +108,25 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             return 0
         _log(paths, t0, f"call {decision.mode}: " + "; ".join(decision.reasons))
         if dry_run:
-            print(json.dumps({"snapshot": json.loads(snap.to_json()), "decision": asdict(decision)}, indent=1, default=str))
+            print(
+                json.dumps(
+                    {"snapshot": json.loads(snap.to_json()), "decision": asdict(decision)}, indent=1, default=str
+                )
+            )
             return 0
         if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
             _log(paths, t0, "no ANTHROPIC_API_KEY in the environment")
             if not notes.has_today("ANTHROPIC_API_KEY", t0):
-                notifier.send(notes.write("ANTHROPIC_API_KEY is not set in /etc/snipetech/env; the operator cannot call Claude", "decision"))
+                notifier.send(
+                    notes.write(
+                        "ANTHROPIC_API_KEY is not set in /etc/snipetech/env; the operator cannot call Claude",
+                        "decision",
+                    )
+                )
             return 0
-        jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch, max_jobs=cfg.operator.max_jobs)
+        jobs = OperatorJobs(
+            repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch, max_jobs=cfg.operator.max_jobs
+        )
         ledger = Ledger(paths.spend, cfg.operator.prices)
         extra = {"client": client} if client is not None else {}
         try:
@@ -113,6 +145,19 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             paths.lock.unlink()
         except OSError:
             pass
+
+
+def _birdeye_credits_probe():
+    def probe() -> dict:
+        from ..birdeye import Birdeye
+
+        be = Birdeye()
+        try:
+            return be.credits()
+        finally:
+            be.close()
+
+    return probe
 
 
 def telegram_setup_cli(cfg: Config) -> int:

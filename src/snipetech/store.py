@@ -127,7 +127,9 @@ CREATE TABLE IF NOT EXISTS funders (
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")
 
-_TRADE_COLS = "sig, ev, slot, pos, ts, mint, venue, user, is_buy, quote, base, fee, fee_bps, q_after, b_after, r_base_after, ix"
+_TRADE_COLS = (
+    "sig, ev, slot, pos, ts, mint, venue, user, is_buy, quote, base, fee, fee_bps, q_after, b_after, r_base_after, ix"
+)
 _LAUNCH_COLS = "mint, user, creator, name, symbol, uri, bonding_curve, slot, ts, sig, token_program, mayhem, holder_reward, quote_mint"
 
 
@@ -245,7 +247,12 @@ class Store:
         out: set[str] = set()
         for i in range(0, len(mints), 500):
             chunk = mints[i : i + 500]
-            out |= {r[0] for r in self._q(f"SELECT DISTINCT quote_mint FROM ftrades WHERE mint IN ({','.join('?' * len(chunk))})", chunk)}
+            out |= {
+                r[0]
+                for r in self._q(
+                    f"SELECT DISTINCT quote_mint FROM ftrades WHERE mint IN ({','.join('?' * len(chunk))})", chunk
+                )
+            }
         return sorted(out)
 
     def put_copy_position(self, pos: dict) -> None:
@@ -393,7 +400,9 @@ class Store:
         return [_trade(r) for r in self._q(sql, params)]
 
     def trades_for_user(self, user: str, since_ts: int = 0) -> list[Trade]:
-        rows = self._q(f"SELECT {_TRADE_COLS} FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev", (user, since_ts))
+        rows = self._q(
+            f"SELECT {_TRADE_COLS} FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos, ev", (user, since_ts)
+        )
         return [_trade(r) for r in rows]
 
     def trade_count(self, mint: str) -> int:
@@ -426,9 +435,22 @@ class Store:
         rows = self._q("SELECT data FROM coverage WHERE key=?", (key,))
         return json.loads(rows[0][0]) if rows else {}
 
+    def usage_add(self, provider: str, n: int = 1, now: float | None = None) -> int:
+        """Monthly request/credit counter per data provider, shared by every process (coverage key api_usage:<p>:<YYYY-MM>)."""
+        key = f"api_usage:{provider}:{time.strftime('%Y-%m', time.gmtime(now if now is not None else time.time()))}"
+        with self.lock:
+            cur = int(self.coverage(key).get("n", 0)) + int(n)
+            self.set_coverage(key, {"n": cur})
+        return cur
+
+    def usage_month(self, provider: str, now: float | None = None) -> int:
+        key = f"api_usage:{provider}:{time.strftime('%Y-%m', time.gmtime(now if now is not None else time.time()))}"
+        return int(self.coverage(key).get("n", 0))
+
     def set_coverage(self, key: str, data: dict[str, Any]) -> None:
         self._exec(
-            "INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)", (key, json.dumps(data), int(time.time()))
+            "INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
+            (key, json.dumps(data), int(time.time())),
         )
 
     def put_score(self, kind: str, key: str, data: dict[str, Any]) -> None:
@@ -560,7 +582,10 @@ class Store:
 
     def paper_trades(self, strategy: str | None = None) -> list[dict]:
         sql = "SELECT strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data FROM paper_trades"
-        rows = self._q(sql + (" WHERE strategy=? ORDER BY trigger_ts" if strategy else " ORDER BY trigger_ts"), (strategy,) if strategy else ())
+        rows = self._q(
+            sql + (" WHERE strategy=? ORDER BY trigger_ts" if strategy else " ORDER BY trigger_ts"),
+            (strategy,) if strategy else (),
+        )
         keys = ("strategy", "mint", "trigger_ts", "entry_ts", "exit_ts", "pnl", "roi", "reason", "data")
         return [dict(zip(keys, r[:-1])) | {"data": json.loads(r[-1] or "{}")} for r in rows]
 
@@ -586,7 +611,9 @@ class Store:
         """Drop trades/launches older than `before_ts` that no list references."""
         with self.lock:
             protected = {r[0] for r in self.conn.execute("SELECT address FROM lists").fetchall()}
-            cur = self.conn.execute("DELETE FROM trades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,))
+            cur = self.conn.execute(
+                "DELETE FROM trades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,)
+            )
             trades = cur.rowcount
             cur = self.conn.execute(
                 "DELETE FROM launches WHERE ts<? AND user NOT IN (SELECT address FROM lists) "
@@ -595,12 +622,16 @@ class Store:
             )
             launches = cur.rowcount
             self.conn.execute("DELETE FROM seen_sigs WHERE ts<?", (before_ts,))
-            self.conn.execute("DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,))
+            self.conn.execute(
+                "DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,)
+            )
             # the tape only covers what is still stored: drop / clip recorded spans before the cutoff
             row = self.conn.execute("SELECT data FROM coverage WHERE key='tape'").fetchone()
             if row:
                 cov = json.loads(row[0])
                 cov["spans"] = [[max(a, before_ts), b] for a, b in cov.get("spans", []) if b > before_ts]
-                self.conn.execute("UPDATE coverage SET data=?, updated=? WHERE key='tape'", (json.dumps(cov), int(time.time())))
+                self.conn.execute(
+                    "UPDATE coverage SET data=?, updated=? WHERE key='tape'", (json.dumps(cov), int(time.time()))
+                )
             self.conn.commit()
         return {"trades": trades, "launches": launches, "protected_addresses": len(protected)}

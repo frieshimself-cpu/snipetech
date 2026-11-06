@@ -173,8 +173,14 @@ class AgentConfig:
 
 
 DEFAULT_OPERATOR_PRICES: dict[str, float] = {  # USD per million tokens
-    "in": 3.0, "out": 15.0, "cache_read": 0.3, "cache_write": 3.75,  # claude-sonnet-5-5
-    "analyst_in": 5.0, "analyst_out": 25.0, "analyst_cache_read": 0.5, "analyst_cache_write": 6.25,  # claude-opus-5-5
+    "in": 3.0,
+    "out": 15.0,
+    "cache_read": 0.3,
+    "cache_write": 3.75,  # claude-sonnet-5-5
+    "analyst_in": 5.0,
+    "analyst_out": 25.0,
+    "analyst_cache_read": 0.5,
+    "analyst_cache_write": 6.25,  # claude-opus-5-5
 }
 
 
@@ -225,6 +231,36 @@ class SolanaTrackerConfig:
 
 
 @dataclass
+class ResourcesConfig:
+    """Thresholds for the operator's resource checks (credits, data-API usage, SOL float, disk)."""
+
+    anthropic_credit_usd: float = 100.0  # what the owner loaded; `config set` records when
+    anthropic_alert_pct: float = 20.0
+    anthropic_min_days: float = 3.0
+    birdeye_alert_pct: float = 15.0
+    solanatracker_month_requests: int = 200_000
+    solanatracker_alert_pct: float = 15.0
+    vybe_month_credits: int = 25_000
+    vybe_alert_pct: float = 15.0
+    disk_alert_gb: float = 30.0
+    sol_float_margin: float = 0.2
+    oktech_fail_alert: int = 3
+
+
+@dataclass
+class BookConfig:
+    """The live book's bounds (phase 4 builds the policy; phase 1 only reads these for the SOL float check)."""
+
+    enabled: bool = False
+    daily_risk_sol: float = 2.0
+    fill_min_sol: float = 0.2
+    fill_max_sol: float = 1.0
+    max_wallets: int = 6
+    equity_floor_sol: float = 3.0
+    day_stop_sol: float = 1.0
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -240,10 +276,12 @@ class Config:
     operator: OperatorConfig = field(default_factory=OperatorConfig)
     birdeye: BirdeyeConfig = field(default_factory=BirdeyeConfig)
     solanatracker: SolanaTrackerConfig = field(default_factory=SolanaTrackerConfig)
+    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
+    book: BookConfig = field(default_factory=BookConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "Config":
+    def load(cls, path: str | Path | None = None) -> Config:
         p = Path(path) if path else DEFAULT_PATH
         cfg = cls()
         if p.exists():

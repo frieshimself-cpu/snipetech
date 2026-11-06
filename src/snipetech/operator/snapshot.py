@@ -6,9 +6,10 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from ..config import Config
 from .budget import Ledger
@@ -41,6 +42,8 @@ class Snapshot:
     spent_today: float = 0.0
     errors: list[str] = field(default_factory=list)
     reason_ts: dict[str, float] = field(default_factory=dict)  # state reason -> when it last triggered a call
+    failed_tx_1h: int | None = None  # failed transactions by the wallet in the last hour (None = could not read)
+    resources: list[dict] = field(default_factory=list)  # filled by operator.resources after the snapshot
 
     @property
     def equity(self) -> float | None:
@@ -52,7 +55,7 @@ class Snapshot:
         return json.dumps(asdict(self) | {"equity": self.equity}, default=str)
 
     @classmethod
-    def from_json(cls, text: str) -> "Snapshot":
+    def from_json(cls, text: str) -> Snapshot:
         d = json.loads(text)
         d.pop("equity", None)
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
@@ -121,7 +124,13 @@ def recent_jobs(jobs_dir: Path, now: float, hours: float = 24.0) -> list[dict]:
     for m in _read_metas(jobs_dir):
         argv = m.get("argv") or []
         ended = m.get("ended")
-        if not argv or argv[0] not in RESEARCH_COMMANDS or m.get("running") or ended is None or ended < now - hours * 3600:
+        if (
+            not argv
+            or argv[0] not in RESEARCH_COMMANDS
+            or m.get("running")
+            or ended is None
+            or ended < now - hours * 3600
+        ):
             continue
         out.append({"id": m.get("id"), "argv": argv, "exit_code": m.get("exit_code"), "ended": ended,
                     "log": str(jobs_dir / f"{m.get('id')}.log")})  # fmt: skip
@@ -146,6 +155,15 @@ def systemd_services(units: tuple[str, ...] | None = None) -> dict[str, str]:
         except Exception as exc:  # noqa: BLE001 - never let a status probe kill the round
             out[u] = f"error: {type(exc).__name__}"
     return out
+
+
+async def failed_transactions(svc, wallet: str, now: float, window: int = 3600) -> int | None:
+    """How many of the wallet's recent transactions failed inside `window` seconds; None when the RPC does not answer."""
+    try:
+        sigs = await svc.rpc.call("getSignaturesForAddress", [wallet, {"limit": 50}])
+    except Exception:  # noqa: BLE001
+        return None
+    return sum(1 for s in sigs or [] if s.get("err") is not None and (s.get("blockTime") or 0) >= now - window)
 
 
 async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, list[dict]]:
@@ -197,14 +215,23 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             snap.native_sol, snap.wsol, snap.held = res
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"balances: {exc}")
+        if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None
+            snap.failed_tx_1h = await failed_transactions(svc, wallet, now)
         try:
-            rows = svc.store._q("select ts, mint, is_buy, quote from trades where user=? and ts>? order by ts", (wallet, since))
-            snap.fills = [{"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4)} for ts, m, b, q in rows]
+            rows = svc.store._q(
+                "select ts, mint, is_buy, quote from trades where user=? and ts>? order by ts", (wallet, since)
+            )
+            snap.fills = [
+                {"ts": int(ts), "mint": m, "side": "buy" if b else "sell", "sol": round(q / 1e9, 4)}
+                for ts, m, b, q in rows
+            ]
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"fills: {exc}")
     try:
         st = await svc.oktech_status()
-        snap.snipers = [{"id": t.get("id"), "name": t.get("name"), "status": t.get("status")} for t in st.get("snipers", [])]
+        snap.snipers = [
+            {"id": t.get("id"), "name": t.get("name"), "status": t.get("status")} for t in st.get("snipers", [])
+        ]
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"oktech: {exc}")
         snap.snipers = None
