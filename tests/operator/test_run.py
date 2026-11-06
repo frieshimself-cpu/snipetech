@@ -104,6 +104,57 @@ def test_budget_note_once_per_day(tmp_env):
     assert tmp_env["paths"].notes.read_text().count("budget reached") == 1 and tmp_env["calls"] == []
 
 
+def _sells(st, n, start, wallet="W"):
+    for i in range(n):
+        st.put_fill({"sig": f"{wallet}-{start + i}", "ts": int(start + i * 60), "wallet": wallet, "mint": f"M{start + i}",
+                     "side": "sell", "sol": 0.19, "tokens": 1.0, "pnl_sol": -0.01})  # fmt: skip
+
+
+def test_five_new_live_round_trips_start_one_post_mortem_and_it_is_not_repeated(tmp_env):
+    from snipetech.operator import learning
+
+    _sells(tmp_env["svc"].store, 5, NOW - 3600)
+    _sells(tmp_env["svc"].store, 3, NOW - 3600, wallet="SOMEONE ELSE")
+    _op(tmp_env)
+    (call,) = tmp_env["calls"]
+    decision = call[0][4]
+    assert decision.mode == "postmortem" and any(
+        r.startswith("post-mortem due: 5 new live round trips") for r in decision.reasons
+    )
+    pm = learning.postmortem_state(tmp_env["paths"])
+    assert pm == {"ts": NOW, "sell_ts": NOW - 3600 + 240, "n": 5, "mode": "postmortem"}
+    _op(tmp_env)  # the same trips: reviewed already
+    _sells(tmp_env["svc"].store, 6, NOW - 1800)
+    _op(tmp_env)  # six new ones, but the last post-mortem ran under three hours ago
+    assert len(tmp_env["calls"]) == 1 and "call postmortem" in tmp_env["paths"].log.read_text()
+
+
+def test_a_failed_post_mortem_keeps_its_trips_for_the_next_one(tmp_env):
+    """An API error must not count as a review of the trips: the next post-mortem (three hours on, or the daily
+    analysis) still starts from the same sells; the three-hour spacing holds all the same."""
+    from snipetech.operator import learning
+
+    _sells(tmp_env["svc"].store, 5, NOW - 3600)
+    failed = lambda *a, **k: {"usd": 0.0, "tool_calls": 0, "stopped": "api_error", "notes": 1}
+    _op(tmp_env, turn=failed)
+    pm = learning.postmortem_state(tmp_env["paths"])
+    assert pm["ts"] == NOW and pm["sell_ts"] is None  # tried now; nothing reviewed yet
+    assert learning.trips_since_postmortem(tmp_env["svc"].store, "W", tmp_env["paths"], NOW + 4 * 3600)["n"] == 5
+    _op(tmp_env)  # straight after: not again within three hours
+    assert tmp_env["calls"] == []
+
+
+def test_a_post_mortem_is_recorded_only_when_the_turn_is_called(tmp_env, monkeypatch, capsys):
+    from snipetech.operator import learning
+
+    _sells(tmp_env["svc"].store, 5, NOW - 3600)
+    _op(tmp_env, dry_run=True)
+    assert '"postmortem"' in capsys.readouterr().out and learning.postmortem_state(tmp_env["paths"]) == {}
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    _op(tmp_env)
+    assert tmp_env["calls"] == [] and learning.postmortem_state(tmp_env["paths"]) == {}
+
+
 def test_cli_has_operate_and_ops_allows_it():
     assert "operate" in O.ALLOWED
     a = build_parser().parse_args(["operate", "--dry-run"])

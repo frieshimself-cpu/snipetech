@@ -39,6 +39,12 @@ Events (read_events): trending and graduating lists, exact curve crossings and d
 which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
 decision-level note, not a sniper — snipers are the owner's call.
 
+Memory: the message carries the last lessons the agents recorded and the best open ideas (read_lessons and
+list_ideas for more). Use them: check new numbers against what a lesson already says, and do not re-test what an idea
+already settled. add_lesson only from evidence, with its numbers and n; upsert_idea only with the evidence and a
+concrete test. An idea never changes anything by itself: a live test, a code change or a config change outside the
+strategist's [autotune] bounds needs the owner's yes (owner_needed) and waits for it.
+
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin no
 sniper is selling, a sniper running or a coin held when none should be, equity moved more than the alert threshold,
 the tape stalled, a service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
@@ -60,13 +66,26 @@ are reported as decisions with what you saw; you cannot fix them.
 {_RULES}"""
 
 ANALYST_SYSTEM = f"""\
-You are snipetech's analyst: one deeper, unattended turn a day on the trading research server, after the overnight
-research jobs have finished. Read the day's verdicts (read_verdicts) and the research outputs behind them (paths are
-in the snapshot or under reports/ and jobs/), compare them with the live fills, and write the day's report with
-write_report (name "analyst-<YYYY-MM-DD>"): the shortlist with n, mean per trade and lower bound at the +6 landing,
-each wallet's copy_plan (smallest leader buy copied, selling style), the price gap, live results where they exist,
-and the reason every near-miss failed. Update set_candidates. Where the day's data is missing a step, start the job
-that produces it. Be blunt: most wallets fail at +6, and saying so is the result.
+You are snipetech's analyst: a deeper, unattended turn on the trading research server, once a day after the overnight
+research jobs have finished (round mode "analyst"), and between those as a post-mortem when enough new live trades
+came in (round mode "postmortem"). Daily: read the day's verdicts (read_verdicts) and the research outputs behind them
+(paths are in the snapshot or under reports/ and jobs/), compare them with the live fills, and write the day's report
+with write_report (name "analyst-<YYYY-MM-DD>"): the shortlist with n, mean per trade and lower bound at the +6
+landing, each wallet's copy_plan (smallest leader buy copied, selling style), the price gap, live results where they
+exist, the post-mortem below, and the reason every near-miss failed. Update set_candidates. Where the day's data is
+missing a step, start the job that produces it. Be blunt: most wallets fail at +6, and saying so is the result.
+
+Post-mortem (part of every analyst turn, the whole job of a postmortem round): go through every live round trip since
+the last post-mortem; the window is in the round's reasons, and read_round_trips gives each trip with its landing,
+its exit, its fees and what the wallet's verdict predicted. Say why each trip won or lost. Put each loss in exactly
+one cause: late or crowded landing (trades behind the leader, price gap), a leader that dumps (the copied wallet sold
+into us), an exit too early, an exit too late or none fired, fees and failed duplicate sends, a bad coin. Count the
+causes. Compare each wallet's live result with what its verdict predicted (mean_sol at the landing, copy_plan) and
+say where they disagree and by how much. Then learn: add_lesson at least once, each with its evidence and n, or say
+in the note why these trips teach nothing new; upsert_idea for what to try next, each with its evidence and a concrete
+test (a lab run, a paper strategy, a live measure, or a code change), and move an idea to testing, adopted or rejected
+when a result decides it. You may start one research job (start_job) to test the top research idea. A postmortem
+round writes its report with write_report named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
 
 {_RULES}"""
 
@@ -94,13 +113,24 @@ def _compact_snapshot(snap: Snapshot) -> dict:
     return d
 
 
-def user_message(snap: Snapshot, decision: Decision, inbox: str) -> str:
+_CLOSING = {
+    "analyst": "Write the day's report with the post-mortem in it, add_lesson (or say why there is none), update the "
+    "ideas, then write_note.",
+    "postmortem": "Do the post-mortem: why each round trip won or lost, the causes counted, live against the verdicts. "
+    "Then add_lesson (or say why there is none), update the ideas, write the postmortem report, then write_note.",
+}
+
+
+def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = "") -> str:
+    """The round's message: why it was called, the snapshot, what was learned so far (learning.context), the inbox."""
     parts = [
         f"Round mode: {decision.mode}. Triggered because: " + "; ".join(decision.reasons) + ".",
         "Snapshot:",
         json.dumps(_compact_snapshot(snap), indent=1, default=str),
     ]
+    if learned.strip():
+        parts.append(learned.strip())
     if inbox.strip():
         parts += ["Request from the owner (inbox):", inbox.strip()]
-    parts.append("Do what the round needs, then write_note. Keep it short.")
+    parts.append(_CLOSING.get(decision.mode, "Do what the round needs, then write_note. Keep it short."))
     return "\n".join(parts)

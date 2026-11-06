@@ -335,10 +335,10 @@ Turn it off on the server with `sudo systemctl disable --now snipetech-ops`.
 **Runs without the timers, and a book switch without SSH.** Until the loop's timers are enabled, every operator
 round (every 15 minutes, already enabled) starts the stages that are due as background jobs: measure and the book every
 round, the event feeds, discover hourly, qualify every 30 minutes (one lab at a time), the read-only database copy
-hourly, the event scan every 3 hours (no unit runs it), the strategist on Sundays. A stage whose timer is active is
-left to systemd. A stage that ends cleanly wakes nobody; a failed one is a decision note, repeated every six hours
-while it keeps failing; stages that cannot start at all are raised the same way. Finished stage jobs are pruned after
-three days; `remote jobs` always lists running jobs first.
+hourly, the event scan every 3 hours (no unit runs it), the strategist once a day after 05:10 UTC. A stage whose
+timer is active is left to systemd. A stage that ends cleanly wakes nobody; a failed one is a decision note, repeated
+every six hours while it keeps failing; stages that cannot start at all are raised the same way. Finished stage jobs
+are pruned after three days; `remote jobs` always lists running jobs first.
 The live book is switched on by `[book] enabled = true` in the owner's config file or, without SSH, by `/book on` in
 Telegram from the owner's chat (or `snipetech remote --wait run book on`). `/book off` stops what the book runs
 within 15 minutes, except a sniper still selling a coin, which keeps running until the coin is sold (a stop never
@@ -370,9 +370,11 @@ the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, 
 takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock
 (`operator/commands.lock`) and one Telegram offset, so a command is handled exactly once.
 
-**The strategist (learning loop, stage 6).** Once a week (`snipetech-strategist.timer`, Sundays 05:00 UTC) one Opus turn
-reads the week's numbers from the tables — fills and the bid model per arm, live expectancy per copied wallet, verdict
-counts, the event-edge table, past parameter changes — and proposes at most one change to `[book]` / `[qualify]`. The
+**The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
+round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.
+From 20 on, one turn on the analyst model reads the week's numbers from the tables — fills and the bid model per arm,
+live expectancy per copied wallet, verdict counts, the event-edge table, past parameter changes, how many round trips
+are new — and the lessons and open ideas below, and proposes at most one change to `[book]` / `[qualify]`. The
 owner's `[autotune]` table says which keys it may touch and how far (`book.fill_max_sol` ≤ 1 SOL, `book.min_score` within
 ×0.5–×2, `book.explore_share` 0–0.3, the control arm's tip 0.002–0.02 SOL, `book.live_kill_n` 5–15, `book.min_copy_sol`
 0.1–2 SOL, `qualify.max_gap3_pct` 5–30, `qualify.min_n_tape` 10–40, `qualify.landing_pos` in +3/+6/+9). Never tunable,
@@ -382,7 +384,23 @@ applied (written to `autotune.toml` next to the database, which is merged over t
 keys the bounds list; the owner's file is never touched; each change is an `events` row of kind
 `param_change` and a Telegram line); one key outside the bounds turns the whole patch into a question on Telegram and
 nothing changes. `snipetech strategist run --dry-run` shows the evidence and the proposal without applying; the turn is
-capped at `[autotune] turn_usd` (10 $) and shares the operator's daily ledger.
+capped at `[autotune] turn_usd` (10 $) and shares the operator's daily ledger; `--force` skips the once-a-day and
+20-trade checks.
+
+**How the agents learn: lessons, ideas, post-mortems.** The operator, the analyst and the strategist share one memory in
+`operator/`: `lessons.md` (append-only, one dated line per lesson, with its evidence and how many trades it rests on)
+and `ideas.json` (what to try next: why, how to test it — a lab run, a paper strategy, a live measure or a code change —
+the effect expected, its status, and whether it needs your yes). Every turn's message carries the last 10 lessons and
+the 5 best open ideas. The daily analysis now includes a post-mortem of every live round trip since the last one: why
+each won or lost, each loss put in one cause (a late or crowded landing, a leader that dumps, an exit too early, an
+exit too late or none fired, fees and failed duplicate sends, a bad coin), the causes counted, and the live result
+against what each wallet's verdict predicted. It then writes at least one lesson (or says why there is none), updates
+the ideas, and may start one research job to test the best of them. Between the daily analyses, 5 new live round trips
+start a post-mortem turn of their own: at most one every 3 hours, paid from the same daily cap, its report in
+`operator/postmortem-<date>-<time>.md`. The six-hour research digest ends with what was learned since the last one and
+the ideas tested next; an idea that needs money, a code change or a setting outside the strategist's bounds says
+"needs your yes" and waits for it. Nothing in this loop trades or changes a live setting; only the strategist changes
+settings, inside the `[autotune]` bounds, as before.
 
 ### 4. Is copytrading this wallet worth it?
 

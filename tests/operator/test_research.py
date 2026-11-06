@@ -278,6 +278,49 @@ def test_the_digest_says_what_ran_what_was_checked_the_best_wallets_and_why_the_
     assert "Next:" in text
 
 
+def test_the_digest_says_what_was_learned_and_what_is_tested_next(env):
+    """Every six hours the owner also reads what the agents learned since the last digest and the ideas they test
+    next; an idea that needs money or a change outside the bounds says it waits for the owner's yes."""
+    from snipetech.operator import learning
+
+    st, cfg, data = env
+    paths, metas = _digest_world(st, data)
+    (paths.root / "BOOK_ON").write_text("{}")
+    learning.add_lesson(paths, "an older lesson", "e", 2, source="analyst", now=NOW - 8 * H)
+    learning.add_lesson(paths, "Crowded leaders lose at our landing", "4 of 5 losses landed 2-4 behind", 5,
+                        source="postmortem", now=NOW - 2 * H)  # fmt: skip
+    learning.upsert_idea(paths, {"title": "Copy 9WzD live at 0.1 SOL", "why": "+0.02 a trade on 40 paper trades",
+                                 "test": "a 0.1 SOL live measure over 20 copies", "expected": "+0.01 SOL a trade",
+                                 "kind": "live-test", "priority": 5}, source="analyst", now=NOW - H)  # fmt: skip
+    learning.upsert_idea(paths, {"title": "Re-qualify the top 10 at +9", "why": "crowded landings", "test": "a lab at +9",
+                                 "expected": "fewer losers copied", "kind": "research"}, source="analyst", now=NOW - H)  # fmt: skip
+    text = RS.digest_text(st, cfg, paths, NOW, NOW - 6 * H, metas + [_meta(["strategist", "run"], NOW - 4 * H)])
+    assert len(text) <= RS.MAX_CHARS and "Next:" in text
+    assert "strategist once" in text and "weekly" not in text  # it runs every day now
+    assert "What it learned since 09:00 UTC:\n- Crowded leaders lose at our landing (5 cases)\n" in text
+    assert "older lesson" not in text  # learned before this digest's window
+    assert "Testing next:\n- Copy 9WzD live at 0.1 SOL (needs your yes)\n- Re-qualify the top 10 at +9" in text
+    assert text.index("Book:") < text.index("What it learned") < text.index("Testing next:")
+    quiet = RS.digest_text(st, cfg, OperatorPaths(data / "elsewhere").ensure(), NOW, NOW - 6 * H, metas)
+    assert "What it learned: nothing new since 09:00 UTC" in quiet and "Testing next: no open ideas yet" in quiet
+
+
+def test_a_full_digest_still_ends_with_what_was_learned(env):
+    """The learning lines come last: a busy six hours (three long lessons, three long ideas) must not cut them off."""
+    from snipetech.operator import learning
+
+    st, cfg, data = env
+    paths, metas = _digest_world(st, data)
+    for i in range(4):
+        learning.add_lesson(paths, f"lesson {i} " + "about crowded landings " * 12, "evidence " * 40, 9, source="analyst",
+                            now=NOW - H + i)  # fmt: skip
+        learning.upsert_idea(paths, {"title": f"idea {i} " + "copy floor " * 10, "why": "w", "test": "t", "expected": "e",
+                                     "kind": "research"}, source="analyst", now=NOW - H)  # fmt: skip
+    text = RS.digest_text(st, cfg, paths, NOW, NOW - 6 * H, metas)
+    assert len(text) <= RS.MAX_CHARS and not text.endswith("…")
+    assert "- and 1 more in operator/lessons.md" in text and text.splitlines()[-1].startswith("- idea 2 copy floor")
+
+
 def test_with_the_timers_on_the_digest_reads_what_ran_from_the_store(env):
     """systemd runs qualify and discovery without a job file: the digest still says they ran, from what they wrote; a
     wallet checked without any trade on our tape is said apart from the ones measured; when nothing can start, it says

@@ -1,5 +1,5 @@
-"""One Opus turn with two tools: read the evidence, propose a patch. Metered by the operator's ledger (analyst rates)
-and cut off at [autotune] turn_usd."""
+"""One turn on the analyst model: read the evidence, propose a patch, and the shared memory (read the lessons and the
+open ideas, add a lesson). Metered by the operator's ledger (analyst rates) and cut off at [autotune] turn_usd."""
 
 from __future__ import annotations
 
@@ -13,12 +13,13 @@ from anthropic import AsyncAnthropic, beta_async_tool
 
 from ..config import Config
 from ..operator.budget import Ledger
-from ..operator.tools import NoteSink
+from ..operator.learning import context as learning_context
+from ..operator.tools import NoteSink, make_learning_tools
 from ..operator.turn import FALLBACK_BETA
 from .bounds import check_patch
 from .prompts import STRATEGIST_SYSTEM, user_message
 
-MAX_TOOL_CALLS = 6
+MAX_TOOL_CALLS = 8  # the evidence, a look at the lessons and ideas, a lesson or two, and at most one proposal
 
 
 async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes: NoteSink, client: AsyncAnthropic | None = None,
@@ -56,8 +57,8 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
         model=cfg.operator.analyst_model,
         max_tokens=cfg.operator.analyst_max_tokens,
         system=STRATEGIST_SYSTEM,
-        tools=[read_evidence, propose_patch],
-        messages=[{"role": "user", "content": user_message(evidence)}],
+        tools=[read_evidence, propose_patch, *make_learning_tools(notes.paths, now, "strategist", ideas=False)],
+        messages=[{"role": "user", "content": user_message(evidence, learned=learning_context(notes.paths))}],
         thinking={"type": "adaptive"},
         output_config={"effort": cfg.operator.effort},
         cache_control={"type": "ephemeral"},

@@ -1,4 +1,4 @@
-"""What the weekly strategist is told."""
+"""What the strategist is told."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ from ..playbook import OKTECH_PLAYBOOK
 
 STRATEGIST_SYSTEM = (
     """\
-You are snipetech's strategist: one unattended turn a week on the trading research server. You read the week's numbers
+You are snipetech's strategist: an unattended turn on the trading research server, on a day when at least 20 new live
+round trips came in since your last turn (the evidence's since_last_turn says how many). You read the week's numbers
 (read_evidence) and decide whether one parameter change to the book or the qualify stage is justified. You never
 trade and you cannot start, stop or create anything; you only propose a patch with propose_patch, and the code applies
 it if every key is inside the owner's [autotune] bounds (hard limits, listed in the evidence) or asks the owner if not.
@@ -32,15 +33,23 @@ Fills can come from snipers the owner started by hand (tests such as the fee tes
 Rules: at most one propose_patch per turn, with a plain-words reason the owner can read in ten seconds. "No change"
 is a good answer when the week is thin (fewer than 20 live round trips for the wallets or the preset a change
 concerns, fewer than 30 live fills per arm) or the numbers disagree. Never propose keys that are not in bounds, never
-a priority fee, never an exit the evidence has not seen fire live. Say what you expect the change to do and how next
-week will show whether it worked.
+a priority fee, never an exit the evidence has not seen fire live. Say what you expect the change to do and how the
+next 20 live round trips will show whether it worked.
+
+Memory: the analyst's lessons and open ideas are in the message (read_lessons and list_ideas for more). Weigh a config
+idea against the evidence before you propose it; never re-propose what a lesson says failed. When the numbers teach
+something new (what your last change did, a key that does not move the result), add_lesson with its evidence and n.
 """
     + "\n"
     + OKTECH_PLAYBOOK
 )
 
 
-def user_message(evidence: dict) -> str:
-    return ("The week's evidence is one read_evidence call away (summary below). Decide: one patch, or no change.\n"
-            + json.dumps({k: evidence.get(k) for k in ("now_utc", "window_days", "arms", "verdict_counts")}, default=str)
-            + "\nFinish with propose_patch if you change anything; otherwise end with one sentence why not.")  # fmt: skip
+def user_message(evidence: dict, learned: str = "") -> str:
+    """The turn's message: the evidence summary, then what the agents learned so far (operator.learning.context)."""
+    head = ("The week's evidence is one read_evidence call away (summary below). Decide: one patch, or no change.\n"
+            + json.dumps({k: evidence.get(k) for k in ("now_utc", "window_days", "since_last_turn", "arms", "verdict_counts")},
+                         default=str))  # fmt: skip
+    memory = f"\n{learned.strip()}" if learned.strip() else ""
+    tail = "\nFinish with propose_patch if you change anything; otherwise end with one sentence why not."
+    return head + memory + tail

@@ -16,6 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive
+from . import learning
 from .budget import Ledger
 from .commands import handle_command, poll_commands
 from .digest import digest_due, digest_text, mark_sent
@@ -137,6 +138,25 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
     return 0
 
 
+def _trips(svc, cfg: Config, paths: OperatorPaths, now: float) -> dict:
+    """The book wallet's live round trips since the last post-mortem; none when there is no wallet or the store
+    cannot say (the round goes on without a post-mortem)."""
+    if not cfg.operator.wallet:
+        return {"n": 0, "since_ts": None, "newest_ts": None}
+    try:
+        return learning.trips_since_postmortem(svc.store, cfg.operator.wallet, paths, now)
+    except Exception as exc:  # noqa: BLE001
+        _log(paths, now, f"post-mortem count: skipped: {type(exc).__name__}: {exc}")
+        return {"n": 0, "since_ts": None, "newest_ts": None}
+
+
+def _mark_postmortem(paths: OperatorPaths, now: float, trips: dict, mode: str, reviewed: bool) -> None:
+    try:
+        learning.mark_postmortem(paths, now, trips, mode, reviewed=reviewed)
+    except OSError as exc:
+        _log(paths, now, f"post-mortem mark: failed: {exc}")
+
+
 def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) -> dict[str, float]:
     """When each state reason last called Claude. A state missing this round keeps its time until its refire window
     has passed, so a state that flaps (present, absent, present) is not news again each time it comes back."""
@@ -216,7 +236,8 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                     _log(paths, t0, "digest send failed; will retry next round")
         except Exception as exc:  # noqa: BLE001
             _log(paths, t0, f"digest: failed: {type(exc).__name__}: {exc}")
-        decision = decide(snap, prev, t0, cfg.operator, paths)
+        trips = _trips(svc, cfg, paths, t0)
+        decision = decide(snap, prev, t0, cfg.operator, paths, new_trips=trips["n"], trips_since=trips["since_ts"])
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
         prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
@@ -257,6 +278,9 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         )
         ledger = Ledger(paths.spend, cfg.operator.prices)
         extra = {"client": client} if client is not None else {}
+        review = decision.mode in ("analyst", "postmortem")  # every analyst turn reviews the live round trips
+        if review:  # its time first: a turn that fails or crashes is not retried before the gap has passed
+            _mark_postmortem(paths, t0, trips, decision.mode, reviewed=False)
         try:
             result = turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, jobs=jobs, now=now, **extra)
             if hasattr(result, "__await__"):
@@ -266,6 +290,8 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             if not notes.has_today("round failed", now()):
                 notifier.send(notes.write(f"round failed: {type(exc).__name__}: {str(exc)[:160]}", "decision"))
             return 0
+        if review and (result or {}).get("stopped") not in ("api_error", "refusal"):  # it ran: these trips are done
+            _mark_postmortem(paths, t0, trips, decision.mode, reviewed=True)
         _log(paths, now(), f"turn {decision.mode}: {json.dumps(result, default=str)}")
         return 0
     finally:

@@ -10,6 +10,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
+from .learning import last_postmortem_ts
 from .paths import OperatorPaths
 from .standin import loop_stage
 
@@ -89,14 +90,40 @@ def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> bool:
     return secs_into_day >= int(hh or 0) * 3600 + int(mm or 0) * 60 and not analyst_done_today(paths, now)
 
 
+POSTMORTEM_MIN_TRIPS = 5  # new live round trips (sells in fills) that make a post-mortem worth an analyst turn
+POSTMORTEM_GAP_SECS = 3 * 3600  # never more than one post-mortem in three hours (the daily analysis counts as one)
+DAILY_SOON_SECS = 3600  # a post-mortem waits for a daily analysis due within the hour: that turn does it too
+
+
+def postmortem_due(paths: OperatorPaths, now: float, new_trips: int, cfg: OperatorConfig) -> bool:
+    """Enough new live round trips to ask why they won or lost, and the last post-mortem over three hours ago."""
+    if int(new_trips or 0) < POSTMORTEM_MIN_TRIPS:
+        return False
+    last = last_postmortem_ts(paths)
+    if last is not None and now - last <= POSTMORTEM_GAP_SECS:
+        return False
+    return not _analyst_due(paths, now + DAILY_SOON_SECS, cfg)
+
+
+def _trips_line(n: int, since: float | None, now: float) -> str:
+    """The window the turn reviews, e.g. 7 new live round trips since 05 Nov 22:30 UTC (read_round_trips hours=8)."""
+    since = now - 86400 if since is None else float(since)
+    hours = max(1, -(-int(now - since) // 3600))
+    when = time.strftime("%d %b %H:%M", time.gmtime(since))
+    return f"{int(n)} new live round trips since {when} UTC (read_round_trips hours={hours})"
+
+
 def _state_key(reason: str) -> str:
     return "".join(ch for ch in reason if not ch.isdigit() and ch not in "+-.").strip()
 
 
-def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) -> Decision:
+def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, new_trips: int = 0,
+           trips_since: float | None = None) -> Decision:  # fmt: skip
     """Events (a research job ended, equity moved, inbox, analysis due) always call. States (sniper running, coin held,
     OKTech unknown, tape stale, service down, a loop stage failing) call when they appear and then at most once per
-    `refire_secs`. A loop stage that ended cleanly is neither."""
+    `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
+    (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
+    analysis reviews them itself."""
     if snap.spent_today >= cfg.daily_usd:
         return Decision(False, "none", ["budget"])
     events: list[str] = []
@@ -170,8 +197,12 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
     state_keys = [_state_key(r) for r in states]
     fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
+    trips = _trips_line(new_trips, trips_since, now) if new_trips else None
     if _analyst_due(paths, now, cfg):
-        return Decision(True, "analyst", reasons + ["daily analysis due"], state_keys)
+        return Decision(True, "analyst", reasons + ["daily analysis due"] + ([f"post-mortem: {trips}"] if trips else []),
+                        state_keys)  # fmt: skip
+    if trips and postmortem_due(paths, now, new_trips, cfg):
+        return Decision(True, "postmortem", reasons + [f"post-mortem due: {trips}"], state_keys)
     if reasons:
         return Decision(True, "operator", reasons, state_keys)
     return Decision(False, "none", [], state_keys)

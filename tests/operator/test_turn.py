@@ -146,6 +146,52 @@ def test_inbox_text_is_included_and_cleared(env):
     assert not env["paths"].inbox.exists() or env["paths"].inbox.read_text().strip() == ""
 
 
+def test_a_post_mortem_is_an_analyst_turn_that_leaves_the_daily_analysis_due(env):
+    """Between the daily analyses, a post-mortem runs on the analyst model with the analyst's instructions and is
+    paid like the analysis (same daily ledger, analyst rates); it never marks the day's analysis done, and what it
+    learns is signed "postmortem"."""
+    add = {"text": "Crowded leaders lose at our landing", "evidence": "4 of 5 losses landed 2-4 behind", "n": 5}
+    handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "add_lesson", "input": add}], "tool_use"),
+                                  ([{"type": "text", "text": "reviewed"}], "end_turn"))  # fmt: skip
+    out = _run(
+        env, Decision(True, "postmortem", ["post-mortem due: 5 new live round trips since 05 Nov 20:00 UTC"]), handler
+    )
+    assert out["stopped"] == "end_turn" and requests[0]["model"] == env["cfg"].operator.analyst_model
+    assert (
+        _system(requests[0]).startswith(ANALYST_SYSTEM[:40])
+        and "Round mode: postmortem" in requests[0]["messages"][0]["content"]
+    )
+    assert {json.loads(x)["mode"] for x in env["paths"].spend.read_text().splitlines()} == {"analyst"}
+    assert not env["paths"].report("analyst-2026-11-06").exists()
+    assert "[postmortem, n=5] Crowded leaders lose at our landing" in (env["paths"].root / "lessons.md").read_text()
+
+
+def test_every_turn_sees_the_lessons_and_the_open_ideas(env):
+    from snipetech.operator import learning
+
+    learning.add_lesson(
+        env["paths"], "Fees ate the small wins", "6 of 9 wins under 0.009 SOL", 9, source="analyst", now=NOW - 60
+    )
+    learning.upsert_idea(env["paths"], {"title": "Copy only leader buys of 0.5 SOL or more", "why": "7 of 9 losses",
+                                        "test": "lab --by-wallet", "expected": "+0.004 SOL a trade", "kind": "research"},
+                         source="analyst", now=NOW - 60)  # fmt: skip
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert "Fees ate the small wins" in content and "Copy only leader buys of 0.5 SOL or more" in content
+    names = {t["name"] for t in requests[0]["tools"]}
+    assert {"read_lessons", "add_lesson", "list_ideas", "upsert_idea", "read_round_trips"} <= names
+
+
+def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
+    """The post-mortem is the analyst's job by its instructions: each loss in one named cause, the causes counted,
+    live against the verdict, then a lesson (or why none) and ideas with a concrete test."""
+    for words in ("post-mortem", "late or crowded landing", "a leader that dumps", "an exit too early",
+                  "an exit too late or none fired", "fees and failed duplicate sends", "a bad coin", "copy_plan",
+                  "add_lesson", "upsert_idea", "start_job", "postmortem-<YYYY-MM-DD-HHMM>"):  # fmt: skip
+        assert words in ANALYST_SYSTEM, words
+
+
 def test_runner_is_closed_after_the_turn(env, monkeypatch):
     """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
     'generator didn't stop after athrow()' on the server. The turn closes it itself."""

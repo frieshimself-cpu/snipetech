@@ -18,7 +18,7 @@ def test_inactive_timers_get_their_stage_started():
     argvs = [tuple(a) for a in due]
     assert ("measure", "run") in argvs and ("book", "run") in argvs and ("discover", "run") in argvs
     assert ("qualify", "run") in argvs and ("events", "poll", "--once") in argvs and ("snapshot-db",) in argvs
-    assert ("strategist", "run") not in argvs  # Sundays after 05:00 UTC only
+    assert ("strategist", "run") in argvs  # every day after 05:10 UTC, not only on Sundays
 
 
 def test_active_timers_are_left_to_systemd():
@@ -41,11 +41,20 @@ def test_recent_or_running_stages_are_not_started_again():
     assert ("book", "run") in argvs
 
 
-def test_strategist_runs_on_sundays():
-    argvs = [tuple(a) for a in due_standins({}, [], SUNDAY)]
-    assert ("strategist", "run") in argvs
-    argvs = [tuple(a) for a in due_standins({}, [_meta(["strategist", "run"], SUNDAY - 3600)], SUNDAY)]
-    assert ("strategist", "run") not in argvs
+def test_the_strategist_stands_in_once_a_day_after_0510():
+    """Its timer runs it every day at 05:10 UTC (its own guard calls Claude only on 20 new live round trips); with the
+    timer off, the first round after 05:10 starts it, once that day, whenever it ran the day before."""
+    day = 1_793_923_200  # Friday 6 Nov 2026, 00:00 UTC
+    strat = ("strategist", "run")
+
+    def due(now, *started):
+        return strat in [tuple(a) for a in due_standins({}, [_meta(strat, s) for s in started], now)]
+
+    assert not due(day + 5 * 3600) and due(day + 5 * 3600 + 15 * 60) and due(SUNDAY)
+    assert not due(NOW, day + 5 * 3600 + 15 * 60)  # it ran this morning
+    assert due(day + 86400 + 5 * 3600 + 15 * 60, day + 5 * 3600 + 15 * 60)  # the next morning
+    assert due(day + 86400 + 5 * 3600 + 15 * 60, day + 23 * 3600)  # a late run the day before does not shift it
+    assert not due(day + 86400 + 4 * 3600, day + 23 * 3600)  # nor make it run before 05:10
 
 
 def test_round_starts_due_stages_but_not_on_a_dry_run(tmp_path, monkeypatch):

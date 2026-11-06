@@ -12,6 +12,7 @@ from anthropic import beta_async_tool
 
 from ..config import OperatorConfig
 from ..ops import _read_only_authorizer, redact
+from . import learning
 from .jobs import OperatorJobs
 from .paths import OperatorPaths
 
@@ -60,7 +61,110 @@ def _inside(path: Path, roots: list[Path]) -> bool:
     return any(r == root.resolve() or r.is_relative_to(root.resolve()) for root in roots)
 
 
-def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: OperatorConfig, notes: NoteSink) -> list:
+def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str, *, ideas: bool = True,
+                        svc=None, wallet: str = "") -> list:  # fmt: skip
+    """The shared memory as tools: read_lessons, add_lesson, list_ideas, and (when `ideas`) upsert_idea; with a
+    service, read_round_trips for the post-mortem. They read and write operator/ files only: no trade, no setting."""
+
+    @beta_async_tool
+    async def read_lessons(n: int = 10) -> str:
+        """The last lessons the agents recorded (operator/lessons.md), oldest first: when, who, n, the lesson and its
+        evidence.
+
+        Args:
+            n: How many of the newest lessons (at most 50).
+        """
+        return redact(json.dumps(learning.read_lessons(paths, min(50, max(1, int(n))))))
+
+    @beta_async_tool
+    async def add_lesson(text: str, evidence: str, n: int) -> str:
+        """Record one lesson for every later turn: something the numbers showed that should change what we do or
+        expect. One sentence, its evidence with the numbers, and how many cases it rests on. Never a guess, never a
+        secret; a lesson already recorded is not written twice.
+
+        Args:
+            text: The lesson in one plain sentence (under 300 characters), e.g. "Crowded leaders lose at our landing".
+            evidence: What shows it, with numbers and where they come from (under 400 characters), e.g. "4 of 5 losses
+                on 6 Nov landed 2-4 trades behind at +18-43 % (read_round_trips, 12:00-18:00)".
+            n: How many trades, runs or moments it rests on (at least 1).
+        """
+        try:
+            lesson = learning.add_lesson(paths, text, evidence, n, source=source, now=now_fn())
+        except ValueError as exc:
+            return f"error: {exc}"
+        return "already recorded" if lesson is None else "recorded: " + json.dumps(lesson)
+
+    @beta_async_tool
+    async def list_ideas(status: str = "open", limit: int = 10) -> str:
+        """The ideas worth testing (operator/ideas.json) with their evidence, test, expected effect, kind, status and
+        whether they need the owner's yes, plus the count per status.
+
+        Args:
+            status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
+            limit: At most this many ideas.
+        """
+        try:
+            rows = learning.list_ideas(paths, status, limit=min(100, max(1, int(limit))))
+        except ValueError as exc:
+            return f"error: {exc}"
+        counts: dict[str, int] = {}
+        for i in learning.list_ideas(paths, "all"):
+            counts[str(i.get("status"))] = counts.get(str(i.get("status")), 0) + 1
+        return redact(json.dumps({"counts": counts, "ideas": rows}))
+
+    @beta_async_tool
+    async def upsert_idea(title: str | None = None, why: str | None = None, test: str | None = None,
+                          expected: str | None = None, kind: str | None = None, status: str | None = None,
+                          owner_needed: bool | None = None, priority: int | None = None, id: str | None = None) -> str:  # fmt: skip
+        """Add an idea worth testing, or update one (by id, or by the same title); fields left out are kept. A new
+        idea needs title, why, test, expected and kind. Live tests and code changes always need the owner's yes, and
+        so does any config change outside the strategist's [autotune] bounds (set owner_needed). An idea never
+        changes anything by itself: research you may start with start_job; the rest waits for the strategist or the
+        owner.
+
+        Args:
+            title: What to try, in a few words (under 120 characters).
+            why: The evidence for it, with numbers (under 600 characters).
+            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (under 400).
+            expected: The effect expected if it works, in numbers where possible (under 300).
+            kind: research | config | code | live-test.
+            status: open | testing | adopted | rejected (adopted or rejected only with the result that decided it).
+            owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
+            priority: 1 (low) to 5 (high): what testing it is worth.
+            id: The idea's id (e.g. "I3") to update it; omit to add a new one.
+        """
+        fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
+                  "status": status, "owner_needed": owner_needed, "priority": priority}  # fmt: skip
+        try:
+            idea = learning.upsert_idea(paths, fields, source=source, now=now_fn())
+        except ValueError as exc:
+            return f"error: {exc}"
+        return json.dumps(idea)
+
+    @beta_async_tool
+    async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
+        """Each live round trip of the last `hours`, newest first, for a post-mortem: the copied wallet, the landing
+        (trades behind it, price gap, place in the slot), the exit that fired (exit_reason, exit_name, crossed,
+        failed duplicate sends in twin_fee_sol), the money (pnl_sol), and what the wallet's latest verdict predicted
+        (mean_sol and lower_sol at the landing, copy_plan); plus wins, losses and the total.
+
+        Args:
+            hours: Look back this many hours (the post-mortem window is in the round's reasons).
+            limit: At most this many round trips, newest first.
+        """
+        try:
+            since = now_fn() - max(1, int(hours)) * 3600
+            out = learning.round_trips(svc.store, wallet, since, limit=min(200, max(1, int(limit))))
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {type(exc).__name__}: {exc}"
+        return redact(json.dumps(out, default=str))
+
+    tools = [read_lessons, add_lesson, list_ideas] + ([upsert_idea] if ideas else [])
+    return tools + ([read_round_trips] if svc is not None else [])
+
+
+def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: OperatorConfig, notes: NoteSink,
+                        source: str = "operator") -> list:  # fmt: skip
     roots = [paths.reports, paths.root, paths.jobs]
     now_fn = notes.now
 
@@ -243,6 +347,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             p = paths.report(name)
         except ValueError as exc:
             return f"error: {exc}"
+        if source == "postmortem" and str(name).startswith("analyst-"):  # that file marks the day's analysis done
+            return "error: a post-mortem writes postmortem-<YYYY-MM-DD-HHMM>, never the day's analyst report"
         paths.ensure()
         p.write_text(text)
         return f"wrote {p.name}"
@@ -258,4 +364,5 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         read_verdicts,
         read_fills,
         read_events,
+        *make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet),
     ]
