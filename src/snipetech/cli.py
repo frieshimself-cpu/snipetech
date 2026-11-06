@@ -276,6 +276,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
     sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
     sp.add_argument("--period", default="1W", help="gainers: yesterday|today|1W|30d|90d")
+    sp.add_argument("--sort", default="PnL", help="gainers: PnL|realized_pnl|unrealized_pnl|trader_score")
     sp.add_argument("--mint", help="top: the coin")
     sp.add_argument("--wallet", help="pnl: the wallet")
     sp.add_argument("--frame", default="7d", help="top: time frame")
@@ -850,7 +851,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.action == "credits":
                 out = be.credits()
             elif args.action == "gainers":
-                out = be.gainers_raw(args.period, limit=args.limit) if args.raw else be.gainers(args.period, limit=args.limit)
+                out = be.gainers_raw(args.period, args.sort, limit=args.limit) if args.raw else be.gainers(args.period, args.sort, limit=args.limit)
             elif args.action == "top":
                 out = be.top_traders(args.mint, time_frame=args.frame, limit=min(10, args.limit))
             else:
