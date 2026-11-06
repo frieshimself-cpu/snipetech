@@ -14,3 +14,6 @@ snipetech.toml
 snipetech-rules.json
 .env
 .superpowers/
+
+# temporary git worktrees of Claude Code workflows (never commit)
+.claude/worktrees/
