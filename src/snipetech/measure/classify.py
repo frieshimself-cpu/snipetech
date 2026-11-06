@@ -15,9 +15,13 @@ ARM_RE = re.compile(r"arm:([A-Za-z0-9_-]+)")
 
 
 def leaders_for(store: Store) -> set[str]:
-    """The wallets the book copies: every active OKTech copy sniper's `ctbotWallets`; without any, the labelled sets."""
+    """The wallets the book copies: every active OKTech *copy* sniper's `ctbotWallets`; without any, the labelled sets.
+    Probe / strategy rows are not leaders: the 4 Nov speed-test probe copied a sniper bot that lands between the real
+    leaders and us, and 2 of the 6 Nov fills were credited to it (audit)."""
     out: set[str] = set()
     for rec in store.oktech_snipers(active=True):
+        if rec.get("kind") != "copy":
+            continue
         for w in (rec.get("payload") or {}).get("ctbotWallets") or []:
             if isinstance(w, dict) and w.get("address"):
                 out.add(str(w["address"]))
@@ -26,6 +30,18 @@ def leaders_for(store: Store) -> set[str]:
     for kind in ("kol", "wallet", "cand"):
         out |= set(store.labels(kind))
     return out
+
+
+def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: dict[str, dict] | None) -> str:
+    """The bid arm a fill paid for: the arm whose priority fee is nearest (tip as the tiebreaker: one send in three
+    carries no tip). Both arms copy the same leaders from one wallet and OKTech's task documents carry no fills, so
+    the fee is the only thing on chain that tells them apart. Unknown fee or no arms: control."""
+    if not arms or priority_lamports is None:
+        return "control"
+    prio, tip = priority_lamports / 1e9, (tip_lamports or 0) / 1e9
+    return min(
+        arms, key=lambda a: (abs(prio - float(arms[a].get("priority") or 0)), abs(tip - float(arms[a].get("tip") or 0)))
+    )
 
 
 def arm_for(store: Store, sniper_id: str | None) -> str:
@@ -65,7 +81,14 @@ def _gap_pct(trade: Trade, leader: tuple) -> float | None:
     return None
 
 
+MIN_TIP_LAMPORTS = 50_000
+UNKNOWN_RELAY = "relay?"
+
+
 def fee_fields(meta: TxMeta | None) -> dict[str, Any]:
+    """What one of *our* fills paid: priority fee, tips to catalogued relays, and any other tip-shaped transfer the
+    wallet made in the same transaction (OKTech pays relays nobody has catalogued; we pay no platform fee on chain,
+    so on our own fills such a transfer is a tip)."""
     if meta is None:
         return {
             "priority_lamports": None,
@@ -75,29 +98,41 @@ def fee_fields(meta: TxMeta | None) -> dict[str, Any]:
             "landing_service": None,
         }
     service = next((t.get("service") for t in meta.tips if t.get("service")), None)
-    return {"priority_lamports": int(meta.priority_lamports), "tip_lamports": int(meta.tip_lamports), "cu_limit": meta.cu_limit,
+    other = sum(int(t.get("lamports") or 0) for t in meta.transfers if int(t.get("lamports") or 0) >= MIN_TIP_LAMPORTS)
+    if other and service is None:
+        service = UNKNOWN_RELAY
+    return {"priority_lamports": int(meta.priority_lamports), "tip_lamports": int(meta.tip_lamports) + other, "cu_limit": meta.cu_limit,
             "cu_used": meta.cu_consumed, "landing_service": service}  # fmt: skip
 
 
 def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta | None, sniper_id: str | None = None,
-                   bid_arm: str | None = None) -> dict[str, Any]:  # fmt: skip
-    """One `fills` row. `sol` is what left the wallet on a buy (quote + protocol fee) and what came back on a sell."""
+                   bid_arm: str | None = None, arms: dict[str, dict] | None = None) -> dict[str, Any]:  # fmt: skip
+    """One `fills` row. `sol` is what left the wallet on a buy (quote + protocol fee) and what came back on a sell.
+    The arm: as given, else from the sniper's name, else from the fee paid (`arms` = the book's bid arms)."""
     rank, size = _position_in_slot(store, trade.mint, trade.slot, trade.sig)
+    if bid_arm is None:
+        bid_arm = (
+            arm_for(store, sniper_id)
+            if sniper_id
+            else arm_from_fee(meta.priority_lamports if meta else None, meta.tip_lamports if meta else None, arms)
+        )
     row: dict[str, Any] = {
         "sig": trade.sig, "ts": int(trade.ts), "slot": int(trade.slot), "pos_in_slot": rank, "slot_txs": size, "wallet": trade.user,
         "wallet_copied": None, "event_kind": None, "mint": trade.mint, "side": "buy" if trade.is_buy else "sell",
         "sol": round((trade.quote + trade.fee) / 1e9, 6) if trade.is_buy else round((trade.quote - trade.fee) / 1e9, 6),
         "tokens": float(trade.base), "trades_behind": None, "price_gap_pct": None, "pnl_sol": None, "exit_reason": None,
-        "sniper_id": sniper_id, "bid_arm": bid_arm or arm_for(store, sniper_id), "buy_sig": None,
+        "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None,
     }  # fmt: skip
     row.update(fee_fields(meta))
     if trade.is_buy:
         lead = _leader_buy(store, trade, leaders)
         if lead is not None:
             user, lslot, lpos, _lquote, _lq, _lb = lead
+            # other wallets' buys between the leader's and ours: our own other fills (the second arm) do not count,
+            # or the arm that goes second measures worse by construction
             between = store._q(
-                "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND (slot>? OR (slot=? AND pos>?)) AND (slot<? OR (slot=? AND pos<?))",
-                (trade.mint, lslot, lslot, lpos, trade.slot, trade.slot, trade.pos),
+                "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND user != ? AND (slot>? OR (slot=? AND pos>?)) AND (slot<? OR (slot=? AND pos<?))",
+                (trade.mint, trade.user, lslot, lslot, lpos, trade.slot, trade.slot, trade.pos),
             )[0][0]
             row["wallet_copied"], row["trades_behind"], row["price_gap_pct"] = user, int(between), _gap_pct(trade, lead)
     return row

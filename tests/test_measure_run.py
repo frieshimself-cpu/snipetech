@@ -179,3 +179,32 @@ def test_cli_measure_parses():
     assert a.cmd == "measure" and a.action == "run" and a.since is None
     a = p.parse_args(["measure", "backfill", "--since", "1793940000", "--until", "1793947000"])
     assert a.action == "backfill" and a.since == 1793940000 and a.until == 1793947000
+
+
+def test_failed_sends_take_their_arm_from_the_fee_and_count_as_overhead(tmp_path):
+    """A failed twin (the second or third send of a sell, or a failed buy) pays its priority fee: it is booked on the arm
+    whose bid it carried, and the bid model shows the overhead per landed buy next to the fee."""
+    svc, st, cfg = _svc(tmp_path)
+    sigs = _copy_world(st, coins=2)
+    metas = {b: _meta(b, priority=20_000_000, tip=20_000_000) for b, _ in sigs} | {
+        s_: _meta(s_, priority=1_000_000, tip=0) for _, s_ in sigs
+    }
+    failed = [{"signature": "FAIL1", "blockTime": NOW - 1800, "slot": SLOT + 100, "err": {"InstructionError": [3, {"Custom": 6023}]}},
+              {"signature": "FAIL2", "blockTime": NOW - 1700, "slot": SLOT + 200, "err": {"InstructionError": [3, {"Custom": 6023}]}}]  # fmt: skip
+    metas["FAIL1"] = _meta("FAIL1", priority=20_000_000, tip=0)
+    metas["FAIL2"] = _meta("FAIL2", priority=1_000_000, tip=0)
+
+    async def failed_sigs(wallet, since):
+        return failed
+
+    out = asyncio.run(run_measure(svc, cfg, NOW, ensure_meta=_ensure(st, metas), failed_sigs=failed_sigs))
+    assert out["arms"]["paid"]["n"] == 2 and out["arms"]["paid"]["failed_n"] == 1
+    assert out["arms"]["control"]["n"] == 0 and out["arms"]["control"]["failed_n"] == 1
+    assert st.fill("FAIL1")["bid_arm"] == "paid" and st.fill("FAIL2")["bid_arm"] == "control"
+    model = {r["arm"]: r for r in st.bid_model()}
+    assert model["paid"]["tipped_share"] == 1.0 and model["paid"]["mean_behind"] == 2.0
+    assert model["paid"]["mean_overhead_sol"] == round(
+        (20_000_000 + 5000) / 1e9 / 2, 6
+    )  # one failed twin over two buys
+    assert model["paid"]["mean_fee_sol"] == round((20_000_000 + 20_000_000 + 5000) / 1e9, 6)
+    st.close()

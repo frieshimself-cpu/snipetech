@@ -11,7 +11,7 @@ from typing import Any
 
 from ..config import Config
 from ..store import Store
-from .classify import classify_trade, leaders_for, pair_round_trips
+from .classify import arm_from_fee, classify_trade, leaders_for, pair_round_trips
 
 LAST_KEY = "measure:last_ts"
 LANDING_KEY = "measure:landing_pos"
@@ -52,13 +52,20 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
         fs = [f for f in failed if (f.get("bid_arm") or "control") == arm]
         pos = sorted(int(b["pos_in_slot"]) for b in bs if b.get("pos_in_slot") is not None)
         gaps = [float(b["price_gap_pct"]) for b in bs if b.get("price_gap_pct") is not None]
+        behind = [int(b["trades_behind"]) for b in bs if b.get("trades_behind") is not None]
         fees = [
             ((b.get("priority_lamports") or 0) + (b.get("tip_lamports") or 0) + BASE_FEE_LAMPORTS) / 1e9 for b in bs
         ]
+        # a failed send pays its priority fee and the base fee; its tip transfer is rolled back with the transaction
+        overhead = sum(((f.get("priority_lamports") or 0) + BASE_FEE_LAMPORTS) / 1e9 for f in fs)
+        tipped = [1.0 if (b.get("tip_lamports") or 0) > 0 else 0.0 for b in bs if b.get("tip_lamports") is not None]
         q = statistics.quantiles(pos, n=4) if len(pos) >= 2 else None
         out.append({"arm": arm, "n": len(bs), "failed_n": len(fs), "mean_pos": statistics.fmean(pos) if pos else None,
                     "p25_pos": (q[0] if q else (pos[0] if pos else None)), "p75_pos": (q[2] if q else (pos[0] if pos else None)),
                     "mean_gap_pct": statistics.fmean(gaps) if gaps else None, "mean_fee_sol": round(statistics.fmean(fees), 6) if fees else None,
+                    "mean_behind": statistics.fmean(behind) if behind else None,
+                    "tipped_share": round(statistics.fmean(tipped), 3) if tipped else None,
+                    "mean_overhead_sol": round(overhead / max(1, len(bs)), 6) if fs else 0.0,
                     "updated_at": int(now)})  # fmt: skip
     return out
 
@@ -106,7 +113,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     leaders = leaders_for(store)
     buys = sells = 0
     for t in trades:
-        row = classify_trade(store, t, leaders, metas.get(t.sig))
+        row = classify_trade(store, t, leaders, metas.get(t.sig), arms=cfg.book.bid_arms)
         store.put_fill(row)
         buys += row["side"] == "buy"
         sells += row["side"] == "sell"
@@ -133,7 +140,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             continue
         meta = fmetas.get(sig)
         row = {"sig": sig, "ts": int(f.get("blockTime") or 0), "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0,
-               "tokens": 0.0, "bid_arm": "control", "priority_lamports": int(meta.priority_lamports) if meta else None,
+               "tokens": 0.0, "bid_arm": arm_from_fee(meta.priority_lamports, meta.tip_lamports, cfg.book.bid_arms) if meta else "control",
+               "priority_lamports": int(meta.priority_lamports) if meta else None,
                "tip_lamports": int(meta.tip_lamports) if meta else None, "cu_limit": meta.cu_limit if meta else None,
                "cu_used": meta.cu_consumed if meta else None, "exit_reason": str(f.get("err"))[:80]}  # fmt: skip
         store.put_fill(row)

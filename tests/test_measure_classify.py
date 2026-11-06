@@ -1,7 +1,7 @@
 """Fill classification: the copied wallet's buy before ours, trades behind, price gap, position in the slot,
 fees from the fingerprint, FIFO round trips."""
 
-from snipetech.measure.classify import arm_for, classify_trade, leaders_for, pair_round_trips
+from snipetech.measure.classify import arm_for, arm_from_fee, classify_trade, leaders_for, pair_round_trips
 from snipetech.solana.txmeta import TxMeta
 from snipetech.store import Store
 from tests.synth import Market, addr
@@ -36,10 +36,67 @@ def test_leaders_from_snipers_else_labels():
     st.set_label("C1", "cand:C1", "cand")
     st.set_label("S1", "axiom", "service")
     assert leaders_for(st) == {"K1", "T1", "C1"}
-    st.add_oktech_sniper({"id": "s1", "external_id": "e1", "kind": "ctbot", "source": "copylist", "name": "copy LEAD arm:paid", "config_hash": "h",
+    st.add_oktech_sniper({"id": "s1", "external_id": "e1", "kind": "copy", "source": "copylist", "name": "copy LEAD arm:paid", "config_hash": "h",
                           "payload": {"ctbotWallets": [{"address": LEAD, "label": "x", "minSol": 1.0}, {"address": "L2"}]}})  # fmt: skip
+    # the 4 Nov speed-test probe copied a sniper bot (6Z91…) that itself sits between the leaders and us: a probe row is
+    # not a book leader, or every fill behind that bot would be credited to it (audit, 6 Nov: 2 of 6 fills were)
+    st.add_oktech_sniper({"id": "p1", "external_id": "e2", "kind": "probe", "source": "6Z91", "name": "speed test: copy 6Z91", "config_hash": "h2",
+                          "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "6Z91" + "b" * 40, "label": "speed test leader"}]}})  # fmt: skip
     assert leaders_for(st) == {LEAD, "L2"}
     assert arm_for(st, "s1") == "paid" and arm_for(st, "nope") == "control" and arm_for(st, None) == "control"
+    st.close()
+
+
+ARMS = {"control": {"priority": 0.001, "tip": 0.002}, "paid": {"priority": 0.02, "tip": 0.02}}
+
+
+def test_arm_from_the_fee_paid_on_chain():
+    """Both fee-test arms copy the same leaders from the same wallet and OKTech's task documents carry no fills, so
+    the only thing that tells a paid fill from a control fill is the fee it paid: nearest arm by priority fee, tip as
+    the tiebreaker (one send in three carries no tip at all)."""
+    assert arm_from_fee(20_000_000, 20_000_000, ARMS) == "paid"
+    assert arm_from_fee(1_000_000, 2_000_000, ARMS) == "control"
+    assert arm_from_fee(20_000_000, 0, ARMS) == "paid"  # untipped paid send
+    assert arm_from_fee(1_000_000, 0, ARMS) == "control"
+    assert arm_from_fee(None, None, ARMS) == "control" and arm_from_fee(20_000_000, 0, {}) == "control"
+    st = Store(":memory:")
+    tl, tme, _, _ = _world(st)
+    meta = TxMeta(sig=tme.sig, slot=tme.slot, block_time=tme.ts, version=0, fee_payer=ME, signers=[ME], n_signatures=1, fee=5000,
+                  priority_lamports=20_000_000, cu_limit=150_000, cu_price=133_333_333, cu_consumed=60_000, tips=[])  # fmt: skip
+    assert classify_trade(st, tme, {LEAD}, meta, arms=ARMS)["bid_arm"] == "paid"
+    assert classify_trade(st, tme, {LEAD}, meta)["bid_arm"] == "control"  # no arms known: the old default
+    assert classify_trade(st, tme, {LEAD}, meta, sniper_id="x", bid_arm="named", arms=ARMS)["bid_arm"] == "named"
+    st.close()
+
+
+def test_tip_shaped_transfers_of_our_own_fills_count_as_tips():
+    """The fingerprint keeps unknown destinations as plain transfers (trading bots' platform fees look the same), but
+    a fill of ours pays no platform fee on chain: a tip-sized transfer in it is a tip to an uncatalogued relay."""
+    from snipetech.measure.classify import fee_fields
+
+    meta = TxMeta(sig="s", slot=1, block_time=1, version=0, fee_payer=ME, signers=[ME], n_signatures=1, fee=5000, priority_lamports=1_000_000,
+                  cu_limit=150_000, cu_price=6_666_666, cu_consumed=60_000, tips=[],
+                  transfers=[{"src": ME, "dst": "NewRelay" + "1" * 36, "lamports": 2_000_000}, {"src": ME, "dst": "dust", "lamports": 1_000}])  # fmt: skip
+    f = fee_fields(meta)
+    assert f["tip_lamports"] == 2_000_000 and f["landing_service"] == "relay?"
+    meta.tips = [{"dest": "noz", "lamports": 1_000_000, "service": "nozomi"}]
+    f = fee_fields(meta)
+    assert f["tip_lamports"] == 3_000_000 and f["landing_service"] == "nozomi"
+
+
+def test_trades_behind_counts_other_wallets_only():
+    """Two arms on one wallet fire on the same leader buy: the second of our own fills must not count the first as a
+    trade it landed behind, or the arm that goes second measures worse by construction."""
+    st = Store(":memory:")
+    m = Market(st, addr("m3"), D, NOW + 5000, SLOT + 9000)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 1.0, 2)
+    m.buy(X, 0.5, 3)
+    first = m.buy(ME, 0.2, 4)
+    second = m.buy(ME, 0.2, 4)  # same slot, right after our first fill
+    m.commit()
+    assert classify_trade(st, first, {LEAD}, None)["trades_behind"] == 1
+    assert classify_trade(st, second, {LEAD}, None)["trades_behind"] == 1  # X only: our own first fill is not counted
     st.close()
 
 

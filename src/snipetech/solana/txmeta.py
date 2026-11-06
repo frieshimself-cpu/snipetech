@@ -3,8 +3,9 @@
 Everything here is read from the transaction itself (exact, not inferred):
 * priority fee  = meta.fee - 5,000 lamports x signatures (plus the compute-unit price and
   limit the sender set with ComputeBudget instructions),
-* tips          = SOL the signers sent to landing services (Jito's 8 tip accounts are
-  verified on-chain; other destinations are recorded and classified later),
+* tips          = SOL the signers sent to landing services (Jito's 8 tip accounts verified
+  on-chain; Nozomi, Helius Sender, Astralane and bloXroute from their own docs; other
+  destinations stay in `transfers`: trading bots' platform fees look the same on chain),
 * the pump.fun / PumpSwap instruction variant and its arguments (`max_sol_cost`,
   `min_tokens_out`, ... i.e. the slippage cap) and which program routed it,
 * the instruction sequence ("template"), durable nonces, lookup tables, tx version.
@@ -38,6 +39,36 @@ JITO_TIP_ACCOUNTS = frozenset({
 BASE_FEE_PER_SIGNATURE = 5_000
 PUMP_PROGRAMS = (PUMP_PROGRAM, PUMP_AMM_PROGRAM)
 
+# Tip accounts of the staked-connection relays, from each operator's own documentation (6 Nov 2026): a System transfer
+# to one of these is a tip to that service. OKTech pays Nozomi, Astralane and Helius Sender on our fills, Jito rarely.
+_NOZOMI = ("TEMPaMeCRFAS9EKF53Jd6KpHxgL47uWLcpFArU1Fanq", "noz3jAjPiHuBPqiSPkkugaJDkJscPuRhYnSpbi8UvC4", "noz3str9KXfpKknefHji8L1mPgimezaiUyCHYMDv1GE",
+           "noz6uoYCDijhu1V7cutCpwxNiSovEwLdRHPwmgCGDNo", "noz9EPNcT7WH6Sou3sr3GGjHQYVkN3DNirpbvDkv9YJ", "nozFrhfnNGoyqwVuwPAW4aaGqempx4PU6g6D9CJMv7Z",
+           "nozNVWs5N8mgzuD3qigrCG2UoKxZttxzZ85pvAQVrbP", "nozUacTVWub3cL4mJmGCYjKZTnE9RbdY5AP46iQgbPJ", "nozWCyTPppJjRuw2fpzDhhWbW355fzosWSzrrMYB1Qk",
+           "nozWNju6dY353eMkMqURqwQEoM3SFgEKC6psLCSfUne", "nozc5yT15LazbLTFVZzoNZCwjh3yUtW86LoUyqsBu4L", "nozievPk7HyK1Rqy1MPJwVQ7qQg2QoJGyP71oeDwbsu",
+           "noznbgwYnBLDHu8wcQVCEw6kDrXkPdKkydGJGNXGvL7", "nozpEGbwx4BcGp6pvEdAh1JoC2CQGZdU6HbNP1v2p6P", "nozrhjhkCr3zXT3BiT4WCodYCUFeQvcdUkM7MqhKqge",
+           "nozrwQtWhEdrA6W8dkbt9gnUaMs52PdAv5byipnadq3", "nozxNBgWohjR75vdspfxR5H9ceC7XXH99xpxhVGt3Bb")  # fmt: skip
+_HELIUS_SENDER = ("2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD", "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ", "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
+                  "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE", "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or", "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
+                  "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn", "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta", "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",
+                  "wyvPkWjVZz1M8fHQnMMCDTQDbkManefNNhweYk5WkcF")  # fmt: skip
+_ASTRALANE = ("ASTRaoF93eYt73TYvwtsv6fMWHWbGmMUZfVZPo3CRU9C", "AStRAnpi6kFrKypragExgeRoJ1QnKH7pbSjLAKQVWUum", "AStrAJv2RN2hKCHxwUMtqmSxgdcNZbihCwc1mCSnG83W",
+              "AsTRADtvb6tTmrsqULQ9Wji9PigDMjhfEMza6zkynEvV", "AsTRAEoyMofR3vUPpf9k68Gsfb6ymTZttEtsAbv8Bk4d", "AsTra79FET4aCKWspPqeSFvjJNyp96SvAnrmyAxqg5b7",
+              "AstrA1ejL4UeXC2SBP4cpeEmtcFPZVLxx3XGKXyCW6to", "AstrABAu8CBTyuPXpV4eSCJ5fePEPnxN8NqBaPKQ9fHR", "Astran35aiQUF57XZsmkWMtNCtXGLzs8upfiqXxth2bz",
+              "astra4uejePWneqNaJKuFFA8oonqCE1sqF6b45kDMZm", "astra9xWY93QyfG6yM8zwsKsRodscjQ2uU2HKNL5prk", "astraEJ2fEj8Xmy6KLG7B3VfbKfsHXhHrNdCQx7iGJK",
+              "astraRVUuTHjpwEVvNBeQEgwYx9w9CFyfxjYoobCZhL", "astraZW5GLFefxNPAatceHhYjfA1ciq9gvfEg2S47xk", "astraubkDw81n4LuutzSQ8uzHCv4BhPVhfvTcYv8SKC",
+              "astrawVNP4xDBKT7rAdxrLYiTSTdqtUr63fSMduivXK", "astrazznxsGUhWShqgNtAdfrzP2G83DzcWVJDxwV9bF")  # fmt: skip
+_BLOXROUTE = ("3UQUKjhMKaY2S6bjcQD6yHB7utcZt5bfarRCmctpRtUd", "FogxVNs6Mm2w9rnGL1vkARSwJxvLE8mujTv3LK8RnUhF", "bLx7MvxGaKdKL7mEbpk9tC79z6MnBSJoJkuaEAPu6Nd",
+              "bLx7XBqSg3LUPVf1bRgCnkJmgVZR8QEgDJBPqcRLHvp", "bLx8KeZxinPwy6kkUgyzMLeqb2ARNsWjADG1dhSsVba", "bLxADBknoNj8WAGw2W6GBYeq848Xx6ajhaymV1YvrHm",
+              "bLxAc88vRBwvcUQJEgcxNfBLvHPikY4csNsUmPeWea2", "bLxQ88oCiTsL8Xj4YWekKi1hjrgmbE3J3FFZ2xZHR3h", "bLxS7NoLuynNRJ4mCnEE2YbtwJFttYsEyp2ME7rp2yt",
+              "bLxW6mCov7VEbrKc3S9tcBRcfSzRnLCbNp3Dfn3SJG5", "bLxXSGXs4mYPTC5okZXed1qzvjNwNJ48QJ82hT2V7w7", "bLxYi3vojbbB7hVzVDVTdBLVPhp7GJ3ZB3BwdK5sFXi",
+              "bLxhLPgBXtUpX4b1bH3HatuMGMSKT9GnwtuCGiMSAqe", "bLxpY1mniuFW4PgkNA4JiNxoeKHFszryi6tNgyZAiAA", "bLxuETxd2tgWxBALNwPzAfHhsik4BzD3nrEBCiPNZQD",
+              "bLxuL2gK5FW7xfahvwLrxLyW76vcCpNsKQY2CmnE6kV", "bLxv4Hnub7nDJWHs8s17o9bGU65Bnx6Yqp2fqtMgHmm")  # fmt: skip
+# vanity-prefixed tip accounts seen on our 6 Nov OKTech buys (2,000,000 lamports = our tipAmount); operator unknown
+_FLASH = ("FLaSHJNm5dWYzEgnHJWWJP5ccu128Mu61NJLxUf7mUXU", "FLAsHZTRcf3Dy1APaz6j74ebdMC6Xx4g6i9YxjyrDybR")
+RELAY_TIP_ACCOUNTS: dict[str, str] = {**{a: "jito" for a in JITO_TIP_ACCOUNTS}, **{a: "nozomi" for a in _NOZOMI},
+                                      **{a: "helius-sender" for a in _HELIUS_SENDER}, **{a: "astralane" for a in _ASTRALANE},
+                                      **{a: "bloxroute" for a in _BLOXROUTE}, **{a: "flash" for a in _FLASH}}  # fmt: skip
+
 PROGRAM_LABELS = {
     PUMP_PROGRAM: "pump",
     PUMP_AMM_PROGRAM: "pumpswap",
@@ -51,8 +82,22 @@ PROGRAM_LABELS = {
     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4": "jupiter",
     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": "pump-fees",
 }
-_TOKEN_IXS = {3: "transfer", 9: "close_account", 12: "transfer_checked", 17: "sync_native", 1: "init_account", 18: "init_account3"}
-_SYSTEM_IXS = {0: "create_account", 2: "transfer", 3: "create_account_with_seed", 4: "advance_nonce", 8: "allocate", 11: "transfer_with_seed"}
+_TOKEN_IXS = {
+    3: "transfer",
+    9: "close_account",
+    12: "transfer_checked",
+    17: "sync_native",
+    1: "init_account",
+    18: "init_account3",
+}
+_SYSTEM_IXS = {
+    0: "create_account",
+    2: "transfer",
+    3: "create_account_with_seed",
+    4: "advance_nonce",
+    8: "allocate",
+    11: "transfer_with_seed",
+}
 
 
 @dataclass
@@ -195,7 +240,7 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
             lamports = int.from_bytes(data[4:12], "little")
             if src not in signer_set or dst in signer_set or dst in own_token_accounts or lamports == 0:
                 return
-            service = "jito" if dst in JITO_TIP_ACCOUNTS else services.get(dst)
+            service = RELAY_TIP_ACCOUNTS.get(dst) or services.get(dst)
             if service:
                 out.tips.append({"dest": dst, "lamports": lamports, "service": service})
             else:
@@ -213,8 +258,12 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
             if decoded is None:
                 return  # event self-CPI and unknown instructions
             name, acc_names, args = decoded
-            if not (name.startswith(("buy", "sell")) or name in ("create", "create_v2", "multi_hop_curve_swap", "multi_hop_swap")):
+            if not (
+                name.startswith(("buy", "sell"))
+                or name in ("create", "create_v2", "multi_hop_curve_swap", "multi_hop_swap")
+            ):
                 return
+
             def account(role: str) -> str:
                 idx = acc_names.index(role) if role in acc_names else len(accs)
                 return accs[idx] if idx < len(accs) else ""

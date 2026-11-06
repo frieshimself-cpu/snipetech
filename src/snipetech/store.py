@@ -142,7 +142,7 @@ CREATE TABLE IF NOT EXISTS fills (
 CREATE INDEX IF NOT EXISTS fills_wallet_ts ON fills(wallet, ts);
 CREATE TABLE IF NOT EXISTS bid_model (
     arm TEXT PRIMARY KEY, n INTEGER, failed_n INTEGER, mean_pos REAL, p25_pos REAL, p75_pos REAL, mean_gap_pct REAL,
-    mean_fee_sol REAL, updated_at INTEGER
+    mean_fee_sol REAL, updated_at INTEGER, mean_behind REAL, tipped_share REAL, mean_overhead_sol REAL
 );
 CREATE TABLE IF NOT EXISTS wallet_live (
     wallet TEXT PRIMARY KEY, n INTEGER, mean_sol REAL, lower_sol REAL, last_fill INTEGER, status TEXT, updated_at INTEGER
@@ -152,7 +152,14 @@ CREATE TABLE IF NOT EXISTS wallet_live (
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
               "exit_reason", "sniper_id", "bid_arm", "buy_sig")  # fmt: skip
-_BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at")
+_BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
+             "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
+# columns added after a table first shipped: (table, column, type); added to existing databases on open
+_ADDED_COLUMNS = (
+    ("bid_model", "mean_behind", "REAL"),
+    ("bid_model", "tipped_share", "REAL"),
+    ("bid_model", "mean_overhead_sol", "REAL"),
+)
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
 
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
@@ -192,6 +199,11 @@ class Store:
         self.lock = threading.RLock()
         with self.lock:
             self.conn.executescript(SCHEMA)
+            for table, col, typ in _ADDED_COLUMNS:
+                have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+                if col not in have:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+            self.conn.commit()
 
     def close(self) -> None:
         with self.lock:
@@ -487,7 +499,9 @@ class Store:
         """One row per wallet: sources merge as a sorted unique list, stats[source] is replaced, status only when given."""
 
         def do():
-            row = self.conn.execute("SELECT first_seen, sources, stats, status FROM candidates WHERE wallet=?", (wallet,)).fetchone()
+            row = self.conn.execute(
+                "SELECT first_seen, sources, stats, status FROM candidates WHERE wallet=?", (wallet,)
+            ).fetchone()
             if row is None:
                 self.conn.execute("INSERT INTO candidates (wallet, first_seen, last_seen, sources, stats, status) VALUES (?,?,?,?,?,?)",
                                   (wallet, int(now), int(now), json.dumps([source]), json.dumps({source: stats}, default=str), status or "candidate"))  # fmt: skip
@@ -512,7 +526,9 @@ class Store:
             d["reasons"] = [str(d["reasons"])]
         return d
 
-    def candidates(self, status: str | None = None, due_before: int | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+    def candidates(
+        self, status: str | None = None, due_before: int | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
         """Candidates with their latest verdict. `due_before` keeps those never evaluated or whose review date has come,
         never-evaluated first, then the oldest review date."""
         sql = f"SELECT c.wallet, c.first_seen, c.last_seen, c.sources, c.stats, c.status, v.* FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet"
@@ -545,7 +561,10 @@ class Store:
         holder: dict[str, int] = {}
 
         def do():
-            cur = self.conn.execute(f"INSERT INTO verdicts ({', '.join(_VERDICT_COLS)}) VALUES ({', '.join('?' * len(_VERDICT_COLS))})", vals)
+            cur = self.conn.execute(
+                f"INSERT INTO verdicts ({', '.join(_VERDICT_COLS)}) VALUES ({', '.join('?' * len(_VERDICT_COLS))})",
+                vals,
+            )
             holder["id"] = int(cur.lastrowid)
 
         self._write(do)
@@ -576,7 +595,9 @@ class Store:
         rows = self._q(f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE sig=?", (sig,))
         return dict(zip(_FILL_COLS, rows[0])) if rows else None
 
-    def fills(self, wallet: str | None = None, since_ts: int = 0, side: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+    def fills(
+        self, wallet: str | None = None, since_ts: int = 0, side: str | None = None, limit: int = 1000
+    ) -> list[dict[str, Any]]:
         where, params = ["ts >= ?"], [int(since_ts)]
         if wallet is not None:
             where.append("wallet = ?")
@@ -585,7 +606,10 @@ class Store:
             where.append("side = ?")
             params.append(side)
         params.append(int(limit))
-        rows = self._q(f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE {' AND '.join(where)} ORDER BY ts DESC, sig LIMIT ?", params)
+        rows = self._q(
+            f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE {' AND '.join(where)} ORDER BY ts DESC, sig LIMIT ?",
+            params,
+        )
         return [dict(zip(_FILL_COLS, r)) for r in rows]
 
     def put_bid_model(self, row: dict[str, Any]) -> None:
@@ -830,8 +854,19 @@ def _add_events(self, rows: list[dict]) -> int:
     before = self._q("SELECT count(*) FROM events")[0][0]
     self._many(
         "INSERT OR IGNORE INTO events (ts, slot, kind, mint, wallet, data, source, dedupe) VALUES (?,?,?,?,?,?,?,?)",
-        [(int(e["ts"]), e.get("slot"), str(e["kind"]), e.get("mint"), e.get("wallet"), json.dumps(e.get("data") or {}, default=str),
-          e.get("source"), _event_dedupe(e)) for e in rows],  # fmt: skip
+        [
+            (
+                int(e["ts"]),
+                e.get("slot"),
+                str(e["kind"]),
+                e.get("mint"),
+                e.get("wallet"),
+                json.dumps(e.get("data") or {}, default=str),
+                e.get("source"),
+                _event_dedupe(e),
+            )
+            for e in rows
+        ],  # fmt: skip
     )
     return int(self._q("SELECT count(*) FROM events")[0][0] - before)
 
@@ -844,7 +879,10 @@ def _events(self, kind: str | None = None, mint: str | None = None, wallet: str 
             where.append(f"{col} = ?")
             params.append(val)
     params.append(int(limit))
-    rows = self._q(f"SELECT {', '.join(_EVENT_COLS)} FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?", params)
+    rows = self._q(
+        f"SELECT {', '.join(_EVENT_COLS)} FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?",
+        params,
+    )
     out = []
     for r in rows:
         d = dict(zip(_EVENT_COLS, r))
@@ -857,7 +895,10 @@ def _events(self, kind: str | None = None, mint: str | None = None, wallet: str 
 
 
 def _event_counts(self, since_ts: int = 0) -> dict[str, int]:
-    return {str(k): int(n) for k, n in self._q("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (int(since_ts),))}
+    return {
+        str(k): int(n)
+        for k, n in self._q("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (int(since_ts),))
+    }
 
 
 def _upsert_edge(self, src: str, dst: str, kind: str, ts: int, lamports: int = 0) -> None:

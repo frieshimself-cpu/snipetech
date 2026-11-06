@@ -25,7 +25,9 @@ def test_priority_fee_matches_compute_budget():
 def test_jito_tip_and_bundle_create():
     m = load("2kHVrerh")
     assert m.n_signatures == 4 and len(m.signers) == 4
-    assert m.tips == [{"dest": "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49", "lamports": 1_000_000, "service": "jito"}]
+    assert m.tips == [
+        {"dest": "ADaUMid9yfUytqMBgopwjb2DTLSokTSzL1zt6iGPaS49", "lamports": 1_000_000, "service": "jito"}
+    ]
     assert m.bribe_lamports == m.priority_lamports + 1_000_000
     names = [p.name for p in m.pump_ixs]
     assert names[0] == "create_v2" and names.count("buy_v3") == 2
@@ -68,3 +70,26 @@ def test_byte_array_args_are_stored_as_hex():
     assert args == {"amount": 5, "memo": "01ff", "nested": ["02"]}
     m = TxMeta("s", 1, 0, 0, "p", ["p"], 1, 5000, 0, None, None, None, [], [], [PumpIx("prog", "buy", "u", args, None)])
     assert json.loads(json.dumps(m.to_dict()))["pump_ixs"][0]["args"]["memo"] == "01ff"
+
+
+def test_relay_tips_are_recognised_on_oktech_transactions():
+    """OKTech tips staked-connection relays, not Jito: Nozomi on the 6 Nov sell, Astralane on a buy, Helius Sender on
+    the sweeps. Before this the fingerprint booked them as plain transfers and every fill read tip 0."""
+    sell = load("4Pdik2uuPbae")
+    assert [(t["lamports"], t["service"]) for t in sell.tips] == [(1_000_000, "nozomi")]
+    assert sell.tips[0]["dest"] == "noz6uoYCDijhu1V7cutCpwxNiSovEwLdRHPwmgCGDNo" and sell.transfers == []
+    buy = load("xqo6FRzqCxub")
+    assert [(t["lamports"], t["service"]) for t in buy.tips] == [(2_000_000, "astralane")]
+    from snipetech.solana.txmeta import RELAY_TIP_ACCOUNTS
+
+    # the sweeps (no pump instruction, so not a trade fixture) tipped these Helius Sender accounts
+    assert RELAY_TIP_ACCOUNTS["3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT"] == "helius-sender"
+    assert RELAY_TIP_ACCOUNTS["4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or"] == "helius-sender"
+    assert len(RELAY_TIP_ACCOUNTS) >= 8 + 17 + 10 + 17 + 17 + 2
+
+
+def test_flash_relay_tip_on_a_6_nov_buy():
+    """The FLaSH… vanity accounts received exactly our tipAmount on two 6 Nov buys: a relay nobody's docs name."""
+    m = load("48YmS3mVdwXo")
+    assert m.pump_ixs and [(t["lamports"], t["service"]) for t in m.tips] == [(2_000_000, "flash")]
+    assert m.tips[0]["dest"].startswith("FLaSH") and m.transfers == []
