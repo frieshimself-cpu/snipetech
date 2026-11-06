@@ -70,9 +70,17 @@ class Vybe:
 
     @staticmethod
     def _trader(t: dict) -> dict:
-        return {"wallet": t.get("accountAddress"), "realized_usd": _num(t.get("realizedPnlUsd")), "unrealized_usd": _num(t.get("unrealizedPnlUsd")),
-                "win_rate": _num(t.get("winRate")), "volume_usd": _num(t.get("tradesVolumeUsd")), "trades": _int(t.get("tradesCount")),
-                "tokens": _int(t.get("uniqueTokensTraded")), "seven_day_usd": _num(t.get("sevenDayPnl"))}  # fmt: skip
+        """Vybe nests the numbers under `metrics` (seen 6 Nov 2026); older docs showed them flat. winRate is a percent
+        there; it is stored as a fraction like Birdeye's. sevenDayPnl is a [ts, pnl] series; its sum is kept."""
+        m = t.get("metrics") if isinstance(t.get("metrics"), dict) else t
+        wr = _num(m.get("winRate"))
+        seven = m.get("sevenDayPnl")
+        if isinstance(seven, list):
+            seven = sum(_num(p[1]) or 0.0 for p in seven if isinstance(p, (list, tuple)) and len(p) == 2) if seven else None
+        return {"wallet": t.get("accountAddress"), "realized_usd": _num(m.get("realizedPnlUsd")), "unrealized_usd": _num(m.get("unrealizedPnlUsd")),
+                "win_rate": (wr / 100.0 if wr is not None and wr > 1.0 else wr), "volume_usd": _num(m.get("tradesVolumeUsd")),
+                "trades": _int(m.get("tradesCount")), "tokens": _int(m.get("uniqueTokensTraded")), "seven_day_usd": _num(seven),
+                "labels": list(t.get("accountLabels") or []), "name": t.get("accountName")}  # fmt: skip
 
     def top_traders_raw(self, resolution: str = "30d", limit: int = 1000, sort: str = "realizedPnlUsd", page: int | None = None,
                         label: str | None = None, mint: str | None = None) -> list[dict]:  # fmt: skip
