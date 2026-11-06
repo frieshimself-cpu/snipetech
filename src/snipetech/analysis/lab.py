@@ -33,7 +33,7 @@ from .stats import summarize
 
 LAMPORTS = 1e9
 # 2 = the lab replays what the live sniper does (measured slot time, OKTech's watch delay, the copy exit, sells a slot
-# after their exit) and scores each wallet on the buys its own floor lets through. Verdicts before 7 Nov 2026 are 1.
+# after their exit) and scores each wallet on the buys its own floor lets through. Older verdicts have no copy plan.
 LAB_VERSION = 2
 # OKTech watches a position about this long after the buy: the 6 Nov copy fills replay right with 1.25-1.4 s
 # (tests/test_lab_replay.py). A sell lands one slot after its exit fires, before the trades of that slot.
@@ -442,14 +442,14 @@ def choose_min_leader_sol(first_buys, rebuys, floor: float) -> float:
     openers. With at least REBUY_MIN_N re-buys of 0.1 SOL or more: 1.1 x their 90th percentile, capped at the 25th
     percentile of its first buys and never below `floor` (the book's minimum); otherwise `floor`. Rounded down to
     0.001 SOL, so an opener of exactly the cap still passes whichever amount OKTech compares."""
-    re = np.array([float(x) for x in rebuys if x is not None and float(x) >= KOL_MIN_SOL])
+    re = np.array([float(s) for s in rebuys if s is not None and float(s) >= KOL_MIN_SOL])
     if len(re) < REBUY_MIN_N:
         return float(floor)
-    x = 1.1 * float(np.percentile(re, 90))
-    fb = [float(x) for x in first_buys if x is not None and float(x) > 0]
+    cut = 1.1 * float(np.percentile(re, 90))
+    fb = [float(s) for s in first_buys if s is not None and float(s) > 0]
     if fb:
-        x = min(x, float(np.percentile(fb, 25)))
-    return max(float(floor), math.floor(x * 1000 + 1e-9) / 1000)
+        cut = min(cut, float(np.percentile(fb, 25)))
+    return max(float(floor), math.floor(cut * 1000 + 1e-9) / 1000)
 
 
 def leader_style(

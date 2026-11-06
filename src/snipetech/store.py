@@ -543,7 +543,7 @@ class Store:
             d["reasons"] = json.loads(d["reasons"]) if d.get("reasons") else []
         except ValueError:
             d["reasons"] = [str(d["reasons"])]
-        try:  # the copy plan is a dict or None (verdicts before the lab fix of 7 Nov 2026 have none)
+        try:  # the copy plan is a dict or None (verdicts from before the lab fix of 6 Nov 2026 have none)
             plan = json.loads(d["copy_plan"]) if d.get("copy_plan") else None
         except ValueError:
             plan = None
