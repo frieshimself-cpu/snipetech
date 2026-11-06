@@ -27,6 +27,35 @@ def _progress(msg: str) -> None:
     print(f"  … {msg}", file=sys.stderr, flush=True)
 
 
+
+def _usage(svc, provider: str):
+    """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
+
+    def count(n: int) -> None:
+        try:
+            svc.store.usage_add(provider, int(n))
+        except Exception:  # noqa: BLE001 - never let bookkeeping break a query
+            pass
+
+    return count
+
+
+def _usage_from_cfg(cfg, provider: str):
+    """Same, for commands that open no Service: a short-lived Store on the configured database."""
+    from .store import Store
+
+    def count(n: int) -> None:
+        try:
+            st = Store(cfg.storage.db_path)
+            try:
+                st.usage_add(provider, int(n))
+            finally:
+                st.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+    return count
+
 def _out(args, data, render=None) -> None:
     if args.json or render is None:
         print(json.dumps(data, indent=2, default=str))
@@ -273,6 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--wallet")
     sp.add_argument("--limit", type=int, default=20)
 
+    sp = cmd("vybe", "query Vybe directly: the free 1d/7d/30d top-traders board")
+    sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
+    sp.add_argument("--limit", type=int, default=50)
+    sp.add_argument("--sort", default="realizedPnlUsd", choices=["realizedPnlUsd", "unrealizedPnlUsd", "winRate", "tradesVolumeUsd", "tradesCount"])
     sp = cmd("birdeye", "query Birdeye directly: credits, gainers, top traders of a coin, a wallet's 30-day PnL")
     sp.add_argument("action", choices=["credits", "gainers", "top", "pnl"])
     sp.add_argument("--period", default="1W", help="gainers: yesterday|today|1W|30d|90d")
@@ -370,6 +403,20 @@ async def doctor(svc: Service) -> dict:
             out["solanatracker"] = {"ok": False, "detail": f"SOLANATRACKER_API_KEY set but the API answered: {exc}"}
     else:
         out["solanatracker"] = {"ok": False, "detail": "SOLANATRACKER_API_KEY not set (optional: 90-day wallet leaderboard)"}
+    if os.environ.get("VYBE_API_KEY"):
+        try:
+            from .vybe import Vybe
+
+            vy = Vybe(counter=_usage(svc, "vybe"))
+            try:
+                rows = await asyncio.to_thread(vy.top_traders, "30d", 1)
+            finally:
+                vy.close()
+            out["vybe"] = {"ok": True, "detail": f"top-traders answers ({len(rows)} row)"}
+        except Exception as exc:  # noqa: BLE001
+            out["vybe"] = {"ok": False, "detail": f"VYBE_API_KEY set but the API answered: {exc}"}
+    else:
+        out["vybe"] = {"ok": False, "detail": "VYBE_API_KEY not set (optional: free 30-day leaderboard)"}
     out["config"] = {"ok": bool(cfg.path and cfg.path.exists()), "detail": str(cfg.path) if cfg.path and cfg.path.exists() else "no snipetech.toml (defaults in use) — run `snipetech init`"}
     out["database"] = {"ok": True, "detail": f"{svc.store.path}: {svc.store.stats()}"}
     return out
@@ -428,7 +475,7 @@ async def _run(args, cfg: Config) -> int:
             if args.source == "birdeye":
                 from .birdeye import Birdeye
 
-                be = Birdeye(budget_cu=cfg.birdeye.daily_cu)
+                be = Birdeye(budget_cu=cfg.birdeye.daily_cu, counter=_usage(svc, "birdeye"))
                 try:
                     rows = []
                     for w in dict.fromkeys(wallets):
@@ -644,7 +691,7 @@ async def _run(args, cfg: Config) -> int:
             if args.source == "birdeye":
                 from .birdeye import Birdeye
 
-                be = Birdeye(budget_cu=cfg.birdeye.daily_cu)
+                be = Birdeye(budget_cu=cfg.birdeye.daily_cu, counter=_usage(svc, "birdeye"))
                 try:
                     rows = await svc.discover_birdeye(be, args.days, args.top_coins, args.pnl_top)
                 finally:
@@ -653,7 +700,7 @@ async def _run(args, cfg: Config) -> int:
             elif args.source == "solanatracker":
                 from .solanatracker import SolanaTracker
 
-                stc = SolanaTracker(budget_requests=cfg.solanatracker.daily_requests)
+                stc = SolanaTracker(budget_requests=cfg.solanatracker.daily_requests, counter=_usage(svc, "solanatracker"))
                 try:
                     rows = await svc.discover_solanatracker(stc, int(args.days) if args.days else None, args.pages)
                 finally:
@@ -828,7 +875,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "solanatracker":
         from .solanatracker import SolanaTracker
 
-        stc = SolanaTracker()
+        stc = SolanaTracker(counter=_usage_from_cfg(cfg, "solanatracker"))
         try:
             if args.action == "leaderboard":
                 rows, cursor = stc.leaderboard(days=args.days, limit=args.limit)
@@ -843,10 +890,20 @@ def main(argv: list[str] | None = None) -> int:
             stc.close()
         print(json.dumps(out, indent=1, default=str))
         return 0
+    if args.cmd == "vybe":
+        from .vybe import Vybe
+
+        vy = Vybe(counter=_usage_from_cfg(cfg, "vybe"))
+        try:
+            out = vy.top_traders(resolution=args.resolution, limit=args.limit, sort=args.sort)
+        finally:
+            vy.close()
+        print(json.dumps(out, indent=1, default=str))
+        return 0
     if args.cmd == "birdeye":
         from .birdeye import Birdeye
 
-        be = Birdeye()
+        be = Birdeye(counter=_usage_from_cfg(cfg, "birdeye"))
         try:
             if args.action == "credits":
                 out = be.credits()

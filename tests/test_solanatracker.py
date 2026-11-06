@@ -124,3 +124,15 @@ def test_cli_and_config():
     assert build_parser().parse_args(["solanatracker", "leaderboard", "--days", "30", "--limit", "5"]).action == "leaderboard"
     c = Config().solanatracker
     assert c.daily_requests == 6000 and c.pages == 5 and c.max_trades == 3000
+
+
+def test_counter_is_called_once_per_request():
+    counted = []
+
+    def handler(req):
+        return httpx.Response(200, json={"traders": [], "pagination": {}})
+
+    st = _client(handler, counter=lambda n: counted.append(n))
+    st.leaderboard(days=30, limit=1)
+    st.leaderboard(days=30, limit=1)
+    assert counted == [1, 1]

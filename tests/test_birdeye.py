@@ -120,3 +120,15 @@ def test_gainers_raw_passthrough_keeps_unknown_shapes():
     assert b.gainers() == []  # unknown field names are not silently mapped
     raw = b.gainers_raw()
     assert raw["items"][0]["wallet_address"] == "X"
+
+
+def test_counter_is_told_the_cu_cost_of_each_successful_call():
+    counted = []
+
+    def handler(req):
+        return httpx.Response(200, json={"success": True, "data": {"usage": {"total": 5}, "remaining": {"total": 95}}})
+
+    b = _client(handler, counter=lambda n: counted.append(n))
+    b.credits()
+    b.credits()
+    assert counted == [CU["credits"], CU["credits"]]

@@ -1,0 +1,85 @@
+"""Vybe Network data API: the free 30-day whole-market top-traders board (docs.vybenetwork.com).
+The key is VYBE_API_KEY. Every successful request is reported to `counter` so the operator can watch the monthly credit budget."""
+
+from __future__ import annotations
+
+import os
+import time
+from collections.abc import Callable
+from typing import Any
+
+import httpx
+
+BASE = "https://api.vybenetwork.xyz"
+RETRY_STATUSES = (429, 500, 502, 503, 504)
+
+
+def _num(v) -> float | None:
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v) -> int | None:
+    try:
+        return None if v is None else int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+class Vybe:
+    def __init__(self, key: str | None = None, *, transport: httpx.BaseTransport | None = None, budget_requests: int | None = None,
+                 counter: Callable[[int], None] | None = None, sleep: Callable[[float], None] = time.sleep, timeout: float = 30.0):  # fmt: skip
+        self.key = key or os.environ.get("VYBE_API_KEY") or ""
+        if not self.key:
+            raise RuntimeError("VYBE_API_KEY is not set")
+        self.http = httpx.Client(
+            base_url=BASE,
+            timeout=timeout,
+            transport=transport,
+            headers={"X-API-KEY": self.key, "accept": "application/json"},
+        )
+        self.budget_requests, self.requests, self.counter, self.sleep = budget_requests, 0, counter, sleep
+
+    def close(self) -> None:
+        self.http.close()
+
+    def _get(self, path: str, params: dict[str, Any]) -> dict | list:
+        if self.budget_requests is not None and self.requests + 1 > self.budget_requests:
+            raise RuntimeError(f"vybe budget: {self.requests} requests used of {self.budget_requests}")
+        delay = 0.5
+        for attempt in range(6):
+            r = self.http.get(path, params={k: v for k, v in params.items() if v is not None})
+            self.requests += 1
+            if r.status_code in RETRY_STATUSES and attempt < 5:
+                self.sleep(delay)
+                delay = min(delay * 2, 8.0)
+                continue
+            if r.status_code != 200:
+                msg = ""
+                try:
+                    msg = str(r.json().get("message") or r.json().get("error") or "")[:120]
+                except (ValueError, AttributeError):
+                    pass
+                raise RuntimeError(f"vybe {path}: HTTP {r.status_code} {msg}".strip())
+            if self.counter is not None:
+                self.counter(1)
+            return r.json() if r.content else {}
+        raise RuntimeError(f"vybe {path}: gave up after retries")
+
+    @staticmethod
+    def _trader(t: dict) -> dict:
+        return {"wallet": t.get("accountAddress"), "realized_usd": _num(t.get("realizedPnlUsd")), "unrealized_usd": _num(t.get("unrealizedPnlUsd")),
+                "win_rate": _num(t.get("winRate")), "volume_usd": _num(t.get("tradesVolumeUsd")), "trades": _int(t.get("tradesCount")),
+                "tokens": _int(t.get("uniqueTokensTraded")), "seven_day_usd": _num(t.get("sevenDayPnl"))}  # fmt: skip
+
+    def top_traders(self, resolution: str = "30d", limit: int = 1000, sort: str = "realizedPnlUsd", page: int | None = None,
+                    label: str | None = None, mint: str | None = None) -> list[dict]:  # fmt: skip
+        """The market-wide board for 1d/7d/30d, sorted descending by `sort` (realizedPnlUsd, winRate, tradesVolumeUsd, tradesCount)."""
+        body = self._get("/v4/wallets/top-traders", {"resolution": resolution, "limit": limit, "sortByDesc": sort, "page": page,
+                                                      "label": label, "mintAddress": mint})  # fmt: skip
+        rows = body.get("data") if isinstance(body, dict) else body
+        if isinstance(rows, dict):
+            rows = rows.get("traders") or rows.get("data") or []
+        return [self._trader(t) for t in rows or [] if isinstance(t, dict)]

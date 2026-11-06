@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -35,12 +36,12 @@ def _ts(ms: Any) -> int:
 
 class SolanaTracker:
     def __init__(self, key: str | None = None, *, transport: httpx.BaseTransport | None = None, budget_requests: int | None = None,
-                 sleep: Callable[[float], None] = time.sleep, timeout: float = 30.0):  # fmt: skip
+                 sleep: Callable[[float], None] = time.sleep, timeout: float = 30.0, counter: Callable[[int], None] | None = None):  # fmt: skip
         self.key = key or os.environ.get("SOLANATRACKER_API_KEY") or ""
         if not self.key:
             raise RuntimeError("SOLANATRACKER_API_KEY is not set")
         self.http = httpx.Client(base_url=BASE, timeout=timeout, transport=transport, headers={"x-api-key": self.key, "accept": "application/json"})
-        self.budget_requests, self.requests, self.sleep = budget_requests, 0, sleep
+        self.budget_requests, self.requests, self.sleep, self.counter = budget_requests, 0, sleep, counter  # counter: one per successful request
 
     def close(self) -> None:
         self.http.close()
@@ -63,6 +64,8 @@ class SolanaTracker:
                 except ValueError:
                     pass
                 raise RuntimeError(f"solanatracker {path}: HTTP {r.status_code} {msg}".strip())
+            if self.counter is not None:
+                self.counter(1)
             return r.json() if r.content else {}
         raise RuntimeError(f"solanatracker {path}: gave up after retries")
 

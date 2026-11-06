@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import httpx
 
@@ -38,13 +39,14 @@ def _int(v: Any) -> int:
 
 class Birdeye:
     def __init__(self, key: str | None = None, *, transport: httpx.BaseTransport | None = None, budget_cu: int | None = None,
-                 wallet_rps: float = 4.0, sleep: Callable[[float], None] = time.sleep, timeout: float = 20.0):  # fmt: skip
+                 wallet_rps: float = 4.0, sleep: Callable[[float], None] = time.sleep, timeout: float = 20.0,
+                 counter: Callable[[int], None] | None = None):  # fmt: skip
         self.key = key or os.environ.get("BIRDEYE_API_KEY") or ""
         if not self.key:
             raise RuntimeError("BIRDEYE_API_KEY is not set")
         self.http = httpx.Client(base_url=BASE, timeout=timeout, transport=transport,
                                  headers={"X-API-KEY": self.key, "x-chain": "solana", "accept": "application/json"})  # fmt: skip
-        self.budget_cu, self.used_cu, self.calls = budget_cu, 0, 0
+        self.budget_cu, self.used_cu, self.calls, self.counter = budget_cu, 0, 0, counter  # counter: CU spent per successful call
         self._wallet_gap, self._last_wallet_call, self.sleep = 1.0 / max(0.1, wallet_rps), 0.0, sleep
 
     def close(self) -> None:
@@ -76,6 +78,8 @@ class Birdeye:
                     pass
                 raise RuntimeError(f"birdeye {path}: HTTP {r.status_code} {msg}".strip())
             self.used_cu += cost
+            if self.counter is not None:
+                self.counter(cost)
             body = r.json()
             if body.get("success") is False:
                 raise RuntimeError(f"birdeye {path}: {str(body.get('message', 'error'))[:120]}")
