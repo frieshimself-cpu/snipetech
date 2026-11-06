@@ -6,6 +6,25 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## Copy landing measured live (6 Nov, 05:45 UTC) — the known wallets are the +6 regime
+
+Seven live copy fills (docs/live-recipe.md, "Copy-landing test, 6 Nov"): same or next slot as the leader, but
+2–4 trades behind and 18–43 % above the leader's price once the other copy bots have filled. Mean −7 % per
+fill. That is the bottom row of the position-sensitivity table below, not the top one, so the "+13–14 SOL a
+day" paper number for the top-25 wallets does not apply to this bot. The live test is stopped with nothing
+held and nothing running.
+
+What is left that can still work, in order of evidence:
+
+1. A wallet whose copiers are few — measured by the price gap between its buy and the second buy after it.
+   The 271-wallet discovery pass found none in 30 h of tape (every quiet-landing candidate was a creator or an
+   outlier). The pass keeps running daily; a wallet needs n ≥ 20 positive at +6 before it goes live.
+2. Exits on the leader's sell, not on a timer: OKTech's `ctbotCopyExit` was on, but the leader sold before our
+   buy had confirmed in three of the seven fills. Nothing to tune there.
+3. Being first: landing inside the create slot (the only regime that paid on paper) needs the create tx itself
+   as the trigger, i.e. a bundle or a pre-signed buy in the same block — out of reach for OKTech's remote
+   execution, as the Hunt test showed.
+
 ## Wallet copies at the measured copy landing (6 Nov, 01:50 UTC) — the one positive result
 
 `lab --latency 0 --position +1 --by-wallet`, 26 h of tape, 0.2 SOL a trade, 99 wallets scored, exits

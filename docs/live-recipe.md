@@ -197,3 +197,47 @@ Everything positive is small and thin: the top 25 wallets together made about +4
 A copy bot on these wallets is a few SOL a day at best at this size, not a path to 100. The fairer landing for
 copies — one trade behind the leader in the same slot, which the speed tests measured — is being re-run now with
 the corrected staleness (`--latency 0 --position +1 --by-wallet`).
+
+## Copy-landing test, 6 Nov 04:36–05:45 UTC — stopped, answer in hand
+
+Twenty copy snipers (five of the paper-positive wallets at 0.05 SOL, fifteen breadth wallets at 0.03 SOL, lab
+exit = 1 s stale / −30 % / 300 s, three cyclers re-arming spent snipers) on wallet SNIPER. Seven fills in 70
+minutes, every one a bonding-curve buy that landed in the leader's own slot or the next one — the speed is
+there — and still 2–4 trades behind the leader, after the other copy bots had already moved the price:
+
+| time (UTC) | leader | leader buy | our buy | behind | price gap at fill | result |
+|---|---|---|---|---|---|---|
+| 04:4x | Gfree | 0.9 SOL | 0.049 | 2 trades | +3x % | −26 % (leader sold in 20 s) |
+| 04:5x | Decu | — | 0.049 | 2 trades | — | +11 % |
+| 05:04 | Gfree | 0.98 SOL | 0.049 | 2 trades | +34 % | −26 % |
+| 05:15 | Decu | 2.93 SOL | 0.049 | 2 trades | +4 % | ≈ +0 % (coin graduated in 9 s; sold on PumpSwap into WSOL 0.0549) |
+| 05:32 | Decu | 2.93 SOL | 0.049 | 4 trades | +43 % | −10 % |
+| 05:32 | Art | 0.96 SOL | 0.030 | 2 trades | +26 % | +1 % |
+| 05:39 | Gfree | 1.25 SOL | 0.049 | 3 trades | +33 % | −26 % |
+| 05:42 | Gfree | 2.40 SOL | 0.049 | 2 trades | +18 % | +17 % |
+
+Mean per fill about −7 %; equity 1.777 → 1.65 SOL (0.13 SOL spent, of which ≈ 0.02 was OKTech's duplicate
+sells and failed ATA creates — every sell is still sent three times). The price gap column is the whole story:
+the first copy bots pay the leader's price, we pay 18–43 % more, and a 60-second hold cannot recover that on
+coins the leader himself flips within a minute. This is exactly the "+6 behind" regime the lab predicted
+(roadmap, position-sensitivity table), where the known wallets are worth ≈ 0, not the "+1" regime that paid.
+
+Stopped at 05:45 while nothing was held: cyclers killed first, then all twenty snipers set idle (verified).
+Nothing is running on the account; the snipers still exist and can be restarted with one command if a
+different landing is ever available. Remaining budget was not the reason — the question was answered, and
+every further fill would have been paid for at a known negative expectancy.
+
+### The "quiet follow-through" wallet hunt (6 Nov 05:38 UTC) — no survivors
+
+Scoring 271 discovered wallets for "price keeps moving up 20–30 s after their buy, with few other buyers piling
+in" produced 34 candidates with huge mean returns (+5 400 %, +1 300 %…). Checked at the next slot after their
+buy with a 30 % stop and returns capped at +200 %:
+
+- eight of the 34 are the coins' own creators (every "buy" is the dev's bundle in the create transaction) —
+  uncopyable, we land a slot later;
+- the rest have 16–35 % winners and 70–95 % of entries stopped out; the means were one or two 50× outliers;
+- best non-creator row: +4 % per trade with 82 % stopped (DFihBUSK) — noise.
+
+Low-cap follow-through wallets with a copyable, quiet landing do not exist in this 30-hour window. The search
+stays automated (`discover-wallets` → `follow` → lab by wallet at +1 and +6) in the autopilot, but the live
+list is empty until a wallet clears all three with n ≥ 20.
