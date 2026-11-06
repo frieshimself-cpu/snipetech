@@ -1,0 +1,15 @@
+[Unit]
+Description=snipetech operator: one round (snapshot, gate, Claude only if something changed; see src/snipetech/operator)
+After=network-online.target
+
+[Service]
+Slice=snipetech.slice
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+Type=oneshot
+User=@USER@
+EnvironmentFile=/etc/snipetech/env
+WorkingDirectory=@DATA@
+ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db operate --repo @REPO@
+TimeoutStartSec=30m

@@ -209,6 +209,30 @@ again). Anything else on the server is left alone; an existing Caddy config gets
 appended (backed up, rolled back if it doesn't validate). A machine close to the validators
 (Frankfurt / Amsterdam / New York) keeps the tape's gaps short.
 
+### 3e. The operator — Claude on the server, every 15 minutes
+
+`snipetech operate` is one unattended round: a script gathers the facts (services, tape lag, jobs, the sniper wallet's
+SOL and wrapped SOL and holdings, every OKTech sniper's state, fills since last time, the paper test, today's spend),
+compares them with the previous round, and calls Claude **only when something changed** or the daily analysis is due.
+Claude gets a deliberately small tool set — read a job log, run a read-only query, start a research job from a fixed
+list (one `lab` at a time), write a note — and nothing that touches OKTech, wallets or keys. Spend is capped per day
+(`[operator] daily_usd`, default 15) and per turn (`turn_usd`, default 2). Notes land in `operator/notes.md`;
+decision-level notes (a wallet clearing all three gates, a sniper running or a coin held when none should be, equity
+moving more than `equity_alert_sol`, the tape stalled, a service down, the budget reached) also go to Telegram when
+`TELEGRAM_BOT_TOKEN` is in `/etc/snipetech/env`.
+
+```bash
+snipetech operate --dry-run          # the snapshot and the gate's decision, never a Claude call
+snipetech operate --telegram-setup   # after you messaged your bot once: stores your chat id, sends a hello
+snipetech operate                    # one real round; --analyst forces the daily analyst turn
+sudo systemctl enable --now snipetech-operator.timer   # every 15 minutes from now on
+```
+
+Config (`/etc/snipetech/snipetech.toml`): `[operator] wallet = "<sniper wallet>"` is required; `expected.json` in
+`operator/` says what "all quiet" means when a live test is on (`{"snipers_running": N, "held": N}`); a request you
+drop into `operator/inbox.md` is read on the next round. The design is in
+`docs/superpowers/specs/2026-11-06-operator-agent-design.md`.
+
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses
 anything older than 5 minutes or replayed. It can: show status, run allowlisted snipetech commands as

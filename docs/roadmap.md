@@ -8,6 +8,9 @@ first on the server's recording and only then run live in capped batches.
 
 ## Copy landing measured live (6 Nov, 05:45 UTC) — the known wallets are the +6 regime
 
+> Operator (6 Nov, built): a 15-minute round on the server that calls Claude only on change, with no trading tools;
+> notes in `operator/notes.md`, decisions to Telegram, caps 15 $/day. README 3e; spec and plan under docs/superpowers/.
+
 Seven live copy fills (docs/live-recipe.md, "Copy-landing test, 6 Nov"): same or next slot as the leader, but
 2–4 trades behind and 18–43 % above the leader's price once the other copy bots have filled. Mean −7 % per
 fill. That is the bottom row of the position-sensitivity table below, not the top one, so the "+13–14 SOL a

@@ -150,6 +150,7 @@ fi
 
 say "services"
 systemctl enable -q --now snipetech-tape snipetech-ops snipetech-daily.timer
+# the operator timer is enabled by hand after `snipetech operate --dry-run` and `--telegram-setup` look right (README 3e)
 systemctl restart snipetech-tape snipetech-ops  # pick up new code on re-runs
 sleep 3
 for u in snipetech-tape snipetech-ops snipetech-daily.timer; do printf '%-24s %s\n' "$u" "$(systemctl is-active "$u")"; done
