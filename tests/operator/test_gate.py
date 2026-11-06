@@ -309,3 +309,51 @@ def test_an_unmanaged_coin_is_a_decision_in_the_same_round(paths):
     assert not decide(snap(book_live=True, snipers=book, held=[]), snap(), NOW, CFG, paths).call  # sold since
     state_path(paths).write_text(json.dumps({"ts": NOW - 3 * 3600, "hits": hits}))
     assert not decide(s, snap(), NOW, CFG, paths).call  # a watch that stopped writing is not news
+
+
+# -- post-mortems: why the live trades won or lost, between the daily analyses ------------------------------------------
+
+
+def _pm(paths, n, since=NOW - 5 * 3600, at=NOW, **kw):
+    s = snap(**({"ts": at, "tape_last_ts": at - 5} | kw))
+    return decide(s, snap(), at, CFG, paths, new_trips=n, trips_since=since)
+
+
+def test_five_new_live_round_trips_start_a_post_mortem(paths):
+    d = _pm(paths, 5)
+    assert d.call and d.mode == "postmortem"
+    assert "post-mortem due: 5 new live round trips since 05 Nov 20:00 UTC (read_round_trips hours=5)" in d.reasons
+    assert not _pm(paths, 4).call  # four are not enough: quiet
+
+
+def test_never_more_than_one_post_mortem_in_three_hours(paths):
+    from snipetech.operator import learning
+
+    learning.mark_postmortem(paths, NOW - 3 * 3600, {"n": 5, "newest_ts": NOW - 4 * 3600}, "postmortem")
+    assert _pm(paths, 9).mode != "postmortem"  # exactly three hours ago: not yet
+    learning.mark_postmortem(paths, NOW - 3 * 3600 - 60, {"n": 5, "newest_ts": NOW - 4 * 3600}, "analyst")
+    assert _pm(paths, 9).mode == "postmortem"  # the daily analysis counts as the last post-mortem too
+
+
+def test_a_post_mortem_rides_along_with_other_reasons(paths):
+    d = _pm(paths, 6, tape_last_ts=NOW - 400)
+    assert d.mode == "postmortem" and any(r.startswith("tape stale") for r in d.reasons)
+
+
+def test_the_daily_analysis_does_the_post_mortem_when_both_are_due(paths):
+    d = _pm(paths, 7, since=AT_0630 - 8 * 3600, at=AT_0630)
+    assert d.mode == "analyst" and "daily analysis due" in d.reasons
+    assert "post-mortem: 7 new live round trips since 05 Nov 22:30 UTC (read_round_trips hours=8)" in d.reasons
+    assert _pm(paths, 0, at=AT_0630).reasons == ["daily analysis due"]  # nothing new: nothing to review
+
+
+def test_a_post_mortem_waits_for_a_daily_analysis_due_within_the_hour(paths):
+    at_0530 = AT_0630 - 3600
+    assert not _pm(paths, 9, at=at_0530).call  # the analysis at 06:00 reviews them
+    paths.report("analyst-2026-11-06").write_text("x")
+    assert _pm(paths, 9, at=AT_0630 + 3 * 3600).mode == "postmortem"  # done today: later trips get their own
+
+
+def test_the_daily_budget_stops_a_post_mortem_too(paths):
+    d = _pm(paths, 9, spent_today=15.0)
+    assert not d.call and d.reasons == ["budget"]
