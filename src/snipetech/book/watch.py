@@ -417,6 +417,12 @@ def _save(paths: OperatorPaths, state: dict) -> None:
     os.replace(tmp, p)
 
 
+def watched_within(paths: OperatorPaths, now: float, secs: float = 180) -> bool:
+    """A watch pass ran in the last `secs`: the book's run need not watch at its end (the one-minute pass does)."""
+    ts = _num(_load(paths).get("ts"))
+    return ts is not None and now - ts <= secs
+
+
 def current_hits(paths: OperatorPaths, now: float, max_age: float = HIT_MAX_AGE_SECS) -> list[dict]:
     """The coins the last watch pass flagged, if it ran within `max_age` (the operator's gate reads this)."""
     st = _load(paths)

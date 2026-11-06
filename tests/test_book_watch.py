@@ -287,6 +287,22 @@ def test_a_failed_record_neither_repeats_the_alert_nor_is_lost(tmp_path, monkeyp
         st.close()
 
 
+def test_the_book_can_tell_whether_the_one_minute_watch_is_running(tmp_path):
+    """The book's run watches at its end only when the one-minute pass has not (its timer is off or failing)."""
+    from snipetech.book.watch import watched_within
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    st = Store(cfg.storage.db_path)
+    paths = OperatorPaths(tmp_path / "data")
+    try:
+        assert not watched_within(paths, T0, 180)  # never ran
+        watch_pass(cfg, st, Notifier(None, None), W, [], [], T0)
+        assert watched_within(paths, T0 + 120, 180) and not watched_within(paths, T0 + 300, 180)
+    finally:
+        st.close()
+
+
 def test_a_coin_off_the_curve_is_sold_by_hand_not_by_sweep(tmp_path):
     from snipetech.models import Completion
 
