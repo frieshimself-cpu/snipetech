@@ -17,7 +17,8 @@ ALL_ACTIVE = {"snipetech-tape": "active", "snipetech-ops": "active"}
 
 
 @pytest.fixture
-def tmp_env(tmp_path):
+def tmp_env(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")  # the round pre-checks the key before calling the turn
     data = tmp_path / "data"
     paths = OperatorPaths(data).ensure()
     st = Store(data / "snipetech.db")

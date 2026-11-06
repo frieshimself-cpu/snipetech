@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import sqlite3
 import subprocess
 import sys
@@ -125,6 +126,28 @@ def sign(key_path: str | Path, op: str, args: dict | None = None) -> tuple[bytes
 
 
 ENV_FILE = Path("/etc/snipetech/env")
+
+
+def _signal_group(proc: subprocess.Popen, sig: int) -> None:
+    """Signal the job's whole process group (start_new_session=True made it a session leader)."""
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        proc.send_signal(sig)
+
+
+REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET")
+
+
+def redact(text: str) -> str:
+    """Replace every secret value present in the environment (8+ chars) with <redacted>."""
+    for k in REDACT_ENV:
+        v = os.environ.get(k, "")
+        if len(v) >= 8:
+            text = text.replace(v, "<redacted>")
+    return text
 
 
 def _pid_alive(pid: Any) -> bool:
@@ -277,7 +300,7 @@ class Ops:
         job = self.jobs.get(id)
         if job is None or job.proc is None or job.code is not None:
             raise OpsError(404, f"no running job {id}")
-        job.proc.terminate()
+        _signal_group(job.proc, signal.SIGTERM)  # the job is a session leader: the wrapper AND the command
         return {"id": id, "signal": "TERM"}
 
     def op_ls(self, path: str = "") -> dict[str, Any]:
@@ -360,7 +383,7 @@ class Ops:
         # A wrapper shell writes the exit code to <id>.exit so the outcome survives the starting process going away
         # (the operator is a short-lived timer run; the ops service may restart): _meta() reconciles from that file.
         env = _job_env() | {"SNIPETECH_JOB_EXIT": str(self.data / "jobs" / f"{jid}.exit")}
-        wrapped = ["/bin/sh", "-c", '"$@"; echo $? > "$SNIPETECH_JOB_EXIT"', "sh", *cmd]
+        wrapped = ["/bin/sh", "-c", '"$@"; rc=$?; echo "$rc" > "$SNIPETECH_JOB_EXIT"; exit "$rc"', "sh", *cmd]
         job.proc = subprocess.Popen(wrapped, stdout=fh, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, cwd=self.data,
                                     start_new_session=True, env=env)  # fmt: skip
         fh.close()
@@ -371,7 +394,7 @@ class Ops:
             try:
                 job.code = job.proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                job.proc.kill()
+                _signal_group(job.proc, signal.SIGKILL)
                 job.code = job.proc.wait()
                 with log.open("ab") as f:
                     f.write(f"\n[ops] killed after {timeout}s\n".encode())

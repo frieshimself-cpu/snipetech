@@ -11,7 +11,7 @@ from typing import Callable
 from anthropic import beta_async_tool
 
 from ..config import OperatorConfig
-from ..ops import _read_only_authorizer
+from ..ops import _read_only_authorizer, redact
 from .jobs import OperatorJobs
 from .paths import OperatorPaths
 
@@ -33,7 +33,7 @@ class NoteSink:
     def write(self, text: str, level: str = "info") -> str:
         if level not in LEVELS:
             raise ValueError(f"level must be one of {LEVELS}")
-        line = f"- {_iso(self.now())} [{level}] {' '.join(str(text).split())}"
+        line = redact(f"- {_iso(self.now())} [{level}] {' '.join(str(text).split())}")
         self.paths.ensure()
         with self.paths.notes.open("a") as f:
             f.write(line + "\n")
@@ -75,7 +75,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.exists():
             return f"error: no log for job {id}"
         lines = p.read_text(errors="replace").splitlines()
-        return "\n".join(lines[-max(1, int(tail)):])
+        return redact("\n".join(lines[-max(1, int(tail)):]))
 
     @beta_async_tool
     async def read_file(path: str) -> str:
@@ -90,7 +90,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.is_file():
             return f"error: no such file {path}"
         text = p.read_text(errors="replace")
-        return text if len(text) <= 200_000 else text[-200_000:]
+        return redact(text if len(text) <= 200_000 else text[-200_000:])
 
     @beta_async_tool
     async def sql(query: str) -> str:
@@ -114,7 +114,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return f"error: sql: {exc}"
         finally:
             con.close()
-        return json.dumps({"columns": cols, "rows": [list(r) for r in rows[:200]], "truncated": len(rows) > 200}, default=str)
+        return redact(json.dumps({"columns": cols, "rows": [list(r) for r in rows[:200]], "truncated": len(rows) > 200}, default=str))
 
     @beta_async_tool
     async def start_job(argv: list[str]) -> str:
@@ -127,9 +127,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         try:
             return json.dumps(jobs.start(list(argv)))
         except PermissionError as exc:
-            return f"error: {exc}"
+            return redact(f"error: {exc}")
         except Exception as exc:  # noqa: BLE001
-            return f"error: {type(exc).__name__}: {exc}"
+            return redact(f"error: {type(exc).__name__}: {exc}")
 
     @beta_async_tool
     async def write_note(text: str, level: str = "info") -> str:

@@ -15,7 +15,12 @@ from .budget import Ledger
 from .paths import OperatorPaths
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
-DUST = 0.001
+# A pump.fun sell leaves tens of thousands of tokens behind (1e9 supplies); below this it is residue, not a position.
+DUST_TOKENS = 1_000_000.0
+# Long-running services and the timers must be active; the oneshot services (snipetech-daily, snipetech-operator)
+# are inactive most of the day by design and only matter when they are "failed".
+WATCHED_UNITS = ("snipetech-tape", "snipetech-ops", "snipetech-daily.timer", "snipetech-operator.timer")
+ONESHOT_UNITS = ("snipetech-daily", "snipetech-operator")
 
 
 @dataclass
@@ -34,6 +39,7 @@ class Snapshot:
     paper: dict | None = None
     spent_today: float = 0.0
     errors: list[str] = field(default_factory=list)
+    reason_ts: dict[str, float] = field(default_factory=dict)  # state reason -> when it last triggered a call
 
     @property
     def equity(self) -> float | None:
@@ -73,8 +79,10 @@ def _read_metas(jobs_dir: Path) -> list[dict]:
     return out
 
 
-def ended_since(jobs_dir: Path, since_ts: float, already: set[str]) -> list[dict]:
-    """Jobs that ended at or after `since_ts`, plus 'running' metas whose process is gone (reported once via `already`)."""
+def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float | None = None) -> list[dict]:
+    """Jobs that ended at or after `since_ts`. A 'running' meta whose process is gone is reconciled and written back
+    (ended = now, exit_code None) so it is reported once and then retires like any other ended job."""
+    now = time.time() if now is None else now
     out = []
     for m in _read_metas(jobs_dir):
         jid = m.get("id")
@@ -89,9 +97,13 @@ def ended_since(jobs_dir: Path, since_ts: float, already: set[str]) -> list[dict
                     code = None
                 m = m | {"running": False, "ended": int(exit_file.stat().st_mtime), "exit_code": code}
             elif not _pid_alive(m.get("pid")):
-                m = m | {"running": False, "ended": None, "exit_code": None, "note": "process gone"}
+                m = m | {"running": False, "ended": int(now), "exit_code": None, "note": "process gone"}
             else:
                 continue
+            try:
+                (jobs_dir / f"{jid}.json").write_text(json.dumps(m))
+            except OSError:
+                pass
         ended = m.get("ended")
         if ended is None or ended >= since_ts:
             out.append({"id": jid, "argv": m.get("argv", []), "exit_code": m.get("exit_code"), "ended": ended,
@@ -109,10 +121,8 @@ def running_jobs(jobs_dir: Path) -> list[dict]:
 
 
 def systemd_services(units: tuple[str, ...] | None = None) -> dict[str, str]:
-    from ..ops import UNITS
-
     out: dict[str, str] = {}
-    for u in units or UNITS:
+    for u in units or (WATCHED_UNITS + ONESHOT_UNITS):
         try:
             r = subprocess.run(["systemctl", "is-active", u], capture_output=True, text=True, timeout=10)
             out[u] = (r.stdout or r.stderr).strip() or "unknown"
@@ -134,7 +144,7 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
             amt = float(info["tokenAmount"]["uiAmount"] or 0)
             if info["mint"] == WSOL_MINT:
                 wsol += amt
-            elif amt > DUST:
+            elif amt > DUST_TOKENS:
                 held.append({"mint": info["mint"], "amount": amt})
     return native, wsol, held
 
@@ -153,7 +163,7 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         snap.errors.append(f"services: {exc}")
     try:
         snap.jobs_running = running_jobs(paths.jobs)
-        snap.jobs_ended = ended_since(paths.jobs, since, already)
+        snap.jobs_ended = ended_since(paths.jobs, since, already, now)
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"jobs: {exc}")
     try:

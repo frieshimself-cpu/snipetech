@@ -172,3 +172,44 @@ def test_ops_never_serves_dot_dirs(env):
     with pytest.raises(O.OpsError):
         req(ops, key, "ls", path=".wallets")
     assert ".wallets/" not in [i["name"] for i in req(ops, key, "ls")["items"]]
+
+
+def test_failed_job_exit_code_is_recorded(tmp_path):
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "import sys; sys.exit(3)"])  # fmt: skip
+    st = ops.op_run(["lab"])
+    for _ in range(100):
+        if ops.jobs[st["id"]].code is not None:
+            break
+        time.sleep(0.05)
+    assert ops._job_dict(ops.jobs[st["id"]])["exit_code"] == 3
+    assert (data / "jobs" / f"{st['id']}.exit").read_text().strip() == "3"
+
+
+def test_kill_stops_the_job_itself_not_only_the_wrapper(tmp_path):
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "import os,sys,time; print(os.getpid(), flush=True); time.sleep(30)"])  # fmt: skip
+    st = ops.op_run(["lab"])
+    log = data / "jobs" / f"{st['id']}.log"
+    for _ in range(100):
+        if log.exists() and log.read_text().strip():
+            break
+        time.sleep(0.05)
+    child = int(log.read_text().split()[0])
+    ops.op_kill(st["id"])
+    for _ in range(100):
+        if not O._pid_alive(child):
+            break
+        time.sleep(0.05)
+    assert not O._pid_alive(child)
+
+
+def test_redact_hides_every_secret_env_value(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJK")
+    monkeypatch.setenv("HELIUS_API_KEY", "helius-secret-key")
+    text = "key=helius-secret-key token 123456:ABCDEFGHIJK ok"
+    assert O.redact(text) == "key=<redacted> token <redacted> ok"

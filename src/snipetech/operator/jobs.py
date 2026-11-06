@@ -25,9 +25,24 @@ class OperatorJobs:
                 out.append(meta)
         return out
 
+    def _check_paths(self, argv: list[str]) -> None:
+        """Any path-looking argument must resolve under the data directory's inputs/, reports/ or operator/."""
+        roots = [(self.ops.data / d).resolve() for d in ("inputs", "reports", "operator")]
+        for a in argv[1:]:
+            if "/" in a or a.startswith(".") or a.startswith("~"):
+                p = Path(a).expanduser()
+                p = p if p.is_absolute() else self.ops.data / p
+                try:
+                    r = p.resolve()
+                except OSError as exc:
+                    raise PermissionError(f"path not allowed: {a}: {exc}") from exc
+                if not any(r == root or r.is_relative_to(root) for root in roots):
+                    raise PermissionError(f"path not allowed: {a} (only inputs/, reports/, operator/ under the data directory)")
+
     def start(self, argv: list[str]) -> dict:
         if not argv or argv[0] not in RESEARCH_COMMANDS:
             raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
+        self._check_paths(argv)
         running = self.running()
         if argv[0] == "lab" and any(m.get("argv", [""])[0] == "lab" for m in running):
             raise PermissionError("a lab is already running; one lab at a time")

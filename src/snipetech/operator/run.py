@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..config import Config
+from ..ops import _pid_alive
 from .budget import Ledger
 from .gate import Decision, decide
 from .jobs import OperatorJobs
@@ -32,8 +33,14 @@ def _log(paths: OperatorPaths, now: float, text: str) -> None:
 def _acquire_lock(paths: OperatorPaths, now: float) -> bool:
     paths.ensure()
     try:
-        if paths.lock.exists() and now - paths.lock.stat().st_mtime > STALE_LOCK_SECS:
-            paths.lock.unlink()
+        if paths.lock.exists():
+            stale = now - paths.lock.stat().st_mtime > STALE_LOCK_SECS
+            try:
+                stale = stale or not _pid_alive(int(paths.lock.read_text().strip() or 0))
+            except ValueError:
+                stale = True
+            if stale:
+                paths.lock.unlink()
     except OSError:
         pass
     try:
@@ -60,10 +67,13 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if balances is not None:
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
-        save(snap, paths)
         decision = decide(snap, prev, t0, cfg.operator, paths)
         if analyst and decision.reasons != ["budget"]:
-            decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"])
+            decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
+        prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
+        snap.reason_ts = {k: (t0 if decision.call and k not in prev_ts or (decision.call and t0 - prev_ts.get(k, 0) >= 3600) else prev_ts.get(k, t0))
+                          for k in decision.state_reasons}  # fmt: skip
+        save(snap, paths)
         notes = NoteSink(paths, now=now)
         notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
         if decision.reasons == ["budget"]:
@@ -79,12 +89,23 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if dry_run:
             print(json.dumps({"snapshot": json.loads(snap.to_json()), "decision": asdict(decision)}, indent=1, default=str))
             return 0
+        if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+            _log(paths, t0, "no ANTHROPIC_API_KEY in the environment")
+            if not notes.has_today("ANTHROPIC_API_KEY", t0):
+                notifier.send(notes.write("ANTHROPIC_API_KEY is not set in /etc/snipetech/env; the operator cannot call Claude", "decision"))
+            return 0
         jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch, max_jobs=cfg.operator.max_jobs)
         ledger = Ledger(paths.spend, cfg.operator.prices)
         extra = {"client": client} if client is not None else {}
-        result = turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, jobs=jobs, now=now, **extra)
-        if hasattr(result, "__await__"):
-            result = await result
+        try:
+            result = turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, jobs=jobs, now=now, **extra)
+            if hasattr(result, "__await__"):
+                result = await result
+        except Exception as exc:  # noqa: BLE001 - a failed round is a note, never a traceback every 15 minutes
+            _log(paths, now(), f"round failed: {type(exc).__name__}: {exc}")
+            if not notes.has_today("round failed", now()):
+                notifier.send(notes.write(f"round failed: {type(exc).__name__}: {str(exc)[:160]}", "decision"))
+            return 0
         _log(paths, now(), f"turn {decision.mode}: {json.dumps(result, default=str)}")
         return 0
     finally:
