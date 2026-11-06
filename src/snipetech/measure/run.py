@@ -132,12 +132,12 @@ def _note(cfg: Config, now: float, notes, text: str) -> None:
 
 
 def _crossed_line(sell: dict, buy: dict | None) -> str:
+    """The owner's line for a crossed sell: which coin, what it paid against its own sniper's fee, and why."""
     paid = (sell.get("priority_lamports") or 0) / 1e9
-    bid = ((buy or {}).get("priority_lamports") or 0) / 1e9
+    own = ((buy or {}).get("priority_lamports") or 0) / 1e9
     leader = str((buy or {}).get("wallet_copied") or "?")[:6]
-    return (f"[measure] the sell of {str(sell.get('mint'))[:6]}… paid another sniper's fee: bought at {bid:g} SOL "
-            f"priority, sold at {paid:g}. Two snipers copy {leader}… from one OKTech wallet, and the other one sold "
-            "it.")  # fmt: skip
+    return (f"[measure] coin {str(sell.get('mint'))[:6]}…: its sell paid another sniper's fee, {paid:g} SOL instead of "
+            f"{own:g}. Two snipers copy {leader}… from one OKTech wallet.")  # fmt: skip
 
 
 async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
