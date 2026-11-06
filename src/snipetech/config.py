@@ -259,7 +259,8 @@ class AutotuneConfig:
         "book.min_score": {"rel_min": 0.5, "rel_max": 2.0},
         "book.explore_share": {"min": 0.0, "max": 0.3},
         # a bid is raised only through the tip: OKTech charges the buy priority fee again on every exit (never tunable)
-        "book.bid_arms.control.tip": {"min": 0.002, "max": 0.02},
+        # 0.005 at most: the fill is the arm's fee over max_fee_share, so a higher tip would make every buy bigger
+        "book.bid_arms.control.tip": {"min": 0.002, "max": 0.005},
         "book.live_kill_n": {"min": 5, "max": 15},  # live copies before a losing wallet is paused
         "book.min_copy_sol": {"min": 0.1, "max": 2.0},  # the smallest leader buy copied (a wallet's own floor wins)
         "qualify.max_gap3_pct": {"min": 5, "max": 30},
@@ -477,6 +478,42 @@ def _leaves(d: dict[str, Any], prefix: str) -> list[tuple[str, Any]]:
     return out
 
 
+def _get_leaf(cfg: Any, dotted: str) -> Any:
+    obj: Any = cfg
+    for part in dotted.split("."):
+        obj = obj.get(part) if isinstance(obj, dict) else getattr(obj, part, None)
+        if obj is None:
+            return None
+    return obj
+
+
+def _overlay_value_ok(rule: dict, value: Any, base: Any) -> bool:
+    """An overlay value is applied only while it passes the owner's rule today: one of its choices, or a finite number
+    inside its absolute and relative limits (relative to the owner's own value, read before the overlay)."""
+    import math
+
+    if "choices" in rule:
+        return value in rule["choices"]
+    if isinstance(value, bool):
+        return False
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(v):
+        return False
+    lo, hi = rule.get("min"), rule.get("max")
+    try:
+        ref = float(base) if base is not None else None
+    except (TypeError, ValueError):
+        ref = None
+    if ref is not None and "rel_min" in rule:
+        lo = ref * float(rule["rel_min"]) if lo is None else max(float(lo), ref * float(rule["rel_min"]))
+    if ref is not None and "rel_max" in rule:
+        hi = ref * float(rule["rel_max"]) if hi is None else min(float(hi), ref * float(rule["rel_max"]))
+    return (lo is None or v >= float(lo) - 1e-12) and (hi is None or v <= float(hi) + 1e-12)
+
+
 def _set_leaf(cfg: Any, dotted: str, value: Any) -> bool:
     """Set one existing leaf (a dataclass field or a key of a dict field), coerced to its current type; siblings stay."""
     obj: Any = cfg
@@ -511,7 +548,10 @@ def _apply_overlay(cfg: Config) -> None:
     for section in OVERLAY_SECTIONS:
         if isinstance(data.get(section), dict):
             for key, value in _leaves(data[section], section):
-                if key in cfg.autotune.bounds and never_tunable(key) is None:
+                rule = cfg.autotune.bounds.get(key)
+                if rule is None or never_tunable(key) is not None:
+                    continue
+                if _overlay_value_ok(rule, value, _get_leaf(cfg, key)):
                     _set_leaf(cfg, key, value)
     cfg.overlay_path = str(path)
 

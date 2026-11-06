@@ -410,3 +410,20 @@ def test_an_idle_sniper_that_made_its_buy_is_never_restarted():
     assert not any(x.kind in ("create", "start") and x.wallet == "W1" for x in plan.actions)
     assert _s1(cfg, status="idle", holdings_known=False).kind == "keep"
     assert _s1(cfg, status="idle").kind == "retire"
+
+
+def test_a_paused_wallet_stays_paused_after_its_losses_age_out():
+    """A wallet paused on its live losses stays paused when those trips leave measure's 7-day window: otherwise every
+    trip that ages out would pay for one more losing copy. Only a verdict from a newer lab lifts it."""
+    cfg = _cfg()
+    lost = {"n": 5, "mean_sol": -0.058, "lower_sol": -0.075}
+    plan = plan_book(_inp(live={"W1": lost}), cfg.book)
+    assert "W1" in plan.paused and "live paused" in plan.paused["W1"]
+    was = {"W1": {"reason": plan.paused["W1"], "ts": NOW - 8 * 86400, "lab_version": 2}}
+    q1 = dict(_q("W1", 0.03), copy_plan={"min_leader_sol": 0.6, "lab_version": 2})
+    later = plan_book(_inp(qualified=[q1, _q("W2", 0.02)], paused=was), cfg.book)
+    assert not any(a.kind == "create" and a.wallet == "W1" for a in later.actions)
+    assert any(a.kind == "skip" and a.wallet == "W1" and "paused since" in a.reason for a in later.actions)
+    newer = dict(q1, copy_plan={"min_leader_sol": 0.6, "lab_version": 3})
+    lifted = plan_book(_inp(qualified=[newer, _q("W2", 0.02)], paused=was), cfg.book)
+    assert any(a.kind == "create" and a.wallet == "W1" for a in lifted.actions)

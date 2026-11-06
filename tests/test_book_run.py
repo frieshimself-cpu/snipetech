@@ -464,8 +464,10 @@ def _coin(st, name, ts, slot, leader_slot, my_slot, leader=None, sell_slot=None)
 
 def test_buys_by_sniper_counts_our_tape_buys_behind_its_leader_since_creation(tmp_path):
     """Each book sniper's buys come from the tape, not from fills (measure lags by minutes): our wallet's buys since
-    the sniper was made (a minute of clock grace) in coins its leader bought in the 20 slots before. A buy made just
-    before a replacement existed, while its predecessor on the same leader was alive, is the predecessor's."""
+    the sniper was made (a minute of clock grace) in coins its leader bought before us, plus every buy of ours that no
+    copied leader explains (its leader's buy failed or is not on the tape): counting high only replaces a sniper early,
+    counting low relies on the buy that uses up OKTech's cap. A buy made just before a replacement existed, while its
+    predecessor on the same leader was alive, is the predecessor's."""
     from snipetech.book.run import _buys_by_sniper
 
     st, _cfg = _env(tmp_path)
@@ -476,18 +478,18 @@ def test_buys_by_sniper_counts_our_tape_buys_behind_its_leader_since_creation(tm
     _record(st, "k2", "copy", L2, n2, created_at=t0 + 1230)  # p1's replacement
     _record(st, "k4", "copy", L3, n3, created_at=t0)
     _coin(st, "c1", t0 + 600, s0, 0, 3, leader=L1, sell_slot=10)  # k1: behind its leader (the sell is no buy)
-    _coin(st, "c2", t0 + 900, s0 + 10_000, 0, 25, leader=L1)  # the leader bought 25 slots earlier: not a copy
+    _coin(st, "c2", t0 + 900, s0 + 10_000, 0, 25, leader=L1)  # the leader bought 25 slots earlier: still k1's
     _coin(st, "c4", t0 - 300, s0 - 10_000, 0, 2, leader=L1)  # before k1 was made
     _coin(st, "c5", t0 - 30, s0 - 5_000, 0, 2, leader=L1)  # 30 s before, no sniper of ours on L1 then: clock grace
     _coin(st, "c3", t0 + 1200, s0 + 20_000, 0, 2, leader=L2)  # p1's buy, 30 s before k2 was made
     _coin(st, "c6", t0 + 1500, s0 + 30_000, 0, 1, leader=L2)  # k2's own buy
-    _coin(st, "c7", t0 + 1600, s0 + 40_000, 0, 2)  # nobody we copy bought it
+    _coin(st, "c7", t0 + 1600, s0 + 40_000, 0, 2)  # nobody we copy bought it: counted for every book sniper alive
     # k3: no record of ours, so never counted and never retired; k4: spent; x1: not the book's
     tasks = [{"id": "k1", "name": n1, "status": "running"}, {"id": "k2", "name": n2, "status": "idle"},
              {"id": "k3", "name": n4, "status": "running"}, {"id": "k4", "name": n3, "status": "finished"},
              {"id": "x1", "name": f"snipetech copy G2oZ {L1[:6]} arm:paid", "status": "running"}]  # fmt: skip
     try:
-        assert _buys_by_sniper(st, W, tasks) == {"k1": 2, "k2": 1}
+        assert _buys_by_sniper(st, W, tasks) == {"k1": 4, "k2": 2}
     finally:
         st.close()
 
@@ -759,5 +761,24 @@ def test_a_retire_that_cannot_delete_pages_once_a_day(tmp_path):
                                          fail={("delete", "k1")}), cfg, NOW + i * 300, notifier=note,
                                  balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
         assert sum("could not be deleted" in t for t in sent) == 1
+    finally:
+        st.close()
+
+
+def test_a_live_pause_is_remembered_across_runs(tmp_path):
+    """The runner keeps each live pause (coverage book:paused) so the wallet stays out after its losing trips leave the
+    measure window."""
+    st, cfg = _env(tmp_path, enabled=True)
+    st.put_wallet_live({"wallet": L1, "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "last_fill": NOW - 60,
+                        "status": "live", "updated_at": NOW})  # fmt: skip
+    _fresh_tape(st)
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    try:
+        asyncio.run(run_book(FakeSvc(st), cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert L1 in st.coverage("book:paused")
+        st._exec("DELETE FROM wallet_live WHERE wallet=?", (L1,))  # the losing trips left the window
+        svc = FakeSvc(st)
+        asyncio.run(run_book(svc, cfg, NOW + 600, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert not any(c[0] == "create" and c[1][0].startswith(L1) for c in svc.calls)
     finally:
         st.close()

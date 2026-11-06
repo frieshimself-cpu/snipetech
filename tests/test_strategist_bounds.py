@@ -10,7 +10,7 @@ def test_defaults_are_the_spec_bounds():
     b = a.bounds
     assert b["book.fill_max_sol"]["max"] == 1.0 and b["book.explore_share"] == {"min": 0.0, "max": 0.3}
     assert b["book.min_score"] == {"rel_min": 0.5, "rel_max": 2.0}
-    assert b["book.bid_arms.control.tip"] == {"min": 0.002, "max": 0.02}
+    assert b["book.bid_arms.control.tip"] == {"min": 0.002, "max": 0.005}
     # OKTech charges the buy priority fee again on every exit, and the paid arm is retired: neither is tunable
     assert not [k for k in b if k.endswith(".priority") or ".paid." in k]
     assert b["qualify.max_gap3_pct"] == {"min": 5, "max": 30} and b["qualify.min_n_tape"] == {"min": 10, "max": 40}
@@ -111,3 +111,19 @@ def test_the_live_pause_and_the_copy_floor_are_tunable_within_bounds_retire_is_n
     auto.bounds["book.retire_after_buys"] = {"min": 1, "max": 3}
     accepted, refusals = check_patch({"book.retire_after_buys": 2}, Config(), auto)
     assert accepted == {} and "never tunable" in refusals[0]
+
+
+def test_the_tip_bound_cannot_move_the_fill_size():
+    """The book sizes a fill as the arm's fee over max_fee_share: a tip raised to 0.02 would make every buy 0.7 SOL.
+    The tip's ceiling keeps the fill at the book's minimum."""
+    from snipetech.book.policy import fill_for
+
+    cfg = Config()
+    top = AutotuneConfig().bounds["book.bid_arms.control.tip"]["max"]
+    assert fill_for(dict(cfg.book.bid_arms["control"], tip=top), cfg.book) == cfg.book.fill_min_sol
+
+
+def test_a_value_that_is_not_a_finite_number_is_refused():
+    for bad in ("nan", float("nan"), float("inf"), "-inf"):
+        accepted, refusals = check_patch({"book.min_score": bad}, Config(), AutotuneConfig())
+        assert accepted == {} and refusals, bad

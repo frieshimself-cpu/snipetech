@@ -62,7 +62,6 @@ def _other_copies(store, tasks: list[dict]) -> set[str]:
 
 
 CREATED_GRACE_SECS = 60  # our clock against block time: a buy just before the recorded creation can still be its own
-LEADER_LEAD_SLOTS = 20  # a buy copies the leader when the leader bought the coin within this many slots before it
 
 
 def _alive(rec: dict, ts: float) -> bool:
@@ -72,10 +71,12 @@ def _alive(rec: dict, ts: float) -> bool:
 
 def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     """Buys each book sniper that can still buy (running, starting, idle) has made, read from the tape rather than
-    from fills, which lag by minutes: our wallet's buys since the sniper was made (a minute of clock grace) in coins
-    its leader bought within the 20 slots before. A buy from before the sniper existed, while another of our snipers
-    on that leader was alive, is that one's (a replacement never inherits its predecessor's buy). A sniper without our
-    own record of it (when it was made, what it copies) is not counted, so it is never retired."""
+    from fills, which lag by minutes. It counts high on purpose: our wallet's buys since the sniper was made (a minute
+    of clock grace) in coins its leader bought before us, plus every buy of ours that no leader we copy explains (the
+    leader's own buy failed, or the tape missed it). Counting high only replaces a sniper early; counting low relies
+    on the buy that uses up OKTech's cap. A buy from before the sniper existed, while another of our snipers on that
+    leader was alive, is that one's (a replacement never inherits its predecessor's buy). A sniper without our own
+    record of it (when it was made, what it copies) is not counted, so it is never retired."""
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
     mine: list[tuple[str, str, float]] = []
     for t in tasks:
@@ -91,20 +92,30 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     since = int(min(born for _, _, born in mine) - CREATED_GRACE_SECS)
     buys = store._q("SELECT DISTINCT sig, mint, slot, pos, ts FROM trades WHERE user=? AND is_buy=1 AND ts>=? "
                     "ORDER BY slot, pos", (wallet, since))  # fmt: skip
+    every_leader = sorted({ld for r in local.values() for ld in copied_leaders(r)})
+
+    def leaders_before(mint: str, slot: int, pos: int) -> set[str]:
+        if not every_leader:
+            return set()
+        rows = store._q(f"SELECT DISTINCT user FROM trades WHERE mint=? AND is_buy=1 AND user IN ({','.join('?' * len(every_leader))}) "
+                        "AND (slot<? OR (slot=? AND pos<?))", (mint, *every_leader, slot, slot, pos))  # fmt: skip
+        return {r[0] for r in rows}
+
+    before = {sig: leaders_before(mint, slot, pos) for sig, mint, slot, pos, _ts in buys}
     out: dict[str, int] = {}
     for sid, leader, born in mine:
         others = [r for r in local.values() if r["id"] != sid and leader in copied_leaders(r)]
         n = 0
-        for _sig, mint, slot, pos, ts in buys:
+        for sig, _mint, _slot, _pos, ts in buys:
             if ts < born - CREATED_GRACE_SECS or (ts < born and any(_alive(o, ts) for o in others)):
                 continue
-            behind = store._q("SELECT 1 FROM trades WHERE mint=? AND user=? AND is_buy=1 AND slot>=? AND (slot<? OR "
-                              "(slot=? AND pos<?)) LIMIT 1", (mint, leader, slot - LEADER_LEAD_SLOTS, slot, slot, pos))  # fmt: skip
-            n += bool(behind)
+            explained_by = before[sig]
+            n += leader in explained_by or not explained_by
         out[sid] = n
     return out
 
 
+PAUSED_KEY = "book:paused"  # wallets paused on their live losses: wallet -> reason, ts, lab_version
 TAPE_SETTLE_SECS = 60  # any buy of ours this recent counts as holding (the sniper's leader is active right now)
 TAPE_OPEN_SECS = 600  # an unsold buy of ours this recent counts as holding; older ones the wallet read sees by itself
 TAPE_STALE_SECS = 120  # the tape further behind than this: no new sniper, start or replacement
@@ -235,11 +246,18 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
-                     tape_holding=tape_holding)  # fmt: skip
+                     tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}))  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
+    if plan.paused:  # remember each live pause: the wallet stays out after its losing trips leave the window
+        rec = dict(store.coverage(PAUSED_KEY) or {})
+        versions = {v.get("wallet"): (v.get("copy_plan") or {}).get("lab_version") if isinstance(v.get("copy_plan"), dict)
+                    else None for v in inp.qualified}  # fmt: skip
+        for w, why in plan.paused.items():
+            rec.setdefault(w, {"reason": why, "ts": int(now), "lab_version": versions.get(w)})
+        store.set_coverage(PAUSED_KEY, rec)
     try:
         age = _tape_age(store, now)
     except Exception:  # noqa: BLE001

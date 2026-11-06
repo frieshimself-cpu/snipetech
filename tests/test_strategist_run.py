@@ -258,10 +258,22 @@ def test_the_overlay_applies_only_keys_listed_in_bounds(tmp_path):
     OperatorPaths(tmp_path / "data").ensure()
     (tmp_path / "data" / "autotune.toml").write_text(
         "[book]\ndaily_risk_sol = 100\nmax_buys_per_sniper = 50\nmin_score = 0.006\n"
-        "[book.bid_arms.control]\npriority = 0.05\ntip = 0.01\n"
+        "[book.bid_arms.control]\npriority = 0.05\ntip = 0.004\n"
     )
     loaded, default = Config.load(cfg.path), Config()
     assert loaded.book.daily_risk_sol == default.book.daily_risk_sol
     assert loaded.book.max_buys_per_sniper == default.book.max_buys_per_sniper
-    assert loaded.book.min_score == 0.006 and loaded.book.bid_arms["control"]["tip"] == 0.01
+    assert loaded.book.min_score == 0.006 and loaded.book.bid_arms["control"]["tip"] == 0.004
     assert loaded.book.bid_arms["control"]["priority"] == default.book.bid_arms["control"]["priority"]
+
+
+def test_the_overlay_rechecks_every_value_against_todays_bounds(tmp_path):
+    """A value is applied from the overlay only while it is a finite number inside the owner's bounds today: a NaN bar
+    would copy every qualified wallet, and a tip written under older, wider bounds must not outlive them."""
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    (tmp_path / "data" / "autotune.toml").write_text("[book]\nmin_score = nan\nexplore_share = 0.25\n"
+                                                      "[book.bid_arms.control]\ntip = 0.05\n")  # fmt: skip
+    loaded, default = Config.load(cfg.path), Config()
+    assert loaded.book.min_score == default.book.min_score and loaded.book.explore_share == 0.25
+    assert loaded.book.bid_arms["control"]["tip"] == default.book.bid_arms["control"]["tip"]

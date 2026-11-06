@@ -6,6 +6,7 @@ that switches the book on, names a wallet or a key, or points at a URL."""
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Any
 
 from ..config import AutotuneConfig, Config, never_tunable
@@ -61,6 +62,9 @@ def check_patch(
             v = float(value)
         except (TypeError, ValueError):
             refusals.append(f"{key}: {value!r} is not a number")
+            continue
+        if not math.isfinite(v):  # NaN compares false with every limit, so it would pass them all
+            refusals.append(f"{key}: {value!r} is not a finite number")
             continue
         ref = cur
         if base is not None:

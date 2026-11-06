@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 from dataclasses import dataclass, field
 
 from ..config import BookConfig
@@ -33,6 +34,8 @@ class BookInputs:
     holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
     other_copies: set[str] = field(default_factory=set)  # leaders an active sniper that is not the book's copies
     buys_by_sniper: dict[str, int] = field(default_factory=dict)  # book sniper id -> buys it has made (from the tape)
+    # wallets paused on their live losses in earlier runs (coverage book:paused): reason, ts, lab_version
+    paused: dict[str, dict] = field(default_factory=dict)
     # the tape shows a buy of ours not yet seen sold (it is ahead of the wallet read by seconds): counts as holding
     tape_holding: bool = False
     holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
@@ -75,6 +78,24 @@ class BookPlan:
     kill_reason: str | None = None
     ranked: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    paused: dict[str, str] = field(default_factory=dict)  # wallets live-paused this run: kept paused by the runner
+
+
+def _lab_version(q: dict) -> int | None:
+    plan = q.get("copy_plan")
+    v = plan.get("lab_version") if isinstance(plan, dict) else None
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def still_paused(q: dict, rec: dict | None) -> bool:
+    """A wallet paused earlier stays paused until a verdict from a newer lab than the one it was paused under."""
+    if not rec:
+        return False
+    now_v, then_v = _lab_version(q), rec.get("lab_version")
+    return not (now_v is not None and (then_v is None or now_v > int(then_v)))
 
 
 def arm_fee_sol(arm: dict) -> float:
@@ -240,12 +261,21 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 else:
                     plan.actions.append(Action("stop", s["w6"], s["arm"], None, s["id"], plan.kill_reason))
         return plan
-    plan.ranked = rank_wallets(inp.qualified, inp.live, cfg)
     dropped: dict[str, str] = {}  # wallet[:6] -> why its sniper is no longer wanted, when it is more than the ranking
+    kept_paused: set[str] = set()
     for q in inp.qualified:
         w = q.get("wallet")
         why = live_pause_reason(inp.live.get(w) if w else None, cfg)
+        if w and not why and still_paused(q, inp.paused.get(w)):
+            rec = inp.paused[w]
+            since = time.strftime("%d %b", time.gmtime(float(rec.get("ts") or inp.now)))
+            why = f"paused since {since}: {rec.get('reason') or 'live losses'}; a newer lab's verdict lifts it"
+            plan.actions.append(Action("skip", w, None, None, None, why))
+            dropped[w[:6]] = why
+            kept_paused.add(w)
+            continue
         if w and why:
+            plan.paused[w] = why
             plan.actions.append(Action("skip", w, None, None, None, why))
             lv = inp.live[w]  # paused means its mean is below zero: the note says the loss as a plain number
             plan.notes.append(
@@ -253,6 +283,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 "not copied until those results are older than the measure window, whatever its paper score"
             )
             dropped[w[:6]] = why
+    plan.ranked = rank_wallets([q for q in inp.qualified if q.get("wallet") not in kept_paused], inp.live, cfg)
     bookable = []
     for r in plan.ranked:
         if r["wallet"] in inp.other_copies:  # its signals already buy through that sniper; a second adds failed sells
