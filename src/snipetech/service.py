@@ -913,7 +913,8 @@ class Service:
         gainers: list[dict] = []
         for period in bc.gainers_periods:
             try:
-                gainers += await asyncio.to_thread(lambda p=period: client.gainers(period=p, sort_by="PnL", limit=100, min_trade=bc.min_trades))
+                # realised PnL, not total: the "PnL" board is dominated by wallets sitting on unrealised bags
+                gainers += await asyncio.to_thread(lambda p=period: client.gainers(period=p, sort_by="realized_pnl", limit=100))
             except BudgetExceeded:
                 raise
             except Exception as exc:  # noqa: BLE001 - one source failing must not sink the scan

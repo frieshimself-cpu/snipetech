@@ -14,6 +14,7 @@ class FakeBirdeye:
         self.used_cu = 0
 
     def gainers(self, period="1W", **kw):
+        assert kw.get("sort_by") == "realized_pnl" and "min_trade" not in kw
         self.calls.append(("gainers", period))
         self.used_cu += 30
         return [{"wallet": "GAIN1", "trades": 40, "pnl_usd": 8000.0, "realized_usd": 7000.0},
