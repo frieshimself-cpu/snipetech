@@ -765,6 +765,29 @@ class Service:
         finally:
             await client.close()
 
+    def oktech_copy_audit(self, address: str, since_ts: int, leaders: list[str]) -> list[dict]:
+        """Where each of our copy buys landed relative to the copied wallet's buy on the same mint: slots behind,
+        trades in between, and the price gap. The number the copy-landing test is for."""
+        address = self._check(address)
+        rows = []
+        for t in self.store.trades_for_user(address, since_ts):
+            if not t.is_buy:
+                continue
+            q = ("SELECT user, slot, pos, quote, q_after FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
+                 "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(leaders)))
+            lead = self.store._q(q, (t.mint, *leaders, t.slot, t.slot, t.pos))
+            if not lead:
+                rows.append({"mint": t.mint, "ts": t.ts, "my_sol": t.quote / 1e9, "leader": None})
+                continue
+            user, lslot, lpos, lquote, lq = lead[0]
+            between = self.store._q(
+                "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND (slot>? OR (slot=? AND pos>?)) AND (slot<? OR (slot=? AND pos<?))",
+                (t.mint, lslot, lslot, lpos, t.slot, t.slot, t.pos))[0][0]
+            rows.append({"mint": t.mint, "ts": t.ts, "my_sol": t.quote / 1e9, "leader": user, "leader_sol": lquote / 1e9,
+                         "dslot": t.slot - lslot, "between_buys": int(between),
+                         "price_gap_pct": round(100 * ((t.q_after / lq) ** 2 - 1), 1)})
+        return rows
+
     async def oktech_copylist(self, specs: list[str], wallet: str, create: bool = False, buy_sol: float = 0.05,
                               max_buys: int = 5, exit_name: str = "lab") -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60)."""

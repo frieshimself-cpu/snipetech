@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--no-refresh", action="store_true")
 
     sp = cmd("oktech", "drive OKTech snipers from snipetech's verdicts: status | plan | push (key in $OKS_KEY)")
-    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "copylist", "guard", "cycle", "holdings", "show", "start",
+    sp.add_argument("action", choices=["status", "plan", "push", "replica", "probe", "strategy", "copylist", "copyaudit", "guard", "cycle", "holdings", "show", "start",
                                        "stop", "delete"])  # fmt: skip
     sp.add_argument("--allow-uncapped", action="store_true", help="guard: also start snipers without a buy cap (not recommended)")
     sp.add_argument("--id", action="append", help="show/start/stop/delete/guard: the sniper's id (from `oktech status`); guard takes several")
@@ -187,6 +187,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--copy", action="append", metavar="ADDRESS[:LABEL[:MIN_SOL[:EXIT]]]",
                     help="copylist: a wallet to copy (repeatable); only its buys >= MIN_SOL (default 1); EXIT lab|hold60")
     sp.add_argument("--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one")
+    sp.add_argument("--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes")
     sp.add_argument("--stale", type=float, default=60, help="strategy: dead exit after this many seconds without a trade (0 = off)")
     sp.add_argument("--only", choices=["copy", "dev"], help="only copy-trading (ctbot) or only dev snipers")
     sp.add_argument("--from-study", metavar="WALLET", help="replica: rebuild this studied wallet's rules as a sniper")
@@ -456,6 +457,26 @@ async def _run(args, cfg: Config) -> int:
                 else:
                     print("\nOKTech refuses unknown or out-of-range fields, so these settings were accepted as sent; it never"
                           "\nreturns settings to a key (check them on the Sniper page). Start them on a leash with `oktech guard`.")
+                return 0
+            if args.action == "copyaudit":
+                if not (args.copy and args.address):
+                    raise SystemExit("copyaudit: give --address <our wallet> and --copy <leader> (one or more; label/min ignored)")
+                leaders = [s.split(":")[0] for s in args.copy]
+                rows = svc.oktech_copy_audit(args.address, int(time.time() - args.since_minutes * 60), leaders)
+                if args.json:
+                    print(json.dumps(rows, indent=1, default=str))
+                    return 0
+                if not rows:
+                    print("no buys by that wallet in the window")
+                    return 0
+                print(f"{'mint':10} {'time':8} {'my SOL':>7} {'leader':8} {'lead SOL':>8} {'dslot':>5} {'between':>7} {'gap%':>6}")
+                for r in rows:
+                    tm = time.strftime("%H:%M:%S", time.gmtime(r["ts"]))
+                    if r.get("leader"):
+                        print(f"{r['mint'][:8]:10} {tm:8} {r['my_sol']:7.3f} {r['leader'][:8]:8} {r['leader_sol']:8.2f} {r['dslot']:5d} "
+                              f"{r['between_buys']:7d} {r['price_gap_pct']:6.1f}")  # fmt: skip
+                    else:
+                        print(f"{r['mint'][:8]:10} {tm:8} {r['my_sol']:7.3f} {'-':8} {'':>8} {'':>5} {'':>7}  (no copied buy ahead)")
                 return 0
             if args.action == "copylist":
                 if not args.copy:
