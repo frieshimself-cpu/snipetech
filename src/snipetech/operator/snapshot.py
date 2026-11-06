@@ -203,7 +203,7 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
     native = (await svc.rpc.call("getBalance", [wallet]))["value"] / 1e9
     wsol, accounts = 0.0, []
     for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
-        r = await svc.rpc.call("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed"}])
+        r = await svc.rpc.call("getTokenAccountsByOwner", [wallet, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}])
         for a in r["value"]:
             info = a["account"]["data"]["parsed"]["info"]
             ta = info["tokenAmount"]

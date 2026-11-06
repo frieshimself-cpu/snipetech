@@ -500,7 +500,17 @@ def _made_its_buy(tmp_path, **svc_kw):
     st, cfg = _env(tmp_path, enabled=True)
     _record(st, "k1", "copy", L1, K1, created_at=NOW - 3600)
     _coin(st, "c1", NOW - 3000, 400_000_000, 0, 3, leader=L1, sell_slot=10)
+    _fresh_tape(st)
     return st, cfg, FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}], **svc_kw)
+
+
+def _fresh_tape(st):
+    """Someone else's trade a few seconds ago: the tape is current."""
+    from tests.synth import Market, addr
+
+    m = Market(st, addr("heartbeat"), addr("dev-heartbeat"), int(NOW) - 5, 401_000_000)
+    m.buy(addr("someone"), 0.1, 0)
+    m.commit()
 
 
 def test_retire_is_stop_then_delete_then_a_create_with_a_fresh_salt(tmp_path):
@@ -639,5 +649,115 @@ def test_the_day_stop_counts_the_failed_twin_sells(tmp_path):
         st.put_fill({"sig": "s", "ts": NOW - 30, "slot": 2, "wallet": W, "mint": "M", "side": "sell", "sol": 0.19, "tokens": 1.0,
                      "pnl_sol": -0.013, "twin_fee_sol": 0.002005})  # fmt: skip
         assert day_accounting(st, W, NOW)["realised_sol"] == round(-0.013 - 0.002005, 6)
+    finally:
+        st.close()
+
+
+def test_tape_holding_sees_a_fresh_unsold_buy(tmp_path):
+    """The wallet read lags our newest buy by seconds; the tape has it first. A buy of ours in the last 10 minutes
+    that the tape has not seen sold, or any buy of ours in the last minute, counts as holding."""
+    from snipetech.book.run import _tape_holding
+
+    st, _ = _env(tmp_path / "a")
+    try:
+        assert _tape_holding(st, W, NOW) is False
+        _coin(st, "old", NOW - 1500, 400_000_000, 0, 1)  # unsold 25 min ago: the wallet read sees it by now
+        assert _tape_holding(st, W, NOW) is False
+        _coin(st, "sold", NOW - 300, 400_100_000, 0, 1, sell_slot=20)
+        assert _tape_holding(st, W, NOW) is False
+        _coin(st, "fresh", NOW - 30, 400_200_000, 0, 1)  # 30 s ago, not sold yet
+        assert _tape_holding(st, W, NOW) is True
+    finally:
+        st.close()
+    st, _ = _env(tmp_path / "b")
+    try:
+        _coin(st, "quick", NOW - 40, 400_300_000, 0, 1, sell_slot=10)  # bought and sold within the last minute
+        assert _tape_holding(st, W, NOW) is True
+    finally:
+        st.close()
+
+
+def test_a_retire_is_undone_when_a_coin_appears_while_it_stops(tmp_path):
+    """The holdings are read once more after the stop: a coin bought while the stop was on its way (OKTech can take a
+    minute when it rate-limits) gets its sniper started again; nothing is deleted and nothing replaces it this run."""
+
+    class LateCoin(FakeSvc):
+        async def open_positions(self, address):
+            self._reads += 1
+            return [{"mint": "NEW", "amount": 1.0, "value_sol": 0.2}] if self._reads >= 3 else []
+
+    st, cfg, _ = _made_its_buy(tmp_path)
+    svc = LateCoin(st, snipers=[{"id": "k1", "name": K1, "status": "running"}])
+    sent = []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert ("stop", "k1") in svc.calls and ("start", "k1") in svc.calls and ("delete", "k1") not in svc.calls
+        assert [c[1] for c in svc.calls if c[0] == "create"] == [(f"{L2}:book:0.3:lab",)]
+        assert any("k1" in t and "started again" in t for t in sent)
+    finally:
+        st.close()
+
+
+def test_the_wallet_is_read_at_confirmed():
+    """The holdings read is never a whole finality window behind our own tape: confirmed, not the node's finalized."""
+    from snipetech.service import Service
+
+    calls = []
+
+    class Rpc:
+        async def call(self, method, params):
+            calls.append((method, params))
+            return {"value": []}
+
+    class Fake:
+        rpc = Rpc()
+
+    asyncio.run(Service.holdings(Fake(), W))
+    reads = [p for m, p in calls if m == "getTokenAccountsByOwner"]
+    assert reads and all(p[-1].get("commitment") == "confirmed" for p in reads)
+
+
+def test_no_new_sniper_while_the_tape_is_behind(tmp_path):
+    """Each sniper's buys are counted on the tape: while it is more than two minutes behind, the book creates and
+    starts nothing (stops still happen) and says why once a day."""
+    st, cfg = _env(tmp_path, enabled=True)
+    _coin(st, "c", NOW - 600, 400_000_000, 0, 1, sell_slot=5)  # the newest trade is 10 minutes old
+    svc, sent = FakeSvc(st), []
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert not [c for c in svc.calls if c[0] in ("create", "start")]
+        notes = (tmp_path / "data" / "operator" / "notes.md").read_text()
+        assert "tape is" in notes and "behind" in notes
+    finally:
+        st.close()
+
+
+def test_two_book_runs_never_overlap(tmp_path):
+    """The 5-minute timer and a run started by hand share one lock: the second skips instead of making a second
+    sniper for the same leader."""
+    from snipetech.book.run import book_lock
+
+    st, cfg = _env(tmp_path, enabled=True)
+    svc = FakeSvc(st)
+    try:
+        with book_lock(tmp_path / "data"):
+            out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (10.0, 0.0, [])))
+        assert out.get("skipped") and svc.calls == []
+    finally:
+        st.close()
+
+
+def test_a_retire_that_cannot_delete_pages_once_a_day(tmp_path):
+    st, cfg, svc = _made_its_buy(tmp_path, fail={("delete", "k1")})
+    sent = []
+    note = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+    try:
+        for i in range(3):
+            asyncio.run(run_book(FakeSvc(st, snipers=[{"id": "k1", "name": K1, "status": "running"}],
+                                         fail={("delete", "k1")}), cfg, NOW + i * 300, notifier=note,
+                                 balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert sum("could not be deleted" in t for t in sent) == 1
     finally:
         st.close()

@@ -383,3 +383,30 @@ def test_the_verdicts_copy_plan_sets_the_floor_of_a_new_sniper_only():
     for copy_plan, want in cases:  # a plan stored as text is read; a value that is not a positive number is ignored
         plan = plan_book(_inp(qualified=[dict(q1, copy_plan=copy_plan)]), cfg.book)
         assert next(x for x in plan.actions if x.kind == "create").min_sol == want, copy_plan
+
+
+def test_a_fresh_buy_on_the_tape_counts_as_holding():
+    """The wallet read lags a fresh buy by seconds (the tape has it first). A buy of ours that the tape shows and has
+    not seen sold yet counts as holding: no book sniper is stopped or retired in that run (a stop strands a coin)."""
+    cfg = _cfg()
+    assert _s1(cfg, tape_holding=True).kind == "keep"
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    plan = plan_book(_inp(snipers=running, buys_by_sniper={"s1": 1}, holdings_known=True, tape_holding=True), cfg.book)
+    assert not any(x.kind == "create" and x.wallet == "W1" for x in plan.actions)
+    off = plan_book(_inp(snipers=running, holdings_known=True, tape_holding=True, switched_on=False), cfg.book)
+    assert off.kill_reason == "book off" and not any(a.kind in ("stop", "retire") for a in off.actions)
+
+
+def test_an_idle_sniper_that_made_its_buy_is_never_restarted():
+    """An idle book sniper that already made its relied-on buy (stopped before a failed delete, or by a kill while the
+    wallet was flat) is never started again with a part-used cap: while a coin is held it stays stopped and no second
+    sniper is made for its wallet; once the wallet is flat it is replaced."""
+    cfg = _cfg()
+    held = [{"mint": "M1", "amount": 5.0}]
+    a = _s1(cfg, status="idle", holdings=held)
+    assert a.kind == "keep" and "stays stopped" in a.reason
+    idle = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "idle"}]
+    plan = plan_book(_inp(snipers=idle, holdings=held, buys_by_sniper={"s1": 1}, holdings_known=True), cfg.book)
+    assert not any(x.kind in ("create", "start") and x.wallet == "W1" for x in plan.actions)
+    assert _s1(cfg, status="idle", holdings_known=False).kind == "keep"
+    assert _s1(cfg, status="idle").kind == "retire"

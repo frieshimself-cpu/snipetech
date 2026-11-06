@@ -6,6 +6,7 @@ run creates its replacement."""
 from __future__ import annotations
 
 import contextlib
+import fcntl
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -104,6 +105,57 @@ def _buys_by_sniper(store, wallet: str, tasks: list[dict]) -> dict[str, int]:
     return out
 
 
+TAPE_SETTLE_SECS = 60  # any buy of ours this recent counts as holding (the sniper's leader is active right now)
+TAPE_OPEN_SECS = 600  # an unsold buy of ours this recent counts as holding; older ones the wallet read sees by itself
+TAPE_STALE_SECS = 120  # the tape further behind than this: no new sniper, start or replacement
+
+
+def _tape_holding(store, wallet: str, now: float) -> bool:
+    """The tape (our own recorder, seconds ahead of the wallet read) shows a buy of ours in the last minute, or one in
+    the last 10 minutes it has not seen sold: count it as holding, so no sniper is stopped or retired on a stale read."""
+    rows = store._q("SELECT mint, is_buy, base, ts FROM trades WHERE user=? AND ts>=? ORDER BY slot, pos",
+                    (wallet, int(now - TAPE_OPEN_SECS)))  # fmt: skip
+    bought: dict[str, float] = {}
+    sold: dict[str, float] = {}
+    for mint, is_buy, base, ts in rows:
+        if is_buy:
+            if ts >= now - TAPE_SETTLE_SECS:
+                return True
+            bought[mint] = bought.get(mint, 0.0) + float(base or 0)
+        else:
+            sold[mint] = sold.get(mint, 0.0) + float(base or 0)
+    return any(b > 0 and sold.get(m, 0.0) < 0.99 * b for m, b in bought.items())
+
+
+def _tape_age(store, now: float) -> float | None:
+    """Seconds since the newest trade on the tape; None for an empty tape (a fresh install)."""
+    row = store._q("SELECT MAX(ts) FROM trades")
+    return None if not row or row[0][0] is None else max(0.0, float(now) - float(row[0][0]))
+
+
+class BookBusy(RuntimeError):
+    pass
+
+
+@contextlib.contextmanager
+def book_lock(data_dir: str | Path):
+    """One book run at a time (the 5-minute timer and a run started by hand): two overlapping runs could each make a
+    sniper for the same leader."""
+    p = Path(data_dir) / "operator" / "book.lock"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(p, "a+")  # noqa: SIM115 - held for the whole run
+    try:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise BookBusy("another book run is in progress") from None
+        yield
+    finally:
+        with contextlib.suppress(OSError):
+            fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
+
+
 def _floor(b, a) -> float:
     """The smallest leader buy a new sniper copies: the wallet's own floor from its verdict (its opening buys, not its
     top-ups), never below [book] min_copy_sol."""
@@ -117,6 +169,16 @@ def _line(a) -> str:
 
 async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = None, dry: bool | None = None,
                    balances: Callable | None = None, notes: NoteSink | None = None) -> dict[str, Any]:  # fmt: skip
+    """One book run under the book lock; a run that finds another in progress does nothing."""
+    try:
+        with book_lock(Path(cfg.storage.db_path).resolve().parent):
+            return await _run_book(svc, cfg, now, notifier=notifier, dry=dry, balances=balances, notes=notes)
+    except BookBusy as exc:
+        return {"dry": True, "skipped": str(exc), "actions": {}, "ranked": 0}
+
+
+async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = None, dry: bool | None = None,
+                    balances: Callable | None = None, notes: NoteSink | None = None) -> dict[str, Any]:  # fmt: skip
     store = svc.store
     paths0 = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     b = replace(cfg.book, min_score=effective_min_score(cfg, paths0))  # the owner's /book bar, if set
@@ -164,15 +226,32 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
         buys = {}
         notes.write(f"book: could not count the snipers' buys on the tape ({type(exc).__name__}); none is replaced "
                     "this run", "info")  # fmt: skip
+    try:
+        tape_holding = _tape_holding(store, wallet, now)
+    except Exception:  # noqa: BLE001 - the tape cannot be read: count it as holding (nothing is stopped or retired)
+        tape_holding = True
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
-                     other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known)  # fmt: skip
+                     other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
+                     tape_holding=tape_holding)  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
+    try:
+        age = _tape_age(store, now)
+    except Exception:  # noqa: BLE001
+        age = None
+    if age is not None and age > TAPE_STALE_SECS:
+        # each sniper's buys and a fresh buy of ours are read on the tape: while it is behind, nothing new starts
+        held_back = [a for a in plan.actions if a.kind in ("create", "start", "retire")]
+        plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
+        sig = "[book] the tape is"
+        if held_back and not notes.has_today(sig, now):
+            notes.write(f"{sig} {int(age // 60)} min behind: no new sniper, start or replacement until it catches up "
+                        f"({len(held_back)} held back)", "info")  # fmt: skip
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
     kept = [a for a in plan.actions if a.kind == "keep" and "never stop a holder" in a.reason]
@@ -221,7 +300,7 @@ async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = 
             await _do(svc, notifier, notes, "stop", a)
     not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
     for a in plan.actions:
-        if a.kind == "retire" and a.sniper_id and not await _retire(svc, wallet, notifier, notes, a):
+        if a.kind == "retire" and a.sniper_id and not await _retire(svc, wallet, notifier, notes, a, store, now):
             not_replaced.add(a.wallet or "")
     new_ids: list[tuple[str, Any]] = []
     for a in plan.actions:
@@ -281,25 +360,46 @@ async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a) -> None:
         )
 
 
-async def _retire(svc, wallet: str, notifier: Notifier, notes: NoteSink, a) -> bool:
+async def _retire(
+    svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store=None, now: float | None = None
+) -> bool:
     """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing; True when it is gone. The
-    holdings are read again first: a coin bought since the plan was made keeps it running (a stop strands a coin)."""
+    holdings are read before the stop and again after it (with the tape): a coin bought in between gets its sniper
+    started again and nothing is deleted (a stopped sniper sells nothing, so its coin would be stranded)."""
     w6, sid = (a.wallet or "")[:6], a.sniper_id
-    try:
-        held = await svc.open_positions(wallet)
-    except Exception as exc:  # noqa: BLE001 - unknown holdings: never retire
-        notes.write(f"[book] retire {w6} ({sid}) waits: holdings could not be read ({type(exc).__name__})", "info")
-        return False
-    if held:
-        notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again", "info")
+    now = float(now if now is not None else 0)
+
+    async def held() -> bool:
+        try:
+            if await svc.open_positions(wallet):
+                return True
+        except Exception:  # noqa: BLE001 - unknown holdings: treat as held
+            return True
+        try:
+            return bool(store is not None and now and _tape_holding(store, wallet, now))
+        except Exception:  # noqa: BLE001
+            return True
+
+    if await held():
+        notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")
         return False
     with contextlib.suppress(Exception):  # an idle task may refuse a stop; the delete is what counts
         await svc.oktech_task("stop", sid)
+    if await held():
+        with contextlib.suppress(Exception):
+            await svc.oktech_task("start", sid)
+        notifier.send(notes.write(f"[book] retire {w6} ({sid}) undone: a coin appeared while it stopped; started again so "
+                                  "it can sell it", "decision"))  # fmt: skip
+        return False
     try:
         await svc.oktech_task("delete", sid)
     except Exception as exc:  # noqa: BLE001
-        notifier.send(notes.write(f"[book] retire {w6} ({sid}) failed: it could not be deleted ({type(exc).__name__}: "
-                                  f"{str(exc)[:120]}); no replacement this run", "decision"))  # fmt: skip
+        line = (f"[book] retire {w6} ({sid}) failed: it could not be deleted ({type(exc).__name__}: {str(exc)[:120]}); "
+                "no replacement this run")  # fmt: skip
+        if now and notes.has_today(f"[book] retire {w6} ({sid}) failed", now):
+            notes.write(line, "info")
+        else:
+            notifier.send(notes.write(line, "decision"))
         return False
     notifier.send(notes.write(f"[book] retire {w6} {a.arm or ''} ({sid}) — {a.reason}", "decision"))
     return True

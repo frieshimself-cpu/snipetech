@@ -742,7 +742,7 @@ class Service:
         out = []
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             r = await self.rpc.call(
-                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}]
+                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}]
             )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
@@ -773,7 +773,7 @@ class Service:
         total = 0.0
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             r = await self.rpc.call(
-                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed"}]
+                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}]
             )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]

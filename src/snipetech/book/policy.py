@@ -33,6 +33,8 @@ class BookInputs:
     holders: set[str] | None = None  # leaders (first 6 chars) whose buys the held coins copied; None = not traceable
     other_copies: set[str] = field(default_factory=set)  # leaders an active sniper that is not the book's copies
     buys_by_sniper: dict[str, int] = field(default_factory=dict)  # book sniper id -> buys it has made (from the tape)
+    # the tape shows a buy of ours not yet seen sold (it is ahead of the wallet read by seconds): counts as holding
+    tape_holding: bool = False
     holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
 
 
@@ -199,7 +201,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             need = arm_fee_sol(arm) / cfg.max_fee_share if cfg.max_fee_share > 0 else 0
             plan.notes.append(f"{name} arm skipped: its fee {arm_fee_sol(arm):g} SOL needs a {need:.2f} SOL fill to stay under "
                               f"{cfg.max_fee_share:.0%}; fill_max_sol is {cfg.fill_max_sol:g}")  # fmt: skip
-    holding = bool(inp.holdings)
+    holding = bool(inp.holdings) or inp.tape_holding
     mine = _book_snipers(inp.snipers)
 
     def holds(s: dict) -> bool:
@@ -264,7 +266,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
     seen_w6: set[str] = set()
     # holder attribution is off (run_book passes holders=None): a sniper is retired only while the wallet holds nothing
-    flat = inp.holdings_known and not inp.holdings
+    flat = inp.holdings_known and not holding
     relied = relied_buys(cfg)
     for s in mine:
         w6, status = s["w6"], str(s.get("status"))
@@ -274,6 +276,11 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 # not seen: the same plan creates its replacement. An idle one is replaced too, never restarted with
                 # a part-used cap (a retire whose delete failed leaves it idle)
                 plan.actions.append(Action("retire", wallet, s["arm"], None, s["id"], RETIRE_REASON))
+            elif status == "idle" and inp.buys_by_sniper.get(s["id"], 0) >= relied:
+                # never restarted with a part-used cap, and no second sniper for its wallet while it waits
+                plan.actions.append(Action("keep", wallet, s["arm"], None, s["id"],
+                                           "made its buy: stays stopped until the wallet holds nothing, then replaced"))  # fmt: skip
+                seen_w6.add(w6)
             elif status in ("running", "starting") and s["arm"] == arm:
                 plan.actions.append(Action("keep", wallet, arm, None, s["id"], f"ranked and {status} on its arm"))
                 seen_w6.add(w6)
