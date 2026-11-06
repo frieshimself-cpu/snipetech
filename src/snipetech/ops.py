@@ -138,7 +138,7 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
         proc.send_signal(sig)
 
 
-REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET")
+REDACT_ENV = SECRET_ENV + ("TELEGRAM_BOT_TOKEN", "TYPESAFE_API_KEY", "SNIPER_SECRET", "BIRDEYE_API_KEY")
 
 
 def redact(text: str) -> str:
