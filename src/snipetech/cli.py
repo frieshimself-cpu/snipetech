@@ -84,6 +84,29 @@ def _discover(args, cfg) -> int:
                 pass
         svc.store.close()
 
+
+def _measure(args, cfg) -> int:
+    import time
+
+    from .measure.run import backfill, run_measure
+    from .service import Service
+
+    svc = Service(cfg)
+
+    async def go():
+        try:
+            if args.action == "backfill":
+                if args.since is None:
+                    raise SystemExit("measure backfill: --since <unix seconds> is required")
+                return await backfill(svc, cfg, args.since, args.until or int(time.time()))
+            return await run_measure(svc, cfg, time.time(), since_ts=args.since)
+        finally:
+            await svc.close()
+            svc.store.close()
+
+    print(json.dumps(asyncio.run(go()), indent=1, default=str))
+    return 0
+
 def _usage(svc, provider: str):
     """A counter the data clients call after each request; the store's monthly tally feeds the operator's resource checks."""
 
@@ -364,6 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("qualify", "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)")
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
+    sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
+    sp.add_argument("action", choices=["run", "backfill"])
+    sp.add_argument("--since", type=int, default=None, help="unix seconds; run: override the cursor; backfill: required")
+    sp.add_argument("--until", type=int, default=None, help="unix seconds (backfill)")
     sp = cmd("vybe", "query Vybe directly: the free 1d/7d/30d top-traders board")
     sp.add_argument("--resolution", default="30d", choices=["1d", "7d", "30d"])
     sp.add_argument("--limit", type=int, default=50)
@@ -587,7 +614,6 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
-
             from .analysis.lab_lock import lab_lock
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
@@ -961,6 +987,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "measure":
+        return _measure(args, cfg)
     if args.cmd == "qualify":
         from .qualify.run import run_qualify_cli
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,15 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         return [r for r in rows if r.get("wallet") in want]
 
     return run
+
+
+def effective_landing_pos(store, q) -> str:
+    """The measured landing once the measure stage has enough fills on an arm (coverage measure:landing_pos), else the config."""
+    try:
+        pos = store.coverage("measure:landing_pos").get("pos")
+    except Exception:  # noqa: BLE001
+        pos = None
+    return str(pos) if pos else q.landing_pos
 
 
 def _tape_start(store, now: float) -> int:
@@ -88,21 +98,23 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             out["labelled"] += 1
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
+    landing = effective_landing_pos(store, q)
     try:
         with lab_lock(Path(jobs_dir).parent, wait=False):
-            rows = {r["wallet"]: r for r in runner(wallets, q.landing_pos) if r.get("wallet")}
+            rows = {r["wallet"]: r for r in runner(wallets, landing) if r.get("wallet")}
     except LabBusy as exc:
         out["deferred"], out["reason"] = True, f"lab lock held ({exc}); retry next tick"
         return out
     store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
     out["lab_wallets"] = len(wallets)
+    q_eff = replace(q, landing_pos=landing)
     for c in measurable:
         w = c["wallet"]
         hist = normalise_history(c["stats"])
         venue = venue_share(store, w, since)
         crowd = crowding(store, w, since)
         rel_ok, rel_reasons = relationship_gate(store, w)
-        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q, now)
+        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q_eff, now)
         store.put_verdict(v)
         store.put_score(
             "qualify",

@@ -285,6 +285,16 @@ class QualifyConfig:
 
 
 @dataclass
+class MeasureConfig:
+    """The measure stage: live fills audited every five minutes (spec Stage 5)."""
+
+    half_life_days: float = 7.0  # live expectancy decay
+    min_arm_fills: int = 30  # fills on one arm before its p75 position becomes the qualify landing
+    overlap_secs: int = 600  # re-read this much before the last run (late tape rows)
+    lookback_days: int = 7  # window for the bid model and the live expectancy
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -302,6 +312,7 @@ class Config:
     solanatracker: SolanaTrackerConfig = field(default_factory=SolanaTrackerConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     qualify: QualifyConfig = field(default_factory=QualifyConfig)
+    measure: MeasureConfig = field(default_factory=MeasureConfig)
     book: BookConfig = field(default_factory=BookConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
 
