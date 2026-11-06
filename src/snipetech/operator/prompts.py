@@ -81,6 +81,7 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "jobs_recent": snap.jobs_recent,
         "wallet": snap.wallet,
         "native_sol": snap.native_sol, "wsol": snap.wsol, "equity_sol": snap.equity, "held": snap.held,
+        "book_live": getattr(snap, "book_live", False),
         "snipers": snap.snipers if snap.snipers is None else {s.get("status", "?"): sum(1 for x in snap.snipers if x.get("status") == s.get("status")) for s in snap.snipers},
         "snipers_not_idle": None if snap.snipers is None else [s for s in snap.snipers if s.get("status") not in ("idle", "finished")],
         "fills_since_last": snap.fills,
@@ -94,8 +95,11 @@ def _compact_snapshot(snap: Snapshot) -> dict:
 
 
 def user_message(snap: Snapshot, decision: Decision, inbox: str) -> str:
-    parts = [f"Round mode: {decision.mode}. Triggered because: " + "; ".join(decision.reasons) + ".",
-             "Snapshot:", json.dumps(_compact_snapshot(snap), indent=1, default=str)]
+    parts = [
+        f"Round mode: {decision.mode}. Triggered because: " + "; ".join(decision.reasons) + ".",
+        "Snapshot:",
+        json.dumps(_compact_snapshot(snap), indent=1, default=str),
+    ]
     if inbox.strip():
         parts += ["Request from the owner (inbox):", inbox.strip()]
     parts.append("Do what the round needs, then write_note. Keep it short.")

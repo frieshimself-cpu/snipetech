@@ -50,6 +50,7 @@ class Snapshot:
     failed_tx_1h: int | None = None  # failed transactions by the wallet in the last hour (None = could not read)
     verdicts: dict[str, int] = field(default_factory=dict)  # the qualify stage's candidates by effective status
     resources: list[dict] = field(default_factory=list)  # filled by operator.resources after the snapshot
+    book_live: bool = False  # the live book was on (config or the owner's /book on) when this snapshot was taken
 
     @property
     def equity(self) -> float | None:
@@ -197,6 +198,16 @@ async def rpc_balances(svc, wallet: str) -> tuple[float | None, float | None, li
     return native, wsol, held
 
 
+def carry_since(held: list[dict], prev: Snapshot | None, now: float) -> list[dict]:
+    """Each held coin keeps the time it was first seen (from the previous snapshot when it was held then too), so
+    the gate can tell a stuck position from one the book bought minutes ago."""
+    before: dict[str, float] = {}
+    for h in (prev.held if prev is not None else None) or []:
+        if h.get("mint"):
+            before[str(h["mint"])] = float(h.get("since", prev.ts))
+    return [h | {"since": before.get(str(h.get("mint")), now)} for h in held]
+
+
 async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot | None, now: float, *,
                         services: Callable[[], dict[str, str]] = systemd_services,
                         balances: Callable[[str], Any] | None = None) -> Snapshot:  # fmt: skip
@@ -209,6 +220,12 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         snap.services = services()
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"services: {exc}")
+    try:
+        from ..book.switch import book_live
+
+        snap.book_live = book_live(cfg, paths)
+    except Exception as exc:  # noqa: BLE001
+        snap.errors.append(f"book switch: {exc}")
     try:
         snap.jobs_running = running_jobs(paths.jobs)
         snap.jobs_ended = ended_since(paths.jobs, since, already, now)
@@ -225,7 +242,8 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             res = balances(wallet) if balances else rpc_balances(svc, wallet)
             if hasattr(res, "__await__"):
                 res = await res
-            snap.native_sol, snap.wsol, snap.held = res
+            snap.native_sol, snap.wsol, held = res
+            snap.held = carry_since(list(held or []), prev, now)
         except Exception as exc:  # noqa: BLE001
             snap.errors.append(f"balances: {exc}")
         if balances is None:  # the real RPC path also counts failed transactions; fakes leave it None

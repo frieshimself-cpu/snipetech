@@ -6,6 +6,7 @@ import json
 import time
 from dataclasses import dataclass, field
 
+from ..book.policy import BOOK_NAME_RE
 from ..config import OperatorConfig
 from ..positions import is_active
 from .paths import OperatorPaths
@@ -18,8 +19,11 @@ STATE_REFIRE_SECS = 3600  # a persisting state (coin held, tape stale, ...) re-t
 SERVICE_REFIRE_SECS = 6 * 3600  # a unit the owner has to enable or reset by hand: a reminder every six hours is enough
 
 
+STUCK_SECS = 30 * 60  # our exits close within minutes (dead exit 1 s, 300 s at most); a coin held longer is stuck
+
+
 def refire_secs(state_key: str) -> int:
-    slow = state_key.startswith("service not active") or state_key.startswith("loop stage failed")
+    slow = state_key.startswith(("service not active", "loop stage failed", "coin(s) held over"))
     return SERVICE_REFIRE_SECS if slow else STATE_REFIRE_SECS
 
 
@@ -115,14 +119,25 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths) ->
     if failed:
         states.append("loop stage failed: " + ", ".join(failed))
     exp = expected_state(paths)
+    # while the owner has the book on (and has not said /stop), the book's own snipers running and the coins they hold
+    # are the book working, not a deviation; anything else running still counts against expected.json
+    book_on = bool(getattr(snap, "book_live", False)) and not paths.stop_flag.exists()
+    book_running: list[dict] = []
     if snap.snipers is None:
         states.append("oktech state unknown")
     else:
         running = [s for s in snap.snipers if is_active(s.get("status"))]
+        if book_on:
+            book_running = [s for s in running if BOOK_NAME_RE.match(str(s.get("name") or ""))]
+            running = [s for s in running if s not in book_running]
         if len(running) > exp["snipers_running"]:
             states.append(f"{len(running)} sniper(s) running, expected {exp['snipers_running']}")
-    if len(snap.held) > exp["held"]:
-        states.append(f"{len(snap.held)} coin(s) held, expected {exp['held']}")
+    allowed_held = exp["held"] + len(book_running)
+    if len(snap.held) > allowed_held:
+        states.append(f"{len(snap.held)} coin(s) held, expected {allowed_held}")
+    stuck = [h for h in snap.held if now - float(h.get("since", now)) > STUCK_SECS]
+    if stuck:
+        states.append(f"coin(s) held over {STUCK_SECS // 60} min: " + ", ".join(str(h.get("mint"))[:8] for h in stuck))
     if prev is not None:
         gained = (snap.verdicts or {}).get("qualified", 0) - (getattr(prev, "verdicts", None) or {}).get("qualified", 0)
         if gained > 0:

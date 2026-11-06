@@ -186,3 +186,40 @@ def test_a_failed_loop_stage_is_raised_then_reminded_every_six_hours(paths):
 def test_a_research_job_ending_still_calls(paths):
     d = decide(snap(jobs_ended=[{"id": "x", "argv": ["follow", "W"], "exit_code": 0}]), snap(), NOW, CFG, paths)
     assert d.call and any("job ended" in r for r in d.reasons)
+
+
+BOOK = "snipetech copy book 2YDnmM arm:control"
+
+
+def test_the_books_own_snipers_and_young_coins_are_expected_while_it_is_live(paths):
+    """With the book on, its snipers run and buy by design; calling the paid operator every hour for that is noise."""
+    s = snap(book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"}],
+             held=[{"mint": "M", "amount": 5.0, "since": NOW - 120}])  # fmt: skip
+    assert not decide(s, snap(), NOW, CFG, paths).call
+
+
+def test_a_book_sniper_running_while_the_book_is_off_is_a_deviation(paths):
+    s = snap(book_live=False, snipers=[{"id": "b1", "name": BOOK, "status": "running"}])
+    assert decide(s, snap(), NOW, CFG, paths).call
+
+
+def test_other_snipers_still_count_while_the_book_is_live(paths):
+    s = snap(book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"},
+                                      {"id": "x", "name": "snipetech copy 2YDn 2YDnmM arm:paid", "status": "running"}])  # fmt: skip
+    d = decide(s, snap(), NOW, CFG, paths)
+    assert d.call and any("1 sniper(s) running" in r for r in d.reasons)
+
+
+def test_more_coins_than_book_snipers_is_a_deviation(paths):
+    held = [{"mint": "A", "amount": 1.0, "since": NOW}, {"mint": "B", "amount": 1.0, "since": NOW}]
+    s = snap(book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"}], held=held)
+    d = decide(s, snap(), NOW, CFG, paths)
+    assert d.call and any("2 coin(s) held, expected 1" in r for r in d.reasons)
+
+
+def test_a_coin_held_past_half_an_hour_is_raised_even_while_the_book_trades(paths):
+    """The book's exits close within minutes; a coin still held after 30 minutes is a stuck position."""
+    s = snap(book_live=True, snipers=[{"id": "b1", "name": BOOK, "status": "running"}],
+             held=[{"mint": "Mint1111", "amount": 5.0, "since": NOW - 40 * 60}])  # fmt: skip
+    d = decide(s, snap(), NOW, CFG, paths)
+    assert d.call and any("held over 30 min" in r for r in d.reasons)
