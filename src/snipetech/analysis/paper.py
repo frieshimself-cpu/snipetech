@@ -33,7 +33,18 @@ from ..config import Config
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
-from .lab import LAMPORTS, Trigger, _fire, collect, label_groups, rank
+from .lab import (
+    EXIT_LATENCY_SLOTS,
+    EXIT_POSITION,
+    LAMPORTS,
+    Trigger,
+    _fire,
+    collect,
+    label_groups,
+    leader_sell_fractions,
+    rank,
+    span_slot_secs,
+)
 from .stats import summarize
 
 SETTLE_SECS = 420  # a trigger is scored once its longest exit (300 s) has played out on the tape
@@ -176,13 +187,17 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         if hi <= lo:
             continue
         end = min(b, int(now))
+        # the lab's simulator settings (lab.collect): the slot time measured on this stretch of tape (an hour before
+        # the window gives the fit enough span), exits that sell one slot after they fire, the copy exit on the
+        # copied wallet's own sells
+        slot_secs = span_slot_secs(store, max(int(a), int(lo) - 3600), int(hi))
         for mint, _count in store.active_mints(lo, hi, 1):
             trades = store.trades_for_mint(mint, a, end)
             if len(trades) < min_trades:
                 continue
             launch = store.launch(mint)
             in_span = launch if (launch and a <= launch.ts) else None
-            path = MarketPath.build(trades, in_span)
+            path = MarketPath.build(trades, in_span, slot_secs=slot_secs)
             if path.n < min_trades:
                 continue
             for s, trig, ex, costs in parsed:
@@ -196,7 +211,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     continue
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger
                 e = int(path.landing_index(int(path.slot[i]) + s["latency"], s["position"], i))
-                prep = prepare(path, e, s["buy_sol"], costs, max(1, s["latency"]), s["position"])
+                frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
+                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
                 if prep is None:
                     continue
                 res = run_exit(prep, ex, costs, end_ts=float(end))

@@ -562,7 +562,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("paper", "forward paper-trading: freeze the lab's best strategies, then score them only on newer tape")
     sp.add_argument("action", choices=["freeze", "run", "report"])
     sp.add_argument("--top", type=int, default=4, help="freeze: how many strategies (positive lower bound only)")
-    sp.add_argument("--position", type=_position, default="+1", help="freeze: landing position (OKTech measured +1)")
+    sp.add_argument(
+        "--position",
+        type=_position,
+        default="+6",
+        help="freeze: landing position of the lab (+6: where live copies land; scoring is at the live landing)",
+    )
     sp.add_argument("--latency", type=int, default=0, help="freeze: slots after the trigger")
     sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
@@ -1010,7 +1015,8 @@ async def _run(args, cfg: Config) -> int:
 
             if args.action == "freeze":
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              args.per_tx, args.replace)  # fmt: skip
+                                              args.per_tx, args.replace,
+                                              lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             else:

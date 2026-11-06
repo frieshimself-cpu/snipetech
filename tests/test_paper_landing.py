@@ -173,3 +173,47 @@ def test_freeze_stores_the_live_landing_and_can_keep_only_what_was_measured_ther
         assert (s["position"], s["latency"]) == want and s["lab"]["landing"] == "+1@0"
     only = paper.freeze(store, cfg, top=10, position="+6", latency=0, replace=True, only_live=True)
     assert only["frozen"] and all(s["trigger"]["kind"] != "launch" for s in only["frozen"])
+
+
+def test_paper_simulates_like_the_lab(monkeypatch):
+    """The paper test runs the lab's simulator settings (lab.collect): the slot time measured on the tape span, exits
+    that sell one slot after they fire at the start of that slot, and the copied wallet's own sells for the copy exit."""
+    from snipetech.analysis import lab
+
+    store = Store(":memory:")
+    _world(store)
+    _freeze(store, Trigger("whale", sol=2.0), "+6", 0, T0)
+    seen: dict[str, list] = {"build": [], "prepare": []}
+    real_build, real_prepare = MarketPath.build, paper.prepare
+    monkeypatch.setattr(paper, "span_slot_secs", lambda st, a, b: 0.214)
+
+    def build(trades, launch=None, **kw):
+        seen["build"].append(kw.get("slot_secs"))
+        return real_build(trades, launch, **kw)
+
+    def prep(path, e, buy_sol, costs, latency, position, **kw):
+        seen["prepare"].append((latency, position, "leader_frac" in kw))
+        return real_prepare(path, e, buy_sol, costs, latency, position, **kw)
+
+    monkeypatch.setattr(paper.MarketPath, "build", staticmethod(build))
+    monkeypatch.setattr(paper, "prepare", prep)
+    assert paper.run(store, Config(), now=NOW)["new_trades"] == 3
+    assert seen["build"] and set(seen["build"]) == {0.214}
+    assert set(seen["prepare"]) == {(lab.EXIT_LATENCY_SLOTS, lab.EXIT_POSITION, True)}
+
+
+def test_paper_freeze_from_the_command_line_measures_at_our_landing_under_the_lab_lock(tmp_path, monkeypatch):
+    """`snipetech paper freeze` runs its lab at the +6 landing by default (CLAUDE.md rule 2: +1 is a landing no live
+    copy gets) and holds the one-lab lock like every other lab."""
+    from snipetech import cli
+
+    assert cli.build_parser().parse_args(["paper", "freeze"]).position == "+6"
+    seen = {}
+    monkeypatch.setattr(paper, "freeze", lambda *a, **k: seen.update(args=a, kw=k) or {"frozen": [], "kept": []})
+    cfg_path = tmp_path / "c.toml"
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    cfg.save(cfg_path)
+    monkeypatch.setattr(cli.R, "render_paper", lambda action, r: "")
+    assert cli.main(["--config", str(cfg_path), "paper", "freeze"]) in (0, None)
+    assert seen["args"][3] == "+6" and str(seen["kw"].get("lock_dir")) == str((tmp_path / "data").resolve())
