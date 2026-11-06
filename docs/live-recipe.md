@@ -285,3 +285,23 @@ Vybe source after the field fix (job 20261106-110247): 344 rows, 311 new. The op
 qualified wallet as a decision note. Timers `snipetech-discover.timer` / `snipetech-qualify.timer` are installed
 by `setup.sh` and still need the owner's `enable --now`; until then the hourly cloud round stands in.
 
+## Measure stage on the server (6 Nov, 11:15 UTC) — accepted, and it agrees with the hand-made table
+
+`measure run` (job 20261106-111501, 3 s) over the last 24 h: 118 fills — 28 buys, 28 sells, **62 failed sends**
+(the triple-send duplicates, 05 Nov 17:02 → 06 Nov 05:44), 28 round trips, 4 copied wallets with a live expectancy.
+The copy-test buys it attributed by itself, against the table in "Inside the slot" above:
+
+| time | coin | copied | trades behind | gap % | pos in slot / txs | priority | tip | CU limit |
+|---|---|---|---|---|---|---|---|---|
+| 05:04:12 | au6jPXHf | 4yo9CUuT | 2 | 34.0 | 4 / 12 | 0.001 | 0 | 150 000 |
+| 05:15:46 | 2NgdUjFY | 4vw54BmA | 2 | 3.7 | 0 / 13 | 0.001 | 0 | 150 000 |
+| 05:32:08 | H4D5mThN | 4vw54BmA | 4 | 42.7 | 5 / 24 | 0.001 | 0 | 150 000 |
+| 05:32:08 | A7YsCfw6 | CgaA9a1J | 2 | 26.2 | 4 / 10 | 0.001 | 0 | 150 000 |
+| 05:39:45 | 3BrEjvww | 6Z91Dgiz | 0 | 0.3 | 4 / 7 | 0.001 | 0 | 150 000 |
+| 05:42:23 | 7bDNtSnb | 6Z91Dgiz | 0 | 0.2 | 3 / 4 | 0.001 | 0 | 150 000 |
+
+Bid model, arm `control`: n 28, failed 62, mean position 1.7, p75 position 3.75, mean gap 17.9 %, mean fee
+0.00113 SOL. Live expectancy (all `warming`, n ≤ 2): every copied wallet negative at this landing, as the test said.
+Failed sends carry no fee fields yet (the fingerprinter skips errored transactions); their count is the cost signal.
+From here on this table writes itself every five minutes once `snipetech-measure.timer` is enabled.
+

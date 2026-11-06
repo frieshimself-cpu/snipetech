@@ -36,7 +36,12 @@ evidence, and **one qualified**: `2YDnmMQt…` — n 93 at +6, +0.0146 SOL a tra
 followers within a second, no API history (a tape-only wallet). The operator reported it on Telegram at 11:01
 with the right caveat (history unverified). That is the loop working end to end without a hand on it.
 
-Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the two new timers (the
+The measure stage (phase 3) is live too (6 Nov, 11:15 UTC): every buy and sell of the sniper wallet becomes a
+`fills` row with its position, the copied wallet, trades behind, price gap, fees and PnL, and failed sends count as
+cost. Its first pass re-derived the copy-test table by itself (62 failed duplicate sends in 24 h, mean gap 18 %, p75
+position 3.75) — the next live step will be measured the moment it happens, with no one watching.
+
+Still yours, in order: run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the three new timers (the
 exact lines are in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; send `/status` to the
 bot; top up Vultr and say "resize now" between jobs; fund the wallet (6–10 SOL) and say yes to the fee test when
 you want the first measured live step.
