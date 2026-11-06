@@ -13,12 +13,13 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..oktech import validate_exit
 from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from ..positions import is_active
-from .policy import BOOK_NAME_RE, BookInputs, BookPlan, copied_leaders, plan_book
+from .policy import BOOK_NAME_RE, BookInputs, BookPlan, ExitChoice, copied_leaders, plan_book
 from .state import day_accounting, record_run
 from .switch import book_live, effective_min_score
 from .watch import watch_pass, watched_within
@@ -178,6 +179,23 @@ def _line(a) -> str:
     return " ".join(b for b in bits if b) + f" — {a.reason}"
 
 
+def _sent_exit(a, cfg: Config) -> ExitChoice | None:
+    """The exit a create sends: the plan's choice, after the full config's last check of a wallet's own exit (its copy
+    exit must still be the one snipers send); lab, sent by name as always, when that check finds a problem."""
+    e = getattr(a, "exit", None)
+    if e is None or e.source != "wallet":
+        return e
+    problems = validate_exit(e.params, cfg)
+    return ExitChoice("lab", None, "lab", f"{e.name} cannot be sent: {'; '.join(problems)}") if problems else e
+
+
+def _exit_words(e: ExitChoice | None) -> str:
+    """The exit in the owner's line: plain lab in fixed mode; in per_wallet mode, why this exit."""
+    if e is None or e.source == "fixed":
+        return "exit lab"
+    return f"exit {e.name} ({e.reason})"
+
+
 async def run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None = None, dry: bool | None = None,
                    balances: Callable | None = None, notes: NoteSink | None = None) -> dict[str, Any]:  # fmt: skip
     """One book run under the book lock; a run that finds another in progress does nothing."""
@@ -299,7 +317,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                 if not notes.has_today(sig, now):
                     floor = f" on its buys of {_floor(b, a):g} SOL or more" if a.kind == "create" else ""
                     size = f" ({a.fill_sol:g} SOL{floor})" if a.fill_sol else ""
-                    notes.write(f"{sig}{size} — {a.reason}", "info")
+                    exit_ = f", {_exit_words(_sent_exit(a, cfg))}" if a.kind == "create" else ""
+                    notes.write(f"{sig}{size}{exit_} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
                 await _do(svc, notifier, notes, "stop", a)
@@ -327,17 +346,21 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                 notes.write(f"[book] create {a.wallet[:6]} waits: its old sniper is still on OKTech", "info")
                 continue
             arm, floor = b.bid_arms.get(a.arm) or {}, _floor(b, a)
+            ex = _sent_exit(a, cfg)
+            # lab goes by name, exactly the call the book always made; only a wallet's own exit is sent as exit_params
+            own = ex is not None and ex.source == "wallet"
+            name, extra = (ex.name, {"exit_params": dict(ex.params)}) if own else ("lab", {})
             try:
                 # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own
-                rep = await svc.oktech_copylist([f"{a.wallet}:book:{floor:g}:lab"], cfg.oktech.wallet or "SNIPER", create=True,
-                                                buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name="lab",
+                rep = await svc.oktech_copylist([f"{a.wallet}:book:{floor:g}:{name}"], cfg.oktech.wallet or "SNIPER", create=True,
+                                                buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name=name,
                                                 priority_fee=arm.get("priority"), tip=arm.get("tip"), send_count=b.send_count, tag=f"arm:{a.arm}",
-                                                compute_units=arm.get("cu"), salt=f"g{int(now)}")  # fmt: skip
+                                                compute_units=arm.get("cu"), salt=f"g{int(now)}", **extra)  # fmt: skip
                 for s in rep.get("snipers", []):
                     if s.get("oktech_id"):
                         new_ids.append((s["oktech_id"], a))
                 notifier.send(notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL on its buys of "
-                                          f"{floor:g} SOL or more — {a.reason}", "decision"))  # fmt: skip
+                                          f"{floor:g} SOL or more, {_exit_words(ex)} — {a.reason}", "decision"))  # fmt: skip
             except Exception as exc:  # noqa: BLE001
                 notifier.send(
                     notes.write(

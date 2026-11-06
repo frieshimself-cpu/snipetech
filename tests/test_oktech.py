@@ -1153,3 +1153,26 @@ def test_the_presets_sent_today_are_byte_identical_to_before_the_menu():
                              tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
         assert hashlib.sha256(json.dumps(p.config).encode()).hexdigest()[:16] == digest, name
         assert p.external_id.endswith(f":{config_hash}:g1") and p.name == "snipetech copy book LLLLLL arm:control"
+
+
+def test_copylist_sends_an_exit_given_as_parameters():
+    """The book's per-wallet exit reaches OKTech through oktech_copylist(exit_params=...), in the lab's form: ride goes
+    out as a trailing stop with its stop-loss and timer and no dead exit. Without exit_params the spec's preset name is
+    used, as before."""
+    from snipetech.analysis.lab import menu_exits
+    from snipetech.service import Service
+
+    store = Store(":memory:")
+    svc = Service(Config(), store=store)
+    try:
+        ride = menu_exits(Config())["ride"].to_dict()
+        spec = f"{TARGET}:book:0.6:ride"
+        rep = asyncio.run(svc.oktech_copylist([spec], "SNIPER", exit_name="ride", exit_params=ride))
+        sell = rep["snipers"][0]["config"]["autoSell"]
+        trail = sell["trailingStopLoss"]
+        assert (trail["percentFromPeak"], trail["activateAfterGainPercent"]) == (25.0, 20.0) and "deadExit" not in sell
+        assert sell["stopLoss"]["stages"][0]["percentLoss"] == 30.0 and sell["sellAfterSeconds"] == 300.0
+        lab = asyncio.run(svc.oktech_copylist([f"{TARGET}:book:0.6:lab"], "SNIPER"))["snipers"][0]["config"]["autoSell"]
+        assert lab["deadExit"]["staleSeconds"] == 1 and "trailingStopLoss" not in lab
+    finally:
+        store.close()
