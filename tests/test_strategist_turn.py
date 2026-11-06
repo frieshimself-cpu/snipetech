@@ -219,3 +219,28 @@ def test_a_proposal_survives_a_later_budget_stop(tmp_path):
         run_strategist_turn(cfg, {"window_days": 7}, ledger, notes, client=_client(handler), now=lambda: NOW)
     )
     assert out["stopped"] == "turn_usd" and out["patch"] == {"book.explore_share": 0.25}
+
+
+def test_the_strategist_sees_what_was_learned_and_adds_to_it(tmp_path):
+    """It reads the analyst's lessons and open ideas in its message and may record a lesson of its own; it cannot
+    add or change ideas (that stays with the analyst), and the one-patch rule is unchanged."""
+    from snipetech.operator import learning
+
+    cfg, ledger, notes, paths = _env(tmp_path)
+    learning.add_lesson(paths, "Crowded leaders lose at our landing", "4 of 5 losses 2-4 behind", 5, source="analyst",
+                        now=NOW - 60)  # fmt: skip
+    learning.upsert_idea(paths, {"title": "Raise the copy floor to 0.5 SOL", "why": "7 of 9 losses copied small buys",
+                                 "test": "lab --by-wallet at min_copy_sol 0.5", "expected": "+0.004 SOL a trade",
+                                 "kind": "config"}, source="analyst", now=NOW - 60)  # fmt: skip
+    add = {"text": "A lower bar copied more losers", "evidence": "min_score 0.001: 10 fills at -0.045 SOL", "n": 10}
+    handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "add_lesson", "input": add}], "tool_use"),
+                                  ([{"type": "text", "text": "no change: too few trips at the new bar"}], "end_turn"))  # fmt: skip
+    out = asyncio.run(
+        run_strategist_turn(cfg, {"window_days": 7}, ledger, notes, client=_client(handler), now=lambda: NOW)
+    )
+    content = requests[0]["messages"][0]["content"]
+    assert "Crowded leaders lose at our landing" in content and "Raise the copy floor to 0.5 SOL" in content
+    names = {t["name"] for t in requests[0]["tools"]}
+    assert {"read_evidence", "propose_patch", "read_lessons", "list_ideas", "add_lesson"} <= names
+    assert "upsert_idea" not in names and out["patch"] == {} and out["stopped"] == "end_turn"
+    assert "[strategist, n=10] A lower bar copied more losers" in (paths.root / "lessons.md").read_text()
