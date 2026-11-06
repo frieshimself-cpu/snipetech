@@ -48,8 +48,11 @@ class Trigger:
 
     def label(self) -> str:
         base = self._label()
-        extra = ([f"within {self.max_age:g}s of launch"] if self.max_age else []) + (["normal coins"] if self.plain else []) \
+        extra = (
+            ([f"within {self.max_age:g}s of launch"] if self.max_age else [])
+            + (["normal coins"] if self.plain else [])
             + (["not a create bundle"] if self.solo else [])
+        )
         return base + (f" ({', '.join(extra)})" if extra else "")
 
     def _label(self) -> str:
@@ -74,7 +77,8 @@ TRIGGERS = (
     + [Trigger("whale", sol=s) for s in (1.0, 2.0, 5.0)]
     + [Trigger("kol")]
     # the KOLs' small buys are top-ups after a 2-4 SOL first buy (decu: 4 buys/coin): the first buy is the signal
-    + [Trigger("kol", sol=1.0)] + [Trigger("kol", sol=s, group="wallet") for s in (1.0, 2.0)]
+    + [Trigger("kol", sol=1.0)]
+    + [Trigger("kol", sol=s, group="wallet") for s in (1.0, 2.0)]
     # the qualify stage's candidates (and the tracked list) at the KOL floor: every first buy >= 0.1 SOL counts
     + [Trigger("kol", sol=KOL_MIN_SOL, group="cand")]
     # forward paper trading: the >= 5 / 2 SOL edge is all in big buys within ~1 s of the launch, on normal coins
@@ -82,7 +86,12 @@ TRIGGERS = (
     # the part of that edge OKTech can reach: the big buy arrives on its own, not as part of a create bundle
     + [Trigger("whale", sol=s, max_age=a, plain=True, solo=True) for s in (1.0, 2.0) for a in (1.0, 5.0)]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
-    + [Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2) for u in (20, 40) for v in (3.0, 6.0) for pr in (0.3, 0.5)]
+    + [
+        Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2)
+        for u in (20, 40)
+        for v in (3.0, 6.0)
+        for pr in (0.3, 0.5)
+    ]
 )
 
 CURVE_REAL_TOKENS = 793_100_000 * 10**6  # tokens a pump.fun curve sells before it completes
@@ -139,7 +148,9 @@ def exit_set() -> list[ExitParams]:
     out = []
     for stale in (1.0, 2.0, 5.0):
         for sl in (0.15, 0.3):
-            out.append(ExitParams(take_profit=0, stop_loss=sl, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=stale))
+            out.append(
+                ExitParams(take_profit=0, stop_loss=sl, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=stale)
+            )
     for trail in (0.1, 0.18, 0.25):
         for act in (0.0, 0.2):
             for hold in (60, 300):
@@ -197,12 +208,20 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols) -> int | None:
                 if len(in_slot) > 2:
                     return None
             return i
-        if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS:
+        if (
+            trig.kind == "kol"
+            and first
+            and path.users[i] in group
+            and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS
+        ):
             return i
         if trig.kind == "burst":
             lo = np.searchsorted(path.ts, path.ts[i] - trig.window, side="left")
             win = [j for j in range(lo, i + 1) if path.is_buy[j] and path.users[j] not in dev]
-            if len({path.users[j] for j in win}) >= trig.buyers and sum(path.quote[j] for j in win) >= trig.sol * LAMPORTS:
+            if (
+                len({path.users[j] for j in win}) >= trig.buyers
+                and sum(path.quote[j] for j in win) >= trig.sol * LAMPORTS
+            ):
                 return i
     return None
 
@@ -214,18 +233,43 @@ def label_groups(store: Store) -> dict[str, set[str]]:
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet}
 
 
+def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[str]:
+    """Coins in [a, b] where any of `wallets` bought (chunked IN lists; thousands of candidates are normal)."""
+    out: set[str] = set()
+    ws = sorted(wallets)
+    for i in range(0, len(ws), 500):
+        chunk = ws[i : i + 500]
+        out |= {
+            m
+            for (m,) in store._q(
+                f"SELECT DISTINCT mint FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({','.join('?' * len(chunk))})",
+                [a, b, *chunk],
+            )
+        }
+    return out
+
+
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
-            per_tx_sol: float = 0.0035, min_trades: int = 5) -> dict[str, Any]:  # fmt: skip
-    """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape."""
+            per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None) -> dict[str, Any]:  # fmt: skip
+    """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
+    With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
+    the qualify stage's lab, a small fraction of the full one."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = exit_set()
     kols = label_groups(store)
+    triggers = [(ti, t) for ti, t in enumerate(TRIGGERS) if groups is None or (t.kind == "kol" and t.group in groups)]
+    group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     rows: list[dict] = []  # one per (token, trigger): pnl per exit
     for a, b in spans:
         if b - a < 600:
             continue
+        wanted = _mints_with_buys_by(store, group_wallets, int(a), int(b)) if group_wallets is not None else None
+        if wanted is not None and not wanted:
+            continue
         for mint, _count in store.active_mints(a, b, min_trades):
+            if wanted is not None and mint not in wanted:
+                continue
             trades = [t for t in store.trades_for_mint(mint, a, b)]
             if len(trades) < min_trades:
                 continue
@@ -233,7 +277,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             path = MarketPath.build(trades, launch if launch and a <= launch.ts else None)
             if path.n < min_trades:
                 continue
-            for ti, trig in enumerate(TRIGGERS):
+            for ti, trig in triggers:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
                 i = _fire(trig, path, launch if (launch and a <= launch.ts) else None, kols)

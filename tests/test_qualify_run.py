@@ -26,16 +26,24 @@ def _svc(tmp_path):
     return Service(cfg, store=st), st, data
 
 
-def _tape(st, wallets):
+def _tape(st, wallets, coins=3):
     """Each wallet buys early in a few coins so it has tape trades; the tape span covers them."""
     D = addr("dev")
     for i, w in enumerate(wallets):
-        for k in range(3):
-            m = Market(st, addr(f"{w}:{k}"), D, NOW - 7000 + i * 100 + k * 1000, SLOT + i * 250 + k * 2500)
+        for k in range(coins):
+            m = Market(
+                st,
+                addr(f"{w}:{k}"),
+                D,
+                NOW - 7000 + i * 100 + k * (3000 // coins),
+                SLOT + i * 250 + k * (7500 // coins),
+            )
             m.buy(D, 1.0, 0)
             m.buy(w, 0.5, 5)
-            m.buy(addr(f"f{i}{k}"), 0.3, 6)
+            for j in range(4):  # a small crowd after it, so every coin has the trades a lab needs
+                m.buy(addr(f"f{i}{k}{j}"), 0.3 + 0.1 * j, 6 + j)
             m.sell(w, 1.0, 30)
+            m.sell(addr(f"f{i}{k}0"), 1.0, 40)
             m.commit()
     st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
 
@@ -179,3 +187,35 @@ def test_lab_has_a_cand_group_at_a_low_floor(tmp_path):
 def test_cli_qualify_run_parses():
     a = build_parser().parse_args(["qualify", "run", "--max", "50", "--json"])
     assert a.cmd == "qualify" and a.action == "run" and a.max == 50
+
+
+def test_collect_can_restrict_to_the_cand_group(tmp_path):
+    """The qualify lab only needs the cand trigger: restricting the groups skips every other trigger and every coin
+    without a candidate's buy, which is what makes a lab every two hours affordable."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["C1"], coins=12)  # C1 buys in twelve coins (a trigger needs ten moments before it is ranked)
+        D = addr("dev")
+        for k in range(3):  # three coins nobody tracked trades in
+            m = Market(st, addr(f"other:{k}"), D, NOW - 6500 + k * 1000, SLOT + 1000 + k * 2500)
+            m.buy(D, 1.0, 0)
+            m.buy(addr(f"x{k}"), 1.5, 3)
+            m.buy(addr(f"y{k}"), 2.0, 4)
+            for j in range(4):
+                m.buy(addr(f"z{k}{j}"), 0.4, 5 + j)
+            m.sell(addr(f"x{k}"), 1.0, 30)
+            m.commit()
+        st.set_label("C1", "cand:C1", "cand")
+        cfg = svc.cfg
+        cfg.verdict.bootstrap_samples = 50
+        full = L.collect(st, cfg, 0.2, 0, "+1")
+        only = L.collect(st, cfg, 0.2, 0, "+1", groups=("cand",))
+        cand_ti = [i for i, t in enumerate(L.TRIGGERS) if t.kind == "kol" and t.group == "cand"][0]
+        assert only["rows"] and all(r["trigger"] == cand_ti for r in only["rows"])
+        assert {r["mint"] for r in only["rows"]} <= {addr(f"C1:{k}") for k in range(12)}
+        assert len({r["trigger"] for r in full["rows"]}) > 1 and len(full["rows"]) > len(only["rows"])
+        assert only["tape_hours"] == full["tape_hours"]
+        rows = L.rank_wallets(only, cfg, st.labels(), top=10, min_n=1)
+        assert [r["wallet"] for r in rows] == ["C1"]
+    finally:
+        st.close()
