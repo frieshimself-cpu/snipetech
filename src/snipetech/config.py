@@ -433,6 +433,7 @@ class Config:
 
 
 OVERLAY_SECTIONS = ("book", "qualify")
+OVERLAY_FORBIDDEN_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
 
 
 def overlay_path_for(cfg: Config) -> Path:
@@ -456,7 +457,9 @@ def _apply_overlay(cfg: Config) -> None:
         return
     for section in OVERLAY_SECTIONS:
         if isinstance(data.get(section), dict):
-            _apply(getattr(cfg, section), data[section])
+            # never from the overlay: switching the book on, wallets, keys (the owner's file decides those)
+            safe = {k: v for k, v in data[section].items() if not any(w in k.lower() for w in OVERLAY_FORBIDDEN_WORDS)}
+            _apply(getattr(cfg, section), safe)
     cfg.overlay_path = str(path)
 
 

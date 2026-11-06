@@ -355,7 +355,20 @@ snipetech remote --wait run oktech copylist --create --buy 0.2 --snipes 2 --prio
 snipetech remote run oktech guard --id <the six ids printed above> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --floor 1.2 --max-minutes 180
 ```
 
-Result: _pending_.
+**Started 6 Nov 15:08 UTC** on the owner's "do everything" in chat. The sniper wallet held 4.76 SOL (4.64 SOL + 0.12
+WSOL), no coins. Six capped snipers, created idle and started by `oktech guard` (equity floor 2.0 SOL, 180 minutes,
+job `20261106-150848-a85b9a`):
+
+| Leader | Low bid (control) | Paid bid |
+|---|---|---|
+| `2YDnmMQt…` | `6aeded3c9d2356e2dc629ed5` | `6aeded569d2356e2dc62a3e8` |
+| `G2oZrd1k…` | `6aeded3c9d2356e2dc629ee1` | `6aeded579d2356e2dc62a3f4` |
+| Gfree `4yo9CUuT…` | `6aeded3d9d2356e2dc629eed` | `6aeded579d2356e2dc62a400` |
+
+At the start OKTech wrapped 0.0996 SOL into WSOL in one transaction (system transfer + sync native): the SOL
+balance fell, equity did not. `operator/expected.json` = 6 running, 6 held for the test.
+
+Result: _pending_ (written from `measure report` when the guard ends, about 18:08 UTC).
 
 ## Operator outage, 6 Nov 12:16–12:45 UTC — fixed
 

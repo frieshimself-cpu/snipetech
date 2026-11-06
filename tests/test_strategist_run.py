@@ -236,3 +236,13 @@ def test_relative_bounds_use_the_owners_file_on_the_server(tmp_path):
                                      turn=_scripted_turn({"book.min_score": 0.02})))  # fmt: skip
     assert out["applied"] == {} and out["refusals"]  # x4 the owner's 0.005: a question, not a change
     st.close()
+
+
+def test_the_overlay_can_never_switch_the_book_on(tmp_path):
+    """Only the owner's own config file switches the book on: an `enabled` (or wallet, key...) line in the strategist's
+    overlay is ignored."""
+    cfg = _cfg_file(tmp_path)
+    OperatorPaths(tmp_path / "data").ensure()
+    (tmp_path / "data" / "autotune.toml").write_text("[book]\nenabled = true\nexplore_share = 0.25\n")
+    loaded = Config.load(cfg.path)
+    assert loaded.book.enabled is False and loaded.book.explore_share == 0.25

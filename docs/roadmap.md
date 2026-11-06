@@ -71,7 +71,10 @@ A second review of the day's own fixes (afternoon) found and closed another set 
 every stop decision (docs/oktech-audit-2026-11-06.md, "Second pass"). With every fill's real fees, the 39 round trips
 of 5–6 Nov lost 0.199 SOL, nearly all of it fees: the case for measuring whether paying more for position is worth it.
 
-Still yours, in order: start the fee test with the three commands in docs/live-recipe.md ("Fee test, 6 Nov"); send
+The fee test started at 15:08 UTC on the owner's go: six capped snipers on three leaders, half at the minimum bid
+and half paying 0.02 + 0.02 SOL, watched by the guard until about 18:08 UTC.
+
+Still yours, in order: send
 the nine questions to OKTech's owner; run `sudo bash /opt/snipetech/deploy/setup.sh` once and enable the new timers
 and the events service (the exact line is in README 3e); put a `DASH_TOKEN` in `/etc/snipetech/env` for the page; top
 up Vultr and say "resize now" between jobs; fund the wallet to 6–10 SOL when you want the book on.
