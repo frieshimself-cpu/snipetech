@@ -136,6 +136,28 @@ def test_copy_farmer_is_avoided(store, cfg):
     assert rep["verdict"]["verdict"] == "AVOID"
 
 
+def test_copy_report_states_latency_in_the_measured_slot_time(store, cfg):
+    """A slot is 0.2 s on this tape, not the old fixed 0.4 s: one slot of latency is reported as 200 ms."""
+
+    class FastChain(Market):
+        def _ts(self, slot: int) -> int:
+            return self.ts0 + int((slot - self.slot0) * 0.2)
+
+    t = addr("fast-trader")
+    for i in range(14):  # one coin every 10 minutes, 3 000 slots apart: 0.2 s a slot across the tape too
+        m = FastChain(store, addr(f"fmint-{i}"), addr(f"fd-{i}"), NOW - 50_000 + i * 600, 5_000_000 + i * 3_000)
+        m.buy(m.deployer, 0.3, 0, sig=m.create_sig)
+        m.buy(t, 1.0, 2)
+        for k in range(20):
+            m.buy(addr(f"forg-{i}-{k}"), 0.7, 3 + k)
+        m.sell(t, 1.0, 40)
+        m.commit()
+    rep = copy_report(store, cfg, t, since_ts=NOW - 100_000)
+    assert rep["slot_secs"] == pytest.approx(0.2, abs=0.005)
+    ms = {r["latency_slots"]: r["latency_ms"] for r in rep["latency_sweep"]}
+    assert ms[1] == pytest.approx(200, abs=5) and ms[10] == pytest.approx(2000, abs=50)
+
+
 def test_policy_backtest_prefers_good_deployers(store, cfg):
     good = [addr(f"g{k}") for k in range(3)]
     bad = [addr(f"r{k}") for k in range(3)]

@@ -11,9 +11,12 @@ from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
 
-from .market import MarketPath
+from .market import DEFAULT_SLOT_SECS, MarketPath
 
 LAMPORTS = 1e9
+# When two exits fire on the same trade: a take-profit first (it may sell only a part), then the copied wallet's sale,
+# the stop-loss, the trailing stop, the dev's sale, and a pause last (it fires a while after that trade).
+_FIRST = {"take_profit": 0, "copy_exit": 1, "stop_loss": 2, "trailing_stop": 3, "dev_sell": 4, "stale": 5}
 
 
 @dataclass(frozen=True)
@@ -26,6 +29,11 @@ class ExitParams:
     max_hold_secs: float = 120.0
     sell_on_dev_sell: bool = True
     stale_secs: float = 0.0  # sell once nothing has traded for this long (OKTech deadExit); 0 = off
+    # OKTech starts watching a position about 1.3 s after the buy lands (6 Nov live fills): no exit fires before then,
+    # and a pause counts only when the dead exit would fire after it. 0 = watched from the buy.
+    watch_secs: float = 0.0
+    # sell when the copied wallet sells at least this share of its holdings in one go (ctbotCopyExit); 0 = off
+    copy_exit_pct: float = 0.0
 
     @classmethod
     def from_config(cls, ec) -> "ExitParams":
@@ -52,6 +60,10 @@ class ExitParams:
         parts.append(f"hold{self.max_hold_secs:g}s")
         if self.sell_on_dev_sell:
             parts.append("devexit")
+        if self.copy_exit_pct > 0:
+            parts.append(f"copy{self.copy_exit_pct:.0%}")
+        if self.watch_secs > 0:
+            parts.append(f"watch{self.watch_secs:g}s")
         return " ".join(parts)
 
     def to_dict(self) -> dict:
@@ -83,6 +95,7 @@ class SimResult:
     exit_reason: str = ""
     exit_idx: int = -1
     exit_ts: float = 0.0
+    exit_slot: int = 0  # the slot the (last) sell lands in: the moment its exit fires, plus the sell latency
     hold_secs: float = 0.0
     peak_multiple: float = 0.0  # best net position value / SOL spent while held
     trough_multiple: float = 0.0
@@ -108,10 +121,17 @@ class Prepared:
     exec_idx: np.ndarray  # absolute index where a sell reacting to state j executes
     ts: np.ndarray
     slot: np.ndarray | None = None
+    leader_frac: np.ndarray | None = None  # share of its holdings the copied wallet sold at each state (0 = no sale)
+    rt: np.ndarray | None = None  # seconds after the entry of each state, from the slots at the path's slot time
+    latency: int = 1  # slots between an exit firing and its sell landing
 
     @property
     def entry_ts(self) -> float:
         return float(self.path.ts[self.e])
+
+    @property
+    def slot_secs(self) -> float:
+        return float(getattr(self.path, "slot_secs", DEFAULT_SLOT_SECS) or DEFAULT_SLOT_SECS)
 
 
 def prepare(
@@ -122,6 +142,7 @@ def prepare(
     exit_latency_slots: int = 1,
     exit_position: str = "middle",
     insider_sell_mask: np.ndarray | None = None,
+    leader_frac: np.ndarray | None = None,
 ) -> Prepared | None:
     if path.n == 0 or entry_idx < 0 or entry_idx >= path.n or spend_sol <= 0:
         return None
@@ -150,21 +171,28 @@ def prepare(
         exec_idx=exec_idx,
         ts=path.ts[e:],
         slot=path.slot[e:],
+        leader_frac=None if leader_frac is None else np.asarray(leader_frac, dtype=np.float64)[e:],
+        rt=(path.slot[e:] - path.slot[e]) * float(getattr(path, "slot_secs", DEFAULT_SLOT_SECS) or DEFAULT_SLOT_SECS),
+        latency=int(exit_latency_slots),
     )
 
 
 def _quiet_secs(p: Prepared, deadline: float) -> np.ndarray:
     """Seconds of silence after each state. Block timestamps are whole seconds, so a 1 s rule on them fired on
     nearly every trade whose follower fell in the next second (which is most trades after a late landing); slot
-    gaps (0.4 s each) are exact, and only the gap after the last trade is measured in seconds, to the deadline."""
-    from .market import SLOT_SECS
-
+    gaps at the path's measured slot time are exact, and only the gap after the last trade is measured in seconds,
+    to the deadline."""
     nxt = np.append(p.ts[1:], max(deadline, float(p.ts[-1])))
     by_ts = nxt - p.ts  # whole seconds: the true gap is within 1 s of this
     if p.slot is None:
         return by_ts
-    by_slot = np.append((p.slot[1:] - p.slot[:-1]) * SLOT_SECS, max(deadline - float(p.ts[-1]), 0.0))
+    by_slot = np.append((p.slot[1:] - p.slot[:-1]) * p.slot_secs, max(deadline - float(p.ts[-1]), 0.0))
     return np.maximum(by_slot, by_ts - 1.0)  # the exact slot gap, or the timestamp gap's lower bound
+
+
+def _rel_secs(p: Prepared) -> np.ndarray:
+    """Seconds after the entry of each state (from the slots when known, else the whole-second block times)."""
+    return p.rt if p.rt is not None else p.ts - p.ts[0]
 
 
 def _first(mask: np.ndarray, lo: int, hi: int) -> int | None:
@@ -178,7 +206,11 @@ def _first(mask: np.ndarray, lo: int, hi: int) -> int | None:
 
 
 def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = None) -> SimResult:
-    """Simulate holding the prepared position under exit rules `ex`."""
+    """Simulate holding the prepared position under exit rules `ex`.
+
+    With `ex.watch_secs` the seller starts watching that long after the entry: price and copy exits are checked from
+    the state then in effect, and a pause counts only when its dead exit would fire after the watch starts (OKTech on
+    6 Nov ignored a 1.7 s pause that began 0.2 s after a buy, and sold 1.5-2.4 s after its buys on later pauses)."""
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
@@ -187,27 +219,40 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         deadline = min(deadline, end_ts)
     last_rel = int(np.searchsorted(p.ts, deadline, side="right")) - 1
     last_rel = max(0, min(last_rel, n_rel - 1))
+    rt = _rel_secs(p)
+    watch = max(0.0, float(ex.watch_secs))
+    lo = max(1, int(np.searchsorted(rt, watch, side="right")) - 1) if watch > 0 else 1
+    peak = p.peak if lo <= 1 else np.maximum.accumulate(np.where(np.arange(n_rel) >= lo, p.v, 0.0))
+    stale_ok = None
+    if ex.stale_secs > 0:
+        # quiet for stale_secs after state j: nothing traded in between, so state j's price is the fill
+        stale_ok = _quiet_secs(p, deadline) >= ex.stale_secs
+        if watch > 0:
+            stale_ok &= rt + ex.stale_secs >= watch
     triggers: dict[str, int] = {}
     if ex.take_profit > 0:
-        t = _first(p.v >= basis * (1 + ex.take_profit), 1, last_rel)
+        t = _first(p.v >= basis * (1 + ex.take_profit), lo, last_rel)
         if t is not None:
             triggers["take_profit"] = t
+    if ex.copy_exit_pct > 0 and p.leader_frac is not None:
+        t = _first(p.leader_frac >= ex.copy_exit_pct, lo, last_rel)
+        if t is not None:
+            triggers["copy_exit"] = t
     if ex.stop_loss > 0:
-        t = _first(p.v <= basis * (1 - ex.stop_loss), 1, last_rel)
+        t = _first(p.v <= basis * (1 - ex.stop_loss), lo, last_rel)
         if t is not None:
             triggers["stop_loss"] = t
     if ex.trailing_stop > 0:
-        armed = p.peak >= basis * (1 + ex.trailing_activation)
-        t = _first(armed & (p.v <= p.peak * (1 - ex.trailing_stop)), 1, last_rel)
+        armed = peak >= basis * (1 + ex.trailing_activation)
+        t = _first(armed & (p.v <= peak * (1 - ex.trailing_stop)), lo, last_rel)
         if t is not None:
             triggers["trailing_stop"] = t
     if ex.sell_on_dev_sell and p.insider_sell is not None:
-        t = _first(p.insider_sell, 1, last_rel)
+        t = _first(p.insider_sell, lo, last_rel)
         if t is not None:
             triggers["dev_sell"] = t
-    if ex.stale_secs > 0:
-        # quiet for stale_secs after state j: nothing traded in between, so state j's price is the fill
-        t = _first(_quiet_secs(p, deadline) >= ex.stale_secs, 0, last_rel)
+    if stale_ok is not None:
+        t = _first(stale_ok, 0, last_rel)
         if t is not None:
             triggers["stale"] = t
 
@@ -217,6 +262,16 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     reason = "time"
     exit_abs = p.e + last_rel
     tx_costs = p.fixed_cost
+    entry_slot = int(path.slot[p.e])
+
+    def lands(fires_at: float) -> int:
+        """The slot a sell lands in when its exit fires `fires_at` s after the entry."""
+        return entry_slot + int(np.floor(max(fires_at, 0.0) / p.slot_secs + 1e-9)) + p.latency
+
+    def fires_at(why: str, t_rel: int) -> float:
+        return float(rt[t_rel]) + ex.stale_secs if why == "stale" else max(float(rt[t_rel]), watch)
+
+    exit_slot = lands(deadline - p.entry_ts)
 
     def sell(abs_idx: int, amount: float, held_now: float) -> float:
         gross = float(path.sell_gross(abs_idx, amount, held_now))
@@ -224,8 +279,9 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         return net - net * costs.platform_fee_bps / 10_000.0
 
     if triggers:
-        reason, t_rel = min(triggers.items(), key=lambda kv: (kv[1], kv[0] != "take_profit"))
+        reason, t_rel = min(triggers.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
         exec_abs = p.e + t_rel if reason == "stale" else int(p.exec_idx[t_rel])
+        exit_slot = lands(fires_at(reason, t_rel))
         if reason == "take_profit" and ex.tp_sell_fraction < 1.0:
             part = held * ex.tp_sell_fraction
             proceeds += sell(exec_abs, part, held)
@@ -250,17 +306,24 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
                 t = _first(p.insider_sell, start_rel + 1, last_rel)
                 if t is not None:
                     more["dev_sell"] = t
-            if ex.stale_secs > 0:  # the remainder also leaves when the coin goes quiet (the scale-out ladder's dead exit)
-                t = _first(_quiet_secs(p, deadline) >= ex.stale_secs, start_rel, last_rel)
+            if ex.copy_exit_pct > 0 and p.leader_frac is not None:  # the copied wallet dumps: the rest goes too
+                t = _first(p.leader_frac >= ex.copy_exit_pct, start_rel + 1, last_rel)
+                if t is not None:
+                    more["copy_exit"] = t
+            # the remainder also leaves when the coin goes quiet (the scale-out ladder's dead exit)
+            if stale_ok is not None:
+                t = _first(stale_ok, start_rel, last_rel)
                 if t is not None:
                     more["stale"] = t
             if more:
-                reason2, t2 = min(more.items(), key=lambda kv: kv[1])
+                reason2, t2 = min(more.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
                 exit_abs = p.e + t2 if reason2 == "stale" else int(p.exec_idx[t2])
                 reason = f"take_profit+{reason2}"
+                exit_slot = lands(fires_at(reason2, t2))
             else:
                 exit_abs = max(p.e + last_rel, exec_abs)
                 reason = "take_profit+time"
+                exit_slot = max(exit_slot, lands(deadline - p.entry_ts))
         else:
             exit_abs = exec_abs
     proceeds += sell(exit_abs, held, held)
@@ -285,6 +348,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         exit_reason=reason,
         exit_idx=exit_abs,
         exit_ts=float(path.ts[exit_abs]) if exit_abs < path.n else p.entry_ts,
+        exit_slot=exit_slot,
         hold_secs=float(max(path.ts[min(exit_abs, path.n - 1)], p.entry_ts) - p.entry_ts),
         peak_multiple=float(p.v[window].max() / basis),
         trough_multiple=float(p.v[window].min() / basis),
