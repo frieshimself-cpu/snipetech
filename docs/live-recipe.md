@@ -368,6 +368,11 @@ job `20261106-150848-a85b9a`):
 At the start OKTech wrapped 0.0996 SOL into WSOL in one transaction (system transfer + sync native): the SOL
 balance fell, equity did not. `operator/expected.json` = 6 running, 6 held for the test.
 
+Owner's money moves during the test (not trading): 15:16:40 UTC 2.542 SOL out of the sniper wallet in a plain
+transfer, 15:16:51 0.599 SOL back in; equity 2.82 SOL at 15:20 (2.60 SOL + 0.22 WSOL), no coin held. The guard saw
+the SOL balance at 1.997, under its 2.0 floor, valued the wallet at 2.22 SOL with the wrapped SOL and correctly did
+not call an emergency. The owner said they are adding more.
+
 Result: _pending_ (written from `measure report` when the guard ends, about 18:08 UTC).
 
 ## Operator outage, 6 Nov 12:16–12:45 UTC — fixed
