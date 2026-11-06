@@ -132,7 +132,8 @@ def test_an_unknown_sniper_keeps_sold_unless_the_fee_says_by_hand():
 def test_the_preset_is_read_back_from_the_snipers_payload():
     assert preset_name(LAB) == "lab" and preset_name(HOLD60) == "hold60"
     assert preset_name(_sniper(sell_fee=0.001, prio=0.02, tip=0.02)) == "lab"  # fees are not part of the preset
-    assert preset_name(RIDE) == "custom" and preset_name(TP) == "custom"
+    # ride is an exit on the menu (exits_menu.py): its live sells count under its own name; an exit no menu has is custom
+    assert preset_name(RIDE) == "ride" and preset_name(TP) == "custom"
     assert preset_name({"ctbotWallets": [{"address": LEAD}]}) is None and preset_name(None) is None
     spec = exit_spec(LAB)
     assert spec["stale_secs"] == 1 and spec["stop_loss_pct"] == 30 and spec["hold_secs"] == [300]

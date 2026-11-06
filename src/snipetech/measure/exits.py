@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from itertools import pairwise
 from typing import Any
 
+from ..exits_menu import COPY_EXIT_MENU
 from ..models import Trade
 from ..oktech import EXITS, autosell
 from ..store import Store
@@ -108,13 +109,21 @@ def _shape(spec: dict[str, Any]) -> tuple:
             tuple(r(g) for g in spec["tp_pcts"]), r(spec["trail_pct"]), r(spec["trail_act_pct"]))  # fmt: skip
 
 
+def named_exits() -> dict[str, dict]:
+    """Every exit with a name: the presets sent today (`oktech.EXITS`), then the rest of the exit menu (exits_menu.py)."""
+    out = {name: dict(params) for name, params in EXITS.items()}
+    for m in COPY_EXIT_MENU:
+        out.setdefault(m.name, dict(m.params))
+    return out
+
+
 def preset_name(payload: dict | None) -> str | None:
-    """The exit preset (`oktech.EXITS`) a sniper ran, read back from its config: 'custom' for an exit no preset has,
-    None when no exit settings are on record."""
+    """The exit preset a sniper ran (`oktech.EXITS`, or another exit on the menu), read back from its config: 'custom'
+    for an exit no preset has, None when no exit settings are on record."""
     spec = exit_spec(payload)
     if spec is None:
         return None
-    for name, params in EXITS.items():
+    for name, params in named_exits().items():
         ref = exit_spec({"autoSell": autosell(dict(params) | {"copy_exit": True}, [])})
         if ref is not None and _shape(ref) == _shape(spec):
             return name
