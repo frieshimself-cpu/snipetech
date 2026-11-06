@@ -248,6 +248,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--keys", help="authorized public keys (default: <repo>/deploy/ops_authorized_keys)")
     sp.add_argument("--branch", help="branch `update` pulls (default: the checkout's current branch)")
 
+    sp = cmd("operate", "on your server: one operator round (snapshot, gate, Claude only if something changed)", json_flag=False)
+    sp.add_argument("--analyst", action="store_true", help="force the daily analyst turn now")
+    sp.add_argument("--dry-run", action="store_true", help="print the snapshot and the gate's decision; never call Claude")
+    sp.add_argument("--telegram-setup", action="store_true", help="store the owner's Telegram chat id and send a hello")
+    sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
+    sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
+
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
     sp.add_argument("--key", default=os.environ.get("SNIPETECH_OPS_KEY"), help="private key file ($SNIPETECH_OPS_KEY)")
@@ -728,6 +735,21 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "ops-serve":
         return _ops_serve(args, cfg)
+    if args.cmd == "operate":
+        import subprocess
+
+        from .operator.run import operate, telegram_setup_cli
+
+        if args.telegram_setup:
+            return telegram_setup_cli(cfg)
+        repo = Path(args.repo or Path(__file__).resolve().parents[2])
+        branch = args.branch or subprocess.run(["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"],
+                                               capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip
+        svc = Service(cfg)
+        try:
+            return asyncio.run(operate(cfg, svc, analyst=args.analyst, dry_run=args.dry_run, repo=repo, branch=branch))
+        finally:
+            svc.store.close()
     if args.cmd == "vanity":
         from .vanity import grind
 
