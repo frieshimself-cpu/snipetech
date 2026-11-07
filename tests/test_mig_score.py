@@ -354,3 +354,79 @@ def test_the_paper_test_reads_the_paid_knob_like_the_lab():
     store.set_coverage("paper_strategies", {"strategies": [s]})
     paper.run(store, _cfg(), now=hm(14, 10))
     assert {r["mint"] for r in store.paper_trades(s["id"])} == {mints["paid"]}
+
+
+# -- MIG's exits: 300 s or less, at the measured cost of a trade ------------------------------------------------------
+
+
+def test_mig_is_scored_on_its_own_exits_of_300_s_or_less():
+    from snipetech.analysis.lab import MIG_MAX_HOLD_SECS, WATCH_SECS, mig_exit_set
+    from snipetech.oktech import autosell
+
+    grid = mig_exit_set()
+    labels = [e.label() for e in grid]
+    assert MIG_MAX_HOLD_SECS == 300 and len(set(labels)) == len(labels)
+    assert all(0 < e.max_hold_secs <= 300 for e in grid)  # held 900 s, round 1's coins lost (bundles sell by 300 s)
+    assert all(e.watch_secs == WATCH_SECS for e in grid)  # OKTech watches a position from 1.3 s after its buy
+    assert all(e.migration_sell_frac == 0 for e in grid)  # a MIG buy comes after its migration: nothing to sell into
+    # take profit, stop loss, trailing, timers alone, the dead exit; round 1's live proposal (+30 % / -20 % / 300 s)
+    assert any(e.take_profit and e.stop_loss for e in grid) and any(e.trailing_stop for e in grid)
+    assert any(not (e.take_profit or e.stop_loss or e.trailing_stop or e.stale_secs) for e in grid)
+    assert any(e.stale_secs for e in grid)
+    assert any(e.take_profit == 0.3 and e.stop_loss == 0.2 and e.max_hold_secs == 300 for e in grid)
+    for e in grid:  # each goes to OKTech exactly as scored
+        assert autosell(e.to_dict(), [])
+
+
+def test_a_mig_lab_scores_mig_on_its_grid_and_the_curve_rules_on_theirs():
+    from snipetech.analysis.lab import exit_set, mig_exit_set, rank
+
+    store = Store(":memory:")
+    _world_7nov(store)
+    _held_world(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10, WHALE2])
+    assert data["exits"] == exit_set() and data["mig_exits"] == mig_exit_set()
+    for r in data["rows"]:
+        kind = data["triggers"][r["trigger"]].kind
+        assert len(r["pnl"]) == len(mig_exit_set() if kind == "mig" else exit_set()), kind
+    # what the lab picks for a MIG trigger is one of MIG's exits
+    ranked = [r for r in rank(data, _cfg(), top=10, min_train=0) if r["trigger_spec"]["kind"] == "mig"]
+    assert all(r["exit"] in {e.label() for e in mig_exit_set()} for r in ranked)
+
+
+def test_mig_is_not_scored_on_exits_longer_than_300_s():
+    store = Store(":memory:")
+    _world_7nov(store)
+    longer = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=600, sell_on_dev_sell=False)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10], exits=[EXIT, longer])
+    assert not data["rows"] and "300 s" in data["unscored"]["mig"]
+    # the paper test refuses a frozen MIG strategy whose exit holds longer, and says so
+    s = {"id": paper.strategy_id(MIG10.__dict__, longer.to_dict(), "+3", 1, 0.2), "label": "long", "position": "+3",
+         "trigger": MIG10.__dict__, "exit": longer.to_dict(), "latency": 1, "buy_sol": 0.2, "per_tx_sol": 0.0045,
+         "from_ts": hm(11, 0), "lab": {"mean": 0.0, "ev_lower": 0.0}}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": [s]})
+    out = paper.run(store, _cfg(), now=hm(16, 50))
+    assert out["new_trades"] == 0 and "300 s" in out["unscored"][s["id"]]
+
+
+def test_the_lab_command_charges_the_measured_cost_unless_told(tmp_path, capsys, monkeypatch):
+    import json
+
+    from snipetech import cli
+    from snipetech.qualify import run as Q
+
+    db = tmp_path / "snipetech.db"
+    store = Store(db)
+    _world_7nov(store)
+    store.close()
+    monkeypatch.setattr(Q, "lab_tx_cost", lambda store, cfg, arm="control": 0.0047)  # as the measure stage measured
+    spec = json.dumps(MIG10.__dict__)
+    assert cli.main(["--db", str(db), "lab", "--trigger", spec, "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["per_tx_sol"] == 0.0047
+    (one,) = out["amm_tape"]["triggers"].values()
+    assert one["scored"] == 2 and one["skipped"] == {"before": 1, "skipped": 1, "hole": 1, "end": 1}
+    assert cli.main(["--db", str(db), "lab", "--trigger", spec, "--per-tx", "0.0045", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["per_tx_sol"] == 0.0045
+    assert cli.main(["--db", str(db), "lab", "--trigger", spec]) == 0  # the text report says the cost it charged
+    assert "buying 0.2 SOL at 0.0047 SOL a transaction" in capsys.readouterr().out

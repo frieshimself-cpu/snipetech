@@ -41,6 +41,7 @@ from .lab import (
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
+    MIG_CAP,
     SKIP_WORDS,
     Trigger,
     _fire,
@@ -54,6 +55,7 @@ from .lab import (
     migration_sell_gap,
     rank,
     span_slot_secs,
+    within_mig_cap,
 )
 from .stats import summarize
 
@@ -247,7 +249,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
     kols = label_groups(store)
-    unscored: dict[str, str] = {}
+    unscored = {  # a MIG strategy whose exit holds past MIG_MAX_HOLD_SECS: the lab never scored one, nor does this
+        s["id"]: MIG_CAP for s in strategies
+        if (s.get("trigger") or {}).get("kind") in AMM_KINDS and not within_mig_cap([ExitParams(**s["exit"])])
+    }  # fmt: skip
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
     mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)

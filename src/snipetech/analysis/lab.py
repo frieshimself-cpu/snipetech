@@ -499,6 +499,42 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
     return None
 
 
+# A MIG position is scored on exits that sell within 300 s of its buy. Research round 1 (7 Nov, 20 MIG-10 coins): +4.3 %
+# at 30 s and +6.6 % at 300 s before costs, but held 900 s it lost (-0.071 SOL a 0.2 SOL trade; 7 of 19 fell more than
+# 80 %), the launch bundles' wallets doing 82 % of their selling within 300 s; and every second of the horizon is a
+# second the PumpSwap tape must hold (`mig_gap`).
+MIG_MAX_HOLD_SECS = 300.0
+MIG_CAP = (f"not scored: MIG is scored only on exits that sell within {MIG_MAX_HOLD_SECS:g} s of the buy, and this run "
+           "has one that holds longer (or has no timer)")  # fmt: skip
+
+
+def mig_exit_set() -> list[ExitParams]:
+    """The exits a MIG buy is scored on when the lab is not handed its own: timers alone, a stop, take profit with a
+    stop, trailing, the dead exit and one scale-out, every one selling within MIG_MAX_HOLD_SECS and watched from
+    OKTech's WATCH_SECS after the buy, so each is what OKTech's auto-sell would do (`oktech.autosell` sends each as
+    scored). No migration sell: a MIG buy comes after its coin migrated, so it would never fire."""
+    w, hold = WATCH_SECS, MIG_MAX_HOLD_SECS
+    out = [ExitParams(take_profit=0, stop_loss=0, max_hold_secs=h, sell_on_dev_sell=False, watch_secs=w)
+           for h in (10, 30, 60, 120, 300)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=sl, max_hold_secs=hold, sell_on_dev_sell=False, watch_secs=w)
+            for sl in (0.1, 0.2, 0.3)]  # fmt: skip
+    # round 1's live proposal, take profit 30 % / stop 20 % / everything at 300 s, among its neighbours
+    out += [ExitParams(take_profit=tp, stop_loss=sl, max_hold_secs=hold, sell_on_dev_sell=False, watch_secs=w)
+            for tp in (0.1, 0.2, 0.3, 0.5) for sl in (0.1, 0.2)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=0.2, trailing_stop=trail, trailing_activation=act, max_hold_secs=hold,
+                       sell_on_dev_sell=False, watch_secs=w) for trail in (0.1, 0.2) for act in (0.0, 0.1)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=0.2, max_hold_secs=hold, sell_on_dev_sell=False, stale_secs=stale,
+                       watch_secs=w) for stale in (2.0, 5.0)]  # fmt: skip
+    out.append(ExitParams(take_profit=0.1, tp_sell_fraction=0.5, stop_loss=0.15, trailing_stop=0.1, max_hold_secs=hold,
+                          sell_on_dev_sell=False, watch_secs=w))  # fmt: skip
+    return out
+
+
+def within_mig_cap(exits: Sequence[ExitParams]) -> bool:
+    """Every exit sells within MIG_MAX_HOLD_SECS of the buy (an exit with no timer holds until the tape ends)."""
+    return all(0 < float(ex.max_hold_secs) <= MIG_MAX_HOLD_SECS for ex in exits)
+
+
 def exit_set() -> list[ExitParams]:
     out = []
     for stale in (1.0, 2.0, 5.0):
@@ -754,6 +790,9 @@ class _Run:
     amm_cov: dict[str, Any] = field(default_factory=dict)
     horizon: float = 0.0
     mig_sell: bool = False
+    # the exits a MIG trigger's moments are scored on (default: `mig_exit_set`), and their horizon
+    mig_exits: list[ExitParams] = field(default_factory=list)
+    mig_horizon: float = 0.0
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
@@ -812,7 +851,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             lat, pos = run.landings.get(trig.kind, (run.latency_slots, run.position))
             e = int(path.landing_index(t_slot + lat, pos, i))
             if trig.kind in AMM_KINDS:  # a PumpSwap buy: only where the tape holds its PumpSwap trades whole
-                why = mig_gap(run.amm_cov, path, e, mig, run.horizon)
+                why = mig_gap(run.amm_cov, path, e, mig, run.mig_horizon)
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
                     continue
@@ -834,7 +873,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 continue
-            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in run.exits]
+            exits = run.mig_exits if trig.kind in AMM_KINDS else run.exits
+            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in exits]
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
                    "landing": f"{pos}@{int(lat)}"}  # fmt: skip
@@ -985,6 +1025,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
+    mig_exits = list(exits) if exits else mig_exit_set()  # handed exits score every trigger, MIG included
     exits = list(exits) if exits else exit_set()
     kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip
@@ -995,6 +1036,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             (ti, t) for ti, t in enumerate(all_triggers) if (t.kind == "kol" and t.group in groups) or t.kind == "event"
         ]
     unscored: dict[str, str] = {}
+    if not within_mig_cap(mig_exits):
+        unscored = {t.kind: MIG_CAP for _, t in triggers if t.kind in AMM_KINDS}
+        triggers = [(ti, t) for ti, t in triggers if t.kind not in AMM_KINDS]
     amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
     mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
     amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell else {}
@@ -1009,7 +1053,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, min_trades=min_trades, amm_cov=amm_cov,
-               horizon=exits_horizon(exits), mig_sell=mig_sell)  # fmt: skip
+               horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
+               mig_horizon=exits_horizon(mig_exits))  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
@@ -1029,9 +1074,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     }
     out = {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
-           "workers": n, "unscored": unscored}  # fmt: skip
+           "workers": n, "unscored": unscored, "mig_exits": mig_exits}  # fmt: skip
     if amm_runs or mig_sell:
-        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, run.horizon, mig_sell)
+        horizon = run.mig_horizon if amm_runs else run.horizon
+        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)
     return out
 
 
@@ -1072,8 +1118,9 @@ def _landing_check(seen: list[tuple]) -> dict[str, Any]:
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
-    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%."""
-    rows, exits = data["rows"], data["exits"]
+    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. A MIG trigger
+    is ranked on the exits its moments were scored on (`mig_exits`)."""
+    rows, curve_exits = data["rows"], data["exits"]
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     hours = max(data["tape_hours"], 1e-6)
     out = []
@@ -1082,6 +1129,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         if len(rs) < min_train + 5:
             continue
         m = np.array([r["pnl"] for r in rs])  # moments x exits
+        exits = (data.get("mig_exits") or curve_exits) if trig.kind in AMM_KINDS else curve_exits
         cut = int(len(rs) * 0.6)
         train_means = m[:cut].mean(axis=0)
         k = int(np.argmax(train_means))
