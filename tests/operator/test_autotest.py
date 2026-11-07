@@ -50,16 +50,16 @@ def _guard_off(e, at=NOW - HOUR):
     set_risk(e.paths, {"day_stop_sol": "off", "floor_sol": "off"}, "telegram", at)
 
 
-def _round(e, at, tape=True, measure=True, readable=True):
+def _round(e, at, tape=True, measure=True, readable=True, wsol=0.1):
     """One operator round at `at`, with a fresh snapshot of the configured wallet (unless `readable` is False: the RPC
     did not answer) and its coins (e.svc.held), (unless `tape` is False) a current recorder and (unless `measure` is
-    False) a measure stage that ran a minute before the round."""
+    False) a measure stage that ran a minute before the round. `wsol`: the wrapped SOL the wallet holds."""
     if tape:
         LTT._tape(e.store, at - 5, k=10_000 + e.k)
         e.k += 1
     if measure:
         e.store.set_coverage("measure:last_ts", {"ts": int(at) - 60})
-    sol, wsol = (e.sol, 0.1) if readable else (None, None)
+    sol, wsol = (e.sol, wsol) if readable else (None, None)
     e.snap = Snapshot(ts=at, wallet=e.cfg.operator.wallet, native_sol=sol, wsol=wsol, held=list(e.svc.held), snipers=[])
     return asyncio.run(
         LT.round_step(e.svc, e.cfg, e.paths, e.jobs, at, snap=e.snap, notes=e.notes, notifier=e.notifier)
@@ -523,18 +523,85 @@ def test_the_next_strategy_after_a_drop_starts_at_once_with_its_own_floor(env):
     assert len(env.sent) == 2
 
 
-def test_a_strategy_whose_block_ends_on_its_floor_is_dropped(env):
-    """The cycler stops re-arming once the wallet is under the strategy's floor: the strategy is at its floor and is
-    dropped there and then, with its numbers."""
+EMERGENCY = ("EMERGENCY: equity below floor 10.9 (balance 10.4); stopped re-arming; the wallet holds nothing, so the "
+             "snipers it armed are stopped")  # fmt: skip
+
+
+def test_a_block_that_ends_on_its_floor_is_judged_on_the_strategys_own_trades(env):
+    """The cycler stops re-arming once the wallet is under the block's floor, and the wallet is the owner's too: taken
+    under it by a 1 SOL withdrawal mid-block, the strategy is 0.4 SOL down by the fills, not at its floor, and goes on,
+    its next floor 1 SOL lower with the wallet (review of 7 Nov: the cycler's floor end dropped it for good). At its floor
+    by its own trades, 1 SOL down by the fills, it is dropped."""
     _guard_off(env)
     _start(env)
-    _play(env, [-0.1] * 4, reason="EMERGENCY: equity below floor 10.9 (balance 10.8); stopped re-arming; the wallet "
-                                  "holds nothing, so the snipers it armed are stopped")  # fmt: skip
+    _play(env, [-0.1] * 4, reason=EMERGENCY)
+    env.sol -= 1.0  # the owner took 1 SOL out while the block ran
+    _round(env, NOW + 60 + 2 * HOUR)
+    t, seq = LT.load(env.paths), _seq(env)
+    assert seq["state"] == "running" and t["sequence"]["block"] == 2 and t["state"] == "running"
+    assert t["floor"] == 9.9 and seq["blocks"][0]["outcome"]["kind"] == "floor"  # 10.5 SOL, 0.6 left of its 1 SOL
+    assert env.sent == []
+    _play(env, [-0.2] * 3, reason=EMERGENCY)
+    _round(env, NOW + 60 + 4 * HOUR)
+    seq = _seq(env)
+    assert seq["state"] == "dropped" and "1.00 SOL down live" in seq["why"] and "floor" in seq["why"]
+    (line,) = _said(env, "Automatic live test dropped")
+    assert "7 live trades" in line and len(env.svc.created) == 2
+
+
+def test_a_strategy_one_sol_down_live_is_dropped_before_its_tenth_trade_whatever_was_deposited(env):
+    """The 1 SOL a strategy may lose is read from the fills after every block, whatever its number of trades (review of
+    7 Nov: it was read only once the strategy had 10). A block that ends on its time limit with 6 trades at -0.2 SOL is
+    1.2 SOL down live; the owner topped the wallet up by 3 SOL meanwhile (they keep it at 5-8 SOL), so the wallet is far
+    above any floor. Dropped there, with no block 2."""
+    _guard_off(env)
+    _start(env)
+    _play(env, [-0.2] * 6, reason=TIME)
+    env.sol += 3.0
     _round(env, NOW + 60 + 2 * HOUR)
     seq = _seq(env)
-    assert seq["state"] == "dropped" and "floor" in seq["why"] and len(env.svc.created) == 1
+    assert seq["state"] == "dropped" and "1.20 SOL down live" in seq["why"] and "floor" in seq["why"]
+    assert len(env.svc.created) == 1
     (line,) = _said(env, "Automatic live test dropped")
-    assert "floor" in line and "-0.1000" in line and "4 live trades" in line
+    assert "6 live trades" in line and "-0.2000" in line
+
+
+def test_buys_the_fills_call_copies_count_toward_the_strategys_loss(env):
+    """Every buy of the test lands right behind a launch-sniping leader the book copies, so the fills name a copied
+    leader on each (block_live): none counts toward the 10 trades the half-of-paper judgement needs (they may be the
+    book's), and the loss limit reads the lower of the two readings' sums, so there they count. A time-limited block of
+    5 such buys at -0.2 SOL is 1 SOL down live: dropped, though the owner keeps the wallet topped up."""
+    _guard_off(env)
+    _start(env)
+    _play(env, [], copies=[-0.2] * 5, reason=TIME)
+    env.sol += 1.0
+    _round(env, NOW + 60 + 2 * HOUR)
+    seq = _seq(env)
+    assert seq["state"] == "dropped" and "1.00 SOL down live" in seq["why"] and len(env.svc.created) == 1
+
+
+def test_failed_sends_alone_count_toward_the_strategys_loss(env):
+    """OKTech sends buys that fail on chain anyway (5 Nov: about 0.001 SOL each, and each spends the shot). Blocks that
+    land no buy at all still pay them, and they count toward the strategy's 1 SOL: two blocks of 500 failed sends and no
+    fill make 1 SOL, and the strategy is dropped (review of 7 Nov: with no buy they counted as nothing). The owner keeps
+    the wallet topped up, so its balance says nothing."""
+    _guard_off(env)
+    _start(env)
+    for block in (1, 2):
+        t = LT.load(env.paths)
+        assert t["state"] == "running" and t["sequence"]["block"] == block
+        LTT._armed(env)
+        start = int(t["started_at"])
+        for k in range(500):
+            env.store.put_fill({"sig": f"failed-{block}-{k}", "ts": start + 60 + k, "wallet": W, "side": "failed",
+                                "sol": 0.0, "tokens": 0.0, "mint": f"Launch{block}x{k}", "priority_lamports": 995_000,
+                                "tip_lamports": 0})  # fmt: skip
+        rep = {"start_sol": env.sol, "end_sol": env.sol - 0.5, "reason": TIME, "fills": 0, "restarts": 120, "held": [],
+               "left_running": []}  # fmt: skip
+        _cycler_ended(env, t, rep, start + 700)
+        _round(env, NOW + 60 + 2 * HOUR * block)
+    seq = _seq(env)
+    assert seq["state"] == "dropped" and "1.00 SOL down live" in seq["why"] and len(env.svc.created) == 2
 
 
 def test_a_strategy_one_sol_down_live_is_dropped_whatever_was_deposited(env):
@@ -548,27 +615,72 @@ def test_a_strategy_one_sol_down_live_is_dropped_whatever_was_deposited(env):
     assert seq["state"] == "dropped" and "1.05 SOL down live" in seq["why"] and "floor" in seq["why"]
 
 
-def test_no_room_above_the_floor_for_another_block_drops_the_strategy(env):
-    """A strategy may lose at most 1 SOL: each block's floor is the first one's. With the wallet down to where another
-    buy has no room above that floor, the strategy is at its floor and is dropped; the floor is the wallet's, so a
-    withdrawal counts too (6 Nov 15:16 the owner took 2.54 SOL out mid-test)."""
+def test_a_withdrawal_never_drops_a_strategy_and_its_floor_moves_with_the_wallet(env):
+    """A strategy may lose 1 SOL by its own trades: each block's floor is the wallet it starts from less what is left of
+    that 1 SOL by the fills. The owner takes 1.2 SOL out between blocks (6 Nov 15:16 they took 2.54 SOL out mid-test, 7
+    Nov 11:30 and 11:45 more): that says nothing about the strategy, which goes on with its floor 1.2 SOL lower (review
+    of 7 Nov: it was dropped for good)."""
     _start(env)
-    _play(env, [0.03] * 10)  # the wallet up 0.3 SOL
+    _play(env, [0.03] * 10)  # +0.3 SOL: the wallet 12.2
     _round(env, NOW + 60 + 2 * HOUR)
-    assert LT.load(env.paths)["floor"] == 10.9
-    _play(env, [0.01] * 10)
-    env.sol -= 1.2  # 11.1 SOL left: under the 10.90 floor plus a buy and its fees
+    assert LT.load(env.paths)["floor"] == 10.9  # 12.2 less the 1.3 SOL left: as the first block's
+    _play(env, [0.01] * 10)  # +0.1: 12.3
+    env.sol -= 1.2  # 11.1 SOL left: under the old 10.90 floor plus a buy and its fees
     _round(env, NOW + 60 + 4 * HOUR)
-    assert len(env.svc.created) == 2 and _seq(env)["state"] == "dropped"
-    (line,) = _said(env, "Automatic live test dropped")
-    assert "10.90" in line and "floor" in line and "11.10" in line
-    assert AT.read_autotest(env.paths)["on"] is True
+    t, seq = LT.load(env.paths), _seq(env)
+    assert seq["state"] == "running" and t["sequence"]["block"] == 3 and t["state"] == "running"
+    assert t["floor"] == 9.7 and seq["floor"] == 9.7  # 11.1 SOL less the 1.4 SOL left of its 1 SOL
+    assert not _said(env, "Automatic live test dropped") and AT.read_autotest(env.paths)["on"] is True
+
+
+def test_a_block_whose_cycler_would_refuse_its_floor_holds_and_never_loops(env):
+    """The cycler reads the wallet's SOL without its wrapped SOL and refuses to start at or below its floor. With 1.5 SOL
+    of the wallet wrapped, the next block's floor (10.90, from the wallet's 12.1 SOL in all) is above the 10.6 SOL the
+    cycler would read: no block is asked for (each would make a sniper that never runs), the wallet holds it like one
+    with no room, said once a day, and the block starts once the SOL is unwrapped."""
+    _start(env)
+    _play(env, [0.02] * 10)  # 12.0 SOL and 0.1 wrapped
+    env.sol -= 1.4  # OKTech wrapped 1.4 SOL more
+    _round(env, NOW + 60 + 2 * HOUR, wsol=1.5)
+    _round(env, NOW + 60 + 2 * HOUR + 900, wsol=1.5)
+    seq = _seq(env)
+    assert len(env.svc.created) == 1 and seq["state"] == "running" and seq["hold"]["kind"] == "room"
+    (held,) = _said(env, "Automatic live test holds")
+    assert "wrapped" in held and "10.90" in held
+    env.sol += 1.4
+    _round(env, NOW + 60 + 2 * HOUR + 1800)
+    t = LT.load(env.paths)
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
+
+
+def test_the_books_loss_never_drops_a_strategy_that_never_traded(env):
+    """The first block's request is written; the book buys a coin before the round starts it, so it does not start (a
+    quiet wait), and that coin then sells 0.9 SOL down. The wallet is 11.0 SOL, under the first request's 10.90 floor
+    plus a buy and its fees: the strategy, which never traded, is not at its floor (review of 7 Nov: it was dropped for
+    good); its first block starts with its floor 1 SOL below the wallet it starts from."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.snap = Snapshot(ts=NOW + 60, wallet=W, native_sol=11.8, wsol=0.1, held=[], snipers=[])
+    LTT._tape(env.store, NOW + 55, k=99_999)
+    env.store.set_coverage("measure:last_ts", {"ts": NOW})
+    asyncio.run(AT.step(env.svc, env.cfg, env.paths, NOW + 60, snap=env.snap, notes=env.notes, notifier=env.notifier))
+    assert LT.load(env.paths)["state"] == "requested"
+    book = "BookCoin" + "B" * 36
+    env.svc.held = [{"mint": book, "amount": 5.0, "raw": 5_000_000, "decimals": 6, "value_sol": 0.9, "priced": True}]
+    env.sol = 10.0  # its SOL went into the book's coin
+    _round(env, NOW + 120)
+    assert not LT.load(env.paths)["started"] and _seq(env)["state"] == "running"
+    env.svc.held, env.sol = [], 10.9  # the book's coin sold 0.9 SOL down
+    _round(env, NOW + 1020)
+    t, seq = LT.load(env.paths), _seq(env)
+    assert seq["state"] == "running" and t["state"] == "running" and t["sequence"]["block"] == 1
+    assert t["floor"] == 10.0 and not _said(env, "Automatic live test dropped")
 
 
 def test_a_coin_held_between_blocks_counts_toward_the_floor(env):
     """The floor is the wallet's SOL and coins, as the cycler reads it: with the book's coin bought for 1 SOL between
-    blocks, the SOL alone is under the floor plus a buy, the wallet is not; the strategy is not dropped, the next block
-    waits for the coin to be sold, and then starts."""
+    blocks, the SOL alone is 1 SOL lower and the wallet is not; the strategy is not dropped, the next block waits
+    quietly for the coin to be sold, and then starts at the floor it had."""
     _start(env)
     _play(env, [0.02] * 10)  # 12.1 SOL; the floor 10.90, a block needs 11.15
     LTT._armed(env, status="finished")  # the block's hunt sniper is spent
@@ -581,7 +693,8 @@ def test_a_coin_held_between_blocks_counts_toward_the_floor(env):
     assert not seq.get("hold") and env.sent == [] and len(env.svc.created) == 1  # a quiet wait: no fault, no drop
     env.sol, env.svc.held = env.sol + 1.0, []  # the book's sniper sold it
     _round(env, NOW + 60 + 2 * HOUR + 900)
-    assert LT.load(env.paths)["sequence"]["block"] == 2 and LT.load(env.paths)["state"] == "running"
+    t = LT.load(env.paths)
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
 
 
 def test_the_live_result_is_read_from_the_measure_stages_fills_never_the_balance(env):
@@ -596,27 +709,50 @@ def test_the_live_result_is_read_from_the_measure_stages_fills_never_the_balance
 
 def test_the_books_copies_from_the_same_wallet_are_not_the_tests_trades(env):
     """The book trades from the same wallet and its buys count toward the cycler's cap; its copies (a copied leader in
-    the fills) are left out of the test's live result."""
+    the fills) are left out of the test's live result, and out of the 10 trades of its own it is judged on: block 1's
+    seven and block 2's three."""
     _start(env)
     _play(env, [0.002] * 7, copies=[0.3] * 3)
     _round(env, NOW + 60 + 2 * HOUR)
+    assert _seq(env)["state"] == "running" and LT.load(env.paths)["sequence"]["block"] == 2
+    _play(env, [0.002] * 3, reason=TIME)
+    _round(env, NOW + 60 + 4 * HOUR)
     assert _seq(env)["state"] == "dropped"
     (line,) = _said(env, "Automatic live test dropped")
-    assert "7 live trades" in line and "+0.0020" in line
+    assert "10 live trades" in line and "+0.0020" in line
 
 
 def test_a_hunt_buy_the_fills_name_a_copy_still_counts_against_the_test(env):
     """The measure stage names a copied leader on any buy of ours in a coin a wallet the book copies bought first, with
     no time bound and no word of which sniper bought: a book sniper never deleted copies a launch sniper L, L buys the
-    launch a slot before the test's hunt buy, and that buy rugs. Left out as the book's, the block reads +0.012 a trade
-    (above half of paper); it really made -0.0092. The block is judged on the worse of the two readings: the buys the
-    fills do not call copies, and every buy of the wallet in the block."""
+    launch a slot before the test's hunt buy, and that buy rugs. Left out as the book's, the strategy reads +0.012 a
+    trade (above half of paper); it really made -0.0073. Once it has 10 trades the fills do not call copies, it is
+    judged on the worse of the two readings: those, and every buy of the wallet in its blocks."""
     _start(env)
     _play(env, [0.012] * 9, copies=[-0.2])
-    _round(env, NOW + 60 + 2 * HOUR)
-    assert len(env.svc.created) == 1 and _seq(env)["state"] == "dropped" and "below" in _seq(env)["why"]
+    _round(env, NOW + 60 + 2 * HOUR)  # nine of its own: not judged yet
+    assert _seq(env)["state"] == "running" and LT.load(env.paths)["sequence"]["block"] == 2
+    _play(env, [0.012], reason=TIME)
+    _round(env, NOW + 60 + 4 * HOUR)
+    assert len(env.svc.created) == 2 and _seq(env)["state"] == "dropped" and "below" in _seq(env)["why"]
     (line,) = _said(env, "Automatic live test dropped")
-    assert "-0.0092" in line and "10 live trades" in line and "copies" in line
+    assert "-0.0073" in line and "11 live trades" in line and "copies" in line
+
+
+def test_a_block_full_of_the_books_buys_is_not_judged_on_two_of_the_strategys_own(env):
+    """The book trades from the same wallet and the cycler's cap counts its buys (review of 7 Nov): block 1 reaches its
+    10 fills with two buys of the test's own and eight copies of the book's. The strategy is judged once it has 10 live
+    round trips of its own, whatever ended the block, never on two: its next block starts, whether the book's copies won
+    (the test's own two then read +0.001, under half of paper) or lost (every buy of the wallet then reads -0.002)."""
+    _start(env)
+    _play(env, [-0.004, 0.006], copies=[0.01] * 8)
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert _seq(env)["state"] == "running" and LT.load(env.paths)["sequence"]["block"] == 2
+    _play(env, [0.03, 0.03], copies=[-0.01] * 8)
+    _round(env, NOW + 60 + 4 * HOUR)
+    seq = _seq(env)
+    assert seq["state"] == "running" and LT.load(env.paths)["sequence"]["block"] == 3
+    assert [b["decision"] for b in seq["blocks"][:2]] == ["next", "next"] and env.sent == []
 
 
 def test_a_book_coin_held_when_the_test_closes_does_not_end_a_complete_block(env):
@@ -735,6 +871,64 @@ def test_trades_the_measure_stage_never_reads_count_as_losses(env):
     assert "10 not measured" in line
 
 
+def test_a_buy_counted_at_its_whole_cost_counts_its_sale_once_the_measure_stage_reads_it(env):
+    """A buy whose coin left the wallet with no sale read counts its whole cost 45 minutes after its block (the wallet
+    held nothing of value then). When the measure stage writes its sale later, every later judgement counts the sale
+    instead (review of 7 Nov: a block counted was never read again). Block 1: nine trades at +0.04 and a tenth sold at
+    +0.04 whose sale is read only during block 2; block 2: ten at 0. On the sale, +0.02 a trade: it goes on."""
+    _start(env)
+    t, _trades, last = _trade(env, [0.04] * 9)
+    sig, mint = "buy-read-late", "Late" + "L" * 40
+    _ours(env, sig, last + 10, mint, True, 0.202)
+    _ours(env, f"sell-{sig}", last + 30, mint, False, 0.242)
+    env.store.put_fill({"sig": sig, "ts": last + 10, "wallet": W, "mint": mint, "side": "buy", "sol": 0.202,
+                        "tokens": 1_000_000.0})  # fmt: skip
+    env.sol += 0.04
+    _cycler_ended(env, t, {"start_sol": 11.8, "end_sol": 12.2, "reason": CAP.format(n=10), "fills": 10, "restarts": 20,
+                           "held": [], "left_running": []}, last + 60)  # fmt: skip
+    for k in range(4):  # 45 minutes and its sale is not read: its whole cost counts, +0.0155 a trade, above half
+        _round(env, NOW + 60 + 2 * HOUR + 900 * k)
+    seq = _seq(env)
+    assert seq["blocks"][0]["live"]["unmeasured"] == 1 and seq["blocks"][0]["decision"] == "continue"
+    _play(env, [0.0] * 10)
+    env.store.put_fill({"sig": f"sell-{sig}", "ts": last + 30, "wallet": W, "mint": mint, "side": "sell", "sol": 0.242,
+                        "tokens": 1_000_000.0, "pnl_sol": 0.04, "buy_sig": sig})  # fmt: skip
+    _round(env, NOW + 60 + 4 * HOUR + 2700)
+    seq = _seq(env)
+    assert seq["state"] == "running" and seq["blocks"][1]["decision"] == "continue"  # (0.4 + 0) / 20 = +0.02
+    assert seq["blocks"][0]["live"]["sum"] == pytest.approx(0.4) and seq["blocks"][0]["live"]["unmeasured"] == 0
+
+
+def test_a_strategys_live_record_goes_with_it_when_its_run_ends_and_it_starts_again(env):
+    """Block 1 ends on its time limit with 6 trades at -0.1 (-0.6 SOL live: not judged, under 10). For one round the
+    strategy is not in the paper test (a re-freeze, its lower bound flickering): its run ends, not dropped. When it
+    passes again it starts with the same live record (review of 7 Nov: it started afresh, its loss forgotten): 0.4 SOL
+    left of its 1 SOL, its floor that far below the wallet, and judged on every live trade it made."""
+    _start(env)
+    _play(env, [-0.1] * 6, reason=TIME)
+    frozen = env.store.coverage("paper_strategies")
+    env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert _seq(env)["state"] == "ended" and not AT.dropped(env.paths)
+    env.store.set_coverage("paper_strategies", frozen)
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    seq, t = _seq(env), LT.load(env.paths)
+    assert seq["state"] == "running" and seq["strategy"] == BEST and t["state"] == "running"
+    assert AT._tally(seq)["n"] == 6 and AT._tally(seq)["sum"] == pytest.approx(-0.6)
+    assert t["floor"] == 10.9 and seq["carried"]["blocks"] == 1  # 11.3 SOL, 0.4 left of its 1 SOL
+    assert "6 live round trips" in AT.status_line(env.paths, NOW + 60 + 2 * HOUR + 960)
+    _play(env, [0.0] * 3, reason=TIME)
+    _round(env, NOW + 60 + 4 * HOUR + 900)
+    seq = _seq(env)
+    assert seq["state"] == "running" and AT._own_trades(seq) == 9
+    _play(env, [-0.02], reason=TIME)
+    _round(env, NOW + 60 + 6 * HOUR + 900)
+    seq = _seq(env)
+    assert seq["state"] == "dropped" and "below" in seq["why"]  # 10 trades in all at -0.062: judged on every one
+    (line,) = _said(env, "Automatic live test dropped")
+    assert "10 live trades" in line and "-0.0620" in line
+
+
 def test_a_refusal_that_passes_by_itself_makes_the_next_block_wait(env):
     _start(env)
     _play(env, [0.02] * 10)
@@ -808,10 +1002,28 @@ def test_oktech_failing_to_create_a_block_holds_and_the_same_strategy_goes_on(en
     assert BEST in cleared and len(_said(env, "Automatic live test holds")) == 1 and len(env.sent) == 2
 
 
+def test_a_first_block_that_did_not_start_takes_its_floor_from_the_wallet_it_starts_from(env):
+    """OKTech refuses the first block's sniper (a fault: it holds), and the owner tops the wallet up by 3 SOL before it
+    starts. The block that starts has its floor 1 SOL below the wallet it starts from, not below the wallet of the first
+    request (review of 7 Nov: the deposit was 3 SOL more the strategy could lose before its cycler stopped it)."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.svc.answer = RuntimeError("OKTech answered 502")
+    _round(env, NOW + 60)
+    assert not LT.load(env.paths)["started"] and _seq(env)["floor"] == 10.9
+    env.sol += 3.0
+    env.svc.answer = None
+    _round(env, NOW + 960)
+    t = LT.load(env.paths)
+    assert t["state"] == "running" and t["sequence"]["block"] == 1 and t["floor"] == 13.9
+    assert _seq(env)["floor"] == 13.9 and _seq(env)["state"] == "running"
+
+
 def test_the_cycler_dying_never_drops_the_strategy(env):
     """A reboot (7 Nov: the resize) or a kill takes the cycler down mid-block with no report: an execution fault, never a
-    trading result. The block's trades still count, the owner hears it once, the next block is tried at once, and once
-    one runs to its end the owner hears that once."""
+    trading result. The block's trades still count, the owner hears it once, no block starts in the round that finds it
+    (review of 7 Nov: the next one started at once), one is tried at the next round, and once one runs to its end the
+    owner hears that once."""
     _start(env)
     t, _trades, last = _trade(env, [0.02] * 3)
     _cycler_ended(env, t, None, last + 30, code=137, log="Killed\n")
@@ -819,41 +1031,191 @@ def test_the_cycler_dying_never_drops_the_strategy(env):
     seq = _seq(env)
     assert seq["state"] == "running" and seq["blocks"][0]["outcome"]["kind"] == "died"
     (held,) = env.sent
-    assert "cycler" in held and "died" in held and "not dropped" in held
+    assert "cycler" in held and "died" in held and "not dropped" in held and "next round" in held
+    assert len(env.svc.created) == 1 and LT.load(env.paths)["state"] == "done"
+    _round(env, NOW + 60 + 2 * HOUR + 900)  # the one try
     t2 = LT.load(env.paths)
     assert t2["sequence"]["block"] == 2 and t2["state"] == "running" and t2["floor"] == 10.9
     _play(env, [0.02] * 7, reason=TIME)  # it runs to its end: 10 trades in all, judged and going on
-    _round(env, NOW + 60 + 4 * HOUR)
+    _round(env, NOW + 60 + 4 * HOUR + 900)
     (cleared,) = _said(env, "Automatic live test goes on")
     assert "cycler" in cleared and LT.load(env.paths)["sequence"]["block"] == 3 and len(env.sent) == 2
 
 
-def test_a_coin_oktech_left_unsold_holds_until_it_is_sold_or_gone(env):
-    """The block's own coin left in the wallet with its sniper stopped, nothing selling it: the owner hears it once with
-    the line that sells it, no block starts while it is held, and the same strategy goes on once it is sold or gone."""
+def test_a_cycler_that_dies_again_holds_new_blocks_for_hours_and_a_deploy_tries_at_once(env, monkeypatch):
+    """A crash loop after a bad deploy: every cycler dies minutes after it armed its sniper, which stays armed with
+    nobody watching (no floor, no /stop, no guard) until the next round closes the block. One block is tried at the
+    next round; after a second death in a row none starts for 4 hours, then 8 after a third, and so on (a day at most),
+    unless a deploy changes the code (its fix may be in), which tries at once. The owner hears it once (review of 7 Nov:
+    every round made a new sniper and a new cycler)."""
+    _start(env)
+
+    def dies(at):  # the block running now: its cycler dies ten minutes before the round at `at`
+        t = LT.load(env.paths)
+        assert t["state"] == "running", t
+        LTT._armed(env)
+        _cycler_ended(env, t, None, at - 600, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+        _round(env, at)
+
+    at = NOW + 60 + 900
+    dies(at)
+    at += 900
+    _round(env, at)  # the one try: block 2
+    assert len(env.started) == 2
+    at += 900
+    dies(at)  # block 2's cycler dies too
+    second = at
+    for _k in range(14):  # three and a half hours: no block starts
+        at += 900
+        _round(env, at)
+    assert len(env.started) == 2 and len(env.svc.created) == 2 and _seq(env)["state"] == "running"
+    (held,) = _said(env, "Automatic live test holds")
+    assert "cycler" in held and "4 hours" in held and "deploy" in held and len(env.sent) == 1
+    assert "2 times in a row" in _seq(env)["hold"]["why"] and "tried at" in _seq(env)["waiting"]["why"]
+    _round(env, second + 4 * HOUR + 900)
+    assert len(env.started) == 3  # 4 hours on: tried again
+    third = second + 5 * HOUR + 900
+    dies(third)  # and it dies again: 8 hours now
+    _round(env, third + 900)
+    _round(env, third + 1800)
+    assert len(env.started) == 3
+    monkeypatch.setattr(AT, "CODE_ID", "the code after a deploy")
+    _round(env, third + 2700)
+    assert len(env.started) == 4 and LT.load(env.paths)["state"] == "running" and len(env.sent) == 1
+
+
+def test_the_owners_resume_tries_a_block_again_after_its_cycler_died_twice(env):
+    """After a second death in a row no block starts for hours; the owner's /stop then /resume is their word to try
+    again (review of 7 Nov), and the /resume reply says so."""
+    _start(env)
+    at = NOW + 60
+    for _death in range(2):
+        t = LT.load(env.paths)
+        LTT._armed(env)
+        _cycler_ended(env, t, None, at + 300, code=1, log="Traceback (most recent call last):\nNameError: x\n")
+        at += 900
+        _round(env, at)  # finds the death
+        at += 900
+        _round(env, at)  # judged: one more block after the first death, none after the second
+    assert len(env.started) == 2 and "tried at" in _seq(env)["waiting"]["why"]
+    LTT._send(env, name="stop", at=at + 60)
+    reply = LTT._send(env, name="resume", at=at + 120)
+    assert "goes on with" in reply and "died 2 times in a row" in reply and "tries one block" in reply
+    _round(env, at + 900)
+    assert len(env.started) == 3 and LT.load(env.paths)["state"] == "running"
+
+
+def test_a_buy_the_sniper_made_after_its_cycler_died_counts_against_the_strategy(env):
+    """A cycler that dies leaves its sniper armed until the round closes the block; a buy it makes then is the
+    strategy's own and counts (review of 7 Nov: the block's window ended when the cycler died)."""
+    _guard_off(env)
     _start(env)
     t, _trades, last = _trade(env, [0.02] * 3)
-    stuck = "Stuck" + "S" * 39
-    _ours(env, "buy-stuck", last + 10, stuck, True, 0.202)  # the block's fourth buy: never sold
-    coin = {"mint": stuck, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.05, "priced": True}
-    env.svc.held = [coin]
-    LTT._armed(env, status="finished")  # its sniper is spent: it sells nothing more
-    _cycler_ended(env, t, {"start_sol": 11.8, "end_sol": 11.7, "reason": TIME + " (a coin is held)", "fills": 4,
-                           "restarts": 3, "held": [coin], "left_running": []}, last + 60)  # fmt: skip
+    died = last + 30
+    _cycler_ended(env, t, None, died, code=137, log="Killed\n")
+    sig, mint = "buy-after-death", "AfterDeath" + "A" * 34
+    _ours(env, sig, died + 60, mint, True, 0.202)
+    _ours(env, f"sell-{sig}", died + 80, mint, False, 0.012)
+    _measure(env, [(sig, died + 60, mint, -0.19, None)])
+    env.sol -= 0.19
+    _round(env, NOW + 60 + 2 * HOUR)
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    live = _seq(env)["blocks"][0]["live"]
+    assert live["n"] == 4 and live["sum"] == pytest.approx(-0.13)
+
+
+STUCK = "Stuck" + "S" * 39
+
+
+def _stuck(e, pnls):
+    """The block running now buys and sells a coin for each of `pnls`, then OKTech leaves its next coin unsold: its
+    sniper is spent and nothing sells it. Its cycler ends on its time limit a minute later with the coin held."""
+    t, _trades, last = _trade(e, pnls)
+    _ours(e, "buy-stuck", last + 10, STUCK, True, 0.202)
+    e.store.put_fill({"sig": "buy-stuck", "ts": last + 10, "wallet": W, "mint": STUCK, "side": "buy", "sol": 0.202,
+                      "tokens": 1_000_000.0})  # fmt: skip
+    coin = {"mint": STUCK, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.05, "priced": True}
+    e.svc.held = [coin]
+    LTT._armed(e, status="finished")  # its sniper is spent: it sells nothing more
+    _cycler_ended(e, t, {"start_sol": 11.8, "end_sol": 11.7, "reason": TIME + " (a coin is held)", "fills": len(pnls) + 1,
+                         "restarts": 3, "held": [coin], "left_running": []}, last + 60)  # fmt: skip
+
+
+def _sold(e, buy_sig, mint, ts, pnl):
+    """The owner's /sell sells the coin at `ts` for `pnl`: the sale on the tape, and in the fills once the measure stage
+    has read it."""
+    e.svc.held = []
+    _ours(e, f"sell-{buy_sig}", ts, mint, False, 0.202 + pnl)
+    e.store.put_fill({"sig": f"sell-{buy_sig}", "ts": ts, "wallet": W, "mint": mint, "side": "sell", "sol": 0.202 + pnl,
+                      "tokens": 1_000_000.0, "pnl_sol": pnl, "buy_sig": buy_sig})  # fmt: skip
+
+
+def test_a_coin_oktech_left_unsold_holds_until_it_is_sold_or_gone(env):
+    """The block's own coin left in the wallet with its sniper stopped, nothing selling it: the owner hears it once with
+    the line that sells it, no block starts while it is held, and the same strategy goes on once it is sold (its sale is
+    what counts) or gone."""
+    _start(env)
+    _stuck(env, [0.02] * 3)
     _round(env, NOW + 60 + 2 * HOUR)
     seq = _seq(env)
     assert seq["state"] == "running" and seq["blocks"][0]["outcome"]["kind"] == "coin"
     (held,) = env.sent
-    assert stuck in held and f"/sell {stuck}" in held and "not dropped" in held
+    assert STUCK in held and f"/sell {STUCK}" in held and "not dropped" in held
     for k in range(1, 3):
         _round(env, NOW + 60 + 2 * HOUR + 900 * k)
     assert len(env.svc.created) == 1 and len(env.sent) == 1  # held: no block, nothing said again
-    env.svc.held = []  # the owner's /sell sold it
+    _sold(env, "buy-stuck", STUCK, NOW + 60 + 2 * HOUR + 900 * 3 - 300, -0.15)  # the owner's /sell sold it
     _round(env, NOW + 60 + 2 * HOUR + 900 * 3)
     assert LT.load(env.paths)["sequence"]["block"] == 2 and LT.load(env.paths)["state"] == "running"
+    assert _seq(env)["blocks"][0]["live"]["sum"] == pytest.approx(0.06 - 0.15)  # the sale is what counts
     _round(env, NOW + 60 + 2 * HOUR + 900 * 4)
     (cleared,) = _said(env, "Automatic live test goes on")
-    assert stuck[:6] in cleared and len(env.sent) == 2
+    assert STUCK[:6] in cleared and len(env.sent) == 2
+
+
+def test_a_coin_oktech_left_unsold_is_never_counted_at_its_whole_cost_while_it_is_held(env):
+    """A coin OKTech left unsold is an execution fault: it holds, never drops (review of 7 Nov: 45 minutes after the
+    block it was counted at its whole cost). The strategy has 10 trades at +0.012, above half of paper's +0.02, and goes
+    on; block 2 leaves its third coin unsold and the owner does not /sell it for an hour and a half. Counted at its whole
+    cost, the strategy would read -0.0047 a trade and be dropped for good; it holds instead, and once /sell sells the
+    coin the sale is what counts: +0.0118 a trade, and block 3 starts."""
+    _start(env)
+    _play(env, [0.012] * 10)
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert LT.load(env.paths)["sequence"]["block"] == 2
+    _stuck(env, [0.012] * 2)
+    at = NOW + 60 + 4 * HOUR
+    for k in range(7):
+        _round(env, at + 900 * k)
+    seq = _seq(env)
+    assert seq["state"] == "running" and seq["hold"]["kind"] == "coin" and len(env.svc.created) == 2
+    assert "decision" not in seq["blocks"][1] and len(_said(env, "Automatic live test holds")) == 1
+    _sold(env, "buy-stuck", STUCK, at + 900 * 7 - 300, 0.01)
+    _round(env, at + 900 * 7)
+    t, seq = LT.load(env.paths), _seq(env)
+    assert t["sequence"]["block"] == 3 and t["state"] == "running" and seq["blocks"][1]["decision"] == "continue"
+    assert seq["blocks"][1]["live"]["sum"] == pytest.approx(0.024 + 0.01) and not _said(
+        env, "Automatic live test dropped"
+    )
+
+
+def test_a_coin_gone_with_no_sale_counts_its_whole_cost_once_it_has_been_gone_45_minutes(env):
+    """When the block's own coin leaves the wallet with no sale read (it went to dust, or was moved out), its buy counts
+    its whole cost once 45 minutes have passed since a round last saw it held (a sale the owner's /sell made has time to
+    reach the fills), and the strategy goes on with its next block."""
+    _start(env)
+    _stuck(env, [0.012] * 3)
+    at = NOW + 60 + 2 * HOUR
+    for k in range(3):  # held: rounds at +0, +15 and +30 minutes
+        _round(env, at + 900 * k)
+    env.svc.held = []  # gone, and no sale
+    for k in range(3, 5):  # +45 and +60 minutes: 15 and 30 minutes since a round last saw it held
+        _round(env, at + 900 * k)
+    assert len(env.svc.created) == 1 and "decision" not in _seq(env)["blocks"][0]
+    _round(env, at + 900 * 5)  # 45 minutes since it was last seen
+    t, seq = LT.load(env.paths), _seq(env)
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and seq["blocks"][0]["decision"] == "next"
+    assert seq["blocks"][0]["live"]["unmeasured"] == 1 and seq["blocks"][0]["live"]["sum"] < 0.036 - 0.2
 
 
 def test_oktech_not_answering_while_a_block_closes_holds_and_clears(env):
@@ -921,7 +1283,8 @@ def test_the_measure_stage_stalled_past_its_wait_holds_and_judging_goes_on_when_
 
 def test_a_wallet_without_room_for_a_buy_holds_and_is_never_a_drop(env):
     """7 Nov 10:59 the wallet was emptied. With no room for a buy (SOL under the buy, its fees and rent) the next block
-    holds, said once a day, and the strategy is not dropped; once SOL is back, the same strategy goes on at its floor."""
+    holds, said once a day, and the strategy is not dropped; once SOL is back, the same strategy goes on, its floor the
+    wallet it starts from less the 1.2 SOL left of its 1 SOL (its +0.2 SOL live included)."""
     _guard_off(env)
     _start(env)
     _play(env, [0.02] * 10)
@@ -936,7 +1299,7 @@ def test_a_wallet_without_room_for_a_buy_holds_and_is_never_a_drop(env):
     env.sol = 11.8
     _round(env, NOW + 60 + 2 * HOUR + 86400 + 900)
     t = LT.load(env.paths)
-    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.7  # 11.9 SOL less 1.2
 
 
 # -- only the owner turns it off; /stop holds it ---------------------------------------------------------------------

@@ -606,6 +606,25 @@ def test_a_cycler_killed_mid_test_leaves_no_sniper_armed(env):
     assert any(f"sniper {OK_ID} is stopped" in s for s in env.sent)
 
 
+def test_a_coin_the_sniper_bought_after_its_cycler_died_is_the_tests_own(env):
+    """A killed cycler never disarmed its sniper, which stays armed until the round closes the test: a coin it bought
+    after the cycler died is the test's own, named with the line that sells it, never "a coin this test did not buy"
+    (review of 7 Nov: the test's window ended when the cycler died)."""
+    _started(env)
+    t = LT.load(env.paths)
+    _end_job(env.paths, t["job_id"], 137, log="Killed\n")
+    os.utime(env.paths.jobs / f"{t['job_id']}.exit", (NOW + 600, NOW + 600))
+    env.store.add_trades([Trade(sig="late-buy", ev=0, slot=7_000, pos=0, ts=NOW + 900, mint=MINT, venue="curve", user=W,
+                                is_buy=True, quote=200_000_000, base=1_000_000, fee=2_000_000, fee_bps=100, q_after=1,
+                                b_after=1)])  # fmt: skip
+    env.svc.held = [{"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.07, "priced": True}]
+    _armed(env, status="finished")  # its one shot fired: it sells nothing more
+    _round(env, NOW + 1800)
+    t = LT.load(env.paths)
+    assert t["state"] == "done" and t["held_own"] == [MINT]
+    assert "nothing sells it" in env.sent[-1] and "did not buy" not in env.sent[-1]
+
+
 def test_a_test_that_ends_holding_a_coin_closes_once_the_coin_is_sold(env):
     """At its end the test's last coin may still be held: its sniper keeps running to sell it (a stopped sniper strands
     its coin), the test stays closing with its sniper and its coin expected (the gate stays quiet), no other test

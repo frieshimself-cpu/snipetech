@@ -12,27 +12,37 @@ is started): while AUTOTEST is on and no strategy runs, the round writes the /te
 the best strategy live_test.eligible offers that this test has not dropped, at no more than the yes's size; live_test's
 own start path creates its hunt sniper and runs its cycler in the same round. A strategy then trades block after block,
 each of at most `fills` buys and `minutes` minutes, one coin at a time, at its own size (a round trip costs about 0.009
-SOL whatever the size, so a test at another size says nothing), with no limit on blocks or hours, and every block at the
-first block's floor (the wallet's start less `loss_sol`). After each block, once the strategy has `fills` live round
-trips in all (a block that made all its buys is judged at once, as on 09:15), it is judged on the measure stage's fills:
-our own round trips only (a deposit or a withdrawal moves nothing; 6 Nov 15:16 the owner moved 2.54 SOL out mid-test),
-with the failed sends, read twice and the worse reading judged (block_live: the fills cannot tell the book's copies
-from the test's own buys for sure). Live above zero and at least `continue_at` times the forward paper mean: the next
-block. Below that, or at its floor (1 SOL down live, a block that ended on the floor, or no room above it for another
-buy), the strategy is dropped for good (operator/autotest.json keeps why, with the numbers) and the next one that passes
-on paper starts at once with a floor of its own; with none, the round looks again every 15 minutes. It never trades a
-strategy without paper evidence: at our landing every Hunt setting loses about 0.007 SOL a trade (7 Nov 08:57).
+SOL whatever the size, so a test at another size says nothing), with no limit on blocks or hours.
 
-What holds it. An execution fault never drops a strategy, since it says nothing about the strategy: a cycler that died,
-OKTech unreachable or erroring, a coin OKTech left unsold, the wallet unreadable, a measure stage stalled past
-MEASURE_WAIT_SECS. It holds new blocks until the fault clears (re-checked each round) and the same strategy goes on; the
-owner hears it once when it starts holding and once when it clears. A wallet without room for a buy holds the same way
-(said once a day): 7 Nov 10:59 the wallet was emptied. The owner's /stop holds every start while its flag exists (a
-running block ends at once, its sniper stopped once the wallet holds nothing; a sniper holding a coin keeps running,
-CLAUDE.md rule 1), and /resume lets the same strategy go on if it still passes on paper. The owner's guard, while on and
-tripped, holds it too (its own line tells the owner). Nothing else says a line: never one per block or per round; the
-day's blocks are in the daily digest. It never turns itself off: only /test auto off or `operate autotest --off` does
-(a running block then runs to its end).
+How it is judged. After every block, once the measure stage has read past it and no coin it bought is still held, its
+trades are counted from the measure stage's fills: our own round trips only (a deposit or a withdrawal moves nothing;
+6 Nov 15:16 the owner moved 2.54 SOL out mid-test), with the failed sends, read twice (block_live: the fills cannot
+tell the book's copies from the test's own buys for sure). A strategy may lose `loss_sol` by its own trades, the lower
+of the two readings' sums: there it is at its floor and dropped for good, whatever its number of trades, and each
+block's floor is the wallet it starts from less what is left of that, so a deposit, a withdrawal or the book's result
+moves the floor with the wallet and never the strategy's loss (review of 7 Nov: the loss was read only at 10 trades, a
+deposit hid it, and a withdrawal or a floor end of the cycler dropped a strategy that had lost nothing). Once it has
+`fills` live round trips of its own (never sooner because the cycler counted `fills` buys of the wallet: the book's are
+among them), it is judged after every block on the worse of the two readings' means: above zero and at least
+`continue_at` times the forward paper mean, the next block; below that, dropped for good (operator/autotest.json keeps
+why, with the numbers), and the next one that passes on paper starts at once with a floor of its own; with none, the
+round looks again every 15 minutes. A run that ends without a drop (the owner's off, its paper flickering) leaves its
+live record to the strategy's next run (_carried). It never trades a strategy without paper evidence: at our landing
+every Hunt setting loses about 0.007 SOL a trade (7 Nov 08:57).
+
+What holds it. An execution fault never drops a strategy, since it says nothing about the strategy: a cycler that died
+(its sniper stayed armed with nobody watching until the round closed the block, and a buy it made then counts: no block
+in the round that finds it, one at the next round, after a second death in a row none for CYCLER_BACKOFF_SECS, doubling,
+unless a deploy changes the code), OKTech unreachable or erroring, a coin OKTech left unsold (never counted at its whole
+cost while the wallet holds it: once sold its sale counts, once gone its cost), the wallet unreadable, a measure stage
+stalled past MEASURE_WAIT_SECS. It holds new blocks until the fault clears (re-checked each round) and the same strategy
+goes on; the owner hears it once when it starts holding and once when it clears. A wallet without room for a block
+holds the same way (said once a day): 7 Nov 10:59 the wallet was emptied. The owner's /stop holds every start while its
+flag exists (a running block ends at once, its sniper stopped once the wallet holds nothing; a sniper holding a coin
+keeps running, CLAUDE.md rule 1), and /resume lets the same strategy go on if it still passes on paper. The owner's
+guard, while on and tripped, holds it too (its own line tells the owner). Nothing else says a line: never one per block
+or per round; the day's blocks are in the daily digest. It never turns itself off: only /test auto off or `operate
+autotest --off` does (a running block then runs to its end).
 
 The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and
 the OKTech wallet it names, and nothing starts by itself, and no strategy goes on, while the config names another.
@@ -56,6 +66,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .. import CODE_ID
 from ..config import Config
 from ..ops import redact
 from ..solana.base58 import is_pubkey
@@ -108,6 +119,12 @@ RENT_SOL = (
 FAULTS = frozenset({"job", "oktech", "sniper", "balance", "coins", "guard-unknown"})
 ENDS = frozenset({"wallet", "paper", "size"})
 CLOSING_FAULTS = ("oktech", "stop", "wallet")  # a block still closing on these: its sniper may still be armed
+# a cycler that dies leaves its sniper armed, nobody watching (no floor, no /stop, no guard), until the next round closes
+# the block. One block is tried at the next round (7 Nov: a reboot, the resize); after a second death in a row (a crash
+# loop after a bad deploy) none starts for this long, twice as long after each further death, a day at most, unless a
+# deploy changes the code (review of 7 Nov: every round made a new sniper and a new cycler)
+CYCLER_BACKOFF_SECS = 4 * 3600
+CYCLER_BACKOFF_MAX_SECS = 86400
 # a cycler that ended without its report, refusing at its start (oktech_cycle's own words): what that end is
 REFUSED_AT_START = (("at or below the floor", "floor"), ("/stop flag is set", "stop"), ("wallet-wide guard", "guard"),
                     ("behind", "early"), ("the wallet holds", "early"))  # fmt: skip
@@ -196,8 +213,9 @@ def read_autotest(paths: OperatorPaths) -> dict[str, Any]:
     """The owner's switch: each cap that is a number inside its bounds, else the owner's 7 Nov value; `on` only while the
     file says so and carries the owner's words and the wallet they are for; `approved` (the owner's words and when),
     `wallet` and `oktech_wallet` (what the yes is for), `plan` (PLAN, or None for a yes of the 09:15 plan, run as PLAN
-    all the same), `used` (what the 09:15 plan wrote at a sequence's end). Never raises: no file, or one that cannot be
-    read, is off."""
+    all the same), `used` (what the 09:15 plan wrote at a sequence's end), `resumed` (when the owner last sent /resume:
+    their word to try a block again after its cycler died twice). Never raises: no file, or one that cannot be read, is
+    off."""
     data = _raw(paths)
     out: dict[str, Any] = dict(DEFAULTS)
     for name in FIELDS:
@@ -208,9 +226,11 @@ def read_autotest(paths: OperatorPaths) -> dict[str, Any]:
     wallets = _wallets(data)
     used = data.get("used") if isinstance(data.get("used"), dict) else None
     plan = data.get("plan") if data.get("plan") == PLAN else None
+    resumed = data.get("resumed")
+    resumed = resumed if isinstance(resumed, int) and not isinstance(resumed, bool) else None
     return out | {"on": data.get("on") is True and approved is not None and wallets is not None, "approved": approved,
                   "wallet": wallets[0] if wallets else None, "oktech_wallet": wallets[1] if wallets else None,
-                  "ts": data.get("ts"), "by": data.get("by"), "used": used, "plan": plan}  # fmt: skip
+                  "ts": data.get("ts"), "by": data.get("by"), "used": used, "plan": plan, "resumed": resumed}  # fmt: skip
 
 
 def _write(paths: OperatorPaths, rec: dict) -> None:
@@ -285,12 +305,23 @@ def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
     return None
 
 
-def on_resume(paths: OperatorPaths) -> str | None:
-    """The owner's /resume: a line for the reply on what the automatic test does next, or None when it is off."""
+def on_resume(paths: OperatorPaths, now: float | None = None) -> str | None:
+    """The owner's /resume: a line for the reply on what the automatic test does next, or None when it is off. It is
+    also their word to try a block again after its cycler died twice in a row (_cycler_wait): when it was said is kept
+    in AUTOTEST, under its lock, for the round to read."""
+    now = time.time() if now is None else now
+    with _locked(paths):
+        cur = _raw(paths)
+        if cur:
+            _write(paths, cur | {"resumed": int(now)})
     seq = load_seq(paths)
     if seq and seq.get("state") == "running":
+        hold = seq.get("hold") or {}
+        dead = int(hold.get("deaths") or 0) if hold.get("kind") == "cycler" else 0
+        again = (f"; its cycler died {dead} times in a row, and your /resume tries one block again" if dead > 1
+                 else "")  # fmt: skip
         return (f"The automatic live test goes on with {_label(seq)} at the next round, if it still passes on paper "
-                "(the same floor as before).")  # fmt: skip
+                f"(the same floor as before){again}.")  # fmt: skip
     if read_autotest(paths)["on"]:
         return "The automatic live test may start the best strategy that passes on paper at the next round."
     return None
@@ -347,7 +378,8 @@ def dropped(paths: OperatorPaths) -> list[dict]:
 def holds(paths: OperatorPaths, t: dict, cfg: Config) -> str | None:
     """Why an automatic request may not start any more (None: it may): the owner's switch is still on, for the wallets
     the request and the config name, its caps still cover the request, and the strategy running names it as its
-    newest block, at its floor (live_test._recheck asks). There is no limit on blocks."""
+    newest block, at the floor the round wrote for that block (live_test._recheck asks). There is no limit on
+    blocks."""
     at = read_autotest(paths)
     if not at["on"]:
         return "the automatic test was turned off since the request"
@@ -371,22 +403,31 @@ def holds(paths: OperatorPaths, t: dict, cfg: Config) -> str | None:
             or blocks[-1].get("requested_at") != t.get("requested_at")
             or (seq.get("wallet"), seq.get("oktech_wallet")) != (at["wallet"], at["oktech_wallet"])):  # fmt: skip
         return "the request is not the automatic sequence's own"
-    try:
-        moved = abs(float(t["floor"]) - float(seq["floor"])) > 1e-9  # every block keeps the first block's floor
+    try:  # each block's floor: the wallet it starts from less what is left of the strategy's loss (_next_block)
+        moved = abs(float(t["floor"]) - float(blocks[-1].get("floor", seq["floor"]))) > 1e-9
     except (KeyError, TypeError, ValueError):
         moved = True
     if moved:
-        return "the request's floor is not the sequence's"
+        return "the request's floor is not the one the sequence wrote for its block"
     return None
 
 
 # -- a block's live result ---------------------------------------------------------------------------------------------
 
 
+def _unreported(rep: dict) -> bool:
+    """The cycler ended without its report (killed, a crash, its job record lost): it never disarmed its sniper."""
+    reason = str(rep.get("reason") or "")
+    return rep.get("held") is None or "without its report" in reason or "job record is missing" in reason
+
+
 def _window(t: dict, now: float) -> tuple[int, int, int]:
-    """(the block's first second, the second its cycler ended, the second by which every trade of it had landed). The
-    cycler's real end comes from its job record (finish_ended keeps it in the report); a cycler that ended with nothing
-    held had sold everything by then, else the test's close is when the wallet held nothing."""
+    """(the block's first second, the last second its sniper may have bought in, the second by which every trade of it
+    had landed). The cycler's real end comes from its job record (finish_ended keeps it in the report); a cycler that
+    ended with nothing held had sold everything by then, else the test's close is when the wallet held nothing. A
+    cycler that ended without its report left its sniper armed until the round closed the block and stopped it: the
+    window runs to that close, so a buy the sniper made after the cycler died counts (review of 7 Nov: it fell in no
+    block)."""
     rep = t.get("report") or {}
     start = int(float(t.get("started_at") or now)) - GRACE_SECS
     try:
@@ -394,6 +435,8 @@ def _window(t: dict, now: float) -> tuple[int, int, int]:
     except (KeyError, TypeError, ValueError):
         job_end = None
     closed = int(float(t.get("ended_at") or now))
+    if _unreported(rep):
+        return start, closed, closed
     end = job_end if job_end is not None else int(float(t.get("cycler_ended_at") or closed))
     settled = job_end if job_end is not None and rep.get("held") == [] else closed
     return start, min(end, closed), min(settled, closed)
@@ -492,10 +535,11 @@ def _reading(live: dict, own: bool, *, final: bool) -> dict[str, Any]:
 def end_kind(t: dict, fills: int, own_mints) -> tuple[str, str]:
     """How a block ended, and the cycler's words for it: "not started"; "coin" (a coin it bought itself is held and
     nothing sells it: the book trades from the same wallet, and its sniper sells its own coin); "complete" (all its
-    `fills` buys); "floor" (the cycler's emergency end under the floor, or a start refused there: the strategy is at its
-    floor); "time" (its time limit), "stop" (the owner's /stop) or "guard" (the owner's guard): normal ends, its trades
-    count; "died" (the cycler ended without its report: killed, or a crash: an execution fault); "early" (any other end,
-    counted like a time limit)."""
+    `fills` buys of the wallet, the book's among them: never a reason to judge it sooner); "floor" (the cycler's
+    emergency end under the block's floor, or a start refused there: the wallet is the owner's too, so it is judged on
+    its trades like any end); "time" (its time limit), "stop" (the owner's /stop) or "guard" (the owner's guard): normal
+    ends, its trades count; "died" (the cycler ended without its report: killed, or a crash: an execution fault);
+    "early" (any other end, counted like a time limit)."""
     if t.get("state") == "expired" or not t.get("started"):
         return "not started", str(t.get("error") or "it did not start")
     held = [str(m) for m in t.get("held_at_end") or [] if str(m) in set(own_mints or ())]
@@ -546,11 +590,13 @@ def plan_words(c: dict) -> str:
              else "on no wallet yet (the config names no sniper wallet), ")  # fmt: skip
     return (f"live trading by itself {where}at the strategy's own size, {c['buy_sol']:g} SOL a buy at most, in blocks "
             f"of at most {c['fills']} buys one coin at a time and {c['minutes']} minutes, with no limit on blocks or "
-            f"hours, every block at the first block's floor ({c['loss_sol']:g} SOL below the wallet's start). Once a "
-            f"strategy has {c['fills']} live trades it is judged after every block: it goes on while live is above zero "
-            f"and at least {_share(c['continue_at'])}, and is dropped for good below that or at its floor, when the "
-            "next strategy that passes on paper takes over. A fault (OKTech, the wallet, the measure stage, a coin "
-            "left unsold) holds it until it clears, never a drop. It never turns itself off")  # fmt: skip
+            f"hours. A strategy may lose {c['loss_sol']:g} SOL by its own trades, read from the fills after every block "
+            "(each block's floor is the wallet it starts from less what is left of that, so a deposit or a withdrawal "
+            f"never moves it), and is dropped for good there. Once it has {c['fills']} live trades of its own it is "
+            f"judged after every block: it goes on while live is above zero and at least {_share(c['continue_at'])}, "
+            "and is dropped for good below that, when the next strategy that passes on paper takes over. A fault "
+            "(OKTech, the cycler, the wallet, the measure stage, a coin left unsold) holds it until it clears, never a "
+            "drop. It never turns itself off")  # fmt: skip
 
 
 def _yes_words(at: dict) -> str:
@@ -565,13 +611,24 @@ def _dropped_words(gone: list[dict]) -> str:
 
 
 def _live_now(seq: dict) -> str:
-    """The strategy's live result so far against paper, in a few words."""
+    """The strategy's live result so far against paper, in a few words (its earlier runs' trades included)."""
     tl = _tally(seq)
     paper = seq.get("paper")
     vs = f" vs paper {float(paper):+.4f}" if paper is not None else ""
     if not tl["n"]:
         return f"no live round trip counted yet{vs.replace(' vs', ';')}"
-    return f"{tl['n']} live round trips, live {tl['sum'] / tl['n']:+.4f}{vs} a trade"
+    earlier = int((seq.get("carried") or {}).get("n") or 0)
+    of = f" ({earlier} of them in its earlier runs)" if earlier else ""
+    return f"{tl['n']} live round trips{of}, live {tl['sum'] / tl['n']:+.4f}{vs} a trade"
+
+
+def _hold_now(seq: dict) -> str:
+    """What holds the strategy, or what its next block waits for, in a few words ("" when nothing does)."""
+    hold, waiting = seq.get("hold"), seq.get("waiting")
+    if hold:
+        more = (waiting or {}).get("why")
+        return f"holds: {hold['why']}" + (f"; {more}" if more and more != hold.get("why") else "")
+    return f"waits: {waiting['why']}" if waiting else ""
 
 
 def _current(seq: dict, paths: OperatorPaths, now: float) -> str:
@@ -594,8 +651,7 @@ def status_line(paths: OperatorPaths, now: float) -> str:
     drops = f"; dropped: {_dropped_words(gone)}" if gone else ""
     on = "on" if at["on"] else "off"
     if seq and seq.get("state") == "running":
-        hold, waiting = seq.get("hold"), seq.get("waiting")
-        why = f"; holds: {hold['why']}" if hold else (f"; waits: {waiting['why']}" if waiting else "")
+        why = f"; {_hold_now(seq)}" if _hold_now(seq) else ""
         n = len(seq.get("blocks") or [])
         return (f"automatic test: {on} ({_yes_words(at)}): {_label(seq)}, {_current(seq, paths, now)}, {n} block"
                 f"{'' if n == 1 else 's'} so far, {_live_now(seq)}, floor {float(seq['floor']):.2f} SOL{why}{drops}")  # fmt: skip
@@ -658,8 +714,8 @@ def status_words(paths: OperatorPaths, now: float, cfg: Config) -> str:
     at, seq, gone = read_autotest(paths), load_seq(paths), dropped(paths)
     drops = f" Dropped for good: {_dropped_words(gone)}." if gone else ""
     if seq and seq.get("state") == "running":
-        hold, waiting = seq.get("hold"), seq.get("waiting")
-        why = f" It holds: {hold['why']}." if hold else (f" Its next block waits: {waiting['why']}." if waiting else "")
+        now_words = _hold_now(seq)
+        why = f" It {now_words.replace('waits:', 'waits for its next block:')}." if now_words else ""
         caps = at | {k: seq.get(k) for k in ("wallet", "oktech_wallet")}
         return (f"Automatic live test running ({'on' if at['on'] else 'off: the running block is the last'}): "
                 f"{_label(seq)}, {_current(seq, paths, now)}, floor {float(seq['floor']):.2f} SOL for the strategy; "
@@ -836,11 +892,27 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     eq = live_test.equity_now(r.snap, now, wallet)
     if eq is None:
         return wait("the wallet's balance is not known this round")
+    # a strategy that ran before and was not dropped starts again with its live record (review of 7 Nov: a run that
+    # ended, its paper flickering or the owner's off, forgot its losses): what is left of its loss, and its trades
+    carried = _carried(paths, best["id"])
+    allowance = float(at["loss_sol"])
+    left = allowance + (_spent({"carried": carried})["sum"] if carried else 0.0)
     try:
-        p = live_test.plan(best, eq, wallet, fills=int(at["fills"]), minutes=int(at["minutes"]),
-                           loss_sol=float(at["loss_sol"]))  # fmt: skip
+        p = live_test.plan(best, eq, wallet, fills=int(at["fills"]), minutes=int(at["minutes"]), loss_sol=allowance,
+                           floor=_floor_for(eq, left))  # fmt: skip
     except ValueError as exc:
         return wait(f"{best['id']} cannot be traded live: {exc}")
+    before = load_seq(paths)
+    seq = {"id": f"seq-{int(now)}", "state": "running", "plan": PLAN, "strategy": best["id"], "label": p["label"],
+           "approved": at["approved"], "caps": _caps(at), "wallet": at["wallet"], "oktech_wallet": at["oktech_wallet"],
+           "buy_sol": p["buy_sol"], "floor": p["floor"], "start_equity": round(eq, 4), "started_at": int(now),
+           "allowance": allowance, "paper": float(best.get("mean") or 0),
+           "blocks": [{"n": 1, "requested_at": int(now), "floor": p["floor"]}],
+           "dropped": list((before or {}).get("dropped") or [])} | ({"carried": carried} if carried else {})  # fmt: skip
+    gone_why = _floor_why(seq)
+    if gone_why:  # its earlier runs left it at its floor (a smaller loss in the owner's latest yes, say): never started
+        seq["blocks"] = []
+        return await _drop(r, seq, gone_why)
     need = live_test._need(p)
     if eq + 1e-9 < need:  # no room for a first block above a floor of at least 1 SOL: said once a day
         sig = "automatic test: no room in the wallet to start"
@@ -849,12 +921,6 @@ async def _begin(r: _Round, at: dict) -> dict | None:
                   "(its floor, never under 1 SOL, a buy and its fees); it starts once the wallet has that (said once a "
                   "day).")  # fmt: skip
         return wait(f"the wallet holds {eq:.2f} SOL, under the {need:.2f} SOL a first block needs")
-    before = load_seq(paths)
-    seq = {"id": f"seq-{int(now)}", "state": "running", "plan": PLAN, "strategy": best["id"], "label": p["label"],
-           "approved": at["approved"], "caps": _caps(at), "wallet": at["wallet"], "oktech_wallet": at["oktech_wallet"],
-           "buy_sol": p["buy_sol"], "floor": p["floor"], "start_equity": round(eq, 4), "started_at": int(now),
-           "paper": float(best.get("mean") or 0), "blocks": [{"n": 1, "requested_at": int(now)}],
-           "dropped": list((before or {}).get("dropped") or [])}  # fmt: skip
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     save_seq(paths, seq)  # first: the round's own check asks that the request be the sequence's own
     why, _wait, _kind = await live_test._check(r.svc, r.cfg, paths, req, r.snap, now)
@@ -866,23 +932,29 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         else:
             sequence_path(paths).unlink(missing_ok=True)
         return wait(why)
+    again = (f" It carries the {carried['n']} live trades of its earlier runs ({_spent(seq)['sum']:+.3f} SOL by the "
+             f"fills): {left:.2f} SOL of its {allowance:g} is left." if carried else "")  # fmt: skip
     r.say(f"Automatic live test, on {_yes_words(at)} (\"{at['approved']['words']}\"): {p['label']} ({best['id']}) "
           f"passes on paper with {int(best['n']):,} forward trades where a live hunt fill lands, at the measured cost "
           f"of a trade, {float(best['mean']):+.4f} SOL a trade, lower bound {float(best['ev_lower']):+.4f}, also with "
           f"each gain capped. It trades live from now on, block after block, on sniper wallet {seq['wallet'][:6]}… "
           f"(OKTech wallet {seq['oktech_wallet']}): {p['buy_sol']:g} SOL a buy, at most {p['fills']} buys one coin at a "
-          f"time and {p['minutes']} minutes a block, floor {p['floor']:.2f} SOL ({float(at['loss_sol']):g} SOL below "
-          f"the wallet's {eq:.2f}) for every block. Once it has {p['fills']} live trades it goes on while live is above "
-          f"zero and at least {_share(at['continue_at'])}, and is dropped for good below that or at its floor. /stop "
-          "holds it; /test auto off ends it.")  # fmt: skip
+          f"time and {p['minutes']} minutes a block. It may lose {allowance:g} SOL by its own trades, read from the "
+          f"fills after every block: floor {p['floor']:.2f} SOL now, and each block's floor is the wallet it starts "
+          f"from less what is left of that, so a deposit or a withdrawal never moves it.{again} Once it has "
+          f"{p['fills']} live trades of its own it goes on while live is above zero and at least "
+          f"{_share(at['continue_at'])}, and is dropped for good below that or at its floor. /stop holds it; /test "
+          "auto off ends it.")  # fmt: skip
     return seq
 
 
 async def _advance(r: _Round, seq: dict) -> dict:
     """The strategy running: nothing while its block runs (a block closing on a fault holds); once the block ended,
-    its end read once, then judged (once the strategy has enough live trades) and the next block requested, or the
-    strategy dropped; a block that did not start is tried again."""
+    its end read once, then its trades counted and the strategy dropped at its floor or judged (once it has enough live
+    trades of its own), and the next block requested; a block that did not start is tried again."""
     blocks = seq.setdefault("blocks", [])
+    if "allowance" not in seq:  # a run the 09:15 plan started keeps what its first floor left below its start
+        seq["allowance"] = _allowance(seq)
     if not blocks:
         return await _next_block(r, seq)
     cur = blocks[-1]
@@ -921,17 +993,19 @@ async def _advance(r: _Round, seq: dict) -> dict:
         kind, why = end_kind(t, int(t.get("fills") or read_autotest(r.paths)["fills"]), live["own_mints"])
         cur["outcome"] = {"kind": kind, "why": why}
         hold = seq.get("hold")
-        if kind == "died":
-            _hold(r, seq, "cycler", f"block {cur['n']}'s cycler died ({why})")
+        if kind == "died":  # its sniper stayed armed until this round closed the block: never a block in this round
+            deaths = int(hold.get("deaths") or 1) + 1 if hold and hold.get("kind") == "cycler" else 1
+            again = f": {deaths} times in a row" if deaths > 1 else ""
+            _hold(r, seq, "cycler", f"block {cur['n']}'s cycler died ({why}){again}",
+                  extra={"deaths": deaths, "last": int(r.now), "code": CODE_ID})  # fmt: skip
         elif kind == "coin":
             coins = [m for m in t.get("held_at_end") or [] if m in set(live["own_mints"])]
             _hold(r, seq, "coin", f"block {cur['n']} {why}", coins=coins)
         elif hold and hold.get("kind") == "cycler" and int(cur["n"]) > int(hold.get("after") or 0):
             _clear(r, seq, f"block {cur['n']} ran to its end")
         save_seq(r.paths, seq)
-    if cur["outcome"]["kind"] == "floor":
-        _record_live(cur, _live(r, t), counted=False)
-        return await _drop(r, seq, f"block {cur['n']} ended on its floor: {cur['outcome']['why']}")
+    # a block the cycler ended on its floor is judged on its trades like any other (review of 7 Nov: it was dropped for
+    # good there and then): the wallet is the owner's too, and a withdrawal or the book's loss takes it there as well
     verdict = await _judge(r, seq, cur, t)
     if verdict is not None:
         return verdict
@@ -944,27 +1018,130 @@ def _live(r: _Round, t: dict) -> dict:
                       failed_fee_sol=float(r.cfg.costs.priority_fee_sol) + 5000 / 1e9)  # fmt: skip
 
 
+def _lives(seq: dict) -> list[dict]:
+    """Every block's live record of the strategy's run, and the one carried from its earlier runs (_carried)."""
+    lives = [b["live"] for b in seq.get("blocks") or [] if isinstance(b.get("live"), dict)]
+    carried = seq.get("carried")
+    return lives + ([carried] if isinstance(carried, dict) else [])
+
+
 def _own_trades(seq: dict) -> int:
-    return sum(int(b["live"]["n"]) for b in seq.get("blocks") or [] if isinstance(b.get("live"), dict))
+    """The strategy's live round trips of its own: the buys the fills do not call copies, in every run of it."""
+    return sum(int(x.get("n") or 0) for x in _lives(seq))
+
+
+def _spent(seq: dict) -> dict[str, Any]:
+    """What the strategy's own trades made live, for its floor: the lower of the two readings' sums (block_live), the
+    failed sends included even in a block with no buy (review of 7 Nov: with no buy they counted as nothing), over every
+    block of every run of it, with that reading's trades. A deposit, a withdrawal or the book's trades outside its blocks
+    are in none of it."""
+    lives = _lives(seq)
+    own = (sum(float(x.get("sum") or 0) for x in lives), sum(int(x.get("n") or 0) for x in lives))
+    every = (sum(float(x.get("sum_all", x.get("sum")) or 0) for x in lives),
+             sum(int(x.get("n_all", x.get("n")) or 0) for x in lives))  # fmt: skip
+    total, n = min(own, every)
+    return {"sum": round(total, 6), "n": n}
+
+
+def _allowance(seq: dict) -> float:
+    """The SOL the strategy may lose by its own trades: the loss_sol of the yes it started under (the owner's 1 SOL), or,
+    for a run the 09:15 plan started, what its first floor left below its start."""
+    a = seq.get("allowance")
+    if isinstance(a, (int, float)) and not isinstance(a, bool) and math.isfinite(a) and a > 0:
+        return float(a)
+    try:
+        legacy = float(seq["start_equity"]) - float(seq["floor"])
+    except (KeyError, TypeError, ValueError):
+        legacy = 0.0
+    if math.isfinite(legacy) and legacy > 0:
+        return round(legacy, 6)
+    return float((seq.get("caps") or {}).get("loss_sol") or DEFAULTS["loss_sol"])
+
+
+def _floor_why(seq: dict) -> str | None:
+    """Why the strategy is at its floor by its own trades, None while it is not: 1 SOL down live by the fills (_spent),
+    whatever its number of trades (review of 7 Nov: it was read only once it had 10, and a deposit hid the rest), or so
+    near it that what is left has no room for another buy and its fees. A deposit, a withdrawal or the book's loss
+    moves none of it: a wallet too small for a block holds it instead ("room")."""
+    sp, allowance = _spent(seq), _allowance(seq)
+    left = allowance + sp["sum"]
+    size = float(seq.get("buy_sol") or DEFAULTS["buy_sol"])
+    if left >= size + live_test.BUY_FEE_MARGIN_SOL - 1e-9:
+        return None
+    if left <= 1e-9:
+        return (f"it is {-sp['sum']:.2f} SOL down live over its {sp['n']} trades, by the fills: at its floor "
+                f"({allowance:g} SOL below its first block's start)")  # fmt: skip
+    return (f"it is at its floor: {sp['sum']:+.2f} SOL live over its {sp['n']} trades, by the fills, leaves {left:.2f} "
+            f"of the {allowance:g} SOL it may lose, no room for another buy of {size:g} SOL and its fees")  # fmt: skip
+
+
+def _floor_for(total: float, left: float) -> float:
+    """A block's floor: the wallet it starts from (SOL and coins, as the cycler reads it) less what is left of the
+    strategy's loss, never under live_test.MIN_FLOOR_SOL, rounded down to the cent (live_test.plan's rule). With only the
+    strategy trading it is its first block's floor; a deposit or a withdrawal moves it with the wallet (review of 7 Nov:
+    a withdrawal dropped a strategy for good, and a deposit was more it could lose)."""
+    return math.floor(max(live_test.MIN_FLOOR_SOL, float(total) - float(left)) * 100 + 1e-6) / 100
+
+
+def _carried(paths: OperatorPaths, sid: str) -> dict | None:
+    """The strategy's live record from its earlier runs that were not dropped (their "sequence" lines in tests.jsonl):
+    every block's trades, read both ways, so a run that starts it again judges it, and keeps its floor, on every live
+    trade it made (review of 7 Nov: a run that ended, its paper flickering or the owner's off, forgot its losses). None
+    when it has none."""
+    try:
+        lines = live_test.history_path(paths).read_text().splitlines()
+    except OSError:
+        return None
+    runs: dict[str, list[dict]] = {}
+    for line in lines:
+        try:
+            h = json.loads(line)
+        except ValueError:
+            continue
+        if (isinstance(h, dict) and h.get("kind") == "sequence" and str(h.get("strategy")) == sid and h.get("id")
+                and h.get("dropped") is not True):  # fmt: skip
+            runs[str(h["id"])] = [b["live"] for b in h.get("blocks") or []
+                                  if isinstance(b, dict) and isinstance(b.get("live"), dict)]  # fmt: skip
+    lives = [x for v in runs.values() for x in v]
+    if not lives:
+        return None
+
+    def total(key: str, alt: str, whole: bool = False):
+        v = sum(float(x.get(key, x.get(alt)) or 0) for x in lives)
+        return int(v) if whole else round(v, 6)
+
+    return {"runs": list(runs), "blocks": len(lives), "n": total("n", "n", True), "sum": total("sum", "sum"),
+            "n_all": total("n_all", "n", True), "sum_all": total("sum_all", "sum"),
+            "unmeasured": total("unmeasured", "unmeasured", True), "failed": total("failed", "failed", True),
+            "failed_sol": total("failed_sol", "failed_sol"), "copies": total("copies", "copies", True),
+            "counted": True}  # fmt: skip
+
+
+async def _held_now(r: _Round, wallet: str) -> set[str] | None:
+    """The coins the wallet holds now: the round's snapshot when it read this wallet, else a read of the wallet (the
+    owner's ignored coins left out both ways); None when neither can be read."""
+    ignore = set(r.cfg.operator.ignore_mints or ())
+    if live_test.equity_now(r.snap, r.now, wallet) is not None:
+        return {str(h["mint"]) for h in r.snap.held or [] if h.get("mint") and str(h["mint"]) not in ignore}
+    try:
+        held = await live_test._held(r.svc, r.cfg, wallet)
+    except Exception:  # noqa: BLE001 - not known this round
+        return None
+    return {str(h["mint"]) for h in held if h.get("mint")}
 
 
 async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
-    """A block that ran and ended: None when the next block is to be requested (the strategy has fewer than `fills`
-    live round trips in all and the block did not make all its buys, or it was judged and goes on); else the record
-    (waiting for the measure stage, holding on it, or dropped)."""
+    """A block that ran and ended, once the measure stage has read past it and no coin it bought is still held: its
+    trades counted, then the strategy dropped at its floor (_floor_why: by the fills, whatever its number of trades), or
+    judged against paper once it has `fills` live round trips of its own (never sooner because the cycler counted
+    `fills` buys of the wallet: the book's are among them, review of 7 Nov), and None for the next block. Else the
+    record: waiting (the measure stage, a coin still held), holding (the measure stage stalled, the wallet unreadable),
+    or dropped."""
     at = read_autotest(r.paths)
-    n, fills, kind = cur["n"], int(at["fills"]), cur["outcome"]["kind"]
+    n, fills = cur["n"], int(at["fills"])
     live = _live(r, t)
     paper = float((t.get("forward") or {}).get("mean") or 0)
     seq["paper"] = paper
-    earlier = _own_trades(seq) - (int(cur["live"]["n"]) if isinstance(cur.get("live"), dict) else 0)
-    if kind != "complete" and earlier + _reading(live, True, final=False)["n"] < fills:
-        _record_live(cur, live, counted=False)
-        cur["decision"] = "next"
-        save_seq(r.paths, seq)
-        r.note(f"automatic test: block {n} of {_label(seq)} ended ({kind}); the strategy has "
-               f"{_own_trades(seq)} of the {fills} live trades it is judged on, so its next block starts")  # fmt: skip
-        return None
     waited = r.now - float(t.get("ended_at") or r.now)
     last = (r.svc.store.coverage(MEASURE_KEY) or {}).get("ts")
     if last is None or float(last) < live["settled"] + MEASURE_SETTLE_SECS:
@@ -976,28 +1153,46 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
         return _hold(r, seq, "measure", f"the measure stage has not read block {n}'s trades within "
                                         f"{MEASURE_WAIT_SECS // 60} minutes of its end (it ran {when}), so the "
                                         "strategy cannot be judged")  # fmt: skip
-    open_buys = sum(1 for b in live["buys"] if not b["measured"])
-    if open_buys and waited < MEASURE_WAIT_SECS:
-        r.info(f"automatic test: block {n} waits for the measure stage ({open_buys} of its buys are not covered by "
-               "sales in the fills yet)")  # fmt: skip
-        return seq
+    open_buys = [b for b in live["buys"] if not b["measured"]]
+    if open_buys:
+        held = await _held_now(r, str(t.get("wallet") or ""))
+        if held is None:  # a buy whose coin may still be held is never counted at its whole cost
+            if waited < MEASURE_WAIT_SECS:
+                r.info(f"automatic test: block {n} waits: the wallet's coins could not be read this round")
+                return seq
+            return _hold(r, seq, "balance", f"the wallet's coins could not be read, so block {n}'s {len(open_buys)} "
+                                            "buys with no sale in the fills cannot be told from coins still held")  # fmt: skip
+        still = sorted({b["mint"] for b in open_buys if b["mint"] in held})
+        if still:  # a coin left unsold is a fault, never a loss counted at its whole cost (review of 7 Nov)
+            cur["held_until"] = int(r.now)
+            return _wait(r, seq, f"the wallet still holds {', '.join(m[:6] + '…' for m in still)}, bought in block "
+                                 f"{n}: its result counts once it is sold (/sell <coin>) or gone")  # fmt: skip
+        gone = r.now - max(float(t.get("ended_at") or r.now), float(cur.get("held_until") or 0))
+        if gone < MEASURE_WAIT_SECS:  # a sale it made, or the owner's /sell made, has this long to reach the fills
+            r.info(f"automatic test: block {n} waits for the measure stage ({len(open_buys)} of its buys are not "
+                   "covered by sales in the fills yet)")  # fmt: skip
+            return seq
     _record_live(cur, live, counted=True)
-    for b in seq["blocks"][:-1]:  # earlier blocks counted before their trades were measured: read again, for good
-        if isinstance(b.get("live"), dict) and b["live"].get("counted"):
+    for b in seq["blocks"][:-1]:  # read again: a block not counted yet, or with buys counted at their whole cost (a
+        lv = b.get("live")  # sale the measure stage writes late then counts: review of 7 Nov)
+        if isinstance(lv, dict) and lv.get("counted") and not lv.get("unmeasured"):
             continue
         tb = live_test.find(r.paths, seq["strategy"], b.get("requested_at"))
         if tb is not None and tb.get("started"):
             _record_live(b, _live(r, tb), counted=True)
+    why = _floor_why(seq)
+    if why:
+        return await _drop(r, seq, why)
     tl = _tally(seq)
-    if (kind != "complete" and _own_trades(seq) < fills) or tl["n"] == 0:  # copies the tape could not tell, now told
+    if _own_trades(seq) < fills or tl["n"] == 0:
         cur["decision"] = "next"
         save_seq(r.paths, seq)
+        r.note(f"automatic test: block {n} of {_label(seq)} ended ({cur['outcome']['kind']}); the strategy has "
+               f"{_own_trades(seq)} of the {fills} live trades of its own it is judged on ({_spent(seq)['sum']:+.3f} SOL "
+               "live by the fills), so its next block starts")  # fmt: skip
         return None
     mean = tl["sum"] / tl["n"]
-    cont, loss = float(at["continue_at"]), float((seq.get("caps") or {}).get("loss_sol") or DEFAULTS["loss_sol"])
-    if tl["sum"] <= -loss + 1e-9:  # 1 SOL down live, whatever was deposited: its floor, read from the fills
-        return await _drop(r, seq, f"it is {-tl['sum']:.2f} SOL down live over its {tl['n']} trades, at its floor "
-                                   f"({loss:g} SOL below its first block's start)")  # fmt: skip
+    cont = float(at["continue_at"])
     if not (paper > 0 and mean > 0 and mean >= cont * paper - 1e-9):
         return await _drop(r, seq, f"live is below {_share(cont)} after block {n}: the analyst works out why")
     cur["decision"] = "continue"
@@ -1005,7 +1200,7 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     save_seq(r.paths, seq)
     r.note(f"automatic test: block {n} of {_label(seq)}: live {mean:+.4f} SOL a trade over the {tl['n']} trades so far "
            f"(the measure stage's fills, {tl['sum']:+.3f} SOL{_live_words(seq)}), paper {paper:+.4f}: at least "
-           f"{_share(cont)}, so block {n + 1} starts, floor {float(seq['floor']):.2f} SOL")  # fmt: skip
+           f"{_share(cont)}, so block {n + 1} starts")  # fmt: skip
     return None
 
 
@@ -1020,15 +1215,17 @@ def _record_live(cur: dict, live: dict, *, counted: bool) -> None:
 
 
 async def _next_block(r: _Round, seq: dict) -> dict:
-    """Request the next block of the same strategy, at the latest yes's caps and the first block's floor, once the
-    round's start would take it. The owner's off and another wallet end the strategy's run; a strategy that no longer
-    passes on paper or whose size changed ends it too (not a drop); a wallet at the floor drops it; a fault holds it;
-    anything else waits for the next round."""
+    """Request the next block of the same strategy at the latest yes's caps, its floor the wallet it starts from less
+    what is left of the strategy's loss, once the round's start would take it. The owner's off and another wallet end
+    the strategy's run; a strategy that no longer passes on paper or whose size changed ends it too (not a drop: its
+    live record goes with it, _carried); the strategy at its floor by its own trades is dropped; a dead cycler holds it
+    for a round, then longer (_cycler_wait); a fault, or a wallet too small for a block, holds it; anything else waits
+    for the next round."""
     at = read_autotest(r.paths)
     if not at["on"]:
         return await _end(r, seq, "you turned the automatic test off")
     mismatch = wallet_mismatch(r.cfg, seq)
-    if mismatch:  # the next block would run on another wallet with this one's floor
+    if mismatch:  # the next block would run on another wallet with this one's record
         return await _end(
             r, seq, f"the sniper wallet changed since it started: {mismatch.replace('your standing yes', 'it')}"
         )
@@ -1037,6 +1234,9 @@ async def _next_block(r: _Round, seq: dict) -> dict:
         return await _end(r, seq, mismatch)
     if r.paths.stop_flag.exists():
         return _wait(r, seq, "your /stop is in force (/resume lets it go on)")
+    dead = _cycler_wait(r, seq)
+    if dead:
+        return _wait(r, seq, dead)
     store, wallet, sid = r.svc.store, r.cfg.operator.wallet, seq["strategy"]
     try:
         ok, why_not, _rows = live_test._survey(store, r.cfg, r.now)
@@ -1051,6 +1251,9 @@ async def _next_block(r: _Round, seq: dict) -> dict:
                                   "SOL a buy)")  # fmt: skip
     if size > float(at["buy_sol"]) + 1e-9:
         return await _end(r, seq, f"{sid} buys {size:g} SOL, above the {at['buy_sol']:g} SOL a buy of your yes")
+    gone_why = _floor_why(seq)
+    if gone_why:  # by its own trades, read from the fills: never the wallet's balance
+        return await _drop(r, seq, gone_why)
     eq = live_test.equity_now(r.snap, r.now, wallet)
     if eq is None:
         return _hold(r, seq, "balance", "the wallet's balance could not be read this round")
@@ -1058,26 +1261,35 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     if eq + 1e-9 < room:  # 7 Nov 10:59 the wallet was emptied: that is no result of the strategy's
         return _hold(r, seq, "room", f"the wallet holds {eq:.2f} SOL: no room for a buy of {size:g} SOL with its fees "
                                      f"and rent ({room:.2f} SOL)", daily=True)  # fmt: skip
-    loss = float((seq.get("caps") or {}).get("loss_sol") or DEFAULTS["loss_sol"])
-    try:
-        p = live_test.plan(row, eq, wallet, fills=int(at["fills"]), minutes=int(at["minutes"]), loss_sol=loss,
-                           floor=float(seq["floor"]))  # fmt: skip
-    except ValueError as exc:
-        return await _end(r, seq, f"{sid} cannot be traded live any more: {exc}")
-    need = live_test._need(p)
     # the floor is the wallet's SOL and coins, as the cycler reads it: a coin still held counts at the tape's price (one
     # the tape has not priced leaves it unknown, and the next block waits on the coin anyway)
     total = r.snap.total_equity if r.snap is not None and r.snap.held else eq
-    if total is not None and total + 1e-9 < need:
-        return await _drop(r, seq, f"it is at its floor: the wallet holds {total:.2f} SOL, with no room above its "
-                                   f"{p['floor']:.2f} SOL floor for another buy and its fees ({need:.2f})")  # fmt: skip
+    base = eq if total is None else total
+    allowance = _allowance(seq)
+    try:
+        p = live_test.plan(row, eq, wallet, fills=int(at["fills"]), minutes=int(at["minutes"]), loss_sol=allowance,
+                           floor=_floor_for(base, allowance + _spent(seq)["sum"]))  # fmt: skip
+    except ValueError as exc:
+        return await _end(r, seq, f"{sid} cannot be traded live any more: {exc}")
+    need = live_test._need(p)
+    if base + 1e-9 < need:  # a floor of at least 1 SOL leaves a small wallet no room: the strategy's room is above
+        return _hold(r, seq, "room", f"the wallet holds {base:.2f} SOL: a block needs {need:.2f} (its floor, never "
+                                     f"under {live_test.MIN_FLOOR_SOL:g} SOL, a buy of {size:g} SOL and its fees)",
+                     daily=True)  # fmt: skip
+    native = r.snap.native_sol if r.snap is not None else None
+    if native is not None and float(native) <= p["floor"] + 1e-9:
+        # the cycler reads the SOL without the wrapped SOL and refuses to start at or below its floor (oktech_cycle): a
+        # block asked for now makes a sniper that never runs, every round (the floor end is judged, never a drop)
+        return _hold(r, seq, "room", f"the wallet's SOL is {float(native):.2f} without its wrapped SOL, as the cycler "
+                                     f"reads it, at or below the block's {p['floor']:.2f} SOL floor, so the cycler "
+                                     "would not start", daily=True)  # fmt: skip
     if live_test.in_progress(r.paths, r.now):
         return _wait(r, seq, "another live test is in progress")
     n = int(seq["blocks"][-1]["n"]) + 1 if seq["blocks"] else 1
     req = live_test.request(
         p, row, r.cfg, r.now, by=BY, sequence={"id": seq["id"], "block": n}, approved=at["approved"]
     )
-    seq["blocks"].append({"n": n, "requested_at": int(r.now)})
+    seq["blocks"].append({"n": n, "requested_at": int(r.now), "floor": p["floor"]})
     save_seq(r.paths, seq)
     why, _wait_too, kind = await live_test._check(r.svc, r.cfg, r.paths, req, r.snap, r.now)
     if why is None and not live_test.write_request(r.paths, req, r.now):
@@ -1085,9 +1297,38 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     if why:
         seq["blocks"].pop()
         return await _refused(r, seq, why, kind)
+    seq["floor"] = p["floor"]
     seq["waiting"] = None
     save_seq(r.paths, seq)
     return seq
+
+
+def _cycler_wait(r: _Round, seq: dict) -> str | None:
+    """Why no block may start yet after its cycler died, None when one may. A dead cycler left its sniper armed with
+    nobody watching until the round closed the block, so never a block in the round that found it; one at the next
+    round (7 Nov: a reboot); after a second death in a row CYCLER_BACKOFF_SECS, twice as long after each further one, a
+    day at most, unless a deploy changed the code since (its fix may be in) or the owner gave their word since (/resume,
+    or a yes again: /test auto off then on, operate autotest --on)."""
+    hold = seq.get("hold") or {}
+    if hold.get("kind") != "cycler":
+        return None
+    last = int(hold.get("last") or hold.get("since") or 0)
+    if int(r.now) <= last:
+        return "its cycler died this round: the next block is tried at the next round"
+    deaths = int(hold.get("deaths") or 1)
+    if deaths < 2:
+        return None
+    nxt = last + min(CYCLER_BACKOFF_SECS * 2 ** min(deaths - 2, 8), CYCLER_BACKOFF_MAX_SECS)
+    if r.now >= nxt or (hold.get("code") and hold["code"] != CODE_ID):
+        return None
+    at = read_autotest(r.paths)
+    try:  # the owner's word since: a yes again (/test auto off then on, operate autotest --on) or /resume
+        said = max(float(at.get("ts") or 0), float(at.get("resumed") or 0))
+    except (TypeError, ValueError):
+        said = 0.0
+    if said > last:
+        return None
+    return f"the next block is tried at {_when(nxt)} (a deploy, or your /stop then /resume, tries again at once)"
 
 
 async def _refused(r: _Round, seq: dict, why: str, kind: str | None) -> dict:
@@ -1108,21 +1349,26 @@ def _wait(r: _Round, seq: dict, why: str) -> dict:
     return seq
 
 
-def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coins: list[str] | None = None) -> dict:
+def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coins: list[str] | None = None,
+          extra: dict | None = None) -> dict:  # fmt: skip
     """An execution fault (or a wallet with no room) holds new blocks: the owner hears it once when it starts (`daily`:
-    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its floor."""
+    once a day), and once when it clears (_clear); the strategy is not dropped and keeps its record. `extra`: what the
+    hold keeps besides (a dead cycler's deaths in a row, when the last was, the code it ran)."""
     day = _day(r.now)
     hold = seq.get("hold")
     if hold and hold.get("kind") == kind:
         if kind != "coin":
             hold["why"] = why
+        hold.update(extra or {})
         if daily and hold.get("told_day") != day:
             hold["told_day"] = day
             r.say(_hold_words(seq, hold))
     else:
         after = int(seq["blocks"][-1]["n"]) if seq.get("blocks") else 0
-        seq["hold"] = hold = {"kind": kind, "why": why, "since": int(r.now), "after": after, "told_day": day} | (
-            {"coins": list(coins)} if coins else {}
+        seq["hold"] = hold = (
+            {"kind": kind, "why": why, "since": int(r.now), "after": after, "told_day": day}
+            | ({"coins": list(coins)} if coins else {})
+            | (extra or {})
         )
         r.say(_hold_words(seq, hold))
     seq["waiting"] = {"why": hold["why"], "since": int(hold["since"])}
@@ -1133,8 +1379,11 @@ def _hold(r: _Round, seq: dict, kind: str, why: str, *, daily: bool = False, coi
 def _hold_words(seq: dict, hold: dict) -> str:
     what = f"Automatic live test holds {_label(seq)}: {hold['why']}."
     if hold["kind"] == "cycler":
-        return (f"{what} An execution fault, not the strategy's: its trades still count and it is not dropped. The next "
-                "block is tried at each round, and you hear again once one runs to its end.")  # fmt: skip
+        return (f"{what} An execution fault, not the strategy's: its trades count (a buy its sniper made after the "
+                "cycler died too) and it is not dropped. One more block is tried at the next round; if its cycler dies "
+                f"as well, no block starts for {CYCLER_BACKOFF_SECS // 3600} hours, then for twice as long after each "
+                "death in a row (a day at most), and a deploy, or your /stop then /resume, tries again at once. You "
+                "hear again once a block runs to its end.")  # fmt: skip
     tail = ", said once a day" if hold["kind"] == "room" else ""
     sell = "".join(f" /sell {m} sells {m[:6]}… now." for m in hold.get("coins") or [])
     return (f"{what}{sell} No block starts until it clears (checked every round{tail}); the strategy is not dropped and "
@@ -1155,9 +1404,9 @@ def _clear(r: _Round, seq: dict, what: str) -> None:
 
 
 def _tally(seq: dict) -> dict[str, Any]:
-    """Every block's trades so far, read both ways (block_live), and the worse of the two readings: its trades, their
-    SOL, which reading it is, and the failed sends and copies in it."""
-    lives = [b["live"] for b in seq.get("blocks") or [] if isinstance(b.get("live"), dict)]
+    """Every block's trades so far, its earlier runs' included, read both ways (block_live), and the worse of the two
+    readings: its trades, their SOL, which reading it is, and the failed sends and copies in it."""
+    lives = _lives(seq)
     own_n, own_sum = sum(int(x["n"]) for x in lives), sum(float(x["sum"]) for x in lives)
     all_n = sum(int(x.get("n_all", x["n"])) for x in lives)
     all_sum = sum(float(x.get("sum_all", x["sum"])) for x in lives)
@@ -1171,7 +1420,7 @@ def _tally(seq: dict) -> dict[str, Any]:
 def _live_words(seq: dict) -> str:
     """What the live numbers include, for the owner's lines: failed sends, the book's copies, buys not measured."""
     tl = _tally(seq)
-    lives = [b["live"] for b in seq.get("blocks") or [] if isinstance(b.get("live"), dict)]
+    lives = _lives(seq)
     out = f"; {tl['failed']} failed sends included ({tl['failed_sol']:.3f} SOL)" if tl["failed"] else ""
     if tl["copies"] and tl["reading"] == "all":
         out += (f"; the book's {tl['copies']} copies counted in: the worse of two readings, since the fills cannot "
@@ -1191,9 +1440,9 @@ def _summary(seq: dict) -> str:
           f"{_live_words(seq)})" if n else f"no live trade judged{_live_words(seq)}")  # fmt: skip
     paper = seq.get("paper")
     k = len(seq.get("blocks") or [])
-    return f"{k} block{'' if k == 1 else 's'}, {lt}" + (
-        f"; paper {float(paper):+.4f} a trade" if paper is not None else ""
-    )
+    earlier = int((seq.get("carried") or {}).get("blocks") or 0)
+    head = f"{k} block{'' if k == 1 else 's'}" + (f" (and {earlier} in its earlier runs)" if earlier else "")
+    return f"{head}, {lt}" + (f"; paper {float(paper):+.4f} a trade" if paper is not None else "")
 
 
 def _history(r: _Round, seq: dict, *, drop: bool) -> None:
@@ -1204,6 +1453,7 @@ def _history(r: _Round, seq: dict, *, drop: bool) -> None:
                                  "label": seq.get("label"), "plan": seq.get("plan"), "approved": seq.get("approved"),
                                  "caps": seq.get("caps"), "wallet": seq.get("wallet"),
                                  "oktech_wallet": seq.get("oktech_wallet"), "floor": seq.get("floor"),
+                                 "allowance": seq.get("allowance"), "carried": seq.get("carried"),
                                  "blocks": seq["blocks"], "trades": n, "live_sol": total,
                                  "live_mean": round(total / n, 6) if n else None, "reading": tl["reading"],
                                  "paper_mean": seq.get("paper"), "dropped": drop, "why": seq.get("why"),

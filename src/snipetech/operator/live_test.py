@@ -247,7 +247,8 @@ def plan(row: dict, equity_sol: float, wallet: str, *, fills: int = FILLS, minut
     """The live test of one eligible strategy: its own size a buy (refused above MAX_BUY_SOL), `fills` buys at most (FILLS
     or fewer), one coin at a time, `minutes` at most (MAX_MINUTES or fewer), and a floor `loss_sol` below the equity it
     starts from (the owner's 1 SOL stop), never under MIN_FLOOR_SOL, rounded down to the cent; or `floor` as given (the
-    automatic test's later blocks keep the first block's, autotest.py). Raises ValueError in plain words."""
+    automatic test's blocks: the wallet each starts from less what is left of its strategy's loss, autotest.py). Raises
+    ValueError in plain words."""
     buy = float(row.get("buy_sol") or 0)
     if not buy > 0:
         raise ValueError("it has no size a buy")
@@ -378,11 +379,12 @@ TEST_GRACE_SECS = 60  # our clock against block time, at the start of a test's w
 
 
 def _bought(store, t: dict, now: float) -> set[str] | None:
-    """The coins the wallet bought while the test's cycler ran (its window on the tape), or None when the tape cannot
-    be read: the book trades from the same wallet, and only these can be the test's own coins."""
+    """The coins the wallet bought while the test's sniper may have been armed (its window on the tape), or None when the
+    tape cannot be read: the book trades from the same wallet, and only these can be the test's own coins. A cycler
+    that ended without its report never disarmed the sniper, so its window runs to now (autotest._window)."""
     rep = t.get("report") or {}
     start = float(t.get("started_at") or now) - TEST_GRACE_SECS
-    end = rep.get("job_ended") or t.get("cycler_ended_at") or now
+    end = now if rep.get("held") is None else (rep.get("job_ended") or t.get("cycler_ended_at") or now)
     try:
         return {tr.mint for tr in store.trades_for_user(t["wallet"], int(start)) if tr.is_buy and tr.ts <= float(end)}
     except Exception:  # noqa: BLE001 - every coin then counts as possibly the test's, as before

@@ -439,7 +439,7 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
             try:  # what the owner's automatic test does next, said in the same reply
                 from . import autotest
 
-                auto = autotest.on_resume(paths)
+                auto = autotest.on_resume(paths, now)
             except Exception:  # noqa: BLE001 - the flag is gone all the same
                 auto = None
             reply += f"\n{auto}" if auto else ""
