@@ -94,7 +94,6 @@ def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = No
     Read from `tape` (the hourly read-only copy when fresh) and written to `store`'s coverage events:edge; the analyst
     reads it, the strategist may propose a sniper for a kind with a positive lower bound over enough moments."""
     from ..analysis import lab as L
-
     from ..qualify.run import lab_tx_cost
 
     kinds = tuple(kinds or DEFAULT_EDGE_KINDS)

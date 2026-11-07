@@ -303,7 +303,6 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     paper test."""
     from ..analysis import lab as L
     from ..analysis import paper
-
     from ..qualify import run as Q
 
     store = svc.store
