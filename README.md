@@ -216,6 +216,7 @@ It installs snipetech under `/opt/snipetech`, asks for your Helius and OKTech ke
 only in `/etc/snipetech/env`, mode 600, and checked against both APIs), and starts:
 
 * `snipetech-tape` — records every trade of every token (several GB/day: give it 500 GB of NVMe);
+  on PumpSwap, each coin's first 30 min after its curve (`[live] amm_recent_secs`, coverage `tape:amm_recent`);
 * `snipetech-daily` — refreshes dev verdicts, ranks KOLs to follow, runs the strategy lab at several
   latencies and writes the OKTech plan to `/var/lib/snipetech/reports/<date>/`;
 * `snipetech-ops` — remote operations at `https://snipetech.<your-ip>.sslip.io` (Caddy, automatic TLS).

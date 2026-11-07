@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -58,6 +59,29 @@ def to_rpc_json(info, slot: int, block_time: int | None) -> dict[str, Any]:
     }  # fmt: skip
 
 
+def account_keys(info) -> list[bytes]:
+    """A transaction's account keys as raw 32-byte values, in `getTransaction` order: static keys, then the lookup
+    tables' writable and read-only addresses (a program reached only through a lookup table counts: p2.bin)."""
+    msg, meta = info.transaction.message, info.meta
+    return [*msg.account_keys, *meta.loaded_writable_addresses, *meta.loaded_readonly_addresses]
+
+
+Handler = Callable[[dict[str, Any], int], Awaitable[None] | None]
+
+
+def dispatch(update, on_tx: Handler, route: Callable[[list[bytes]], Handler | None] | None = None):
+    """One stream update: its transaction goes to `on_tx(tx_json, index_in_block)`. A `route`, when given, sees the
+    raw account keys first and returns the handler to use, or None to drop the transaction unconverted (the
+    conversion, base58 for every key, is two thirds of a transaction's cost: a1.bin 614 of 917 us, 7 Nov)."""
+    if not update.HasField("transaction"):
+        return None
+    info = update.transaction.transaction
+    handler = on_tx if route is None else route(account_keys(info))
+    if handler is None:
+        return None
+    return handler(to_rpc_json(info, update.transaction.slot, int(time.time())), int(info.index))
+
+
 def subscribe_request(programs: list[str], commitment: str = "confirmed", failed: bool = False):
     from .ys import geyser_pb2
 
@@ -70,12 +94,11 @@ def subscribe_request(programs: list[str], commitment: str = "confirmed", failed
     return req
 
 
-async def stream(programs: list[str], on_tx: Callable[[dict[str, Any], int], Awaitable[None] | None],
-                 endpoint: str = DEFAULT_ENDPOINT, token: str | None = None, commitment: str = "confirmed",
-                 on_connect: Callable[[], None] | None = None) -> None:  # fmt: skip
-    """Run one subscription until it ends or fails (the caller reconnects). `on_tx(tx_json, index_in_block)`."""
-    import time
-
+async def stream(programs: list[str], on_tx: Handler, endpoint: str = DEFAULT_ENDPOINT, token: str | None = None,
+                 commitment: str = "confirmed", on_connect: Callable[[], None] | None = None,
+                 route: Callable[[list[bytes]], Handler | None] | None = None) -> None:  # fmt: skip
+    """Run one subscription until it ends or fails (the caller reconnects). `on_tx(tx_json, index_in_block)`;
+    `route` picks a handler per transaction from its raw account keys (see `dispatch`)."""
     import grpc
 
     from .ys import geyser_pb2, geyser_pb2_grpc
@@ -91,7 +114,11 @@ async def stream(programs: list[str], on_tx: Callable[[dict[str, Any], int], Awa
             n += 1
             yield geyser_pb2.SubscribeRequest(ping=geyser_pb2.SubscribeRequestPing(id=n))
 
-    opts = [("grpc.max_receive_message_length", 64 << 20), ("grpc.keepalive_time_ms", 20000), ("grpc.keepalive_timeout_ms", 10000)]
+    opts = [
+        ("grpc.max_receive_message_length", 64 << 20),
+        ("grpc.keepalive_time_ms", 20000),
+        ("grpc.keepalive_timeout_ms", 10000),
+    ]
     async with grpc.aio.secure_channel(endpoint, grpc.ssl_channel_credentials(), options=opts) as ch:
         call = geyser_pb2_grpc.GeyserStub(ch).Subscribe(requests(), metadata=[("x-token", token)])
         connected = False
@@ -100,9 +127,6 @@ async def stream(programs: list[str], on_tx: Callable[[dict[str, Any], int], Awa
                 connected = True
                 if on_connect:
                     on_connect()
-            if not u.HasField("transaction"):
-                continue
-            info = u.transaction.transaction
-            r = on_tx(to_rpc_json(info, u.transaction.slot, int(time.time())), int(info.index))
+            r = dispatch(u, on_tx, route)
             if asyncio.iscoroutine(r):
                 await r

@@ -114,6 +114,9 @@ class ApiConfig:
 class LiveConfig:
     webhook_url: str = ""
     index_amm: bool = False  # also index all PumpSwap trades (heavy)
+    # the tape keeps the PumpSwap trades of coins that left their pump.fun curve within this many seconds (MIG snipes,
+    # the migration-sell exit); 0 = off
+    amm_recent_secs: int = 1800
     rescore_interval_secs: int = 120
     funder_lookup: bool = True  # resolve who funded brand-new deployer wallets
     source: str = "auto"  # auto (LaserStream for the tape when HELIUS_API_KEY is set) | laserstream | logs

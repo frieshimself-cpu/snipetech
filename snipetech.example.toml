@@ -75,6 +75,7 @@ api_key = ""                 # if set, clients must send X-API-Key (or set SNIPE
 [live]
 webhook_url = ""             # POST every signal here (or set SNIPETECH_WEBHOOK_URL)
 index_amm = false            # also index all PumpSwap trades (heavy)
+amm_recent_secs = 1800       # the tape keeps PumpSwap trades of coins that left their curve this recently (0 = off)
 rescore_interval_secs = 120
 funder_lookup = true         # link fresh deployer wallets to their funding wallet's history
 

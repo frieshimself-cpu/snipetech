@@ -51,9 +51,7 @@ def load_idl(filename: str) -> ProgramIdl:
         program_id=raw["address"],
         decoder=IdlDecoder(raw["types"]),
         events={bytes(e["discriminator"]): e["name"] for e in raw["events"]},
-        instructions={
-            bytes(ix["discriminator"]): (ix["name"], tuple(ix["accounts"])) for ix in raw["instructions"]
-        },
+        instructions={bytes(ix["discriminator"]): (ix["name"], tuple(ix["accounts"])) for ix in raw["instructions"]},
         accounts={bytes(a["discriminator"]): a["name"] for a in raw["accounts"]},
         args={ix["name"]: ix.get("args", []) for ix in raw["instructions"]},
     )
@@ -79,6 +77,21 @@ def idl_for(program_id: str) -> ProgramIdl | None:
     if program_id == LAUNCHLAB_PROGRAM:
         return launchlab_idl()
     return None
+
+
+def pump_pool(mint: str, quote_mint: str = WSOL_MINT) -> str:
+    """The PumpSwap pool a pump.fun coin migrates into: the PumpSwap PDA ("pool", index 0, the coin's pool authority,
+    mint, quote), the pool authority being pump.fun's PDA ("pool-authority", mint).
+
+    Why: the recorder knows a coin's pool the moment its curve completes, before the migrate transaction lands and
+    without an RPC call. Every pool the mainnet fixtures trade is this address (tests/test_live_amm.py: 8 of 8, two of
+    them quoted in another token); one derivation costs ~24 us."""
+    from solders.pubkey import Pubkey
+
+    m = bytes(Pubkey.from_string(mint))
+    authority, _ = Pubkey.find_program_address([b"pool-authority", m], Pubkey.from_string(PUMP_PROGRAM))
+    seeds = [b"pool", (0).to_bytes(2, "little"), bytes(authority), m, bytes(Pubkey.from_string(quote_mint))]
+    return str(Pubkey.find_program_address(seeds, Pubkey.from_string(PUMP_AMM_PROGRAM))[0])
 
 
 def decode_event(program_id: str, payload: bytes) -> tuple[str, dict[str, Any]] | None:
@@ -136,6 +149,7 @@ def decode_instruction(program_id: str, data: bytes) -> tuple[str, tuple[str, ..
                 reader.pos = start
                 break
     return name, accounts, args
+
 
 TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
 TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb"
