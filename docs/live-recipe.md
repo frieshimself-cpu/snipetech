@@ -18,8 +18,8 @@ the book retired the sniper and armed a fresh one, so its spare buys are never n
 
 Net −0.0039 SOL over 3 trades (−0.0013 a trade against the forecast +0.027; three trades say nothing yet). The
 landing is the news: 0–1 trades behind at +0.5–0.8 %, against 2–4 behind at +18–43 % for the earlier leaders' copies
-(the "+6 regime"). 7aPo3n buys late in the curve (79–93 %, research round 2), where fewer bots race the leader. Each
-sell carried two failed duplicate sends (Custom 6023), charged to its trip.
+(the "+6 regime"). 7aPo3n buys late in the curve (79–93 %, research round 2), where fewer bots race the leader. The
+first two sells each carried two failed duplicate sends (Custom 6023), charged to their trips.
 
 ## The owner's yes widened: live trading never stops (7 Nov 2026, about 12:10 UTC)
 
