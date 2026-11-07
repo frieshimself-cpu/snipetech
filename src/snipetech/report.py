@@ -734,7 +734,7 @@ def render_lab(r: dict) -> str:
     moved = sorted(
         {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
     )
-    if moved:  # an OKTech hunt buy lands a slot after its trigger, whatever landing the lab was asked for
+    if moved:  # launch-window rules land where an OKTech hunt buy lands, whatever landing the lab was asked for
         out.append("Scored where they trade live, not at the landing above: "
                    + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
     out.append("")

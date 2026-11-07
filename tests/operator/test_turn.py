@@ -345,6 +345,17 @@ def test_the_analyst_tests_one_hypothesis_of_its_own_each_turn():
         assert words in text, words
 
 
+def test_the_analyst_is_told_launch_window_hypotheses_land_where_a_hunt_buy_lands():
+    """7 Nov: launch, whale and burst rules scored at the copy landing made their paper profit inside create bundles no
+    live buy reaches; the protocol never sends them to the copy landing."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    assert (
+        "hunt, whale and burst triggers run live through OKTech hunt and are always scored where a hunt buy lands"
+        in text
+    )
+    assert "for any other kind" not in text
+
+
 def test_runner_is_closed_after_the_turn(env, monkeypatch):
     """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
     'generator didn't stop after athrow()' on the server. The turn closes it itself."""

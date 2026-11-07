@@ -412,7 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--position",
         type=_position,
         default="middle",
-        help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you)",
+        help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you); launch, "
+        "hunt, whale and burst triggers are always scored where a hunt buy lands (a launch a slot after the create)",
     )
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
@@ -424,8 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="run only this trigger (repeatable), an agent's own hypothesis: a JSON object with the "
-                         'trigger\'s fields, e.g. \'{"kind": "hunt", "sol": 4, "window": 1.5, "dev_max": 1}\'; an OKTech '
-                         "hunt is always scored where a hunt buy lands, the others at --latency / --position")  # fmt: skip
+                         'trigger\'s fields, e.g. \'{"kind": "hunt", "sol": 4, "window": 1.5, "dev_max": 1}\'; launch, '
+                         "hunt, whale and burst triggers are always scored where a hunt buy lands, the others at "
+                         "--latency / --position")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
 
     sp = cmd(
@@ -1024,9 +1026,10 @@ async def _run(args, cfg: Config) -> int:
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
                     tape = svc.tape_store if args.hours is None else recent_tape(svc.tape_store, args.hours)
-                    # an OKTech hunt buy lands a slot after its trigger, wherever --position puts the others
+                    # launch-window rules (launch, hunt, whale, burst) run live through OKTech hunt: scored where its
+                    # buy lands, wherever --position puts the others, as `paper freeze` and the strategy search do
                     return lab_collect(tape, cfg, args.buy, args.latency, args.position, args.per_tx,
-                                       landings={"hunt": paper.HUNT_LANDING}, triggers=args.trigger)  # fmt: skip
+                                       landings=paper.LAUNCH_LANDINGS, triggers=args.trigger)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())
