@@ -288,6 +288,22 @@ def test_status_shows_the_wallet_wide_guard_and_todays_result(tmp_path):
         st.close()
 
 
+def test_status_says_a_stop_the_owner_switched_off(tmp_path):
+    """/status shows each stop of the guard on with its value, or off with who switched it off and when."""
+    from snipetech.operator.risk_guard import set_risk
+
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=3.4, wsol=0.1, held=[], snipers=[], spent_today=0.0)
+    ctx, _ = _ctx(tmp_path, FakeSvc(held=[], snipers=[]), snap)
+    set_risk(ctx["paths"], {"day_stop_sol": "off"}, "telegram", NOW - 1800)
+    reply = asyncio.run(handle_command(_cmd("status"), **ctx))
+    assert "risk guard: no new live trade once the wallet is under 10 SOL" in reply and "TRIPPED: " in reply
+    assert "day stop off (the owner, 06 Nov 00:30 UTC)" in reply
+    set_risk(ctx["paths"], {"floor_sol": "off"}, "telegram", NOW - 600)
+    reply = asyncio.run(handle_command(_cmd("status"), **ctx))
+    assert "day stop off (the owner, 06 Nov 00:30 UTC)" in reply and "floor off (the owner, 06 Nov 00:50 UTC)" in reply
+    assert "TRIPPED" not in reply and "cannot tell" not in reply
+
+
 def test_status_counts_a_starting_sniper_as_running(tmp_path):
     svc = FakeSvc(
         held=[], snipers=[{"id": "s1", "name": "a", "status": "starting"}, {"id": "s2", "name": "b", "status": "idle"}]

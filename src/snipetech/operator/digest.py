@@ -87,6 +87,15 @@ def digest_text(
         )
     else:
         lines.append("resources: all ok")
+    # The owner's automatic test: the day's blocks live here, never a Telegram line per block (7 Nov ~12:10 UTC).
+    try:
+        from .autotest import digest_line
+
+        auto = digest_line(paths, now)
+        if auto:
+            lines.append(auto)
+    except Exception as exc:  # noqa: BLE001 - the digest still goes out
+        lines.append(f"automatic test: its record could not be read ({type(exc).__name__})")
     # Notes.
     n, last_decision = _notes_last_24h(paths, now)
     if n == 0:

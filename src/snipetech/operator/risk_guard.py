@@ -21,10 +21,13 @@ Telegram when a stop trips (once a day for each of the two), and /status shows t
 
 operator/RISK holds the owner's values (budget_switch.py's pattern: written atomically as JSON with when and who, a read
 never raises, a value out of its bounds falls back to the owner's 7 Nov value alone). With no file the guard is on at
-the owner's values; there is no off. Only the owner writes it: `/risk stop 1.5`, `/risk floor 9` or `/risk default` in
-Telegram, or `snipetech operate risk --day-stop N --floor N --default` (the cloud session, with the owner's yes in
-chat). The agents' start_job refuses `operate`, and none of their tools writes a file without an extension in
-operator/."""
+the owner's values. Each stop can be switched off (the owner's widened yes, 7 Nov about 12:10 UTC: "Just make it so
+live trading never stops"): it is written as the word "off" with when it was said, and only that word means off; a
+missing value or a file that cannot be read never does, so either falls back to the 7 Nov value, on. A stop that is off
+never trips; with both off the guard reads nothing (no fills, no balance, no coins) and blocks nothing. Only the owner
+writes it: `/risk stop 1.5`, `/risk stop off`, `/risk floor 9`, `/risk floor off` or `/risk default` in Telegram, or
+`snipetech operate risk --day-stop N|off --floor N|off --default` (the cloud session, with the owner's yes in chat).
+The agents' start_job refuses `operate`, and none of their tools writes a file without an extension in operator/."""
 
 from __future__ import annotations
 
@@ -41,13 +44,17 @@ from .paths import OperatorPaths
 DAY_STOP_SOL = 1.0  # the owner's: no new live trade once the day is this far down
 FLOOR_SOL = 10.0  # the owner's: ... or once the wallet (SOL and coins) is under this
 DEFAULTS: dict[str, float] = {"day_stop_sol": DAY_STOP_SOL, "floor_sol": FLOOR_SOL}
-# each value's bounds, in the words the owner reads when one is refused: a typo can neither switch the guard off nor
-# make it stop everything for good (a day stop of 0.1 SOL still lets a day start)
+# the owner's word for a stop switched off (7 Nov ~12:10 UTC); written into operator/RISK as it is, and the only value
+# that means off: a typo, a missing value or a broken file leaves the stop on
+OFF = "off"
+# each number's bounds, in the words the owner reads when one is refused: a typo can neither switch the guard off nor
+# make it stop everything for good (a day stop of 0.1 SOL still lets a day start); off is a word of its own
 RULES = {
-    "day_stop_sol": (lambda v: 0.1 <= v <= 5, "the day stop is 0.1 to 5 SOL"),
-    "floor_sol": (lambda v: 0 <= v <= 1000, "the floor is 0 to 1000 SOL"),
+    "day_stop_sol": (lambda v: 0.1 <= v <= 5, "the day stop is 0.1 to 5 SOL, or off"),
+    "floor_sol": (lambda v: 0 <= v <= 1000, "the floor is 0 to 1000 SOL, or off"),
 }
 FIELDS = tuple(RULES)
+WORD = {"day_stop_sol": "day stop", "floor_sol": "floor"}  # each stop as the owner reads it
 SNAPSHOT_MAX_AGE_SECS = 40 * 60  # the last round's snapshot: older than two rounds, the wallet is read instead
 SETTLE_SECS = 60  # a buy this recent may not be in a wallet read yet (book/run.py TAPE_SETTLE_SECS)
 # the measure stage writes our trades into the fills every 5 minutes (every 15 as the round's stand-in): a last run
@@ -63,8 +70,11 @@ def risk_file(paths: OperatorPaths) -> Path:
     return paths.root / "RISK"
 
 
-def _sane(name: str, value: Any) -> float | None:
-    """`value` as a number inside its bounds, else None. Never raises (a 400-digit integer overflows a float)."""
+def _sane(name: str, value: Any) -> float | str | None:
+    """`value` as a number inside its bounds, or OFF when it is exactly that word, else None. Never raises (a 400-digit
+    integer overflows a float)."""
+    if isinstance(value, str) and value == OFF:
+        return OFF
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
     try:
@@ -74,15 +84,19 @@ def _sane(name: str, value: Any) -> float | None:
     return v if math.isfinite(v) and RULES[name][0](v) else None
 
 
-def read_risk(paths: OperatorPaths) -> dict[str, float]:
-    """The owner's values that are numbers inside their bounds; {} without a file or with one that cannot be read."""
+def _raw(paths: OperatorPaths) -> dict:
     try:
         data = json.loads(risk_file(paths).read_text())
     except (OSError, ValueError):
         return {}
-    if not isinstance(data, dict):
-        return {}
-    out: dict[str, float] = {}
+    return data if isinstance(data, dict) else {}
+
+
+def read_risk(paths: OperatorPaths) -> dict[str, float | str]:
+    """The owner's values that are numbers inside their bounds, or OFF; {} without a file or with one that cannot be
+    read."""
+    data = _raw(paths)
+    out: dict[str, float | str] = {}
     for name in FIELDS:
         v = _sane(name, data.get(name))
         if v is not None:
@@ -90,28 +104,48 @@ def read_risk(paths: OperatorPaths) -> dict[str, float]:
     return out
 
 
-def limits(paths: OperatorPaths) -> dict[str, float]:
-    """Each value from the owner's file when it is there and sane, else the owner's 7 Nov value."""
-    return DEFAULTS | read_risk(paths)
+def limits(paths: OperatorPaths) -> dict[str, float | None]:
+    """Each value from the owner's file when it is there and sane, else the owner's 7 Nov value; None for a stop the
+    owner switched off."""
+    return {name: None if v == OFF else float(v) for name, v in (DEFAULTS | read_risk(paths)).items()}
 
 
-def set_risk(paths: OperatorPaths, values: dict[str, Any], by: str, now: float | None = None) -> dict[str, float]:
-    """Write the owner's `values` over what the file holds and return what it holds now. Every value is checked before
-    anything is written: an unknown name or a value out of its bounds raises ValueError in plain words (never repeating
-    the value: a secret pasted by mistake must not reach the chat) and changes nothing."""
+def set_times(paths: OperatorPaths | None) -> dict[str, float]:
+    """When the owner set each value the file holds: its own time, or the file's for a value written before each value
+    had one (until 7 Nov ~13:00 UTC the file kept a single time)."""
+    if paths is None:
+        return {}
+    data = _raw(paths)
+    at = data.get("at") if isinstance(data.get("at"), dict) else {}
+    out: dict[str, float] = {}
+    for name in read_risk(paths):
+        ts = at.get(name, data.get("ts"))
+        if isinstance(ts, (int, float)) and not isinstance(ts, bool) and math.isfinite(ts):
+            out[name] = float(ts)
+    return out
+
+
+def set_risk(paths: OperatorPaths, values: dict[str, Any], by: str, now: float | None = None) -> dict[str, float | str]:
+    """Write the owner's `values` (each a number, or OFF) over what the file holds and return what it holds now; the
+    file keeps when each value was set. Every value is checked before anything is written: an unknown name, or a value
+    that is neither a number inside its bounds nor OFF, raises ValueError in plain words (never repeating the value: a
+    secret pasted by mistake must not reach the chat) and changes nothing."""
     unknown = sorted(set(values) - set(FIELDS))
     if unknown:
         raise ValueError(f"unknown guard value {', '.join(unknown)} (known: {', '.join(FIELDS)})")
+    now = time.time() if now is None else now
+    before = set_times(paths)
     new = read_risk(paths)
     for name, value in values.items():
         v = _sane(name, value)
         if v is None:
             raise ValueError(RULES[name][1])
         new[name] = v
+    at = {name: int(now) if name in values else int(before.get(name, now)) for name in new}
     paths.ensure()
     f = risk_file(paths)
     tmp = f.with_name(f.name + ".tmp")
-    tmp.write_text(json.dumps({**new, "ts": int(time.time() if now is None else now), "by": by}))
+    tmp.write_text(json.dumps({**new, "ts": int(now), "by": by, "at": at}))
     tmp.replace(f)
     return new
 
@@ -272,9 +306,9 @@ def day_result(store, wallet: str, now: float, held: list[dict], *, per_tx_sol: 
 
 @dataclass(frozen=True)
 class Guard:
-    """The guard as it stands: `tripped` while a stop holds (no new live trade); `known` when both stops could be read
-    or one of them holds; `kinds` the stops that hold ("day", "floor"); `reason` why it is tripped, or what could not be
-    read, in plain words ("" when it is clear)."""
+    """The guard as it stands: `tripped` while a stop holds (no new live trade); `known` when every stop that is on
+    could be read or one of them holds; `kinds` the stops that hold ("day", "floor"); `reason` why it is tripped, or
+    what could not be read, in plain words ("" when it is clear). A stop the owner switched off is None."""
 
     tripped: bool
     known: bool
@@ -282,10 +316,15 @@ class Guard:
     kinds: tuple[str, ...]
     day: dict[str, Any] | None
     equity_sol: float | None  # SOL, wrapped SOL and the priced coins (a lower bound while a coin is unpriced)
-    day_stop_sol: float
-    floor_sol: float
+    day_stop_sol: float | None  # None: the owner switched the day stop off
+    floor_sol: float | None  # None: the owner switched the floor off
     owner_set: bool
     reasons: tuple[str, ...] = ()  # each stop's own words, in the order of `kinds`
+
+
+def is_off(paths: OperatorPaths) -> bool:
+    """Both stops are switched off: the guard reads nothing and blocks nothing."""
+    return all(v is None for v in limits(paths).values())
 
 
 def _sol(x: float) -> str:
@@ -319,9 +358,13 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
     its coins by the shared rule (positions.py; None: not known), read at `held_ts` (now by default). The day stop holds
     once today is at least the day stop down; the floor once the wallet is under it. A measure stage that has stopped
     writing the fills while the wallet trades makes the day one the guard cannot tell. Reads the store and the owner's
-    file, nothing else."""
+    file, nothing else, and only what a stop that is on needs: with the day stop off no fills, with the floor off no
+    balance, and with both off nothing at all (it is clear, never "cannot tell")."""
     lim = limits(paths)
     stop, floor = lim["day_stop_sol"], lim["floor_sol"]
+    if stop is None and floor is None:  # the owner switched both off (7 Nov ~12:10 UTC): nothing to read or block
+        return Guard(tripped=False, known=True, reason="", kinds=(), day=None, equity_sol=None, day_stop_sol=None,
+                     floor_sol=None, owner_set=True)  # fmt: skip
     wallet = wallet if wallet is not None else (cfg.operator.wallet or "")
     ignore = set(cfg.operator.ignore_mints or ())
     coins = None if held is None else [h for h in held if h.get("mint") and h.get("mint") not in ignore]
@@ -331,9 +374,9 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
     day = None
     if not wallet:
         unknown.append("no sniper wallet is set ([operator] wallet)")
-    elif coins is None:
+    elif coins is None:  # the day counts the coins our buys hold, the floor their value: either stop needs them
         unknown.append("the wallet's coins are not known")
-    else:
+    elif stop is not None:
         try:
             day = day_result(store, wallet, now, coins, per_tx_sol=cfg.costs.per_tx_sol(),
                              lookback_days=cfg.measure.lookback_days, held_ts=held_ts, ignore=ignore)  # fmt: skip
@@ -342,7 +385,7 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
                 unknown.append(lag)
         except Exception as exc:  # noqa: BLE001 - the guard says it cannot tell; it never says clear
             unknown.append(f"the fills could not be read ({type(exc).__name__})")
-    if day is not None and day["total_sol"] <= -stop + 1e-9:
+    if day is not None and stop is not None and day["total_sol"] <= -stop + 1e-9:
         kinds.append("day")
         unread = (f", {_sol(day['unread_sol'])} of it in trades the measure stage has not written yet"
                   if abs(day.get("unread_sol") or 0) >= 0.005 else "")  # fmt: skip
@@ -350,7 +393,9 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
                     f"{unread}, {_sol(day['open_sol'])} in coins still held), at or past the {stop:g} SOL day "
                     "stop")  # fmt: skip
     equity = None
-    if sol is None:
+    if floor is None:
+        pass  # the floor is off: the balance is not needed
+    elif sol is None:
         unknown.append("the wallet's balance is not known")
     elif coins is not None:
         equity = round(
@@ -370,42 +415,51 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
                  reasons=tuple(said))  # fmt: skip
 
 
-def from_snapshot(store, cfg, paths: OperatorPaths, now: float, snap) -> Guard:
-    """The guard from the last round's snapshot (its SOL, wrapped SOL and coins); a snapshot older than two rounds, of
-    another wallet, or one that could not read the balances, leaves the wallet unknown."""
+def _snap_wallet(cfg, now: float, snap) -> tuple[float | None, list[dict] | None, float | None]:
+    """(SOL and wrapped SOL, the coins, when they were read) from the last round's snapshot; Nones for a snapshot older
+    than two rounds, of another wallet, or one that could not read the balances."""
     wallet = cfg.operator.wallet or ""
     fresh = (snap is not None and now - float(snap.ts) <= SNAPSHOT_MAX_AGE_SECS
              and not (wallet and snap.wallet and snap.wallet != wallet))  # fmt: skip
     sol = snap.native_sol + snap.wsol if fresh and snap.native_sol is not None and snap.wsol is not None else None
     held = list(snap.held or []) if fresh and sol is not None else None
-    return evaluate(store, cfg, paths, now, sol=sol, held=held, held_ts=float(snap.ts) if held is not None else None)
+    return sol, held, (float(snap.ts) if held is not None else None)
 
 
-async def read_wallet(svc, cfg, wallet: str) -> tuple[float, list[dict]]:
-    """(SOL and wrapped SOL, the coins by the shared rule) read now, WALLET_READ_SECS at most; raises otherwise."""
+def from_snapshot(store, cfg, paths: OperatorPaths, now: float, snap) -> Guard:
+    """The guard from the last round's snapshot (its SOL, wrapped SOL and coins); a snapshot older than two rounds, of
+    another wallet, or one that could not read the balances, leaves the wallet unknown."""
+    sol, held, held_ts = _snap_wallet(cfg, now, snap)
+    return evaluate(store, cfg, paths, now, sol=sol, held=held, held_ts=held_ts)
+
+
+async def read_wallet(svc, cfg, wallet: str, *, balance: bool = True) -> tuple[float | None, list[dict]]:
+    """(SOL and wrapped SOL, the coins by the shared rule) read now, WALLET_READ_SECS at most; raises otherwise. With
+    `balance` False (the floor is off) the SOL is not read and is None."""
     ignore = list(cfg.operator.ignore_mints or ())
-    sol = await asyncio.wait_for(svc.wallet_sol(wallet), WALLET_READ_SECS)
+    sol = await asyncio.wait_for(svc.wallet_sol(wallet), WALLET_READ_SECS) if balance else None
     held = await asyncio.wait_for(svc.open_positions(wallet, ignore=ignore), WALLET_READ_SECS)
-    return float(sol), list(held or [])
+    return (None if sol is None else float(sol)), list(held or [])
 
 
 async def tripped(svc, cfg, paths: OperatorPaths, now: float, *, snap=None, sol: float | None = None,
                   held: list[dict] | None = None) -> tuple[bool, str]:  # fmt: skip
     """(True, why) while a stop holds or the guard cannot tell, (False, "") when it is clear: what every start path
-    asks. The wallet comes from `sol` and `held` when given, else the snapshot when it is fresh, else a read now."""
+    asks. The wallet comes from `sol` and `held` when given, else the snapshot when it is fresh, else a read now (of
+    what a stop that is on needs: nothing at all with both off)."""
+    if is_off(paths):  # the owner switched both stops off: clear, with nothing read
+        return False, ""
     store = getattr(svc, "store", None)
-    g = None
-    if sol is None and held is None and snap is not None:
-        g = from_snapshot(store, cfg, paths, now, snap)
-        if g.equity_sol is None and not g.tripped:  # too old, another wallet, or no balance in it: read the wallet
-            g = None
-    if g is None and sol is None and held is None:
+    held_ts = None
+    if sol is None and held is None and snap is not None:  # too old, another wallet, or no balance in it: Nones
+        sol, held, held_ts = _snap_wallet(cfg, now, snap)
+    if sol is None and held is None:
         try:
-            sol, held = await read_wallet(svc, cfg, cfg.operator.wallet or "")
+            sol, held = await read_wallet(svc, cfg, cfg.operator.wallet or "",
+                                          balance=limits(paths)["floor_sol"] is not None)  # fmt: skip
         except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
             return True, f"the guard cannot tell: the wallet could not be read ({type(exc).__name__})"
-    if g is None:
-        g = evaluate(store, cfg, paths, now, sol=sol, held=held)
+    g = evaluate(store, cfg, paths, now, sol=sol, held=held, held_ts=held_ts)
     return (True, g.reason) if g.tripped or not g.known else (False, "")
 
 
@@ -413,14 +467,38 @@ async def tripped(svc, cfg, paths: OperatorPaths, now: float, *, snap=None, sol:
 
 
 def rule_words(g: Guard) -> str:
-    return f"no new live trade once the day is {g.day_stop_sol:g} SOL down or the wallet is under {g.floor_sol:g} SOL"
+    """The stops that are on, as one rule."""
+    parts = [f"the day is {g.day_stop_sol:g} SOL down"] if g.day_stop_sol is not None else []
+    parts += [f"the wallet is under {g.floor_sol:g} SOL"] if g.floor_sol is not None else []
+    return f"no new live trade once {' or '.join(parts)}" if parts else "no stop holds any live trade"
+
+
+def _when(ts) -> str:
+    try:
+        return time.strftime("%d %b %H:%M UTC", time.gmtime(float(ts)))
+    except (TypeError, ValueError, OverflowError):
+        return "an unknown time"
+
+
+def off_words(g: Guard, paths: OperatorPaths | None = None) -> list[str]:
+    """Each stop the owner switched off, as "day stop off (the owner, 07 Nov 13:00 UTC)"."""
+    at = set_times(paths)
+    return [f"{WORD[name]} off (the owner{', ' + _when(at[name]) if name in at else ''})" for name in FIELDS
+            if getattr(g, name) is None]  # fmt: skip
 
 
 def status_line(g: Guard, paths: OperatorPaths | None = None) -> str:
-    """The guard in one line for /status and /risk: the rule, whose values, today's result and the wallet."""
-    whose = (f"your setting{_set_at(paths)}" if paths is not None else "your setting") if g.owner_set else (
-        "the 7 Nov plan's values")  # fmt: skip
-    head = f"risk guard: {rule_words(g)} ({whose})"
+    """The guard in one line for /status and /risk: each stop on with its value and whose it is, or off with when the
+    owner switched it off, today's result and the wallet (each read only while a stop that is on needs it)."""
+    offs = off_words(g, paths)
+    on = [name for name in FIELDS if getattr(g, name) is not None]
+    if not on:
+        return f"risk guard: {', '.join(offs)}: no stop holds any live trade"
+    owners = read_risk(paths) if paths is not None else {}
+    mine = any(owners.get(name) not in (None, OFF) for name in on) if paths is not None else g.owner_set
+    whose = (f"your setting{_set_at(paths) if paths is not None else ''}" if mine
+             else f"the 7 Nov plan's value{'s' if len(on) > 1 else ''}")  # fmt: skip
+    head = f"risk guard: {rule_words(g)} ({whose})" + "".join(f"; {o}" for o in offs)
     facts = []
     if g.day is not None:
         d = g.day
@@ -464,8 +542,8 @@ def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> boo
                        "stops its snipers once the wallet holds nothing (while it holds any coin every book sniper "
                        "keeps running, since the book cannot tell which one holds it and a stopped sniper strands its "
                        "coin, and each can still buy up to its cap: /sell <coin> sells the coin); no live test starts "
-                       f"or re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> changes "
-                       "it.", "decision" if page else "info")  # fmt: skip
+                       f"or re-arms; {_until(new, g)}. /risk shows it; /risk stop or /risk floor, with SOL or off, "
+                       "changes it.", "decision" if page else "info")  # fmt: skip
     if page and notifier is not None:
         notifier.send(line)
     return True
@@ -473,13 +551,16 @@ def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> boo
 
 # -- /risk in Telegram and `operate risk` ----------------------------------------------------------------------------
 
-USAGE = "Send /risk to see it, /risk stop <SOL a day>, /risk floor <SOL> or /risk default."
+USAGE = ("Send /risk to see it; /risk stop <SOL a day> or /risk stop off; /risk floor <SOL> or /risk floor off; /risk "
+         "default (on again at 1 SOL a day and 10 SOL).")  # fmt: skip
 _NAMES = {"stop": "day_stop_sol", "floor": "floor_sol"}
 
 
 def risk_reply(cfg, paths: OperatorPaths, store, snap, args: list[str], by: str, now: float) -> str:
-    """/risk (show the guard and today's result), /risk stop 1.5, /risk floor 9, /risk default. Nothing else is
-    understood, and nothing the owner sent is repeated (a secret key pasted by mistake must not reach the chat)."""
+    """/risk (show the guard and today's result), /risk stop 1.5, /risk stop off, /risk floor 9, /risk floor off,
+    /risk default. Each stop is named: /risk off alone is not understood, so one word never switches both off. Nothing
+    else is understood, and nothing the owner sent is repeated (a secret key pasted by mistake must not reach the
+    chat)."""
     words = [w.lower() for w in args]
 
     def line() -> str:
@@ -492,9 +573,9 @@ def risk_reply(cfg, paths: OperatorPaths, store, snap, args: list[str], by: str,
         return "risk guard back to the 7 Nov plan's values: " + line()
     if len(words) == 2 and words[0] in _NAMES:
         try:
-            value = float(words[1].removesuffix("sol"))
+            value: float | str = OFF if words[1] == OFF else float(words[1].removesuffix("sol"))
         except ValueError:
-            return f"risk guard not changed: {words[0]} needs a number of SOL after it. {USAGE} {line()}"
+            return f"risk guard not changed: {words[0]} needs a number of SOL or off after it. {USAGE} {line()}"
         try:
             set_risk(paths, {_NAMES[words[0]]: value}, by, now)
         except ValueError as exc:
@@ -504,9 +585,10 @@ def risk_reply(cfg, paths: OperatorPaths, store, snap, args: list[str], by: str,
 
 
 def risk_cli(cfg, args, now: float | None = None) -> int:
-    """`snipetech operate risk [--day-stop N] [--floor N] [--default]`: sets exactly the values given (the cloud session
-    names each value the owner agreed to in chat: `remote --wait run operate risk ...`). Prints where the file is and
-    the guard that applies; a bad value, or a guard flag without `risk`, changes nothing and exits with the reason."""
+    """`snipetech operate risk [--day-stop N|off] [--floor N|off] [--default]`: sets exactly the values given (the cloud
+    session names each value the owner agreed to in chat: `remote --wait run operate risk ...`). Prints where the file
+    is and the guard that applies; a bad value, or a guard flag without `risk`, changes nothing and exits with the
+    reason."""
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     values = {k: v for k, v in (("day_stop_sol", args.day_stop), ("floor_sol", args.risk_floor)) if v is not None}
     if args.action != "risk":

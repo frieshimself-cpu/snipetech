@@ -13,12 +13,15 @@ _RULES = """\
 Hard rules (the tools enforce them too):
 - You never trade. You have no tool that touches OKTech, wallets, keys or money, and you do not ask for one. Any live
   step is the owner's decision in chat; you only put the evidence in front of them.
-- A live test is the owner's own: the owner reads the plan and starts it with /test in Telegram, or the round starts one by
-  itself under the owner's standing yes (operator/AUTOTEST, /test auto), the round runs it, /stop ends it.
+- A live test is the owner's own: the owner reads the plan and starts it with /test in Telegram, or the round runs one by
+  itself, block after block, under the owner's standing yes (operator/AUTOTEST, /test auto: a strategy that passes on
+  paper trades until live falls below half of paper or it is at its floor, then the next one takes over;
+  operator/autotest.json says which runs and why one was dropped). /stop holds it and /resume lets it go on.
   operator/TEST.json (read_file) says which strategy, its caps and how it stands; while it runs or closes (its last
-  coin being sold), its one sniper and its one coin are expected. The wallet-wide guard (operator/RISK, /risk: no new
-  live trade once the day is 1 SOL down or the wallet under 10 SOL) is the owner's too. To suggest a test, name the
-  strategy and the evidence in a note; never write those files.
+  coin being sold), its one sniper and its one coin are expected. The wallet-wide guard (operator/RISK, /risk: by
+  default no new live trade once the day is 1 SOL down or the wallet under 10 SOL, and the owner may
+  switch either stop off) is the owner's too. To suggest a test, name the strategy and the evidence in a note;
+  never write those files.
 - Research jobs: start_job accepts only lab, follow, discover-wallets, label, copy-rank, paper, study, copy. One lab at a
   time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the outputs of the
   last 24 h are there with their log paths — read them with read_job_log (the JSON is the last part of the log) instead

@@ -320,8 +320,10 @@ with `read_fills`.
 mean after 10 live fills, else its verdict score; `min_score` floor), keeps one capped copy sniper per wallet in the
 top `max_wallets`, assigns bid arms (`[book] bid_arms`; the alternative arm for an `explore_share` of wallets), sizes
 each fill so the arm's fee is at most 3 % of it (an arm that cannot is skipped and named), and applies the stops:
-equity floor, day stop, daily risk, and the owner's wallet-wide guard (`/risk`, below). It never stops a sniper
-while the wallet holds a coin. With `enabled = false` (the default) it only writes `[book dry] would …` notes, once
+equity floor, day stop, daily risk, and the owner's wallet-wide guard (`/risk`, below). The floor and the day stop are
+your `/risk` values where you set them, a number or off (the config file pins every default, and changing it needs
+SSH); the daily cap of SOL bought (2 SOL) goes with your day stop's off and stays while your day stop is a number, and
+a stop you switched off never halts the book. It never stops a sniper while the wallet holds a coin. With `enabled = false` (the default) it only writes `[book dry] would …` notes, once
 per action per day, and calls OKTech for nothing; the owner reads a day of those before flipping `enabled = true` in
 the config file, after which every stop, create and start is a Telegram line. `--live` on the command line is
 refused while the config says disabled.
@@ -421,10 +423,14 @@ starts while the tape is behind; `/stop` cancels one not started and ends a runn
 file or start a test (`operator/live_test.py`, docs/live-recipe.md).
 
 **The wallet-wide guard (`/risk`).** The owner's rule of 7 Nov: no new live trade once the day is 1 SOL down or the
-wallet is under 10 SOL. It is on from the start, with no off. `/risk` shows it with today's result; `/risk stop 1.5`
-and `/risk floor 9` change it (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 SOL), `/risk default` goes back to 1 and
-10. From the cloud session, with your OK in chat: `snipetech remote --wait run operate risk --day-stop 1.5 --floor 9`
-(`--default` to go back). The day's result is our own trading only: today's closed round trips from the measure
+wallet is under 10 SOL. It is on from the start. `/risk` shows it with today's result; `/risk stop 1.5` and `/risk floor
+9` change it (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 SOL), `/risk stop off` and `/risk floor off` switch a
+stop off (your widened yes of 7 Nov: "Just make it so live trading never stops"), `/risk default` puts both back on at
+1 and 10. From the cloud session, with your OK in chat: `snipetech remote --wait run operate risk --day-stop 1.5
+--floor off` (`--default` to go back). Only the word off switches a stop off: a missing or broken file leaves it on. A
+stop that is off never trips; with both off the guard reads nothing and blocks nothing, and `/risk` and `/status` say
+"off (the owner, <time>)". The book's floor and day stop follow your values (above). The day's result is our own
+trading only: today's closed round trips from the measure
 stage's fills plus the coins our buys still hold at the tape's price, so a deposit or a withdrawal moves nothing; our
 trades the fills do not have yet are read from the tape, and a stalled measure stage (40 minutes, with trades since)
 is a day the guard cannot tell, which starts nothing. While
@@ -434,18 +440,27 @@ re-arm, like `/stop`). While the wallet holds any coin every book sniper keeps r
 (3): the book cannot tell which one holds the coin, and a stopped sniper strands it; `/sell <coin>` sells it. One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
 cannot write it (`operator/risk_guard.py`).
 
-**The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan"): when a strategy passes
-on paper, one live test starts by itself at the next round, at the strategy's own size (0.2 SOL a buy at most), at most
-10 buys one coin at a time, 120 minutes, stopping 1 SOL below the wallet's start. After its 10 trades it goes on in
-blocks of 10 (at most 3 more) only while the live mean per trade, read from the measure stage's fills (failed sends
-included, and the worse of two readings while the book's copies from the same wallet cannot be told apart for sure),
-is at least half of the paper mean; the whole sequence never goes more than 1 SOL below the first block's start. Otherwise it stops and
-the analyst works out why. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote
---wait run operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session);
-nothing starts by itself on another wallet. `/test auto` shows it; `/test auto off` starts no more (a running block
-runs to its end, `/stop` ends it now, and a `/stop` between blocks ends the sequence even if `/resume` follows). At the
-end of a sequence it turns itself off, and a new one needs your yes again. Its files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can
-write neither (`operator/autotest.py`, docs/live-recipe.md).
+**The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan", widened at about 12:10:
+"Just make it so live trading never stops"): when a strategy passes on paper it trades live by itself, block after
+block, at its own size (0.2 SOL a buy at most), each block at most 10 buys one coin at a time and 120 minutes, with no
+limit on blocks or hours. A strategy may lose 1 SOL by its own trades, read from the measure stage's fills after every
+block (failed sends included, and the worse of two readings while the book's copies from the same wallet cannot be told
+apart for sure): there it is at its floor and dropped for good, whatever its number of trades. Each block's floor is the
+wallet it starts from less what is left of that 1 SOL, so a deposit or a withdrawal moves the floor and never drops a
+strategy. Once it has 10 live round trips of its own it is judged after every block on the live mean per trade: at least
+half of the paper mean and above zero, it goes on; below that it is dropped for good, and the next strategy that passes
+on paper takes over with a floor of its own (with none, it waits for one); a strategy that comes back keeps its live
+record. A fault (a cycler that died, OKTech not answering or refusing, a coin left unsold, the wallet unreadable, the
+measure stage stalled) holds it until it clears and never drops it; so does a wallet with no room for a block. A coin
+left unsold is never counted at its whole cost while the wallet holds it; a cycler that dies twice in a row holds new
+blocks for 4 hours, then longer, unless a deploy changes the code or you send `/stop` then `/resume`. You hear a
+strategy start, a drop, a hold and its clearing; never a line per block (the day's blocks are in the digest), and
+`/status` shows it. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote --wait run
+operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session); nothing starts
+by itself on another wallet. It never turns itself off: `/test auto off` does (a running block runs to its end); `/stop`
+holds it while the flag is set and `/resume` lets the same strategy go on. Its files are `operator/AUTOTEST` (yours) and
+`operator/autotest.json` (the strategy running and the ones dropped); the agents can write neither
+(`operator/autotest.py`, docs/live-recipe.md).
 
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
 round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.

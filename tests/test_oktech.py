@@ -906,6 +906,31 @@ def test_the_cycler_reads_the_owners_guard_file_next_to_the_database(monkeypatch
     store.close()
 
 
+def test_with_the_owners_guard_off_the_cycler_reads_no_balance_for_it(monkeypatch, tmp_path):
+    """The owner's widened yes (7 Nov ~12:10 UTC): no day stop and no wallet floor. With both stops off in operator/RISK
+    the guard never says "cannot tell": the cycler starts and re-arms even while the wallet's SOL cannot be read, since
+    the guard needs nothing of it (the cycler's own floor reads the balance on its own)."""
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.operator.risk_guard import set_risk
+
+    flag = {"stop": False}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard="real")
+    svc.cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    set_risk(OperatorPaths(tmp_path), {"day_stop_sol": "off", "floor_sol": "off"}, "telegram")
+    asked: list[str] = []
+
+    async def unreadable(address):
+        asked.append(address)
+        raise RuntimeError("rpc down")
+
+    monkeypatch.setattr(svc, "wallet_sol", unreadable)
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 3))
+    assert rep["reason"].startswith("time limit") and rep["restarts"] >= 1 and asked == []
+    assert not any("cannot tell" in e for e in rep["events"])
+    store.close()
+
+
 def test_a_sale_that_takes_the_day_past_the_stop_blocks_the_next_rearm(monkeypatch, tmp_path):
     """The cycler re-arms seconds after a sale, and the measure stage writes the sale up to 5 minutes later: a guard
     resting on the fills alone counted the coin's loss while it was held and lost it the moment it was sold, so the

@@ -42,6 +42,96 @@ it before the first raise.
   `GXcAHhvu…HRtQ` at 11:25, 11:31 and 12:45). A look-alike `GXcANzWb…HRtQ` sent it zero-SOL transfers at 11:27 and
   11:33 (address poisoning; the owner was warned).
 
+### How the yes runs as code
+
+Built 7 Nov on branch `never-stops`; it applies once deployed. The guard's off is the owner's own word in Telegram, as
+every change of it always was: after the deploy, `/risk stop off` and `/risk floor off`.
+
+**1. The wallet-wide guard can be off** (`operator/risk_guard.py`; the owner's values in `operator/RISK`).
+
+- `/risk stop off` and `/risk floor off` in Telegram (the owner's chat only; a message more than 5 minutes old is
+  refused), or `snipetech remote --wait run operate risk --day-stop off --floor off` from the cloud session with the
+  owner's yes in chat. `/risk off` alone is not understood: each stop is named.
+- The file keeps the word "off" with when it was said, and only that word means off: a missing value or a file that
+  cannot be read falls back to the 7 Nov values, on (1 SOL a day, 10 SOL). `/risk default` puts both back on there.
+  The numbers keep their bounds (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 SOL).
+- A stop that is off never trips. With both off the guard reads nothing (no fills, no balance, no coins), never says
+  it cannot tell, and blocks nothing; the cycler reads the wallet's SOL for it only while the floor is on.
+- `/risk` and `/status` show each stop on with its value, or "off (the owner, <time>)".
+- At 12:55 the owner set a 5 SOL day stop and a 0 SOL floor, the most the bounds allowed; those apply until the
+  owner's off.
+
+**2. The book follows the owner's guard** (`book/switch.book_stops`).
+
+- The server's config file pins `[book] equity_floor_sol` 3.0 and `day_stop_sol` 1.0 (a dump of every default;
+  changing one needs SSH, which the owner does not do). A value the owner set with `/risk`, a number or off, is the
+  book's floor or day stop instead, value by value; with none, the pinned values apply as before. So the owner's 12:55
+  values make the book's floor 0 SOL and its day stop 5 SOL.
+- The daily cap of SOL bought (`daily_risk_sol`, 2 SOL: ten 0.2 SOL buys) halts the book for the day rather than
+  sizing it, so it follows the day stop's off, and only its off: with the owner's day stop off the cap is off too; while
+  the day stop is a number (the owner's 5 SOL of 12:55 was set for the guard, before the book followed `/risk`; a
+  tighter `/risk stop 0.5` is no word to buy more) the pinned 2 SOL cap stays, and the automatic test's buys from the
+  same wallet count toward it. With the floor off, a balance that cannot be read no longer halts it.
+- What still halts the book: `/stop`, `/book off`, and the guard while it is on and holds. The per-wallet rules are
+  unchanged (a wallet paused after 5 losing live copies, the bar, a sniper retired after its relied-on buy): each drops
+  one wallet, and the book goes on. `/book on` says which stops apply.
+
+**3. The automatic test never stops** (`operator/autotest.py`; the owner's switch in `operator/AUTOTEST`, the record
+in `operator/autotest.json`).
+
+- `/test auto on` and `operate autotest --on --approved "<the owner's words>" --wallet 6VFrZ15V…` write this plan. A
+  switch on from the 09:15 plan runs it too (the owner's latest yes); a strategy's run in progress keeps its floor (what
+  its first floor left below its start).
+- A strategy that passes on paper (as on 09:15: 100+ forward trades where a hunt fill lands, at the measured cost of
+  a trade, a lower bound above zero, also with gains capped) trades in blocks of at most 10 buys and 120 minutes (180
+  at most), one coin at a time, at its own size, on the recorded wallet only. A strategy scored above 0.2 SOL a buy is
+  refused (told once a day), and the best one that fits trades instead. There is no limit on blocks or hours.
+- After every block, once the measure stage has read past it and no coin it bought is still in the wallet, its trades
+  are counted as on 09:15: the measure stage's fills, read two ways (with and without the buys the fills call copies),
+  the failed sends, sales covering 99 % of a buy's tokens, up to 45 minutes' wait for a buy's sale. A coin still held
+  never counts at its whole cost: its block waits until it is sold (its sale counts) or gone (its cost counts 45
+  minutes after a round last saw it), and a sale the measure stage writes late replaces a whole cost counted before.
+- The strategy may lose 1 SOL by its own trades: the lower of the two readings' sums, failed sends included even in a
+  block with no buy. At 1 SOL down, or so near it that another buy and its fees have no room left, it is at its floor
+  and dropped, after any block, whatever its number of trades. Each block's floor is the wallet it starts from less
+  what is left of that 1 SOL, and the cycler stops re-arming under it: with only the strategy trading it is the first
+  block's floor, and a deposit, a withdrawal (11:30 and 11:45 that morning) or the book's result moves it with the
+  wallet, never the strategy's loss. A block the cycler ended on its floor is judged on its trades like any other.
+- Once it has 10 live round trips of its own (never sooner because the cycler counted 10 buys of the wallet: the
+  book's are among them), it is judged after every block on the worse of the two readings: above zero and at least
+  half of paper, the next block. Until then the next block starts, whatever ended the last one (its time limit is
+  normal). Below half of paper, or at its floor, the strategy is dropped for good: the record keeps why and the
+  numbers, the owner gets one line (live against paper), the automatic test never starts that strategy again, and the
+  next one that passes on paper starts in the same round with a floor of its own. With none, it waits and looks again
+  every round. A strategy whose run ends without a drop (the owner's off, its paper flickering for a round) takes its
+  live record into its next run: its trades and what is left of its 1 SOL.
+- An execution fault holds new blocks and never drops a strategy: a cycler that died (its sniper stayed armed with
+  nobody watching until the round closed the block, and a buy it made then counts; no block in the round that finds it,
+  one at the next round, and after a second death in a row none for 4 hours, then twice as long after each death in a
+  row, a day at most, unless a deploy changes the code or the owner sends `/stop` then `/resume`), OKTech not answering
+  or refusing a create, a coin OKTech left unsold (held until it is sold with `/sell` or gone), the wallet unreadable,
+  the measure stage stalled 45 minutes past a block. Each round checks again; the owner hears it once when it starts
+  holding and once when it clears, and the same strategy goes on. A wallet without room for a block holds the same way,
+  said once a day: SOL under a buy, its fees and the coin account's rent (about 0.25 SOL; 10:59 that morning the wallet
+  was emptied), a wallet too small for a floor of at least 1 SOL, or SOL without its wrapped SOL at or below the block's
+  floor (the cycler would not start).
+- It never turns itself off: only `/test auto off` or `operate autotest --off` does, and a block running then runs to
+  its end. `/stop` holds every start while its flag exists (a block running ends at once, its sniper stopped once the
+  wallet holds nothing; a sniper holding a coin keeps running until the coin is sold); `/resume` lets the same strategy
+  go on if it still passes on paper. Both replies say so. The guard, while it is on and holds, holds it too.
+- What the owner hears: a strategy starting, a drop, a hold starting and clearing, and a strategy's run ending without
+  a drop (the owner's off, another wallet, a strategy that no longer passes on paper). Never a line per block or per
+  round: the blocks' own lines are notes, and the day's blocks are in the daily digest. `/status` and `/test auto` show
+  the strategy, its blocks and live round trips, live against paper, what holds it, and the strategies dropped.
+- Recorded: each block in `operator/TEST.json` and `operator/tests.jsonl` as before, and one `"kind": "sequence"` line
+  there per strategy's run, with `"dropped"` true or false, each block's floor and what the run carried from earlier
+  ones.
+- Reviewed before the deploy (7 Nov afternoon), and changed: the 1 SOL was read only at 10 trades and a deposit hid
+  the rest; a withdrawal, the book's loss or the cycler's floor end dropped a strategy that had lost nothing; a dead
+  cycler was replaced every round; a coin left unsold counted its whole cost after 45 minutes; a block of mostly the
+  book's buys was judged on two of the strategy's own; a run that ended forgot its losses; and any day stop the owner
+  set as a number lifted the book's 2 SOL daily cap.
+
 ## The owner's yes for the first launch-rule test (7 Nov 2026, 09:15 UTC)
 
 Asked "What's the most efficient way to do this without rinsing the 10 sol?", the owner answered the plan below with
@@ -58,7 +148,7 @@ Asked "What's the most efficient way to do this without rinsing the 10 sol?", th
 Wallet at the time: 11.88 SOL, nothing held, no sniper running. Why 0.2 SOL and not less: a round trip costs about
 0.009 SOL whatever the size, so a 0.02 SOL test can only lose. Results go in this file as they come.
 
-### How the yes runs as code
+### How the 09:15 yes ran as code (kept for the record; the widened yes above replaced it)
 
 The guard is on from the start. The automatic test starts nothing until the owner's yes is recorded: `/test auto on` in
 Telegram (that message is the yes, for the wallet `/test auto` names), or from the cloud session `snipetech remote

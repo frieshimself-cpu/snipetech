@@ -82,9 +82,10 @@ def test_the_owners_values_are_written_atomically_with_when_and_who(env):
     paths, _store, _cfg = env
     assert RG.set_risk(paths, {"day_stop_sol": 1.5}, "telegram", NOW) == {"day_stop_sol": 1.5}
     assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 10.0}
-    RG.set_risk(paths, {"floor_sol": 9}, "cli", NOW + 60)  # a value not named keeps the file's
+    RG.set_risk(paths, {"floor_sol": 9}, "cli", NOW + 60)  # a value not named keeps the file's, and its time
     data = json.loads(RG.risk_file(paths).read_text())
-    assert data == {"day_stop_sol": 1.5, "floor_sol": 9.0, "ts": NOW + 60, "by": "cli"}
+    assert data == {"day_stop_sol": 1.5, "floor_sol": 9.0, "ts": NOW + 60, "by": "cli",
+                    "at": {"day_stop_sol": NOW, "floor_sol": NOW + 60}}  # fmt: skip
     assert not list(paths.root.glob("RISK*.tmp"))
     RG.clear_risk(paths)
     assert RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0} and not RG.risk_file(paths).exists()
@@ -117,6 +118,116 @@ def test_a_hand_edited_or_broken_file_never_breaks_the_guard(env):
     f.unlink()
     f.mkdir()  # not even a file
     assert RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}
+
+
+# -- the owner's off (7 Nov ~12:10 UTC: "Just make it so live trading never stops") -------------------------------
+
+
+def test_each_stop_can_be_switched_off_and_is_stored_as_an_explicit_off(env):
+    """The owner's widened yes: no day stop and no wallet floor. Each stop is switched off on its own, written into
+    operator/RISK as the word "off" with when it was said; limits() gives None for a stop that is off. /risk default
+    puts both back on at the 7 Nov values."""
+    paths, _store, _cfg = env
+    assert RG.OFF == "off"
+    assert RG.set_risk(paths, {"day_stop_sol": RG.OFF}, "telegram", NOW) == {"day_stop_sol": "off"}
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": 10.0}
+    data = json.loads(RG.risk_file(paths).read_text())
+    assert data["day_stop_sol"] == "off" and data["by"] == "telegram" and data["at"] == {"day_stop_sol": NOW}
+    RG.set_risk(paths, {"floor_sol": "off"}, "cli", NOW + 300)
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": None}
+    assert json.loads(RG.risk_file(paths).read_text())["at"] == {"day_stop_sol": NOW, "floor_sol": NOW + 300}
+    RG.set_risk(paths, {"floor_sol": 4.0}, "telegram", NOW + 600)  # a number again: on at that value
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": 4.0}
+    RG.clear_risk(paths)
+    assert RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}  # no file: on at 1 and 10
+    with pytest.raises(ValueError, match="off"):  # anything else that is not a number in bounds changes nothing
+        RG.set_risk(paths, {"floor_sol": "of"}, "cli", NOW)
+    assert not RG.risk_file(paths).exists()
+
+
+def test_an_off_is_never_inferred_from_a_missing_or_broken_value(env):
+    """Only the word the guard itself writes switches a stop off: a corrupt file, a missing value or any other word
+    leaves the stop on at the owner's 7 Nov value."""
+    paths, _store, _cfg = env
+    f = RG.risk_file(paths)
+    for v in ("OFF", "Off", " off", None, False, True, "", "none", "0", {"off": True}, [], -1):
+        f.write_text(json.dumps({"day_stop_sol": v, "floor_sol": v, "ts": NOW, "by": "hand"}))
+        assert RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}, v
+    for text in ("{not json", "", '"off"', '["off"]', json.dumps({"stop": "off", "floor": "off"})):
+        f.write_text(text)
+        assert RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}, text
+    f.write_text(json.dumps({"day_stop_sol": "off", "ts": NOW, "by": "telegram"}))  # an off from before "at" existed
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": 10.0}
+
+
+def test_a_stop_switched_off_never_trips_on_that_stop(env):
+    paths, store, cfg = env
+    _sell(store, "s1", NOW - 600, M2, pnl=-3.0)  # a day 3 SOL down
+    RG.set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+    g = RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[])
+    assert g.known and not g.tripped and g.day_stop_sol is None and g.floor_sol == 10.0
+    g = RG.evaluate(store, cfg, paths, NOW, sol=9.0, held=[])  # the floor is still on
+    assert g.tripped and g.kinds == ("floor",)
+    RG.clear_risk(paths)
+    RG.set_risk(paths, {"floor_sol": "off"}, "telegram", NOW)
+    g = RG.evaluate(store, cfg, paths, NOW, sol=0.4, held=[])  # 0.4 SOL: no floor any more
+    assert g.tripped and g.kinds == ("day",) and g.floor_sol is None  # the day stop is still on
+    store._exec("DELETE FROM fills")
+    g = RG.evaluate(store, cfg, paths, NOW, sol=0.4, held=[])
+    assert g.known and not g.tripped and g.reason == ""
+    # a stop that is off needs nothing read: with the floor off the balance is not needed
+    assert RG.evaluate(store, cfg, paths, NOW, sol=None, held=[]).known
+
+
+def test_with_both_stops_off_the_guard_reads_nothing_and_blocks_nothing(env):
+    """With both stops off the guard never trips and never "cannot tell": no fills, no measure stage, no balance, no
+    coins are read, and every start path that asks it hears clear."""
+    paths, _store, cfg = env
+    RG.set_risk(paths, {"day_stop_sol": "off", "floor_sol": "off"}, "telegram", NOW)
+
+    class Unreadable:
+        def __getattr__(self, name):
+            raise AssertionError(f"the guard read {name} with both stops off")
+
+    g = RG.evaluate(Unreadable(), cfg, paths, NOW, sol=None, held=None)
+    assert g.known and not g.tripped and g.reason == "" and (g.day_stop_sol, g.floor_sol) == (None, None)
+    assert g.day is None and g.equity_sol is None
+    cfg.operator.wallet = ""  # not even a wallet is needed
+    assert RG.evaluate(Unreadable(), cfg, paths, NOW).known
+    cfg.operator.wallet = W
+    assert asyncio.run(RG.tripped(Unreadable(), cfg, paths, NOW)) == (False, "")  # no wallet read either
+    old = Snapshot(ts=NOW - 3 * 3600, wallet=W, native_sol=None, wsol=None, held=[], snipers=[])
+    assert RG.from_snapshot(Unreadable(), cfg, paths, NOW, old).known
+    assert RG.status_line(RG.from_snapshot(Unreadable(), cfg, paths, NOW, None), paths).startswith("risk guard: ")
+
+
+def test_with_the_day_stop_off_the_fills_are_not_read(env):
+    """A stalled measure stage made the day one the guard cannot tell: with the day stop off it says nothing about the
+    floor, which is the wallet itself."""
+    paths, store, cfg = env
+    _measured(store, NOW - 4 * 3600)
+    _tape(store, "b1", NOW - 3600, M1, buy=True, sol=0.202)
+    _tape(store, "s1", NOW - 3500, M1, buy=False, sol=0.21)
+    assert not RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[]).known  # on: it cannot tell
+    RG.set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+
+    class NoFills:
+        def __getattr__(self, name):
+            raise AssertionError(f"the guard read {name} with the day stop off")
+
+    g = RG.evaluate(NoFills(), cfg, paths, NOW, sol=11.0, held=[])
+    assert g.known and not g.tripped and g.day is None and g.equity_sol == 11.0
+
+
+def test_risk_and_status_say_off_the_owner_and_when(env):
+    paths, store, cfg = env
+    RG.set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+    line = RG.status_line(RG.evaluate(store, cfg, paths, NOW, sol=11.2, held=[]), paths)
+    assert "day stop off (the owner, 07 Nov 10:00 UTC)" in line and "under 10 SOL" in line and "wallet 11.20" in line
+    RG.set_risk(paths, {"floor_sol": "off"}, "telegram", NOW + 300)
+    line = RG.status_line(RG.evaluate(store, cfg, paths, NOW + 300, sol=None, held=None), paths)
+    assert "day stop off (the owner, 07 Nov 10:00 UTC)" in line and "floor off (the owner, 07 Nov 10:05 UTC)" in line
+    assert "no stop holds" in line and "cannot tell" not in line and "TRIPPED" not in line
 
 
 # -- the day's result ----------------------------------------------------------------------------------------------
@@ -482,6 +593,24 @@ def test_a_risk_the_guard_does_not_understand_changes_nothing_and_repeats_nothin
     assert "0.1 to 5 SOL" in _risk(env, "stop", "9") and "0 to 1000 SOL" in _risk(env, "floor", "-1")
 
 
+def test_risk_stop_off_and_floor_off_from_telegram(env):
+    """/risk stop off and /risk floor off: the owner's own chat only, a message that waited is refused, and /risk
+    default puts both back on. /risk off alone is not understood: each stop is named."""
+    paths, _store, _cfg = env
+    reply = _risk(env, "stop", "off")
+    assert reply.startswith("risk guard set:") and "day stop off (the owner, 07 Nov 10:00 UTC)" in reply
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": 10.0}
+    reply = _risk(env, "floor", "OFF", at=NOW + 60)
+    assert "floor off (the owner, 07 Nov 10:01 UTC)" in reply and "no stop holds" in reply
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": None}
+    assert "owner set the wallet-wide guard" in paths.notes.read_text()
+    assert "/risk stop off" in _risk(env, "off") and "not changed" in _risk(env, "off")
+    reply = _risk(env, "default", at=NOW + 120)
+    assert "back to the 7 Nov plan's values" in reply and RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}
+    reply = _risk(env, "floor", "off", date=NOW - 600)  # it waited out an outage: nothing changes
+    assert "10 min old" in reply and not RG.risk_file(paths).exists()
+
+
 def test_a_risk_change_that_waited_in_telegram_is_refused(env):
     """As for /sell and /test go: a change older than 5 minutes waited out an outage; the owner sends it again."""
     paths, _store, _cfg = env
@@ -543,6 +672,16 @@ def test_operate_risk_sets_shows_and_clears_the_owners_file(env, capsys):
         run("risk", "--daily-usd", "200")  # never silently dropped
     assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 9.0}
     assert run("risk", "--default") == 0 and not RG.risk_file(paths).exists()
+    capsys.readouterr()
+    assert run("risk", "--day-stop", "off", "--floor", "OFF") == 0  # the owner's off, as the cloud session sends it
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": None}
+    out = capsys.readouterr().out
+    assert "day stop off (the owner," in out and "floor off (the owner," in out
+    assert json.loads(RG.risk_file(paths).read_text())["by"] == "cli"
+    with pytest.raises(SystemExit):  # neither a number nor "off": argparse refuses it, nothing changes
+        run("risk", "--floor", "maybe")
+    assert RG.limits(paths) == {"day_stop_sol": None, "floor_sol": None}
+    assert run("risk", "--day-stop", "1.5") == 0 and RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": None}
 
 
 def test_the_cli_routes_operate_risk_to_the_guard_and_budget_stays_the_budget(env, monkeypatch):
@@ -580,8 +719,11 @@ def test_no_agent_tool_can_write_the_guard(env):
     jobs.ops.op_run = lambda argv, timeout=0: started.append(argv) or {"id": "x"}
     tools = {t.name: t for t in make_operator_tools(svc, paths, jobs, cfg.operator, NoteSink(paths, now=lambda: NOW))}
     loose = json.dumps({"day_stop_sol": 5, "floor_sol": 0, "ts": NOW, "by": "telegram"})
+    off = json.dumps({"day_stop_sol": "off", "floor_sol": "off", "ts": NOW, "by": "telegram"})
     calls = [("start_job", {"argv": ["operate", "risk", "--floor", "0"]}),
              ("start_job", {"argv": ["operate", "risk", "--default"]}),
+             ("start_job", {"argv": ["operate", "risk", "--day-stop", "off", "--floor", "off"]}),
+             ("write_report", {"name": "RISK", "text": off}), ("write_note", {"text": off, "level": "decision"}),
              ("write_report", {"name": "RISK", "text": loose}), ("write_report", {"name": "../operator/RISK", "text": loose}),
              ("write_report", {"name": "RISK.json", "text": loose}), ("set_candidates", {"items": [json.loads(loose)]}),
              ("write_note", {"text": loose, "level": "decision"}), ("add_lesson", {"text": "loosen the guard", "evidence": loose, "n": 1}),

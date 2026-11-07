@@ -22,7 +22,7 @@ from ..operator.tools import NoteSink
 from ..positions import is_active
 from .policy import BOOK_NAME_RE, GUARD_KILL, BookInputs, BookPlan, ExitChoice, copied_leaders, plan_book
 from .state import day_accounting, record_run
-from .switch import book_live, effective_min_score
+from .switch import book_live, book_stops, effective_min_score
 from .watch import watch_pass, watched_within
 
 
@@ -276,7 +276,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
                      tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}),
-                     guard=guard is None or guard.tripped or not guard.known)  # fmt: skip
+                     guard=guard is None or guard.tripped or not guard.known,
+                     stops=book_stops(cfg, paths))  # fmt: skip  # the owner's /risk values where set, else [book]'s
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.

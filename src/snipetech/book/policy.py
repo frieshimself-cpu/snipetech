@@ -1,6 +1,7 @@
 """The book's policy as a pure function. Inputs in, a plan of actions out, every action with its reason.
 Order: stops first (equity floor, day stop, daily risk, the owner's wallet-wide guard), then the diff between the wanted
-set and the snipers that exist.
+set and the snipers that exist. The book's own stops are the owner's /risk values where the owner set them (BookStops,
+book/switch.book_stops): a stop the owner switched off never halts the book.
 It never stops a sniper while the wallet holds a coin, and never creates or starts under a stop."""
 
 from __future__ import annotations
@@ -88,6 +89,27 @@ def exit_for(copy_plan: dict | str | None, cfg: BookConfig) -> ExitChoice:
     return ExitChoice(str(name), dict(params), "wallet", why)
 
 
+@dataclass(frozen=True)
+class BookStops:
+    """The book's own book-wide stops as they apply: the equity floor, the day stop and the daily cap of SOL bought,
+    each None when off, and whose the floor and the day stop are ("config": the config file's [book] value; "owner": the
+    owner's /risk, operator/RISK). The server's config file pins every default and changing one needs SSH, which the
+    owner does not do (7 Nov), so the owner's word in operator/RISK wins, value by value. The daily cap halts the book
+    for the day (it does not size a fill), so it follows the day stop's off: it is None only while the owner's day stop
+    is off, never because the owner set the day stop to a number."""
+
+    floor_sol: float | None
+    day_stop_sol: float | None
+    daily_risk_sol: float | None
+    floor_from: str = "config"
+    day_from: str = "config"
+
+    @classmethod
+    def pinned(cls, b: BookConfig) -> BookStops:
+        """The config's [book] values, as the book always applied them."""
+        return cls(float(b.equity_floor_sol), float(b.day_stop_sol), float(b.daily_risk_sol))
+
+
 @dataclass
 class BookInputs:
     equity_sol: float | None
@@ -114,6 +136,9 @@ class BookInputs:
     # sniper stops; while it holds any coin (holders None: not traceable) every book sniper is kept, as under the book's
     # own stops, and each can still buy up to max_buys_per_sniper
     guard: bool = False
+    # the book's own floor, day stop and daily cap as they apply (book/switch.book_stops: the owner's /risk values where
+    # set); None: the config's [book] values
+    stops: BookStops | None = None
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
@@ -309,16 +334,18 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         to a leader (then every book sniper counts as a holder: never strand a coin)."""
         return holding and (inp.holders is None or s["w6"] in inp.holders)
 
-    # stops
+    # stops: a stop that is off (the owner's /risk, 7 Nov ~12:10 UTC) never halts the book, and with the floor off the
+    # equity is not needed (an unknown one says nothing about a floor there is not)
+    st = inp.stops or BookStops.pinned(cfg)
     if inp.stopped:
         plan.kill_reason = "owner /stop"
-    elif inp.equity_sol is None:
+    elif st.floor_sol is not None and inp.equity_sol is None:
         plan.kill_reason = "equity unknown"
-    elif inp.equity_sol < cfg.equity_floor_sol:
+    elif st.floor_sol is not None and inp.equity_sol < st.floor_sol:
         plan.kill_reason = "equity below floor"
-    elif inp.day_realised_sol <= -cfg.day_stop_sol:
+    elif st.day_stop_sol is not None and inp.day_realised_sol <= -st.day_stop_sol:
         plan.kill_reason = "day stop"
-    elif inp.day_risk_used_sol >= cfg.daily_risk_sol:
+    elif st.daily_risk_sol is not None and inp.day_risk_used_sol >= st.daily_risk_sol:
         plan.kill_reason = "daily risk used"
     elif inp.guard:  # after the book's own stops, so each keeps the reason it always had
         plan.kill_reason = GUARD_KILL

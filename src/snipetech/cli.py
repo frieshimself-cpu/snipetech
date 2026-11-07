@@ -267,6 +267,18 @@ def _hours(v: str) -> float:
     return h
 
 
+def _sol_or_off(v: str) -> float | str:
+    """operate risk --day-stop / --floor: a number of SOL, or off (the owner's widened yes of 7 Nov ~12:10 UTC: "Just
+    make it so live trading never stops"). Anything else is refused without being repeated (it may be a pasted key)."""
+    word = str(v).strip().lower()
+    if word == "off":
+        return "off"
+    try:
+        return float(word)
+    except ValueError:
+        raise argparse.ArgumentTypeError("a number of SOL, or off") from None
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="snipetech", description="Decide what to snipe and who to copy on pump.fun.")
     p.add_argument("--version", action="version", version=__version__)
@@ -665,10 +677,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--default", dest="budget_default", action="store_true",
                     help="budget or risk: remove the owner's file; the config's (budget) or the 7 Nov plan's (risk) "
                          "values apply again")  # fmt: skip
-    sp.add_argument("--day-stop", dest="day_stop", type=float,
-                    help="risk: no new live trade once the day is this many SOL down (0.1 to 5)")  # fmt: skip
-    sp.add_argument("--floor", dest="risk_floor", type=float,
-                    help="risk: no new live trade once the wallet (SOL and coins) is under this many SOL (0 to 1000)")  # fmt: skip
+    sp.add_argument("--day-stop", dest="day_stop", type=_sol_or_off,
+                    help="risk: no new live trade once the day is this many SOL down (0.1 to 5), or off")  # fmt: skip
+    sp.add_argument("--floor", dest="risk_floor", type=_sol_or_off,
+                    help="risk: no new live trade once the wallet (SOL and coins) is under this many SOL (0 to 1000), "
+                         "or off")  # fmt: skip
     sp.add_argument("--on", dest="autotest_on", action="store_true",
                     help="autotest: turn the owner's standing yes on (needs --approved with the owner's words)")  # fmt: skip
     sp.add_argument("--off", dest="autotest_off", action="store_true", help="autotest: turn it off")
@@ -680,9 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fills", type=float, help="autotest --on: buys a block (1 to 10; 10)")
     sp.add_argument("--minutes", type=float, help="autotest --on: minutes a block (1 to 180; 120)")
     sp.add_argument("--loss-sol", dest="loss_sol", type=float,
-                    help="autotest --on: the whole sequence stops this far below the first block's start (at most 2; 1)")  # fmt: skip
-    sp.add_argument("--more-blocks", dest="more_blocks", type=float,
-                    help="autotest --on: blocks after the first (at most 3; 3)")  # fmt: skip
+                    help="autotest --on: a strategy is dropped this far below its first block's start (at most 2; 1)")  # fmt: skip
     sp.add_argument("--continue-at", dest="continue_at", type=float,
                     help="autotest --on: live must be at least this times paper to go on (0.5 to 1; 0.5)")  # fmt: skip
 

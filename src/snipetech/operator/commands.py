@@ -5,9 +5,10 @@
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task.
 /test is the owner's own capped live test (live_test.py): it shows the plan, and "/test <id> go" only writes the request
-the next operator round starts; nothing here creates or starts a sniper.
+the next operator round starts; nothing here creates or starts a sniper. /test auto is the owner's standing yes
+(autotest.py): live trading that starts by itself and never stops; /stop holds it and /resume lets it go on.
 /risk is the owner's wallet-wide guard (risk_guard.py): it shows the guard and today's result, and /risk stop, /risk floor
-and /risk default change the owner's operator/RISK; nothing the owner sent is repeated."""
+(each with SOL or off) and /risk default change the owner's operator/RISK; nothing the owner sent is repeated."""
 
 from __future__ import annotations
 
@@ -37,8 +38,10 @@ HELP = (
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
     "analyst runs)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
-    "it at the next round, /stop ends it)  /risk [stop <SOL a day>|floor <SOL>|default] (the wallet-wide guard: no new "
-    "live trade once the day is that far down or the wallet under its floor)  /why <wallet> (later phase)"
+    "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
+    "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk [stop <SOL a "
+    "day>|off] [floor <SOL>|off] [default] (the wallet-wide guard: no new live trade once the day is that far down or "
+    "the wallet under its floor; off switches a stop off)  /why <wallet> (later phase)"
 )
 
 
@@ -130,6 +133,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         f"claude spend today {snap.spent_today:.2f} $ of {effective_daily_usd(cfg, paths):g} $",
         f"book: {'on' if book_live(cfg, paths) else 'off'}",
         risk_guard.status_line(risk_guard.from_snapshot(store, cfg, paths, now, snap), paths),
+        _autotest_line(paths, now),
     ]
     if snap.fills:
         lines.append(f"fills since last round: {len(snap.fills)}")
@@ -138,6 +142,16 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
     else:
         lines.append("resources: all ok")
     return "\n".join(lines)
+
+
+def _autotest_line(paths: OperatorPaths, now: float) -> str:
+    """The owner's automatic test for /status (autotest.status_line); its record never breaks /status."""
+    try:
+        from . import autotest
+
+        return autotest.status_line(paths, now)
+    except Exception as exc:  # noqa: BLE001 - /status still answers
+        return f"automatic test: its record could not be read ({type(exc).__name__})"
 
 
 async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: float) -> str:
@@ -151,14 +165,14 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
         test = (
             f"(the live test's record could not be updated: {type(exc).__name__}; the /stop flag stops it all the same)"
         )
-    # the owner's automatic test: a sequence in progress ends with this /stop, recorded at once so that a /resume before
-    # the next round does not bring it back (the round would otherwise see no flag and start the next block)
+    # the owner's automatic test holds while the flag exists (the widened yes of 7 Nov ~12:10 UTC: /stop holds every
+    # start, a running block ends and is disarmed as any test is; /resume lets the same strategy go on)
     try:
         from . import autotest
 
         auto = autotest.on_stop(paths, notes, now)
     except Exception as exc:  # noqa: BLE001 - the flag still holds every start until /resume
-        auto = (f"(the automatic test's record could not be updated: {type(exc).__name__}; nothing starts while the "
+        auto = (f"(the automatic test's record could not be read: {type(exc).__name__}; nothing starts while the "
                 "/stop flag is set, and /test auto off turns it off)")  # fmt: skip
     reply = await _stop_snipers(svc, cfg, notes)
     return "\n".join(x for x in (reply, test, auto) if x)
@@ -422,6 +436,13 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                 "resumed by owner: stop flag removed; expected state back to none running, none held", "decision"
             )
             reply = "resumed: snipers may run again as planned (expected state reset: any sniper running is reported again)."
+            try:  # what the owner's automatic test does next, said in the same reply
+                from . import autotest
+
+                auto = autotest.on_resume(paths, now)
+            except Exception:  # noqa: BLE001 - the flag is gone all the same
+                auto = None
+            reply += f"\n{auto}" if auto else ""
         except FileNotFoundError:
             reply = "nothing to resume: no stop flag was set."
     elif cmd.name == "book":
