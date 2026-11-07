@@ -297,3 +297,46 @@ def test_status_says_how_big_the_machine_is(env):
     st = req(ops, key, "status")
     assert isinstance(st["cpus"], int) and st["cpus"] >= 1
     assert st["mem_gb"] is None or st["mem_gb"] > 0
+
+
+def test_status_says_what_the_kernel_allows_snipetech_and_how_often_it_held_it_back(env, tmp_path, monkeypatch):
+    """7 Nov: the slice set on 4 Nov (2 cores, 3 GB, to share the box) may still cap every snipetech process after the
+    resize to 6 cores and 16 GB, the lab sizing its pool from the 6, and nothing showed it. The status reads the
+    slice's cgroup: its limits, how often the CPU quota and memory.high held it back, the tape recorder's pressure
+    stalls (the share of the last minute it waited for CPU, memory, disk), and the WAL's size."""
+    root = tmp_path / "cg"
+    sl = root / "snipetech.slice"
+    tape = sl / "snipetech-tape.service"
+    tape.mkdir(parents=True)
+    (sl / "cpu.max").write_text("200000 100000\n")
+    (sl / "memory.high").write_text("2726297600\n")
+    (sl / "memory.max").write_text("3221225472\n")
+    (sl / "memory.current").write_text("2600000000\n")
+    (sl / "cpu.stat").write_text(
+        "usage_usec 100\nuser_usec 80\nsystem_usec 20\nnr_periods 1000\nnr_throttled 250\nthrottled_usec 31400000\n"
+    )
+    (sl / "memory.events").write_text("low 0\nhigh 5120\nmax 3\noom 0\noom_kill 0\n")
+    for name, some in (("cpu", "8.25"), ("memory", "2.00"), ("io", "0.40")):
+        (tape / f"{name}.pressure").write_text(
+            f"some avg10=12.50 avg60={some} avg300=3.10 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+        )
+    monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    ops, key = env
+    (ops.db.parent / "snipetech.db-wal").write_bytes(b"\0" * 20_000_000)
+    st = req(ops, key, "status")
+    assert st["slice"] == {"cpu_cores": 2.0, "memory_high_gb": 2.73, "memory_max_gb": 3.22, "memory_gb": 2.6,
+                           "cpu_periods": 1000, "cpu_throttled_periods": 250, "cpu_throttled_secs": 31.4,
+                           "memory_high_events": 5120, "memory_max_events": 3, "oom_kills": 0}  # fmt: skip
+    assert st["tape_pressure"] == {"cpu": 8.25, "memory": 2.0, "io": 0.4}
+    assert st["wal_gb"] == 0.02
+
+
+def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "no-cgroup")
+    (tmp_path / "no-cgroup" / "snipetech.slice").mkdir(parents=True)
+    (tmp_path / "no-cgroup" / "snipetech.slice" / "cpu.max").write_text("max 100000\n")
+    ops, key = env
+    st = req(ops, key, "status")
+    assert st["slice"] == {"cpu_cores": None} and st["tape_pressure"] is None and st["wal_gb"] == 0.0
+    monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "nothing")
+    assert req(ops, key, "status")["slice"] is None

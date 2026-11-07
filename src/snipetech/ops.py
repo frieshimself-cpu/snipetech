@@ -293,6 +293,10 @@ class Ops:
         out["jobs_running"] = sum(1 for j in self.jobs.values() if j.code is None)
         out["cpus"] = os.cpu_count() or 1  # sizes the lab's worker pool ([lab] workers, auto: all but two)
         out["mem_gb"] = _mem_gb()
+        wal = self.db.with_name(self.db.name + "-wal")
+        out["wal_gb"] = round(wal.stat().st_size / 1e9, 2) if wal.is_file() else 0.0
+        out["slice"] = _slice_limits(CGROUP_ROOT / SLICE)
+        out["tape_pressure"] = _pressure(CGROUP_ROOT / SLICE / "snipetech-tape.service")
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -540,6 +544,65 @@ def _read_only_authorizer(action, arg1, arg2, dbname, source):
     if action == sqlite3.SQLITE_PRAGMA and arg1 in ("table_info", "table_list", "index_list", "index_info"):
         return sqlite3.SQLITE_OK
     return sqlite3.SQLITE_DENY
+
+
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+SLICE = "snipetech.slice"  # deploy/systemd/snipetech.slice: every snipetech unit runs in it
+
+
+def _cgroup_file(d: Path, name: str) -> str | None:
+    try:
+        return (d / name).read_text().strip()
+    except OSError:
+        return None
+
+
+def _pairs(text: str | None) -> dict[str, str]:
+    return dict(p for p in (line.split() for line in (text or "").splitlines()) if len(p) == 2)
+
+
+def _slice_limits(d: Path) -> dict[str, Any] | None:
+    """What the kernel allows a cgroup (v2) and how often it held it back: the CPU quota in cores (None: no quota),
+    memory.high, memory.max and memory in use in GB (page cache counts), the CPU periods the quota throttled and the
+    seconds lost to it, and how often memory.high and memory.max were hit. None without the cgroup."""
+    if not d.is_dir():
+        return None
+    out: dict[str, Any] = {}
+    cpu_max = (_cgroup_file(d, "cpu.max") or "").split()
+    if len(cpu_max) == 2:
+        out["cpu_cores"] = None if cpu_max[0] == "max" else round(int(cpu_max[0]) / int(cpu_max[1]), 2)
+    for name, key in (
+        ("memory.high", "memory_high_gb"),
+        ("memory.max", "memory_max_gb"),
+        ("memory.current", "memory_gb"),
+    ):
+        v = _cgroup_file(d, name)
+        if v:
+            out[key] = None if v == "max" else round(int(v) / 1e9, 2)
+    stat = _pairs(_cgroup_file(d, "cpu.stat"))
+    if "nr_periods" in stat:
+        out["cpu_periods"] = int(stat["nr_periods"])
+        out["cpu_throttled_periods"] = int(stat.get("nr_throttled", 0))
+        out["cpu_throttled_secs"] = round(int(stat.get("throttled_usec", 0)) / 1e6, 1)
+    events = _pairs(_cgroup_file(d, "memory.events"))
+    if events:
+        out["memory_high_events"] = int(events.get("high", 0))
+        out["memory_max_events"] = int(events.get("max", 0))
+        out["oom_kills"] = int(events.get("oom_kill", 0))
+    return out
+
+
+def _pressure(d: Path) -> dict[str, float] | None:
+    """A cgroup's pressure stalls: the share (%) of the last minute some task of it waited for CPU, memory or disk
+    (the "some avg60" of cpu.pressure, memory.pressure, io.pressure). None without them."""
+    out: dict[str, float] = {}
+    for kind in ("cpu", "memory", "io"):
+        for line in (_cgroup_file(d, f"{kind}.pressure") or "").splitlines():
+            if line.startswith("some "):
+                fields = dict(f.split("=", 1) for f in line.split()[1:] if "=" in f)
+                if "avg60" in fields:
+                    out[kind] = float(fields["avg60"])
+    return out or None
 
 
 def _mem_gb() -> float | None:
