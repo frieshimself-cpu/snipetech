@@ -220,19 +220,27 @@ def file_identity(path: str | Path) -> tuple[int, int] | None:
 
 
 class Store:
+    # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
+    # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
+    # long reads pinned it, and never shrank. A routine checkpoint cycle is 1,000 frames (4 MB), so a restart never trims
+    # below what the next minutes need; while a read pins it the recorder writes about 2 GB of WAL an hour (16:00-17:58),
+    # so 64 MiB is two minutes of it. sqlite trims at the first commit after a restart, on whichever connection makes
+    # it: every connection carries the limit.
+    JOURNAL_SIZE_LIMIT = 64 << 20
+
     def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False):
         """`readonly`: a reader of an existing database file beside its writers (a lab worker; WAL lets it read while
         the tape recorder writes): no schema, no migration, never a write, and a missing file is an error."""
         self.path = str(path)
+        self.readonly = readonly
         self.lock = threading.RLock()
         if readonly:
-            uri = Path(self.path).resolve().as_uri() + "?mode=ro"
-            self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+            self.conn = self._connect()
             self.file_id = file_identity(self.path)
             return
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        self.conn = self._connect()
         self.file_id = file_identity(self.path)  # the file this connection reads, even after another is renamed over it
         # through the retrying write: the first opener after a deploy that adds a table or a column writes the schema
         # and waits its turn for the lock instead of dying on it (an up-to-date schema takes no lock at all)
@@ -249,6 +257,16 @@ class Store:
                     if "duplicate column name" not in str(e):
                         raise
 
+    def _connect(self) -> sqlite3.Connection:
+        """A connection to this store's file (read-only, by URI, for a `readonly` store) with the WAL size limit set."""
+        if self.readonly:
+            uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+        else:
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        conn.execute(f"PRAGMA journal_size_limit = {int(self.JOURNAL_SIZE_LIMIT)}")
+        return conn
+
     def close(self) -> None:
         with self.lock:
             self.conn.close()
@@ -261,7 +279,7 @@ class Store:
                 self.conn.close()
             except sqlite3.Error:
                 pass
-            self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+            self.conn = self._connect()
             self.file_id = file_identity(self.path)
 
     def _q(self, sql: str, params: Iterable[Any] = ()) -> list[tuple]:
