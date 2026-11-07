@@ -180,8 +180,10 @@ def _pid_alive(pid: Any) -> bool:
 
 
 def _job_env() -> dict[str, str]:
-    """The service's environment plus whatever is in /etc/snipetech/env *now*: a key added to the file (e.g.
-    SNIPER_SECRET) reaches the next job without restarting the service. Values are never logged."""
+    """The service's environment with whatever is in /etc/snipetech/env *now* on top: a key added to the file (e.g.
+    SNIPER_SECRET) or changed in it reaches the next job without restarting the service (7 Nov 18:06: the owner put a
+    new Anthropic key in the file and a round started here still ran on the old one the service had loaded at its own
+    start). An empty value in the file never blanks a key. Values are never logged."""
     env = dict(os.environ)
     try:
         for line in ENV_FILE.read_text().splitlines():
@@ -190,7 +192,7 @@ def _job_env() -> dict[str, str]:
                 continue
             k, v = line.split("=", 1)
             k, v = k.strip(), v.strip().strip('"').strip("'")
-            if k and v and k not in env:
+            if k and v:
                 env[k] = v
     except OSError as e:  # the file must be group-readable by the service user (setup.sh: root:snipetech 640)
         print(
