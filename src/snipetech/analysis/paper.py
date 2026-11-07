@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import time
+from collections.abc import Sequence
 from contextlib import nullcontext
 from pathlib import Path
 from typing import Any
@@ -152,17 +153,26 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
 
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0, buy_sol: float = 0.2,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
-           only_live: bool = False, lock_dir: str | Path | None = None) -> dict[str, Any]:  # fmt: skip
+           only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
+           hours: float | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`) and freeze its `top` strategies with a positive lower bound for forward
     testing, each stored at the live landing for its trigger (that is where `run` scores it). `data`: a lab already
     collected at that landing (no second lab). `only_live`: keep only strategies the lab measured at their live
-    landing. `lock_dir`: hold the one-lab-at-a-time lock there while the lab runs."""
+    landing. `lock_dir`: hold the one-lab-at-a-time lock there while the lab runs. `triggers`: the lab runs only these
+    (an agent's own hypotheses, `lab.parse_trigger`) instead of the grid; `hours`: only the newest N hours of tape."""
     now = now or time.time()
     if data is None:
         from .lab_lock import lab_lock
 
         with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
-            data = collect(store, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS)
+            tape = store
+            if hours:
+                from ..operator.research import recent_tape  # the strategy search's window on the tape
+
+                tape = recent_tape(store, hours)
+            # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
+            data = collect(tape, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
+                           triggers=triggers)  # fmt: skip
     copy_pos = copy_landing(store, cfg, now)
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
 

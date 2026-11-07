@@ -10,9 +10,11 @@ from snipetech.analysis.lab import TRIGGERS, Trigger, collect, parse_trigger
 from snipetech.config import Config
 from snipetech.store import Store
 
-from .test_lab import whale_world
+from .test_lab import NOW, whale_world
 
 LAB_EXIT = {"stop_loss": 0.3, "max_hold_secs": 300, "stale_secs": 1.0}
+HUNT = Trigger("hunt", sol=2.0, window=2.0, dev_max=1.0)  # fires on every whale-world coin at its 2.5 SOL buy
+WHALE = Trigger("whale", sol=2.2)  # not in the grid: an agent's own variant
 
 
 @pytest.mark.parametrize(
@@ -108,3 +110,32 @@ def test_collect_runs_only_the_triggers_it_is_given():
     by = {ti: sum(r["trigger"] == ti for r in data["rows"]) for ti in range(len(mine))}
     assert by == {0: 40, 1: 40} and len(data["rows"]) == 80  # once per coin each, nothing from the grid
     assert {r["landing"] for r in data["rows"] if r["trigger"] == 1} == {"+3@1"}
+
+
+def _cfg() -> Config:
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    return cfg
+
+
+def test_freeze_runs_only_the_hypotheses_and_keeps_each_at_its_live_landing():
+    """`paper freeze --trigger ... --only-live`: the lab runs only the agent's triggers, an OKTech hunt is scored where
+    a hunt buy lands (3 trades into the slot after its trigger), and each one that pays there is frozen there."""
+    store = Store(":memory:")
+    whale_world(store)  # at their live landings: the whale +0.012 SOL a trade, the hunt +0.007
+    rep = paper.freeze(store, _cfg(), top=4, position="+6", latency=0, triggers=[HUNT, WHALE], only_live=True, now=NOW)
+    by = {s["trigger"]["kind"]: s for s in rep["frozen"]}
+    assert len(rep["frozen"]) == 2
+    assert by["hunt"]["trigger"] == HUNT.__dict__ and by["whale"]["trigger"] == WHALE.__dict__
+    assert (by["hunt"]["latency"], by["hunt"]["position"], by["hunt"]["lab"]["landing"]) == (1, "+3", "+3@1")
+    assert (by["whale"]["latency"], by["whale"]["position"], by["whale"]["lab"]["landing"]) == (0, "+6", "+6@0")
+    assert all(s["lab"]["ev_lower"] > 0 for s in rep["frozen"])
+
+
+def test_freeze_reads_only_the_newest_hours_of_tape():
+    store = Store(":memory:")
+    whale_world(store, 80)  # a coin a minute; 56 of them launch in the tape's newest hour
+    rep = paper.freeze(store, _cfg(), top=4, position="+6", triggers=[WHALE], hours=1, now=NOW)
+    (s,) = rep["frozen"]
+    assert rep["tape_hours"] == pytest.approx(1.0)
+    assert s["lab"]["n"] == 23  # 56 moments: the exit picked on the older 33, judged on the newer 23
