@@ -370,16 +370,28 @@ def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg:
 
     When one of NEW_RULE_GATES stops such a wallet, the verdict written is the one the book armed it on (status,
     score, copy plan, landing and numbers, as the book reads them), reviewed as a qualified one, its only reason that it
-    no longer qualifies and why; `kept_armed` holds when it was armed on, and the new evaluation ("new"). Its forward
-    and create-slot numbers are the new ones. Passing these rules, it gets its own verdict with the mark ("kept": False),
-    so it stays kept should it fall back under them while it is copied. Any other wallet, one an old gate stops (the
-    bundle rule, venue, history, copies, crowding) and one no sniper copies any more: `v` as it is."""
+    no longer qualifies and why; `kept_armed` holds when it was armed on, the score it was armed on ("armed_score"), and
+    the new evaluation ("new"). Its forward and create-slot numbers are the new ones. Passing these rules, it gets its
+    own verdict with the mark ("kept": False), so it stays kept should it fall back under them while it is copied, but
+    never a score under the one it was armed on: the book ranks on the score, and these rules usually score a wallet
+    lower where copies land (+3x) than the old ones did at +6, so its own lower score under the book's bar would have
+    the book stop it (review of 7 Nov: 0.0018 against the bar's 0.005). Then the verdict says so, and "new_score" is its
+    own. Any other wallet, one an old gate stops (the bundle rule, venue, history, copies, crowding) and one no sniper
+    copies any more: `v` as it is."""
     if not armed or not armed_before_rules(prev):  # nothing copies it, or it qualified under these rules: they apply
         return v
     mark = prev.get("kept_armed")
     armed_on = int(mark["armed_on"]) if mark else int(prev["computed_at"])
+    armed_score = float((mark or {}).get("armed_score", prev.get("score")) or 0.0)
     if v.get("status") == "qualified":
-        return dict(v, kept_armed={"armed_on": armed_on, "kept": False})
+        out = dict(v, kept_armed={"armed_on": armed_on, "armed_score": armed_score, "kept": False})
+        own = float(v.get("score") or 0.0)
+        if own < armed_score:
+            said = (f"ranked at the score it was armed on ({armed_score:.4f}) while the book copies it: these rules score "
+                    f"it {own:.4f}; whether to keep copying it, the owner decides")  # fmt: skip
+            out["score"], out["reasons"] = armed_score, [*list(v.get("reasons") or []), said]
+            out["kept_armed"]["new_score"] = own
+        return out
     if v.get("gate") not in NEW_RULE_GATES:
         return v
     why = (v.get("reasons") or ["?"])[-1]  # the gate that stopped it says why last
@@ -389,5 +401,6 @@ def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg:
     return kept | {
         "computed_at": int(now), "next_review": int(now) + cfg.review_qualified_h * 3600, "reasons": [said],
         "forward": v.get("forward"), "create_slot": v.get("create_slot"),
-        "kept_armed": {"armed_on": armed_on, "kept": True, "new": {k: v.get(k) for k in KEPT_NEW_FIELDS}},
+        "kept_armed": {"armed_on": armed_on, "armed_score": armed_score, "kept": True,
+                       "new": {k: v.get(k) for k in KEPT_NEW_FIELDS}},
     }  # fmt: skip

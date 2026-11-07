@@ -427,7 +427,7 @@ def test_a_wallet_the_book_copied_before_these_rules_keeps_the_verdict_it_was_ar
     assert kept["reasons"][0].startswith("no longer qualifies under the 7 Nov verdict rules (forward pending: 0 later")
     assert "the owner decides" in kept["reasons"][0] and kept["reasons"][1:] == []
     assert kept["forward"] == new["forward"] and kept["create_slot"] == new["create_slot"]
-    assert kept["kept_armed"] == {"armed_on": ARMED_ON, "kept": True,
+    assert kept["kept_armed"] == {"armed_on": ARMED_ON, "armed_score": OLD_RULES["score"], "kept": True,
                                   "new": {k: new[k] for k in ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol",
                                                               "score", "reasons")}}  # fmt: skip
 
@@ -466,7 +466,8 @@ def test_a_kept_wallet_stays_kept_while_it_is_copied_even_after_it_once_met_thes
     )
     met = keep_armed(passing, kept, True, cfg, NOW + 2 * 86400)
     assert met["status"] == "qualified" and met["landing_pos"] == "+3x" and met["forward"]["status"] == "passed"
-    assert met["kept_armed"] == {"armed_on": ARMED_ON, "kept": False}  # its own numbers now; the marker goes along
+    # its own numbers now (its score is above the one it was armed on); the marker goes along
+    assert met["kept_armed"] == {"armed_on": ARMED_ON, "armed_score": OLD_RULES["score"], "kept": False}
     later = keep_armed(pending, met, True, cfg, NOW + 3 * 86400)  # it falls back under the rules: still kept
     assert later["status"] == "qualified" and later["landing_pos"] == "+3x" and later["kept_armed"]["kept"] is True
     assert keep_armed(pending, kept, False, cfg, NOW + 86400) == pending  # no longer copied: the rules apply
@@ -478,3 +479,35 @@ def test_the_forward_check_leaves_a_wallet_the_in_sample_gates_stopped_alone(cfg
                     [], cfg, NOW)  # fmt: skip
     assert v["status"] == "candidate"
     assert forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW) == v
+
+
+def test_a_copied_wallet_that_meets_these_rules_with_a_lower_score_keeps_the_score_it_was_armed_on(cfg):
+    """Review of 7 Nov: a wallet the book copies that meets these rules got their score, usually lower at the copy
+    landing (+3x) than at +6. Under the book's bar (0.005, or the owner's), the book's own ranking then dropped it and
+    stopped its sniper: these rules stopping a wallet already copied, which the owner decides. While the book copies it,
+    its score never falls below the one it was armed on; a higher one stands. The verdict says which, with both."""
+    from dataclasses import replace
+
+    lab = {"n": 30, "mean": 0.01, "ev_lower": 0.002, "win_rate": 0.6, "total": 0.3, "exit": "x", "min_leader_sol": 0.3,
+           "exit_name": "lab", "lab_version": 2}  # fmt: skip
+    quiet = {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 30}
+    low = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], replace(cfg, landing_pos="+3x"), NOW,
+                      create={"in_create": 0, "first_buys": 30, "share": 0.0})  # fmt: skip
+    low = forward_gate(low, _copies(25, 0.02, ARMED_ON + 60), ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW)
+    assert low["status"] == "qualified" and low["score"] == pytest.approx(0.002)
+    armed = dict(OLD_RULES, score=0.01)
+    held = keep_armed(low, armed, True, cfg, NOW)
+    assert held["status"] == "qualified" and held["score"] == 0.01 and held["landing_pos"] == "+3x"
+    assert held["kept_armed"] == {"armed_on": ARMED_ON, "armed_score": 0.01, "kept": False, "new_score": low["score"]}
+    assert held["reasons"][-1].startswith("ranked at the score it was armed on (0.0100) while the book copies it")
+    assert held["copy_plan"] == low["copy_plan"] and held["forward"] == low["forward"]  # its own numbers otherwise
+    again = keep_armed(low, held, True, cfg, NOW + 86400)  # the next review: still the score it was armed on
+    assert again["score"] == 0.01 and again["kept_armed"]["armed_score"] == 0.01
+    pending = forward_gate(_in_sample_pass(cfg), [], ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW)
+    fallen = keep_armed(pending, held, True, cfg, NOW + 2 * 86400)  # under these rules again: the verdict it had
+    assert fallen["score"] == 0.01 and fallen["kept_armed"]["kept"] is True
+    assert fallen["kept_armed"]["armed_score"] == 0.01
+    high = keep_armed(low, dict(OLD_RULES, score=0.001), True, cfg, NOW)  # its own score is the higher: it stands
+    assert high["score"] == pytest.approx(0.002) and "new_score" not in high["kept_armed"]
+    assert high["reasons"] == low["reasons"]
+    assert keep_armed(low, armed, False, cfg, NOW) == low  # no longer copied: its own score

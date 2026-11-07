@@ -785,3 +785,31 @@ def test_while_the_books_reading_of_oktech_is_unknown_a_wallet_it_may_copy_waits
         assert out["armed_unknown"] == 0 and oldq["status"] == "candidate" and oldq["kept_armed"] is None
     finally:
         st.close()
+
+
+def test_a_copied_wallet_these_rules_score_under_the_books_bar_keeps_its_sniper(tmp_path):
+    """Review of 7 Nov: ARMED, copied by a running book sniper on an old-rules verdict scoring 0.01, meets these rules
+    with a lower bound of 0.003 at +3x and 24 small wins since its pick: its own score, 0.0018, is under the book's 0.005
+    bar, and the book's unchanged ranking stopped its sniper ("dropped out of the ranking"). It keeps the score it was
+    armed on while the book copies it, and the book keeps its sniper."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["ARMED"])
+        st.set_coverage("tape", {"spans": [[NOW - 30 * 3600, NOW]]})
+        armed_on = NOW - 25 * 3600
+        _old_rules_pick(st, "ARMED", armed_on, lower=0.012)
+        sniper = {"id": "s1", "name": "snipetech copy book ARMED arm:control", "status": "running"}
+        record_copying(st, buying_book_wallets([sniper]), NOW - 120)
+        before = [[armed_on - 7200 + 60 * k, 0.004] for k in range(30)]
+        after = [[armed_on + 3600 + 900 * k, 0.004 if k % 4 else 0.002] for k in range(24)]
+        runner = lambda ws, pos: [{"wallet": w, "n": 54, "mean": 0.0037, "ev_lower": 0.003, "win_rate": 1.0, "total": 0.2,
+                                   "exit": "x", "min_leader_sol": 0.5, "moments": before + after} for w in ws]  # fmt: skip
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        v = st.latest_verdicts()[0]
+        assert v["status"] == "qualified" and v["forward"]["status"] == "passed" and v["landing_pos"] == "+3x"
+        assert v["score"] == 0.01 and v["kept_armed"]["new_score"] == pytest.approx(0.0018)
+        assert svc.cfg.book.min_score == 0.005
+        acts = _book_plan(svc, st, [sniper])
+        assert ("keep", "ARMED", "s1") in acts and not any(kind == "stop" for kind, _w, _s in acts), acts
+    finally:
+        st.close()
