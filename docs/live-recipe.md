@@ -41,10 +41,14 @@ starts by itself (the owner hears it once a day) and a sequence in progress ends
   withdrawal moves nothing in it. The floor is the wallet itself: SOL, wrapped SOL and coins.
 - When the measure stage has not run for 40 minutes and the wallet has traded today since, the guard cannot tell the
   day (it says so in `/risk` and `/status`), and nothing new starts until it runs again.
-- While it holds, nothing new starts. The book creates and starts nothing and stops its snipers that hold nothing (one
-  holding a coin keeps running to sell it). `/test go` and the round's start of a test refuse. The cycler does not
-  start, and it reads the guard before each re-arm (like `/stop`) and ends its run. The automatic test asks for nothing.
-  What the guard cannot read never counts as clear.
+- While it holds, nothing new starts. The book creates and starts nothing, and stops its snipers once the wallet holds
+  nothing. `/test go` and the round's start of a test refuse. The cycler does not start, and it reads the guard before
+  each re-arm (like `/stop`) and ends its run. The automatic test asks for nothing. What the guard cannot read never
+  counts as clear.
+- What it does not stop: while the wallet holds any coin, every book sniper keeps running, and each can still buy up to
+  its cap (`[book] max_buys_per_sniper`, 3). The book cannot tell which of its snipers holds a coin (a fill can name the
+  wrong leader), and a stopped sniper strands its coin (CLAUDE.md rule 1). The trip line says so; `/sell <coin>` sells
+  the coin, and the next book run then stops them all. This is how the book's own stops have always worked.
 - The owner hears it once when a stop trips (one line a day for each stop), and `/status` shows it.
 
 **2. The first test starts by itself** (`operator/autotest.py`; the owner's switch in `operator/AUTOTEST`, the

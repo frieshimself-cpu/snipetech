@@ -110,7 +110,9 @@ class BookInputs:
     tape_holding: bool = False
     holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
     # the owner's wallet-wide guard holds (operator/risk_guard.py: the day 1 SOL down or the wallet under 10 SOL): a
-    # kill like the book's own stops, so nothing is created or started and the book's snipers that hold nothing stop
+    # kill like the book's own stops, so nothing is created or started, and with the wallet holding nothing every book
+    # sniper stops; while it holds any coin (holders None: not traceable) every book sniper is kept, as under the book's
+    # own stops, and each can still buy up to max_buys_per_sniper
     guard: bool = False
 
 

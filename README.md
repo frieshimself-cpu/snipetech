@@ -426,9 +426,10 @@ and `/risk floor 9` change it (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 
 stage's fills plus the coins our buys still hold at the tape's price, so a deposit or a withdrawal moves nothing; our
 trades the fills do not have yet are read from the tape, and a stalled measure stage (40 minutes, with trades since)
 is a day the guard cannot tell, which starts nothing. While
-it holds, nothing new starts: the book creates and starts nothing and stops its snipers that hold nothing, `/test go`
-and the round's start of a test refuse, and a running cycler stops re-arming (it reads the guard before each re-arm,
-like `/stop`). One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
+it holds, nothing new starts: the book creates and starts nothing and stops its snipers once the wallet holds nothing,
+`/test go` and the round's start of a test refuse, and a running cycler stops re-arming (it reads the guard before each
+re-arm, like `/stop`). While the wallet holds any coin every book sniper keeps running and can still buy up to its cap
+(3): the book cannot tell which one holds the coin, and a stopped sniper strands it; `/sell <coin>` sells it. One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
 cannot write it (`operator/risk_guard.py`).
 
 **The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan"): when a strategy passes

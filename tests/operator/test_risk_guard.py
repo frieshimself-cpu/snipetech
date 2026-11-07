@@ -367,6 +367,10 @@ def test_the_trip_is_told_once_a_day_for_each_stop(env):
         )
     (line,) = sent
     assert "wallet-wide guard tripped" in line and "9.00 SOL" in line and "/risk" in line
+    # what it does not stop, said as it is: the book cannot tell which of its snipers holds a coin, so while the wallet
+    # holds one every book sniper keeps running (a stopped sniper strands its coin), and each can still buy to its cap
+    assert "while it holds any coin every book sniper keeps running" in line and "can still buy" in line
+    assert "/sell" in line and "stops its snipers that hold nothing" not in line
     assert "[decision] wallet-wide guard tripped" in paths.notes.read_text()
     _sell(store, "s1", NOW - 600, M2, pnl=-1.0)  # the day stop as well: that one is news
     assert RG.announce(RG.evaluate(store, cfg, paths, NOW + 60, sol=9.0, held=[]), notes, notifier, NOW + 60) is True

@@ -11,10 +11,12 @@ of the wallet's balance: a deposit, a withdrawal or OKTech wrapping SOL is not a
 moved 2.54 SOL out of the sniper wallet in the middle of a test, and OKTech wrapped 0.0996 SOL at its start). The floor
 is the wallet itself: SOL, wrapped SOL and the coins at the tape's price, the owner's ignored coins left out.
 
-While it is tripped, no new live trade starts: the book creates and starts nothing and stops its own snipers that hold
-nothing (a sniper holding a coin is never stopped: a stopped sniper strands its coin, CLAUDE.md rule 1); /test go, the
-round's start of a test and the cycler's re-arm refuse; the automatic test requests nothing. What the guard cannot read
-never counts as clear. One decision line goes to Telegram when a stop trips (once a day for each of the two), and
+While it is tripped, no new live trade starts: the book creates and starts nothing and stops its own snipers once the
+wallet holds nothing; /test go, the round's start of a test and the cycler's re-arm refuse; the automatic test requests
+nothing. What it does not stop: while the wallet holds any coin every book sniper keeps running, because the book cannot
+tell which one holds it (book/run.py passes holders=None: a fill can name the wrong leader) and a stopped sniper strands
+its coin (CLAUDE.md rule 1), and each can still buy up to [book] max_buys_per_sniper; the trip line says so, and
+/sell <coin> lets the book stop them. What the guard cannot read never counts as clear. One decision line goes to Telegram when a stop trips (once a day for each of the two), and
 /status shows the guard.
 
 operator/RISK holds the owner's values (budget_switch.py's pattern: written atomically as JSON with when and who, a read
@@ -457,10 +459,12 @@ def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> boo
     if not g.tripped or not new:
         return False
     said = "; ".join(f"{_WORDS[k]} {r}" for k, r in zip(g.kinds, g.reasons, strict=True) if k in new)
-    line = notes.write(f"{ANNOUNCED}: {said}. No new live trade: the book creates and starts nothing and stops its "
-                       "snipers that hold nothing (one holding a coin keeps running to sell it), and no live test "
-                       f"starts or re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> "
-                       "changes it.", "decision" if page else "info")  # fmt: skip
+    line = notes.write(f"{ANNOUNCED}: {said}. No new live trade starts: the book creates and starts nothing, and it stops "
+                       "its snipers once the wallet holds nothing (while it holds any coin every book sniper keeps "
+                       "running, since the book cannot tell which one holds it and a stopped sniper strands its coin, "
+                       "and each can still buy up to its cap: /sell <coin> sells the coin); no live test starts or "
+                       f"re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> changes it.",
+                       "decision" if page else "info")  # fmt: skip
     if page and notifier is not None:
         notifier.send(line)
     return True
