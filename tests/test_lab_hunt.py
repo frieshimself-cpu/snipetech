@@ -221,3 +221,93 @@ def test_hunt_fills_every_sol_quoted_coin_however_the_create_names_sol(quote):
     m = _coin(store, f"hunt-sol-{quote[:4] or 'none'}", 0.5, quote_mint=quote)
     m.buy(addr(f"hunt-sol-whale-{quote[:4]}"), 3.0, 1)
     assert _who(store, m, Trigger("hunt", sol=2.0, window=1.0)) == addr(f"hunt-sol-whale-{quote[:4]}")
+
+
+# -- the replay against OKTech's own hunt fills (5 Nov 21:13-22:10, thresholds enforced) -----------------------------
+
+ME = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"  # the sniper wallet
+
+
+def _hunt_fixture():
+    import csv
+    import gzip
+    from pathlib import Path
+
+    from snipetech.models import Launch, Trade
+
+    fx = Path(__file__).parent / "fixtures"
+    with open(fx / "hunt_fills_5nov_launches.tsv", newline="") as fh:
+        launches = [
+            Launch(
+                r["mint"],
+                r["user"],
+                r["creator"],
+                r["name"],
+                r["symbol"],
+                r["uri"],
+                r["bonding_curve"],
+                int(r["slot"]),
+                int(r["ts"]),
+                r["sig"],
+                r["token_program"],
+                r["mayhem"] == "1",
+                r["holder_reward"] == "1",
+                r["quote_mint"],
+            )
+            for r in csv.DictReader(fh, delimiter="\t")
+        ]
+    with gzip.open(fx / "hunt_fills_5nov_tape.tsv.gz", "rt", newline="") as fh:
+        trades = [
+            Trade(
+                sig=r["sig"],
+                ev=int(r["ev"]),
+                slot=int(r["slot"]),
+                pos=int(r["pos"]),
+                ts=int(r["ts"]),
+                mint=r["mint"],
+                venue=r["venue"],
+                user=r["user"],
+                is_buy=r["is_buy"] == "1",
+                quote=int(r["quote"]),
+                base=int(r["base"]),
+                fee=int(r["fee"]),
+                fee_bps=int(r["fee_bps"]),
+                q_after=int(r["q_after"]),
+                b_after=int(r["b_after"]),
+                r_base_after=int(r["r_base_after"] or 0),
+                ix=r["ix"],
+            )
+            for r in csv.DictReader(fh, delimiter="\t")
+        ]
+    store = Store(":memory:")
+    store.add_launches(launches)
+    store.add_trades(trades)
+    return store, launches
+
+
+def test_the_hunt_replay_fires_on_every_live_hunt_fill_and_never_lands_us_earlier_than_live():
+    store, launches = _hunt_fixture()
+    assert {la.symbol for la in launches} == {"RLT", "Bricks", "Suncat", "Gogeta", "II"}
+    sent = Trigger("hunt", sol=2.0, window=1.0)  # what those snipers were sent
+    for la in launches:
+        path = MarketPath.build(store.trades_for_mint(la.mint), la)
+        i = _fire(sent, path, la, set())
+        assert i is not None, la.symbol  # OKTech bought this launch: the replay must fire on it too
+        ours = next(k for k in range(path.n) if path.users[k] == ME and path.is_buy[k])
+        assert path.slot[ours] > path.slot[i], la.symbol  # live: a slot or two after the trigger
+        model = int(path.landing_index(int(path.slot[i]) + paper.HUNT_LANDING[0], paper.HUNT_LANDING[1], i))
+        # the model enters at the state after `model`; live entered at the state before our buy (ours - 1):
+        # measured 0-2 trades later than live on these five, never earlier (paper is never rosier than live)
+        assert ours - 1 <= model <= ours + 2, (la.symbol, ours, model)
+
+
+def test_the_creator_cap_skips_the_live_fills_that_only_the_creator_paid_for():
+    # four of the five fired on the creator's own buy (RLT 11.85, Bricks 2.96, Gogeta 2.96, II 3.16 SOL)
+    store, launches = _hunt_fixture()
+    capped = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0)
+    skipped = set()
+    for la in launches:
+        path = MarketPath.build(store.trades_for_mint(la.mint), la)
+        if _fire(capped, path, la, set()) is None:
+            skipped.add(la.symbol)
+    assert skipped >= {"RLT", "Bricks", "Gogeta", "II"}
