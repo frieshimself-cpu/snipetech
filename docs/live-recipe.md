@@ -38,6 +38,82 @@ Asked "What's the most efficient way to do this without rinsing the 10 sol?", th
 Wallet at the time: 11.88 SOL, nothing held, no sniper running. Why 0.2 SOL and not less: a round trip costs about
 0.009 SOL whatever the size, so a 0.02 SOL test can only lose. Results go in this file as they come.
 
+### How the yes runs as code
+
+The guard is on from the start. The automatic test starts nothing until the owner's yes is recorded: `/test auto on` in
+Telegram (that message is the yes, for the wallet `/test auto` names), or from the cloud session `snipetech remote
+--wait run operate autotest --on --approved "Yes, use this plan (7 Nov 09:15 UTC)" --wallet
+6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at`. `/test auto` shows where it stands; `/test auto off` turns it off.
+The yes is recorded with the sniper wallet and the OKTech wallet it is for: while the config names another, nothing
+starts by itself (the owner hears it once a day) and a sequence in progress ends.
+
+**1. The wallet-wide guard** (`operator/risk_guard.py`; the owner's values in `operator/RISK`).
+
+- On at 1 SOL a day and 10 SOL. `/risk` shows it with today's result; `/risk stop 1.5`, `/risk floor 9` and
+  `/risk default` change it (`operate risk --day-stop N --floor N --default` does the same). The day stop is 0.1 to 5 SOL
+  and the floor 0 to 1000 SOL. There is no off.
+- The day's result is our own trading only: today's closed round trips in the measure stage's fills (real fees and
+  failed duplicate sells included), plus the coins our buys still hold, at the tape's price. The fills lag by up to 5
+  minutes and the cycler re-arms seconds after a sale, so our trades the fills do not have yet are read from the tape,
+  and a coin bought today that has left the wallet with no sale seen counts its whole cost as lost. A deposit or a
+  withdrawal moves nothing in it. The floor is the wallet itself: SOL, wrapped SOL and coins.
+- When the measure stage has not run for 40 minutes and the wallet has traded today since, the guard cannot tell the
+  day (it says so in `/risk` and `/status`), and nothing new starts until it runs again.
+- While it holds, nothing new starts. The book creates and starts nothing, and stops its snipers once the wallet holds
+  nothing. `/test go` and the round's start of a test refuse. The cycler does not start, and it reads the guard before
+  each re-arm (like `/stop`) and ends its run. The automatic test asks for nothing. What the guard cannot read never
+  counts as clear.
+- What it does not stop: while the wallet holds any coin, every book sniper keeps running, and each can still buy up to
+  its cap (`[book] max_buys_per_sniper`, 3). The book cannot tell which of its snipers holds a coin (a fill can name the
+  wrong leader), and a stopped sniper strands its coin (CLAUDE.md rule 1). The trip line says so; `/sell <coin>` sells
+  the coin, and the next book run then stops them all. This is how the book's own stops have always worked.
+- The owner hears it once when a stop trips (one line a day for each stop), and `/status` shows it.
+
+**2. The first test starts by itself** (`operator/autotest.py`; the owner's switch in `operator/AUTOTEST`, the
+sequence's record in `operator/autotest.json`).
+
+- Each round checks the conditions: the switch on, no test in progress, no `/stop`, the guard clear. When all hold, the
+  round writes the `/test go` request itself for the best strategy `/test` would offer (100+ forward trades where a hunt
+  fill lands, a lower bound above zero, also with gains capped, scored at no less than the measured cost of a trade).
+- "At real costs": a strategy frozen below the cost of a transaction the measure stage measures (half the low bid's
+  measured round trip: 0.0047 SOL a transaction, 0.0094 a round trip, on 6 Nov) is not eligible, for `/test go`
+  either. `paper freeze` now scores at that measured cost unless `--per-tx` says otherwise (it used to take 0.0035,
+  and accepted 0).
+- It runs at the strategy's own size, never another. A strategy scored above the yes's 0.2 SOL is refused, and the owner
+  is told once a day: a test at another size says nothing about it.
+- The yes's caps apply: 10 buys, 120 minutes, the floor 1 SOL below the wallet's balance. The same round starts it, as
+  for a `/test go`: one hunt sniper, one cycler.
+
+**3. It goes on only while live is at least half of paper.**
+
+- After a block has made all its 10 buys and closed, its result is read from the measure stage's fills, once that
+  stage has run after the block's last trade. Only our own round trips count, with their real fees, the failed
+  duplicate sells and the block's failed buy sends (OKTech sends buys that fail on chain anyway, about 0.001 SOL each;
+  paper does not model them). A buy counts once its sales cover its tokens (a scale-out exit sells it in two). A buy
+  not covered after 45 minutes counts its unsold part at its whole cost; a measure stage that has not read the block
+  45 minutes after it ended stops the sequence for the analyst.
+- The book trades from the same wallet, and the fills cannot tell its copies from the test's own buys for sure (they
+  name a copied leader on any buy in a coin one of the book's leaders bought first). So the block is read twice, with
+  the buys the fills call copies left out and with every buy of the wallet in the block, and the worse reading is the
+  one judged. A coin left held counts against the block only when the block bought it.
+- The live mean per trade, over every trade of the sequence so far, is compared with the strategy's forward paper mean.
+- At least half, and above zero: the next block starts at once, with the same strategy, size and caps. Its floor stays
+  the first block's, so the whole sequence can lose at most 1 SOL. There are at most 3 more blocks (40 trades in all).
+- Below half: the sequence stops, and a decision note says "the analyst works out why" for the post-mortem to pick up.
+
+**What ends it.** A block that ends early (its 120 minutes, the floor, `/stop`, the guard) or does not start. Live
+below half of paper. All 4 blocks done. No room above the floor for another block. The config naming another wallet
+than the yes. The switch turned off: a block running then runs to its end (`/stop` ends it now), and a request not
+started yet never starts. `/stop` between blocks ends the sequence too: it is written into `operator/AUTOTEST` at
+once, so a `/resume` before the next round does not bring it back. With no sequence in progress `/stop` leaves the
+switch as it is: nothing starts while the flag is set, and after `/resume` the standing yes may start a test again. At
+the end the switch turns itself off (marked used, with the result) and the owner gets one summary. A new sequence needs
+the owner's yes again; `/test auto on` is refused while a sequence still runs.
+
+**Recorded:** each block in `operator/TEST.json` and `operator/tests.jsonl` with its sequence and block number, and one
+`"kind": "sequence"` line per sequence there. A decision note and a Telegram line go out at every start, block end and
+sequence end.
+
 ## The strategy
 
 | | |
@@ -121,7 +197,8 @@ No SSH and no command line: the owner starts and ends a capped live test from Te
    `operator/TEST.json` (state `requested`), and only when the strategy qualifies now, no test is requested, running or
    closing, no OKTech cycler or guard runs, no sniper that is not the book's is active on OKTech (an earlier test's left
    armed, one started by hand), the tape is at most 2 minutes behind (the book's rule: the cap counts our buys there),
-   `/stop` is not set, the wallet holds no coin, and the wallet holds at least the floor plus one buy and its fees. It
+   `/stop` is not set, the wallet holds no coin, the wallet holds at least the floor plus one buy and its fees, and the
+   wallet-wide guard (above) is clear. It
    offers only strategies whose forward lower bound is above zero also with each gain capped at 2.5 times its buy (the
    7 Nov create-slot bundle artifact made a losing rule look like +10.6 SOL). A message more
    than 5 minutes old is refused, as for `/sell`.

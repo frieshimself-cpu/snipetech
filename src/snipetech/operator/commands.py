@@ -1,11 +1,13 @@
-"""Owner commands over Telegram: /status /stop /resume /book /sell /test. Polled once per round and every minute
+"""Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
 /stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task.
 /test is the owner's own capped live test (live_test.py): it shows the plan, and "/test <id> go" only writes the request
-the next operator round starts; nothing here creates or starts a sniper."""
+the next operator round starts; nothing here creates or starts a sniper.
+/risk is the owner's wallet-wide guard (risk_guard.py): it shows the guard and today's result, and /risk stop, /risk floor
+and /risk default change the owner's operator/RISK; nothing the owner sent is repeated."""
 
 from __future__ import annotations
 
@@ -22,7 +24,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
-from . import live_test
+from . import live_test, risk_guard
 from .budget_switch import budget_reply, effective_daily_usd
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
@@ -35,7 +37,8 @@ HELP = (
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
     "analyst runs)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
-    "it at the next round, /stop ends it)  /why <wallet> (later phase)"
+    "it at the next round, /stop ends it)  /risk [stop <SOL a day>|floor <SOL>|default] (the wallet-wide guard: no new "
+    "live trade once the day is that far down or the wallet under its floor)  /why <wallet> (later phase)"
 )
 
 
@@ -111,7 +114,7 @@ def _ago(secs: float) -> str:
     return f"{secs / 3600:.1f} h ago"
 
 
-def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float) -> str:
+def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float, store=None) -> str:
     if snap is None:
         return "no snapshot yet; the next round (within 15 min) will have one"
     running = [s for s in snap.snipers or [] if is_active(s.get("status"))]
@@ -126,6 +129,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         else "snipers: unknown (OKTech not answering)",
         f"claude spend today {snap.spent_today:.2f} $ of {effective_daily_usd(cfg, paths):g} $",
         f"book: {'on' if book_live(cfg, paths) else 'off'}",
+        risk_guard.status_line(risk_guard.from_snapshot(store, cfg, paths, now, snap), paths),
     ]
     if snap.fills:
         lines.append(f"fills since last round: {len(snap.fills)}")
@@ -147,8 +151,17 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
         test = (
             f"(the live test's record could not be updated: {type(exc).__name__}; the /stop flag stops it all the same)"
         )
+    # the owner's automatic test: a sequence in progress ends with this /stop, recorded at once so that a /resume before
+    # the next round does not bring it back (the round would otherwise see no flag and start the next block)
+    try:
+        from . import autotest
+
+        auto = autotest.on_stop(paths, notes, now)
+    except Exception as exc:  # noqa: BLE001 - the flag still holds every start until /resume
+        auto = (f"(the automatic test's record could not be updated: {type(exc).__name__}; nothing starts while the "
+                "/stop flag is set, and /test auto off turns it off)")  # fmt: skip
     reply = await _stop_snipers(svc, cfg, notes)
-    return f"{reply}\n{test}" if test else reply
+    return "\n".join(x for x in (reply, test, auto) if x)
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
@@ -395,7 +408,7 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                          notes: NoteSink, now: float, sweep: Callable | None = None) -> str:  # fmt: skip
     """Act on one owner command and send the reply. `sweep`: solana.sell.sweep unless a test hands in a fake."""
     if cmd.name == "status":
-        reply = _status(cfg, snap, paths, now)
+        reply = _status(cfg, snap, paths, now, store=getattr(svc, "store", None))
     elif cmd.name == "stop":
         reply = await _stop(svc, cfg, paths, notes, now)
     elif cmd.name == "resume":
@@ -448,6 +461,16 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = budget_reply(cfg, paths, cmd.args, "telegram", now)
         if cmd.args and not reply.startswith("budget not changed"):
             notes.write(f"owner set the agents' budget: {reply}", "decision")
+    elif cmd.name == "risk" and cmd.args and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
+        # the same rule as /sell: a change that waited in Telegram's queue may loosen the guard after the moment it was
+        # meant for. Its words are not repeated
+        mins = int((now - cmd.date) // 60)
+        reply = (f"risk guard not changed: this /risk is {mins} min old (it waited while the bot was not reading). Send "
+                 "it again if you still mean it.")  # fmt: skip
+    elif cmd.name == "risk":
+        reply = risk_guard.risk_reply(cfg, paths, getattr(svc, "store", None), snap, cmd.args, "telegram", now)
+        if reply.startswith(("risk guard set", "risk guard back")):
+            notes.write(f"owner set the wallet-wide guard (/risk): {reply}", "decision")
     elif cmd.name == "test" and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
         # the same rule as /sell: a yes that waited in Telegram's queue may not fit the wallet or the strategies now.
         # Its words are not repeated: a secret key pasted by mistake must not reach the notes

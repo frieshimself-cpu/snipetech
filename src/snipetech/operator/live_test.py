@@ -38,6 +38,7 @@ from pathlib import Path
 from ..config import Config
 from ..ops import redact
 from ..positions import is_active
+from . import risk_guard
 from .paths import OperatorPaths
 from .snapshot import running_jobs
 from .tools import NoteSink
@@ -45,6 +46,7 @@ from .tools import NoteSink
 MAX_BUY_SOL = 0.5  # the most one buy of a test may be, whatever size the strategy was frozen at
 FILLS = 10  # buys a test makes at most: the cycler stops re-arming at the 10th buy of the wallet on the tape
 MINUTES = 120  # how long the cycler keeps the sniper armed
+MAX_MINUTES = 180  # the longest an automatic test's block may run (operator/AUTOTEST's bound; /test go plans MINUTES)
 MIN_FORWARD_N = 100  # forward paper trades at the real landing a strategy needs before it goes live
 REQUEST_TTL_SECS = 30 * 60  # a yes that no round acted on within two rounds is stale: the owner sends it again
 # Fees beyond the buys themselves: about 0.009 SOL a live round trip, failed duplicate sells included (6 Nov), and about
@@ -148,6 +150,11 @@ def _active(t: dict | None, now: float) -> bool:
     return bool(t) and t["state"] in ACTIVE and not _expired(t, now)
 
 
+def in_progress(paths: OperatorPaths, now: float) -> bool:
+    """A live test is requested, starting, running or closing (a request no round acted on in time is not)."""
+    return _active(load(paths), now)
+
+
 def _history(paths: OperatorPaths, test: dict) -> None:
     paths.ensure()
     with history_path(paths).open("a") as f:
@@ -167,14 +174,26 @@ def _expect(paths: OperatorPaths, values: dict) -> None:
 # -- which strategies, what plan -----------------------------------------------------------------------------------
 
 
-def _why_not(row: dict | None, frozen: dict | None) -> str | None:
-    """Why a strategy may not go live now, in plain words; None when it may."""
+def _why_not(row: dict | None, frozen: dict | None, tx_cost: float = 0.0) -> str | None:
+    """Why a strategy may not go live now, in plain words; None when it may. `tx_cost`: the SOL a transaction costs
+    live, as the measure stage measures it (qualify.run.lab_tx_cost)."""
     if row is None or frozen is None:
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
         return "is not a hunt strategy (OKTech runs only its hunt launch gate exactly as the lab scored it)"
     if not row.get("live_landing"):
         return "was not scored where a live hunt fill lands"
+    try:
+        scored = float(frozen.get("per_tx_sol"))
+    except (TypeError, ValueError):
+        scored = -1.0
+    if not math.isfinite(scored) or scored < float(tx_cost) - 1e-9:
+        # the owner's yes covers a strategy that passes "at real costs": `paper freeze` takes 0.0035 SOL a transaction
+        # unless told otherwise (and accepts 0), while a live round trip cost about 0.0094 on 6 Nov; trades scored at
+        # less are not evidence at the real cost
+        at = f"{scored:g} SOL a transaction" if scored >= 0 else "no known cost"
+        return (f"was scored at {at}, below the {float(tx_cost):g} SOL a transaction measured live (a round trip about "
+                f"{2 * float(tx_cost):.4f}): its forward trades are not at the real cost")  # fmt: skip
     n = int(row.get("n") or 0)
     if n < MIN_FORWARD_N:
         return f"has {n} forward trades of the {MIN_FORWARD_N} needed"
@@ -200,12 +219,14 @@ def _why_not(row: dict | None, frozen: dict | None) -> str | None:
 def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str], list[dict]]:
     """(the eligible strategies, best lower bound first; why each other one is not; every paper report row)."""
     from ..analysis import paper
+    from ..qualify.run import lab_tx_cost
 
     rows = paper.report(store, cfg, now=now)["strategies"]
     frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
+    tx_cost = lab_tx_cost(store, cfg)  # the measured cost of a transaction (the flat 0.0035 until it is measured)
     ok, why = [], {}
     for r in rows:
-        w = _why_not(r, frozen.get(r["id"]))
+        w = _why_not(r, frozen.get(r["id"]), tx_cost)
         if w is None:
             ok.append(r)
         else:
@@ -215,26 +236,34 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
 
 def eligible(store, cfg: Config, now: float) -> list[dict]:
     """The frozen paper strategies a live test may run, best lower bound first (paper.report rows): hunt strategies (the
-    one kind OKTech runs exactly as the lab scored it), scored at the live landing, with MIN_FORWARD_N forward trades or
-    more and a lower bound above zero. The forward test at the real landing is the evidence, never the lab."""
+    one kind OKTech runs exactly as the lab scored it), scored at the live landing and at no less than the measured cost
+    of a transaction, with MIN_FORWARD_N forward trades or more and a lower bound above zero, also with each gain
+    capped. The forward test at the real landing and the real cost is the evidence, never the lab."""
     return _survey(store, cfg, now)[0]
 
 
-def plan(row: dict, equity_sol: float, wallet: str) -> dict:
-    """The live test of one eligible strategy: its own size a buy (refused above MAX_BUY_SOL), FILLS buys at most, one
-    coin at a time, MINUTES at most, and a floor LOSS_SOL below the equity it starts from (the owner's 1 SOL stop),
-    never under MIN_FLOOR_SOL, rounded down to the cent. Raises ValueError in plain words."""
+def plan(row: dict, equity_sol: float, wallet: str, *, fills: int = FILLS, minutes: int = MINUTES,
+         loss_sol: float = LOSS_SOL, floor: float | None = None) -> dict:  # fmt: skip
+    """The live test of one eligible strategy: its own size a buy (refused above MAX_BUY_SOL), `fills` buys at most (FILLS
+    or fewer), one coin at a time, `minutes` at most (MAX_MINUTES or fewer), and a floor `loss_sol` below the equity it
+    starts from (the owner's 1 SOL stop), never under MIN_FLOOR_SOL, rounded down to the cent; or `floor` as given (the
+    automatic test's later blocks keep the first block's, autotest.py). Raises ValueError in plain words."""
     buy = float(row.get("buy_sol") or 0)
     if not buy > 0:
         raise ValueError("it has no size a buy")
     if buy > MAX_BUY_SOL + 1e-9:
         raise ValueError(f"it buys {buy:g} SOL at a time, above the {MAX_BUY_SOL:g} SOL a live test may buy")
-    floor = round(math.floor(max(MIN_FLOOR_SOL, float(equity_sol) - LOSS_SOL) * 100 + 1e-6) / 100, 2)
-    worst = (f"at most {FILLS} buys of {buy:g} SOL, one coin at a time; it buys nothing more once the wallet (SOL and "
-             f"coins) is below {floor:.2f} SOL, {LOSS_SOL:g} SOL below its start (the coin it holds then may take it a "
-             "little further while it sells)")  # fmt: skip
-    return {"id": row["id"], "label": str(row.get("label") or row["id"]), "buy_sol": buy, "fills": FILLS,
-            "minutes": MINUTES, "floor": floor, "wallet": wallet, "equity_sol": round(float(equity_sol), 4),
+    if not (1 <= int(fills) <= FILLS and 1 <= int(minutes) <= MAX_MINUTES):
+        raise ValueError(f"a test makes 1 to {FILLS} buys in 1 to {MAX_MINUTES} minutes")
+    since = "its start" if floor is None else "the first block's start"
+    if floor is None:
+        floor = math.floor(max(MIN_FLOOR_SOL, float(equity_sol) - float(loss_sol)) * 100 + 1e-6) / 100
+    floor = round(float(floor), 2)
+    worst = (f"at most {int(fills)} buys of {buy:g} SOL, one coin at a time; it buys nothing more once the wallet (SOL "
+             f"and coins) is below {floor:.2f} SOL, {float(loss_sol):g} SOL below {since} (the coin it holds then may "
+             "take it a little further while it sells)")  # fmt: skip
+    return {"id": row["id"], "label": str(row.get("label") or row["id"]), "buy_sol": buy, "fills": int(fills),
+            "minutes": int(minutes), "floor": floor, "wallet": wallet, "equity_sol": round(float(equity_sol), 4),
             "worst": worst}  # fmt: skip
 
 
@@ -345,6 +374,21 @@ def _fills_since(store, wallet: str, since: float) -> int | None:
         return None
 
 
+TEST_GRACE_SECS = 60  # our clock against block time, at the start of a test's window (autotest.GRACE_SECS)
+
+
+def _bought(store, t: dict, now: float) -> set[str] | None:
+    """The coins the wallet bought while the test's cycler ran (its window on the tape), or None when the tape cannot
+    be read: the book trades from the same wallet, and only these can be the test's own coins."""
+    rep = t.get("report") or {}
+    start = float(t.get("started_at") or now) - TEST_GRACE_SECS
+    end = rep.get("job_ended") or t.get("cycler_ended_at") or now
+    try:
+        return {tr.mint for tr in store.trades_for_user(t["wallet"], int(start)) if tr.is_buy and tr.ts <= float(end)}
+    except Exception:  # noqa: BLE001 - every coin then counts as possibly the test's, as before
+        return None
+
+
 # -- the words the owner reads ---------------------------------------------------------------------------------------
 
 
@@ -385,6 +429,8 @@ def _caps(t: dict) -> str:
 def _status(svc, t: dict, now: float) -> str:
     """/test while a test is requested, starting or running."""
     head = f"{t.get('label') or t['id']} ({t['id']})"
+    if (t.get("sequence") or {}).get("block"):  # started by the owner's standing yes (autotest.py)
+        head += f", automatic test, block {t['sequence']['block']}"
     if t["state"] == "requested":
         return (f"Live test requested at {_hm(t['requested_at'])} UTC: {head}, {_caps(t)}. It starts at the next "
                 f"operator round (within 15 minutes) and expires if no round has started it by "
@@ -431,7 +477,8 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
 
     near = sorted((r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")), key=closeness)[:SHOWN]
     lines = [(f"No hunt strategy qualifies for a live test yet: one needs at least {MIN_FORWARD_N} forward paper "
-              "trades where a live hunt fill lands, and a lower bound above zero.")]  # fmt: skip
+              "trades where a live hunt fill lands, at the cost a trade has live, and a lower bound above "
+              "zero.")]  # fmt: skip
     if near:
         lines.append("Closest now:")
         for r in near:
@@ -453,6 +500,10 @@ async def command(args: list[str], *, svc, cfg: Config, paths: OperatorPaths, sn
     round starts. Only the owner's chat gets here (commands.parse_updates); a message that waited is refused before."""
     if not args:
         return _overview(svc, cfg, paths, snap, now)
+    if args[0].lower() == "auto":  # the owner's standing yes: /test auto, /test auto on, /test auto off
+        from . import autotest
+
+        return autotest.command(args[1:], cfg=cfg, paths=paths, notes=notes, now=now, date=date)
     sid = args[0].lower()
     if not _ID.fullmatch(sid):  # never repeated: a secret key pasted by mistake must not reach the chat or the log
         return ("Nothing started: that is not a strategy id (ten letters and digits, as /test shows them). Send /test "
@@ -490,7 +541,7 @@ def _overview(svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> str:
     for r in ok[:SHOWN]:
         lines.append(f"{r['id']} {r['label']}: {int(r['n']):,} forward trades, {float(r['mean']):+.4f} SOL a trade, "
                      f"lower bound {float(r['ev_lower']):+.4f}")  # fmt: skip
-    return "\n".join([*lines, *_plan_lines(ok[0], cfg, paths, snap, now)])
+    return "\n".join([*lines, *_plan_lines(ok[0], cfg, paths, snap, now, getattr(svc, "store", None))])
 
 
 def _one(sid: str, svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> str:
@@ -505,10 +556,10 @@ def _one(sid: str, svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> 
     if row is None:
         return (f"{sid} cannot be tested live: it {why.get(sid, 'is not a frozen paper strategy')}. Send /test to see "
                 "the ones that can.")  # fmt: skip
-    return "\n".join(_plan_lines(row, cfg, paths, snap, now))
+    return "\n".join(_plan_lines(row, cfg, paths, snap, now, getattr(svc, "store", None)))
 
 
-def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float) -> list[str]:
+def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float, store=None) -> list[str]:
     """The plan for `row` in words, ending with the exact line that starts it (or why it cannot start now)."""
     wallet = cfg.operator.wallet
     if not wallet:
@@ -526,6 +577,9 @@ def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float) 
         return [*lines, (f"Not possible now: the wallet holds {eq:.2f} SOL and this test needs at least "
                          f"{_need(p):.2f} SOL (the {p['floor']:.2f} SOL floor plus one buy of {p['buy_sol']:g} and "
                          "its fees).")]  # fmt: skip
+    g = risk_guard.from_snapshot(store, cfg, paths, now, snap)
+    if g.tripped:
+        return [*lines, f"Not possible now: the wallet-wide guard holds: {g.reason}. /risk shows it."]
     return [*lines, "To start it, send this line; the next operator round (within 15 minutes) starts it:",
             f"/test {p['id']} go"]  # fmt: skip
 
@@ -586,19 +640,55 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
     if held:
         return no + (f"the wallet holds {_coins(held)}, and a test starts only from a wallet that holds none (a coin "
                      f"held stops the cycler from re-arming). Send /sell to see them, then /test {sid} go again.")  # fmt: skip
-    req = p | {"state": "requested", "oktech_wallet": cfg.oktech.wallet or DEFAULT_OKTECH_WALLET,
-               "forward": {k: row.get(k) for k in ("n", "mean", "ev_lower", "landing")},
-               "requested_at": int(now), "by": "telegram", "message_date": date}  # fmt: skip
-    written, before = _swap(paths, lambda cur: not _active(cur, now), req)
-    if not written:
+    g = risk_guard.evaluate(svc.store, cfg, paths, now, wallet=wallet, sol=eq, held=held)
+    if g.tripped:
+        return no + f"the wallet-wide guard holds: {g.reason}. /risk shows it; /risk stop or /risk floor changes it."
+    if not g.known:
+        return no + f"{g.reason}. Try again in a minute."
+    if not write_request(paths, request(p, row, cfg, now, by="telegram", message_date=date), now):
         return no + "another live test was requested a moment ago. Send /test to see it."
-    if before and _expired(before, now):  # a yes no round ever acted on: kept in the record as expired
-        _history(paths, before | {"state": "expired", "ended_at": int(now), "error": "expired: no round started it"})
     notes.write(f"owner requested a live test from Telegram (/test {sid} go): {p['label']}, {_caps(p)}, wallet "
                 f"{wallet}; the next operator round starts it", "decision")  # fmt: skip
     head = (f"Live test requested: {p['label']} ({sid}). It starts at the next operator round, within 15 minutes; if "
             f"no round has started it by {_hm(now + REQUEST_TTL_SECS)} UTC it expires and nothing is bought.")  # fmt: skip
     return "\n".join([head, *_plan_words(p, cfg, paths)])
+
+
+def request(p: dict, row: dict, cfg: Config, now: float, *, by: str, **extra) -> dict:
+    """The request for plan `p` of paper row `row`, as /test go writes it and the automatic test (by "autotest") too:
+    the plan, the OKTech wallet, the forward numbers it was started on, when and by whom."""
+    return p | {"state": "requested", "oktech_wallet": cfg.oktech.wallet or DEFAULT_OKTECH_WALLET,
+                "forward": {k: row.get(k) for k in ("n", "mean", "ev_lower", "landing")},
+                "requested_at": int(now), "by": by} | extra  # fmt: skip
+
+
+def write_request(paths: OperatorPaths, req: dict, now: float) -> bool:
+    """Write `req` only while no test is requested, starting, running or closing; False when another was written
+    meanwhile. A request no round ever acted on is kept in the record as expired."""
+    written, before = _swap(paths, lambda cur: not _active(cur, now), req)
+    if written and before and _expired(before, now):
+        _history(paths, before | {"state": "expired", "ended_at": int(now), "error": "expired: no round started it"})
+    return written
+
+
+def find(paths: OperatorPaths, sid: str, requested_at) -> dict | None:
+    """The test of strategy `sid` requested at `requested_at`: TEST.json while it is the current one, else its last line
+    in tests.jsonl; None when neither has it."""
+    t = load(paths)
+    if t and t["id"] == sid and t.get("requested_at") == requested_at:
+        return t
+    try:
+        lines = history_path(paths).read_text().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            h = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(h, dict) and h.get("id") == sid and h.get("requested_at") == requested_at and h.get("state"):
+            return h
+    return None
 
 
 def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
@@ -664,16 +754,25 @@ def _end(paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier, l
 async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: float) -> tuple[str | None, bool]:
     """Why the requested test must not start now (None: it may), and whether that may pass by itself before the request
     expires (the balance or the coins could not be read). The request file is checked against the caps too: only
-    /test go writes it, and nothing above them is ever started."""
+    /test go and the automatic test write it, and nothing above them is ever started. An automatic request starts only
+    while the owner's standing yes still covers it (autotest.holds)."""
     if paths.stop_flag.exists():
         return "your /stop is in force", False
+    auto = t.get("by") == "autotest"
     try:
-        bad = (float(t["buy_sol"]) > MAX_BUY_SOL + 1e-9 or int(t["fills"]) > FILLS or int(t["minutes"]) > MINUTES
+        bad = (float(t["buy_sol"]) > MAX_BUY_SOL + 1e-9 or int(t["fills"]) > FILLS
+               or int(t["minutes"]) > (MAX_MINUTES if auto else MINUTES)
                or float(t["floor"]) < MIN_FLOOR_SOL or float(t["buy_sol"]) <= 0)  # fmt: skip
     except (KeyError, TypeError, ValueError):
         bad = True
     if bad:
         return "the request is not one /test go writes (its caps are missing or above the limits)", False
+    if auto:
+        from . import autotest
+
+        why = autotest.holds(paths, t, cfg)
+        if why:
+            return why, False
     if not cfg.operator.wallet or t.get("wallet") != cfg.operator.wallet:
         return "the sniper wallet in the config is not the one in the request", False
     try:
@@ -708,6 +807,11 @@ async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: f
         return f"the wallet's coins could not be read ({type(exc).__name__})", True
     if held:
         return f"the wallet holds {_coins(held)}", False
+    g = risk_guard.evaluate(svc.store, cfg, paths, now, wallet=t["wallet"], sol=eq, held=held)
+    if g.tripped:  # the day stop lifts at 00:00 UTC and the floor with a deposit, long after this request expires
+        return f"the wallet-wide guard holds: {g.reason}", False
+    if not g.known:
+        return g.reason, True
     return None, False
 
 
@@ -825,20 +929,24 @@ def _json_tail(text: str) -> dict | None:
 
 def _cycle_report(paths: OperatorPaths, svc, cfg: Config, t: dict, meta: dict) -> dict:
     """What the cycler said at its end (fills, start and end balance, why it ended, the coins it saw held), or, when it
-    ended without its report, its exit code, its last words and the fills on the tape."""
+    ended without its report, its exit code, its last words and the fills on the tape (`held` None: not known then).
+    `job_ended`: when its job ended by the job record (the round that notices it comes up to 15 minutes later), None
+    when that is not known."""
     try:
         text = (paths.jobs / f"{t['job_id']}.log").read_text(errors="replace")
     except OSError:
         text = ""
     rep = _json_tail(text)
+    ended = meta.get("ended") if isinstance(meta.get("ended"), (int, float)) else None
     if rep is not None:
         return {"fills": rep.get("fills"), "start_sol": rep.get("start_sol"), "end_sol": rep.get("end_sol"),
                 "reason": redact(str(rep.get("reason") or ""))[:300], "restarts": rep.get("restarts"),
-                "held": _real_coins(svc, cfg, rep.get("held")), "exit_code": meta.get("exit_code")}  # fmt: skip
+                "held": _real_coins(svc, cfg, rep.get("held")), "exit_code": meta.get("exit_code"),
+                "job_ended": ended}  # fmt: skip
     last = " ".join(x.strip() for x in text.splitlines() if x.strip())[-240:]
     store = getattr(svc, "store", None)
     return {"fills": _fills_since(store, t["wallet"], t["started_at"]) if store is not None else None,
-            "start_sol": None, "end_sol": None, "exit_code": meta.get("exit_code"), "held": [],
+            "start_sol": None, "end_sol": None, "exit_code": meta.get("exit_code"), "held": None, "job_ended": ended,
             "reason": redact(f"the cycler ended without its report (exit {meta.get('exit_code')}): {last or 'no output'}")}  # fmt: skip
 
 
@@ -911,14 +1019,19 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
             return _closing(paths, t, now, notes, notifier, log, "stop",
                             f"its sniper {oid} could not be stopped ({type(exc).__name__}), so it may still be armed")  # fmt: skip
     sniper = f"its sniper {oid} is stopped: it buys nothing more" if stopped else f"its sniper {oid} is not running"
-    if held:  # its sniper is no longer running, so nothing sells these
-        sniper += f"; the wallet still holds {', '.join(mints)} and nothing sells it: /sell <coin> sells it now"
+    bought = _bought(svc.store, t, now) if held and getattr(svc, "store", None) is not None else None
+    own = [m for m in mints if bought is None or m in bought]
+    others = [m for m in mints if m not in own]
+    if own:  # its sniper is no longer running, so nothing of the test sells these
+        sniper += f"; the wallet still holds {', '.join(own)} and nothing sells it: /sell <coin> sells it now"
+    if others:  # bought outside the test's window: another sniper's (the book's), which manages it
+        sniper += f"; the wallet also holds {', '.join(others)}, which this test did not buy"
     _expect(paths, dict(NONE_EXPECTED))
     if t["state"] == "running":
         text = f"{_ended_words(t, now)} {sniper[0].upper()}{sniper[1:]}.{_record(t)}"
     else:
         text = f"Live test closed: {t.get('label') or t['id']} ({t['id']}); {sniper}."
-    done = t | {"sniper_stopped": stopped, "held_at_end": mints}
+    done = t | {"sniper_stopped": stopped, "held_at_end": mints, "held_own": own}
     for k in ("closing_kind", "closing_why"):
         done.pop(k, None)
     return _end(paths, done, now, notes, notifier, log, text=text)
@@ -950,8 +1063,22 @@ async def finish_ended(svc, cfg: Config, paths: OperatorPaths, jobs, now: float,
 async def round_step(svc, cfg: Config, paths: OperatorPaths, jobs, now: float, *, snap=None,
                      notes: NoteSink | None = None, notifier=None) -> list[str]:  # fmt: skip
     """One round's live-test work, from `operate` (never on a dry run, never from the one-minute pass): close a test
-    whose cycler ended, then start (or expire) a request. Returns lines for the operator log."""
+    whose cycler ended, then the owner's automatic test (autotest.py: it judges a block that ended and may write the
+    next request, or the first one), then start (or expire) a request, so an automatic request starts in the same
+    round. Returns lines for the operator log."""
+    from . import autotest
+
     lines: list[str] = []
+    notes = notes or NoteSink(paths, now=lambda: now)
     await finish_ended(svc, cfg, paths, jobs, now, notes=notes, notifier=notifier, log=lines.append)
+    try:
+        await autotest.step(svc, cfg, paths, now, snap=snap, notes=notes, notifier=notifier, log=lines.append)
+    except Exception as exc:  # noqa: BLE001 - the owner's own /test go still starts; the owner hears it once a day
+        lines.append(redact(f"automatic test step failed: {type(exc).__name__}: {exc}"))
+        if not notes.has_today("automatic test step failed", now):
+            text = notes.write(f"automatic test step failed: {type(exc).__name__}: {str(exc)[:160]}; the next round "
+                               "looks again", "decision")  # fmt: skip
+            if notifier is not None:
+                notifier.send(text)
     await start_requested(svc, cfg, paths, jobs, now, snap=snap, notes=notes, notifier=notifier, log=lines.append)
     return lines

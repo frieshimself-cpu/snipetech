@@ -115,19 +115,17 @@ def _landed_before(sell: dict, failed: dict) -> bool:
     return float(sell["ts"]) <= float(failed["ts"])
 
 
-def twin_fees_by_sell(
-    failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
-) -> dict[str, float]:
-    """What each landed sell's failed twins cost, in SOL. OKTech sends every exit as one tipped and up to two untipped
-    variants; the losers fail on chain and still pay their priority fee and the 5,000-lamport base fee (a failed
-    send's tip is rolled back). A failed send carrying a sell instruction (`is_sell`) on the same coin within
-    `window_s` seconds after a landed sell is that sell's twin; with several landed sells in reach, the nearest one.
-    A twin never lands before its winner, so a sell that landed after the failed send is never its winner."""
+def twin_sells(failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS) -> dict[str, str]:
+    """Which landed sell each failed send is a twin of (failed sig -> sell sig). OKTech sends every exit as one tipped
+    and up to two untipped variants, and the losers fail on chain. A failed send carrying a sell instruction (`is_sell`)
+    on the same coin within `window_s` seconds after a landed sell is that sell's twin; with several landed sells in
+    reach, the nearest one. A twin never lands before its winner, so a sell that landed after the failed send is never
+    its winner. A send whose fee is unknown is no twin (it cannot be charged to one)."""
     by_mint: dict[str, list[dict]] = {}
     for s in sells:
         if s.get("mint"):
             by_mint.setdefault(s["mint"], []).append(s)
-    out: dict[str, float] = {}
+    out: dict[str, str] = {}
     for f in failed_rows:
         if not f.get("is_sell") or not f.get("mint") or f.get("priority_lamports") is None:
             continue
@@ -139,7 +137,20 @@ def twin_fees_by_sell(
         best = min(near, key=lambda s: (abs(float(f["ts"]) - float(s["ts"])),
                                         abs(int(slot) - int(s["slot"])) if slot is not None and s.get("slot") is not None else 0,
                                         s["sig"]))  # fmt: skip
-        out[best["sig"]] = out.get(best["sig"], 0.0) + (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9
+        out[f["sig"]] = best["sig"]
+    return out
+
+
+def twin_fees_by_sell(
+    failed_rows: list[dict], sells: list[dict], window_s: float = TWIN_WINDOW_SECS
+) -> dict[str, float]:
+    """What each landed sell's failed twins cost, in SOL (twin_sells says which are twins): each pays its priority fee
+    and the 5,000-lamport base fee (a failed send's tip is rolled back)."""
+    fee = {f["sig"]: (int(f["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9 for f in failed_rows
+           if f.get("priority_lamports") is not None}  # fmt: skip
+    out: dict[str, float] = {}
+    for fsig, ssig in twin_sells(failed_rows, sells, window_s).items():
+        out[ssig] = out.get(ssig, 0.0) + fee[fsig]
     return out
 
 

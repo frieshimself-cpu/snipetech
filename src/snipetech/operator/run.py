@@ -16,7 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive, redact
-from . import learning, live_test
+from . import learning, live_test, risk_guard
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -158,6 +158,14 @@ def _mark_postmortem(paths: OperatorPaths, now: float, trips: dict, mode: str, r
         _log(paths, now, f"post-mortem mark: failed: {exc}")
 
 
+def _could_trade(snap, paths: OperatorPaths, now: float) -> bool:
+    """Whether a new live trade could start now, which makes the wallet-wide guard's trip worth a page: the book is on,
+    a live test is requested, starting, running or closing, or the owner's standing yes may start one (autotest.py)."""
+    from . import autotest
+
+    return bool(getattr(snap, "book_live", False)) or live_test.in_progress(paths, now) or autotest.is_on(paths)
+
+
 def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) -> dict[str, float]:
     """When each state reason last called Claude. A state missing this round keeps its time until its refire window
     has passed, so a state that flaps (present, absent, present) is not news again each time it comes back."""
@@ -205,6 +213,14 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                 start_standins(round_jobs, dict(snap.services or {}), t0, log=standin_log)
             except Exception as exc:  # noqa: BLE001
                 standin_log(f"stand-in: failed: {type(exc).__name__}: {exc}")
+            # the owner's wallet-wide guard (7 Nov 09:15): its trip is told once a day for each of its two stops, as a
+            # page when a new live trade could start (the book on, a test requested or running), else as a note
+            try:
+                g = risk_guard.from_snapshot(svc.store, cfg, paths, t0, snap)
+                if g.tripped:
+                    risk_guard.announce(g, notes, notifier, t0, page=_could_trade(snap, paths, t0))
+            except Exception as exc:  # noqa: BLE001 - the guard's line never breaks the round
+                _log(paths, t0, redact(f"risk guard: failed: {type(exc).__name__}: {exc}"))
             # the owner's live test (/test <id> go in Telegram) starts here and only here: this unit's jobs outlive the
             # round and deploys (KillMode=process); the one-minute pass would take its cycler down with it
             try:

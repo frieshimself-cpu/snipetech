@@ -596,7 +596,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--latency", type=int, default=0, help="freeze: slots after the trigger")
     sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
-    sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
+    sp.add_argument("--per-tx", type=float, default=None,
+                    help="freeze: SOL per transaction (default: the measured cost, half the low bid's measured round "
+                         "trip, 0.0035 until it is measured; a strategy scored below it never goes live)")  # fmt: skip
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
@@ -639,7 +641,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--commands",
         action="store_true",
-        help="only poll Telegram and act on /stop /resume /status /book /sell /budget (the one-minute timer)",
+        help="only poll Telegram and act on /stop /resume /status /book /sell /budget /test /risk (the one-minute timer)",
     )
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
@@ -648,8 +650,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="snipers=N,held=M",
         help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
     )
-    sp.add_argument("action", nargs="?", choices=["budget"],
-                    help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed)")  # fmt: skip
+    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest"],
+                    help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed); "
+                         "risk: show or set the wallet-wide guard (operator/RISK, the owner's); autotest: show, or turn "
+                         "on or off, the owner's standing yes for a live test that starts by itself "
+                         "(operator/AUTOTEST)")  # fmt: skip
     sp.add_argument(
         "--daily-usd", type=float, help="budget: dollars a day for all the agents (more than 0, at most 500)"
     )
@@ -658,7 +663,28 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--analyst-every-h", type=float,
                     help="budget: hours between analyses besides the daily one (0: once a day; else 0.5 to 24)")  # fmt: skip
     sp.add_argument("--default", dest="budget_default", action="store_true",
-                    help="budget: remove the owner's budget file; the config's values apply again")  # fmt: skip
+                    help="budget or risk: remove the owner's file; the config's (budget) or the 7 Nov plan's (risk) "
+                         "values apply again")  # fmt: skip
+    sp.add_argument("--day-stop", dest="day_stop", type=float,
+                    help="risk: no new live trade once the day is this many SOL down (0.1 to 5)")  # fmt: skip
+    sp.add_argument("--floor", dest="risk_floor", type=float,
+                    help="risk: no new live trade once the wallet (SOL and coins) is under this many SOL (0 to 1000)")  # fmt: skip
+    sp.add_argument("--on", dest="autotest_on", action="store_true",
+                    help="autotest: turn the owner's standing yes on (needs --approved with the owner's words)")  # fmt: skip
+    sp.add_argument("--off", dest="autotest_off", action="store_true", help="autotest: turn it off")
+    sp.add_argument("--approved", help="autotest --on: the owner's yes, in their words as said in chat")
+    sp.add_argument("--wallet", dest="autotest_wallet",
+                    help="autotest --on: the sniper wallet the owner's yes names (the config's [operator] "
+                         "wallet)")  # fmt: skip
+    sp.add_argument("--buy-sol", dest="buy_sol", type=float, help="autotest --on: SOL a buy (at most 0.5; 0.2)")
+    sp.add_argument("--fills", type=float, help="autotest --on: buys a block (1 to 10; 10)")
+    sp.add_argument("--minutes", type=float, help="autotest --on: minutes a block (1 to 180; 120)")
+    sp.add_argument("--loss-sol", dest="loss_sol", type=float,
+                    help="autotest --on: the whole sequence stops this far below the first block's start (at most 2; 1)")  # fmt: skip
+    sp.add_argument("--more-blocks", dest="more_blocks", type=float,
+                    help="autotest --on: blocks after the first (at most 3; 3)")  # fmt: skip
+    sp.add_argument("--continue-at", dest="continue_at", type=float,
+                    help="autotest --on: live must be at least this times paper to go on (0.5 to 1; 0.5)")  # fmt: skip
 
     sp = cmd(
         "solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL"
@@ -1081,8 +1107,12 @@ async def _run(args, cfg: Config) -> int:
             from .analysis import paper
 
             if args.action == "freeze":
+                from .qualify.run import lab_tx_cost
+
+                # the measured cost of a transaction unless told: live_test.eligible refuses a strategy scored below it
+                per_tx = args.per_tx if args.per_tx is not None else lab_tx_cost(svc.store, cfg)
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              args.per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
+                                              per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
                                               hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
@@ -1628,15 +1658,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "operate":
         import subprocess
 
-        from .operator.budget_switch import budget_cli
+        from .operator import autotest, budget_switch, risk_guard
         from .operator.run import operate, telegram_setup_cli
 
+        if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):
+            return risk_guard.risk_cli(cfg, args)
+        if (
+            args.action == "autotest"
+            or args.autotest_on
+            or args.autotest_off
+            or any(getattr(args, k) is not None for k in ("approved", "autotest_wallet", *autotest.FIELDS))
+        ):
+            return autotest.autotest_cli(cfg, args)
         if (
             args.action == "budget"
             or args.budget_default
             or any(v is not None for v in (args.daily_usd, args.turn_usd, args.tool_calls, args.analyst_every_h))
         ):
-            return budget_cli(cfg, args)
+            return budget_switch.budget_cli(cfg, args)
         if args.telegram_setup:
             return telegram_setup_cli(cfg)
         if args.commands:

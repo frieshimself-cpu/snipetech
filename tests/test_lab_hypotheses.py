@@ -319,6 +319,30 @@ def test_paper_freeze_from_the_command_line_freezes_only_the_hypotheses_at_their
     assert (plain.trigger, plain.hours, plain.only_live, plain.position) == (None, None, False, "+6")
 
 
+def test_paper_freeze_scores_at_the_measured_cost_of_a_trade_unless_told(tmp_path, capsys):
+    """A strategy scored below the measured cost of a trade never goes live (live_test.eligible: the owner's yes is for
+    a strategy that passes "at real costs"), so `paper freeze` without --per-tx scores at the measure stage's cost of a
+    transaction (qualify.run.lab_tx_cost: half its round trip, 0.0035 until it is measured), as the daily strategy
+    search does; the analysts' hypotheses freeze that way."""
+    from snipetech import cli
+
+    def freeze(name: str, *flags: str) -> list[float]:
+        db = _tape_db(tmp_path, name=name)
+        st = Store(db)
+        try:  # the low bid's round trip as measured: 0.008 SOL, so 0.004 a transaction
+            st.put_bid_model({"arm": "control", "n": 40, "failed_n": 0, "mean_fee_sol": 0.0035,
+                              "mean_overhead_sol": 0.001, "updated_at": NOW})  # fmt: skip
+        finally:
+            st.close()
+        argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--hours", "1", *flags, "--json"]
+        assert cli.main(argv) == 0
+        return [s["per_tx_sol"] for s in json.loads(capsys.readouterr().out)["frozen"]]
+
+    assert freeze("measured") == [pytest.approx(0.004)]
+    assert freeze("told", "--per-tx", "0.006") == [pytest.approx(0.006)]
+    assert cli.build_parser().parse_args(["paper", "freeze"]).per_tx is None
+
+
 def test_paper_freeze_only_live_keeps_out_what_the_lab_scored_off_its_live_landing(tmp_path, capsys):
     """`paper freeze --position +1` scores the grid's KOL copies 1 trade behind the KOL, where no live copy lands
     (copies land at +6). Without --only-live they are frozen from those numbers; with it they are kept out, and every

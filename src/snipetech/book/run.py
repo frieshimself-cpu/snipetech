@@ -14,12 +14,13 @@ from typing import Any
 
 from ..config import Config
 from ..oktech import validate_exit
+from ..operator import risk_guard
 from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from ..positions import is_active
-from .policy import BOOK_NAME_RE, BookInputs, BookPlan, ExitChoice, copied_leaders, plan_book
+from .policy import BOOK_NAME_RE, GUARD_KILL, BookInputs, BookPlan, ExitChoice, copied_leaders, plan_book
 from .state import day_accounting, record_run
 from .switch import book_live, effective_min_score
 from .watch import watch_pass, watched_within
@@ -259,16 +260,32 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         tape_holding = _tape_holding(store, wallet, now)
     except Exception:  # noqa: BLE001 - the tape cannot be read: count it as holding (nothing is stopped or retired)
         tape_holding = True
+    # the owner's wallet-wide guard, from what this run read: SOL and wrapped SOL, and the coins (None when unread). A
+    # guard that cannot tell is never clear: coins that could not be read leave the book's own floor a SOL balance to
+    # pass on, so the guard halts the run (its holders are all kept: unknown coins count as held)
+    sol = native + wsol if native is not None and wsol is not None else None
+    try:
+        guard = risk_guard.evaluate(store, cfg, paths, now, wallet=wallet, sol=sol,
+                                    held=list(holdings or []) if holdings_known else None)  # fmt: skip
+    except Exception as exc:  # noqa: BLE001 - the guard never breaks the book's own stops
+        guard = None
+        notes.write(f"book: the wallet-wide guard could not be read ({type(exc).__name__})", "info")
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
-                     tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}))  # fmt: skip
+                     tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}),
+                     guard=guard is None or guard.tripped or not guard.known)  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
+    if plan.kill_reason == GUARD_KILL and guard is not None:
+        # the guard's own line says why the book halts (the book's own stops keep their own line); the owner is paged
+        # when the book is on or stops a sniper, an off book with nothing running only notes it
+        stopping = act_on_stops and any(a.kind == "stop" for a in plan.actions)
+        risk_guard.announce(guard, notes, notifier, now, page=live_mode or stopping)
     if plan.paused:  # remember each live pause: the wallet stays out after its losing trips leave the window
         rec = dict(store.coverage(PAUSED_KEY) or {})
         versions = {v.get("wallet"): (v.get("copy_plan") or {}).get("lab_version") if isinstance(v.get("copy_plan"), dict)
@@ -291,14 +308,23 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
     kept = [a for a in plan.actions if a.kind == "keep" and "never stop a holder" in a.reason]
+    # the guard's own line (risk_guard.announce) is only for a stop that holds; a guard that cannot tell (a stalled
+    # measure stage, coins that could not be read) halts the book all the same, and this line says why
+    blind = plan.kill_reason == GUARD_KILL and (guard is None or not guard.tripped)
     if plan.kill_reason and not notes.has_today(f"[decision] [book] kill: {plan.kill_reason}", now):
         line = (
             f"[book] kill: {plan.kill_reason}"
+            + (f" ({guard.reason if guard is not None else 'the guard could not be read'})" if blind else "")
             + (" (stopping its snipers that hold nothing)" if act_on_stops and stops else "")
             + (f"; {len(kept)} book sniper(s) kept running while the wallet holds a coin (each can still buy up to "
                f"{b.max_buys_per_sniper})" if kept else "")
         )  # fmt: skip
-        if live_mode or (act_on_stops and stops) or kept:  # the owner hears it; an idle off book only notes it
+        guarded = (
+            plan.kill_reason == GUARD_KILL and not blind and not kept
+        )  # the guard's own line told the owner; each stop has its own
+        if not guarded and (
+            live_mode or (act_on_stops and stops) or kept
+        ):  # the owner hears it; an off book only notes it
             notifier.send(notes.write(line, "decision"))
         elif not notes.has_today(f"[book] kill: {plan.kill_reason}", now):
             notes.write(line, "info")

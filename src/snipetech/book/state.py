@@ -11,14 +11,25 @@ DAY_KEY = "book:day"
 LAST_RUN_KEY = "book:last_run"
 
 
+def _realised(fills: list[dict]) -> float:
+    # a sell's failed duplicate sends (twin_fee_sol, measure) are part of what it cost
+    return round(sum(float(f.get("pnl_sol") or 0.0) - float(f.get("twin_fee_sol") or 0.0)
+                     for f in fills if f.get("side") == "sell"), 6)  # fmt: skip
+
+
+def realised_today(store: Store, wallet: str, now: float) -> float:
+    """The round trips closed since 00:00 UTC, in SOL: each sell's result from `fills` (the measure stage pairs it with
+    the buys it closed, whenever they were made, real fees included) less its failed duplicate sends. Only our own
+    trades are in it, so a deposit or a withdrawal never moves it (the wallet-wide guard's day stop rests on it)."""
+    return _realised(store.fills(wallet=wallet, since_ts=int(now // 86400) * 86400, side="sell", limit=100_000))
+
+
 def day_accounting(store: Store, wallet: str, now: float, equity_now: float | None = None) -> dict[str, Any]:
     """Realised result and risk used since 00:00 UTC from `fills`; the day's starting equity is fixed on the first call."""
     day = time.strftime("%Y-%m-%d", time.gmtime(now))
     day_start = int(now // 86400) * 86400
     fills = store.fills(wallet=wallet, since_ts=day_start, limit=100_000)
-    # a sell's failed duplicate sends (twin_fee_sol, measure) are part of what it cost
-    realised = round(sum(float(f.get("pnl_sol") or 0.0) - float(f.get("twin_fee_sol") or 0.0)
-                         for f in fills if f.get("side") == "sell"), 6)  # fmt: skip
+    realised = _realised(fills)
     risk = round(sum(float(f.get("sol") or 0.0) for f in fills if f.get("side") == "buy"), 6)
     rec = store.coverage(DAY_KEY)
     if rec.get("day") != day:
