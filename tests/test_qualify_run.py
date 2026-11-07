@@ -7,6 +7,8 @@ import os
 import pytest
 
 from snipetech.analysis import lab as L
+from snipetech.book.policy import buying_book_wallets
+from snipetech.book.state import record_copying
 from snipetech.cli import build_parser
 from snipetech.config import Config
 from snipetech.qualify.run import run_qualify
@@ -129,6 +131,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             "forward_pending": 1,
             "forward_failed": 0,
             "kept_armed": 0,
+            "armed_unknown": 0,
             "deferred": False,
             "no_tape": 0,
             "labelled": 2,
@@ -498,6 +501,7 @@ def test_the_forward_window_starts_at_the_first_pick_even_one_made_before_these_
     try:
         _tape(st, ["KEEPS", "STOPS"])
         st.set_coverage("tape", {"spans": [[NOW - 40 * 3600, NOW]]})
+        record_copying(st, set(), NOW - 120)  # the book read OKTech two minutes ago: none of its snipers copies them
         picked = NOW - 30 * 3600
         for w in ("KEEPS", "STOPS"):
             st.upsert_candidate(w, "solanatracker", STRONG, picked - 3600)
@@ -549,6 +553,8 @@ def test_a_wallet_the_book_already_copies_is_not_stopped_by_these_rules_and_its_
         st.add_oktech_sniper({"id": "s1", "external_id": "e-s1", "kind": "copy", "source": "ARMED", "name": name,
                               "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "ARMED"}]},
                               "created_at": NOW - 3 * 3600})  # fmt: skip
+        # the book's reading of OKTech two minutes ago: its sniper on ARMED is running
+        record_copying(st, buying_book_wallets([{"id": "s1", "name": name, "status": "running"}]), NOW - 120)
         before = [[armed_on - 7200 + 60 * k, 0.03] for k in range(35)]  # all before the pick: no forward copy yet
         runner = lambda ws, pos: [{"wallet": w, "n": 35, "mean": 0.03, "ev_lower": 0.03, "win_rate": 1.0, "total": 1.05,
                                    "exit": "x", "min_leader_sol": 0.5, "moments": list(before)} for w in ws]  # fmt: skip
@@ -672,5 +678,110 @@ def test_a_copy_that_would_dodge_a_dump_by_waiting_for_three_buys_is_scored_wher
         v = st.latest_verdicts()[0]
         assert v["landing_pos"] == "+3x" and v["status"] == "retired" and v["mean_sol"] < 0, v["reasons"]
         assert any(r.startswith("loses at +3x") for r in v["reasons"])
+    finally:
+        st.close()
+
+
+def _old_rules_pick(st, w, at, score=0.01, lower=0.0049):
+    """The verdict the book armed a wallet on before the 7 Nov rules (7aPo3n, 16:05: n 35, +0.0271, lower +0.0049)."""
+    st.upsert_candidate(w, "solanatracker", STRONG, at - 3600)
+    st.put_verdict({"wallet": w, "computed_at": at, "landing_pos": "+6", "n_tape": 35, "mean_sol": 0.0271,
+                    "lower_sol": lower, "score": score, "status": "qualified", "next_review": NOW - 3600,
+                    "copy_plan": {"min_leader_sol": 0.5, "exit_name": "lab", "lab_version": 2}})  # fmt: skip
+
+
+def _book_plan(svc, st, snipers):
+    """The book's own plan, unchanged, on the verdicts the qualify stage wrote."""
+    from snipetech.book.policy import BookInputs, plan_book
+    from snipetech.book.run import _bookable
+
+    inp = BookInputs(equity_sol=10.0, day_realised_sol=0.0, day_risk_used_sol=0.0, qualified=_bookable(st), live={},
+                     bid_model={}, snipers=snipers, holdings=[], now=NOW, holdings_known=True)  # fmt: skip
+    return [(a.kind, a.wallet, a.sniper_id) for a in plan_book(inp, svc.cfg.book).actions]
+
+
+def test_a_wallet_whose_book_sniper_was_stopped_gets_the_verdict_of_these_rules(tmp_path):
+    """Review of 7 Nov: the book's stop never deletes a sniper's local row (only a retire does), so counting rows kept
+    a wallet nobody copied at the verdict it was armed on, and the book's own plan then made it a new sniper although
+    its forward check was pending. Kept is only a wallet the book's latest reading of OKTech shows one of its own
+    snipers running or starting for; a stopped task reads idle."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["STOPPED"])
+        st.set_coverage("tape", {"spans": [[NOW - 30 * 3600, NOW]]})
+        armed_on = NOW - 25 * 3600
+        _old_rules_pick(st, "STOPPED", armed_on)
+        name = "snipetech copy book STOPPE arm:control"
+        st.add_oktech_sniper({"id": "s1", "external_id": "e-s1", "kind": "copy", "source": "STOPPED", "name": name,
+                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "STOPPED"}]},
+                              "created_at": NOW - 20 * 3600})  # fmt: skip  # stopped 10 h ago, its row still there
+        record_copying(st, buying_book_wallets([{"id": "s1", "name": name, "status": "idle"}]), NOW - 120)
+        before = [[armed_on - 7200 + 60 * k, 0.03] for k in range(35)]
+        runner = lambda ws, pos: [{"wallet": w, "n": 35, "mean": 0.03, "ev_lower": 0.03, "win_rate": 1.0, "total": 1.05,
+                                   "exit": "x", "min_leader_sol": 0.5, "moments": list(before)} for w in ws]  # fmt: skip
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        v = st.latest_verdicts()[0]
+        assert v["status"] == "candidate" and v["forward"]["status"] == "pending" and v["landing_pos"] == "+3x"
+        assert v["kept_armed"] is None and out["kept_armed"] == 0
+        for status in ("idle", "stopped"):
+            acts = _book_plan(svc, st, [{"id": "s1", "name": name, "status": status}])
+            assert not any(kind in ("create", "start") for kind, _w, _s in acts), acts
+    finally:
+        st.close()
+
+
+def test_a_sniper_the_owner_made_by_hand_never_keeps_a_wallet_at_its_old_verdict(tmp_path):
+    """Review of 7 Nov: a copy sniper the owner made by hand (`oktech push`, a test) on a wallet with an old qualified
+    verdict kept it qualified though the book never copied it and all 24 of its copies since the pick lost; the book
+    then armed it. Only the book's own snipers count, so it gets the verdict of these rules: retired."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["HANDW"])
+        st.set_coverage("tape", {"spans": [[NOW - 30 * 3600, NOW]]})
+        picked = NOW - 25 * 3600
+        _old_rules_pick(st, "HANDW", picked, lower=0.012)
+        hand = {"id": "h1", "name": "snipetech vcopy HANDW test", "status": "running"}
+        st.add_oktech_sniper({"id": "h1", "external_id": "e-h1", "kind": "vcopy", "source": "HANDW", "name": hand["name"],
+                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "HANDW"}]},
+                              "created_at": NOW - 24 * 3600})  # fmt: skip
+        record_copying(st, buying_book_wallets([hand]), NOW - 120)
+        before = [[picked - 7200 + 60 * k, 0.03] for k in range(35)]
+        after = [[picked + 3600 + 900 * k, -0.01] for k in range(24)]
+        runner = lambda ws, pos: [{"wallet": w, "n": 59, "mean": 0.014, "ev_lower": 0.008, "win_rate": 0.6, "total": 0.8,
+                                   "exit": "x", "min_leader_sol": 0.5, "moments": before + after} for w in ws]  # fmt: skip
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        v = st.latest_verdicts()[0]
+        assert v["status"] == "retired" and v["forward"]["status"] == "failed" and v["kept_armed"] is None
+        acts = _book_plan(svc, st, [dict(hand, status="stopped")])
+        assert not any(kind == "create" for kind, _w, _s in acts), acts
+    finally:
+        st.close()
+
+
+def test_while_the_books_reading_of_oktech_is_unknown_a_wallet_it_may_copy_waits_for_the_next_run(tmp_path):
+    """With no reading of OKTech by the book in the last hour (it has not run since an update, or OKTech did not answer),
+    whether the book copies a wallet it armed before the 7 Nov rules is unknown: keeping a wallet nobody copies would
+    let the book arm it, dropping one it copies would stop it. Such a wallet's verdict is left as it is and stays due;
+    every other wallet is judged as usual, and the run says how many waited."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["OLDQ", "FRESH"])
+        st.set_coverage("tape", {"spans": [[NOW - 30 * 3600, NOW]]})
+        _old_rules_pick(st, "OLDQ", NOW - 25 * 3600)
+        st.upsert_candidate("FRESH", "solanatracker", STRONG, NOW - 3600)
+        runner = lambda ws, pos: [{"wallet": w, "n": 35, "mean": 0.03, "ev_lower": 0.03, "win_rate": 1.0, "total": 1.05,
+                                   "exit": "x", "min_leader_sol": 0.5, "moments": []} for w in ws]  # fmt: skip
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)  # the book never read OKTech
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert out["armed_unknown"] == 1 and out["evaluated"] == 1
+        assert by["OLDQ"]["computed_at"] == NOW - 25 * 3600 and by["OLDQ"]["landing_pos"] == "+6"  # untouched
+        assert by["FRESH"]["status"] == "candidate" and by["FRESH"]["forward"]["status"] == "pending"
+        record_copying(st, set(), NOW - 2 * 3600)  # a reading two hours old says nothing about now
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 60, lab_runner=runner, early=True)
+        assert out["armed_unknown"] == 1 and st.latest_verdicts("qualified")[0]["computed_at"] == NOW - 25 * 3600
+        record_copying(st, set(), NOW + 60)  # the book read OKTech: none of its snipers copies OLDQ
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 120, lab_runner=runner, early=True)
+        oldq = {v["wallet"]: v for v in st.latest_verdicts()}["OLDQ"]
+        assert out["armed_unknown"] == 0 and oldq["status"] == "candidate" and oldq["kept_armed"] is None
     finally:
         st.close()

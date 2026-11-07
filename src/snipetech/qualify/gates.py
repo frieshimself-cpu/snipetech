@@ -352,6 +352,15 @@ KEPT_NEW_FIELDS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "
 _NOT_KEPT = ("id", "computed_at", "next_review", "reasons", "forward", "create_slot", "kept_armed", "gate")
 
 
+def armed_before_rules(prev: dict[str, Any] | None) -> bool:
+    """The wallet's latest verdict is one the book may have armed it on before these rules: qualified, with a copy plan
+    (the book books nothing else), and either from before them (no forward check) or already kept by keep_armed. Only
+    such a wallet is kept while the book copies it."""
+    if not prev or prev.get("status") != "qualified" or not prev.get("copy_plan"):
+        return False
+    return prev.get("forward") is None or bool(prev.get("kept_armed"))
+
+
 def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg: QualifyConfig,
                now: float) -> dict[str, Any]:  # fmt: skip
     """The verdict to write for a wallet a copy sniper copies now (`armed`), given its latest verdict before this run
@@ -365,11 +374,9 @@ def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg:
     and create-slot numbers are the new ones. Passing these rules, it gets its own verdict with the mark ("kept": False),
     so it stays kept should it fall back under them while it is copied. Any other wallet, one an old gate stops (the
     bundle rule, venue, history, copies, crowding) and one no sniper copies any more: `v` as it is."""
-    mark = (prev or {}).get("kept_armed")
-    if not armed or not prev or prev.get("status") != "qualified" or not prev.get("copy_plan"):
+    if not armed or not armed_before_rules(prev):  # nothing copies it, or it qualified under these rules: they apply
         return v
-    if prev.get("forward") is not None and not mark:  # qualified under these rules: they apply to it
-        return v
+    mark = prev.get("kept_armed")
     armed_on = int(mark["armed_on"]) if mark else int(prev["computed_at"])
     if v.get("status") == "qualified":
         return dict(v, kept_armed={"armed_on": armed_on, "kept": False})

@@ -14,6 +14,7 @@ from ..analysis.lab_lock import LabBusy, lab_lock
 from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import (
+    armed_before_rules,
     create_slot_share,
     crowding,
     forward_gate,
@@ -189,8 +190,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
     out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
-                           "forward_failed": 0, "kept_armed": 0, "deferred": False, "no_tape": 0, "labelled": 0,
-                           "lab_wallets": 0}  # fmt: skip
+                           "forward_failed": 0, "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0,
+                           "labelled": 0, "lab_wallets": 0}  # fmt: skip
     due = [c for c in store.candidates(due_before=int(now), limit=max_wallets * 4) if c["status"] != "banned"][
         :max_wallets
     ]
@@ -242,9 +243,12 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     out["lab_wallets"] = len(wallets)
     q_eff = replace(q, landing_pos=landing)
     spans = getattr(svc, "tape_store", store).tape_spans()  # the tape the lab read: the forward window's hours
-    from ..measure.classify import copy_sniper_rows, leaders_at
+    from ..book.state import copying_now
 
-    armed = leaders_at(copy_sniper_rows(store), now)  # what a copy sniper copies now (a retire's replacement too)
+    # the wallets (first six characters) the book's own snipers still buy for at its last reading of OKTech, None when
+    # it has not read OKTech within the hour; never the local sniper rows: a book stop leaves the row in place, and the
+    # owner's hand-made snipers have rows too (review of 7 Nov)
+    copying = copying_now(store, now)
     for c in measurable:
         w = c["wallet"]
         hist = normalise_history(c["stats"])
@@ -257,7 +261,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
         v = forward_gate(v, moments, first_pick(store, w), spans, q_eff, now, conf=cfg.verdict.confidence,
                          samples=cfg.verdict.bootstrap_samples)  # fmt: skip
-        v = keep_armed(v, c.get("verdict"), w in armed, q_eff, now)  # these rules never stop a wallet already copied
+        prev = c.get("verdict")
+        if copying is None and armed_before_rules(prev):
+            # whether the book copies it is unknown: keeping it could arm a wallet nobody copies, dropping it could stop
+            # one it does. Its verdict stays as it is and it stays due, for a run after the book has read OKTech.
+            out["armed_unknown"] += 1
+            continue
+        v = keep_armed(v, prev, copying is not None and w[:6] in copying, q_eff, now)  # never stops a copied wallet
         out["kept_armed"] += bool((v.get("kept_armed") or {}).get("kept"))
         store.put_verdict(v)
         store.put_score(
