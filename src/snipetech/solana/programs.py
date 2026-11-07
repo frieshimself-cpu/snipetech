@@ -12,6 +12,8 @@ from .borsh import IdlDecoder
 
 PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMP_AMM_PROGRAM = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+# pump.fun's fee program: its FeeConfig account holds the fee tiers PumpSwap charges by market cap (solana/sell.py)
+PUMP_FEES_PROGRAM = "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"
 LAUNCHLAB_PROGRAM = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"  # Raydium LaunchLab (bonk.fun and others)
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 DEFAULT_PUBKEY = "11111111111111111111111111111111"
@@ -69,6 +71,10 @@ def launchlab_idl() -> ProgramIdl:
     return load_idl("launchlab.json")
 
 
+def fees_idl() -> ProgramIdl:
+    return load_idl("pump_fees.json")
+
+
 def idl_for(program_id: str) -> ProgramIdl | None:
     if program_id == PUMP_PROGRAM:
         return pump_idl()
@@ -76,7 +82,18 @@ def idl_for(program_id: str) -> ProgramIdl | None:
         return amm_idl()
     if program_id == LAUNCHLAB_PROGRAM:
         return launchlab_idl()
+    if program_id == PUMP_FEES_PROGRAM:
+        return fees_idl()
     return None
+
+
+def pump_pool_authority(mint: str) -> str:
+    """pump.fun's PDA ("pool-authority", mint): the creator of the PumpSwap pool a coin migrates into. Only pump.fun's
+    program can sign for it, so a pool whose creator it is was made by pump.fun's migration and no one else."""
+    from solders.pubkey import Pubkey
+
+    m = bytes(Pubkey.from_string(mint))
+    return str(Pubkey.find_program_address([b"pool-authority", m], Pubkey.from_string(PUMP_PROGRAM))[0])
 
 
 def pump_pool(mint: str, quote_mint: str = WSOL_MINT) -> str:

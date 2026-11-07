@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Refresh the vendored, trimmed IDLs (pump.fun, PumpSwap, Raydium LaunchLab) from the
-official public repos.
+"""Refresh the vendored, trimmed IDLs (pump.fun, PumpSwap, pump.fun's fee program, Raydium
+LaunchLab) from the official public repos.
 
 Only the pieces snipetech decodes are kept: events (and the types they reference),
 plus instruction names/discriminators/account names/args. Run this when a program
-ships an upgrade that appends fields.
+ships an upgrade that appends fields. The fee program's FeeConfig holds PumpSwap's fee
+tiers, which solana/sell.py reads to quote a PumpSwap sale (7 Nov).
 
     python scripts/update_idl.py              # all
     python scripts/update_idl.py launchlab.json
@@ -18,12 +19,20 @@ import sys
 import urllib.request
 
 BASE = "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/"
-SOURCES = {"launchlab.json": "https://raw.githubusercontent.com/raydium-io/raydium-idl/master/raydium_launchpad/raydium_launchpad.json"}
+SOURCES = {
+    "launchlab.json": "https://raw.githubusercontent.com/raydium-io/raydium-idl/master/raydium_launchpad/raydium_launchpad.json"
+}
 OUT = pathlib.Path(__file__).resolve().parent.parent / "src" / "snipetech" / "solana" / "idl"
 
 KEEP = {
     "pump.json": {
-        "events": {"CreateEvent", "TradeEvent", "CompleteEvent", "CompletePumpAmmMigrationEvent", "PostCompleteBuyEvent"},
+        "events": {
+            "CreateEvent",
+            "TradeEvent",
+            "CompleteEvent",
+            "CompletePumpAmmMigrationEvent",
+            "PostCompleteBuyEvent",
+        },
         "instructions": None,  # keep every instruction header (name/discriminator/accounts)
         "accounts": {"BondingCurve"},
     },
@@ -31,6 +40,11 @@ KEEP = {
         "events": {"BuyEvent", "SellEvent", "CreatePoolEvent"},
         "instructions": None,
         "accounts": {"Pool"},
+    },
+    "pump_fees.json": {
+        "events": set(),
+        "instructions": None,
+        "accounts": {"FeeConfig"},
     },
     "launchlab.json": {
         "events": {"TradeEvent", "PoolCreateEvent"},
