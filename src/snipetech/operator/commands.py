@@ -22,7 +22,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
-from . import live_test
+from . import live_test, risk_guard
 from .budget_switch import budget_reply, effective_daily_usd
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
@@ -111,7 +111,7 @@ def _ago(secs: float) -> str:
     return f"{secs / 3600:.1f} h ago"
 
 
-def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float) -> str:
+def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float, store=None) -> str:
     if snap is None:
         return "no snapshot yet; the next round (within 15 min) will have one"
     running = [s for s in snap.snipers or [] if is_active(s.get("status"))]
@@ -126,6 +126,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         else "snipers: unknown (OKTech not answering)",
         f"claude spend today {snap.spent_today:.2f} $ of {effective_daily_usd(cfg, paths):g} $",
         f"book: {'on' if book_live(cfg, paths) else 'off'}",
+        risk_guard.status_line(risk_guard.from_snapshot(store, cfg, paths, now, snap), paths),
     ]
     if snap.fills:
         lines.append(f"fills since last round: {len(snap.fills)}")
@@ -395,7 +396,7 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
                          notes: NoteSink, now: float, sweep: Callable | None = None) -> str:  # fmt: skip
     """Act on one owner command and send the reply. `sweep`: solana.sell.sweep unless a test hands in a fake."""
     if cmd.name == "status":
-        reply = _status(cfg, snap, paths, now)
+        reply = _status(cfg, snap, paths, now, store=getattr(svc, "store", None))
     elif cmd.name == "stop":
         reply = await _stop(svc, cfg, paths, notes, now)
     elif cmd.name == "resume":

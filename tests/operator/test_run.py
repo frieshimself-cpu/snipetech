@@ -212,6 +212,24 @@ def test_cli_has_operate_and_ops_allows_it():
     assert build_parser().parse_args(["operate", "--analyst", "--telegram-setup"]).telegram_setup
 
 
+def test_the_round_tells_the_owner_once_when_the_wallet_wide_guard_trips(tmp_env):
+    """The owner's guard (7 Nov 09:15: no new live trade once the wallet is under 10 SOL): one decision line when it
+    trips, then nothing more every round. With nothing that could trade (the book off, no test) it is only noted."""
+    from snipetech.book.switch import book_switch
+
+    sent: list[str] = []
+    _op(tmp_env, send=lambda t: sent.append(t) or True)  # a 1 SOL wallet, the book off
+    notes = tmp_env["paths"].notes.read_text()
+    assert not [t for t in sent if "wallet-wide guard" in t] and "[info] wallet-wide guard tripped" in notes
+    book_switch(tmp_env["paths"], True, "test", NOW)  # the book on: a new live trade could start
+    for k in range(1, 4):
+        _op(tmp_env, now=lambda k=k: NOW + 900 * k, send=lambda t: sent.append(t) or True)
+    (told,) = [t for t in sent if "wallet-wide guard tripped" in t]
+    assert "1.00 SOL" in told and "10 SOL floor" in told and "/risk" in told
+    _op(tmp_env, dry_run=True, now=lambda: NOW + 86400, send=lambda t: sent.append(t) or True)
+    assert len([t for t in sent if "wallet-wide guard tripped" in t]) == 1  # a dry run starts nothing, says nothing
+
+
 def _watch_env(tmp_path, monkeypatch):
     """A DTAU-shaped coin held by the book wallet, bought by a sniper OKTech reports finished (tests/test_book_watch)."""
     from tests.test_book_watch import FINISHED, G, W, _held, _sniper, dtau

@@ -347,18 +347,26 @@ def _until(kinds: tuple[str, ...], g: Guard) -> str:
     return " and ".join(parts)
 
 
-def announce(g: Guard, notes, notifier, now: float) -> bool:
+def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> bool:
     """One decision line, to Telegram as well, when a stop trips: once a day for each of the two stops, never every
-    round (the book and the round both call it; the shared notes file says whether it was told today). True when told."""
-    new = tuple(k for k in g.kinds if not notes.has_today(f"[decision] {ANNOUNCED}", now, _WORDS[k]))
+    round (the book and the round both call it; the shared notes file says whether it was told today). With `page`
+    False (nothing would trade: an off book, no test, no automatic test) it is only noted, and the owner still hears it
+    the first time it matters that day. True when written."""
+
+    def told(k: str) -> bool:
+        return notes.has_today(f"[decision] {ANNOUNCED}", now, _WORDS[k]) or (
+            not page and notes.has_today(f"[info] {ANNOUNCED}", now, _WORDS[k])
+        )
+
+    new = tuple(k for k in g.kinds if not told(k))
     if not g.tripped or not new:
         return False
     said = "; ".join(f"{_WORDS[k]} {r}" for k, r in zip(g.kinds, g.reason.split("; "), strict=False) if k in new)
     line = notes.write(f"{ANNOUNCED}: {said}. No new live trade: the book creates and starts nothing and stops its "
                        "snipers that hold nothing (one holding a coin keeps running to sell it), and no live test "
                        f"starts or re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> "
-                       "changes it.", "decision")  # fmt: skip
-    if notifier is not None:
+                       "changes it.", "decision" if page else "info")  # fmt: skip
+    if page and notifier is not None:
         notifier.send(line)
     return True
 

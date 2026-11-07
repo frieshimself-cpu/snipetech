@@ -231,7 +231,12 @@ def test_owner_stop_flag_kills_the_book_even_when_live(tmp_path):
 def test_book_equity_counts_the_coins_held(tmp_path):
     """The book's own buys move SOL into coins; equity = SOL + WSOL + the tape value of the coins held, or the book
     would trip its own floor after a few fills."""
+    from snipetech.operator.risk_guard import set_risk
+
     st, cfg = _env(tmp_path)
+    # the owner's wallet-wide guard at its loosest floor: a 3.5 SOL wallet is under its 10 SOL, and this is about the
+    # book's own floor
+    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": 0}, "test", NOW)
     svc = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "value_sol": 2.5, "priced": True}])
     try:
         out = asyncio.run(
@@ -851,5 +856,83 @@ def test_a_live_pause_is_remembered_across_runs(tmp_path):
         svc = FakeSvc(st)
         asyncio.run(run_book(svc, cfg, NOW + 600, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
         assert not any(c[0] == "create" and c[1][0].startswith(L1) for c in svc.calls)
+    finally:
+        st.close()
+
+
+# -- the owner's wallet-wide guard (operator/risk_guard.py) -------------------------------------------------------
+
+
+def test_under_the_wallet_wide_floor_the_book_starts_nothing_and_stops_its_idle_snipers(tmp_path):
+    """The owner's yes (7 Nov 09:15): no new live trade once the wallet is under 10 SOL. The book's own floor is 3 SOL;
+    at 9 SOL the guard holds: no create, no start, and its snipers that hold nothing are stopped. The owner hears it
+    once, in the guard's own line, not again every run."""
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    svc = FakeSvc(st, snipers=[{"id": "k1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"},
+                               {"id": "k2", "name": f"snipetech copy book {L2[:6]} arm:control", "status": "idle"}])  # fmt: skip
+    sent = []
+    note = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=note, balances=lambda w: (9.0, 0.0, [])))
+        assert out["kill_reason"] == "wallet-wide guard" and svc.calls == [("stop", "k1")]
+        (told,) = [t for t in sent if "wallet-wide guard tripped" in t]
+        assert "9.00 SOL" in told and "10 SOL floor" in told
+        assert not any("[book] kill" in t for t in sent)  # the guard's line says it; the stop has its own line
+        sent.clear()
+        svc2 = FakeSvc(
+            st, snipers=[{"id": "k1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "idle"}]
+        )
+        asyncio.run(run_book(svc2, cfg, NOW + 300, notifier=note, balances=lambda w: (9.0, 0.0, [])))
+        assert svc2.calls == [] and sent == []  # nothing started, nothing said again
+    finally:
+        st.close()
+
+
+def test_the_wallet_wide_guard_never_stops_a_book_sniper_holding_a_coin(tmp_path):
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    svc = FakeSvc(st, snipers=[{"id": "k1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"}],
+                  held=[{"mint": "M", "amount": 3.0, "value_sol": 0.1, "priced": True}])  # fmt: skip
+    sent = []
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (8.0, 0.0, [{"mint": "M"}])))  # fmt: skip
+        assert out["kill_reason"] == "wallet-wide guard" and svc.calls == []
+        assert any("kept running while the wallet holds a coin" in t for t in sent)  # each can still buy: said
+    finally:
+        st.close()
+
+
+def test_a_coin_marked_down_trips_the_guard_before_the_books_own_day_stop(tmp_path):
+    """The book's own day stop counts closed trips only; the guard also counts the coins still held at the tape's
+    price: closed -0.9 and a coin bought for 0.2 now worth 0.05 is a day 1.05 SOL down."""
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    st.put_fill({"sig": "S1", "ts": NOW - 1800, "wallet": W, "mint": "Old", "side": "sell", "sol": 0.1,
+                 "tokens": 1000.0, "pnl_sol": -0.9})  # fmt: skip
+    st.put_fill({"sig": "B2", "ts": NOW - 300, "wallet": W, "mint": "M", "side": "buy", "sol": 0.2,
+                 "tokens": 1000.0, "priority_lamports": 0, "tip_lamports": 0})  # fmt: skip
+    svc = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "raw": 1000, "value_sol": 0.05, "priced": True}])
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (12.0, 0.0, [{"mint": "M"}])))  # fmt: skip
+        assert out["kill_reason"] == "wallet-wide guard" and not any(c[0] in ("create", "start") for c in svc.calls)
+    finally:
+        st.close()
+
+
+def test_the_owners_risk_values_are_the_ones_the_book_obeys(tmp_path):
+    """/risk floor 8: at 9 SOL the guard is clear and the book trades as before."""
+    from snipetech.operator.risk_guard import set_risk
+
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": 8.0}, "telegram", NOW)
+    svc = FakeSvc(st)
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (9.0, 0.0, [])))  # fmt: skip
+        assert out["kill_reason"] is None and [c[0] for c in svc.calls].count("create") == 2
     finally:
         st.close()

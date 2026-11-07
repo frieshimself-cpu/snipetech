@@ -348,6 +348,65 @@ def test_go_and_the_round_wait_for_the_tape_to_catch_up(env):
     assert LT.load(env.paths)["state"] == "running" and len(env.started) == 1
 
 
+def _lost(store, pnl, ts=NOW - 600, k=0):
+    """A round trip of ours closed today that lost `pnl` SOL (a sell in the measure stage's fills)."""
+    store.put_fill({"sig": f"loss{k}", "ts": int(ts), "wallet": W, "mint": f"Lost{k}", "side": "sell", "sol": 0.1,
+                    "tokens": 1000.0, "pnl_sol": pnl})  # fmt: skip
+
+
+def test_go_and_the_round_refuse_while_the_wallet_wide_guard_holds(env):
+    """The owner's yes (7 Nov 09:15): no new live trade once the day is 1 SOL down or the wallet is under 10 SOL. /test
+    go refuses then and says so; the owner's /risk changes it; a request the guard trips before the round starts ends
+    with nothing created."""
+    from snipetech.operator.risk_guard import set_risk
+
+    _freeze(env.store, BEST, pnl=0.02)
+    _lost(env.store, -1.0)
+    reply = _refused(env, BEST, "go")
+    assert "wallet-wide guard" in reply and "1.00 SOL down" in reply and "/risk" in reply
+    assert " go" not in _send(env).splitlines()[-1]  # the plan says it is not possible now, not the line to send
+    set_risk(env.paths, {"day_stop_sol": 1.5}, "telegram", NOW)  # the owner's /risk stop 1.5
+    _send(env, BEST, "go")
+    assert LT.load(env.paths)["state"] == "requested"
+    _lost(env.store, -0.6, k=1)  # the day is 1.6 SOL down before the round
+    env.sent.clear()
+    _round(env)
+    t = LT.load(env.paths)
+    assert t["state"] == "done" and not t["started"] and "wallet-wide guard" in t["error"]
+    assert env.svc.created == [] and env.started == []
+    assert any("did not start" in s and "wallet-wide guard" in s for s in env.sent)
+
+
+def test_go_refuses_a_wallet_under_the_wallet_wide_floor(env):
+    _freeze(env.store, BEST, pnl=0.02)
+    env.snap = Snapshot(ts=NOW - 300, wallet=W, native_sol=9.8, wsol=0.1, held=[], snipers=[])  # 9.9 SOL
+    reply = _refused(env, BEST, "go")
+    assert "wallet-wide guard" in reply and "9.90 SOL" in reply and "10 SOL floor" in reply
+
+
+def test_a_request_waits_while_the_guard_cannot_tell(env, monkeypatch):
+    """What the guard cannot read is never clear, and says nothing about the owner's yes: the request waits for the next
+    round (until it expires) instead of starting or ending."""
+    from snipetech.operator import risk_guard
+
+    _freeze(env.store, BEST, pnl=0.02)
+    _send(env, BEST, "go")
+    real = risk_guard.evaluate
+
+    def blind(*a, **k):
+        g = real(*a, **k)
+        return risk_guard.Guard(
+            **{**g.__dict__, "known": False, "reason": "the guard cannot tell: the fills could not be read"}
+        )
+
+    monkeypatch.setattr(risk_guard, "evaluate", blind)
+    _round(env)
+    assert LT.load(env.paths)["state"] == "requested" and env.svc.created == []
+    monkeypatch.setattr(risk_guard, "evaluate", real)
+    _round(env, NOW + 900)
+    assert LT.load(env.paths)["state"] == "running" and len(env.started) == 1
+
+
 def test_an_old_or_malformed_go_is_refused_and_never_echoed(env):
     _freeze(env.store, BEST, pnl=0.02)
     assert "10 min old" in _refused(env, BEST, "go", date=NOW - 600)  # it waited out an outage: send it again

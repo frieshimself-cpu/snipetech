@@ -659,11 +659,17 @@ class _CycleClient:
         pass
 
 
+CLEAR = None  # the owner's wallet-wide guard says nothing against a re-arm
+
+
 def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda secs: None, balance=lambda: 5.0,
-               coins=None, clock=None):  # fmt: skip
+               coins=None, clock=None, guard=lambda: CLEAR):  # fmt: skip
     """The cycler on a fake clock (each sleep moves it, so its one-minute re-arm really comes round), one capped sniper
     "a", a wallet with `balance()` SOL that holds coin M1 while `holds()` says so (or the coins `coins(now)` lists),
-    and the owner's /stop flag in `flag`. The tape is empty unless a test adds trades to the store."""
+    and the owner's /stop flag in `flag`. The tape is empty unless a test adds trades to the store. The owner's
+    wallet-wide guard says what `guard()` says: None clear, "unknown" cannot tell, any other text tripped with that
+    reason (these wallets hold 5 SOL, under the guard's own 10 SOL floor, so the real one is tested on its own)."""
+    from snipetech.operator.risk_guard import Guard
     from snipetech.service import Service
 
     clock = clock if clock is not None else {"t": 1_794_045_600.0}
@@ -688,9 +694,18 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
             return coins(clock["t"])
         return [{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []
 
+    def risk_guard(address, sol, held):
+        said = guard()
+        return Guard(tripped=said not in (None, "unknown"), known=said != "unknown",
+                     reason="the guard cannot tell: the fills could not be read" if said == "unknown" else (said or ""),
+                     kinds=() if said in (None, "unknown") else ("day",), day=None, equity_sol=sol, day_stop_sol=1.0,
+                     floor_sol=10.0, owner_set=False)  # fmt: skip
+
     monkeypatch.setattr(svc, "_oktech", lambda: client)
     monkeypatch.setattr(svc, "stop_flag_set", lambda: flag["stop"])
     monkeypatch.setattr(svc, "open_positions", positions)
+    if guard != "real":
+        monkeypatch.setattr(svc, "risk_guard", risk_guard)
     monkeypatch.setattr("snipetech.service.asyncio.sleep", sleep)
     monkeypatch.setattr("snipetech.service.time.time", lambda: clock["t"])
     return svc, store
@@ -820,6 +835,74 @@ def test_a_cycle_does_not_start_while_the_tape_is_behind(monkeypatch):
     with pytest.raises(SystemExit, match="tape"):
         asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
     assert client.calls == []
+    store.close()
+
+
+def test_a_cycle_does_not_start_while_the_wallet_wide_guard_holds(monkeypatch):
+    """The owner's yes (7 Nov 09:15): no new live trade once the day is 1 SOL down or the wallet is under 10 SOL. A guard
+    that cannot tell is not clear either, as for the cycler's other reads at its start."""
+    flag = {"stop": False}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard=lambda: "today is 1.02 SOL down")
+    with pytest.raises(SystemExit, match="wallet-wide guard"):
+        asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    store.close()
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard=lambda: "unknown")
+    with pytest.raises(SystemExit, match="cannot tell"):
+        asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == []
+    store.close()
+
+
+def test_the_wallet_wide_guard_ends_a_cycle_at_its_next_rearm_and_disarms_it(monkeypatch):
+    """Read at each re-arm, like the /stop flag: once the day is 1 SOL down (or the wallet under its floor) the cycler
+    re-arms nothing more and, with nothing held, stops the sniper it armed (a block ended early: the automatic test's
+    sequence ends with it)."""
+    flag = {"stop": False}
+    said = {"now": None}
+    client = _CycleClient(on_start=lambda n: said.update(now="today is 1.02 SOL down, at or past the 1 SOL day stop"))
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard=lambda: said["now"])
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a")]  # armed once, never again, then disarmed
+    assert "wallet-wide guard" in rep["reason"] and "1.02 SOL down" in rep["reason"] and rep["restarts"] == 0
+    assert "stopped" in rep["reason"] and rep["left_running"] == []
+    store.close()
+
+
+def test_a_guard_that_cannot_tell_holds_the_rearm_not_the_run(monkeypatch):
+    """An RPC hiccup at a re-arm says nothing about the day: that re-arm waits for a guard that can tell, the run goes
+    on, and the sniper is re-armed once it can."""
+    flag = {"stop": False}
+    reads = {"n": 0}
+
+    def guard():
+        reads["n"] += 1
+        return "unknown" if 2 <= reads["n"] <= 4 else None  # the start reads it first: clear
+
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard=guard)
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 3))
+    assert rep["reason"].startswith("time limit") and rep["restarts"] == 2  # at about 75 s and 135 s, not at 60 s
+    assert sum("cannot tell" in e for e in rep["events"]) == 1  # said once, not every tick
+    store.close()
+
+
+def test_the_cycler_reads_the_owners_guard_file_next_to_the_database(monkeypatch, tmp_path):
+    """The real guard, from operator/RISK next to the database: these 5 SOL wallets are under the owner's 10 SOL floor
+    until the owner's /risk floor 4."""
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.operator.risk_guard import set_risk
+
+    flag = {"stop": False}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, guard="real")
+    svc.cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    with pytest.raises(SystemExit, match="under the 10 SOL floor"):
+        asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 2))
+    assert client.calls == []
+    set_risk(OperatorPaths(tmp_path), {"floor_sol": 4.0}, "telegram")
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 2))
+    assert rep["reason"].startswith("time limit") and rep["restarts"] >= 1
     store.close()
 
 

@@ -1,5 +1,6 @@
 """The book's policy as a pure function. Inputs in, a plan of actions out, every action with its reason.
-Order: stops first (equity floor, day stop, daily risk), then the diff between the wanted set and the snipers that exist.
+Order: stops first (equity floor, day stop, daily risk, the owner's wallet-wide guard), then the diff between the wanted
+set and the snipers that exist.
 It never stops a sniper while the wallet holds a coin, and never creates or starts under a stop."""
 
 from __future__ import annotations
@@ -108,6 +109,12 @@ class BookInputs:
     # the tape shows a buy of ours not yet seen sold (it is ahead of the wallet read by seconds): counts as holding
     tape_holding: bool = False
     holdings_known: bool = False  # the wallet's holdings were read this run: retiring a sniper needs them, and none
+    # the owner's wallet-wide guard holds (operator/risk_guard.py: the day 1 SOL down or the wallet under 10 SOL): a
+    # kill like the book's own stops, so nothing is created or started and the book's snipers that hold nothing stop
+    guard: bool = False
+
+
+GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
 
 
 OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one buy per signal per wallet"
@@ -311,6 +318,8 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         plan.kill_reason = "day stop"
     elif inp.day_risk_used_sol >= cfg.daily_risk_sol:
         plan.kill_reason = "daily risk used"
+    elif inp.guard:  # after the book's own stops, so each keeps the reason it always had
+        plan.kill_reason = GUARD_KILL
     elif not inp.switched_on and any(is_active(s.get("status")) for s in mine):
         plan.kill_reason = "book off"  # a running copy sniper keeps buying to its cap until it is stopped
     if plan.kill_reason:

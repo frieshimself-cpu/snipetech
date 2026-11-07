@@ -284,6 +284,20 @@ def test_the_trip_is_told_once_a_day_for_each_stop(env):
     assert RG.announce(RG.evaluate(store, cfg, paths, tomorrow, sol=9.0, held=[]), notes, notifier, tomorrow) is True
 
 
+def test_a_trip_that_stops_nothing_is_noted_and_paged_the_first_time_it_matters(env):
+    """With nothing that would trade (the book off, no test, no automatic test) the trip is a note, not a page every
+    day; the owner still hears it the first time it matters that day."""
+    paths, store, cfg = env
+    sent: list[str] = []
+    notes, notifier = NoteSink(paths, now=lambda: NOW), Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
+    floor = RG.evaluate(store, cfg, paths, NOW, sol=9.0, held=[])
+    assert RG.announce(floor, notes, notifier, NOW, page=False) is True and sent == []
+    assert RG.announce(floor, notes, notifier, NOW + 300, page=False) is False  # noted once
+    assert "[info] wallet-wide guard tripped" in paths.notes.read_text()
+    assert RG.announce(floor, notes, notifier, NOW + 600, page=True) is True and len(sent) == 1
+    assert RG.announce(floor, notes, notifier, NOW + 900, page=False) is False  # told: not noted again either
+
+
 def test_the_status_line_says_the_guard_and_todays_result(env):
     paths, store, cfg = env
     _sell(store, "s1", NOW - 600, M2, pnl=-0.32)

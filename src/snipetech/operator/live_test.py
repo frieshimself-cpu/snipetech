@@ -38,6 +38,7 @@ from pathlib import Path
 from ..config import Config
 from ..ops import redact
 from ..positions import is_active
+from . import risk_guard
 from .paths import OperatorPaths
 from .snapshot import running_jobs
 from .tools import NoteSink
@@ -146,6 +147,11 @@ def _expired(t: dict | None, now: float) -> bool:
 
 def _active(t: dict | None, now: float) -> bool:
     return bool(t) and t["state"] in ACTIVE and not _expired(t, now)
+
+
+def in_progress(paths: OperatorPaths, now: float) -> bool:
+    """A live test is requested, starting, running or closing (a request no round acted on in time is not)."""
+    return _active(load(paths), now)
 
 
 def _history(paths: OperatorPaths, test: dict) -> None:
@@ -490,7 +496,7 @@ def _overview(svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> str:
     for r in ok[:SHOWN]:
         lines.append(f"{r['id']} {r['label']}: {int(r['n']):,} forward trades, {float(r['mean']):+.4f} SOL a trade, "
                      f"lower bound {float(r['ev_lower']):+.4f}")  # fmt: skip
-    return "\n".join([*lines, *_plan_lines(ok[0], cfg, paths, snap, now)])
+    return "\n".join([*lines, *_plan_lines(ok[0], cfg, paths, snap, now, getattr(svc, "store", None))])
 
 
 def _one(sid: str, svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> str:
@@ -505,10 +511,10 @@ def _one(sid: str, svc, cfg: Config, paths: OperatorPaths, snap, now: float) -> 
     if row is None:
         return (f"{sid} cannot be tested live: it {why.get(sid, 'is not a frozen paper strategy')}. Send /test to see "
                 "the ones that can.")  # fmt: skip
-    return "\n".join(_plan_lines(row, cfg, paths, snap, now))
+    return "\n".join(_plan_lines(row, cfg, paths, snap, now, getattr(svc, "store", None)))
 
 
-def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float) -> list[str]:
+def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float, store=None) -> list[str]:
     """The plan for `row` in words, ending with the exact line that starts it (or why it cannot start now)."""
     wallet = cfg.operator.wallet
     if not wallet:
@@ -526,6 +532,9 @@ def _plan_lines(row: dict, cfg: Config, paths: OperatorPaths, snap, now: float) 
         return [*lines, (f"Not possible now: the wallet holds {eq:.2f} SOL and this test needs at least "
                          f"{_need(p):.2f} SOL (the {p['floor']:.2f} SOL floor plus one buy of {p['buy_sol']:g} and "
                          "its fees).")]  # fmt: skip
+    g = risk_guard.from_snapshot(store, cfg, paths, now, snap)
+    if g.tripped:
+        return [*lines, f"Not possible now: the wallet-wide guard holds: {g.reason}. /risk shows it."]
     return [*lines, "To start it, send this line; the next operator round (within 15 minutes) starts it:",
             f"/test {p['id']} go"]  # fmt: skip
 
@@ -586,6 +595,11 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
     if held:
         return no + (f"the wallet holds {_coins(held)}, and a test starts only from a wallet that holds none (a coin "
                      f"held stops the cycler from re-arming). Send /sell to see them, then /test {sid} go again.")  # fmt: skip
+    g = risk_guard.evaluate(svc.store, cfg, paths, now, wallet=wallet, sol=eq, held=held)
+    if g.tripped:
+        return no + f"the wallet-wide guard holds: {g.reason}. /risk shows it; /risk stop or /risk floor changes it."
+    if not g.known:
+        return no + f"{g.reason}. Try again in a minute."
     req = p | {"state": "requested", "oktech_wallet": cfg.oktech.wallet or DEFAULT_OKTECH_WALLET,
                "forward": {k: row.get(k) for k in ("n", "mean", "ev_lower", "landing")},
                "requested_at": int(now), "by": "telegram", "message_date": date}  # fmt: skip
@@ -708,6 +722,11 @@ async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: f
         return f"the wallet's coins could not be read ({type(exc).__name__})", True
     if held:
         return f"the wallet holds {_coins(held)}", False
+    g = risk_guard.evaluate(svc.store, cfg, paths, now, wallet=t["wallet"], sol=eq, held=held)
+    if g.tripped:  # the day stop lifts at 00:00 UTC and the floor with a deposit, long after this request expires
+        return f"the wallet-wide guard holds: {g.reason}", False
+    if not g.known:
+        return g.reason, True
     return None, False
 
 

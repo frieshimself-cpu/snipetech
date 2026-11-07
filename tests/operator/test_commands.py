@@ -267,6 +267,27 @@ def test_status_names_the_owners_daily_budget(tmp_path):
     assert "claude spend today 1.92 $ of 200 $" in asyncio.run(handle_command(_cmd("status"), **ctx))
 
 
+def test_status_shows_the_wallet_wide_guard_and_todays_result(tmp_path):
+    from snipetech.store import Store
+
+    st = Store(tmp_path / "s.db")
+    svc = FakeSvc(held=[], snipers=[])
+    svc.store = st
+    st.put_fill({"sig": "s1", "ts": NOW - 600, "wallet": W, "mint": "M", "side": "sell", "sol": 0.1, "tokens": 1.0,
+                 "pnl_sol": -0.3})  # fmt: skip
+    try:
+        snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=11.0, wsol=0.2, held=[], snipers=[], spent_today=0.0)
+        ctx, _ = _ctx(tmp_path, svc, snap)
+        reply = asyncio.run(handle_command(_cmd("status"), **ctx))
+        assert "risk guard: no new live trade once the day is 1 SOL down or the wallet is under 10 SOL" in reply
+        assert "today -0.30 SOL" in reply and "wallet 11.20 SOL" in reply and "TRIPPED" not in reply
+        ctx["snap"] = Snapshot(ts=NOW - 60, wallet=W, native_sol=9.0, wsol=0.0, held=[], snipers=[], spent_today=0.0)
+        reply = asyncio.run(handle_command(_cmd("status"), **ctx))
+        assert "TRIPPED" in reply and "under the 10 SOL floor" in reply
+    finally:
+        st.close()
+
+
 def test_status_counts_a_starting_sniper_as_running(tmp_path):
     svc = FakeSvc(
         held=[], snipers=[{"id": "s1", "name": "a", "status": "starting"}, {"id": "s2", "name": "b", "status": "idle"}]

@@ -132,6 +132,15 @@ class Service:
         except Exception:  # noqa: BLE001
             return False
 
+    def risk_guard(self, address: str, sol: float | None, held: list[dict] | None):
+        """The owner's wallet-wide guard for `address` now (operator/RISK next to the database: no new live trade once
+        the day is 1 SOL down or the wallet is under 10 SOL), from its SOL and wrapped SOL and its coins as read."""
+        from .operator import risk_guard
+        from .operator.paths import OperatorPaths
+
+        paths = OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent)
+        return risk_guard.evaluate(self.store, self.cfg, paths, time.time(), wallet=address, sol=sol, held=held)
+
     def reset_tape_store(self) -> None:
         if self._tape_store is not None and self._tape_store is not self.store:
             self._tape_store.close()
@@ -926,7 +935,9 @@ class Service:
 
         The run ends at `max_fills` buys since it started, counted as the larger of the wallet's buys on the tape and
         the coins seen in the wallet (with the recorder missing our buys the tape alone counted none: a probe made 118
-        buys under a cap of 10), on the emergency floor, at the time limit, or at the owner's /stop (read every tick).
+        buys under a cap of 10), on the emergency floor, at the time limit, at the owner's /stop (read every tick), or
+        once the owner's wallet-wide guard holds (operator/RISK: the day 1 SOL down or the wallet under 10 SOL; read at
+        the start and before each re-arm; a guard that cannot tell holds that re-arm back, never the run).
         Every end leaves nothing armed: the snipers this run armed are stopped when the wallet holds nothing (one left
         armed buys once more at the next launch that qualifies, past the time limit or under the floor, with nobody
         watching); a coin held, or a wallet that cannot be read, keeps them running to sell it (a stopped sniper strands
@@ -973,6 +984,18 @@ class Service:
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
             # ignore_mints: positions no sniper manages (to be sold by hand)
             return await self.open_positions(address, ignore=ignore_mints)
+
+        async def guard_says(held: list[dict]) -> tuple[bool | None, str]:
+            """The owner's wallet-wide guard now (operator/RISK: the day 1 SOL down or the wallet under 10 SOL), read at
+            the start and at each re-arm like the /stop flag: (True, why) while it holds, (None, why) when it cannot
+            tell, (False, "") when it is clear."""
+            try:
+                g = self.risk_guard(address, await self.wallet_sol(address), held)
+            except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
+                return None, f"the guard cannot tell ({type(exc).__name__})"
+            if g.tripped:
+                return True, g.reason
+            return (None, g.reason) if not g.known else (False, "")
 
         async def disarm(why: str) -> tuple[str, list[dict] | None]:
             """How every run ends: with nothing held the snipers this run armed are stopped (a stopped sniper with
@@ -1027,6 +1050,11 @@ class Service:
             lag = tape_lag()
             if lag:  # the fills cap is counted on the tape: a run that cannot count them does not start
                 raise SystemExit(f"{lag} (more than {TAPE_STALE_SECS} s): not cycling, its fills are counted there")
+            blocked, why = await guard_says(held0)
+            if blocked is not False:  # cannot tell is never clear, as for the reads above
+                raise SystemExit(
+                    f"the wallet-wide guard {'holds' if blocked else 'cannot be read'} ({why}): not cycling"
+                )
             for i in ids:
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
@@ -1035,7 +1063,7 @@ class Service:
                 armed_at[i] = time.time()
                 armed.add(i)
                 log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
-            low, paused = b0, False
+            low, paused, unsure = b0, False, False
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
                 if self.stop_flag_set():
@@ -1070,11 +1098,22 @@ class Service:
                     log("the tape has caught up: re-arming again")
                     paused = False
                 now = time.time()
+                guarded = False
                 for i in ids:
                     since = now - armed_at.get(i, now)
                     if since < 20:  # a fresh shot may have just been fired and not reached the tape or the RPC yet
                         continue
                     if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after:
+                        blocked, why = await guard_says(held)
+                        if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
+                            reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True
+                            break
+                        if blocked is None:  # an unreadable wallet says nothing about the day: wait, never re-arm
+                            if not unsure:
+                                log(f"{why}: no re-arm until it can tell")
+                            unsure = True
+                            break
+                        unsure = False
                         try:
                             await client.stop(i)
                             armed.discard(i)
@@ -1091,6 +1130,8 @@ class Service:
                         except Exception as exc:
                             log(f"re-arm of {i[:8]} failed: {exc}")
                         break  # one restart per tick keeps the rate limits and the state readable
+                if guarded:
+                    break
             reason, held = await disarm(reason)
             log(reason)
             try:
