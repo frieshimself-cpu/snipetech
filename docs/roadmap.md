@@ -6,7 +6,22 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
-## A launch rule holds on new tape; making it something OKTech can run (7 Nov, 07:40 UTC)
+## The launch rule that "held" was a landing artifact; the lab now scores where OKTech buys (7 Nov, 08:30 UTC)
+
+- **Correction (08:20):** the forward paper "winner" below is not evidence. Its whole profit came from a handful of
+  trades: one hour (04:00-05:00 UTC) made +9.98 SOL of its +10.3, and its three best trades (+11.0 SOL, 12-23x in no
+  time) were coins whose create slot held a 22-wallet bundle of 115-150 SOL that completed the curve inside that slot
+  (BRUH, PgFtGG, jpfML7). The paper test bought six trades behind the trigger inside that very slot and sold on
+  PumpSwap; no live buy can land there (OKTech's Hunt buys a slot or two later, and its pump.fun buy fails on a
+  completed curve). Without its 15 trades above 0.5 SOL the rule lost -9.3 SOL over 1,212 trades (mean -0.0076).
+- **Fixed (eae2d0b, deployed 08:30):** every launch-type rule (launch, hunt, whale, burst) is scored where it lands
+  live, in the same lab pass (whale, burst and hunt a slot after the trigger, 3 trades in); the paper test re-keys
+  the frozen ones there; and a launch-type buy on a coin that has left its curve is no trade. Copies keep the copy
+  landing. The 5 Nov hunt fills check the landing: the model enters 0-2 trades later than live did, never earlier.
+- **What this means:** there is no launch rule with evidence yet. The next search (it starts when the wallet-check
+  lab ends; then every 6 hours) scores 24 Hunt settings and the old rules at the real landing.
+
+### What was written at 07:40 (kept for the record)
 
 - **The forward paper test, 9 h of tape recorded after the freeze, at our real landing, 0.2 SOL fills:** "a non-dev
   buys 1 SOL or more in the first second of a normal coin, not inside the create bundle", lab exit (dead exit 1 s,
