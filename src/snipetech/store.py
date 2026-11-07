@@ -382,12 +382,33 @@ class Store:
                        "ORDER BY 3, 4, 2", (mint, start_ts, end_ts, mint, start_ts, end_ts))  # fmt: skip
         return [_trade(r) for r in rows]
 
+    # The most tape one read covers. A read holds its snapshot of the WAL until its last row: no checkpoint passes it
+    # and the WAL cannot start over (7 Nov: the database plus WAL grew about 2 GB an hour while long reads ran). The
+    # server's busiest ten minutes held 55,000 trades (to 19:06 UTC, 7 Nov); a list of a whole day's coins took 10 s
+    # cold on a 2.4M-trade copy in one read.
+    READ_SPAN_SECS = 600
+
     def active_mints(self, start_ts: int, end_ts: int, min_trades: int = 1) -> list[tuple[str, int]]:
-        """Tokens traded in a time range (SOL and foreign), with their trade counts."""
-        rows = self._q("SELECT mint, COUNT(*) c FROM (SELECT mint FROM trades WHERE ts>=? AND ts<=? "
-                       "UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND ts<=?) GROUP BY mint HAVING c>=?",
-                       (start_ts, end_ts, start_ts, end_ts, min_trades))  # fmt: skip
-        return [(r[0], r[1]) for r in rows]
+        """Tokens traded in a time range (SOL and foreign), with their trade counts, in mint order. Read in pieces of
+        READ_SPAN_SECS, each read whole before the next one starts, no transaction between them: [start, start + span),
+        ... and the last one up to `end_ts` itself, so a trade on the edge of two pieces is counted in one. The labs and
+        the paper test read their spans here, the paper test on the live file. On the 2.4M-trade copy (7 Nov, cold) a
+        day took 8.9 s in 144 pieces of at most 0.15 s each, against 9.0 s in one read, with the same answer."""
+        counts: dict[str, int] = {}
+        lo = start_ts
+        while lo <= end_ts:
+            hi = lo + self.READ_SPAN_SECS
+            last = hi >= end_ts
+            upper = "ts<=?" if last else "ts<?"
+            rows = self._q(f"SELECT mint, COUNT(*) FROM (SELECT mint FROM trades WHERE ts>=? AND {upper} "
+                           f"UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND {upper}) GROUP BY mint",
+                           (lo, end_ts if last else hi) * 2)  # fmt: skip
+            for mint, n in rows:
+                counts[mint] = counts.get(mint, 0) + n
+            if last:
+                break
+            lo = hi
+        return [(mint, n) for mint, n in sorted(counts.items()) if n >= min_trades]
 
     def user_market(self, user: str, since_ts: int = 0) -> list[Trade]:
         """A wallet's trades, SOL- and foreign-quoted, in block order."""

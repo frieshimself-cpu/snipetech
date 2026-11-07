@@ -352,3 +352,109 @@ def test_paper_freeze_runs_its_lab_on_the_hourly_copy(tmp_path, monkeypatch, cap
     finally:
         wal.close()
         live.close()
+
+
+# -- the readers that need fresh trades: short pieces, each read whole before the work on it -------------------------
+
+ACTIVE_ONCE = ("SELECT mint, COUNT(*) c FROM (SELECT mint FROM trades WHERE ts>=? AND ts<=? "
+               "UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND ts<=?) GROUP BY mint HAVING c>=?")  # fmt: skip
+
+
+def _active_once(st: Store, a, b, min_trades: int) -> list[tuple[str, int]]:
+    """Store.active_mints as one read of the whole span, the way it was until 7 Nov."""
+    return [(m, n) for m, n in st._q(ACTIVE_ONCE, (a, b, a, b, min_trades))]
+
+
+def test_active_mints_reads_its_span_in_pieces_and_answers_as_one_read(tmp_path):
+    """The labs' and the paper test's list of a span's coins was one read of the whole span: 10 s cold for 24 h on the
+    2.4M-trade copy. It reads ten-minute pieces now (55,000 trades in the server's busiest ten minutes, 7 Nov), each
+    piece whole before the next, and adds them up: the same coins, counts and order, a trade on a piece's edge counted
+    in one piece only."""
+    from dataclasses import replace
+
+    st = Store(tmp_path / "t.db")
+    try:
+        step = Store.READ_SPAN_SECS
+        trades = _trades(0, 6000, t0=T0, per_sec=1.0, mints=300)
+        edges = [replace(t, sig=f"edge{k}", ts=T0 + k * step) for k, t in enumerate(trades[:12])]  # on the edges
+        st.add_trades(trades + edges)
+        st.add_ftrades([replace(t, sig=f"f{t.sig}", quote_mint="USD1") for t in trades[::7]])
+        for a, b, n in ((T0, T0 + 6000, 1), (T0, T0 + 6000, 25), (T0 + 1, T0 + 2 * step, 1), (T0 + 17, T0 + 17, 1),
+                        (T0 + 5999, T0 + 99_999, 1), (T0 + 600.5, T0 + 3000.25, 2), (T0 + 10, T0 - 10, 1)):  # fmt: skip
+            assert st.active_mints(a, b, n) == _active_once(st, a, b, n), (a, b, n)
+        assert len(st.active_mints(T0, T0 + 6000, 1)) == 300
+    finally:
+        st.close()
+
+
+def test_active_mints_counts_each_trade_once_while_the_recorder_writes(tmp_path, monkeypatch):
+    """The recorder goes on writing between two pieces: a trade landing in a piece still to come is counted (once, on
+    the edge of two pieces too), one landing in a piece already read is not, as a single read begun then would not
+    have seen it either."""
+    from dataclasses import replace
+
+    st = Store(tmp_path / "t.db")
+    step = Store.READ_SPAN_SECS
+    st.add_trades(_trades(0, 3000, t0=T0, per_sec=1.0, mints=50))
+    writer = Store(tmp_path / "t.db")
+    late = _trades(9000, 1, t0=T0)[0]
+    ahead = replace(late, sig="ahead", mint="NEW", ts=T0 + 3 * step)  # on the edge of pieces 3 and 4, still to come
+    behind = replace(late, sig="behind", mint="OLD", ts=T0 + 10)  # in the first piece, already read
+    real, reads = Store._q, []
+
+    def q(store, sql, params=()):
+        rows = real(store, sql, params)
+        if store is st and "GROUP BY mint" in sql:
+            reads.append(params)
+            if len(reads) == 2:  # between the second piece and the third
+                writer.add_trades([ahead, behind])
+        return rows
+
+    monkeypatch.setattr(Store, "_q", q)
+    try:
+        got = dict(st.active_mints(T0, T0 + 3000, 1))
+        assert len(reads) == 5 and got.get("NEW") == 1 and "OLD" not in got
+        monkeypatch.setattr(Store, "_q", real)
+        once = dict(_active_once(st, T0, T0 + 3000, 1))
+        assert got == {m: n for m, n in once.items() if m != "OLD"}
+    finally:
+        writer.close()
+        st.close()
+
+
+def _paper_run_world(st: Store) -> None:
+    """The paper tests' world (a frozen copy rule, its leaders' coins) inside four hours of 15,000 other trades."""
+    from tests import test_paper_landing as P
+
+    P._world(st)
+    P._freeze(st, P.COPY, "+6", 0, P.T0)
+    st.add_trades(_trades(0, 15_000, t0=P.T0, per_sec=1.0))
+
+
+def test_the_paper_run_reads_the_window_in_pieces(tmp_path, monkeypatch):
+    """The forward paper test (every 30 minutes) needs the newest trades, so it reads the live file: its list of the
+    window's coins was one read of the whole window (half an hour when it keeps up, hours after an outage). In
+    ten-minute pieces the WAL checkpoints whole while it runs, and it scores the very trades the single read gave."""
+    from snipetech.analysis import paper
+    from snipetech.config import Config
+    from snipetech.sim import market
+    from tests.test_paper_landing import NOW
+
+    once = Store(tmp_path / "once.db")
+    _paper_run_world(once)
+    once.READ_SPAN_SECS = 10**12  # one piece: the whole window in one read, as before
+    want = paper.run(once, Config(), now=NOW)
+    want_rows = once.paper_trades()
+    once.close()
+    st = Store(tmp_path / "t.db")
+    _paper_run_world(st)
+    wal = Wal(st.path)
+    wal.watch(st.conn)
+    wal.during(monkeypatch, market.MarketPath, "build")
+    try:
+        out = paper.run(st, Config(), now=NOW)
+        assert out["new_trades"] == want["new_trades"] == 3 and st.paper_trades() == want_rows
+        assert wal.whole, wal.checks
+    finally:
+        wal.close()
+        st.close()
