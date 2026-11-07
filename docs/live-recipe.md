@@ -4,6 +4,21 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The owner, 7 Nov 2026 about 22:05 UTC: "pnl matters but dont stop the bot"
+
+In their words: "no there's no sol checks idc ab it", then "no as in pnl matters but dont stop the bot", then "just make
+it understand why it lost and how to do better". So the profit and loss is what counts, a loss should teach the bot
+something rather than stop it, and the wallet's balance stays out of the reports.
+
+- The one stop of the whole bot left is the guard's 5 SOL day stop (operator/RISK; the floor has been off since 12:55).
+  The cloud session's safety layer refused to switch it off from here (`remote run operate risk --day-stop off`,
+  22:06), so it stays the owner's switch: `/risk stop off` in Telegram.
+- The learning: the post-mortem already names a cause for every lost trip and writes lessons and ideas; a build started
+  22:10 (loss-learning) breaks every live trip into price move, fees and failed duplicate sends in code, puts those
+  numbers in the post-mortem, and sends the owner a short summary after each batch. Tonight's three copies moved
+  +0.0142 SOL before costs and ended -0.0039: the fees (0.001 priority + 0.002 tip on every buy and sell) and two
+  failed duplicate sells per sell at 0.002 each turned them into losses.
+
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
 The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy landing: n 35, +0.0271 SOL a trade,
