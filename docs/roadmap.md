@@ -6,6 +6,29 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The afternoon of 7 Nov: live copying armed, the tape stalled for 1 h 45 min and now heals itself (16:15 UTC)
+
+- **Deployed:** the owner's guard and the automatic test (c265fb7), then live trading that never stops (d682e4d: each
+  `/risk` stop can be off, the book's floor and day stop follow `/risk`, the automatic test has no block limit and drops
+  a failing strategy for the next), then the recorder's self-healing (fa49772). The guard stands at a 5 SOL day stop and
+  no floor (12:55); `/risk stop off`, `/risk floor off` and `/test auto on` are the owner's to send in Telegram.
+- **Live copying:** at 13:50 the book armed a copy sniper on `AG89fnx9…` (qualified at the copy landing: n 27, +0.0265
+  SOL a trade, lower bound +0.0071, crowding 4, a dumper with its first sell at a median 17 s), 0.2 SOL on its buys of
+  0.3 SOL or more. It has bought nothing yet (the leader only sold in the hours after).
+- **The tape stalled 14:03-15:48:** a long write lock held by another job, then a write that gave up left the recorder's
+  connection in an open transaction, and every later write failed ("database is locked") until a deploy restarted it;
+  the database grew from 11.3 to 15 GB. Nobody was told: the only alert was the operator's model, refused by the API.
+  Fixed (fa49772): a failed write rolls back, the recorder waits 20 s at most per write, keeps refused trades in memory,
+  reopens its connection after 3 minutes and restarts itself after 10, and a tape 5 minutes behind is a critical row
+  (Telegram, by code). Still to find: which job held the lock that long (events scan, qualify, search or paper).
+- **The owner trades by hand in the sniper wallet** (Axiom): Db3AN1YJ bought 15:24-15:25 for 1.55 SOL, sold 15:30-15:37
+  for 2.44 SOL, and moves SOL between their wallets (`H4SJzJ…`, `CsLVhf…`, `GXcAHhvu…`). At 15:45 the wallet held 0 SOL.
+  Look-alike addresses keep sending it dust to be copied from its history: `95o22tih…` (for `95o2L9Jm…`), `GXcANzWb…`
+  (for `GXcAHhvu…`), `CsLVZuXJ…` (for `CsLVhfV6…`), `H4SJmUSq…` (for `H4SJzJbp…`).
+- **The server's agents** have been refused by the API since 11:16 (an Anthropic verification of the organization that
+  owns the server's key, `b8b652c0-…`; the owner verified, the refusals go on). The research runs from the cloud session
+  instead (docs/research/).
+
 ## The wallet was emptied at 10:59; no rule has an edge where our buys land yet (7 Nov, 11:15 UTC)
 
 - **The sniper wallet:** at 10:59:53 UTC one transfer, signed with the wallet's own key, sent its 11.69 SOL to
