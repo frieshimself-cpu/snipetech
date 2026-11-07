@@ -639,6 +639,15 @@ EXECUTION: dict[str, Any] = {
 }
 
 
+def _whole_hunt(value: Any, name: str) -> int:
+    """A hunt threshold as OKTech takes it: a whole number. OKTech ignored 2.5 / 1.0 / null on 5 Nov 22:11 and bought
+    every launch as if no threshold were set, so anything else is refused here rather than sent."""
+    v = float(value or 0)
+    if v < 0 or abs(v - round(v)) > 1e-9:
+        raise ValueError(f"OKTech takes hunt thresholds as whole numbers only: {name} = {v:g} would be ignored")
+    return round(v)
+
+
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60
 ) -> PlannedSniper:
@@ -703,6 +712,31 @@ def strategy_sniper(
                            + (", and by at most 2 distinct wallets (a lone buy on a quiet launch)" if trig.get("solo") else ""))  # fmt: skip
             notes.append("hunt is an approved-accounts mode ([S] tab); the 5 Nov probes also sent it under mode normal and "
                          "bought every launch: verify on the tape that every fill had the big buy in front of it")  # fmt: skip
+    elif kind == "hunt":
+        # the lab scored exactly this rule (analysis/lab.py `_hunt`): send it as it was scored, nothing approximated
+        config["mode"] = "hunt"
+        thresholds = {"minTotalSol": _whole_hunt(trig.get("sol"), "minTotalSol")}
+        if trig.get("dev_max") is not None:
+            thresholds["maxDevBuySol"] = _whole_hunt(trig["dev_max"], "maxDevBuySol")
+        if int(trig.get("buyers") or 0) > 0:
+            thresholds["minUniqueBuyers"] = _whole_hunt(trig["buyers"], "minUniqueBuyers")
+        if int(trig.get("max_buyers") or 0) > 0:
+            thresholds["maxUniqueBuyers"] = _whole_hunt(trig["max_buyers"], "maxUniqueBuyers")
+        thresholds["requireKnownBot"] = False
+        window_ms = _whole_hunt(float(trig.get("window") or 0) * 1000, "timeWindowMs")
+        if window_ms <= 0:
+            raise ValueError("a hunt trigger needs its window (timeWindowMs) as a whole number of milliseconds")
+        config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all", "thresholds": thresholds,
+                          "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
+                          "useKnownBotDefaults": True}  # fmt: skip
+        summary.append(f"only after >= {thresholds['minTotalSol']} SOL in total is bought within {window_ms / 1000:g} s of "
+                       "the launch, the creator's own buy included"
+                       + (f"; skips a launch whose creator bought more than {thresholds['maxDevBuySol']} SOL" if "maxDevBuySol" in thresholds else "")
+                       + (f"; needs >= {thresholds['minUniqueBuyers']} wallets" if "minUniqueBuyers" in thresholds else "")
+                       + (f"; skips it once more than {thresholds['maxUniqueBuyers']} wallets bought" if "maxUniqueBuyers" in thresholds else "")
+                       + " (OKTech hunt, exactly as the lab scored it)")  # fmt: skip
+        notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
+                     "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):

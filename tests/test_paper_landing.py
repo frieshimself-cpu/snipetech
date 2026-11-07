@@ -147,7 +147,7 @@ def test_the_report_says_which_landing_every_number_is_at():
     _freeze(store, Trigger("launch"), "start", 1, T0)
     paper.run(store, Config(), now=NOW)
     rep = paper.report(store, Config(), now=NOW)
-    assert rep["landing"] == {"copies": "+6", "launch": "start@1"}
+    assert rep["landing"] == {"copies": "+6", "launch": "start@1", "hunt": "+3@1"}
     assert "+6" in rep["landing_note"] and "slot after the create" in rep["landing_note"]
     by_kind = {r["trigger_kind"]: r for r in rep["strategies"]}
     assert by_kind["whale"]["landing"].startswith("+6") and "slot after the create" in by_kind["launch"]["landing"]

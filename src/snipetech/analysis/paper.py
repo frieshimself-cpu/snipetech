@@ -49,6 +49,9 @@ from .stats import summarize
 
 SETTLE_SECS = 420  # a trigger is scored once its longest exit (300 s) has played out on the tape
 LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch snipe lands a slot after the create
+# OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
+# (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
+HUNT_LANDING = (1, "+3")
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
@@ -56,7 +59,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     so a strategy frozen before it existed keeps its id and is not frozen a second time."""
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
-    raw = json.dumps([trigger, ex, position, latency, buy_sol], sort_keys=True)
+    later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
+    trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
+    raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
 
@@ -70,7 +75,11 @@ def copy_landing(store: Store, cfg: Config, now: float) -> str:
 
 def live_landing(kind: str | None, copy_pos: str) -> tuple[int, str]:
     """(slots after the trigger, position in that slot) where a live entry on this kind of trigger lands."""
-    return LAUNCH_LANDING if kind == "launch" else (0, copy_pos)
+    if kind == "launch":
+        return LAUNCH_LANDING
+    if kind == "hunt":
+        return HUNT_LANDING
+    return (0, copy_pos)
 
 
 def landing_key(latency: int, position: str) -> str:
@@ -84,16 +93,20 @@ def landing_text(latency: int, position: str) -> str:
         return "the first trade of the slot after the create"
     if latency == 0 and position.startswith("+") and position[1:].isdigit():
         return f"{position}: up to {position[1:]} trades behind the trigger, in its slot"
+    if latency >= 1 and position.startswith("+") and position[1:].isdigit():
+        slot = "the slot after the trigger" if latency == 1 else f"the slot {latency} after the trigger"
+        return f"{position[1:]} trades into {slot}, behind everything in the trigger's own slot"
     return f"{position} of the slot {latency} after the trigger"
 
 
 def landings(copy_pos: str) -> dict[str, str]:
-    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING)}
+    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING), "hunt": landing_key(*HUNT_LANDING)}
 
 
 def landing_note(copy_pos: str) -> str:
     return (f"Scored where live trades land: copies at {copy_pos} (up to {copy_pos[1:]} trades behind the leader, in its "
-            f"slot: the regime live copies measured), launch snipes at the slot after the create.")  # fmt: skip
+            f"slot: the regime live copies measured), launch snipes at the slot after the create, OKTech hunt snipes "
+            f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger.")  # fmt: skip
 
 
 def _scored(store: Store, sid: str) -> bool:
@@ -148,9 +161,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             data = collect(store, cfg, buy_sol, latency, position, per_tx_sol)
     copy_pos = copy_landing(store, cfg, now)
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
+
+    def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
+        lat, pos = r.get("landing") or (latency, position)
+        return int(lat), str(pos)
+
     if only_live:
-        here = (int(latency), position)
-        ranked = [r for r in ranked if live_landing(r["trigger_spec"].get("kind"), copy_pos) == here]
+        ranked = [r for r in ranked if live_landing(r["trigger_spec"].get("kind"), copy_pos) == scored_at(r)]
     cov = store.coverage("paper_strategies")
     old = [] if replace else cov.get("strategies", [])
     have = {s["id"] for s in old}
@@ -163,7 +180,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         have.add(sid)
         new.append({"id": sid, "label": f"{r['trigger']} | {r['exit']}", "trigger": r["trigger_spec"], "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol, "from_ts": int(now),
-                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(latency, position), **r["test"]}})  # fmt: skip
+                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **r["test"]}})  # fmt: skip
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     return {"frozen": new, "kept": old, "tape_hours": data["tape_hours"], "landing": landings(copy_pos)}
 

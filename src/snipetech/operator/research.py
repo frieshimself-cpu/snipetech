@@ -295,7 +295,9 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
     with _lab_lock(data_dir, wait=True):
-        data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, 0.0035)
+        # OKTech hunt triggers are scored in the same pass where a hunt buy lands (a slot after its trigger)
+        data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, 0.0035,
+                         landings={"hunt": paper.HUNT_LANDING})  # fmt: skip
     # a launch trigger at the copy landing would buy inside the create slot, where no launch snipe lands
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)
@@ -303,7 +305,8 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
                           only_live=True)  # fmt: skip
     out = {"ts": int(now), "landing": copy_pos, "buy_sol": buy, "tape_hours": round(float(data["tape_hours"]), 1),
            "moments": len(data["rows"]),
-           "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"], **r["test"]} for r in ranked[:8]],
+           "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],
+                           "landing": paper.landing_key(*(r.get("landing") or (0, copy_pos))), **r["test"]} for r in ranked[:8]],
            "wallets": [{k: w.get(k) for k in ("wallet", "label", "n", "mean", "ev_lower", "win_rate")} for w in wallets[:8]],
            "frozen": [{"id": s["id"], "label": s["label"]} for s in frozen["frozen"]]}  # fmt: skip
     store.set_coverage(SEARCH_KEY, out)

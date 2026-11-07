@@ -17,7 +17,8 @@ def addr(name: str) -> str:
 
 
 class Market:
-    def __init__(self, store: Store, mint: str, deployer: str, ts: int, slot: int, mayhem: bool = False):
+    def __init__(self, store: Store, mint: str, deployer: str, ts: int, slot: int, mayhem: bool = False,
+                 quote_mint: str = ""):  # fmt: skip
         self.store, self.mint, self.deployer = store, mint, deployer
         self.ts0, self.slot0 = ts, slot
         self.q, self.b = Q0, B0
@@ -26,7 +27,7 @@ class Market:
         self.holdings: dict[str, int] = {}
         self.create_sig = addr(f"{mint}:create")
         self.launch = Launch(mint, deployer, deployer, f"T{mint[:4]}", mint[:4].upper(), "", addr(f"{mint}:bc"),
-                             slot, ts, self.create_sig, mayhem=mayhem)  # fmt: skip
+                             slot, ts, self.create_sig, mayhem=mayhem, quote_mint=quote_mint)  # fmt: skip
         store.add_launches([self.launch])
         cov = {"from_ts": ts - 1, "to_ts": ts + 10_000}
         store.set_coverage(f"mint:{mint}", cov)
@@ -37,7 +38,9 @@ class Market:
     def _push(self, user: str, slot: int, is_buy: bool, quote: int, base: int, sig: str | None = None) -> Trade:
         self.n += 1
         sig = sig or addr(f"{self.mint}:{self.n}")
-        ev = sum(1 for x in self.trades if x.sig == sig)  # several trades in one tx (a create bundle) get distinct events
+        ev = sum(
+            1 for x in self.trades if x.sig == sig
+        )  # several trades in one tx (a create bundle) get distinct events
         t = Trade(
             sig=sig, ev=ev, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
             venue="curve", user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
@@ -67,7 +70,9 @@ class Market:
     def commit(self, completed: bool = False) -> None:
         self.store.add_trades(self.trades)
         if completed:
-            self.store.add_completions([Completion(self.mint, self.trades[-1].slot, self.trades[-1].ts, self.trades[-1].sig)])
+            self.store.add_completions(
+                [Completion(self.mint, self.trades[-1].slot, self.trades[-1].ts, self.trades[-1].sig)]
+            )
 
 
 def rinse_launch(store: Store, i: int, deployer: str, ts: int, slot: int) -> Market:
@@ -108,8 +113,14 @@ def dead_launch(store: Store, i: int, deployer: str, ts: int, slot: int) -> Mark
     return m
 
 
-def fingerprint(store: Store, trade: Trade, bribe_sol: float, payer: str | None = None, signers: list[str] | None = None,
-                service: str = "jito") -> None:
+def fingerprint(
+    store: Store,
+    trade: Trade,
+    bribe_sol: float,
+    payer: str | None = None,
+    signers: list[str] | None = None,
+    service: str = "jito",
+) -> None:
     """Attach a transaction fingerprint (what the tx paid to land) to a synthetic trade."""
     from snipetech.solana.programs import PUMP_PROGRAM
     from snipetech.solana.txmeta import PumpIx, TxMeta

@@ -100,6 +100,10 @@ class Trigger:
     group: str = "kol"  # kol: which label kind the wallets come from (kol = labeled KOLs, wallet = the tracked list)
     solo: bool = False  # whale: the buy is not inside the create tx and at most 2 wallets bought in the create slot
     event: str = ""  # event: the events-table kind this trigger fires on (first trade of the coin after the event)
+    # hunt (OKTech's launch gate, exactly as the live sniper runs it): `sol` = minTotalSol, `buyers` = minUniqueBuyers,
+    # `window` = timeWindowMs / 1000, and these two (unset at their defaults)
+    max_buyers: int = 0  # maxUniqueBuyers: skip the launch once more distinct wallets bought (0 = no limit)
+    dev_max: float | None = None  # maxDevBuySol: skip the launch when its creator bought more with it (None = no limit)
 
     def label(self) -> str:
         base = self._label()
@@ -116,6 +120,11 @@ class Trigger:
                     f">= {self.holders} holders, +{self.ret:.0%}/5m")  # fmt: skip
         if self.kind == "burst":
             return f"burst >= {self.buyers} buyers & {self.sol:g} SOL in {self.window:g}s"
+        if self.kind == "hunt":
+            return ("OKTech hunt: >= " + f"{self.sol:g} SOL bought within {self.window:g} s of the launch"
+                    + (f", by >= {self.buyers} wallets" if self.buyers else "")
+                    + (f", by at most {self.max_buyers} wallets" if self.max_buyers else "")
+                    + (f", creator's own buy <= {self.dev_max:g} SOL" if self.dev_max is not None else ""))  # fmt: skip
         if self.kind == "whale":
             return f"buy >= {self.sol:g} SOL by a non-dev"
         if self.kind == "event":
@@ -142,6 +151,14 @@ TRIGGERS = (
     + [Trigger("whale", sol=s, max_age=1.0, plain=True) for s in (2.0, 5.0)]
     # the part of that edge OKTech can reach: the big buy arrives on its own, not as part of a create bundle
     + [Trigger("whale", sol=s, max_age=a, plain=True, solo=True) for s in (1.0, 2.0) for a in (1.0, 5.0)]
+    # OKTech hunt exactly as the live launch sniper runs it (whole numbers; it cannot skip mayhem / holder-reward coins
+    # or see the create tx): what wins here is deployable as scored, with `oktech strategy`
+    + [
+        Trigger("hunt", sol=s, window=w, max_buyers=mb, dev_max=1.0)
+        for s in (2.0, 3.0, 5.0)
+        for w in (1.0, 2.0)
+        for mb in (0, 3, 5)
+    ]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
     + [
         Trigger("momentum", buyers=u, sol=v, progress=pr, holders=13, ret=0.2)
@@ -201,6 +218,36 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
     return None
 
 
+def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
+    """OKTech hunt as the live sniper runs it (docs/live-recipe.md, "Hunt live, 5 Nov"): from the create, every buy in
+    the window counts toward the total, the creator's own included (Suncat fired on 1.6 SOL from others + 1.0 from the
+    dev); a launch whose creator bought more than `dev_max` SOL in the create is skipped, and so is one where more than
+    `max_buyers` distinct wallets bought before the thresholds held. Fires at the buy that meets every threshold
+    (triggerMode "all"). A non-SOL-quoted coin never fills: OKTech counts its quote units as SOL and fires, and the SOL
+    buy fails on-chain (pump error 6010)."""
+    if launch is None or launch.quote_mint:
+        return None
+    if trig.dev_max is not None:
+        created = sum(path.quote[i] for i in range(path.n)
+                      if path.sigs[i] == launch.sig and path.is_buy[i] and path.users[i] in dev)  # fmt: skip
+        if created > trig.dev_max * LAMPORTS:
+            return None
+    end = launch.ts + trig.window
+    total, buyers = 0.0, set()
+    for i in range(path.n):
+        if path.ts[i] > end:
+            return None
+        if not path.is_buy[i] or not path.users[i]:
+            continue
+        total += float(path.quote[i])
+        buyers.add(path.users[i])
+        if trig.max_buyers and len(buyers) > trig.max_buyers:
+            return None
+        if total >= trig.sol * LAMPORTS and len(buyers) >= trig.buyers:
+            return i
+    return None
+
+
 def exit_set() -> list[ExitParams]:
     out = []
     for stale in (1.0, 2.0, 5.0):
@@ -249,6 +296,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return None
     if trig.kind == "momentum":
         return _momentum(trig, path, dev)
+    if trig.kind == "hunt":
+        return _hunt(trig, path, launch, dev)
     if trig.kind == "launch":
         if launch is None:
             return None
@@ -396,7 +445,8 @@ def span_slot_secs(store: Store, a: int, b: int, step: int = 60) -> float:
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
             event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None,
-            kols: dict[str, set[str]] | None = None) -> dict[str, Any]:  # fmt: skip
+            kols: dict[str, set[str]] | None = None,
+            landings: Mapping[str, tuple[int, str]] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
@@ -405,7 +455,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     after the exit fires; on a wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records
     the trigger buy's size (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`).
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
-    tape may be the hourly read-only copy, which has none of the labels written since it was taken."""
+    tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
+    (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
+    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = list(exits) if exits else exit_set()
@@ -458,7 +510,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                 for i in fired:
                     if path.ts[i] > b - 60:
                         continue
-                    e = int(path.landing_index(int(path.slot[i]) + latency_slots, position, i))
+                    lat, pos = (landings or {}).get(trig.kind, (latency_slots, position))
+                    e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
                     own, frac = None, None
                     if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                         by_user = _trades_by_user(path) if by_user is None else by_user
@@ -469,12 +522,16 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                         continue
                     pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
                     row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
-                           "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6)}  # fmt: skip
+                           "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
+                           "landing": f"{pos}@{int(lat)}"}  # fmt: skip
                     if frac is not None:
                         row |= _leader_profile(path, i, frac, own)
                     rows.append(row)
+    landing_of = {
+        ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
+    }
     return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
-            "slot_secs": measured}  # fmt: skip
+            "slot_secs": measured, "landing_of": landing_of}  # fmt: skip
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
@@ -496,7 +553,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         st = summarize(test, conf, samples)
         out.append({
             "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": exits[k].label(), "exit_params": exits[k].to_dict(),
-            "moments": len(rs), "per_hour": len(rs) / hours,
+            "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
         })  # fmt: skip
