@@ -48,8 +48,10 @@ every change of it always was: after the deploy, `/risk stop off` and `/risk flo
   book's floor or day stop instead, value by value; with none, the pinned values apply as before. So the owner's 12:55
   values make the book's floor 0 SOL and its day stop 5 SOL.
 - The daily cap of SOL bought (`daily_risk_sol`, 2 SOL: ten 0.2 SOL buys) halts the book for the day rather than
-  sizing it, so it follows the day stop: with the owner's day stop set, a value or off, the owner's is the book's one
-  day-level stop and the cap no longer applies. With the floor off, a balance that cannot be read no longer halts it.
+  sizing it, so it follows the day stop's off, and only its off: with the owner's day stop off the cap is off too; while
+  the day stop is a number (the owner's 5 SOL of 12:55 was set for the guard, before the book followed `/risk`; a
+  tighter `/risk stop 0.5` is no word to buy more) the pinned 2 SOL cap stays, and the automatic test's buys from the
+  same wallet count toward it. With the floor off, a balance that cannot be read no longer halts it.
 - What still halts the book: `/stop`, `/book off`, and the guard while it is on and holds. The per-wallet rules are
   unchanged (a wallet paused after 5 losing live copies, the bar, a sniper retired after its relied-on buy): each drops
   one wallet, and the book goes on. `/book on` says which stops apply.
@@ -58,29 +60,41 @@ every change of it always was: after the deploy, `/risk stop off` and `/risk flo
 in `operator/autotest.json`).
 
 - `/test auto on` and `operate autotest --on --approved "<the owner's words>" --wallet 6VFrZ15V…` write this plan. A
-  switch on from the 09:15 plan runs it too (the owner's latest yes); a strategy's run in progress keeps its floor.
+  switch on from the 09:15 plan runs it too (the owner's latest yes); a strategy's run in progress keeps its floor (what
+  its first floor left below its start).
 - A strategy that passes on paper (as on 09:15: 100+ forward trades where a hunt fill lands, at the measured cost of
   a trade, a lower bound above zero, also with gains capped) trades in blocks of at most 10 buys and 120 minutes (180
   at most), one coin at a time, at its own size, on the recorded wallet only. A strategy scored above 0.2 SOL a buy is
   refused (told once a day), and the best one that fits trades instead. There is no limit on blocks or hours.
-- After each block, once the strategy has 10 live round trips in all (a block that made all its 10 buys is judged at
-  once), it is judged as on 09:15: the measure stage's fills, the worse of the two readings, the failed sends, sales
-  covering 99 % of a buy's tokens, the measure stage past the block's last trade, up to 45 minutes' wait. Live above
-  zero and at least half of paper: the next block, the same strategy at the same floor (its first block's start less
-  1 SOL). A block that ends on its time limit is normal: until the strategy has its 10 round trips, its next block
-  starts at once.
-- Below that, or at its floor, the strategy is dropped for good. At its floor means 1 SOL down live by the fills (a
-  deposit never hides it), a block whose cycler stopped on the floor, or a wallet with no room above the floor for
-  another buy and its fees; the floor is the wallet's, so a withdrawal counts there. The record keeps why and the
+- After every block, once the measure stage has read past it and no coin it bought is still in the wallet, its trades
+  are counted as on 09:15: the measure stage's fills, read two ways (with and without the buys the fills call copies),
+  the failed sends, sales covering 99 % of a buy's tokens, up to 45 minutes' wait for a buy's sale. A coin still held
+  never counts at its whole cost: its block waits until it is sold (its sale counts) or gone (its cost counts 45
+  minutes after a round last saw it), and a sale the measure stage writes late replaces a whole cost counted before.
+- The strategy may lose 1 SOL by its own trades: the lower of the two readings' sums, failed sends included even in a
+  block with no buy. At 1 SOL down, or so near it that another buy and its fees have no room left, it is at its floor
+  and dropped, after any block, whatever its number of trades. Each block's floor is the wallet it starts from less
+  what is left of that 1 SOL, and the cycler stops re-arming under it: with only the strategy trading it is the first
+  block's floor, and a deposit, a withdrawal (11:30 and 11:45 that morning) or the book's result moves it with the
+  wallet, never the strategy's loss. A block the cycler ended on its floor is judged on its trades like any other.
+- Once it has 10 live round trips of its own (never sooner because the cycler counted 10 buys of the wallet: the
+  book's are among them), it is judged after every block on the worse of the two readings: above zero and at least
+  half of paper, the next block. Until then the next block starts, whatever ended the last one (its time limit is
+  normal). Below half of paper, or at its floor, the strategy is dropped for good: the record keeps why and the
   numbers, the owner gets one line (live against paper), the automatic test never starts that strategy again, and the
   next one that passes on paper starts in the same round with a floor of its own. With none, it waits and looks again
-  every round.
-- An execution fault holds new blocks and never drops a strategy: a cycler that died, OKTech not answering or refusing
-  a create, a coin OKTech left unsold (held until it is sold with `/sell` or gone), the wallet unreadable, the measure
-  stage stalled 45 minutes past a block. Each round checks again; the owner hears it once when it starts holding and
-  once when it clears, and the same strategy goes on. A wallet without room for a buy (SOL under the buy, its fees and
-  the coin account's rent: about 0.25 SOL) holds the same way, said once a day: 10:59 that morning the wallet was
-  emptied.
+  every round. A strategy whose run ends without a drop (the owner's off, its paper flickering for a round) takes its
+  live record into its next run: its trades and what is left of its 1 SOL.
+- An execution fault holds new blocks and never drops a strategy: a cycler that died (its sniper stayed armed with
+  nobody watching until the round closed the block, and a buy it made then counts; no block in the round that finds it,
+  one at the next round, and after a second death in a row none for 4 hours, then twice as long after each death in a
+  row, a day at most, unless a deploy changes the code or the owner sends `/stop` then `/resume`), OKTech not answering
+  or refusing a create, a coin OKTech left unsold (held until it is sold with `/sell` or gone), the wallet unreadable,
+  the measure stage stalled 45 minutes past a block. Each round checks again; the owner hears it once when it starts
+  holding and once when it clears, and the same strategy goes on. A wallet without room for a block holds the same way,
+  said once a day: SOL under a buy, its fees and the coin account's rent (about 0.25 SOL; 10:59 that morning the wallet
+  was emptied), a wallet too small for a floor of at least 1 SOL, or SOL without its wrapped SOL at or below the block's
+  floor (the cycler would not start).
 - It never turns itself off: only `/test auto off` or `operate autotest --off` does, and a block running then runs to
   its end. `/stop` holds every start while its flag exists (a block running ends at once, its sniper stopped once the
   wallet holds nothing; a sniper holding a coin keeps running until the coin is sold); `/resume` lets the same strategy
@@ -90,7 +104,13 @@ in `operator/autotest.json`).
   round: the blocks' own lines are notes, and the day's blocks are in the daily digest. `/status` and `/test auto` show
   the strategy, its blocks and live round trips, live against paper, what holds it, and the strategies dropped.
 - Recorded: each block in `operator/TEST.json` and `operator/tests.jsonl` as before, and one `"kind": "sequence"` line
-  there per strategy's run, with `"dropped"` true or false.
+  there per strategy's run, with `"dropped"` true or false, each block's floor and what the run carried from earlier
+  ones.
+- Reviewed before the deploy (7 Nov afternoon), and changed: the 1 SOL was read only at 10 trades and a deposit hid
+  the rest; a withdrawal, the book's loss or the cycler's floor end dropped a strategy that had lost nothing; a dead
+  cycler was replaced every round; a coin left unsold counted its whole cost after 45 minutes; a block of mostly the
+  book's buys was judged on two of the strategy's own; a run that ended forgot its losses; and any day stop the owner
+  set as a number lifted the book's 2 SOL daily cap.
 
 ## The owner's yes for the first launch-rule test (7 Nov 2026, 09:15 UTC)
 
