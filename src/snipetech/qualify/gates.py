@@ -218,12 +218,15 @@ def create_slot_share(store: Store, wallet: str, since_ts: int) -> dict[str, Any
 # -0.0147 SOL a copy on the tape recorded after their verdicts (257 copies, lower bound -0.0225, 4 of 5 windows
 # negative), while the same method made +0.063 a copy (37) in the 6 h before the 14:30 verdicts: the verdicts caught hot
 # streaks that then stopped, and 16 of 24 verdict wallets never bought again within 9-13 h. So a wallet every
-# in-sample gate passed qualifies only once it also passes on its own copies on the tape after it was first picked: at
-# least FORWARD_MIN_N of them (the copies the in-sample gate asks of a wallet without a strong history) over at least
+# in-sample gate passed qualifies only once it also passes on its own copies on the tape after it was picked: at least
+# FORWARD_MIN_N of them (the copies the in-sample gate asks of a wallet without a strong history) over at least
 # FORWARD_MIN_HOURS of later tape, judged by the in-sample gate's own rule (a lower bound above 0 passes, a mean below 0
 # retires, anything between waits). Those later copies spread about 0.15 SOL a copy (257 at -0.0147, lower bound
 # -0.0225): on a mean above 0 alone such a loser would pass 20 copies one time in three, on the lower bound about one
 # time in ten. Until it passes or fails it is "forward pending".
+# Picked is its latest pick (review of 7 Nov): a wallet that failed an in-sample gate and passes them again was picked
+# again on the copies that made it pass, so only the copies after that count as forward; its copies since its first pick
+# must also not lose (the same counts, a mean below 0 retires it), so qualifying again never forgets what it lost.
 FORWARD_MIN_N = 20
 FORWARD_MIN_HOURS = 6.0
 
@@ -234,37 +237,57 @@ def tape_hours_after(spans, since: float, now: float) -> float:
 
 
 def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None, spans, cfg: QualifyConfig,
-                 now: float, conf: float = 0.8, samples: int = 2000) -> dict[str, Any]:  # fmt: skip
+                 now: float, conf: float = 0.8, samples: int = 2000,
+                 first_picked_at: int | None = None) -> dict[str, Any]:  # fmt: skip
     """The verdict after the forward check, for a verdict every in-sample gate passed (status qualified; any other is
-    returned as it is). `moments`: the wallet's copies the lab scored, [[the leader's buy ts, SOL a copy made], ...];
-    `picked_at`: when it was first picked (qualify.run.first_pick), None = now; `spans`: the tape the lab read. Its
-    copies after the pick are its forward copies, and `forward` holds their numbers: {"picked_at", "tape_hours", "n",
-    "mean", "lower", "win_rate", "status", "min_n", "min_hours"}.
+    returned as it is). `moments`: the wallet's copies, [[the leader's buy ts, SOL a copy made], ...]: the lab's, and
+    older than the tape the lab read, the ones earlier runs recorded (qualify.run.with_recorded); `picked_at`: its
+    latest pick, `first_picked_at`: its first (qualify.run.pick_times), None = now and the latest; `spans`: the tape the
+    lab read. Its copies after the latest pick are its forward copies, and `forward` holds their numbers: {"picked_at",
+    "tape_hours", "n", "mean", "lower", "win_rate", "status", "min_n", "min_hours", "first_picked_at", "first_n",
+    "first_mean", "off_tape"} (first_*: its copies since its first pick; off_tape: forward copies the tape no longer
+    holds, from the record).
 
-    The bar (FORWARD_MIN_N, FORWARD_MIN_HOURS): with fewer than 20 forward copies or under 6 h of tape after the pick,
-    "pending": the verdict is a candidate the book does not arm, every number of it the lab's, re-checked as often as
-    a qualified wallet (review_qualified_h). With both, the in-sample gate's rule on the forward copies: their lower
-    bound above 0 keeps it qualified ("passed"); their mean below 0 retires it ("failed": it lost after it was picked);
-    between the two it stays pending. Means and bounds count to the lamport. The reason says which, with its numbers."""
+    The bar (FORWARD_MIN_N, FORWARD_MIN_HOURS): picked again after it failed an in-sample gate, 20 or more copies since
+    its first pick over 6 h or more of tape with a mean below 0 retire it ("failed": it lost since it was first picked),
+    whatever its latest window says. Otherwise, with fewer than 20 forward copies or under 6 h of tape after the pick,
+    "pending": the verdict is a candidate the book does not arm, every number of it the lab's, re-checked as often as a
+    qualified wallet (review_qualified_h). With both, the in-sample gate's rule on the forward copies: their lower bound
+    above 0 keeps it qualified ("passed"); their mean below 0 retires it ("failed": it lost after it was picked); between
+    the two it stays pending. Means and bounds count to the lamport. The reason says which, with its numbers."""
     if v.get("status") != "qualified":
         return v
     since = int(now if picked_at is None else picked_at)
-    later = [float(p) for ts, p in (moments or []) if float(ts) > since]
+    first = since if first_picked_at is None else min(int(first_picked_at), since)
+    copies = [(float(ts), float(p)) for ts, p in (moments or [])]
+    later = [p for ts, p in copies if ts > since]
     hours = round(tape_hours_after(spans or [], since, now), 2)
     st = summarize(later, conf, samples) if later else {}
     mean = st.get("mean")
+    tape_from = min((float(a) for a, _ in spans or []), default=float(now))
+    since_first = [p for ts, p in copies if ts > first]
+    first_mean = sum(since_first) / len(since_first) if since_first else None
     fwd = {"picked_at": since, "tape_hours": hours, "n": len(later), "mean": mean, "lower": st.get("ev_lower"),
-           "win_rate": st.get("win_rate"), "status": "pending", "min_n": FORWARD_MIN_N, "min_hours": FORWARD_MIN_HOURS}  # fmt: skip
+           "win_rate": st.get("win_rate"), "status": "pending", "min_n": FORWARD_MIN_N, "min_hours": FORWARD_MIN_HOURS,
+           "first_picked_at": first, "first_n": len(since_first), "first_mean": first_mean,
+           "off_tape": sum(1 for ts, _ in copies if since < ts < tape_from)}  # fmt: skip
     out = dict(v, forward=fwd, reasons=list(v.get("reasons") or []))
     when = time.strftime("%d %b %H:%M UTC", time.gmtime(since))
     waits = {"status": "candidate", "gate": "forward", "next_review": int(now) + cfg.review_qualified_h * 3600}
-    if len(later) < FORWARD_MIN_N or hours < FORWARD_MIN_HOURS:
+    retires = {"status": "retired", "gate": "forward", "next_review": int(now) + cfg.review_retired_h * 3600}
+    if (first < since and len(since_first) >= FORWARD_MIN_N and tape_hours_after(spans or [], first, now) >= FORWARD_MIN_HOURS
+            and round(float(first_mean), 9) < 0):  # fmt: skip
+        fwd["status"] = "failed"
+        out |= retires
+        out["reasons"].append(f"loses since it was first picked on {time.strftime('%d %b %H:%M UTC', time.gmtime(first))}: "
+                              f"mean {first_mean:+.4f} SOL over {len(since_first)} copies since (picked again on {when})")  # fmt: skip
+    elif len(later) < FORWARD_MIN_N or hours < FORWARD_MIN_HOURS:
         out |= waits
         out["reasons"].append(f"forward pending: {len(later)} later copies (needs {FORWARD_MIN_N}) over {hours:.1f} h of "
                               f"tape since it was picked on {when} (needs {FORWARD_MIN_HOURS:g} h)")  # fmt: skip
     elif round(float(mean), 9) < 0:
         fwd["status"] = "failed"
-        out |= {"status": "retired", "gate": "forward", "next_review": int(now) + cfg.review_retired_h * 3600}
+        out |= retires
         out["reasons"].append(f"loses after it was picked: mean {mean:+.4f} SOL over {len(later)} later copies since "
                               f"{when}")  # fmt: skip
     elif round(float(fwd["lower"]), 9) <= 0:

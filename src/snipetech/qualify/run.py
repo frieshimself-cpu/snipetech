@@ -107,14 +107,35 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     return run
 
 
-def first_pick(store, wallet: str) -> int | None:
-    """When the wallet was first picked: the earliest of its verdicts every in-sample gate passed (status qualified,
-    as every such verdict was until 7 Nov, or one that carries a forward check), or None. Its forward window starts
-    there and never moves: a wallet that dips and recovers in-sample keeps every copy since its first pick as forward.
-    Research round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts the same way."""
-    rows = store._q("SELECT min(computed_at) FROM verdicts WHERE wallet=? AND (status='qualified' OR forward IS NOT NULL)",
-                    (wallet,))  # fmt: skip
-    return int(rows[0][0]) if rows and rows[0][0] is not None else None
+def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
+    """When the wallet was picked: (its first pick, its latest), each None when there is none. A pick is a verdict
+    every in-sample gate passed: one qualified before 7 Nov, as every such verdict was, or one that carries a forward
+    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick starts
+    its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a wallet that
+    lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as forward
+    copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research round 2
+    scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
+    rows = store._q("SELECT computed_at, status, forward IS NOT NULL, kept_armed IS NOT NULL FROM verdicts WHERE wallet=? "
+                    "ORDER BY computed_at, id", (wallet,))  # fmt: skip
+    first = latest = None
+    for at, status, checked, kept in rows:
+        if checked or (status == "qualified" and not kept):
+            first = int(at) if first is None else first
+            latest = int(at) if latest is None else latest
+        else:
+            latest = None
+    return first, latest
+
+
+def with_recorded(recorded: list | None, moments: list | None, spans) -> list[list[float]]:
+    """The wallet's copies to judge, oldest first: the lab's, on the tape it read, and older than that tape the ones
+    earlier runs recorded (`recorded`, from the stage's working data). The tape keeps 3 to 30 days (SNIPETECH_RETAIN_DAYS,
+    deploy/bootstrap.sh), so without the record the losses after a pick older than the tape would drop out and the
+    forward check would judge only what the lab scored in-sample too (review of 7 Nov). A recorded copy is a score from
+    the lab of its own run (its exit, its cost); on the tape the lab's own score wins."""
+    tape_from = min((float(a) for a, _ in spans or []), default=None)
+    old = [[float(ts), float(p)] for ts, p in (recorded or []) if tape_from is not None and float(ts) < tape_from]
+    return sorted(old + [[float(ts), float(p)] for ts, p in (moments or [])], key=lambda c: c[0])
 
 
 def _measured_landing(store, now: float | None, max_age_secs: float) -> dict:
@@ -258,9 +279,16 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         create = create_slot_share(store, w, since)
         row = rows.get(w)
         moments = row.pop("moments", None) if row else None  # its copies, for the forward check only
+        record = (store.get_score("qualify", w) or {}).get("record") or {}  # its copies since its first pick, so far
+        copies = with_recorded(record.get("copies"), moments, spans)
+        first, latest = pick_times(store, w)
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
-        v = forward_gate(v, moments, first_pick(store, w), spans, q_eff, now, conf=cfg.verdict.confidence,
-                         samples=cfg.verdict.bootstrap_samples)  # fmt: skip
+        v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
+                         samples=cfg.verdict.bootstrap_samples, first_picked_at=first)  # fmt: skip
+        if first is None and v.get("forward") is not None:
+            first = int(now)  # picked for the first time now
+        if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
+            record = {"first_picked_at": first, "copies": [c for c in copies if c[0] > first]}
         prev = c.get("verdict")
         if copying is None and armed_before_rules(prev):
             # whether the book copies it is unknown: keeping it could arm a wallet nobody copies, dropping it could stop
@@ -270,9 +298,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         v = keep_armed(v, prev, copying is not None and w[:6] in copying, q_eff, now)  # never stops a copied wallet
         out["kept_armed"] += bool((v.get("kept_armed") or {}).get("kept"))
         store.put_verdict(v)
-        store.put_score(
-            "qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist, "computed_at": int(now)}
-        )
+        store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
+                                       "computed_at": int(now), "record": record or None})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
         fwd = (v.get("forward") or {}).get("status")

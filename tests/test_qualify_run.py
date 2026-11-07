@@ -493,10 +493,11 @@ def test_a_wallet_that_buys_in_create_slots_is_retired_whatever_the_lab_says(tmp
         st.close()
 
 
-def test_the_forward_window_starts_at_the_first_pick_even_one_made_before_these_rules(tmp_path):
+def test_the_forward_window_starts_at_the_pick_even_one_made_before_these_rules(tmp_path):
     """The 27 wallets of research round 2 were picked by the 04:15 and 14:30 verdicts (7 Nov): their forward window
-    starts at their first qualified verdict, whatever the rules were then, and is never moved by a later one. Both
-    wallets win as much in the window they were picked on; one keeps paying after its pick, one loses."""
+    starts at their qualified verdict, whatever the rules were then (a later one that passes the in-sample gates too
+    does not move it; only one that fails them ends that pick). Both wallets win as much in the window they were picked
+    on; one keeps paying after its pick, one loses."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["KEEPS", "STOPS"])
@@ -811,5 +812,122 @@ def test_a_copied_wallet_these_rules_score_under_the_books_bar_keeps_its_sniper(
         assert svc.cfg.book.min_score == 0.005
         acts = _book_plan(svc, st, [sniper])
         assert ("keep", "ARMED", "s1") in acts and not any(kind == "stop" for kind, _w, _s in acts), acts
+    finally:
+        st.close()
+
+
+def test_a_wallet_picked_once_before_waits_for_copies_after_its_new_pick_like_one_never_picked(tmp_path):
+    """Review of 7 Nov: the forward window started at a wallet's first pick and never moved. OLDPICK was picked 4 days
+    ago (the old rules) and retired a day later; the tape keeps 3 days. On the same fresh streak as NEWBIE, never
+    picked, its 25 streak copies counted as forward (forward n 25 = in-sample n 25) and it qualified while NEWBIE waited.
+    Passing the in-sample gates again after a verdict that failed them is a new pick: both now wait for copies after it.
+    LOSTPICK lost 24 copies after its first pick 30 h ago; its streak does not undo that: retired."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["OLDPICK", "NEWBIE", "LOSTPICK"])
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW]]})  # three days of tape kept
+        for w, picked in (("OLDPICK", NOW - 4 * 86400), ("LOSTPICK", NOW - 30 * 3600)):
+            st.upsert_candidate(w, "solanatracker", STRONG, picked - 3600)
+            for at, status, mean in ((picked, "qualified", 0.02), (picked + 6 * 3600, "retired", -0.01)):
+                st.put_verdict({"wallet": w, "computed_at": at, "landing_pos": "+6", "n_tape": 30, "mean_sol": mean,
+                                "lower_sol": mean - 0.01, "score": max(0.0, mean - 0.01), "status": status,
+                                "next_review": NOW - 60, "copy_plan": {"min_leader_sol": 0.3, "exit_name": "lab",
+                                                                       "lab_version": 2}})  # fmt: skip
+        st.upsert_candidate("NEWBIE", "solanatracker", STRONG, NOW - 3600)
+        streak = [[NOW - 10 * 3600 + 1400 * k, 0.03 if k % 5 else -0.01] for k in range(25)]  # the fresh hot streak
+        lost = [[NOW - 29 * 3600 + 600 * k, -0.03] for k in range(24)]
+
+        def runner(wallets, pos):
+            return [{"wallet": w, "n": 25, "mean": 0.0224, "ev_lower": 0.017, "win_rate": 0.8, "total": 0.56, "exit": "x",
+                     "min_leader_sol": 0.3, "moments": (lost if w == "LOSTPICK" else []) + list(streak)}
+                    for w in wallets]  # fmt: skip
+
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        for w in ("OLDPICK", "NEWBIE"):
+            fwd = by[w]["forward"]
+            assert by[w]["status"] == "candidate" and fwd["status"] == "pending", (w, by[w]["reasons"])
+            assert fwd["picked_at"] == NOW and fwd["n"] == 0
+        old = by["OLDPICK"]["forward"]
+        assert old["first_picked_at"] == NOW - 4 * 86400 and old["first_n"] == 25  # its streak, kept apart
+        assert by["NEWBIE"]["forward"]["first_picked_at"] == NOW
+        lostpick = by["LOSTPICK"]
+        assert lostpick["status"] == "retired" and lostpick["forward"]["status"] == "failed"
+        assert lostpick["forward"]["first_n"] == 49 and lostpick["forward"]["first_mean"] < 0
+        assert any(r.startswith("loses since it was first picked") for r in lostpick["reasons"])
+    finally:
+        st.close()
+
+
+def test_losses_after_a_pick_still_count_once_the_tape_no_longer_holds_them(tmp_path):
+    """Review of 7 Nov: the tape keeps 3-30 days (deploy/bootstrap.sh). A wallet picked at NOW lost on 20 copies after
+    its pick and was retired; at its review a week later the tape no longer holds them, and 25 fresh wins alone would
+    pass. Each run records the wallet's copies since its first pick with its verdict's working data, and the next run
+    takes the ones older than its tape from that record: the losses still count, and it stays retired."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["PRUNED"])
+        st.upsert_candidate("PRUNED", "solanatracker", STRONG, NOW - 3600)
+        record_copying(st, set(), NOW - 60)
+        streak = [[NOW - 5000 + 100 * k, 0.03] for k in range(30)]  # the streak it is picked on
+        losses = [[NOW + 3600 + 900 * k, -0.03] for k in range(20)]  # its copies after the pick
+        week = NOW + 8 * 86400  # a retired wallet is reviewed a week (review_retired_h) after its verdict
+        wins = [[week + 3600 + 600 * k, 0.02] for k in range(25)]  # after the tape dropped the losses
+        span = {"now": [NOW - 7200, NOW]}
+
+        def runner(wallets, pos):  # the lab sees only the copies on the tape it reads
+            a, b = span["now"]
+            moments = [m for m in streak + losses + wins if a <= m[0] <= b]
+            return [{"wallet": w, "n": len(moments), "mean": 0.02, "ev_lower": 0.01, "win_rate": 0.7, "total": 0.5,
+                     "exit": "x", "min_leader_sol": 0.3, "moments": moments} for w in wallets]  # fmt: skip
+
+        def run(at, a, b):
+            span["now"] = [a, b]
+            st.set_coverage("tape", {"spans": [[a, b]]})
+            record_copying(st, set(), at - 60)
+            run_qualify(svc, svc.cfg, data / "jobs", at, lab_runner=runner, early=True)
+            return st.latest_verdicts()[0]
+
+        first = run(NOW, NOW - 7200, NOW)
+        assert first["status"] == "candidate" and first["forward"]["picked_at"] == NOW
+        second = run(NOW + 25 * 3600, NOW - 7200, NOW + 25 * 3600)
+        assert second["status"] == "retired" and second["forward"]["status"] == "failed"
+        assert second["forward"]["n"] == 20
+        later = week + 8 * 3600
+        third = run(later, week, later)  # the tape now starts a week after the pick
+        fwd = third["forward"]
+        assert fwd["picked_at"] == NOW and fwd["n"] == 45 and fwd["off_tape"] == 20, third["reasons"]
+        assert third["status"] == "retired" and fwd["status"] == "failed" and fwd["mean"] < 0
+        assert len(st.get_score("qualify", "PRUNED")["record"]["copies"]) == 45
+    finally:
+        st.close()
+
+
+def test_pick_times_are_the_first_pick_and_the_start_of_the_latest_run_of_picks():
+    """A pick is a verdict every in-sample gate passed: qualified before the 7 Nov rules, or one that carries a forward
+    check. A verdict that failed one ends the run, a kept verdict included when it carries no forward check (these rules
+    stopped it in-sample), so the latest pick starts over at the next pass."""
+    from snipetech.qualify.run import pick_times
+
+    st = Store(":memory:")
+    try:
+        assert pick_times(st, "W") == (None, None)
+
+        def put(at, status, forward=None, kept=None):
+            st.put_verdict({"wallet": "W", "computed_at": at, "status": status, "next_review": at + 86400,
+                            "forward": forward, "kept_armed": kept})  # fmt: skip
+
+        put(100, "qualified")  # before these rules
+        assert pick_times(st, "W") == (100, 100)
+        put(200, "candidate", forward={"status": "pending"})
+        assert pick_times(st, "W") == (100, 100)
+        put(300, "retired", forward={"status": "failed"})  # it passed the in-sample gates and lost after its pick
+        assert pick_times(st, "W") == (100, 100)
+        put(400, "qualified", kept={"armed_on": 100, "kept": True})  # kept, failing these rules in-sample
+        assert pick_times(st, "W") == (100, None)
+        put(500, "candidate", forward={"status": "pending"})
+        assert pick_times(st, "W") == (100, 500)
+        put(600, "candidate")  # too few copies: no forward check
+        assert pick_times(st, "W") == (100, None)
     finally:
         st.close()

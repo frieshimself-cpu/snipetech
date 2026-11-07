@@ -351,7 +351,8 @@ def test_a_wallet_with_no_later_tape_is_forward_pending_and_nothing_else_changes
     assert {k: out[k] for k in same} == {k: v[k] for k in same}
     assert out["status"] == "candidate" and out["next_review"] == NOW + 24 * 3600
     assert out["forward"] == {"picked_at": NOW, "tape_hours": 0.0, "n": 0, "mean": None, "lower": None,
-                              "win_rate": None, "status": "pending", "min_n": 20, "min_hours": 6.0}  # fmt: skip
+                              "win_rate": None, "status": "pending", "min_n": 20, "min_hours": 6.0,
+                              "first_picked_at": NOW, "first_n": 0, "first_mean": None, "off_tape": 0}  # fmt: skip
     assert out["reasons"][:-1] == v["reasons"] and out["reasons"][-1].startswith("forward pending: 0 later copies")
     assert v["status"] == "qualified" and "forward" not in v  # the verdict handed in is left as it was
 
@@ -511,3 +512,36 @@ def test_a_copied_wallet_that_meets_these_rules_with_a_lower_score_keeps_the_sco
     assert high["score"] == pytest.approx(0.002) and "new_score" not in high["kept_armed"]
     assert high["reasons"] == low["reasons"]
     assert keep_armed(low, armed, False, cfg, NOW) == low  # no longer copied: its own score
+
+
+def test_a_wallet_picked_again_is_judged_on_its_copies_since_that_pick_and_must_not_lose_since_its_first(cfg):
+    """Review of 7 Nov: the forward window never moved from a wallet's first pick, so a wallet that lost after it and
+    qualified again on a new streak counted that streak (the copies that made it qualify again) as its forward copies.
+    Now its forward copies are the ones after its latest pick (`picked_at`), and its copies since its first pick
+    (`first_picked_at`) must not lose: 20 or more over 6 h or more of tape with a mean below 0 retire it, whatever the
+    latest window says. The forward numbers say both, and how many of the copies the tape no longer holds."""
+    first = NOW - 30 * 3600
+    again = NOW - 8 * 3600  # picked again eight hours ago
+    v = _in_sample_pass(cfg)
+    lost = _copies(24, -0.03, first + 3600)  # lost on every copy after its first pick
+    streak = _copies(10, 0.03, again - 7200)  # the streak that made it qualify again: not forward
+    holds = _copies(25, lambda k: 0.03 if k % 2 else -0.01, again + 60)  # after the latest pick it pays
+    out = forward_gate(v, lost + streak + holds, again, [[first - 3600, NOW]], cfg, NOW, first_picked_at=first)
+    fwd = out["forward"]
+    assert out["status"] == "retired" and fwd["status"] == "failed" and out["next_review"] == NOW + 168 * 3600
+    assert (fwd["picked_at"], fwd["n"], fwd["first_picked_at"], fwd["first_n"]) == (again, 25, first, 59)
+    assert fwd["first_mean"] == pytest.approx((24 * -0.03 + 10 * 0.03 + 12 * 0.03 - 13 * 0.01) / 59)
+    assert out["reasons"][-1].startswith("loses since it was first picked")
+    recovered = _copies(24, 0.02, first + 3600)  # it paid after its first pick too: only the latest window decides
+    ok = forward_gate(v, recovered + streak + holds, again, [[first - 3600, NOW]], cfg, NOW, first_picked_at=first)
+    assert ok["status"] == "qualified" and ok["forward"]["status"] == "passed" and ok["forward"]["n"] == 25
+    early = forward_gate(v, lost + streak, again, [[first - 3600, NOW]], cfg, NOW, first_picked_at=first)
+    assert early["status"] == "retired" and early["forward"]["n"] == 0  # nothing since the latest pick: it still lost
+    same = forward_gate(v, holds, again, [[first - 3600, NOW]], cfg, NOW)  # never picked before: one window
+    assert same["forward"]["first_picked_at"] == again and same["forward"]["first_n"] == 25
+    pruned = forward_gate(v, lost + holds, again, [[again - 3600, NOW]], cfg, NOW, first_picked_at=first)
+    assert pruned["forward"]["off_tape"] == 0 and pruned["forward"]["first_n"] == 49  # 24 of them before the tape
+    off = forward_gate(v, holds, again - 7200, [[again, NOW]], cfg, NOW)
+    assert off["forward"]["off_tape"] == 0
+    carried = forward_gate(v, _copies(5, 0.03, again - 3000) + holds, again - 7200, [[again, NOW]], cfg, NOW)
+    assert carried["forward"]["off_tape"] == 5 and carried["forward"]["n"] == 30
