@@ -13,6 +13,9 @@ Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on cho
 - [Round 2](2026-11-07-round-2.md), 7 Nov 16:27-20:48: 5 labs, none past the skeptics' bar; copy verdicts do not carry
   forward (-0.0147 a copy on later tape); leads: MIG on Qm-uri coins (decided by a forward test about 8 Nov 04:00 UTC)
   and the creator-0 crowd hunt (15 test trades, +0.0234; decided on 30 new firings, about 9 Nov).
+- [Round 3](2026-11-07-round-3.md), 7 Nov 20:50 - 8 Nov 00:00: 5 labs, none past the bar; one bundle operator's coins
+  (41 SOL first-slot bundles, creator 0) are behind nearly every positive hunt and copy result; the creator-0 hunts lose
+  on unseen 4-5 Nov tape; the one lead is hunting that operator's coins directly, decided by its next 20 launches.
 
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
