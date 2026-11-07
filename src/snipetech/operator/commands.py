@@ -1,11 +1,13 @@
-"""Owner commands over Telegram: /status /stop /resume /book /sell /test. Polled once per round and every minute
+"""Owner commands over Telegram: /status /stop /resume /book /sell /test /risk. Polled once per round and every minute
 (`operate --commands`); only the owner's chat is obeyed.
 /stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
 (solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task.
 /test is the owner's own capped live test (live_test.py): it shows the plan, and "/test <id> go" only writes the request
-the next operator round starts; nothing here creates or starts a sniper."""
+the next operator round starts; nothing here creates or starts a sniper.
+/risk is the owner's wallet-wide guard (risk_guard.py): it shows the guard and today's result, and /risk stop, /risk floor
+and /risk default change the owner's operator/RISK; nothing the owner sent is repeated."""
 
 from __future__ import annotations
 
@@ -35,7 +37,8 @@ HELP = (
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
     "analyst runs)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
-    "it at the next round, /stop ends it)  /why <wallet> (later phase)"
+    "it at the next round, /stop ends it)  /risk [stop <SOL a day>|floor <SOL>|default] (the wallet-wide guard: no new "
+    "live trade once the day is that far down or the wallet under its floor)  /why <wallet> (later phase)"
 )
 
 
@@ -449,6 +452,16 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = budget_reply(cfg, paths, cmd.args, "telegram", now)
         if cmd.args and not reply.startswith("budget not changed"):
             notes.write(f"owner set the agents' budget: {reply}", "decision")
+    elif cmd.name == "risk" and cmd.args and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
+        # the same rule as /sell: a change that waited in Telegram's queue may loosen the guard after the moment it was
+        # meant for. Its words are not repeated
+        mins = int((now - cmd.date) // 60)
+        reply = (f"risk guard not changed: this /risk is {mins} min old (it waited while the bot was not reading). Send "
+                 "it again if you still mean it.")  # fmt: skip
+    elif cmd.name == "risk":
+        reply = risk_guard.risk_reply(cfg, paths, getattr(svc, "store", None), snap, cmd.args, "telegram", now)
+        if reply.startswith(("risk guard set", "risk guard back")):
+            notes.write(f"owner set the wallet-wide guard (/risk): {reply}", "decision")
     elif cmd.name == "test" and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
         # the same rule as /sell: a yes that waited in Telegram's queue may not fit the wallet or the strategies now.
         # Its words are not repeated: a secret key pasted by mistake must not reach the notes

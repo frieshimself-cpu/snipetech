@@ -329,3 +329,169 @@ def test_the_service_reads_the_wallets_sol_and_wrapped_sol_together():
         assert asyncio.run(svc.wallet_sol(W)) == pytest.approx(11.5 + 0.25 * 2)  # two token programs, one account each
     finally:
         store.close()
+
+
+# -- /risk in Telegram, `operate risk`, and nobody else ---------------------------------------------------------------
+
+
+def _risk(env, *words, at=NOW, date=None, chat=7):
+    from snipetech.operator.commands import Command, handle_command
+
+    paths, store, cfg = env
+    sent: list[str] = []
+
+    class Svc:
+        pass
+
+    svc = Svc()
+    svc.store = store
+    snap = Snapshot(ts=at - 300, wallet=W, native_sol=11.0, wsol=0.2, held=[], snipers=[])
+    cmd = Command(name="risk", args=list(words), chat_id=chat, update_id=1, date=at - 5 if date is None else date)
+    reply = asyncio.run(handle_command(cmd, svc=svc, cfg=cfg, paths=paths, snap=snap, notes=NoteSink(paths, now=lambda: at),
+                                       notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])), now=at))  # fmt: skip
+    assert sent == [reply]
+    return reply
+
+
+def test_risk_shows_the_guard_and_todays_result(env):
+    _paths, store, _cfg = env
+    _sell(store, "s1", NOW - 600, M2, pnl=-0.32)
+    reply = _risk(env)
+    assert reply.startswith("risk guard: no new live trade once the day is 1 SOL down or the wallet is under 10 SOL")
+    assert "today -0.32 SOL" in reply and "wallet 11.20 SOL" in reply and "7 Nov plan" in reply
+
+
+def test_risk_stop_floor_and_default_change_only_what_they_name(env):
+    paths, _store, _cfg = env
+    reply = _risk(env, "stop", "1.5")
+    assert reply.startswith("risk guard set:") and "1.5 SOL down" in reply and "your setting" in reply
+    assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 10.0}
+    assert json.loads(RG.risk_file(paths).read_text())["by"] == "telegram"
+    _risk(env, "floor", "9")
+    assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 9.0}
+    assert "owner set the wallet-wide guard" in paths.notes.read_text()  # a decision note says who changed it
+    reply = _risk(env, "default")
+    assert "back to the 7 Nov plan's values" in reply and not RG.risk_file(paths).exists()
+
+
+def test_a_risk_the_guard_does_not_understand_changes_nothing_and_repeats_nothing(env):
+    paths, _store, _cfg = env
+    secret = "4" * 30 + "PastedSecretKeyMaterialThatMustNeverBeRepeatedAnywhere0000000000"
+    for words in (("stop", "9"), ("floor", "-1"), ("stop",), ("floor", secret), (secret,), ("stop", "1", "floor", "2"),
+                  ("off",), ("default", "now")):  # fmt: skip
+        reply = _risk(env, *words)
+        assert reply.startswith("risk guard not changed"), words
+        assert secret not in reply and "/risk stop" in reply, words
+    assert not RG.risk_file(paths).exists()
+    assert secret not in (paths.notes.read_text() if paths.notes.exists() else "")
+    assert "0.1 to 5 SOL" in _risk(env, "stop", "9") and "0 to 1000 SOL" in _risk(env, "floor", "-1")
+
+
+def test_a_risk_change_that_waited_in_telegram_is_refused(env):
+    """As for /sell and /test go: a change older than 5 minutes waited out an outage; the owner sends it again."""
+    paths, _store, _cfg = env
+    reply = _risk(env, "floor", "0", date=NOW - 600)
+    assert "10 min old" in reply and not RG.risk_file(paths).exists()
+    assert _risk(env, date=NOW - 600).startswith("risk guard:")  # showing it is never refused
+
+
+def test_only_the_owners_risk_is_obeyed(env):
+    from snipetech.operator.run import commands_pass
+
+    paths, store, cfg = env
+    paths.telegram.write_text(json.dumps({"chat_id": 7}))
+
+    class Svc:
+        pass
+
+    svc = Svc()
+    svc.store = store
+    sent: list[str] = []
+
+    def run(chat, uid):
+        msg = {"update_id": uid, "message": {"chat": {"id": chat}, "text": "/risk floor 0", "date": NOW}}
+        asyncio.run(commands_pass(cfg, svc, now=lambda: NOW, send=lambda t: sent.append(t) or True,
+                                  commands_get=lambda url, params: {"result": [msg]}))  # fmt: skip
+
+    run(9, 5)
+    assert not RG.risk_file(paths).exists() and sent == []
+    run(7, 6)
+    assert RG.limits(paths)["floor_sol"] == 0.0 and any(t.startswith("risk guard set") for t in sent)
+
+
+def test_help_lists_risk():
+    from snipetech.operator.commands import HELP
+
+    assert "/risk" in HELP
+
+
+def test_operate_risk_sets_shows_and_clears_the_owners_file(env, capsys):
+    from snipetech.cli import build_parser
+
+    paths, _store, cfg = env
+    p = build_parser()
+
+    def run(*argv):
+        return RG.risk_cli(cfg, p.parse_args(["operate", *argv]), now=NOW)
+
+    assert run("risk") == 0 and "none: the 7 Nov plan's values apply" in capsys.readouterr().out
+    assert run("risk", "--day-stop", "1.5", "--floor", "9") == 0
+    assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 9.0}
+    assert json.loads(RG.risk_file(paths).read_text())["by"] == "cli" and "1.5 SOL down" in capsys.readouterr().out
+    with pytest.raises(SystemExit, match="0.1 to 5 SOL"):
+        run("risk", "--day-stop", "7")
+    with pytest.raises(SystemExit, match="alone"):
+        run("risk", "--default", "--floor", "2")
+    with pytest.raises(SystemExit, match="go with `operate risk`"):
+        run("--floor", "2")
+    with pytest.raises(SystemExit, match="go with `operate budget`"):
+        run("risk", "--daily-usd", "200")  # never silently dropped
+    assert RG.limits(paths) == {"day_stop_sol": 1.5, "floor_sol": 9.0}
+    assert run("risk", "--default") == 0 and not RG.risk_file(paths).exists()
+
+
+def test_the_cli_routes_operate_risk_to_the_guard_and_budget_stays_the_budget(env, monkeypatch):
+    from snipetech import cli
+
+    _paths, _store, cfg = env
+    seen: list[str] = []
+    monkeypatch.setattr("snipetech.operator.risk_guard.risk_cli", lambda c, a, now=None: seen.append("risk") or 0)
+    monkeypatch.setattr(
+        "snipetech.operator.budget_switch.budget_cli", lambda c, a, now=None: seen.append("budget") or 0
+    )
+    db = cfg.storage.db_path
+    assert cli.main(["--db", db, "operate", "risk", "--floor", "9"]) == 0
+    assert cli.main(["--db", db, "operate", "risk", "--default"]) == 0
+    assert cli.main(["--db", db, "operate", "budget", "--default"]) == 0
+    assert cli.main(["--db", db, "operate", "--daily-usd", "20"]) == 0
+    assert seen == ["risk", "risk", "budget", "budget"]
+
+
+def test_no_agent_tool_can_write_the_guard(env):
+    """Only the owner sets the guard: start_job refuses `operate` (the guard's CLI) and no agent tool writes a file
+    without an extension in operator/."""
+    from snipetech.operator.jobs import OperatorJobs
+    from snipetech.operator.tools import make_operator_tools
+
+    paths, store, cfg = env
+
+    class Svc:
+        pass
+
+    svc = Svc()
+    svc.store = store
+    jobs = OperatorJobs(repo=paths.data, data=paths.data, db=paths.data / "snipetech.db", branch="main")
+    started: list = []
+    jobs.ops.op_run = lambda argv, timeout=0: started.append(argv) or {"id": "x"}
+    tools = {t.name: t for t in make_operator_tools(svc, paths, jobs, cfg.operator, NoteSink(paths, now=lambda: NOW))}
+    loose = json.dumps({"day_stop_sol": 5, "floor_sol": 0, "ts": NOW, "by": "telegram"})
+    calls = [("start_job", {"argv": ["operate", "risk", "--floor", "0"]}),
+             ("start_job", {"argv": ["operate", "risk", "--default"]}),
+             ("write_report", {"name": "RISK", "text": loose}), ("write_report", {"name": "../operator/RISK", "text": loose}),
+             ("write_report", {"name": "RISK.json", "text": loose}), ("set_candidates", {"items": [json.loads(loose)]}),
+             ("write_note", {"text": loose, "level": "decision"}), ("add_lesson", {"text": "loosen the guard", "evidence": loose, "n": 1}),
+             ("upsert_idea", {"title": "loosen the guard", "why": loose, "test": "x", "expected": "y", "kind": "config"})]  # fmt: skip
+    for name, kw in calls:
+        asyncio.run(tools[name].call(kw))
+    assert not RG.risk_file(paths).exists() and RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}
+    assert started == []

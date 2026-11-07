@@ -411,6 +411,8 @@ def risk_cli(cfg, args, now: float | None = None) -> int:
     values = {k: v for k, v in (("day_stop_sol", args.day_stop), ("floor_sol", args.risk_floor)) if v is not None}
     if args.action != "risk":
         raise SystemExit("--day-stop and --floor go with `operate risk`")
+    if any(getattr(args, k, None) is not None for k in ("daily_usd", "turn_usd", "tool_calls", "analyst_every_h")):
+        raise SystemExit("--daily-usd, --turn-usd, --tool-calls and --analyst-every-h go with `operate budget`")
     if args.budget_default and values:
         raise SystemExit("operate risk: --default goes alone (it removes the owner's guard file)")
     now = time.time() if now is None else now
@@ -425,7 +427,14 @@ def risk_cli(cfg, args, now: float | None = None) -> int:
     print(
         f"guard file {risk_file(paths)} on this machine" + ("" if there else " (none: the 7 Nov plan's values apply)")
     )
-    print(status_line(evaluate(_store(cfg), cfg, paths, now, sol=None, held=None), paths))
+    from .snapshot import load_current
+
+    store = _store(cfg)
+    try:  # the wallet as the last round read it, as /risk shows it
+        print(status_line(from_snapshot(store, cfg, paths, now, load_current(paths)), paths))
+    finally:
+        if store is not None:
+            store.close()
     return 0
 
 
