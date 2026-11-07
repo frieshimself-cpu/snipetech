@@ -144,7 +144,7 @@ def _events(args, cfg) -> int:
         if args.action == "scan":
             from .events.dev import dev_transfers
 
-            out = scan_tape(svc.store, time.time(), hours=args.hours)
+            out = scan_tape(svc.store, time.time(), hours=args.hours, tape=svc.tape_store)
 
             async def dev():
                 try:

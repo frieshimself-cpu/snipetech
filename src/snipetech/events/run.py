@@ -65,8 +65,12 @@ def poll_feeds(store: Store, clients: dict[str, Any], now: float, log: Callable[
     return {"added": added, "by_kind": by_kind, "errors": errors, "feeds": len(feeds)}
 
 
-def scan_tape(store: Store, now: float, hours: float = 6.0) -> dict[str, Any]:
-    events = curve_crossings(store, int(now - hours * 3600))
+def scan_tape(store: Store, now: float, hours: float = 6.0, tape: Store | None = None) -> dict[str, Any]:
+    """Curve crossings of the last `hours`, read from `tape` (the hourly read-only copy when fresh) and written to
+    `store`. The read walks the trades table through one index and then each coin's whole curve (7 Nov 16:46-17:18 a
+    scan took 32 minutes); on the live file it kept the WAL from being checkpointed all along. A copy up to two hours
+    old loses nothing: six hours are read every three, and a crossing found twice is written once."""
+    events = curve_crossings(tape or store, int(now - hours * 3600))
     added = store.add_events(events)
     store.set_coverage(LAST_SCAN_KEY, {"ts": int(now), "curve_cross": added})
     return {"curve_cross": added, "scanned_hours": hours}

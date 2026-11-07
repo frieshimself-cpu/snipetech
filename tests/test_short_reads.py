@@ -248,3 +248,46 @@ def test_discover_reads_its_tape_from_the_hourly_copy(tmp_path):
         wal.close()
         svc.reset_tape_store()
         live.close()
+
+
+def _scan_world(live: Store, now: int) -> None:
+    """200 launches in the last six hours: every tenth coin's curve passes 10 and 30 SOL, none reaches 60."""
+    from tests.synth import Market, addr
+
+    for k in range(200):
+        m = Market(live, addr(f"scan{k}"), addr(f"sdev{k % 7}"), now - 5 * 3600 + k * 60, 390_000_000 + k * 1000)
+        m.buy(m.deployer, 1.0, 0)
+        runner = k % 10 == 0
+        for i in range(8 if runner else 60):
+            m.buy(addr(f"b{k}-{i}"), 5.0 if runner else 0.05, 2 + i)
+        m.commit()
+
+
+def test_the_events_scan_reads_the_hourly_copy(tmp_path, monkeypatch):
+    """The events scan (every 3 h) read the live file: its coins with a curve trade in six hours walk the whole trades
+    table through one index (3.9 s cold on the 2.4M-trade copy), and the dev-transfer scan probes every launch of the
+    window for a 60 SOL trade in one read (1.4 s); 7 Nov 16:46-17:18 one scan took 32 minutes. Its crossings are
+    research events, found again by the next scan (six hours read every three, idempotent writes): it reads the hourly
+    copy, writes to the live file, and records the very crossings it found on the live one."""
+    import time
+
+    from snipetech import cli
+    from snipetech.events.curve import curve_crossings
+
+    monkeypatch.setattr(cli, "_yield_cpu", lambda cmd: None)
+    live = Store(tmp_path / "snipetech.db")
+    now = int(time.time())
+    _scan_world(live, now)
+    expected = curve_crossings(live, now - 6 * 3600)
+    _copy(live)
+    wal = Wal(live.path)
+    wal.every_store(monkeypatch)
+    try:
+        assert cli.main(["--db", live.path, "events", "scan", "--hours", "6"]) == 0
+        keys = ("kind", "mint", "wallet", "slot", "ts", "data")
+        found = sorted(tuple(str(e[k]) for k in keys) for e in live.events(since_ts=0, limit=10_000))
+        assert len(expected) == 40 and found == sorted(tuple(str(e[k]) for k in keys) for e in expected)
+        assert wal.whole, wal.checks
+    finally:
+        wal.close()
+        live.close()

@@ -17,12 +17,17 @@ WINDOW_SECS = 24 * 3600
 async def dev_transfers(
     svc, since_ts: int, now: float | None = None, max_launches: int = 400, min_curve_sol: float = 60.0
 ) -> dict[str, Any]:
+    """The launches come from the hourly copy when the service has a fresh one (`Service.tape_store`): one read probes
+    every launch of the window for a trade past `min_curve_sol` (1.4 s cold for six hours on a 2.4M-trade copy, 7 Nov),
+    and on the live file it held the WAL back all the while. The cursor moves to the last launch taken from the copy,
+    and the next scan goes on from there. Fingerprints, events, edges and the cursor live in the live store."""
     store = svc.store
+    tape = getattr(svc, "tape_store", store)
     now = time.time() if now is None else now
     cursor = store.coverage(CURSOR_KEY).get("ts")
     start = max(int(since_ts), int(cursor) + 1 if cursor is not None else int(since_ts))
     threshold = int(min_curve_sol * 1e9) + INITIAL_VIRTUAL_SOL_RESERVES
-    launches = store._q(
+    launches = tape._q(
         "SELECT l.mint, l.creator, l.ts FROM launches l WHERE l.ts >= ? AND l.ts <= ? AND EXISTS "
         "(SELECT 1 FROM trades t WHERE t.mint = l.mint AND t.venue = 'curve' AND t.q_after >= ?) ORDER BY l.ts LIMIT ?",
         (start, int(now), threshold, int(max_launches)),
