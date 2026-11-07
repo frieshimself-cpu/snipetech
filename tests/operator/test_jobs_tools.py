@@ -160,6 +160,7 @@ def test_write_note_format_and_levels(tmp_path):
     assert sink.write("hello", "decision") == "- 2026-11-06T00:00:00Z [decision] hello"
     assert sink.decisions == ["- 2026-11-06T00:00:00Z [decision] hello"]
     assert sink.has_today("hello", 1_793_923_200 + 100) and not sink.has_today("hello", 1_793_923_200 + 90000)
+    assert sink.has_today("hello", 1_793_923_200, "[decision]") and not sink.has_today("hello", 1_793_923_200, "[info]")
     with pytest.raises(ValueError):
         sink.write("x", "loud")
 

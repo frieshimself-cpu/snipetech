@@ -115,6 +115,35 @@ def test_the_budget_lines_name_the_owners_daily_cap(tmp_env):
     assert "budget: 21.00 $ of 20.00 $ spent today" in tmp_env["paths"].log.read_text() and tmp_env["calls"] == []
 
 
+def test_a_turns_own_cap_never_hides_the_days_budget_note(tmp_env):
+    """Review, 7 Nov: the day's note was matched on "budget reached", which the turn's "turn budget reached (...)" note
+    contains too. Once one turn hit its own cap, the day's cap was reached in silence. A cap the owner raised with
+    /budget is announced again when it is reached in its turn; the same cap stays once a day."""
+    from snipetech.operator.budget_switch import set_budget
+
+    sent: list[str] = []
+
+    def send(text: str) -> bool:
+        sent.append(text)
+        return True
+
+    paths = tmp_env["paths"]
+    paths.notes.write_text(
+        "- 2026-11-06T00:10:00Z [info] turn budget reached (2.31 $ of 2.00) before the round finished\n"
+    )
+    paths.spend.write_text(json.dumps({"ts": NOW - 10, "mode": "analyst", "usd": 15.10}) + "\n")
+    _op(tmp_env, send=send)
+    _op(tmp_env, send=send, balances=lambda w: (2.0, 0.0, []))  # the same cap reached again: no second message
+    budget = [s for s in sent if "budget reached:" in s]
+    assert len(budget) == 1 and "15.10 $ of 15.00 $ today" in budget[0] and "/budget" in budget[0]
+    set_budget(paths, tmp_env["cfg"], {"daily_usd": 20}, "telegram", NOW)  # the owner raises the day's cap
+    with paths.spend.open("a") as f:
+        f.write(json.dumps({"ts": NOW - 5, "mode": "analyst", "usd": 5.0}) + "\n")
+    _op(tmp_env, send=send, balances=lambda w: (3.0, 0.0, []))
+    budget = [s for s in sent if "budget reached:" in s]
+    assert len(budget) == 2 and "20.10 $ of 20.00 $ today" in budget[1] and tmp_env["calls"] == []
+
+
 def test_the_owners_higher_budget_lets_the_round_call_claude_past_the_configs_cap(tmp_env):
     from snipetech.operator.budget_switch import set_budget
 

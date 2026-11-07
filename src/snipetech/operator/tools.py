@@ -46,11 +46,13 @@ class NoteSink:
             self.decisions.append(line)
         return line
 
-    def has_today(self, prefix: str, now: float) -> bool:
+    def has_today(self, prefix: str, now: float, *also: str) -> bool:
+        """A note of today (UTC) that contains `prefix` and each of `also`."""
         day = time.strftime("%Y-%m-%d", time.gmtime(now))
         try:
             return any(
-                line.startswith(f"- {day}") and prefix in line for line in self.paths.notes.read_text().splitlines()
+                line.startswith(f"- {day}") and prefix in line and all(a in line for a in also)
+                for line in self.paths.notes.read_text().splitlines()
             )
         except OSError:
             return False
