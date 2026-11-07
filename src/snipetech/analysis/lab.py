@@ -157,7 +157,7 @@ TRIGGERS = (
         Trigger("hunt", sol=s, window=w, max_buyers=mb, dev_max=1.0)
         for s in (2.0, 3.0, 5.0)
         for w in (1.0, 2.0)
-        for mb in (0, 3, 5)
+        for mb in (0, 2, 3, 5)  # 2: what `oktech strategy` sends for a solo whale rule today
     ]
     # what the most profitable small-size wallet on the tape (ARu4n5mF) buys: proven coins mid-curve, on momentum
     + [

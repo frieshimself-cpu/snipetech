@@ -198,3 +198,15 @@ def test_the_search_freezes_hunt_strategies_at_the_hunt_landing(monkeypatch):
     s = out["frozen"][0]
     assert (s["latency"], s["position"]) == paper.HUNT_LANDING
     assert s["lab"]["landing"] == paper.landing_key(*paper.HUNT_LANDING)
+
+
+def test_the_search_scores_what_oktech_runs_for_the_best_paper_strategy():
+    # 9b2bd6f664 (7 Nov forward paper: +0.0096 SOL a trade over 1,156 trades) is a whale rule OKTech cannot run as
+    # scored; `oktech strategy` sends an approximation of it, and that approximation must be scored as such
+    whale = Trigger("whale", sol=1.0, max_age=1.0, plain=True, solo=True)
+    strat = {"id": "w", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": whale.__dict__}
+    sent = strategy_sniper(strat, 1).config["hunt"]
+    th = sent["thresholds"]
+    as_sent = Trigger("hunt", sol=float(th["minTotalSol"]), window=sent["timeWindowMs"] / 1000,
+                      max_buyers=int(th.get("maxUniqueBuyers", 0)), dev_max=float(th["maxDevBuySol"]))  # fmt: skip
+    assert as_sent in TRIGGERS
