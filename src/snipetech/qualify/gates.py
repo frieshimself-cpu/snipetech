@@ -183,6 +183,35 @@ def relationship_gate(store: Store, wallet: str) -> tuple[bool, list[str]]:
     return not reasons, reasons
 
 
+# A wallet with this share of its first buys or more in a coin's create slot is not copied. Research round 2 (7 Nov):
+# the 14:00 search's rows 7zvP2x and 3yrJE1 were artifacts, 10 of 10 and 13 of 20 of their first buys in the create
+# slot (the block the coin was made in, full of the creator's bundle), where no copy can land: the lab scored moments
+# that live copies never get.
+MAX_CREATE_SLOT_SHARE = 0.10
+
+
+def create_slot_share(store: Store, wallet: str, since_ts: int) -> dict[str, Any] | None:
+    """How many of the wallet's first buys since `since_ts` sat in the coin's create slot: {"in_create", "first_buys",
+    "share"}, over the first buys the qualify lab scores (lab.KOL_MIN_SOL, 0.1 SOL, or more) in coins whose create the
+    tape recorded (elsewhere the create slot is unknown), never in a coin the wallet created (its buy there is the
+    creator's, which the lab never scores). None when there is no such first buy."""
+    from ..analysis.lab import KOL_MIN_SOL
+
+    rows = store._q(
+        "SELECT t.mint, t.slot, t.quote, l.slot, l.user, l.creator FROM trades t JOIN launches l ON l.mint = t.mint "
+        "WHERE t.user=? AND t.is_buy=1 AND t.ts>=? ORDER BY t.mint, t.slot, t.pos, t.ev",
+        (wallet, int(since_ts)),
+    )
+    first: dict[str, tuple] = {}
+    for r in rows:
+        first.setdefault(r[0], r)  # the earliest buy per coin: its first buy there
+    kept = [r for r in first.values() if wallet not in (r[4], r[5]) and r[2] >= KOL_MIN_SOL * 1e9]
+    if not kept:
+        return None
+    n = sum(1 for _mint, slot, _q, created, *_ in kept if int(slot) == int(created))
+    return {"in_create": n, "first_buys": len(kept), "share": round(n / len(kept), 4)}
+
+
 def score(lower_sol: float | None, n: int | None, venue: float | None, followers_1s: float | None) -> float:
     if lower_sol is None:
         return 0.0
@@ -193,9 +222,12 @@ def score(lower_sol: float | None, n: int | None, venue: float | None, followers
 
 
 def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | None, crowd: dict, rel_ok: bool,
-                rel_reasons: list[str], cfg: QualifyConfig, now: float) -> dict[str, Any]:  # fmt: skip
-    """The verdict row. Order of the gates: relationships veto, then venue, then history, then the tape at the landing,
-    then crowding; whatever stops the wallet sets the status and the review date."""
+                rel_reasons: list[str], cfg: QualifyConfig, now: float,
+                create: dict | None = None) -> dict[str, Any]:  # fmt: skip
+    """The verdict row. Order of the gates: the vetoes (relationships, then the create slot: `create`, from
+    create_slot_share, MAX_CREATE_SLOT_SHARE or more of its first buys there; each one that applies is said), then
+    venue, then history, then the tape at the landing, then crowding; whatever stops the wallet sets the status and the
+    review date."""
     passes, strong, hist_reasons = history_gate(hist, cfg)
     n = int(lab_row["n"]) if lab_row and lab_row.get("n") is not None else 0
     mean = _num(lab_row.get("mean")) if lab_row else None
@@ -203,8 +235,13 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
     sc = score(lower, n, venue, crowd.get("followers_1s")) if lab_row else 0.0
     reasons: list[str] = []
     status = "qualified"
-    if not rel_ok:
-        status, reasons = "retired", list(rel_reasons)
+    in_create = bool(create) and float(create.get("share") or 0) >= MAX_CREATE_SLOT_SHARE
+    if not rel_ok or in_create:
+        status, reasons = "retired", [] if rel_ok else list(rel_reasons)
+        if in_create:
+            reasons.append(f"{create['in_create']} of {create['first_buys']} first buys ({float(create['share']):.0%}) "
+                           f"in the coin's create slot, where no copy lands ({MAX_CREATE_SLOT_SHARE:.0%} or more is "
+                           "not copied)")  # fmt: skip
     elif lab_row is None:
         status, reasons = "candidate", ["no tape data"]
     elif venue is not None and venue < cfg.min_venue_share:
@@ -238,4 +275,4 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
             "hist_win_rate": hist.get("win_rate"), "hist_trades": hist.get("trades"), "crowding": crowd.get("followers_1s"),
             "venue_share": venue, "score": sc, "status": status, "next_review": int(now) + hours * 3600, "reasons": reasons,
             "exit": lab_row.get("exit") if lab_row else None, "gap3_pct": crowd.get("gap3_pct"),
-            "copy_plan": copy_plan(lab_row)}  # fmt: skip
+            "copy_plan": copy_plan(lab_row), "create_slot": create}  # fmt: skip

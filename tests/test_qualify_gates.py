@@ -4,6 +4,7 @@ import pytest
 
 from snipetech.config import Config, QualifyConfig
 from snipetech.qualify.gates import (
+    create_slot_share,
     crowding,
     history_gate,
     normalise_history,
@@ -262,3 +263,55 @@ def test_verdict_for_keeps_the_copy_plan_and_gap3(cfg):
     plan = verdict_for("G2oZ", {"trades": None}, old, 1.0, crowd, True, [], cfg, NOW)["copy_plan"]
     assert plan is not None and plan["min_leader_sol"] is None and plan["lab_version"] is None
     assert verdict_for("G2oZ", {"trades": None}, None, None, crowd, True, [], cfg, NOW)["copy_plan"] is None
+
+
+def test_create_slot_share_counts_the_first_buys_that_sat_in_the_coins_create_slot():
+    """Research round 2 (7 Nov): the 14:00 search's rows 7zvP2x and 3yrJE1 had 10 of 10 and 13 of 20 of their first
+    buys in the coin's create slot (the block the coin was made in), where no copy can land. The share counts the first
+    buys the qualify lab scores (0.1 SOL or more), in coins whose create the tape recorded, never the wallet's own
+    coins (its buy there is the creator's)."""
+    st = Store(":memory:")
+    C, D = addr("C"), addr("dev")
+    for k in range(10):  # two first buys in the create slot, eight later
+        m = Market(st, addr(f"cs{k}"), D, NOW + k * 100, SLOT + k * 250)
+        m.buy(D, 1.0, 0, sig=m.create_sig)
+        m.buy(C, 0.5, 0 if k < 2 else 5)
+        m.commit()
+    own = Market(st, addr("cs-own"), C, NOW + 2000, SLOT + 5000)
+    own.buy(C, 1.0, 0, sig=own.create_sig)
+    own.commit()
+    dust = Market(st, addr("cs-dust"), D, NOW + 2100, SLOT + 5250)  # a first buy under 0.1 SOL is no lab moment
+    dust.buy(D, 1.0, 0, sig=dust.create_sig)
+    dust.buy(C, 0.05, 0)
+    dust.buy(C, 0.5, 6)
+    dust.commit()
+    old = Market(st, addr("cs-old"), D, NOW + 2200, SLOT + 5500)  # its create is not on the tape: slot unknown
+    old.buy(D, 1.0, 0, sig=old.create_sig)
+    old.buy(C, 0.5, 0)
+    old.commit()
+    st._exec("DELETE FROM launches WHERE mint=?", (addr("cs-old"),))
+    assert create_slot_share(st, C, NOW - 10) == {"in_create": 2, "first_buys": 10, "share": 0.2}
+    assert create_slot_share(st, C, NOW + 50) == {"in_create": 1, "first_buys": 9, "share": 0.1111}  # since the tape
+    assert create_slot_share(st, addr("nobody"), NOW - 10) is None
+    st.close()
+
+
+def test_a_wallet_with_a_tenth_of_its_first_buys_in_create_slots_is_not_qualified(cfg):
+    """10 % or more of its first buys in a coin's create slot: whatever the lab says, its verdict is retired and says
+    why (research round 2: drop wallets with 10 %+ of first buys there)."""
+    lab = {"n": 25, "mean": 0.02, "ev_lower": 0.004, "win_rate": 0.6, "total": 0.5, "exit": "STALE1s SL-30% hold300s"}
+    quiet = {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 25}
+    tenth = {"in_create": 3, "first_buys": 30, "share": 0.1}
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW, create=tenth)
+    assert v["status"] == "retired" and v["next_review"] == NOW + 168 * 3600 and v["create_slot"] == tenth
+    assert any("3 of 30 first buys" in r and "create slot" in r for r in v["reasons"]), v["reasons"]
+    under = {"in_create": 2, "first_buys": 30, "share": 0.0667}
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW, create=under)
+    assert v["status"] == "qualified" and v["create_slot"] == under
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW)  # nothing known: no veto
+    assert v["status"] == "qualified" and v["create_slot"] is None
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, False, ["bundle member in 2 launches"], cfg, NOW,
+                    create=tenth)  # fmt: skip
+    # without fingerprints every create-slot buyer is a bundle member: both vetoes are said, the relationship first
+    assert v["status"] == "retired" and v["reasons"][0] == "bundle member in 2 launches"
+    assert any("3 of 30 first buys" in r for r in v["reasons"][1:])

@@ -120,19 +120,22 @@ def test_verdict_copy_plan_round_trips_and_an_old_table_migrates(tmp_path):
     try:
         cols = [r[1] for r in st._q("PRAGMA table_info(verdicts)")]
         assert cols == [r[1] for r in fresh._q("PRAGMA table_info(verdicts)")]
-        assert len(cols) == 19 and cols[-2:] == ["copy_plan", "gap3_pct"]
+        assert len(cols) == 20 and cols[-3:] == ["copy_plan", "gap3_pct", "create_slot"]
         v = st.latest_verdicts()[0]
         assert v["n_tape"] == 93 and v["reasons"] == [] and v["copy_plan"] is None and v["gap3_pct"] is None
+        assert v["create_slot"] is None
         due = st.candidates(due_before=300)  # candidates() reads the verdict's columns by position
         assert [c["wallet"] for c in due] == ["W1"] and due[0]["verdict"]["status"] == "qualified"
         assert due[0]["verdict"]["copy_plan"] is None and due[0]["verdict"]["score"] == 0.0013
         plan = {"min_leader_sol": 0.594, "rebuy_share": 0.0, "leader_style": "mixed", "leader_first_sell_p50_s": 4.0,
                 "leader_one_tx_exit_share": 0.0, "exit_name": "lab", "exit_params": {"stale_secs": 1.0}, "lab_version": 2}  # fmt: skip
+        create = {"in_create": 1, "first_buys": 30, "share": 0.0333}
         st.put_verdict({"wallet": "W1", "computed_at": NOW, "status": "qualified", "next_review": NOW + 10, "score": 0.01,
-                        "reasons": [], "copy_plan": plan, "gap3_pct": 4.2})  # fmt: skip
+                        "reasons": [], "copy_plan": plan, "gap3_pct": 4.2, "create_slot": create})  # fmt: skip
         v = st.latest_verdicts()[0]
-        assert v["copy_plan"] == plan and v["gap3_pct"] == 4.2
+        assert v["copy_plan"] == plan and v["gap3_pct"] == 4.2 and v["create_slot"] == create
         assert st.candidates()[0]["verdict"]["copy_plan"] == plan
+        assert st.candidates()[0]["verdict"]["create_slot"] == create
         st.put_verdict(
             {"wallet": "W1", "computed_at": NOW + 1, "status": "candidate", "next_review": NOW + 9, "score": 0}
         )

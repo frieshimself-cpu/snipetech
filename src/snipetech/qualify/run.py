@@ -13,7 +13,7 @@ from typing import Any
 from ..analysis.lab_lock import LabBusy, lab_lock
 from ..config import Config
 from ..operator.snapshot import running_jobs
-from .gates import crowding, normalise_history, relationship_gate, venue_share, verdict_for
+from .gates import create_slot_share, crowding, normalise_history, relationship_gate, venue_share, verdict_for
 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
@@ -227,7 +227,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         venue = venue_share(store, w, since)
         crowd = crowding(store, w, since)
         rel_ok, rel_reasons = relationship_gate(store, w)
-        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q_eff, now)
+        create = create_slot_share(store, w, since)
+        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
         store.put_verdict(v)
         store.put_score(
             "qualify",

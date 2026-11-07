@@ -451,3 +451,33 @@ def test_a_wallet_the_in_slot_landing_qualified_loses_where_its_copies_land(tmp_
         assert v["status"] == "retired" and any(r.startswith("loses at +3x") for r in v["reasons"]), v["reasons"]
     finally:
         st.close()
+
+
+def test_a_wallet_that_buys_in_create_slots_is_retired_whatever_the_lab_says(tmp_path):
+    """7zvP2x and 3yrJE1 (the 14:00 search, 7 Nov) were create-slot artifacts: 10 of 10 and 13 of 20 first buys in the
+    coin's create slot. One of ten here (10 %): fewer than the two launches the bundle rule needs, so only this gate
+    stops it; its verdict says so and stores the counts. The other wallet keeps its lab verdict."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        D = addr("dev")
+        for w in ("EARLY", "LATER"):
+            for k in range(10):
+                m = Market(st, addr(f"{w}:cs{k}"), D, NOW - 6000 + k * 100, SLOT + k * 250)
+                m.buy(D, 1.0, 0, sig=m.create_sig)
+                m.buy(w, 0.5, 0 if (w == "EARLY" and k == 0) else 5)
+                for j in range(4):
+                    m.buy(addr(f"{w}:cs{k}:f{j}"), 0.3, 6 + j)
+                m.commit()
+            st.upsert_candidate(w, "solanatracker", STRONG, NOW - 3600)
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+        win = {"n": 25, "mean": 0.02, "ev_lower": 0.005, "win_rate": 0.6, "total": 0.5, "exit": "x"}
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: [dict(win, wallet=w) for w in ws])
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        early = by["EARLY"]
+        assert early["status"] == "retired" and early["create_slot"] == {"in_create": 1, "first_buys": 10, "share": 0.1}
+        assert len(early["reasons"]) == 1 and early["reasons"][0].startswith("1 of 10 first buys (10%) in the coin's "
+                                                                             "create slot")  # fmt: skip
+        assert by["LATER"]["status"] != "retired" and by["LATER"]["create_slot"]["in_create"] == 0
+        assert not any("create slot" in r for r in by["LATER"]["reasons"])
+    finally:
+        st.close()
