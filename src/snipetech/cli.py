@@ -693,9 +693,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fills", type=float, help="autotest --on: buys a block (1 to 10; 10)")
     sp.add_argument("--minutes", type=float, help="autotest --on: minutes a block (1 to 180; 120)")
     sp.add_argument("--loss-sol", dest="loss_sol", type=float,
-                    help="autotest --on: the whole sequence stops this far below the first block's start (at most 2; 1)")  # fmt: skip
-    sp.add_argument("--more-blocks", dest="more_blocks", type=float,
-                    help="autotest --on: blocks after the first (at most 3; 3)")  # fmt: skip
+                    help="autotest --on: a strategy is dropped this far below its first block's start (at most 2; 1)")  # fmt: skip
     sp.add_argument("--continue-at", dest="continue_at", type=float,
                     help="autotest --on: live must be at least this times paper to go on (0.5 to 1; 0.5)")  # fmt: skip
 
