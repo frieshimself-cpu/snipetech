@@ -362,6 +362,15 @@ class MeasureConfig:
 
 
 @dataclass
+class LabConfig:
+    """The strategy lab (analysis/lab.py collect)."""
+
+    # worker processes one lab spreads its coins over: 0 = every CPU but two (the tape recorder and the services keep
+    # theirs), at most 12; 1 = one process, as before 7 Nov. Same results whatever the number.
+    workers: int = 0
+
+
+@dataclass
 class Config:
     rpc: RpcConfig = field(default_factory=RpcConfig)
     costs: CostConfig = field(default_factory=CostConfig)
@@ -382,6 +391,7 @@ class Config:
     measure: MeasureConfig = field(default_factory=MeasureConfig)
     book: BookConfig = field(default_factory=BookConfig)
     autotune: AutotuneConfig = field(default_factory=AutotuneConfig)
+    lab: LabConfig = field(default_factory=LabConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
     env_keys: list[str] = field(
         default_factory=list, compare=False, repr=False
