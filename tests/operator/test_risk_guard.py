@@ -732,3 +732,13 @@ def test_no_agent_tool_can_write_the_guard(env):
         asyncio.run(tools[name].call(kw))
     assert not RG.risk_file(paths).exists() and RG.limits(paths) == {"day_stop_sol": 1.0, "floor_sol": 10.0}
     assert started == []
+
+
+def test_the_help_shows_each_risk_command_the_way_it_is_understood():
+    """Review of 7 Nov: /help showed "/risk [stop <SOL a day>|off] [floor <SOL>|off] [default]", which reads as one message
+    for both stops, but each /risk changes one stop. The help names each form as it is sent, one per message."""
+    from snipetech.operator.commands import HELP
+
+    for form in ("/risk stop off", "/risk floor off", "/risk default"):
+        assert form in HELP, form
+    assert "one per message" in HELP

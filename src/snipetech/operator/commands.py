@@ -39,9 +39,10 @@ HELP = (
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
     "analyst runs)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
     "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
-    "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk [stop <SOL a "
-    "day>|off] [floor <SOL>|off] [default] (the wallet-wide guard: no new live trade once the day is that far down or "
-    "the wallet under its floor; off switches a stop off)  /why <wallet> (later phase)"
+    "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk (the wallet-wide "
+    "guard: no new live trade once the day is that far down or the wallet under its floor), one per message: "
+    "/risk stop <SOL a day>, /risk stop off, /risk floor <SOL>, /risk floor off, /risk default  /why <wallet> "
+    "(later phase)"
 )
 
 

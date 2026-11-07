@@ -1084,6 +1084,65 @@ def test_a_cycler_that_dies_again_holds_new_blocks_for_hours_and_a_deploy_tries_
     assert len(env.started) == 4 and LT.load(env.paths)["state"] == "running" and len(env.sent) == 1
 
 
+def test_a_cycler_that_cannot_start_leaves_an_idle_sniper_a_round_at_most_and_backs_off(env, monkeypatch):
+    """Review of 7 Nov: when the server cannot start the cycler (a full disk, say), each round's automatic request made a
+    new hunt sniper on OKTech and left it idle, about 96 a day. A start fault that left a sniper idle is tried again at
+    the next round but one (never in the round that found it), and after a second in a row none for 4 hours, doubling, a
+    day at most, as a dead cycler; a deploy tries at once. The owner hears it once."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+
+    def cannot_start(argv, timeout=0):
+        raise RuntimeError("no space left on device")
+
+    env.jobs.ops.op_run = cannot_start
+    at = NOW + 60
+    _round(env, at)  # the first block: its sniper is created, its cycler cannot start
+    assert len(env.svc.created) == 1 and not LT.load(env.paths)["started"]
+    at += 900
+    _round(env, at)  # finds it: nothing in this round
+    assert len(env.svc.created) == 1
+    at += 900
+    _round(env, at)  # one more try
+    assert len(env.svc.created) == 2
+    at += 900
+    _round(env, at)  # finds the second in a row
+    second = at
+    for _k in range(14):  # three and a half hours on: nothing more is created
+        at += 900
+        _round(env, at)
+    assert len(env.svc.created) == 2 and len(env.started) == 0
+    (held,) = _said(env, "Automatic live test holds")
+    assert "did not start" in held and "tried at" in _seq(env)["waiting"]["why"]
+    _round(env, second + 4 * HOUR + 900)
+    assert len(env.svc.created) == 3  # 4 hours on: tried again, and it fails again
+    _round(env, second + 4 * HOUR + 1800)  # finds the third in a row
+    _round(env, second + 4 * HOUR + 2700)  # 8 hours now
+    assert len(env.svc.created) == 3
+    monkeypatch.setattr(AT, "CODE_ID", "the code after a deploy")
+    _round(env, second + 4 * HOUR + 3600)  # a deploy tries at once
+    assert len(env.svc.created) == 4 and len(_said(env, "Automatic live test holds")) == 1
+
+
+def test_an_oktech_create_that_fails_leaves_nothing_idle_and_is_tried_each_round(env):
+    """A create OKTech refuses leaves no sniper behind, so it holds without the back-off: every round tries again,
+    whatever the number in a row."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.svc.answer = RuntimeError("OKTech answered 502")
+    at = NOW + 60
+    for _k in range(8):
+        _round(env, at)
+        at += 900
+    assert len(env.svc.created) == 8  # tries (the fake records each): one a round, never backed off
+    seq = _seq(env)
+    assert len(_said(env, "Automatic live test holds")) == 1 and seq["hold"]["kind"] == "start"
+    assert "a deploy" not in str((seq.get("waiting") or {}).get("why", ""))
+    env.svc.answer = None
+    _round(env, at)
+    assert LT.load(env.paths)["state"] == "running"
+
+
 def test_the_owners_resume_tries_a_block_again_after_its_cycler_died_twice(env):
     """After a second death in a row no block starts for hours; the owner's /stop then /resume is their word to try
     again (review of 7 Nov), and the /resume reply says so."""

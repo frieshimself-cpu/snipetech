@@ -982,7 +982,13 @@ async def _advance(r: _Round, seq: dict) -> dict:
         save_seq(r.paths, seq)
         if t.get("fault"):
             error = str(t.get("error") or "no reason known").removeprefix("not started: ")
-            _hold(r, seq, "start", f"block {cur['n']} did not start: {error}")
+            hold = seq.get("hold") or {}
+            # a start that left its sniper idle on OKTech counts toward the back-off (review of 7 Nov: a cycler that
+            # could not start made a new idle sniper every round); a create that failed left nothing behind
+            idle = bool(t.get("oktech_id"))
+            faults = int(hold.get("deaths") or 0) + 1 if hold.get("kind") == "start" and idle else int(idle)
+            _hold(r, seq, "start", f"block {cur['n']} did not start: {error}",
+                  extra={"deaths": faults, "last": int(r.now), "code": CODE_ID})  # fmt: skip
         else:
             r.info(f"automatic test: block {cur['n']} did not start ({t.get('error')}); it is requested again")
         return await _next_block(r, seq)
@@ -1304,16 +1310,21 @@ async def _next_block(r: _Round, seq: dict) -> dict:
 
 
 def _cycler_wait(r: _Round, seq: dict) -> str | None:
-    """Why no block may start yet after its cycler died, None when one may. A dead cycler left its sniper armed with
+    """Why no block may start yet after its cycler died or its block did not start, None when one may. A start that left
+    its sniper idle on OKTech backs off the same way (each try made a new sniper). A dead cycler left its sniper armed with
     nobody watching until the round closed the block, so never a block in the round that found it; one at the next
     round (7 Nov: a reboot); after a second death in a row CYCLER_BACKOFF_SECS, twice as long after each further one, a
     day at most, unless a deploy changed the code since (its fix may be in) or the owner gave their word since (/resume,
     or a yes again: /test auto off then on, operate autotest --on)."""
     hold = seq.get("hold") or {}
-    if hold.get("kind") != "cycler":
+    if hold.get("kind") not in ("cycler", "start"):
+        return None
+    if hold["kind"] == "start" and not int(hold.get("deaths") or 0):  # a create that failed left nothing idle
         return None
     last = int(hold.get("last") or hold.get("since") or 0)
     if int(r.now) <= last:
+        if hold["kind"] == "start":
+            return "its block did not start this round: the next one is tried at the next round"
         return "its cycler died this round: the next block is tried at the next round"
     deaths = int(hold.get("deaths") or 1)
     if deaths < 2:
