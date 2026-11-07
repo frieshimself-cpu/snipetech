@@ -91,6 +91,14 @@ def landing_key(latency: int, position: str) -> str:
     return f"{position}@{int(latency)}"
 
 
+def landing_fields(row: dict, copy_pos: str) -> dict[str, Any]:
+    """A ranked lab row's landing for the agents: its key ("+3@1") and whether it is where that trigger trades live; a
+    lower bound at any other landing is no evidence (CLAUDE.md rule 2)."""
+    lat, pos = row["landing"]
+    live = live_landing((row.get("trigger_spec") or {}).get("kind"), copy_pos) == (int(lat), str(pos))
+    return {"landing": landing_key(lat, pos), "live_landing": live}
+
+
 def landing_text(latency: int, position: str) -> str:
     """The landing in words, for the report."""
     latency, position = int(latency), str(position)

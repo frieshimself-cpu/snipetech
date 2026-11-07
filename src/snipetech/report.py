@@ -730,6 +730,13 @@ def render_lab(r: dict) -> str:
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
+    here = f"{r['position']}@{r['latency_slots']}"
+    moved = sorted(
+        {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
+    )
+    if moved:  # an OKTech hunt buy lands a slot after its trigger, whatever landing the lab was asked for
+        out.append("Scored where they trade live, not at the landing above: "
+                   + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
     out.append("")
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."

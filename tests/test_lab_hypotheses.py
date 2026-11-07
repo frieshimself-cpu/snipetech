@@ -3,6 +3,8 @@ kind reads, whole numbers where OKTech needs them, so every hunt hypothesis is o
 scored), then run alone on the newest tape at the landing where it trades live, and frozen into the forward paper test
 only when it pays there."""
 
+import json
+
 import pytest
 
 from snipetech.analysis import paper
@@ -15,6 +17,7 @@ from .test_lab import NOW, whale_world
 LAB_EXIT = {"stop_loss": 0.3, "max_hold_secs": 300, "stale_secs": 1.0}
 HUNT = Trigger("hunt", sol=2.0, window=2.0, dev_max=1.0)  # fires on every whale-world coin at its 2.5 SOL buy
 WHALE = Trigger("whale", sol=2.2)  # not in the grid: an agent's own variant
+HUNT_JSON, WHALE_JSON = '{"kind": "hunt", "sol": 2, "window": 2, "dev_max": 1}', '{"kind": "whale", "sol": 2.2}'
 
 
 @pytest.mark.parametrize(
@@ -139,3 +142,83 @@ def test_freeze_reads_only_the_newest_hours_of_tape():
     (s,) = rep["frozen"]
     assert rep["tape_hours"] == pytest.approx(1.0)
     assert s["lab"]["n"] == 23  # 56 moments: the exit picked on the older 33, judged on the newer 23
+
+
+# -- the commands the agents start (start_job) -------------------------------------------------------------------------
+
+
+def _tape_db(tmp_path, n: int = 80):
+    """A database file holding the whale world: 80 coins a minute apart, 56 of them in the tape's newest hour."""
+    db = tmp_path / "data" / "snipetech.db"
+    db.parent.mkdir(parents=True)
+    st = Store(db)
+    try:
+        whale_world(st, n)
+    finally:
+        st.close()
+    return db
+
+
+def test_the_lab_command_runs_an_agents_triggers_on_the_newest_hours(tmp_path, capsys):
+    """`lab --trigger <json> --hours N --json`: only those triggers, on the newest N hours of tape; a hunt where a hunt
+    buy lands whatever --position says, every other trigger at --latency / --position; each ranked row says its landing
+    and whether that is where it trades live."""
+    from snipetech import cli
+
+    db = _tape_db(tmp_path)
+    argv = ["--db", str(db), "lab", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--hours", "1", "--position", "+1",
+            "--json"]  # fmt: skip
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    rows = {r["trigger_spec"]["kind"]: r for r in out["strategies"]}
+    assert set(rows) == {"hunt", "whale"} and rows["whale"]["trigger_spec"] == WHALE.__dict__
+    assert (rows["hunt"]["landing"], rows["hunt"]["live_landing"]) == ("+3@1", True)
+    assert (rows["whale"]["landing"], rows["whale"]["live_landing"]) == ("+1@0", False)  # copies land at +6, not +1
+    for r in rows.values():
+        assert r["moments"] == 56 and r["per_hour"] == pytest.approx(56.0)  # only the coins of the newest hour
+        assert r["trigger"] and r["exit"] and r["test"]["n"] == 23 and r["test"]["ev_lower"] is not None
+    assert out["hours"] == 1 and out["tape_hours"] == pytest.approx(1.0)
+    assert [(t["trigger"], t["landing"], t["moments"], t["ranked"]) for t in out["triggers"]] == [
+        (HUNT.label(), "+3@1", 56, True),
+        (WHALE.label(), "+1@0", 56, True),
+    ]
+
+
+def test_the_lab_text_says_which_rows_are_scored_at_another_landing(tmp_path, capsys):
+    from snipetech import cli
+
+    db = _tape_db(tmp_path)
+    assert cli.main(["--db", str(db), "lab", "--trigger", HUNT_JSON, "--hours", "1", "--position", "+1"]) == 0
+    text = capsys.readouterr().out
+    assert "(+1 of the slot)" in text and "hunt triggers at +3@1" in text
+
+
+def test_the_lab_command_refuses_a_hypothesis_oktech_could_not_run_before_any_lab(tmp_path, capsys, monkeypatch):
+    from snipetech import cli
+    from snipetech.analysis import lab
+
+    monkeypatch.setattr(lab, "collect", lambda *a, **k: pytest.fail("a refused hypothesis must not start a lab"))
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--db", str(tmp_path / "x.db"), "lab", "--trigger", '{"kind": "hunt", "sol": 2.5, "window": 1}'])
+    assert exc.value.code == 2 and "whole numbers" in capsys.readouterr().err
+
+
+def test_paper_freeze_from_the_command_line_freezes_only_the_hypotheses_at_their_live_landing(tmp_path, capsys):
+    from snipetech import cli
+
+    db = _tape_db(tmp_path)
+    argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--hours", "1",
+            "--only-live", "--json"]  # fmt: skip
+    assert cli.main(argv) == 0
+    rep = json.loads(capsys.readouterr().out)
+    got = sorted((s["trigger"]["kind"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"])
+    assert got == [("hunt", 1, "+3", "+3@1"), ("whale", 0, "+6", "+6@0")]
+    assert rep["tape_hours"] == pytest.approx(1.0)
+    st = Store(db)
+    try:
+        assert sorted(s["trigger"]["kind"] for s in st.coverage("paper_strategies")["strategies"]) == ["hunt", "whale"]
+    finally:
+        st.close()
+    # without the new flags `paper freeze` is what it was: the grid, the whole tape, every landing kept
+    plain = cli.build_parser().parse_args(["paper", "freeze"])
+    assert (plain.trigger, plain.hours, plain.only_live, plain.position) == (None, None, False, "+6")
