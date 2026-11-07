@@ -607,7 +607,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--commands",
         action="store_true",
-        help="only poll Telegram and act on /stop /resume /status /book /sell (the one-minute timer)",
+        help="only poll Telegram and act on /stop /resume /status /book /sell /budget (the one-minute timer)",
     )
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
@@ -616,6 +616,17 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="snipers=N,held=M",
         help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
     )
+    sp.add_argument("action", nargs="?", choices=["budget"],
+                    help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed)")  # fmt: skip
+    sp.add_argument(
+        "--daily-usd", type=float, help="budget: dollars a day for all the agents (more than 0, at most 500)"
+    )
+    sp.add_argument("--turn-usd", type=float, help="budget: dollars a turn (more than 0, at most 25, at most the day)")
+    sp.add_argument("--tool-calls", type=int, help="budget: tool calls a turn (5 to 80)")
+    sp.add_argument("--analyst-every-h", type=float,
+                    help="budget: hours between analyses besides the daily one (0: once a day; else 0.5 to 24)")  # fmt: skip
+    sp.add_argument("--default", dest="budget_default", action="store_true",
+                    help="budget: remove the owner's budget file; the config's values apply again")  # fmt: skip
 
     sp = cmd(
         "solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL"
@@ -1561,8 +1572,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "operate":
         import subprocess
 
+        from .operator.budget_switch import budget_cli
         from .operator.run import operate, telegram_setup_cli
 
+        if (
+            args.action == "budget"
+            or args.budget_default
+            or any(v is not None for v in (args.daily_usd, args.turn_usd, args.tool_calls, args.analyst_every_h))
+        ):
+            return budget_cli(cfg, args)
         if args.telegram_setup:
             return telegram_setup_cli(cfg)
         if args.commands:

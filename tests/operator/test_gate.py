@@ -273,10 +273,14 @@ def test_a_stand_in_that_cannot_start_stages_is_raised(paths):
     assert d.call and any("loop stages not starting" in r for r in d.reasons)
 
 
-
 def test_the_stuck_coin_reminder_key_does_not_change_with_the_coins(paths):
     """Which coins are stuck, and in which order, must not make the state look new inside its six-hour window."""
-    a = snap(held=[{"mint": "AAA111", "amount": 1.0, "since": NOW - 3600}, {"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
+    a = snap(
+        held=[
+            {"mint": "AAA111", "amount": 1.0, "since": NOW - 3600},
+            {"mint": "BBB222", "amount": 1.0, "since": NOW - 3600},
+        ]
+    )
     b = snap(held=[{"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
     ka = [k for k in decide(a, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
     kb = [k for k in decide(b, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
@@ -356,4 +360,119 @@ def test_a_post_mortem_waits_for_a_daily_analysis_due_within_the_hour(paths):
 
 def test_the_daily_budget_stops_a_post_mortem_too(paths):
     d = _pm(paths, 9, spent_today=15.0)
+    assert not d.call and d.reasons == ["budget"]
+
+
+# -- the owner's budget (operator/BUDGET, /budget in Telegram) -----------------------------------------------------------
+
+
+def test_the_owners_budget_file_sets_the_daily_cap(paths):
+    """The server's config pins daily_usd at 15 $: /budget 200 lifts it, a lower budget stops the day sooner."""
+    from snipetech.operator.budget_switch import set_budget
+
+    ended = [{"id": "x", "argv": ["follow", "W"], "exit_code": 0}]
+    assert decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
+    set_budget(paths, CFG, {"daily_usd": 200}, "telegram", NOW)
+    d = decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths)
+    assert d.call and d.reasons != ["budget"]
+    set_budget(paths, CFG, {"daily_usd": 10}, "telegram", NOW)
+    assert decide(snap(spent_today=12.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
+
+
+# -- the analyst's cadence: besides the daily analysis, one every N hours since the last analyst turn -----------------
+
+
+def _at(paths, t, cfg=CFG, **kw):
+    return decide(snap(**({"ts": t, "tape_last_ts": t - 5} | kw)), snap(), t, cfg, paths)
+
+
+def test_an_analysis_every_two_hours_after_the_last_one(paths):
+    """Measured 7 Nov: 4.44 $ spent on 6 Nov against a 15 $ cap; the analyst ran once a day. Now also every
+    analyst_every_h (2 h by default) since the last analyst turn (operator/analyst.last)."""
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")  # the day's analysis is done
+    mark_analyst_ran(paths, AT_0630)
+    assert _at(paths, AT_0630 + 2 * 3600 - 60).mode == "none"  # 1 h 59 min on: not yet
+    d = _at(paths, AT_0630 + 2 * 3600)
+    assert d.call and d.mode == "analyst" and d.reasons == ["analysis due: every 2 h, the last one 2.0 h ago"]
+    mark_analyst_ran(paths, AT_0630 + 2 * 3600)
+    assert _at(paths, AT_0630 + 3 * 3600).mode == "none"  # it counts from the turn that just ran
+
+
+def test_the_owners_cadence_wins_and_zero_means_once_a_day(paths):
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    set_budget(paths, CFG, {"analyst_every_h": 3}, "telegram", AT_0630)
+    assert _at(paths, AT_0630 + 2.5 * 3600).mode == "none" and _at(paths, AT_0630 + 3 * 3600).mode == "analyst"
+    set_budget(paths, CFG, {"analyst_every_h": 0}, "telegram", AT_0630)
+    assert _at(paths, AT_0630 + 12 * 3600).mode == "none"  # once a day, as before 7 Nov
+    assert _at(paths, AT_0630 + 12 * 3600, cfg=OperatorConfig(analyst_every_h=0)).mode == "none"
+
+
+def test_the_config_decides_the_cadence_without_the_owners_file(paths):
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    later = AT_0630 + 5 * 3600
+    assert _at(paths, later, cfg=OperatorConfig(analyst_every_h=0)).mode == "none"
+    assert _at(paths, later, cfg=OperatorConfig(analyst_every_h=4)).mode == "analyst"
+
+
+def test_without_the_marker_the_days_report_time_stands_in(paths):
+    """The first rounds after this change on the server: today's report from the morning exists, no analyst.last yet,
+    and the cadence starts from when that report was written instead of waiting for tomorrow."""
+    import os
+
+    assert _at(paths, NOW).mode == "none"  # 01:00, no report today and no marker: nothing to count from yet
+    report = paths.report("analyst-2026-11-06")
+    report.write_text("x")
+    os.utime(report, (AT_0630, AT_0630))
+    assert _at(paths, AT_0630 + 3600).mode == "none" and _at(paths, AT_0630 + 2 * 3600).mode == "analyst"
+
+
+def test_the_daily_rule_is_kept_and_wins_over_the_cadence(paths):
+    from snipetech.operator.gate import mark_analyst_ran
+
+    mark_analyst_ran(paths, AT_0630 - 3 * 3600)  # an analysis at 03:30, between the daily ones
+    d = _at(paths, AT_0630)
+    assert d.mode == "analyst" and d.reasons == ["daily analysis due"]  # 06:30 and no report today: the daily one
+
+
+def test_an_analysis_between_the_daily_ones_waits_for_a_daily_one_due_within_the_hour(paths):
+    """Two analyst turns a quarter of an hour apart would say the same: at 05:15 the 06:00 analysis is near, so it does
+    the work; at 04:30 it is not, so the cadence runs (and the night's analyses go on)."""
+    from snipetech.operator.gate import mark_analyst_ran
+
+    mark_analyst_ran(paths, AT_0630 - 4 * 3600)  # 02:30
+    assert _at(paths, AT_0630 - 2 * 3600).mode == "analyst"  # 04:30: two hours on, the daily one is 90 min away
+    assert _at(paths, AT_0630 - 75 * 60).mode == "none"  # 05:15: the 06:00 analysis does it
+    assert _at(paths, AT_0630 - 30 * 60).reasons == ["daily analysis due"]  # 06:00
+
+
+def test_a_post_mortem_waits_for_an_analysis_due_within_the_hour_by_the_cadence(paths):
+    """A post-mortem waits when an analyst turn is due within the hour: that turn reviews the same round trips."""
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630 + 3600)  # 07:30
+    at = AT_0630 + 2.5 * 3600  # 09:00: the next analysis is due at 09:30
+    assert not _pm(paths, 9, since=at - 5 * 3600, at=at).call
+    d = _pm(paths, 9, since=at - 5 * 3600, at=at + 1800)  # 09:30: the analysis is due, and it does the post-mortem
+    assert d.mode == "analyst" and any(r.startswith("post-mortem: 9 new live round trips") for r in d.reasons)
+    set_budget(paths, CFG, {"analyst_every_h": 0}, "telegram", at)  # once a day: the post-mortem goes ahead
+    assert _pm(paths, 9, since=at - 5 * 3600, at=at).mode == "postmortem"
+
+
+def test_the_budget_stops_an_analysis_due_by_the_cadence(paths):
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    d = _at(paths, AT_0630 + 3 * 3600, spent_today=15.0)
     assert not d.call and d.reasons == ["budget"]

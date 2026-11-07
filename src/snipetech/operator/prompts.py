@@ -66,8 +66,8 @@ are reported as decisions with what you saw; you cannot fix them.
 {_RULES}"""
 
 ANALYST_SYSTEM = f"""\
-You are snipetech's analyst: a deeper, unattended turn on the trading research server, once a day after the overnight
-research jobs have finished (round mode "analyst"), and between those as a post-mortem when enough new live trades
+You are snipetech's analyst: a deeper, unattended turn on the trading research server, daily after the overnight
+research, every few hours in between (round mode "analyst"), and as a post-mortem when enough new live trades
 came in (round mode "postmortem"). Daily: read the day's verdicts (read_verdicts) and the research outputs behind them
 (paths are in the snapshot or under reports/ and jobs/), compare them with the live fills, and write the day's report
 with write_report (name "analyst-<YYYY-MM-DD>"): the shortlist with n, mean per trade and lower bound at the +6
@@ -88,6 +88,11 @@ upsert_idea for what to try next, each with its evidence and a concrete test (a 
 measure, or a code change), and move an idea to testing, adopted or rejected when a result decides it. You may start
 one research job (start_job) to test the top research idea. A postmortem round writes its report with write_report
 named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
+
+Between the daily analyses today's report already exists (before the day's analysis, yesterday's does), and the
+round's message names it. Read it first and never replace it: add this turn's update at its end with write_report
+(that name, append=true), headed "## Update HH:MM UTC": what changed since the last analysis, the hypothesis this turn
+tested and the result, and the next test. A turn that tested nothing new says so in one line.
 
 {_RULES}"""
 
@@ -123,8 +128,19 @@ _CLOSING = {
 }
 
 
-def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = "") -> str:
-    """The round's message: why it was called, the snapshot, what was learned so far (learning.context), the inbox."""
+def _update_closing(report: str) -> str:
+    return (f"An earlier analysis stands in operator/{report}.md: read it first (read_file operator/{report}.md) "
+            f"and never replace it. Add this turn's update at its end with write_report(name \"{report}\", "
+            "append=true), headed \"## Update HH:MM UTC\": what changed since the last analysis, the hypothesis you "
+            "tested and its result, the next test. Then add_lesson (or say why there is none), update the ideas, then "
+            "write_note.")  # fmt: skip
+
+
+def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = "", update_of: str | None = None,
+                 ceiling: dict | None = None) -> str:  # fmt: skip
+    """The round's message: why it was called, the snapshot, what was learned so far (learning.context), the inbox,
+    where the turn stops (`ceiling`: the owner's /budget), and for an analysis between the daily ones the report it
+    updates (`update_of`)."""
     parts = [
         f"Round mode: {decision.mode}. Triggered because: " + "; ".join(decision.reasons) + ".",
         "Snapshot:",
@@ -134,5 +150,12 @@ def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = 
         parts.append(learned.strip())
     if inbox.strip():
         parts += ["Request from the owner (inbox):", inbox.strip()]
-    parts.append(_CLOSING.get(decision.mode, "Do what the round needs, then write_note. Keep it short."))
+    if ceiling:
+        parts.append(f"This turn stops at {ceiling['tool_calls']} tool calls or {ceiling['turn_usd']:g} $ "
+                     f"({ceiling['spent_usd']:.2f} $ of the day's {ceiling['daily_usd']:g} $ spent); keep the last "
+                     "calls for the report and the note.")  # fmt: skip
+    if decision.mode == "analyst" and update_of:
+        parts.append(_update_closing(update_of))
+    else:
+        parts.append(_CLOSING.get(decision.mode, "Do what the round needs, then write_note. Keep it short."))
     return "\n".join(parts)

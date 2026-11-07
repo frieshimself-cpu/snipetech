@@ -20,6 +20,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
+from .budget_switch import budget_reply, effective_daily_usd
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
 from .snapshot import Snapshot
@@ -29,7 +30,8 @@ HELP = (
     "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  "
     "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
-    "/why <wallet> and /budget (later phase)"
+    "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
+    "analyst runs)  /why <wallet> (later phase)"
 )
 
 
@@ -118,7 +120,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         f"snipers: {len(running)} running of {len(snap.snipers or [])}"
         if snap.snipers is not None
         else "snipers: unknown (OKTech not answering)",
-        f"claude spend today {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.0f} $",
+        f"claude spend today {snap.spent_today:.2f} $ of {effective_daily_usd(cfg, paths):g} $",
         f"book: {'on' if book_live(cfg, paths) else 'off'}",
     ]
     if snap.fills:
@@ -425,7 +427,11 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = f"Nothing sold: this /sell is {mins} min old (it waited while the bot was not reading). Send it again if you still mean it."
     elif cmd.name == "sell":
         reply = await _sell(cmd.args, svc=svc, cfg=cfg, notes=notes, sweep=sweep)
-    elif cmd.name in ("why", "budget"):
+    elif cmd.name == "budget":
+        reply = budget_reply(cfg, paths, cmd.args, "telegram", now)
+        if cmd.args and not reply.startswith("budget not changed"):
+            notes.write(f"owner set the agents' budget: {reply}", "decision")
+    elif cmd.name == "why":
         reply = f"/{cmd.name} is available in a later phase."
     else:
         reply = HELP

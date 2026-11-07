@@ -232,7 +232,7 @@ SOL and wrapped SOL and holdings, every OKTech sniper's state, fills since last 
 compares them with the previous round, and calls Claude **only when something changed** or the daily analysis is due.
 Claude gets a deliberately small tool set — read a job log, run a read-only query, start a research job from a fixed
 list (one `lab` at a time), write a note — and nothing that touches OKTech, wallets or keys. Spend is capped per day
-(`[operator] daily_usd`, default 15) and per turn (`turn_usd`, default 2). Notes land in `operator/notes.md`;
+(`[operator] daily_usd`, default 15) and per turn (`turn_usd`, default 2); the owner's `/budget` overrides both (below). Notes land in `operator/notes.md`;
 decision-level notes (a wallet clearing all three gates, a sniper running or a coin held when none should be, equity
 moving more than `equity_alert_sol`, the tape stalled, a service down, the budget reached) also go to Telegram when
 `TELEGRAM_BOT_TOKEN` is in `/etc/snipetech/env`.
@@ -255,7 +255,7 @@ needs, disk, failed transactions in the last hour — and sends one Telegram lin
 exact thing to do (`[resources]` thresholds in the config; `snipetech config set resources.anthropic_credit_usd <n>`
 after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a digest: wallet and its change since the
 last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys these commands
-from your chat only (also `/book` and `/sell`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
+from your chat only (also `/book`, `/sell` and `/budget`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
 snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
 alone), `/resume`. `/sell <coin address>` sells all of that coin from the sniper wallet within a minute (pump.fun
 curve coins only, signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin off the curve is sold by hand in
@@ -264,6 +264,22 @@ curve coin, none of them ever buys or touches a sniper, and the watchdog's alert
 with that coin's `/sell` line. A live page at `https://<host>/dash` shows services, resources, the wallet, jobs,
 the last decisions and notes, candidates and fills, refreshing every 15 s; it is served by `snipetech-ops`, asks for a
 password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not exist until that token is set.
+
+**What the agents may spend, and how often the analyst runs, without SSH.** The server's config file pins every
+`[operator]` value, so you set the agents' budget from Telegram. `/budget` shows the budget that applies and today's
+spend. `/budget 200` allows 200 $ a day and, for whatever you do not name, lets the agents work harder: up to 6 $ and
+40 tool calls a turn, and an analysis every 2 hours. `/budget 200 turn 4 calls 30 every 3` sets each value;
+`/budget default` goes back to the config. A value outside its bounds (at most 500 $ a day; at most 25 $ a turn and
+never more than the day; 5 to 80 tool calls; an analysis every 0.5 to 24 hours, or 0 for once a day) changes nothing
+and the reply says why. The values live in `operator/BUDGET`; from the cloud session, with your OK in chat,
+`snipetech remote --wait run operate budget --daily-usd 200 --turn-usd 6 --tool-calls 40 --analyst-every-h 2` does the
+same. The agents cannot change it: their job tool refuses `operate`. Besides the daily analysis after 06:00 UTC, the
+analyst now runs every 2 hours by default (`[operator] analyst_every_h`; your `every` wins). Each of those turns reads
+the day's report and adds a dated update at its end (what changed since the last analysis, the hypothesis it tested
+and the result, the next test) and never replaces it; before 06:00 the update goes to yesterday's report, so the
+morning analysis still writes the day's. A post-mortem waits when an analysis is due within the hour, since that turn
+reviews the same trades. At the config's 15 $ a day, the extra analyses can reach the cap before evening;
+`/budget 200` lifts it.
 
 **Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
 `snipetech discover run` (hourly) puts every source's wallets into one `candidates` table: the tape's consistent

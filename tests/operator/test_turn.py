@@ -65,8 +65,17 @@ def env(tmp_path):
     notifier = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
     ledger = Ledger(paths.spend, cfg.operator.prices)
     notes = NoteSink(paths, now=lambda: NOW)
-    snap = Snapshot(ts=NOW, wallet="W", native_sol=1.0, wsol=0.0, snipers=[], jobs_ended=[{"id": "j1", "argv": ["lab"], "exit_code": 0}])
-    yield dict(cfg=cfg, svc=Svc(), paths=paths, jobs=jobs, notifier=notifier, sent=sent, ledger=ledger, notes=notes, snap=snap)
+    snap = Snapshot(
+        ts=NOW,
+        wallet="W",
+        native_sol=1.0,
+        wsol=0.0,
+        snipers=[],
+        jobs_ended=[{"id": "j1", "argv": ["lab"], "exit_code": 0}],
+    )
+    yield dict(
+        cfg=cfg, svc=Svc(), paths=paths, jobs=jobs, notifier=notifier, sent=sent, ledger=ledger, notes=notes, snap=snap
+    )
     st.close()
 
 
@@ -82,7 +91,17 @@ def _run(env, decision, handler, **kw):
 
 def test_turn_records_usage_and_sends_decisions(env):
     handler, requests = _scripted(
-        ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "wallet X cleared all gates", "level": "decision"}}], "tool_use"),
+        (
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "write_note",
+                    "input": {"text": "wallet X cleared all gates", "level": "decision"},
+                }
+            ],
+            "tool_use",
+        ),
         ([{"type": "text", "text": "ok"}], "end_turn"),
     )
     out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
@@ -111,10 +130,43 @@ def test_turn_stops_at_turn_usd(env):
 
 def test_turn_stops_at_max_tool_calls(env):
     env["cfg"].operator.max_tool_calls = 2
-    tool = lambda i: ([{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}], "tool_use")
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+    )
     handler, requests = _scripted(tool(1), tool(2), tool(3), tool(4))
     out = _run(env, Decision(True, "operator", ["x"]), handler)
     assert out["stopped"] == "tool_calls" and out["tool_calls"] == 2
+
+
+def test_the_owners_budget_sets_the_turns_dollar_cap(env):
+    """0.9 $ a response: the config's 2 $ turn would take three; the owner's 0.5 $ stops after the first."""
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"turn_usd": 0.5}, "telegram", NOW)
+    mid = {"input_tokens": 300_000, "output_tokens": 0}  # 0.9 $ at the operator's 3 $ per million input tokens
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+        mid,
+    )
+    handler, requests = _scripted(tool(1), tool(2), tool(3), tool(4))
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out["stopped"] == "turn_usd" and len(requests) == 1
+    assert "turn budget reached (0.90 $ of 0.50)" in env["paths"].notes.read_text()
+
+
+def test_the_owners_budget_sets_the_turns_tool_calls(env):
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"max_tool_calls": 5}, "telegram", NOW)  # the config allows 20
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+    )
+    handler, _ = _scripted(*(tool(i) for i in range(1, 9)))
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out["stopped"] == "tool_calls" and out["tool_calls"] == 5
 
 
 def test_turn_without_note_adds_one(env):
@@ -125,7 +177,10 @@ def test_turn_without_note_adds_one(env):
 
 def test_api_error_writes_one_note(env):
     def handler(request):
-        return httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error", "message": "credit balance is too low"}})
+        return httpx2.Response(
+            400,
+            json={"type": "error", "error": {"type": "invalid_request_error", "message": "credit balance is too low"}},
+        )
 
     out1 = _run(env, Decision(True, "operator", ["x"]), handler)
     out2 = _run(env, Decision(True, "operator", ["x"]), handler)
@@ -140,7 +195,9 @@ def test_user_message_has_reasons_and_no_secrets(env):
 
 def test_inbox_text_is_included_and_cleared(env):
     env["paths"].inbox.write_text("please check wallet Q\n")
-    handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "checked"}}], "tool_use"))
+    handler, requests = _scripted(
+        ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "checked"}}], "tool_use")
+    )
     _run(env, Decision(True, "operator", ["inbox has a request"]), handler)
     assert "please check wallet Q" in requests[0]["messages"][0]["content"]
     assert not env["paths"].inbox.exists() or env["paths"].inbox.read_text().strip() == ""
@@ -189,6 +246,91 @@ def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
     for words in ("post-mortem", "late or crowded landing", "a leader that dumps", "an exit too early",
                   "an exit too late or none fired", "fees and failed duplicate sends", "a bad coin", "copy_plan",
                   "add_lesson", "upsert_idea", "start_job", "postmortem-<YYYY-MM-DD-HHMM>"):  # fmt: skip
+        assert words in ANALYST_SYSTEM, words
+
+
+def test_an_analyst_turn_records_when_it_ran_for_the_cadence(env):
+    """operator/analyst.last is written once an analyst turn ran; a post-mortem, an operator round or an analyst turn
+    the API refused never moves it (the next round tries again)."""
+    from snipetech.operator.gate import last_analyst_ts
+
+    def ok():
+        return _scripted(([{"type": "text", "text": "ok"}], "end_turn"))[0]
+
+    _run(env, Decision(True, "operator", ["job ended: j1"]), ok())
+    _run(env, Decision(True, "postmortem", ["post-mortem due: 5 new live round trips"]), ok())
+    assert not env["paths"].analyst_last.exists()
+
+    def refused(request):
+        return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+
+    _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), refused)
+    assert not env["paths"].analyst_last.exists()
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), ok())
+    assert last_analyst_ts(env["paths"], NOW) == NOW
+
+
+def ADD_UPDATE(name):  # the model's call that appends this turn's update to `name`
+    return [{"type": "tool_use", "id": "u1", "name": "write_report",
+             "input": {"name": name, "text": "## Update 01:00 UTC\nNothing new since the morning.", "append": True}}]  # fmt: skip
+
+
+def test_an_analysis_after_the_days_report_appends_a_dated_update_to_it(env):
+    """The day's report holds the morning's analysis: a later analyst turn is told to read it and append its update,
+    and the report keeps the morning's text."""
+    report = env["paths"].report("analyst-2026-11-06")
+    report.write_text("# analyst 2026-11-06\n\nThe morning's shortlist.\n")
+    handler, requests = _scripted(
+        (ADD_UPDATE("analyst-2026-11-06"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
+    )
+    out = _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert out["stopped"] == "end_turn" and "read_file operator/analyst-2026-11-06.md" in content
+    assert "append=true" in content and "Write the day's report" not in content
+    assert (
+        report.read_text()
+        == "# analyst 2026-11-06\n\nThe morning's shortlist.\n\n## Update 01:00 UTC\nNothing new since the morning.\n"
+    )
+
+
+def test_before_the_days_analysis_the_update_goes_to_yesterdays_report(env):
+    """01:00, the cadence is due, today's report does not exist yet: the update goes to yesterday's report, so the
+    analysis after 06:00 (after the overnight research) still writes the day's report; no stub takes its place."""
+    env["paths"].report("analyst-2026-11-05").write_text("# analyst 2026-11-05\n")
+    handler, requests = _scripted(
+        (ADD_UPDATE("analyst-2026-11-05"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
+    )
+    _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
+    assert "read_file operator/analyst-2026-11-05.md" in requests[0]["messages"][0]["content"]
+    assert env["paths"].report("analyst-2026-11-05").read_text().endswith("Nothing new since the morning.\n")
+    assert not env["paths"].report("analyst-2026-11-06").exists() and env["paths"].analyst_last.exists()
+
+
+def test_the_daily_analysis_still_writes_the_days_report(env):
+    handler, requests = _scripted(([{"type": "text", "text": "no report"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert "Write the day's report" in content and "append=true" not in content
+    assert "no report was written by the model" in env["paths"].report("analyst-2026-11-06").read_text()
+
+
+def test_the_turn_is_told_its_ceiling(env):
+    """With the owner's /budget the turn has more room; the model is told where the round stops so that it keeps the
+    last calls for the report and the note instead of being cut off before them."""
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"daily_usd": 200, "turn_usd": 6, "max_tool_calls": 40}, "telegram", NOW)
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    assert (
+        "This turn stops at 40 tool calls or 6 $ (0.00 $ of the day's 200 $ spent)"
+        in requests[0]["messages"][0]["content"]
+    )
+
+
+def test_the_analyst_is_told_to_append_its_update_when_the_days_report_exists():
+    for words in ("today's report", "append=true", "never replace", "what changed since the last analysis",
+                  "the hypothesis", "the next test", "## Update"):  # fmt: skip
         assert words in ANALYST_SYSTEM, words
 
 

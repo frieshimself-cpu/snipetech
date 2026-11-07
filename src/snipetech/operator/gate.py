@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from dataclasses import dataclass, field
 
@@ -10,6 +11,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
+from .budget_switch import effective_analyst_every_h, effective_daily_usd
 from .learning import last_postmortem_ts
 from .paths import OperatorPaths
 from .standin import loop_stage
@@ -84,15 +86,72 @@ def analyst_done_today(paths: OperatorPaths, now: float) -> bool:
     return paths.report(f"analyst-{_day(now)}").exists()
 
 
-def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> bool:
+def daily_analysis_due(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> bool:
+    """After analyst_after_utc until the day's report exists: the analysis that follows the overnight research."""
     hh, _, mm = cfg.analyst_after_utc.partition(":")
     secs_into_day = now - int(now // 86400) * 86400
     return secs_into_day >= int(hh or 0) * 3600 + int(mm or 0) * 60 and not analyst_done_today(paths, now)
 
 
+def mark_analyst_ran(paths: OperatorPaths, ts: float) -> None:
+    """operator/analyst.last: when the last analyst turn started (turn.py, once the turn ran); the cadence counts
+    from it."""
+    paths.ensure()
+    tmp = paths.analyst_last.with_name(paths.analyst_last.name + ".tmp")
+    tmp.write_text(str(int(ts)))
+    tmp.replace(paths.analyst_last)
+
+
+def last_analyst_ts(paths: OperatorPaths, now: float) -> float | None:
+    """When the last analyst turn ran: operator/analyst.last; before the first turn that wrote it (the rounds right
+    after this change reached the server on 7 Nov), the time today's report was written."""
+    try:
+        ts = float(paths.analyst_last.read_text().strip())
+        if math.isfinite(ts):
+            return ts
+    except (OSError, ValueError):
+        pass
+    try:
+        return paths.report(f"analyst-{_day(now)}").stat().st_mtime
+    except OSError:
+        return None
+
+
 POSTMORTEM_MIN_TRIPS = 5  # new live round trips (sells in fills) that make a post-mortem worth an analyst turn
 POSTMORTEM_GAP_SECS = 3 * 3600  # never more than one post-mortem in three hours (the daily analysis counts as one)
-DAILY_SOON_SECS = 3600  # a post-mortem waits for a daily analysis due within the hour: that turn does it too
+DAILY_SOON_SECS = 3600  # a post-mortem waits for an analysis due within the hour: that turn does it too
+
+
+def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> str | None:
+    """Why an analyst turn is due now, or None. The daily one after analyst_after_utc until the day's report exists;
+    and, while the cadence is on (the owner's /budget `every`, else [operator] analyst_every_h; 0 turns it off), one
+    once that many hours have passed since the last analyst turn ran: the owner wants the agents working harder
+    (7 Nov: 4.44 $ spent on 6 Nov of the 15 $ allowed, one analysis a day). A turn the daily analysis would follow
+    within the hour waits for it: two analyses a quarter of an hour apart would say the same."""
+    if daily_analysis_due(paths, now, cfg):
+        return "daily analysis due"
+    every = effective_analyst_every_h(cfg, paths)
+    last = last_analyst_ts(paths, now) if every > 0 else None
+    if last is None or now - last < every * 3600 or daily_analysis_due(paths, now + DAILY_SOON_SECS, cfg):
+        return None
+    return f"analysis due: every {every:g} h, the last one {(now - last) / 3600:.1f} h ago"
+
+
+def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> bool:
+    return analyst_reason(paths, now, cfg) is not None
+
+
+def analyst_update_target(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> str | None:
+    """The report an analyst turn adds its dated update to, or None when it writes the day's report: today's once it
+    exists; before the day's analysis (04:00 with the overnight research still to come) yesterday's, so that the
+    analysis after analyst_after_utc still writes the day's report and the daily rule keeps its meaning."""
+    today = f"analyst-{_day(now)}"
+    if paths.report(today).exists():
+        return today
+    if daily_analysis_due(paths, now, cfg):
+        return None
+    yesterday = f"analyst-{_day(now - 86400)}"
+    return yesterday if paths.report(yesterday).exists() else None
 
 
 def postmortem_due(paths: OperatorPaths, now: float, new_trips: int, cfg: OperatorConfig) -> bool:
@@ -123,8 +182,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     OKTech unknown, tape stale, service down, a loop stage failing) call when they appear and then at most once per
     `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
     (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
-    analysis reviews them itself."""
-    if snap.spent_today >= cfg.daily_usd:
+    analysis reviews them itself. The day's cap is the owner's /budget when set, else the config's daily_usd."""
+    if snap.spent_today >= effective_daily_usd(cfg, paths):
         return Decision(False, "none", ["budget"])
     events: list[str] = []
     states: list[str] = []
@@ -198,9 +257,9 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
     trips = _trips_line(new_trips, trips_since, now) if new_trips else None
-    if _analyst_due(paths, now, cfg):
-        return Decision(True, "analyst", reasons + ["daily analysis due"] + ([f"post-mortem: {trips}"] if trips else []),
-                        state_keys)  # fmt: skip
+    why = analyst_reason(paths, now, cfg)
+    if why:
+        return Decision(True, "analyst", reasons + [why] + ([f"post-mortem: {trips}"] if trips else []), state_keys)
     if trips and postmortem_due(paths, now, new_trips, cfg):
         return Decision(True, "postmortem", reasons + [f"post-mortem due: {trips}"], state_keys)
     if reasons:

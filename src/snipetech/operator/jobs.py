@@ -9,6 +9,10 @@ from ..ops import Ops, OpsError, _pid_alive
 from .standin import loop_stage
 
 RESEARCH_COMMANDS = frozenset({"lab", "follow", "discover-wallets", "label", "copy-rank", "paper", "study", "copy"})
+# never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
+# (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
+# change settings. Named here so the refusal says whose they are and the model does not try variants
+OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "book", "strategist", "config"})
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 
 
@@ -53,6 +57,9 @@ class OperatorJobs:
         return None
 
     def start(self, argv: list[str], now: float | None = None) -> dict:
+        if argv and argv[0] in OWNER_COMMANDS:
+            raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
+                                  "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
         if not argv or argv[0] not in RESEARCH_COMMANDS:
             raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
         self._check_paths(argv)

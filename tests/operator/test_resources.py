@@ -74,6 +74,30 @@ def test_anthropic_credit_ok_when_fresh(tmp_store, ledger):
     assert rs["anthropic_credit"].status == "ok"
 
 
+def test_the_credit_forecast_follows_the_owners_budget(tmp_path, tmp_store, ledger):
+    """After /budget 200 the agents spend more from one day to the next, and a week's mean hides it for days: the pace
+    is the faster of the week's mean and the last day. The line also says how long the credit lasts if the agents spend
+    their whole daily budget."""
+    import json
+
+    from snipetech.operator.budget_switch import set_budget
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    cfg.resources.anthropic_credit_usd = 100
+    ledger.path.write_text(json.dumps({"ts": NOW - 600, "mode": "analyst", "usd": 20.0}) + "\n")  # all of it today
+
+    def credit():
+        return {x.name: x for x in check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0,
+                                                   birdeye_credits=None, now=NOW)}["anthropic_credit"]  # fmt: skip
+
+    r = credit()
+    assert "80 $ of 100 $ left, about 4.0 days at the current pace" in r.message  # 20 $ a day, not 20 / 7
+    assert "5.3 days if the agents spend their whole 15 $ a day" in r.message and r.status == "ok"
+    set_budget(OperatorPaths(tmp_path / "data"), cfg, {"daily_usd": 200}, "telegram", NOW)
+    assert "0.4 days if the agents spend their whole 200 $ a day" in credit().message
+
+
 def test_disk_float_birdeye_and_requests_thresholds(tmp_store, ledger):
     cfg = Config()
     cfg.operator.wallet = W

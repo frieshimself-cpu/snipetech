@@ -10,6 +10,8 @@ from pathlib import Path
 from ..config import Config
 from ..store import Store
 from .budget import Ledger
+from .budget_switch import effective_daily_usd
+from .paths import OperatorPaths
 from .snapshot import Snapshot
 
 
@@ -41,7 +43,9 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
     rc = cfg.resources
     out: list[Resource] = []
 
-    # Anthropic credit: what the owner loaded minus what the ledger has spent since they loaded it.
+    # Anthropic credit: what the owner loaded minus what the ledger has spent since they loaded it. The pace is the
+    # faster of the week's mean and the last day: once the owner raises the agents' budget (/budget, 7 Nov: 200 $ a day
+    # against the 4.44 $ spent on 6 Nov) the spend jumps from one day to the next, and a week's mean hides it for days
     try:
         rec = store.coverage("resources:anthropic_credit")
         credit = float(rec.get("usd", cfg.resources.anthropic_credit_usd))
@@ -49,15 +53,16 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         spent = ledger.spent_since(set_at)
         left = max(0.0, credit - spent)
         left_pct = 100.0 * left / credit if credit > 0 else None
-        week = ledger.spent_since(now - 7 * 86400)
-        per_day = week / 7.0
+        per_day = max(ledger.spent_since(now - 7 * 86400) / 7.0, ledger.spent_since(now - 86400))
         days_left = (left / per_day) if per_day > 0 else None
+        daily = effective_daily_usd(cfg, OperatorPaths(Path(cfg.storage.db_path).resolve().parent))
         status = _pct_left_status(left_pct, rc.anthropic_alert_pct)
         if days_left is not None and days_left <= rc.anthropic_min_days:
             status = "crit"
         msg = (
             f"{left:.0f} $ of {credit:.0f} $ left"
             + (f", about {days_left:.1f} days at the current pace" if days_left is not None else "")
+            + (f", {left / daily:.1f} days if the agents spend their whole {daily:g} $ a day" if daily > 0 else "")
             + ". Top up 100 $ at console.anthropic.com, then run: snipetech config set resources.anthropic_credit_usd <new total>"
         )
         out.append(
@@ -109,7 +114,6 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         live = b.enabled
         try:
             from ..book.switch import book_flag
-            from .paths import OperatorPaths
 
             live = live or book_flag(OperatorPaths(Path(cfg.storage.db_path).resolve().parent)).exists()
         except Exception:  # noqa: BLE001
