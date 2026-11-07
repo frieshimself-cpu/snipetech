@@ -482,7 +482,8 @@ def test_the_lab_command_charges_the_measured_cost_unless_told(tmp_path, capsys,
     store = Store(db)
     _world_7nov(store)
     store.close()
-    monkeypatch.setattr(Q, "lab_tx_cost", lambda store, cfg, arm="control": 0.0047)  # as the measure stage measured
+    measured = {"per_tx_sol": 0.0047, "per_tx_source": "measured", "per_tx_measured_at": 1_794_000_000}
+    monkeypatch.setattr(Q, "lab_tx_cost_info", lambda store, cfg, arm="control": measured)  # as measure measured
     spec = json.dumps(MIG10.__dict__)
     assert cli.main(["--db", str(db), "lab", "--trigger", spec, "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
@@ -493,3 +494,18 @@ def test_the_lab_command_charges_the_measured_cost_unless_told(tmp_path, capsys,
     assert json.loads(capsys.readouterr().out)["per_tx_sol"] == 0.0045
     assert cli.main(["--db", str(db), "lab", "--trigger", spec]) == 0  # the text report says the cost it charged
     assert "buying 0.2 SOL at 0.0047 SOL a transaction" in capsys.readouterr().out
+
+
+def test_handed_exits_score_a_mig_rule_watched_as_oktech_runs_it(tmp_path):
+    """Merge of mig-score and lab-live-cost (7 Nov evening): a launch-type rule's exits wait OKTech's 1.3 s watch delay
+    (lab.kind_exits), and so does a MIG rule's auto-sell, which OKTech watches the same way. MIG's own exit grid carries
+    the delay; exits handed to the lab (a hypothesis lab, the paper test) get it too. The curve rules' plain exits stay
+    as handed."""
+    from snipetech.analysis.lab import WATCH_SECS
+
+    store = Store(tmp_path / "t.db")
+    _world_7nov(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10], exits=[EXIT])
+    assert [ex.watch_secs for ex in data["mig_exits"]] == [WATCH_SECS]
+    assert [ex.watch_secs for ex in data["exits"]] == [0.0]
+    store.close()
