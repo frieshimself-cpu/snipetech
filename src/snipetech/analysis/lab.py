@@ -750,12 +750,19 @@ def label_groups(store: Store) -> dict[str, set[str]]:
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet}
 
 
+# Wallets one read of `_mints_with_buys_by` asks about. The read walks every trade each wallet ever made (the wallet
+# index has no time in it): 5.5 s cold for 500 wallets on the 2.4M-trade copy (7 Nov), and the qualify lab reads the
+# live file when no copy under two hours old exists, where a read that long holds the WAL back.
+WALLETS_PER_READ = 50
+
+
 def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[str]:
-    """Coins in [a, b] where any of `wallets` bought (chunked IN lists; thousands of candidates are normal)."""
+    """Coins in [a, b] where any of `wallets` bought, WALLETS_PER_READ wallets a read (thousands of candidates are
+    normal)."""
     out: set[str] = set()
     ws = sorted(wallets)
-    for i in range(0, len(ws), 500):
-        chunk = ws[i : i + 500]
+    for i in range(0, len(ws), WALLETS_PER_READ):
+        chunk = ws[i : i + WALLETS_PER_READ]
         out |= {
             m
             for (m,) in store._q(

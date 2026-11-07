@@ -83,15 +83,16 @@ class Wal:
 
 
 def _trades(first: int, n: int, t0: int = T0, per_sec: float = 1.0, mints: int = 40, users: int = 200,
-            seed: int = 7) -> list[Trade]:  # fmt: skip
-    """`n` trades from `t0`, `per_sec` a second, spread over `mints` coins and `users` wallets, mostly buys."""
+            seed: int = 7, quote: int = 10_000_000) -> list[Trade]:  # fmt: skip
+    """`n` trades from `t0`, `per_sec` a second, spread over `mints` coins and `users` wallets, mostly buys of about
+    `quote` lamports."""
     rnd = random.Random(seed + first)
     out = []
     for k in range(first, first + n):
         q = 30_000_000_000 + rnd.randrange(80_000_000_000)
         out.append(Trade(sig=f"s{k:08d}{rnd.random():.6f}", ev=0, slot=380_000_000 + k, pos=k % 40,
                          ts=t0 + int((k - first) / per_sec), mint=f"M{rnd.randrange(mints):03d}", venue="curve",
-                         user=f"U{rnd.randrange(users):04d}", is_buy=rnd.random() < 0.7, quote=10_000_000 + k,
+                         user=f"U{rnd.randrange(users):04d}", is_buy=rnd.random() < 0.7, quote=quote + k,
                          base=1_000_000, fee=125_000, fee_bps=125, q_after=q, b_after=1_000_000_000_000,
                          r_base_after=700_000_000_000, ix="buy"))  # fmt: skip
     return out
@@ -419,6 +420,39 @@ def test_active_mints_counts_each_trade_once_while_the_recorder_writes(tmp_path,
         assert got == {m: n for m, n in once.items() if m != "OLD"}
     finally:
         writer.close()
+        st.close()
+
+
+def test_the_qualify_lab_on_the_live_file_reads_its_wallets_a_few_at_a_time(tmp_path, monkeypatch):
+    """With no copy under two hours old the qualify lab reads the live file, and it first lists the coins its
+    candidates bought, 500 wallets a read: each read walks every one of their trades (5.5 s cold for 500 wallets on
+    the 2.4M-trade copy, 7 Nov). Fifty a read keeps each short, and the lab scores the same moments."""
+    from snipetech.analysis import lab
+    from snipetech.config import Config
+
+    st = Store(tmp_path / "snipetech.db")
+    wallets = [f"U{u:04d}" for u in range(600)]
+    # the candidates' older trades, before the span: every read of a wallet's coins walks them all the same
+    st.add_trades(_trades(0, 24_000, t0=T0 - 30_000, per_sec=1.0, mints=200, users=600, quote=200_000_000))
+    st.add_trades(_trades(100_000, 600, t0=T0 + 60, per_sec=0.2, mints=20, users=600, quote=200_000_000))
+    st.set_coverage("tape", {"spans": [[T0, T0 + 3600]]})
+    cfg = Config()
+
+    def collect():
+        return lab.collect(st, cfg, 0.1, 0, "+6", groups=("cand",), kols={"cand": set(wallets), "kol": set(),
+                           "wallet": set()}, workers=1)["rows"]  # fmt: skip
+
+    monkeypatch.setattr(lab, "WALLETS_PER_READ", 10**6, raising=False)  # every wallet in one read, as before
+    want = collect()
+    monkeypatch.undo()
+    wal = Wal(st.path)
+    wal.watch(st.conn)
+    wal.during(monkeypatch, lab, "_coin_rows")
+    try:
+        assert want and collect() == want
+        assert wal.whole, wal.checks
+    finally:
+        wal.close()
         st.close()
 
 
