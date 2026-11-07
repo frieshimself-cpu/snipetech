@@ -249,3 +249,15 @@ def test_the_sol_float_is_sized_from_the_fill_the_book_can_use(tmp_store, ledger
     rs = {x.name: x for x in check_resources(cfg, tmp_store, snap(native_sol=3.0, wsol=0.0, wallet=W), ledger, disk_free_gb=lambda: 50.0,
                                                birdeye_credits=None, now=NOW)}  # fmt: skip
     assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2) and rs["sol_float"].status == "warn"
+
+
+def test_a_stalled_tape_is_critical_and_says_what_happens(tmp_store, ledger):
+    """7 Nov 14:03-15:48 the tape recorded nothing for 1 h 45 min and nobody was told: the only alert was the operator's
+    model, which the API refused all afternoon. The resources check (code, no model) says it."""
+    cfg = Config()
+    late = {x.name: x for x in check_resources(cfg, tmp_store, snap(tape_last_ts=NOW - 900), ledger, disk_free_gb=lambda: 200.0,
+                                                 birdeye_credits=None, now=NOW)}  # fmt: skip
+    assert late["tape"].status == "crit" and "15 min" in late["tape"].message and "restart" in late["tape"].message
+    fresh = {x.name: x for x in check_resources(cfg, tmp_store, snap(tape_last_ts=NOW - 20), ledger, disk_free_gb=lambda: 200.0,
+                                                  birdeye_credits=None, now=NOW)}  # fmt: skip
+    assert fresh["tape"].status == "ok"

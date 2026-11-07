@@ -250,6 +250,17 @@ class Store:
         with self.lock:
             self.conn.close()
 
+    def reopen(self) -> None:
+        """A fresh connection to the same file, for a writer whose writes keep failing (what a restart did for the tape
+        recorder on 7 Nov: its writes failed for 1 h 45 min and worked again the moment it reconnected)."""
+        with self.lock:
+            try:
+                self.conn.close()
+            except sqlite3.Error:
+                pass
+            self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+            self.file_id = file_identity(self.path)
+
     def _q(self, sql: str, params: Iterable[Any] = ()) -> list[tuple]:
         with self.lock:
             return self.conn.execute(sql, tuple(params)).fetchall()
@@ -272,6 +283,14 @@ class Store:
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) and "busy" not in str(e):
                     raise
+                # the failed attempt left its transaction open: rolled back, the next one (or the next write, after
+                # this one gives up) starts afresh. 7 Nov 14:07-15:48: left open, every later write of the tape
+                # recorder failed on it until a restart, and its snapshot kept the WAL from being checkpointed
+                with self.lock:
+                    try:
+                        self.conn.rollback()
+                    except sqlite3.Error:
+                        pass
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(delay)
@@ -604,8 +623,10 @@ class Store:
         if where:
             sql += " WHERE " + " AND ".join(where)
         # never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
-        sql += (f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
-                f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?")
+        sql += (
+            f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
+            f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?"
+        )
         params.append(int(limit))
         out = []
         for row in self._q(sql, params):

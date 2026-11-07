@@ -14,6 +14,8 @@ from .budget_switch import effective_daily_usd
 from .paths import OperatorPaths
 from .snapshot import Snapshot
 
+TAPE_ALERT_SECS = 300  # the tape this far behind is critical (its own stale guards are 60 and 120 s)
+
 
 @dataclass
 class Resource:
@@ -134,6 +136,18 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
             out.append(Resource("sol_float", round(eq, 4), "sol", needed, status, msg))
     except Exception as exc:  # noqa: BLE001
         out.append(Resource("sol_float", None, "sol", None, "unknown", f"could not compute: {exc}"))
+
+    # The tape (7 Nov 14:03-15:48: it recorded nothing for 1 h 45 min and only the operator's model would have said so,
+    # while the API refused it): code says it, once a day like every critical row.
+    if snap.tape_last_ts is None:
+        out.append(Resource("tape", None, "s", TAPE_ALERT_SECS, "unknown", "the tape's newest trade could not be read"))
+    else:
+        lag = max(0.0, now - float(snap.tape_last_ts))
+        late = lag > TAPE_ALERT_SECS
+        out.append(Resource("tape", round(lag), "s", TAPE_ALERT_SECS, "crit" if late else "ok",
+                            f"the tape is {lag / 60:.0f} min behind: nothing new is recorded. The recorder opens a new "
+                            "connection after 3 minutes of refused writes and restarts itself after 10; if it stays behind, "
+                            "`snipetech remote update` restarts it" if late else f"the tape is {lag:.0f} s behind"))  # fmt: skip
 
     # Disk.
     try:

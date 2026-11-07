@@ -26,6 +26,7 @@ import itertools
 import json
 import logging
 import os
+import sqlite3
 import time
 from collections import OrderedDict, defaultdict
 from collections.abc import Callable, Iterable
@@ -60,6 +61,11 @@ VALVE_REOPEN_SECS = 10.0
 # The window counts on the chain clock (the block times being recorded, not the wall clock), and a coin stays watched a
 # minute past it, so neither a lagging recorder nor a resubscription cuts its last seconds.
 EXPIRY_GRACE_SECS = 60
+# the database refusing the recorder's writes (7 Nov 14:07-15:48): how long one write waits for the lock (its event loop
+# waits with it), after how long a new connection is opened, after how long the recorder exits for systemd to restart it
+WRITE_PATIENCE_SECS = 20.0
+REOPEN_AFTER_SECS = 180.0
+RESTART_AFTER_SECS = 600.0
 SLOT_SECS = 0.4  # mainnet's slot time: places a slot on the chain clock
 SLOT_DRIFT = 0.1  # how far slot times wander from it: a slot's place is widened by this share of its distance
 SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides as well
@@ -241,6 +247,11 @@ class LiveWatcher:
         self.migrated = RecentMigrations(secs) if tape and secs > 0 and not self.cfg.live.index_amm else None
         self.valve = LagValve(VALVE_LAG_SECS, VALVE_SUSTAIN_SECS, VALVE_REOPEN_SECS)
         self.clock: Callable[[], float] = time.time  # the mode's wall clock
+        # the recorder's event loop waits with each of its writes: never the batch jobs' ten minutes (7 Nov 13:47: the
+        # streams fell behind while a write waited for the lock)
+        self.store.LOCK_PATIENCE = WRITE_PATIENCE_SECS
+        self.write_fail_since: float | None = None  # when the database started refusing the recorder's writes
+        self.write_reopened = False
         self.lag = 0.0  # how far behind the chain the tape's own stream last measured itself (s)
         self.lag_due = 0.0  # when to measure it next (once a second)
         self.head: tuple[int, int] | None = None  # (slot, block time) last measured there: the chain clock
@@ -280,7 +291,10 @@ class LiveWatcher:
         finally:
             for t in tasks:
                 t.cancel()
-            self._flush()
+            try:
+                self._flush()
+            except Exception as exc:  # noqa: BLE001 - leaving anyway: the restart writes nothing twice (INSERT OR IGNORE)
+                log.warning("tape: last flush failed (%s)", exc)
             await self.sink.close()
 
     # -- firehose ------------------------------------------------------------------------------
@@ -817,7 +831,7 @@ class LiveWatcher:
             if launch:
                 self.closed_launches.append(launch)
         if len(self.buffer) + len(self.fbuffer) >= 500:
-            self._flush()
+            self._flush(hot=True)
 
     def _note_departures(self, norm: Normalized) -> None:
         """Coins that left their curve in this transaction join the recent-migrations record with their pool and the
@@ -885,13 +899,46 @@ class LiveWatcher:
         else:
             self.stats["unresolved_pool_events"] += len(waiting)
 
-    def _flush(self) -> None:
-        if self.buffer:
-            self.store.add_trades(self.buffer)
-            self.buffer = []
-        if self.fbuffer:
-            self.store.add_ftrades(self.fbuffer)
-            self.fbuffer = []
+    def _flush(self, hot: bool = False) -> None:
+        """Write the buffered trades. A database that refuses them (locked) keeps them in memory for the next tick, and
+        the hot path (`hot`: the 500-trade flush on a transaction) leaves a failing database to the maintenance tick.
+        After REOPEN_AFTER_SECS of refusals the recorder opens a new connection; after RESTART_AFTER_SECS it exits so
+        systemd starts it afresh (7 Nov 14:07-15:48: it recorded nothing for 1 h 45 min until a deploy restarted it)."""
+        if hot and self.write_fail_since is not None:
+            return
+        try:
+            if self.buffer:
+                self.store.add_trades(self.buffer)
+                self.buffer = []
+            if self.fbuffer:
+                self.store.add_ftrades(self.fbuffer)
+                self.fbuffer = []
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc) and "busy" not in str(exc):
+                raise
+            self._write_failed(exc)
+            return
+        if self.write_fail_since is not None:
+            log.warning("tape: the database takes the recorder's writes again after %.0f s",
+                        self.clock() - self.write_fail_since)  # fmt: skip
+            self.write_fail_since, self.write_reopened = None, False
+
+    def _write_failed(self, exc: Exception) -> None:
+        now = self.clock()
+        if self.write_fail_since is None:
+            self.write_fail_since = now
+            log.warning("tape: the database refused the recorder's writes (%s); %d trades wait in memory", exc,
+                        len(self.buffer) + len(self.fbuffer))  # fmt: skip
+            return
+        failing = now - self.write_fail_since
+        if failing >= RESTART_AFTER_SECS:
+            log.error("tape: writes refused for %.0f s, a new connection too: the recorder exits for systemd to start "
+                      "it afresh", failing)  # fmt: skip
+            raise SystemExit(75)
+        if failing >= REOPEN_AFTER_SECS and not self.write_reopened:
+            self.write_reopened = True
+            log.warning("tape: writes refused for %.0f s: the recorder opens a new connection", failing)
+            self.store.reopen()
 
     # -- signals ---------------------------------------------------------------------------------
 
