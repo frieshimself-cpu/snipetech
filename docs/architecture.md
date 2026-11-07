@@ -97,3 +97,13 @@ of coins in 144 reads of at most 0.15 s instead of one of 9 s, the same answer),
 `journal_size_limit` (64 MiB): once the WAL starts over, the file shrinks back instead of keeping its high-water mark.
 `tests/test_short_reads.py` guards the rule: while each reader is mid-run, inside its longest read or between two, a
 second connection checkpoints, and every frame must be checkpointed.
+
+Nothing writes the copy once it holds its path. Its readers open it read-only and immutable (SQLite reads the file
+alone: no lock, and no `-wal` or `-shm` beside it is ever opened), and a lab takes it only once it holds the lab lock,
+so a wait behind another lab never leaves it on a copy that has been replaced since. `snapshot-db` hands each copy over
+with the code's whole schema, in rollback mode, and clears what an older job left beside the last one. Until 7 Nov
+evening the tape store opened the copy read-write: its schema step put the copy in WAL mode, a deploy's new table went
+into a `-wal` under the copy's name, and the next copy renamed over it was read on top of that `-wal` ("database disk
+image is malformed" for every heavy reader until the copy after, and on disk too once they had closed). A copy taken
+before a deploy that added a table or a column is not read: the live file is, until the next copy.
+`tests/test_tape_store.py` and `tests/test_snapshot_db.py` guard it.
