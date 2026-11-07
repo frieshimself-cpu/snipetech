@@ -140,6 +140,33 @@ def test_the_exit_label_names_the_migration_sell():
     assert replace(MIG, migration_sell_frac=0.0).label() == HOLD.label()
 
 
+def test_the_lab_searches_a_few_migration_sell_exits_each_one_oktech_can_run():
+    from snipetech.analysis.lab import exit_set
+
+    exits = exit_set()
+    labels = [e.label() for e in exits]
+    assert len(set(labels)) == len(labels)  # the lab's ranking and the paper report tell exits apart by label
+    mig = [e for e in exits if e.migration_sell_frac > 0]
+    assert 0 < len(mig) <= 4  # a few: every exit costs one simulation per moment on the whole tape
+    # the exit every book sniper runs, alone and with everything sold 1 s after the migration; a 300 s hold that sells
+    # half at the migration (OKTech's shortest delay)
+    lab = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1.0)
+    assert lab in exits and replace(lab, migration_sell_frac=1.0, migration_sell_delay=1.0) in exits
+    hold300 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False)
+    assert replace(hold300, migration_sell_frac=0.5, migration_sell_delay=0.1) in exits
+    for e in mig:
+        assert autosell(e.to_dict(), [])["migrationSell"]  # each goes to OKTech exactly as scored, or raises
+
+
+def test_an_exit_read_as_oktech_runs_it_keeps_its_migration_sell():
+    from snipetech.analysis.lab import _as_live
+
+    e = LAB | {"migration_sell_frac": 0.5, "migration_sell_delay": 0.1}
+    ex = _as_live(e, 0.5)
+    assert (ex.migration_sell_frac, ex.migration_sell_delay) == (0.5, 0.1)  # the lab scores what the sniper is sent
+    assert autosell(ex.to_dict() | {"copy_exit": True}, []) == autosell(e | {"copy_exit": True}, [])
+
+
 def test_strategies_frozen_before_the_migration_sell_keep_their_ids():
     """Paper strategy a586d8164a was frozen on 5 Nov, long before the exit had a migration sell. Left off, the two new
     fields are not part of a strategy's id, so no frozen strategy is re-frozen under a second id."""

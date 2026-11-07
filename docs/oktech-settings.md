@@ -75,7 +75,7 @@ inferred from the field names and must be confirmed in the app before money depe
 | `trailingStopLoss {percentFromPeak, activateAfterGainPercent, confirmMs}` | sell on a drop from the peak | "if it's only going up hold, if it dips get out" (lab: 25% from peak) |
 | `deadExit {staleSeconds}` | sell when nothing trades for N s | the lab's best exit on most triggers (1 s) |
 | `autoStop {percentGain, withinMs}` | a fast pump turns the exits off and lets it run | moonbags on runners |
-| `migrationSell {sellPercent, delayMs}` | sell at migration | exit into the graduation pump |
+| `migrationSell {sellPercent, delayMs}` | sell at migration ("on migration to a new pool, sell % after delay (100 ms - 1 min)") | exit into the graduation pump. Since 7 Nov the lab scores it (an exit's `migration_sell_frac` / `migration_sell_delay`: that share of what is held, that many seconds after the coin leaves its curve) and `autosell` sends it exactly as scored, refusing a delay outside 100 ms - 60 s. Never seen fire live (playbook fact 8) |
 | `momentumHold {minVelocity, lookbackMs, maxHoldMs, trailingDropPercent}` | keep holding while the price climbs fast | ride momentum past the timer |
 | `timerExtension {minGainVelocity, lookbackMs, extensionMs, maxExtensionMs, cancelDropPercent}` | extend the sell timer while gaining | same, finer |
 | `stageAcceleration {minStages, delayMs, releaseOnDropPercent}` | speeds up the ladder | |
