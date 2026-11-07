@@ -429,9 +429,11 @@ def _sol_or_worst(v: Any) -> float:
     return float("-inf") if v is None else float(v)
 
 
-# what a post-mortem reads of the copied wallet's latest verdict: its prediction at the landing, its copy plan, and what
-# its copies made on the tape after it was picked (qualify/gates.forward_gate)
-TRIP_VERDICT_KEYS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "copy_plan", "forward")
+# what a post-mortem reads of the copied wallet's latest verdict: its prediction at the landing, its copy plan, what its
+# copies made on the tape after it was picked (qualify/gates.forward_gate), and whether it is copied only because the
+# book copied it before the 7 Nov rules (qualify/gates.keep_armed: then "new" holds what those rules found)
+TRIP_VERDICT_KEYS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "copy_plan", "forward",
+                     "kept_armed")  # fmt: skip
 
 
 def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> dict[str, Any]:

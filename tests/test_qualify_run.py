@@ -128,6 +128,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             "retired": 1,
             "forward_pending": 1,
             "forward_failed": 0,
+            "kept_armed": 0,
             "deferred": False,
             "no_tape": 0,
             "labelled": 2,
@@ -520,6 +521,53 @@ def test_the_forward_window_starts_at_the_first_pick_even_one_made_before_these_
         assert any(r.startswith("loses after it was picked") for r in by["STOPS"]["reasons"])
         assert out["qualified"] == 1 and out["forward_failed"] == 1
         assert "moments" not in st.get_score("qualify", "KEEPS")["lab"]  # the copies were for the check, not to keep
+    finally:
+        st.close()
+
+
+def test_a_wallet_the_book_already_copies_is_not_stopped_by_these_rules_and_its_verdict_says_so(tmp_path):
+    """E (research round 2, 7 Nov): the owner decides whether a wallet the book already copies goes (7aPo3n: keep it as a
+    live measurement, judge it at 30 copies). Both wallets qualified under the old rules a day ago and have no copies
+    since; the book copies ARMED. After a run under these rules IDLE waits for its forward copies, while ARMED keeps the
+    verdict the book armed it on: the book's own plan, unchanged, keeps its sniper. ARMED's verdict says it no longer
+    qualifies, and what these rules found."""
+    from snipetech.book.policy import BookInputs, plan_book
+    from snipetech.book.run import _bookable
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["ARMED", "IDLE"])
+        st.set_coverage("tape", {"spans": [[NOW - 30 * 3600, NOW]]})
+        armed_on = NOW - 25 * 3600
+        plan = {"min_leader_sol": 0.5, "exit_name": "lab", "lab_version": 2}
+        for w in ("ARMED", "IDLE"):
+            st.upsert_candidate(w, "solanatracker", STRONG, armed_on - 3600)
+            st.put_verdict({"wallet": w, "computed_at": armed_on, "landing_pos": "+6", "n_tape": 35, "mean_sol": 0.0271,
+                            "lower_sol": 0.0049, "score": 0.01, "status": "qualified", "next_review": NOW - 3600,
+                            "copy_plan": plan})  # fmt: skip
+        name = "snipetech copy book ARMED arm:control"
+        st.add_oktech_sniper({"id": "s1", "external_id": "e-s1", "kind": "copy", "source": "ARMED", "name": name,
+                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "ARMED"}]},
+                              "created_at": NOW - 3 * 3600})  # fmt: skip
+        before = [[armed_on - 7200 + 60 * k, 0.03] for k in range(35)]  # all before the pick: no forward copy yet
+        runner = lambda ws, pos: [{"wallet": w, "n": 35, "mean": 0.03, "ev_lower": 0.03, "win_rate": 1.0, "total": 1.05,
+                                   "exit": "x", "min_leader_sol": 0.5, "moments": list(before)} for w in ws]  # fmt: skip
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        idle, armed = by["IDLE"], by["ARMED"]
+        assert idle["status"] == "candidate" and idle["forward"]["status"] == "pending" and idle["landing_pos"] == "+3x"
+        assert armed["status"] == "qualified" and armed["score"] == 0.01 and armed["copy_plan"] == plan
+        assert armed["landing_pos"] == "+6" and armed["kept_armed"]["kept"] is True
+        assert armed["kept_armed"]["armed_on"] == armed_on and armed["kept_armed"]["new"]["status"] == "candidate"
+        assert armed["forward"]["status"] == "pending" and armed["reasons"][0].startswith("no longer qualifies")
+        assert out["qualified"] == 1 and out["kept_armed"] == 1 and out["forward_pending"] == 2
+        qualified = _bookable(st)
+        assert [v["wallet"] for v in qualified] == ["ARMED"]
+        inp = BookInputs(equity_sol=10.0, day_realised_sol=0.0, day_risk_used_sol=0.0, qualified=qualified, live={},
+                         bid_model={}, snipers=[{"id": "s1", "name": name, "status": "running"}], holdings=[], now=NOW,
+                         holdings_known=True)  # fmt: skip
+        actions = [(a.kind, a.sniper_id) for a in plan_book(inp, svc.cfg.book).actions]
+        assert ("keep", "s1") in actions and ("stop", "s1") not in actions
     finally:
         st.close()
 

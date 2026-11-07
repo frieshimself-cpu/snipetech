@@ -176,6 +176,8 @@ _ADDED_COLUMNS = (
     ("verdicts", "forward", "TEXT"),
     # a copy buy: the copied wallet's curve progress at its buy (measure/classify.curve_progress)
     ("fills", "leader_progress", "REAL"),
+    # JSON: a wallet the book copied before the 7 Nov verdict rules, kept qualified while copied (qualify/gates.keep_armed)
+    ("verdicts", "kept_armed", "TEXT"),
 )
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
@@ -186,8 +188,8 @@ _SHADOW_COLS = ("buy_sig", "exit_name", "menu_version", "sim_pnl_sol", "sim_reas
 # (candidates() reads `v.*` by position, so a fresh and a migrated database must agree)
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
                  "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons",
-                 "copy_plan", "gap3_pct", "create_slot", "forward")  # fmt: skip
-_VERDICT_JSON = ("copy_plan", "create_slot", "forward")  # verdict columns that hold a JSON object (or None)
+                 "copy_plan", "gap3_pct", "create_slot", "forward", "kept_armed")  # fmt: skip
+_VERDICT_JSON = ("copy_plan", "create_slot", "forward", "kept_armed")  # verdict columns holding a JSON object (or None)
 _LATEST_VERDICT = "SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet ORDER BY computed_at DESC, id DESC LIMIT 1)"
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")

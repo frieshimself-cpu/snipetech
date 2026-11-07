@@ -8,6 +8,7 @@ from snipetech.qualify.gates import (
     crowding,
     forward_gate,
     history_gate,
+    keep_armed,
     normalise_history,
     relationship_gate,
     score,
@@ -319,11 +320,14 @@ def test_a_wallet_with_a_tenth_of_its_first_buys_in_create_slots_is_not_qualifie
 
 
 def _in_sample_pass(cfg):
-    """A verdict every in-sample gate passed: what the qualify stage wrote as qualified until 7 Nov."""
+    """A verdict every in-sample gate passed at the qualify lab's landing: what the stage wrote as qualified until
+    7 Nov."""
+    from dataclasses import replace
+
     lab = {"n": 30, "mean": 0.02, "ev_lower": 0.006, "win_rate": 0.6, "total": 0.6, "exit": "STALE1s SL-30% hold300s",
            "min_leader_sol": 0.3, "exit_name": "lab", "lab_version": 2}  # fmt: skip
     quiet = {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 30}
-    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW,
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], replace(cfg, landing_pos="+3x"), NOW,
                     create={"in_create": 0, "first_buys": 30, "share": 0.0})  # fmt: skip
     assert v["status"] == "qualified"
     return v
@@ -343,7 +347,7 @@ def test_a_wallet_with_no_later_tape_is_forward_pending_and_nothing_else_changes
     as a qualified wallet; every number of its verdict stays what the lab said."""
     v = _in_sample_pass(cfg)
     out = forward_gate(v, _copies(30, 0.02, NOW - 7200), None, [[NOW - 7200, NOW]], cfg, NOW)
-    same = [k for k in v if k not in ("status", "next_review", "reasons", "forward")]
+    same = [k for k in v if k not in ("status", "next_review", "reasons", "forward", "gate")]
     assert {k: out[k] for k in same} == {k: v[k] for k in same}
     assert out["status"] == "candidate" and out["next_review"] == NOW + 24 * 3600
     assert out["forward"] == {"picked_at": NOW, "tape_hours": 0.0, "n": 0, "mean": None, "lower": None,
@@ -397,6 +401,75 @@ def test_the_forward_bar_is_the_in_sample_rule_on_twenty_later_copies_over_six_h
     assert even["status"] == "candidate" and even["forward"]["mean"] == pytest.approx(0.0)  # not above 0, not below
     on_pick = forward_gate(v, _copies(25, 0.02, PICK), PICK, [[PICK, NOW]], cfg, NOW)  # the first one at the pick
     assert on_pick["forward"]["n"] == 24  # a copy at the very second of the pick was in the window it was picked on
+
+
+ARMED_ON = NOW - 28 * 3600
+# the verdict the book armed a wallet on before these rules (7aPo3n, 7 Nov 16:05: n 35, +0.0271, lower bound +0.0049)
+OLD_RULES = {"wallet": "W", "computed_at": ARMED_ON, "landing_pos": "+6", "n_tape": 35, "mean_sol": 0.0271,
+             "lower_sol": 0.0049, "hist_days": None, "hist_realized_usd": None, "hist_win_rate": None, "hist_trades": None,
+             "crowding": 0.0, "venue_share": 1.0, "score": 0.0049, "status": "qualified", "next_review": ARMED_ON + 86400,
+             "reasons": ["no history from any source"], "copy_plan": {"min_leader_sol": 0.5, "exit_name": "lab"},
+             "gap3_pct": 0.8, "create_slot": None, "forward": None, "kept_armed": None, "id": 7}  # fmt: skip
+
+
+def test_a_wallet_the_book_copied_before_these_rules_keeps_the_verdict_it_was_armed_on(cfg):
+    """E (research round 2, 7 Nov): the book arms only qualified wallets and drops any other, but a wallet it already
+    copies is not stopped by these rules; the owner decides (7aPo3n: keep it armed as a live measurement, judge it at 30
+    copies). Its verdict stays the one it was armed on, as the book reads it (status, score, copy plan, landing,
+    numbers), and says first that it no longer qualifies and why; what these rules found is in `kept_armed`."""
+    new = forward_gate(_in_sample_pass(cfg), _copies(30, 0.02, ARMED_ON - 7200), ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW)
+    assert new["status"] == "candidate" and new["forward"]["status"] == "pending"
+    kept = keep_armed(new, OLD_RULES, True, cfg, NOW)
+    book = ["status", "score", "copy_plan", "landing_pos", "n_tape", "mean_sol", "lower_sol", "gap3_pct", "crowding",
+            "venue_share"]  # fmt: skip
+    assert {k: kept[k] for k in book} == {k: OLD_RULES[k] for k in book}
+    assert kept["computed_at"] == NOW and kept["next_review"] == NOW + 24 * 3600 and "id" not in kept
+    assert kept["reasons"][0].startswith("no longer qualifies under the 7 Nov verdict rules (forward pending: 0 later")
+    assert "the owner decides" in kept["reasons"][0] and kept["reasons"][1:] == []
+    assert kept["forward"] == new["forward"] and kept["create_slot"] == new["create_slot"]
+    assert kept["kept_armed"] == {"armed_on": ARMED_ON, "kept": True,
+                                  "new": {k: new[k] for k in ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol",
+                                                              "score", "reasons")}}  # fmt: skip
+
+
+def test_keeping_an_armed_wallet_covers_only_what_these_rules_changed(cfg):
+    new = forward_gate(_in_sample_pass(cfg), [], ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW)  # forward pending
+    assert keep_armed(new, OLD_RULES, False, cfg, NOW) == new  # nothing copies it: the new verdict as it is
+    quiet = {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 30}
+    lab = {"n": 30, "mean": 0.02, "ev_lower": 0.006, "win_rate": 0.6, "total": 0.6, "exit": "x"}
+    bundle = verdict_for("W", {"trades": None}, lab, 1.0, quiet, False, ["bundle member in 2 launches"], cfg, NOW)
+    assert keep_armed(bundle, OLD_RULES, True, cfg, NOW) == bundle  # an old rule stops it, as it did before
+    venue = verdict_for("W", {"trades": None}, lab, 0.3, quiet, True, [], cfg, NOW)
+    assert keep_armed(venue, OLD_RULES, True, cfg, NOW) == venue
+    crowded = verdict_for("W", {"trades": None}, lab, 1.0, {"followers_1s": 3.0, "gap3_pct": 40.0, "n": 30}, True, [],
+                          cfg, NOW)  # fmt: skip
+    assert keep_armed(crowded, OLD_RULES, True, cfg, NOW) == crowded
+    loses = verdict_for("W", {"trades": None}, dict(lab, mean=-0.01, ev_lower=-0.02), 1.0, quiet, True, [], cfg, NOW)
+    assert keep_armed(loses, OLD_RULES, True, cfg, NOW)["status"] == "qualified"  # the new landing stops it: kept
+    in_create = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW,
+                            create={"in_create": 2, "first_buys": 10, "share": 0.2})  # fmt: skip
+    assert keep_armed(in_create, OLD_RULES, True, cfg, NOW)["status"] == "qualified"
+    armed_since = dict(OLD_RULES, landing_pos="+3x", forward={"status": "passed"})  # qualified by these rules
+    assert keep_armed(new, armed_since, True, cfg, NOW) == new  # the rules it met stop it like any other wallet
+    assert keep_armed(new, dict(OLD_RULES, copy_plan=None), True, cfg, NOW) == new  # no plan: the book never booked it
+    assert keep_armed(new, None, True, cfg, NOW) == new
+
+
+def test_a_kept_wallet_stays_kept_while_it_is_copied_even_after_it_once_met_these_rules(cfg):
+    pending = forward_gate(_in_sample_pass(cfg), [], ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW)
+    kept = keep_armed(pending, OLD_RULES, True, cfg, NOW)
+    again = keep_armed(pending, kept, True, cfg, NOW + 86400)  # its next review
+    assert again["status"] == "qualified" and again["score"] == OLD_RULES["score"]
+    assert again["kept_armed"]["armed_on"] == ARMED_ON and again["kept_armed"]["kept"] is True
+    passing = forward_gate(
+        _in_sample_pass(cfg), _copies(25, 0.02, ARMED_ON + 60), ARMED_ON, [[ARMED_ON, NOW]], cfg, NOW
+    )
+    met = keep_armed(passing, kept, True, cfg, NOW + 2 * 86400)
+    assert met["status"] == "qualified" and met["landing_pos"] == "+3x" and met["forward"]["status"] == "passed"
+    assert met["kept_armed"] == {"armed_on": ARMED_ON, "kept": False}  # its own numbers now; the marker goes along
+    later = keep_armed(pending, met, True, cfg, NOW + 3 * 86400)  # it falls back under the rules: still kept
+    assert later["status"] == "qualified" and later["landing_pos"] == "+3x" and later["kept_armed"]["kept"] is True
+    assert keep_armed(pending, kept, False, cfg, NOW + 86400) == pending  # no longer copied: the rules apply
 
 
 def test_the_forward_check_leaves_a_wallet_the_in_sample_gates_stopped_alone(cfg):

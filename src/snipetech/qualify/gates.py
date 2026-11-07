@@ -257,17 +257,18 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
            "win_rate": st.get("win_rate"), "status": "pending", "min_n": FORWARD_MIN_N, "min_hours": FORWARD_MIN_HOURS}  # fmt: skip
     out = dict(v, forward=fwd, reasons=list(v.get("reasons") or []))
     when = time.strftime("%d %b %H:%M UTC", time.gmtime(since))
+    waits = {"status": "candidate", "gate": "forward", "next_review": int(now) + cfg.review_qualified_h * 3600}
     if len(later) < FORWARD_MIN_N or hours < FORWARD_MIN_HOURS:
-        out["status"], out["next_review"] = "candidate", int(now) + cfg.review_qualified_h * 3600
+        out |= waits
         out["reasons"].append(f"forward pending: {len(later)} later copies (needs {FORWARD_MIN_N}) over {hours:.1f} h of "
                               f"tape since it was picked on {when} (needs {FORWARD_MIN_HOURS:g} h)")  # fmt: skip
     elif round(float(mean), 9) < 0:
         fwd["status"] = "failed"
-        out["status"], out["next_review"] = "retired", int(now) + cfg.review_retired_h * 3600
+        out |= {"status": "retired", "gate": "forward", "next_review": int(now) + cfg.review_retired_h * 3600}
         out["reasons"].append(f"loses after it was picked: mean {mean:+.4f} SOL over {len(later)} later copies since "
                               f"{when}")  # fmt: skip
     elif round(float(fwd["lower"]), 9) <= 0:
-        out["status"], out["next_review"] = "candidate", int(now) + cfg.review_qualified_h * 3600
+        out |= waits
         out["reasons"].append(f"forward pending: mean {mean:+.4f} SOL over {len(later)} later copies since {when}, its "
                               f"lower bound {fwd['lower']:+.4f} not above 0 yet")  # fmt: skip
     else:
@@ -299,38 +300,37 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
     lower = _num(lab_row.get("ev_lower")) if lab_row else None
     sc = score(lower, n, venue, crowd.get("followers_1s")) if lab_row else 0.0
     reasons: list[str] = []
-    status = "qualified"
+    status, gate = "qualified", None  # gate: the one that set the status (keep_armed reads it)
     in_create = bool(create) and float(create.get("share") or 0) >= MAX_CREATE_SLOT_SHARE
     if not rel_ok or in_create:
-        status, reasons = "retired", [] if rel_ok else list(rel_reasons)
+        status, gate = "retired", "create_slot" if rel_ok else "relationship"
+        reasons = [] if rel_ok else list(rel_reasons)
         if in_create:
             reasons.append(f"{create['in_create']} of {create['first_buys']} first buys ({float(create['share']):.0%}) "
                            f"in the coin's create slot, where no copy lands ({MAX_CREATE_SLOT_SHARE:.0%} or more is "
                            "not copied)")  # fmt: skip
     elif lab_row is None:
-        status, reasons = "candidate", ["no tape data"]
+        status, gate, reasons = "candidate", "lab", ["no tape data"]
     elif venue is not None and venue < cfg.min_venue_share:
-        status, reasons = (
-            "retired",
-            [f"venue share {venue:.0%} < {cfg.min_venue_share:.0%} (trades mostly off pump.fun)"],
-        )
+        status, gate = "retired", "venue"
+        reasons = [f"venue share {venue:.0%} < {cfg.min_venue_share:.0%} (trades mostly off pump.fun)"]
     elif passes is False:
-        status, reasons = "retired", ["history: " + "; ".join(hist_reasons)]
+        status, gate, reasons = "retired", "history", ["history: " + "; ".join(hist_reasons)]
     else:
         if passes is None:
             reasons.extend(hist_reasons)  # noted, not a veto: the tape decides
         need = cfg.min_n_tape_strong if strong else cfg.min_n_tape
-        if n < need:
-            status = "candidate"
+        if n < need:  # how many copies, the same at any landing
+            status, gate = "candidate", "sample"
             reasons.append(f"n {n} < {need} at {cfg.landing_pos}")
-        elif mean is not None and mean < 0:
-            status = "retired"
+        elif mean is not None and mean < 0:  # what they made where they land
+            status, gate = "retired", "tape"
             reasons.append(f"loses at {cfg.landing_pos}: mean {mean:+.4f} SOL over {n}")
         elif lower is None or lower <= 0:
-            status = "candidate"
+            status, gate = "candidate", "tape"
             reasons.append(f"lower bound {lower if lower is None else round(lower, 4)} <= 0 at {cfg.landing_pos}")
         elif crowd.get("gap3_pct") is not None and crowd["gap3_pct"] > cfg.max_gap3_pct:
-            status = "candidate"
+            status, gate = "candidate", "crowding"
             reasons.append(f"crowded: gap to the 3rd follower {crowd['gap3_pct']:.1f} % > {cfg.max_gap3_pct:g} %")
     hours = {"qualified": cfg.review_qualified_h, "candidate": cfg.review_candidate_h, "retired": cfg.review_retired_h}[
         status
@@ -340,4 +340,47 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
             "hist_win_rate": hist.get("win_rate"), "hist_trades": hist.get("trades"), "crowding": crowd.get("followers_1s"),
             "venue_share": venue, "score": sc, "status": status, "next_review": int(now) + hours * 3600, "reasons": reasons,
             "exit": lab_row.get("exit") if lab_row else None, "gap3_pct": crowd.get("gap3_pct"),
-            "copy_plan": copy_plan(lab_row), "create_slot": create}  # fmt: skip
+            "copy_plan": copy_plan(lab_row), "create_slot": create, "gate": gate}  # fmt: skip
+
+
+# The gates these rules added or changed (research round 2, 7 Nov): what a copy makes where it lands ("tape": the lab
+# moved from the in-slot +6 to +3x), first buys in a create slot, and the forward check. A wallet the book copied before
+# them is never stopped by them (keep_armed); every other gate stops it as it always did.
+NEW_RULE_GATES = frozenset({"tape", "create_slot", "forward"})
+# what a kept verdict says of the new evaluation (`kept_armed["new"]`)
+KEPT_NEW_FIELDS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "reasons")
+_NOT_KEPT = ("id", "computed_at", "next_review", "reasons", "forward", "create_slot", "kept_armed", "gate")
+
+
+def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg: QualifyConfig,
+               now: float) -> dict[str, Any]:  # fmt: skip
+    """The verdict to write for a wallet a copy sniper copies now (`armed`), given its latest verdict before this run
+    (`prev`). The book arms only qualified wallets and drops any other; a wallet it copied before these rules (its last
+    verdict qualified under the old ones, with a copy plan, or already kept) is not stopped by them: the owner decides
+    (research round 2, 7 Nov: keep 7aPo3n armed as a live measurement, judge it at 30 copies).
+
+    When one of NEW_RULE_GATES stops such a wallet, the verdict written is the one the book armed it on (status,
+    score, copy plan, landing and numbers, as the book reads them), reviewed as a qualified one, its only reason that it
+    no longer qualifies and why; `kept_armed` holds when it was armed on, and the new evaluation ("new"). Its forward
+    and create-slot numbers are the new ones. Passing these rules, it gets its own verdict with the mark ("kept": False),
+    so it stays kept should it fall back under them while it is copied. Any other wallet, one an old gate stops (the
+    bundle rule, venue, history, copies, crowding) and one no sniper copies any more: `v` as it is."""
+    mark = (prev or {}).get("kept_armed")
+    if not armed or not prev or prev.get("status") != "qualified" or not prev.get("copy_plan"):
+        return v
+    if prev.get("forward") is not None and not mark:  # qualified under these rules: they apply to it
+        return v
+    armed_on = int(mark["armed_on"]) if mark else int(prev["computed_at"])
+    if v.get("status") == "qualified":
+        return dict(v, kept_armed={"armed_on": armed_on, "kept": False})
+    if v.get("gate") not in NEW_RULE_GATES:
+        return v
+    why = (v.get("reasons") or ["?"])[-1]  # the gate that stopped it says why last
+    said = (f"no longer qualifies under the 7 Nov verdict rules ({why}): kept qualified because the book already copied "
+            "it before these rules; whether to stop it, the owner decides")  # fmt: skip
+    kept = {k: val for k, val in prev.items() if k not in _NOT_KEPT}
+    return kept | {
+        "computed_at": int(now), "next_review": int(now) + cfg.review_qualified_h * 3600, "reasons": [said],
+        "forward": v.get("forward"), "create_slot": v.get("create_slot"),
+        "kept_armed": {"armed_on": armed_on, "kept": True, "new": {k: v.get(k) for k in KEPT_NEW_FIELDS}},
+    }  # fmt: skip

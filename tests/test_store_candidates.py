@@ -120,10 +120,10 @@ def test_verdict_copy_plan_round_trips_and_an_old_table_migrates(tmp_path):
     try:
         cols = [r[1] for r in st._q("PRAGMA table_info(verdicts)")]
         assert cols == [r[1] for r in fresh._q("PRAGMA table_info(verdicts)")]
-        assert len(cols) == 21 and cols[-4:] == ["copy_plan", "gap3_pct", "create_slot", "forward"]
+        assert len(cols) == 22 and cols[-5:] == ["copy_plan", "gap3_pct", "create_slot", "forward", "kept_armed"]
         v = st.latest_verdicts()[0]
         assert v["n_tape"] == 93 and v["reasons"] == [] and v["copy_plan"] is None and v["gap3_pct"] is None
-        assert v["create_slot"] is None and v["forward"] is None
+        assert v["create_slot"] is None and v["forward"] is None and v["kept_armed"] is None
         due = st.candidates(due_before=300)  # candidates() reads the verdict's columns by position
         assert [c["wallet"] for c in due] == ["W1"] and due[0]["verdict"]["status"] == "qualified"
         assert due[0]["verdict"]["copy_plan"] is None and due[0]["verdict"]["score"] == 0.0013

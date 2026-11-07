@@ -281,9 +281,11 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     st.upsert_candidate("LEAD", "tape", {}, NOW - 86400)
     forward = {"picked_at": NOW - 30 * H, "tape_hours": 29.0, "n": 21, "mean": 0.003, "lower": 0.0004, "win_rate": 0.52,
                "status": "passed", "min_n": 20, "min_hours": 6.0}  # fmt: skip
+    kept = {"armed_on": NOW - 40 * H, "kept": False}  # copied before the 7 Nov rules, meeting them now
     st.put_verdict({"wallet": "LEAD", "computed_at": NOW - 3600, "status": "qualified", "score": 0.004, "n_tape": 30,
                     "mean_sol": 0.009, "lower_sol": 0.002, "landing_pos": "+3x",
-                    "copy_plan": {"min_leader_sol": 0.5, "leader_style": "dumper"}, "forward": forward})  # fmt: skip
+                    "copy_plan": {"min_leader_sol": 0.5, "leader_style": "dumper"}, "forward": forward,
+                    "kept_armed": kept})  # fmt: skip
     out = L.round_trips(st, "W", NOW - 6 * H)
     assert out["summary"] == {"trips": 1, "wins": 0, "losses": 1, "pnl_sol": -0.041}
     (trip,) = out["trips"]
@@ -292,6 +294,9 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     assert trip["leader_progress"] == 0.0846  # where on its curve the leader bought, beside where we landed
     assert trip["verdict"]["mean_sol"] == 0.009 and trip["verdict"]["copy_plan"]["min_leader_sol"] == 0.5
     assert trip["verdict"]["forward"] == forward  # what its copies made after the pick, next to what the trip made
+    assert (
+        trip["verdict"]["kept_armed"] == kept
+    )  # whether it is copied only because the book copied it before the rules
     assert trip["sig"] == "S" * 12 and "B" * 20 not in json.dumps(out)  # short signatures only
     st.close()
 
