@@ -186,6 +186,24 @@ def test_repositioning_trades_waits_out_a_briefly_locked_database(tmp_path):
     st.close()
 
 
+def test_opening_a_database_that_needs_a_new_column_waits_out_a_briefly_locked_database(tmp_path, monkeypatch):
+    """Every process opens the store; after a deploy that adds a column the first opener writes the schema, and it did
+    that on the connection directly (no wait past sqlite's own 30 s). An up-to-date schema needs no lock at all."""
+    db = tmp_path / "t.db"
+    Store(db).close()
+    con = sqlite3.connect(db)
+    con.execute("ALTER TABLE verdicts DROP COLUMN gap3_pct")  # a database from before the column
+    con.commit()
+    con.close()
+    real = sqlite3.connect
+    monkeypatch.setattr(sqlite3, "connect", lambda *a, **kw: real(*a, **{**kw, "timeout": 0.1}))
+    monkeypatch.setattr(Store, "LOCK_PATIENCE", 20.0)
+    _lock_for(db, 1.0)
+    st = Store(db)
+    assert [r[1] for r in st._q("PRAGMA table_info(verdicts)")][-1] == "gap3_pct" and not st.conn.in_transaction
+    st.close()
+
+
 def test_bulk_rows_go_in_short_batches_another_writer_gets_in_between(tmp_path):
     """The recorder's buffer after minutes of refusals, the events scan's crossings, a lab's features: one transaction
     per call held the lock for the whole list (5,000 trades: 0.23 s on a 2.4M-trade copy; the server's is larger)."""

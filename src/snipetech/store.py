@@ -234,17 +234,20 @@ class Store:
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.file_id = file_identity(self.path)  # the file this connection reads, even after another is renamed over it
-        with self.lock:
-            self.conn.executescript(SCHEMA)
-            for table, col, typ in _ADDED_COLUMNS:
-                have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
-                if col not in have:
-                    try:
-                        self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
-                    except sqlite3.OperationalError as e:  # another process opening it added the column first
-                        if "duplicate column name" not in str(e):
-                            raise
-            self.conn.commit()
+        # through the retrying write: the first opener after a deploy that adds a table or a column writes the schema
+        # and waits its turn for the lock instead of dying on it (an up-to-date schema takes no lock at all)
+        self._write(self._create_schema)
+
+    def _create_schema(self) -> None:
+        self.conn.executescript(SCHEMA)
+        for table, col, typ in _ADDED_COLUMNS:
+            have = {r[1] for r in self.conn.execute(f"PRAGMA table_info({table})")}
+            if col not in have:
+                try:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {typ}")
+                except sqlite3.OperationalError as e:  # another process opening it added the column first
+                    if "duplicate column name" not in str(e):
+                        raise
 
     def close(self) -> None:
         with self.lock:
