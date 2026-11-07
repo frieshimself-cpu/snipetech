@@ -983,9 +983,9 @@ def test_the_books_stops_are_the_owners_risk_values_value_by_value(tmp_path):
 
         assert now_() == (3.0, 1.0, 2.0, "config", "config")
         set_risk(paths, {"floor_sol": 0.0, "day_stop_sol": 5.0}, "telegram", NOW)  # the owner's values, 7 Nov 12:55
-        assert now_() == (0.0, 5.0, None, "owner", "owner")
+        assert now_() == (0.0, 5.0, 2.0, "owner", "owner")  # a day stop that is a number lifts no cap
         set_risk(paths, {"floor_sol": "off"}, "telegram", NOW + 60)
-        assert now_() == (None, 5.0, None, "owner", "owner")
+        assert now_() == (None, 5.0, 2.0, "owner", "owner")
         risk_file(paths).unlink()
         set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW + 120)
         assert now_() == (3.0, None, None, "config", "owner")
@@ -998,7 +998,8 @@ def test_the_books_stops_are_the_owners_risk_values_value_by_value(tmp_path):
 def test_with_the_owners_guard_off_the_book_trades_below_its_pinned_floor_and_day_stop(tmp_path):
     """7 Nov ~12:10 UTC the owner: "Just make it so live trading never stops". A 2 SOL wallet (under the pinned 3 SOL
     floor), a day 1.2 SOL down (past the pinned 1 SOL day stop) and 2.4 SOL bought today (past the pinned 2 SOL daily
-    cap): the pinned values halt the book; the owner's /risk floor off and /risk stop 1.5 (then off) are what it obeys."""
+    cap): the pinned values halt the book; the owner's /risk floor off and /risk stop 1.5 (then off) are what it obeys.
+    The cap lifts with the day stop's off only: under the owner's 1.5 SOL day stop the 2.4 SOL bought still halts it."""
     from snipetech.operator.risk_guard import set_risk
 
     st, cfg = _env(tmp_path, enabled=True)
@@ -1020,8 +1021,40 @@ def test_with_the_owners_guard_off_the_book_trades_below_its_pinned_floor_and_da
         set_risk(paths, {"floor_sol": "off"}, "telegram", NOW)
         assert run() == ("day stop", 0)  # the pinned day stop: the owner set none
         set_risk(paths, {"day_stop_sol": 1.5}, "telegram", NOW)
-        assert run() == (None, 2)  # 1.2 down of the owner's 1.5, and no daily cap any more
+        assert run() == ("daily risk used", 0)  # 1.2 down of the owner's 1.5, and the pinned 2 SOL cap still on
         set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+        assert run() == (None, 2)
+    finally:
+        st.close()
+
+
+def test_the_books_daily_cap_lifts_only_with_the_owners_day_stop_off(tmp_path):
+    """The daily cap of SOL bought ([book] daily_risk_sol, 2 SOL: ten 0.2 SOL buys) halts the book for the day, so it
+    follows the day stop, and only the owner's off lifts it (review of 7 Nov: any number lifted it). The owner set the 5
+    SOL day stop at 12:55 for the guard, before the book followed /risk, and a tighter /risk stop 0.5 is no word to buy
+    more: while the day stop is a number the pinned cap stays. /risk stop off lifts both."""
+    from snipetech.book.switch import book_stops
+    from snipetech.operator.risk_guard import set_risk
+
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    paths = OperatorPaths(tmp_path / "data")
+    for k in range(12):  # 2.4 SOL bought today, the automatic test's buys from the same wallet among them
+        st.put_fill({"sig": f"B{k}", "ts": NOW - 3000 + k, "wallet": W, "side": "buy", "sol": 0.2})
+
+    def run():
+        svc = FakeSvc(st)
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (12.0, 0.0, [])))  # fmt: skip
+        return out["kill_reason"], [c[0] for c in svc.calls].count("create")
+
+    try:
+        for day in (5.0, 0.5):
+            set_risk(paths, {"floor_sol": 0.0, "day_stop_sol": day}, "telegram", NOW)
+            assert book_stops(cfg, paths).daily_risk_sol == 2.0, day
+            assert run() == ("daily risk used", 0), day
+        set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+        assert book_stops(cfg, paths).daily_risk_sol is None
         assert run() == (None, 2)
     finally:
         st.close()
@@ -1038,8 +1071,8 @@ def test_the_book_says_which_stops_apply(tmp_path):
     assert "at most 2 SOL a day at risk" in line and "below 3 SOL equity" in line and "1 SOL day loss" in line
     set_risk(paths, {"floor_sol": 0.0, "day_stop_sol": 5.0}, "telegram", NOW)
     line = book_line(cfg, paths)
-    assert "below 0 SOL equity (your /risk floor)" in line and "5 SOL day loss (your /risk day stop" in line
-    assert "a day at risk" not in line
+    assert "below 0 SOL equity (your /risk floor)" in line and "5 SOL day loss (your /risk day stop)" in line
+    assert "at most 2 SOL a day at risk" in line  # the cap lifts with the day stop's off only
     set_risk(paths, {"floor_sol": "off", "day_stop_sol": "off"}, "telegram", NOW)
     line = book_line(cfg, paths)
     assert "no equity floor" in line and "no day stop" in line and "3 SOL equity" not in line

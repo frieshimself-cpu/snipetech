@@ -86,9 +86,10 @@ def book_stops(cfg: Config, paths: OperatorPaths | None) -> BookStops:
     and day_stop_sol 1 (a dump of every default; changing one needs SSH, which the owner does not do), so the owner's
     word wins, value by value: a value the owner set in operator/RISK (/risk floor, /risk stop), or off, is the book's
     floor or day stop instead of the pinned one. The daily cap of SOL bought ([book] daily_risk_sol, 2 SOL: ten 0.2 SOL
-    buys) halts the book for the day, so it follows the day stop: with the owner's day stop set, a value or off, the
-    owner's is the book's one day-level stop and the cap no longer applies. A file that cannot be read is no word of
-    the owner's (risk_guard.read_risk), and the pinned values apply."""
+    buys) halts the book for the day, so it follows the day stop, and only the owner's off lifts it: a day stop that is a
+    number (the owner's 5 SOL of 7 Nov 12:55 was set for the guard, before the book followed /risk; a tighter /risk stop
+    0.5 is no word to buy more) leaves the pinned cap on (review of 7 Nov: any number lifted it). A file that cannot be
+    read is no word of the owner's (risk_guard.read_risk), and the pinned values apply."""
     st = BookStops.pinned(cfg.book)
     owner = risk_guard.read_risk(paths) if paths is not None else {}
 
@@ -97,7 +98,8 @@ def book_stops(cfg: Config, paths: OperatorPaths | None) -> BookStops:
 
     floor, floor_from = (word("floor_sol"), "owner") if "floor_sol" in owner else (st.floor_sol, "config")
     if "day_stop_sol" in owner:
-        day, daily, day_from = word("day_stop_sol"), None, "owner"
+        day, day_from = word("day_stop_sol"), "owner"
+        daily = None if day is None else st.daily_risk_sol  # the cap goes with the day stop's off, and only with it
     else:
         day, daily, day_from = st.day_stop_sol, st.daily_risk_sol, "config"
     return BookStops(floor, day, daily, floor_from, day_from)
@@ -110,8 +112,9 @@ def _stops_words(st: BookStops) -> tuple[str, str]:
     if st.floor_sol is not None:
         stops.append(f"below {st.floor_sol:g} SOL equity" + (" (your /risk floor)" if st.floor_from == "owner" else ""))
     if st.day_stop_sol is not None:
-        stops.append(f"after a {st.day_stop_sol:g} SOL day loss"
-                     + (" (your /risk day stop: no daily cap)" if st.day_from == "owner" else ""))  # fmt: skip
+        stops.append(
+            f"after a {st.day_stop_sol:g} SOL day loss" + (" (your /risk day stop)" if st.day_from == "owner" else "")
+        )
     offs = (["no equity floor (you switched it off: /risk floor off)"] if st.floor_sol is None else []) + (
         ["no day stop and no daily cap (you switched it off: /risk stop off)"] if st.day_stop_sol is None else []
     )

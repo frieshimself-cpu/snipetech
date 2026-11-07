@@ -95,8 +95,8 @@ class BookStops:
     each None when off, and whose the floor and the day stop are ("config": the config file's [book] value; "owner": the
     owner's /risk, operator/RISK). The server's config file pins every default and changing one needs SSH, which the
     owner does not do (7 Nov), so the owner's word in operator/RISK wins, value by value. The daily cap halts the book
-    for the day (it does not size a fill), so it follows the day stop: with the owner's day stop set, a value or off,
-    the owner's is the book's one day-level stop."""
+    for the day (it does not size a fill), so it follows the day stop's off: it is None only while the owner's day stop
+    is off, never because the owner set the day stop to a number."""
 
     floor_sol: float | None
     day_stop_sol: float | None
