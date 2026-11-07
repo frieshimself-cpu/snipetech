@@ -160,8 +160,10 @@ def _mark_postmortem(paths: OperatorPaths, now: float, trips: dict, mode: str, r
 
 def _could_trade(snap, paths: OperatorPaths, now: float) -> bool:
     """Whether a new live trade could start now, which makes the wallet-wide guard's trip worth a page: the book is on,
-    or a live test is requested, starting, running or closing."""
-    return bool(getattr(snap, "book_live", False)) or live_test.in_progress(paths, now)
+    a live test is requested, starting, running or closing, or the owner's standing yes may start one (autotest.py)."""
+    from . import autotest
+
+    return bool(getattr(snap, "book_live", False)) or live_test.in_progress(paths, now) or autotest.is_on(paths)
 
 
 def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) -> dict[str, float]:

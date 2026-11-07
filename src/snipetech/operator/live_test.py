@@ -46,6 +46,7 @@ from .tools import NoteSink
 MAX_BUY_SOL = 0.5  # the most one buy of a test may be, whatever size the strategy was frozen at
 FILLS = 10  # buys a test makes at most: the cycler stops re-arming at the 10th buy of the wallet on the tape
 MINUTES = 120  # how long the cycler keeps the sniper armed
+MAX_MINUTES = 180  # the longest an automatic test's block may run (operator/AUTOTEST's bound; /test go plans MINUTES)
 MIN_FORWARD_N = 100  # forward paper trades at the real landing a strategy needs before it goes live
 REQUEST_TTL_SECS = 30 * 60  # a yes that no round acted on within two rounds is stale: the owner sends it again
 # Fees beyond the buys themselves: about 0.009 SOL a live round trip, failed duplicate sells included (6 Nov), and about
@@ -226,21 +227,28 @@ def eligible(store, cfg: Config, now: float) -> list[dict]:
     return _survey(store, cfg, now)[0]
 
 
-def plan(row: dict, equity_sol: float, wallet: str) -> dict:
-    """The live test of one eligible strategy: its own size a buy (refused above MAX_BUY_SOL), FILLS buys at most, one
-    coin at a time, MINUTES at most, and a floor LOSS_SOL below the equity it starts from (the owner's 1 SOL stop),
-    never under MIN_FLOOR_SOL, rounded down to the cent. Raises ValueError in plain words."""
+def plan(row: dict, equity_sol: float, wallet: str, *, fills: int = FILLS, minutes: int = MINUTES,
+         loss_sol: float = LOSS_SOL, floor: float | None = None) -> dict:  # fmt: skip
+    """The live test of one eligible strategy: its own size a buy (refused above MAX_BUY_SOL), `fills` buys at most (FILLS
+    or fewer), one coin at a time, `minutes` at most (MAX_MINUTES or fewer), and a floor `loss_sol` below the equity it
+    starts from (the owner's 1 SOL stop), never under MIN_FLOOR_SOL, rounded down to the cent; or `floor` as given (the
+    automatic test's later blocks keep the first block's, autotest.py). Raises ValueError in plain words."""
     buy = float(row.get("buy_sol") or 0)
     if not buy > 0:
         raise ValueError("it has no size a buy")
     if buy > MAX_BUY_SOL + 1e-9:
         raise ValueError(f"it buys {buy:g} SOL at a time, above the {MAX_BUY_SOL:g} SOL a live test may buy")
-    floor = round(math.floor(max(MIN_FLOOR_SOL, float(equity_sol) - LOSS_SOL) * 100 + 1e-6) / 100, 2)
-    worst = (f"at most {FILLS} buys of {buy:g} SOL, one coin at a time; it buys nothing more once the wallet (SOL and "
-             f"coins) is below {floor:.2f} SOL, {LOSS_SOL:g} SOL below its start (the coin it holds then may take it a "
-             "little further while it sells)")  # fmt: skip
-    return {"id": row["id"], "label": str(row.get("label") or row["id"]), "buy_sol": buy, "fills": FILLS,
-            "minutes": MINUTES, "floor": floor, "wallet": wallet, "equity_sol": round(float(equity_sol), 4),
+    if not (1 <= int(fills) <= FILLS and 1 <= int(minutes) <= MAX_MINUTES):
+        raise ValueError(f"a test makes 1 to {FILLS} buys in 1 to {MAX_MINUTES} minutes")
+    since = "its start" if floor is None else "the first block's start"
+    if floor is None:
+        floor = math.floor(max(MIN_FLOOR_SOL, float(equity_sol) - float(loss_sol)) * 100 + 1e-6) / 100
+    floor = round(float(floor), 2)
+    worst = (f"at most {int(fills)} buys of {buy:g} SOL, one coin at a time; it buys nothing more once the wallet (SOL "
+             f"and coins) is below {floor:.2f} SOL, {float(loss_sol):g} SOL below {since} (the coin it holds then may "
+             "take it a little further while it sells)")  # fmt: skip
+    return {"id": row["id"], "label": str(row.get("label") or row["id"]), "buy_sol": buy, "fills": int(fills),
+            "minutes": int(minutes), "floor": floor, "wallet": wallet, "equity_sol": round(float(equity_sol), 4),
             "worst": worst}  # fmt: skip
 
 
@@ -391,6 +399,8 @@ def _caps(t: dict) -> str:
 def _status(svc, t: dict, now: float) -> str:
     """/test while a test is requested, starting or running."""
     head = f"{t.get('label') or t['id']} ({t['id']})"
+    if (t.get("sequence") or {}).get("block"):  # started by the owner's standing yes (autotest.py)
+        head += f", automatic test, block {t['sequence']['block']}"
     if t["state"] == "requested":
         return (f"Live test requested at {_hm(t['requested_at'])} UTC: {head}, {_caps(t)}. It starts at the next "
                 f"operator round (within 15 minutes) and expires if no round has started it by "
@@ -459,6 +469,10 @@ async def command(args: list[str], *, svc, cfg: Config, paths: OperatorPaths, sn
     round starts. Only the owner's chat gets here (commands.parse_updates); a message that waited is refused before."""
     if not args:
         return _overview(svc, cfg, paths, snap, now)
+    if args[0].lower() == "auto":  # the owner's standing yes: /test auto, /test auto on, /test auto off
+        from . import autotest
+
+        return autotest.command(args[1:], cfg=cfg, paths=paths, notes=notes, now=now, date=date)
     sid = args[0].lower()
     if not _ID.fullmatch(sid):  # never repeated: a secret key pasted by mistake must not reach the chat or the log
         return ("Nothing started: that is not a strategy id (ten letters and digits, as /test shows them). Send /test "
@@ -600,19 +614,50 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
         return no + f"the wallet-wide guard holds: {g.reason}. /risk shows it; /risk stop or /risk floor changes it."
     if not g.known:
         return no + f"{g.reason}. Try again in a minute."
-    req = p | {"state": "requested", "oktech_wallet": cfg.oktech.wallet or DEFAULT_OKTECH_WALLET,
-               "forward": {k: row.get(k) for k in ("n", "mean", "ev_lower", "landing")},
-               "requested_at": int(now), "by": "telegram", "message_date": date}  # fmt: skip
-    written, before = _swap(paths, lambda cur: not _active(cur, now), req)
-    if not written:
+    if not write_request(paths, request(p, row, cfg, now, by="telegram", message_date=date), now):
         return no + "another live test was requested a moment ago. Send /test to see it."
-    if before and _expired(before, now):  # a yes no round ever acted on: kept in the record as expired
-        _history(paths, before | {"state": "expired", "ended_at": int(now), "error": "expired: no round started it"})
     notes.write(f"owner requested a live test from Telegram (/test {sid} go): {p['label']}, {_caps(p)}, wallet "
                 f"{wallet}; the next operator round starts it", "decision")  # fmt: skip
     head = (f"Live test requested: {p['label']} ({sid}). It starts at the next operator round, within 15 minutes; if "
             f"no round has started it by {_hm(now + REQUEST_TTL_SECS)} UTC it expires and nothing is bought.")  # fmt: skip
     return "\n".join([head, *_plan_words(p, cfg, paths)])
+
+
+def request(p: dict, row: dict, cfg: Config, now: float, *, by: str, **extra) -> dict:
+    """The request for plan `p` of paper row `row`, as /test go writes it and the automatic test (by "autotest") too:
+    the plan, the OKTech wallet, the forward numbers it was started on, when and by whom."""
+    return p | {"state": "requested", "oktech_wallet": cfg.oktech.wallet or DEFAULT_OKTECH_WALLET,
+                "forward": {k: row.get(k) for k in ("n", "mean", "ev_lower", "landing")},
+                "requested_at": int(now), "by": by} | extra  # fmt: skip
+
+
+def write_request(paths: OperatorPaths, req: dict, now: float) -> bool:
+    """Write `req` only while no test is requested, starting, running or closing; False when another was written
+    meanwhile. A request no round ever acted on is kept in the record as expired."""
+    written, before = _swap(paths, lambda cur: not _active(cur, now), req)
+    if written and before and _expired(before, now):
+        _history(paths, before | {"state": "expired", "ended_at": int(now), "error": "expired: no round started it"})
+    return written
+
+
+def find(paths: OperatorPaths, sid: str, requested_at) -> dict | None:
+    """The test of strategy `sid` requested at `requested_at`: TEST.json while it is the current one, else its last line
+    in tests.jsonl; None when neither has it."""
+    t = load(paths)
+    if t and t["id"] == sid and t.get("requested_at") == requested_at:
+        return t
+    try:
+        lines = history_path(paths).read_text().splitlines()
+    except OSError:
+        return None
+    for line in reversed(lines):
+        try:
+            h = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(h, dict) and h.get("id") == sid and h.get("requested_at") == requested_at and h.get("state"):
+            return h
+    return None
 
 
 def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
@@ -678,16 +723,25 @@ def _end(paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier, l
 async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: float) -> tuple[str | None, bool]:
     """Why the requested test must not start now (None: it may), and whether that may pass by itself before the request
     expires (the balance or the coins could not be read). The request file is checked against the caps too: only
-    /test go writes it, and nothing above them is ever started."""
+    /test go and the automatic test write it, and nothing above them is ever started. An automatic request starts only
+    while the owner's standing yes still covers it (autotest.holds)."""
     if paths.stop_flag.exists():
         return "your /stop is in force", False
+    auto = t.get("by") == "autotest"
     try:
-        bad = (float(t["buy_sol"]) > MAX_BUY_SOL + 1e-9 or int(t["fills"]) > FILLS or int(t["minutes"]) > MINUTES
+        bad = (float(t["buy_sol"]) > MAX_BUY_SOL + 1e-9 or int(t["fills"]) > FILLS
+               or int(t["minutes"]) > (MAX_MINUTES if auto else MINUTES)
                or float(t["floor"]) < MIN_FLOOR_SOL or float(t["buy_sol"]) <= 0)  # fmt: skip
     except (KeyError, TypeError, ValueError):
         bad = True
     if bad:
         return "the request is not one /test go writes (its caps are missing or above the limits)", False
+    if auto:
+        from . import autotest
+
+        why = autotest.holds(paths, t)
+        if why:
+            return why, False
     if not cfg.operator.wallet or t.get("wallet") != cfg.operator.wallet:
         return "the sniper wallet in the config is not the one in the request", False
     try:
@@ -969,8 +1023,22 @@ async def finish_ended(svc, cfg: Config, paths: OperatorPaths, jobs, now: float,
 async def round_step(svc, cfg: Config, paths: OperatorPaths, jobs, now: float, *, snap=None,
                      notes: NoteSink | None = None, notifier=None) -> list[str]:  # fmt: skip
     """One round's live-test work, from `operate` (never on a dry run, never from the one-minute pass): close a test
-    whose cycler ended, then start (or expire) a request. Returns lines for the operator log."""
+    whose cycler ended, then the owner's automatic test (autotest.py: it judges a block that ended and may write the
+    next request, or the first one), then start (or expire) a request, so an automatic request starts in the same
+    round. Returns lines for the operator log."""
+    from . import autotest
+
     lines: list[str] = []
+    notes = notes or NoteSink(paths, now=lambda: now)
     await finish_ended(svc, cfg, paths, jobs, now, notes=notes, notifier=notifier, log=lines.append)
+    try:
+        await autotest.step(svc, cfg, paths, now, snap=snap, notes=notes, notifier=notifier, log=lines.append)
+    except Exception as exc:  # noqa: BLE001 - the owner's own /test go still starts; the owner hears it once a day
+        lines.append(redact(f"automatic test step failed: {type(exc).__name__}: {exc}"))
+        if not notes.has_today("automatic test step failed", now):
+            text = notes.write(f"automatic test step failed: {type(exc).__name__}: {str(exc)[:160]}; the next round "
+                               "looks again", "decision")  # fmt: skip
+            if notifier is not None:
+                notifier.send(text)
     await start_requested(svc, cfg, paths, jobs, now, snap=snap, notes=notes, notifier=notifier, log=lines.append)
     return lines

@@ -121,8 +121,9 @@ def _tape(store, ts, k=0):
                             user="SomeoneElse", is_buy=True, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
 
 
-@pytest.fixture
-def env(tmp_path):
+def make_env(tmp_path):
+    """The live test's world: the operator's files, the store, the round's job runner (it records what would start and
+    leaves the job running), the fake service, the owner's Telegram and a fresh snapshot of an 11.9 SOL wallet."""
     data = tmp_path / "data"
     paths = OperatorPaths(data).ensure()
     store = Store(data / "snipetech.db")
@@ -145,8 +146,14 @@ def env(tmp_path):
     e = SimpleNamespace(paths=paths, store=store, cfg=cfg, sent=sent, jobs=jobs, started=started, svc=Svc(store, paths),
                         notes=NoteSink(paths, now=lambda: NOW), notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
                         snap=Snapshot(ts=NOW - 300, wallet=W, native_sol=11.8, wsol=0.1, held=[], snipers=[]))  # fmt: skip
+    return e
+
+
+@pytest.fixture
+def env(tmp_path):
+    e = make_env(tmp_path)
     yield e
-    store.close()
+    e.store.close()
 
 
 def _send(e, *words, at=NOW, date=None, name="test"):

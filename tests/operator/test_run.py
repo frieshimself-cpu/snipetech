@@ -230,6 +230,16 @@ def test_the_round_tells_the_owner_once_when_the_wallet_wide_guard_trips(tmp_env
     assert len([t for t in sent if "wallet-wide guard tripped" in t]) == 1  # a dry run starts nothing, says nothing
 
 
+def test_the_guards_trip_pages_the_owner_while_the_standing_yes_is_on(tmp_env):
+    """The book off and no test, but the owner's automatic test may start one: the trip matters, so it is a page."""
+    from snipetech.operator.autotest import set_autotest
+
+    set_autotest(tmp_env["paths"], True, words="Yes, use this plan", by="cli", now=NOW - 60)
+    sent: list[str] = []
+    _op(tmp_env, send=lambda t: sent.append(t) or True)
+    assert len([t for t in sent if "wallet-wide guard tripped" in t]) == 1
+
+
 def _watch_env(tmp_path, monkeypatch):
     """A DTAU-shaped coin held by the book wallet, bought by a sniper OKTech reports finished (tests/test_book_watch)."""
     from tests.test_book_watch import FINISHED, G, W, _held, _sniper, dtau

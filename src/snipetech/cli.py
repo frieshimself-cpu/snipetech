@@ -648,9 +648,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="snipers=N,held=M",
         help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
     )
-    sp.add_argument("action", nargs="?", choices=["budget", "risk"],
+    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest"],
                     help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed); "
-                         "risk: show or set the wallet-wide guard (operator/RISK, the owner's)")  # fmt: skip
+                         "risk: show or set the wallet-wide guard (operator/RISK, the owner's); autotest: show, or turn "
+                         "on or off, the owner's standing yes for a live test that starts by itself "
+                         "(operator/AUTOTEST)")  # fmt: skip
     sp.add_argument(
         "--daily-usd", type=float, help="budget: dollars a day for all the agents (more than 0, at most 500)"
     )
@@ -665,6 +667,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="risk: no new live trade once the day is this many SOL down (0.1 to 5)")  # fmt: skip
     sp.add_argument("--floor", dest="risk_floor", type=float,
                     help="risk: no new live trade once the wallet (SOL and coins) is under this many SOL (0 to 1000)")  # fmt: skip
+    sp.add_argument("--on", dest="autotest_on", action="store_true",
+                    help="autotest: turn the owner's standing yes on (needs --approved with the owner's words)")  # fmt: skip
+    sp.add_argument("--off", dest="autotest_off", action="store_true", help="autotest: turn it off")
+    sp.add_argument("--approved", help="autotest --on: the owner's yes, in their words as said in chat")
+    sp.add_argument("--buy-sol", dest="buy_sol", type=float, help="autotest --on: SOL a buy (at most 0.5; 0.2)")
+    sp.add_argument("--fills", type=float, help="autotest --on: buys a block (1 to 10; 10)")
+    sp.add_argument("--minutes", type=float, help="autotest --on: minutes a block (1 to 180; 120)")
+    sp.add_argument("--loss-sol", dest="loss_sol", type=float,
+                    help="autotest --on: the whole sequence stops this far below the first block's start (at most 2; 1)")  # fmt: skip
+    sp.add_argument("--more-blocks", dest="more_blocks", type=float,
+                    help="autotest --on: blocks after the first (at most 3; 3)")  # fmt: skip
+    sp.add_argument("--continue-at", dest="continue_at", type=float,
+                    help="autotest --on: live must be at least this times paper to go on (0.5 to 1; 0.5)")  # fmt: skip
 
     sp = cmd(
         "solanatracker", "query SolanaTracker directly: leaderboard, first buyers / traders of a coin, a wallet's PnL"
@@ -1634,11 +1649,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "operate":
         import subprocess
 
-        from .operator import budget_switch, risk_guard
+        from .operator import autotest, budget_switch, risk_guard
         from .operator.run import operate, telegram_setup_cli
 
         if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):
             return risk_guard.risk_cli(cfg, args)
+        if (
+            args.action == "autotest"
+            or args.autotest_on
+            or args.autotest_off
+            or any(getattr(args, k) is not None for k in ("approved", *autotest.FIELDS))
+        ):
+            return autotest.autotest_cli(cfg, args)
         if (
             args.action == "budget"
             or args.budget_default
