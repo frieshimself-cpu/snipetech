@@ -7,7 +7,7 @@ import os
 import sqlite3
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -270,39 +270,66 @@ class Store:
     # and one "database is locked" used to kill an hour-long analysis job. Writes therefore retry
     # with backoff for up to LOCK_PATIENCE seconds before giving up.
     LOCK_PATIENCE = 600.0
+    # Every write is a short transaction: the tape recorder writes ~100,000 trades an hour and waits at most 20 s for
+    # the lock (7 Nov 14:03-15:48 it recorded nothing). A list of rows goes in batches of WRITE_BATCH, each committed
+    # on its own: on a 2.4M-trade copy (7 Nov) a batch of 500 trades or of 500 deletes held the lock 20-40 ms, and
+    # another writer never waited more than 0.08 s; the server's database is ten times larger and mostly uncached.
+    WRITE_BATCH = 500
 
     def _write(self, fn) -> None:
+        """Run `fn` (its statements on self.conn) as one transaction and commit it. Whatever goes wrong inside rolls it
+        back before the error goes on: a transaction left open keeps the write lock until this connection's next
+        commit, and its snapshot pins the WAL. A refused lock ("locked", "busy") is waited out for LOCK_PATIENCE."""
         deadline = time.monotonic() + self.LOCK_PATIENCE
         delay = 0.5
         while True:
             try:
                 with self.lock:
-                    fn()
-                    self.conn.commit()
+                    try:
+                        fn()
+                        self.conn.commit()
+                    except BaseException:
+                        # 7 Nov 14:07-15:48: a refused write left its transaction open and every later write of the
+                        # tape recorder failed on it until a restart. Any other error left it open too, the lock held
+                        # while the job went on (dev transfers and measure swallow a failed fingerprint write and keep
+                        # calling the RPC). Rolled back here, under the same lock, so no other thread's statement
+                        # lands in the failed transaction first.
+                        self._rollback()
+                        raise
                 return
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) and "busy" not in str(e):
                     raise
-                # the failed attempt left its transaction open: rolled back, the next one (or the next write, after
-                # this one gives up) starts afresh. 7 Nov 14:07-15:48: left open, every later write of the tape
-                # recorder failed on it until a restart, and its snapshot kept the WAL from being checkpointed
-                with self.lock:
-                    try:
-                        self.conn.rollback()
-                    except sqlite3.Error:
-                        pass
                 if time.monotonic() >= deadline:
                     raise
                 time.sleep(delay)
                 delay = min(delay * 2, 10.0)
 
+    def _rollback(self) -> None:
+        try:
+            self.conn.rollback()
+        except sqlite3.Error:
+            pass
+
     def _exec(self, sql: str, params: Iterable[Any] = ()) -> None:
         self._write(lambda: self.conn.execute(sql, tuple(params)))
 
-    def _many(self, sql: str, rows: list[tuple]) -> None:
-        if not rows:
-            return
-        self._write(lambda: self.conn.executemany(sql, rows))
+    def _many(self, sql: str, rows: list[tuple]) -> int:
+        """executemany in batches of WRITE_BATCH rows, each its own transaction; returns the rows changed (an INSERT OR
+        IGNORE's new rows). Every caller writes rows that stand alone (OR IGNORE / OR REPLACE): a reader mid-call sees
+        the first batches, as it sees the recorder's flushes, and a call that fails half way is finished by the next
+        one (the recorder keeps its buffer and writes it again)."""
+        changed = 0
+        for i in range(0, len(rows), self.WRITE_BATCH):
+            batch = rows[i : i + self.WRITE_BATCH]
+            out: dict[str, int] = {}
+
+            def do(batch=batch, out=out):
+                out["n"] = self.conn.executemany(sql, batch).rowcount
+
+            self._write(do)
+            changed += out["n"]
+        return changed
 
     # -- writes ----------------------------------------------------------------
 
@@ -444,6 +471,10 @@ class Store:
 
     def mark_seen(self, items: Iterable[tuple[str, int, int]]) -> None:
         self._many("INSERT OR IGNORE INTO seen_sigs (sig, slot, ts) VALUES (?,?,?)", list(items))
+
+    def set_trade_positions(self, rows: list[tuple[int, str]]) -> None:
+        """(pos, sig): each trade's place in its slot, from a listing that knows it (ingest's authoritative order)."""
+        self._many("UPDATE trades SET pos=? WHERE sig=?", rows)
 
     # -- reads -----------------------------------------------------------------
 
@@ -870,29 +901,35 @@ class Store:
         return [r[0] for r in self._q("SELECT list FROM lists WHERE address=?", (address,))]
 
     def add_signal(self, kind: str, data: dict[str, Any], ts: int | None = None) -> int:
-        with self.lock:
-            cur = self.conn.execute(
-                "INSERT INTO signals (ts, kind, data) VALUES (?,?,?)",
-                (ts or int(time.time()), kind, json.dumps(data, default=str)),
-            )
-            self.conn.commit()
-            return int(cur.lastrowid)
+        row = (ts or int(time.time()), kind, json.dumps(data, default=str))
+        out: dict[str, int] = {}
+
+        def do():
+            out["id"] = int(self.conn.execute("INSERT INTO signals (ts, kind, data) VALUES (?,?,?)", row).lastrowid)
+
+        self._write(do)
+        return out["id"]
 
     def signals_since(self, since_id: int = 0, limit: int = 200) -> list[dict[str, Any]]:
         rows = self._q("SELECT id, ts, kind, data FROM signals WHERE id>? ORDER BY id LIMIT ?", (since_id, limit))
         return [{"id": i, "ts": ts, "kind": k, **json.loads(d)} for i, ts, k, d in rows]
 
     def put_paper_trade(self, rec: dict) -> int:
-        """Store one forward paper trade; 0 if this strategy already traded this token."""
-        with self.lock:
-            cur = self.conn.execute(
+        """Store one forward paper trade; 0 if this strategy already traded this token. Through the retrying write:
+        7 Nov 14:06 a paper run died on its first 30 s wait for the lock."""
+        row = (rec["strategy"], rec["mint"], rec["trigger_ts"], rec.get("entry_ts"), rec.get("exit_ts"), rec["pnl"],
+               rec.get("roi"), rec.get("reason"), json.dumps(rec.get("data") or {}))  # fmt: skip
+        out: dict[str, int] = {}
+
+        def do():
+            out["n"] = self.conn.execute(
                 "INSERT OR IGNORE INTO paper_trades (strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data) "
                 "VALUES (?,?,?,?,?,?,?,?,?)",
-                (rec["strategy"], rec["mint"], rec["trigger_ts"], rec.get("entry_ts"), rec.get("exit_ts"), rec["pnl"], rec.get("roi"),
-                 rec.get("reason"), json.dumps(rec.get("data") or {})),
-            )  # fmt: skip
-            self.conn.commit()
-            return cur.rowcount
+                row,
+            ).rowcount
+
+        self._write(do)
+        return out["n"]
 
     def paper_trades(self, strategy: str | None = None) -> list[dict]:
         sql = "SELECT strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data FROM paper_trades"
@@ -921,34 +958,63 @@ class Store:
 
     # -- maintenance -----------------------------------------------------------
 
+    # what prune drops, table by table: rows older than the cutoff that no list references
+    _PRUNED = (
+        ("trades", "ts<? AND user NOT IN (SELECT address FROM lists)"),
+        ("launches", "ts<? AND user NOT IN (SELECT address FROM lists) AND creator NOT IN (SELECT address FROM lists)"),
+        ("seen_sigs", "ts<?"),
+        ("ftrades", "ts<? AND user NOT IN (SELECT address FROM lists)"),
+    )
+
     def prune(self, before_ts: int) -> dict[str, int]:
-        """Drop trades/launches older than `before_ts` that no list references."""
-        with self.lock:
-            protected = {r[0] for r in self.conn.execute("SELECT address FROM lists").fetchall()}
-            cur = self.conn.execute(
-                "DELETE FROM trades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,)
-            )
-            trades = cur.rowcount
-            cur = self.conn.execute(
-                "DELETE FROM launches WHERE ts<? AND user NOT IN (SELECT address FROM lists) "
-                "AND creator NOT IN (SELECT address FROM lists)",
-                (before_ts,),
-            )
-            launches = cur.rowcount
-            self.conn.execute("DELETE FROM seen_sigs WHERE ts<?", (before_ts,))
-            self.conn.execute(
-                "DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (before_ts,)
-            )
-            # the tape only covers what is still stored: drop / clip recorded spans before the cutoff
+        """Drop trades/launches older than `before_ts` that no list references (all of `prune_steps`)."""
+        counts: dict[str, int] = {}
+        for counts in self.prune_steps(before_ts):
+            pass
+        return counts
+
+    def prune_steps(self, before_ts: int) -> Iterator[dict[str, int]]:
+        """`prune` one short transaction at a time, yielding the counts so far after each: the tape recorder runs its
+        hourly prune between its own writes. In one transaction it held the write lock for as long as the deletes took
+        and its event loop waited with it: on a 2.4M-trade copy (7 Nov) another writer waited 2.0 s while the oldest
+        hour went (89k trades), 12.4 s for six hours; in batches of 500, 0.05 and 0.08 s at most.
+
+        The tape coverage is clipped first, so a span never claims trades already deleted: a reader mid-prune, or
+        after a prune that died, sees the tape start at the cutoff and some older rows still there, outside every span
+        (the labs and the paper test read the tape inside its spans). Then each table's old rows go in batches of
+        WRITE_BATCH: their rowids are read outside any transaction (seen_sigs has no index on ts), then deleted by rowid
+        with the same condition, so a row a list protects in the meantime stays. The next prune finishes the rest."""
+        protected = len({r[0] for r in self._q("SELECT address FROM lists")})
+
+        def clip():  # the tape only covers what is still stored: drop / clip recorded spans before the cutoff
             row = self.conn.execute("SELECT data FROM coverage WHERE key='tape'").fetchone()
             if row:
                 cov = json.loads(row[0])
                 cov["spans"] = [[max(a, before_ts), b] for a, b in cov.get("spans", []) if b > before_ts]
-                self.conn.execute(
-                    "UPDATE coverage SET data=?, updated=? WHERE key='tape'", (json.dumps(cov), int(time.time()))
-                )
-            self.conn.commit()
-        return {"trades": trades, "launches": launches, "protected_addresses": len(protected)}
+                self.conn.execute("UPDATE coverage SET data=?, updated=? WHERE key='tape'",
+                                  (json.dumps(cov), int(time.time())))  # fmt: skip
+
+        self._write(clip)
+        counts = {"trades": 0, "launches": 0, "protected_addresses": protected}
+        yield counts
+        for table, where in self._PRUNED:
+            while True:
+                rows = self._q(f"SELECT rowid FROM {table} WHERE {where} LIMIT ?", (before_ts, self.WRITE_BATCH))
+                ids = [r[0] for r in rows]
+                if not ids:
+                    break
+                out: dict[str, int] = {}
+
+                def delete(ids=ids, out=out, table=table, where=where):
+                    sql = f"DELETE FROM {table} WHERE rowid IN ({','.join('?' * len(ids))}) AND {where}"
+                    out["n"] = self.conn.execute(sql, (*ids, before_ts)).rowcount
+
+                self._write(delete)
+                if table in counts:
+                    counts[table] += out["n"]
+                yield counts
+                if not out["n"]:  # nothing of the batch could go (a list protects it now): the next prune looks again
+                    break
 
 
 # -- phase 5: events and edges (appended so earlier line numbers stay put) --------------------------
@@ -977,11 +1043,12 @@ def _event_dedupe(e: dict) -> str:
 
 
 def _add_events(self, rows: list[dict]) -> int:
-    """INSERT OR IGNORE by (kind, mint, wallet, slot); returns how many were new."""
+    """INSERT OR IGNORE by (kind, mint, wallet, slot); returns how many were new: the rows the inserts themselves added
+    (it was count(*) after minus before, two scans of the table, and an event another process wrote in between, the
+    poller's every minute, counted as the caller's)."""
     if not rows:
         return 0
-    before = self._q("SELECT count(*) FROM events")[0][0]
-    self._many(
+    return self._many(
         "INSERT OR IGNORE INTO events (ts, slot, kind, mint, wallet, data, source, dedupe) VALUES (?,?,?,?,?,?,?,?)",
         [
             (
@@ -997,7 +1064,6 @@ def _add_events(self, rows: list[dict]) -> int:
             for e in rows
         ],  # fmt: skip
     )
-    return int(self._q("SELECT count(*) FROM events")[0][0] - before)
 
 
 def _events(self, kind: str | None = None, mint: str | None = None, wallet: str | None = None, since_ts: int = 0,

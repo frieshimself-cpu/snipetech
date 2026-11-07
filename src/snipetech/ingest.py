@@ -124,10 +124,9 @@ class Ingestor:
         return result
 
     def _reposition(self, positions: dict[str, tuple[int, int]]) -> None:
-        rows = [(pos, sig) for sig, (_slot, pos) in positions.items()]
-        with self.store.lock:
-            self.store.conn.executemany("UPDATE trades SET pos=? WHERE sig=?", rows)
-            self.store.conn.commit()
+        # through the store's write: batched, waits out a briefly locked database, rolls back what fails (until 7 Nov it
+        # wrote on the connection directly: no wait past sqlite's own 30 s, and a failure left its transaction open)
+        self.store.set_trade_positions([(pos, sig) for sig, (_slot, pos) in positions.items()])
 
     async def ensure_tx_meta(self, sigs: list[str], include_failed: bool = False) -> int:
         """Fingerprint already-ingested transactions that have no tx_meta yet (re-fetches them).
