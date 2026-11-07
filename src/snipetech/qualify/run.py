@@ -21,18 +21,26 @@ FLAT_TX_SOL = 0.0035  # SOL a transaction the lab charges until the low bid's ro
 LOW_BID_ARM = "control"
 
 
-def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
-    """SOL a transaction for the qualify lab: the flat 0.0035 until the low-bid arm has `[measure] min_arm_fills`
-    measured fills, then half its measured round trip (the buy's fees, the sale at the same fees, and the failed
-    duplicate sends per buy: 0.0094 SOL on 6 Nov), never below the flat cost."""
+def lab_tx_cost_source(store, cfg: Config, arm: str = LOW_BID_ARM) -> tuple[float, str]:
+    """(SOL a transaction a lab charges, where that number came from). "measured" once the low-bid arm has
+    `[measure] min_arm_fills` measured fills: half its measured round trip (the buy's fees, the sale at the same fees,
+    and the failed duplicate sends per buy: 0.0094 SOL on 6 Nov), never below the flat cost. "flat" before that: the
+    flat 0.0035, which is below what a live trade costs, so a result charged at it is too kind (7 Nov, research round 1:
+    0.002 SOL a trade). The lab says which it charged, so nobody reads a flat-cost result as a live one."""
     try:
         row = next((r for r in store.bid_model() if r.get("arm") == arm), None)
     except Exception:  # noqa: BLE001 - no measure stage yet: the flat cost
-        return FLAT_TX_SOL
+        return FLAT_TX_SOL, "flat"
     if not row or (row.get("n") or 0) < cfg.measure.min_arm_fills or row.get("mean_fee_sol") is None:
-        return FLAT_TX_SOL
+        return FLAT_TX_SOL, "flat"
     trip = 2.0 * float(row["mean_fee_sol"]) + float(row.get("mean_overhead_sol") or 0.0)
-    return max(FLAT_TX_SOL, round(trip / 2.0, 6))
+    return max(FLAT_TX_SOL, round(trip / 2.0, 6)), "measured"
+
+
+def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
+    """SOL a transaction for a lab: the qualify lab, the strategy search, `paper freeze` and `snipetech lab` all charge
+    it (`lab_tx_cost_source` says where it came from)."""
+    return lab_tx_cost_source(store, cfg, arm)[0]
 
 
 def default_lab_runner(svc, cfg: Config) -> LabRunner:

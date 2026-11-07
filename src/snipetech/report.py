@@ -741,6 +741,13 @@ def render_lab(r: dict) -> str:
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."
     )
+    if r.get("per_tx_sol") is not None:  # what each transaction was charged, and whether that is what live costs
+        tx = float(r["per_tx_sol"])
+        source = {"measured": "measured: half the low bid's live round trip",
+                  "flat": "the flat cost: the low bid's live round trip is not measured yet, and live costs more "
+                          "(about 0.009 a round trip on 6 Nov), so every mean here is too kind",
+                  "flag": "as --per-tx says"}.get(r.get("per_tx_source"), "source unknown")  # fmt: skip
+        out.append(f"Costs: {tx:g} SOL a transaction ({2 * tx:g} a round trip), {source}.")
     if "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
         out.append(f"Each hypothesis is scored where it trades live: copies at {r.get('copy_landing', r['position'])} "
                    "(where ours land), launch, hunt, whale and burst triggers where a hunt buy lands.")  # fmt: skip

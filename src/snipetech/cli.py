@@ -428,7 +428,10 @@ def build_parser() -> argparse.ArgumentParser:
         "hunt, whale and burst triggers are always scored where a hunt buy lands (a launch a slot after the create)",
     )
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
-    sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
+    sp.add_argument("--per-tx", type=float, default=None,
+                    help="SOL per transaction (priority + tip + base + failed duplicate sends; default: the measured "
+                         "cost, half the low bid's measured round trip, 0.0035 until it is measured, as `paper freeze` "
+                         "charges; the output names the cost and where it came from)")  # fmt: skip
     sp.add_argument("--top", type=int, default=10)
     sp.add_argument(
         "--by-wallet",
@@ -1063,25 +1066,33 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import rank_wallets as lab_rank_wallets
             from .analysis.lab_lock import lab_lock
             from .operator.research import recent_tape
+            from .qualify.run import lab_tx_cost_source
 
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
             # of their own: their copies at the copy landing; the grid's copies at --latency / --position
             lat, pos = (0, copy_pos) if args.trigger else (args.latency, args.position)
+            # what a transaction costs live, as `paper freeze`, the qualify lab and the strategy search charge it, unless
+            # told: every lab of research round 1 (7 Nov) charged the flat 0.0035 against about 0.0045 live, so every
+            # mean was 0.002 SOL a trade too kind
+            per_tx, per_tx_source = (
+                (args.per_tx, "flag") if args.per_tx is not None else lab_tx_cost_source(svc.store, cfg)
+            )
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
                     tape = svc.tape_store if args.hours is None else recent_tape(svc.tape_store, args.hours)
                     # launch-window rules (launch, hunt, whale, burst) run live through OKTech hunt: scored where its
                     # buy lands, wherever --position puts the others, as `paper freeze` and the strategy search do
-                    return lab_collect(tape, cfg, args.buy, lat, pos, args.per_tx, landings=paper.LAUNCH_LANDINGS,
+                    return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
                                        triggers=args.trigger)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
             ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
-                   "copy_landing": copy_pos, "buy_sol": args.buy, "hours": args.hours, "strategies": ranked}  # fmt: skip
+                   "copy_landing": copy_pos, "buy_sol": args.buy, "per_tx_sol": per_tx, "per_tx_source": per_tx_source,
+                   "hours": args.hours, "strategies": ranked}  # fmt: skip
             if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired
                 fired = Counter(r["trigger"] for r in data["rows"])
                 res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
