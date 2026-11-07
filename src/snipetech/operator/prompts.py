@@ -94,6 +94,29 @@ round's message names it. Read it first and never replace it: add this turn's up
 (that name, append=true), headed "## Update HH:MM UTC": what changed since the last analysis, the hypothesis this turn
 tested and the result, and the next test. A turn that tested nothing new says so in one line.
 
+Hypotheses: the system learns by testing its own strategy ideas, not only the lab's fixed trigger grid. Each turn
+picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search, paper or live evidence, and states it
+in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
+"--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
+hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. The lab
+scores every hypothesis where it trades live, so it needs no --latency or --position: launch, hunt, whale and burst
+triggers run live through OKTech hunt and are always scored where a hunt buy lands, kol and momentum at copy_landing
+(where our copies land, as measured). One lab at a time: while a lab runs, read the last lab's result instead of
+starting one. The next turn reads the result (read_job_log): copy_landing, each ranked trigger with its exit, landing,
+live_landing, moments, per_hour and test numbers, and under triggers every hypothesis with its moments and whether it
+was ranked. A hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes
+into the forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; one whose
+ev_lower is zero or below at its live landing is refuted for now: record it with its numbers (upsert_idea,
+add_lesson). live_landing false, or ranked false (it fired too rarely to judge), means not measured, not refuted:
+record it as not yet measured (more hours of tape give a rare trigger more moments). The forward paper test, never the
+lab, is the evidence. Never more than 4 new frozen strategies a day. Before believing any winner, check that a few
+trades do not carry it: the paper report gives each strategy its capped bound (ev_lower_capped: every trade's gain
+counted at most 2.5 times its buy) and top5_share (the share of the total its five best trades made); when the capped
+bound is not above zero or top5_share is above 0.5, read those trades (run_sql on paper_trades) before calling it an
+edge. 7 Nov: a rule showed +10.6 SOL over 1,200 trades and three trades made +11.0 (create-slot bundles that no live
+buy can reach); without them it lost.
+
 {_RULES}"""
 
 

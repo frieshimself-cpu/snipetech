@@ -18,16 +18,17 @@ again picked on older and judged on newer moments. Only test numbers count.
 
 from __future__ import annotations
 
+import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from typing import Any
 
 import numpy as np
 
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
-from ..oktech import EXITS
+from ..oktech import EXITS, _whole_hunt
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -168,6 +169,94 @@ TRIGGERS = (
         for pr in (0.3, 0.5)
     ]
 )
+
+# An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
+# the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
+TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
+    "launch": ("plain",),
+    "burst": ("buyers", "sol", "window", "max_age", "plain"),
+    "whale": ("sol", "max_age", "plain", "solo"),
+    "kol": ("sol", "group", "max_age", "plain"),
+    "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
+    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max"),
+}
+HUNT_CANNOT = ("OKTech hunt cannot skip mayhem or holder-reward coins (plain), see the create transaction (solo) or "
+               "limit the coin's age beyond its own window (max_age)")  # fmt: skip
+TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
+    "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "max_buyers": (0, 200),
+    "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
+}  # fmt: skip
+WHOLE_FIELDS = ("buyers", "holders", "max_buyers")
+FLAG_FIELDS = ("plain", "solo")
+TEXT_FIELDS = ("kind", "group", "event")
+TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
+TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
+
+
+def _trigger_value(name: str, value: Any) -> Any:
+    """One field of an agent's trigger, typed the way the grid's triggers are (3 SOL is 3.0, 4 buyers is 4)."""
+    if name in TEXT_FIELDS:
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be text, not {value!r}")
+        return value
+    if name in FLAG_FIELDS:
+        if not isinstance(value, bool):
+            raise ValueError(f"{name} must be true or false, not {value!r}")
+        return value
+    if name == "dev_max" and value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number, not {value!r}")  # noqa: TRY004 - every refusal is a ValueError
+    lo, hi = TRIGGER_BOUNDS[name]
+    if not lo <= value <= hi:  # NaN fails here too
+        raise ValueError(f"{name} must be between {lo:g} and {hi:g}, not {value!r}")
+    if name in WHOLE_FIELDS:
+        if value != int(value):
+            raise ValueError(f"{name} must be a whole number, not {value!r}")
+        return int(value)
+    return float(value)
+
+
+def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
+    """An agent's own trigger (a hypothesis to test), from a JSON object with Trigger's fields. A ValueError in plain
+    words for anything the lab could not score as meant: an unknown field, a kind other than launch, burst, whale, kol,
+    momentum or hunt (an event trigger needs the events table), a number outside its bounds, a field its kind does not
+    read. A hunt trigger must also be one OKTech runs exactly as scored: sol (minTotalSol) and dev_max (maxDevBuySol)
+    whole numbers, the window a whole number of milliseconds (5 Nov 22:11: OKTech ignored 2.5 / 1.0 and bought every
+    launch), so every hunt hypothesis that wins can be sent with `oktech strategy` as it was tested. Numbers are typed
+    the way the grid's are, so a hypothesis equal to a grid trigger gets the grid's strategy id."""
+    if isinstance(spec, str):
+        try:
+            spec = json.loads(spec)
+        except ValueError as exc:
+            raise ValueError(f"a trigger is a JSON object, e.g. {TRIGGER_EXAMPLE} ({exc})") from None
+    if not isinstance(spec, Mapping):  # every refusal is a ValueError: the CLI and the agents' jobs read that one type
+        raise ValueError(f"a trigger is a JSON object, e.g. {TRIGGER_EXAMPLE}")  # noqa: TRY004
+    names = [f.name for f in fields(Trigger)]
+    unknown = sorted(str(k) for k in spec if k not in names)
+    if unknown:
+        raise ValueError(f"unknown trigger field {', '.join(unknown)}; a trigger has {', '.join(names)}")
+    kind = spec.get("kind")
+    if not isinstance(kind, str) or kind not in TRIGGER_KNOBS:
+        raise ValueError(f"kind must be one of {', '.join(TRIGGER_KNOBS)}, not {kind!r}")
+    trig = Trigger(**{k: _trigger_value(k, v) for k, v in spec.items()})
+    default = Trigger(kind)
+    for name in names:
+        if name != "kind" and name not in TRIGGER_KNOBS[kind] and getattr(trig, name) != getattr(default, name):
+            raise ValueError(f"{name} does not apply to a {kind} trigger (it takes {', '.join(TRIGGER_KNOBS[kind])})"
+                             + (f": {HUNT_CANNOT}" if kind == "hunt" else ""))  # fmt: skip
+    if kind == "kol" and trig.group not in TRIGGER_GROUPS:
+        raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
+    if kind == "hunt":
+        _whole_hunt(trig.sol, "sol (minTotalSol)")
+        if trig.dev_max is not None:
+            _whole_hunt(trig.dev_max, "dev_max (maxDevBuySol)")
+        if _whole_hunt(trig.window * 1000, "the window in ms (timeWindowMs)") <= 0:
+            raise ValueError("a hunt trigger needs a window above 0 s (OKTech timeWindowMs)")
+        if trig.max_buyers and trig.max_buyers < trig.buyers:
+            raise ValueError(f"max_buyers {trig.max_buyers} is below buyers {trig.buyers}: the hunt could never fire")
+    return trig
+
 
 CURVE_REAL_TOKENS = 793_100_000 * 10**6  # tokens a pump.fun curve sells before it completes
 VIRTUAL_OFFSET = 1_073_000_000_000_000 - CURVE_REAL_TOKENS  # virtual minus real token reserves (constant on the curve)
@@ -460,8 +549,8 @@ def span_slot_secs(store: Store, a: int, b: int, step: int = 60) -> float:
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
             event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None,
-            kols: dict[str, set[str]] | None = None,
-            landings: Mapping[str, tuple[int, str]] | None = None) -> dict[str, Any]:  # fmt: skip
+            kols: dict[str, set[str]] | None = None, landings: Mapping[str, tuple[int, str]] | None = None,
+            triggers: Sequence[Trigger] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
@@ -472,12 +561,13 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
-    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at."""
+    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at. `triggers`: run
+    only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = list(exits) if exits else exit_set()
     kols = label_groups(store) if kols is None else kols
-    all_triggers = list(TRIGGERS) + [Trigger("event", event=k) for k in (event_kinds or ())]
+    all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip
     triggers = [(ti, t) for ti, t in enumerate(all_triggers)
                 if (groups is None or (t.kind == "kol" and t.group in groups)) and (t.kind != "event" or event_kinds)]  # fmt: skip
     if groups is not None and event_kinds:

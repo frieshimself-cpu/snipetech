@@ -730,13 +730,24 @@ def render_lab(r: dict) -> str:
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
+    here = f"{r['position']}@{r['latency_slots']}"
+    moved = sorted(
+        {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
+    )
+    if moved:  # launch-window rules land where an OKTech hunt buy lands, whatever landing the lab was asked for
+        out.append("Scored where they trade live, not at the landing above: "
+                   + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
     out.append("")
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."
     )
-    out.append(
-        "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
-    )
+    if "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
+        out.append(f"Each hypothesis is scored where it trades live: copies at {r.get('copy_landing', r['position'])} "
+                   "(where ours land), launch, hunt, whale and burst triggers where a hunt buy lands.")  # fmt: skip
+    else:
+        out.append(
+            "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
+        )
     if r.get("wallets"):
         out += [
             "",

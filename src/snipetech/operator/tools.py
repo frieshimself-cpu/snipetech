@@ -234,11 +234,16 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def start_job(argv: list[str]) -> str:
-        """Start a research job in the background. Only lab, follow, discover-wallets, label, copy-rank, paper, study and
-        copy are allowed; one lab at a time. Returns the job id.
+        """Start a research job in the background; returns the job id.
+
+        Only lab, follow, discover-wallets, label, copy-rank, paper, study and copy are allowed; one lab at a time. A
+        strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
+        whale, kol, momentum or hunt, with its numbers), refused with its reason when a number is out of range or
+        OKTech could not run it. Hunt triggers are the ones OKTech can run exactly as scored.
 
         Args:
-            argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"].
+            argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"],
+                or one hypothesis on the newest day of tape: ["lab", "--trigger", '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}', "--hours", "24", "--json"].
         """
         try:
             return json.dumps(jobs.start(list(argv)))

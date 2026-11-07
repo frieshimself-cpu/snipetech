@@ -249,6 +249,24 @@ def _position(v: str) -> str:
     raise argparse.ArgumentTypeError("start, middle, end or +N (e.g. +1)")
 
 
+def _trigger(v: str):
+    """--trigger: an agent's own hypothesis, refused with its reason before any lab starts (lab.parse_trigger)."""
+    from .analysis.lab import parse_trigger
+
+    try:
+        return parse_trigger(v)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
+def _hours(v: str) -> float:
+    """--hours: a window of the newest tape; an infinite one would crash the job after it took the lab lock."""
+    h = float(v)
+    if not 0 < h < float("inf"):
+        raise argparse.ArgumentTypeError("a number of hours above 0")
+    return h
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="snipetech", description="Decide what to snipe and who to copy on pump.fun.")
     p.add_argument("--version", action="version", version=__version__)
@@ -394,7 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--position",
         type=_position,
         default="middle",
-        help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you)",
+        help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you); launch, "
+        "hunt, whale and burst triggers are always scored where a hunt buy lands (a launch a slot after the create)",
     )
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="SOL per transaction (priority + tip + base)")
@@ -404,6 +423,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit",
     )
+    sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
+                    help="run only this trigger (repeatable), an agent's own hypothesis: a JSON object with the "
+                         'trigger\'s fields, e.g. \'{"kind": "hunt", "sol": 4, "window": 1.5, "dev_max": 1}\'; each is '
+                         "scored where it trades live (launch, hunt, whale and burst where a hunt buy lands, kol and "
+                         "momentum at the copy landing, `copy_landing` in the output): --latency / --position do not "
+                         "apply to it")  # fmt: skip
+    sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
 
     sp = cmd(
         "sweep", "sell every pump.fun curve token the sniper wallet holds (SNIPER_SECRET): the exit OKTech can drop"
@@ -572,6 +598,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
     sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
+    sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
+                    help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
+                         "scored where it trades live: --latency / --position do not apply to it")  # fmt: skip
+    sp.add_argument("--hours", type=_hours, metavar="N", help="freeze: the lab reads only the newest N hours of tape")
+    sp.add_argument("--only-live", action="store_true",
+                    help="freeze: keep only strategies the lab scored where they trade live")  # fmt: skip
 
     sp = cmd(
         "vanity",
@@ -984,18 +1016,40 @@ async def _run(args, cfg: Config) -> int:
             else:
                 raise SystemExit("label: give ADDRESS NAME, or --file")
         elif c == "lab":
+            from collections import Counter
+
+            from .analysis import paper
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
             from .analysis.lab_lock import lab_lock
+            from .operator.research import recent_tape
+
+            copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
+            # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
+            # of their own: their copies at the copy landing; the grid's copies at --latency / --position
+            lat, pos = (0, copy_pos) if args.trigger else (args.latency, args.position)
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
-                    return lab_collect(svc.tape_store, cfg, args.buy, args.latency, args.position, args.per_tx)
+                    tape = svc.tape_store if args.hours is None else recent_tape(svc.tape_store, args.hours)
+                    # launch-window rules (launch, hunt, whale, burst) run live through OKTech hunt: scored where its
+                    # buy lands, wherever --position puts the others, as `paper freeze` and the strategy search do
+                    return lab_collect(tape, cfg, args.buy, lat, pos, args.per_tx, landings=paper.LAUNCH_LANDINGS,
+                                       triggers=args.trigger)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
-            res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": args.latency,
-                   "position": args.position, "buy_sol": args.buy, "strategies": lab_rank(data, cfg, args.top)}  # fmt: skip
+            top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
+            ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
+            res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
+                   "copy_landing": copy_pos, "buy_sol": args.buy, "hours": args.hours, "strategies": ranked}  # fmt: skip
+            if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired
+                fired = Counter(r["trigger"] for r in data["rows"])
+                res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
+                                    **paper.landing_fields({"landing": data["landing_of"][ti], "trigger_spec": t.__dict__},
+                                                           copy_pos),
+                                    "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked)}
+                                   for ti, t in enumerate(data["triggers"])]  # fmt: skip
             if args.by_wallet:
                 res["wallets"] = lab_rank_wallets(data, cfg, svc.store.labels(), top=max(args.top, 40))
             _out(args, res, R.render_lab)
@@ -1026,8 +1080,8 @@ async def _run(args, cfg: Config) -> int:
 
             if args.action == "freeze":
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              args.per_tx, args.replace,
-                                              lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
+                                              args.per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
+                                              hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             else:

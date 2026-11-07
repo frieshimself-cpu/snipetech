@@ -334,6 +334,39 @@ def test_the_analyst_is_told_to_append_its_update_when_the_days_report_exists():
         assert words in ANALYST_SYSTEM, words
 
 
+def test_the_analyst_tests_one_hypothesis_of_its_own_each_turn():
+    """The hypothesis protocol: one idea a turn, stated with what would refute it, a lab on the newest day (one lab at
+    a time), frozen into the forward paper test only with a positive lower bound at its live landing; the paper test,
+    never the lab, is the evidence, and at most 4 new frozen strategies a day."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    for words in ("ONE hypothesis", "operator/ideas.json", "refute", '["lab", "--trigger", "<json>", "--hours", "24", "--json"]',
+                  "One lab at a time", "live_landing", '["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]',
+                  "never the lab, is the evidence", "4 new frozen strategies a day", "Hunt triggers are the ones OKTech can run exactly"):  # fmt: skip
+        assert words in text, words
+
+
+def test_the_analyst_is_told_launch_window_hypotheses_land_where_a_hunt_buy_lands():
+    """7 Nov: launch, whale and burst rules scored at the copy landing made their paper profit inside create bundles no
+    live buy reaches; the protocol never sends them to the copy landing."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    assert (
+        "hunt, whale and burst triggers run live through OKTech hunt and are always scored where a hunt buy lands"
+        in text
+    )
+    assert "for any other kind" not in text
+
+
+def test_the_analyst_reads_an_unmeasured_hypothesis_as_not_refuted():
+    """A hypothesis scored off its live landing, or with too few moments to be ranked, was not measured: the protocol
+    says so instead of calling it refuted, reads where our copies land from the lab (copy_landing), and gives the lab
+    no landing of its own to get wrong."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    protocol = text[text.index("Hypotheses:") : text.index("4 new frozen strategies a day")]
+    for words in ("live_landing false", "ranked false", "not measured, not refuted", "copy_landing"):
+        assert words in protocol, words
+    assert '"--position"' not in protocol
+
+
 def test_runner_is_closed_after_the_turn(env, monkeypatch):
     """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
     'generator didn't stop after athrow()' on the server. The turn closes it itself."""

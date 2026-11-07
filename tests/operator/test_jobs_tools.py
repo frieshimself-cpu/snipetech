@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import re
 import sys
 import time
 
@@ -153,6 +154,41 @@ def test_no_agent_tool_writes_the_owners_budget_file(toolbox):
         _call(tools["write_report"], name=name, text='{"daily_usd": 500}')
     assert not (paths.root / "BUDGET").exists() and not paths.analyst_last.exists()
     assert effective_daily_usd(OperatorConfig(), paths) == 15.0
+
+
+HYPOTHESIS = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
+
+
+def test_the_hypothesis_commands_the_analyst_is_given_run_as_written(jobs):
+    """The analyst's hypothesis protocol names two jobs: a lab on the newest day of tape and the freeze of a winner.
+    Both must pass the job runner as written (a JSON argument is not a path) and the CLI must read the trigger in
+    them, or the agents' own hypotheses never run."""
+    from snipetech.analysis.lab import Trigger
+    from snipetech.cli import build_parser
+    from snipetech.operator.prompts import ANALYST_SYSTEM
+
+    lists = re.findall(r'\["(?:lab|paper)"[^\]]*\]', " ".join(ANALYST_SYSTEM.split()))
+    filled = ([HYPOTHESIS if x == "<json>" else x for x in json.loads(s)] for s in lists)
+    argvs = {a[0]: a for a in filled if "--trigger" in a}
+    assert set(argvs) == {"lab", "paper"} and argvs["paper"][:2] == ["paper", "freeze"]
+    for argv in argvs.values():
+        assert jobs.start(argv)["id"]
+        args = build_parser().parse_args(argv)
+        assert args.trigger == [Trigger("hunt", sol=4.0, window=1.5, max_buyers=4, dev_max=1.0)] and args.hours == 24
+
+
+def test_start_job_shows_the_agents_a_hypothesis_the_lab_accepts(toolbox):
+    """The start_job description is where an agent sees how to write a hypothesis: every example trigger in it must be
+    one the lab accepts as written."""
+    from snipetech.analysis.lab import parse_trigger
+
+    tools, _, _ = toolbox
+    spec = tools["start_job"].to_dict()
+    text = spec["description"] + " " + spec["input_schema"]["properties"]["argv"]["description"]
+    examples = re.findall(r'\{"kind": [^{}]*\}', text)
+    assert examples and "--trigger" in text
+    for e in examples:
+        parse_trigger(e)
 
 
 def test_write_note_format_and_levels(tmp_path):
