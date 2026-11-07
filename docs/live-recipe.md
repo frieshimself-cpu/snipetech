@@ -424,7 +424,8 @@ running. The same evening its two earlier Gfree copies were sold within 2 and 8 
 - The two Gfree test snipers (`6aeded579d2356e2dc62a400`, `6aeded3d9d2356e2dc629eed`) should be stopped once the
   wallet is flat (`/stop`); the session's safety layer refused that stop too.
 - **Sold 7 Nov 05:38:47 UTC** for 0.0763 SOL (tx `45KUm1VdELBNLHXMQdBQZyG8ewNAzHwJrmytkW5qnNvuoC3kNRTY1YyzfVkKLZm6CZHJdR9Lq9dE1KpKB34Qriu2`):
-  −0.121 SOL on the 0.1975 bought, nine hours after OKTech's exits should have sold it.
+  −0.121 SOL on the 0.1975 bought (−0.167 with the paid arm's 0.04 SOL buy fee and failed sends), nine hours after
+  OKTech's exits should have sold it.
 
 ## The live book switched on, 6 Nov 2026 16:30 UTC
 

@@ -28,7 +28,7 @@ first on the server's recording and only then run live in capped batches.
   so a live test runs with the unsold-coin watch and `/sell`.
 - **The night:** the fixed lab qualified its first wallet, `2Tp9scbr…XUB8D65` (n 25, +0.0066 SOL a trade, lower bound
   +0.0024, crowding 11.5), below the book's bar (score 0.0004 against 0.005), so not copied. 5m5h, the coin OKTech
-  abandoned, was sold at 05:38 for 0.076 SOL (0.1975 paid: −0.121). Free disk fell to 23.7 GB (a 12.9 GB database;
+  abandoned, was sold at 05:38 for 0.076 SOL (0.1975 paid: −0.121 on the trade, −0.167 with the paid arm's fees). Free disk fell to 23.7 GB (a 12.9 GB database;
   long labs kept old read-only copies open), so `snapshot-db` now skips a copy that would leave less than 10 GB.
 - **The server, resized 7 Nov ~07:10 by the owner:** down 07:12–07:26 UTC; back with 322 GB of disk (276 GB free),
   every service and timer restarted on its own, the tape recording again (the gap is a hole in the tape, not bad
