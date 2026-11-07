@@ -74,3 +74,47 @@ cutoff with some older rows still outside it. A job that dies leaves whole batch
 writes the rest. A new index on a big table, or a table rebuilt, holds the lock for the whole build: run it once by hand
 at a quiet hour, never as a line in `SCHEMA` that every process runs when it opens the database.
 `tests/test_short_writes.py` guards the rule: a second connection writes while each writer is mid-run.
+
+## Our own exit: /sell sells on the curve and, since 7 Nov, on PumpSwap
+
+`/sell` in Telegram, the unsold-coin watch's `/sell` line and `snipetech sweep` sell a coin from the sniper wallet with
+SNIPER_SECRET (`solana/sell.py`) when OKTech leaves it unsold (4siK on 5 Nov, DTAU and 5m5h on 6 Nov). They never buy,
+never sell a coin the wallet does not hold, and never sell more than it holds. Each sale is a copy of one OKTech landed
+from our own wallet, re-derived for the coin, with the same compute budget (140,000 units at 7,142,857 micro-lamports);
+no account list is written from memory:
+
+- A coin still on its curve: `sell_v3`, from `tests/fixtures/pump_sell_v3_template.json` (5 Nov 20:04 UTC).
+- A coin that has left its curve: `sell_v2` on its PumpSwap pool, from `tests/fixtures/pumpswap_sell_template.json`,
+  OKTech's own auto-sell of `2NgdUjFY…pump` (6 Nov 05:15:55 UTC, slot 465988077, signature
+  `4msjkqRb2vciUqWGr6KVnbgw8x189hc2mDNF8NeTXR2N6yWwRFJmh1gi5yJJSwaMzFvzD8myicR4yYu4rvVry6w7`, 0.0549 WSOL). It matters
+  because the live book copies 7aPo3n, who buys at 79-93 % of the curve: 11 of 28 earlier copies of such leaders
+  completed their curve within 18-86 s.
+
+How a PumpSwap coin is sold:
+
+1. **The pool.** pump.fun's migration puts the coin in the pool at the coin's own PumpSwap address (index 0, created by
+   pump.fun's pool authority for the coin, quoted in SOL). The tape's migration record must name the same pool; two
+   pools on record is a refusal, never a guess. With no record (the tape was down), the chain must show that pump.fun's
+   pool authority made that pool for this coin and SOL. Side pools on the tape are never candidates.
+2. **The quote,** from one RPC call: the pool's two token accounts, its virtual SOL reserve (boost pools carry one), the
+   coin's supply and pump.fun's fee config. The arithmetic is PumpSwap's own: the swap rounds down, and the LP, protocol
+   and creator fees each round up, at the rates of the fee tier of the pool's market cap (`idl/pump_fees.json`). It
+   matches the template's sale and a 27 Oct sale to the lamport. On 7 Nov about 21:00 UTC, 66 trades on 27 such pools
+   were each charged their tier, and 63 sells paid exactly this arithmetic.
+3. **The sale:** the whole holding, with a floor at half the quote from `/sell`. The pool pays in WSOL into the wallet's
+   WSOL account, as OKTech's sale did. The account is left open, as OKTech left it: OKTech trades from it (6 Nov 15:08 it
+   wrapped 0.0996 SOL into it), and the book and the guard count WSOL as SOL.
+
+Refused, with the reason in the reply: no pool yet (the move lands a slot or more after the curve completes), two
+pools on record, a pool that is not the coin's, a cashback coin (PumpSwap sells those only with its older `sell`, and we
+hold no landed copy of one), a wallet without a WSOL account (the template creates none), a coin held outside the
+wallet's own token account, and a pool that would pay nothing.
+
+`sell_v2` takes 17 accounts. Six depend on the coin: the pool, the coin, the wallet's coin account, the pool's two token
+accounts, and the coin's token program. Three are our wallet's: the wallet, its WSOL account, and its volume
+accumulator. The other eight are the same for every sale: PumpSwap's global config, the WSOL mint, the token and system
+programs, the fee config, the buyback recipient's WSOL account, the event authority and PumpSwap itself. The PumpSwap
+IDL account on the chain (`5fLnXN…`, read 7 Nov) is stale: it has `sell` but not `sell_v2`. The public IDL
+(pump-public-docs, vendored trimmed in `idl/pump_amm.json`) and the official SDK 2.2.0 have `sell_v2` with the
+template's discriminator, accounts, order and flags. `tests/test_sell_pumpswap.py` holds all of it to the template
+byte for byte, and to a second landed `sell_v2` on another pool account for account.
