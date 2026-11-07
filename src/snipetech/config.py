@@ -210,6 +210,9 @@ class OperatorConfig:
     equity_alert_sol: float = 0.1
     tape_stale_secs: int = 300
     analyst_after_utc: str = "06:00"
+    # an analyst turn also every this many hours since the last one, besides the daily one (0: once a day only). New
+    # on 7 Nov, so the server's file (a dump of the old defaults) does not pin it; the owner's /budget overrides it
+    analyst_every_h: float = 2.0
     digest_hour_utc: int = 7  # the daily Telegram digest goes out in the first round after this hour (UTC)
     model: str = "claude-sonnet-5-5"
     analyst_model: str = "claude-opus-5-5"
