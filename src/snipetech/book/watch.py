@@ -362,8 +362,9 @@ def _dur(secs: float) -> str:
 
 def alert_line(hit: dict, *, migrated: bool = False) -> str:
     """One decision line for the owner: the coin, the leader, which exits were due and when, its value now, how to
-    sell it, and last the Telegram command that sells it (a coin still on the curve). Plain words; nothing here sells:
-    only the owner's own /sell does."""
+    sell it, and last the Telegram command that sells it (on the curve, or on PumpSwap once the tape shows the coin left
+    its curve: solana/sell.py sells it there since 7 Nov). Plain words; nothing here sells: only the owner's own /sell
+    does."""
     mint = hit["mint"]
     head = f"[watch] Nobody is selling coin {mint}"
     if hit.get("bought_at") is not None:
@@ -393,13 +394,11 @@ def alert_line(hit: dict, *, migrated: bool = False) -> str:
         worth += f", worth about {value:.3f} SOL now"
         worth += f" ({(value / hit['buy_sol'] - 1) * 100:+.0f} %)" if hit.get("buy_sol") else ""
     worth = f"{worth[0].upper()}{worth[1:]}"
-    if migrated:
-        how = "It has left the pump.fun curve, so sell it by hand in OKTech or Axiom (/sell only sells curve coins)"
-        return f"{head}. {why}. {worth}. {how}. Nothing sells it unless you do."
+    where = " It has moved from the pump.fun curve to PumpSwap; /sell sells it there." if migrated else ""
     # the last line is the owner's Telegram command that sells it (operator/commands.py): nothing after the address,
     # so the line copied from the alert is the command
     return (
-        f"{head}. {why}. {worth}. Nothing sells it unless you do (by hand in OKTech or Axiom, or from here).\n"
+        f"{head}. {why}. {worth}.{where} Nothing sells it unless you do (by hand in OKTech or Axiom, or from here).\n"
         f"Sell it now: /sell {mint}"
     )
 

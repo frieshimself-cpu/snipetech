@@ -428,8 +428,10 @@ def test_the_minute_watch_reads_the_holdings_without_the_ignored_coins(tmp_path)
         st.close()
 
 
-def test_a_coin_off_the_curve_is_sold_by_hand_not_by_sweep(tmp_path):
-    from snipetech.models import Completion
+def test_a_coin_off_the_curve_gets_the_sell_line_too(tmp_path):
+    """A coin the tape shows has left its curve is no longer one /sell cannot sell (7 Nov: solana/sell.py sells it on its
+    PumpSwap pool). The alert says where it trades now and ends with the same command as any other."""
+    from snipetech.models import Completion, Migration
 
     cfg = Config()
     cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
@@ -439,10 +441,13 @@ def test_a_coin_off_the_curve_is_sold_by_hand_not_by_sweep(tmp_path):
         _sniper(st, G)
         m, ours = dtau(st)
         st.add_completions([Completion(m.mint, S0 + B + 1300, ours.ts + 300, "c")])
+        st.add_migrations([Migration(m.mint, addr("its pool"), S0 + B + 1302, ours.ts + 301, "m")])
         watch_pass(cfg, st, Notifier("T", 7, post=lambda u, d: sent.append(d["text"])), W, [_held(m, ours)], FINISHED,
                    ours.ts + 400)  # fmt: skip
-        assert len(sent) == 1 and "OKTech or Axiom" in sent[0] and "left the pump.fun curve" in sent[0]
-        assert "remote run sweep" not in sent[0] and "Sell it now" not in sent[0]  # /sell sells curve coins only
+        assert len(sent) == 1 and "PumpSwap" in sent[0] and "/sell sells it there" in sent[0]
+        assert sent[0].endswith(f"Sell it now: /sell {m.mint}")  # the command to send, as for a coin on the curve
+        assert "OKTech or Axiom" in sent[0] and "/sell only sells curve coins" not in sent[0]
+        assert "remote run sweep" not in sent[0]
     finally:
         st.close()
 
@@ -450,7 +455,7 @@ def test_a_coin_off_the_curve_is_sold_by_hand_not_by_sweep(tmp_path):
 def test_every_alert_ends_with_the_sell_command_to_send():
     """The owner is often only on the phone: whatever the reason a coin is flagged, the alert's last line is the exact
     Telegram command that sells it, with nothing after the coin's address (a full stop there would make the copied
-    command invalid). A coin off the curve gets no such line: /sell sells curve coins only."""
+    command invalid). A coin off the curve gets the same line: /sell sells it on PumpSwap (7 Nov)."""
     from snipetech.book.watch import REASONS, alert_line
 
     mint = addr("5m5h-shaped coin")
@@ -461,8 +466,10 @@ def test_every_alert_ends_with_the_sell_command_to_send():
         line = alert_line(hit | {"reason": reason})
         assert line.splitlines()[-1] == f"Sell it now: /sell {mint}", reason
         assert "snipetech remote run sweep" not in line  # one way to sell from the phone, not two
-    off = alert_line(hit | {"reason": "exits_not_acted_on"}, migrated=True)
-    assert f"/sell {mint}" not in off and "OKTech or Axiom" in off and "left the pump.fun curve" in off
+    for reason in REASONS:
+        off = alert_line(hit | {"reason": reason}, migrated=True)
+        assert off.splitlines()[-1] == f"Sell it now: /sell {mint}", reason
+        assert "PumpSwap" in off and "OKTech or Axiom" in off and "only sells curve coins" not in off
 
 
 def test_exit_spec_reads_the_snipers_own_payload():

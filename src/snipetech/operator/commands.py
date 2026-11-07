@@ -3,7 +3,8 @@
 /stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
-(solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task.
+(solana/sell.py: on the pump.fun curve, or on PumpSwap once the coin has left it, since 7 Nov), never buys, and never
+touches an OKTech task.
 /test is the owner's own capped live test (live_test.py): it shows the plan, and "/test <id> go" only writes the request
 the next operator round starts; nothing here creates or starts a sniper. /test auto is the owner's standing yes
 (autotest.py): live trading that starts by itself and never stops; /stop holds it and /resume lets it go on.
@@ -230,6 +231,10 @@ SELL_SLIPPAGE = 0.5  # a sale fails rather than take less than half its quote (a
 # fast still sells, and nobody can take more than half of it on the way
 LIST_MAX = 20  # coins a reply names one by one (a Telegram message holds 4,000 characters)
 BY_HAND = "by hand in Axiom or OKTech"
+# where a PumpSwap sale's SOL lands (solana/sell.py builds it from OKTech's own landed PumpSwap sale of 6 Nov, which paid
+# into the wallet's WSOL account and left it open)
+WSOL_WORDS = ("PumpSwap pays in wrapped SOL: it lands in the wallet's WSOL account, which OKTech trades from and the bot "
+              "counts as SOL.")  # fmt: skip
 
 
 def _sell_key(cfg: Config) -> tuple[str | None, str | None]:
@@ -270,13 +275,18 @@ def _why(exc: Exception) -> str:
 
 
 def _skip_words(skipped: object) -> str:
-    """Why the sweep left a coin, in plain words (its reasons: solana/sell.py)."""
+    """Why the sweep left a coin, in plain words (its reasons: solana/sell.py, whose PumpSwap reasons are written for
+    the owner and start with "PumpSwap: ")."""
     s = str(skipped or "")
-    if "migrated" in s or "complete" in s:
-        return "has left the pump.fun curve (it moved to PumpSwap)"
+    if s.startswith("PumpSwap: "):
+        return f"has moved to PumpSwap, and could not be sold there: {s.removeprefix('PumpSwap: ')}"
     if "curve" in s:
         return "is not a pump.fun curve coin"
     return f"was left alone ({s})"
+
+
+def _on_pumpswap(row: dict) -> bool:
+    return row.get("venue") == "pumpswap"
 
 
 async def _sell_list(svc, cfg: Config) -> str:
@@ -315,7 +325,7 @@ async def _sell_list(svc, cfg: Config) -> str:
         lines += [f"{m[:6]}… {worth}", f"/sell {m}"]
     if len(order) > LIST_MAX:
         lines.append(f"… and {len(order) - LIST_MAX} more.")
-    lines.append("/sell all sells every one still on the pump.fun curve.")
+    lines.append("/sell all sells every one, on the pump.fun curve or on PumpSwap.")
     return "\n".join(lines) + warn
 
 
@@ -330,19 +340,21 @@ def _sold_one(mint: str, wallet: str, rows: list[dict], notes: NoteSink) -> str:
     if not sold:
         why = _skip_words(rows[0].get("skipped"))
         notes.write(f"owner's /sell {mint} from Telegram: not sold, the coin {why}", "decision")
-        return f"Not sold: coin {mint} {why}, and /sell only sells coins on the pump.fun curve. Sell it {BY_HAND}."
+        return f"Not sold: coin {mint} {why}. Sell it {BY_HAND}."
     quote = sum(float(r.get("quote_sol") or 0) for r in sold)
     floor = sum(float(r.get("floor_sol") or 0) for r in sold)
     sigs = [str(r["signature"]) for r in sold]
+    where = " on PumpSwap" if any(_on_pumpswap(r) for r in sold) else ""
     notes.write(
-        f"owner sold coin {mint} with /sell from Telegram: sent for about {quote:.4f} SOL (floor {floor:.4f} SOL), "
-        f"signature {', '.join(sigs)}",
+        f"owner sold coin {mint}{where} with /sell from Telegram: sent for about {quote:.4f} SOL (floor {floor:.4f} "
+        f"SOL), signature {', '.join(sigs)}",
         "decision",
     )
     head = (
-        f"Sold coin {mint} for about {quote:.4f} SOL, its price when sent. If the price falls below {floor:.4f} SOL "
-        "before the sale lands, the sale fails and you keep the coin."
+        f"Sold coin {mint}{where} for about {quote:.4f} SOL, its price when sent. If the price falls below {floor:.4f} "
+        "SOL before the sale lands, the sale fails and you keep the coin."
     )
+    head += f" {WSOL_WORDS}" if where else ""
     tail = "Send /sell in a minute: if the coin is still listed, it did not sell."
     return "\n".join([head, *(f"Signature {s}\nhttps://solscan.io/tx/{s}" for s in sigs), tail])
 
@@ -362,11 +374,14 @@ def _sold_all(wallet: str, rows: list[dict], notes: NoteSink) -> str:
         head = f"Nothing sold: /sell could sell none of the {len(left)} coin(s) the wallet holds."
     lines = [head]
     lines += [
-        f"{r['mint']}: about {float(r.get('quote_sol') or 0):.4f} SOL, signature {r['signature']}"
+        f"{r['mint']}: about {float(r.get('quote_sol') or 0):.4f} SOL{' on PumpSwap' if _on_pumpswap(r) else ''}, "
+        f"signature {r['signature']}"
         for r in sold[:LIST_MAX]
     ]
     if len(sold) > LIST_MAX:
         lines.append(f"… and {len(sold) - LIST_MAX} more (each in the notes).")
+    if any(_on_pumpswap(r) for r in sold):
+        lines.append(WSOL_WORDS)
     if left:
         why = "; ".join(f"{r.get('mint')} {_skip_words(r.get('skipped'))}" for r in left[:LIST_MAX])
         more = f"; and {len(left) - LIST_MAX} more" if len(left) > LIST_MAX else ""
@@ -374,7 +389,7 @@ def _sold_all(wallet: str, rows: list[dict], notes: NoteSink) -> str:
     if sold:
         lines.append("Send /sell in a minute: a coin still listed did not sell.")
     parts = [f"owner sold with /sell all from Telegram: sent {len(sold)} for about {quote:.4f} SOL"]
-    parts += [f"{r['mint']} {r['signature']}" for r in sold]
+    parts += [f"{r['mint']}{' on PumpSwap' if _on_pumpswap(r) else ''} {r['signature']}" for r in sold]
     parts += [f"not sold: {r.get('mint')} {_skip_words(r.get('skipped'))}" for r in left]
     notes.write("; ".join(parts), "decision")
     return "\n".join(lines)
@@ -400,8 +415,8 @@ async def _sell(args: list[str], *, svc, cfg: Config, notes: NoteSink, sweep: Ca
         return f"Nothing sold: {problem}, then send {said} again. Until then sell it {BY_HAND}."
     if sweep is None:
         from ..solana.sell import sweep
-    try:
-        res = await sweep(svc.rpc, mints, SELL_SLIPPAGE)
+    try:  # the tape: a coin that left its curve is sold on the PumpSwap pool its migration record names
+        res = await sweep(svc.rpc, mints, SELL_SLIPPAGE, store=getattr(svc, "store", None))
     except Exception as exc:  # noqa: BLE001 - the owner hears what happened; the pass goes on
         why = _why(exc)
         notes.write(f"owner's {said} from Telegram stopped with an error ({why}); it may not have sold", "decision")
