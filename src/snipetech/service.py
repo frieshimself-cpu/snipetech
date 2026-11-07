@@ -134,12 +134,22 @@ class Service:
 
     def risk_guard(self, address: str, sol: float | None, held: list[dict] | None):
         """The owner's wallet-wide guard for `address` now (operator/RISK next to the database: no new live trade once
-        the day is 1 SOL down or the wallet is under 10 SOL), from its SOL and wrapped SOL and its coins as read."""
+        the day is 1 SOL down or the wallet is under 10 SOL, each stop on unless the owner switched it off), from its
+        SOL and wrapped SOL and its coins as read."""
         from .operator import risk_guard
         from .operator.paths import OperatorPaths
 
         paths = OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent)
         return risk_guard.evaluate(self.store, self.cfg, paths, time.time(), wallet=address, sol=sol, held=held)
+
+    def risk_guard_reads_balance(self) -> bool:
+        """Whether the owner's guard needs the wallet's SOL: only while its floor is on (7 Nov ~12:10 UTC the owner
+        could switch it off). A guard that needs nothing never says it cannot tell."""
+        from .operator import risk_guard
+        from .operator.paths import OperatorPaths
+
+        paths = OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent)
+        return risk_guard.limits(paths)["floor_sol"] is not None
 
     def reset_tape_store(self) -> None:
         if self._tape_store is not None and self._tape_store is not self.store:
@@ -989,8 +999,9 @@ class Service:
             """The owner's wallet-wide guard now (operator/RISK: the day 1 SOL down or the wallet under 10 SOL), read at
             the start and at each re-arm like the /stop flag: (True, why) while it holds, (None, why) when it cannot
             tell, (False, "") when it is clear."""
-            try:
-                g = self.risk_guard(address, await self.wallet_sol(address), held)
+            try:  # the SOL only while the floor is on: with the owner's guard off nothing is read for it
+                sol = await self.wallet_sol(address) if self.risk_guard_reads_balance() else None
+                g = self.risk_guard(address, sol, held)
             except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
                 return None, f"the guard cannot tell ({type(exc).__name__})"
             if g.tripped:
