@@ -23,8 +23,11 @@ Wallet at the time: 11.88 SOL, nothing held, no sniper running. Why 0.2 SOL and 
 ### How the yes runs as code
 
 The guard is on from the start. The automatic test starts nothing until the owner's yes is recorded: `/test auto on` in
-Telegram (that message is the yes), or from the cloud session `snipetech remote --wait run operate autotest --on
---approved "Yes, use this plan (7 Nov 09:15 UTC)"`. `/test auto` shows where it stands; `/test auto off` turns it off.
+Telegram (that message is the yes, for the wallet `/test auto` names), or from the cloud session `snipetech remote
+--wait run operate autotest --on --approved "Yes, use this plan (7 Nov 09:15 UTC)" --wallet
+6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at`. `/test auto` shows where it stands; `/test auto off` turns it off.
+The yes is recorded with the sniper wallet and the OKTech wallet it is for: while the config names another, nothing
+starts by itself (the owner hears it once a day) and a sequence in progress ends.
 
 **1. The wallet-wide guard** (`operator/risk_guard.py`; the owner's values in `operator/RISK`).
 

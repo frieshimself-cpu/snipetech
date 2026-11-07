@@ -20,11 +20,14 @@ block of the same strategy with the same caps and the first block's floor (the w
 early (its time limit, its floor, /stop, the guard) or does not start ends the sequence. At its end AUTOTEST turns itself
 off (used, with the result), the owner gets one summary, and a new sequence needs the owner's yes again.
 
-Only the owner turns it on: `snipetech operate autotest --on --approved "<the owner's words>"` (the cloud session, with the
-owner's yes in chat) or /test auto on in Telegram (that message is the yes); /test auto off or `operate autotest --off`
-turns it off, and a request it wrote that has not started is then never started. The agents cannot: their start_job
-refuses `operate`, and none of their tools writes a file without an extension in operator/, or a .json other than
-candidates.json."""
+The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and the
+OKTech wallet it names, and nothing starts by itself, and no sequence goes on, while the config names another.
+
+Only the owner turns it on: `snipetech operate autotest --on --approved "<the owner's words>" --wallet <the wallet they
+named>` (the cloud session, with the owner's yes in chat) or /test auto on in Telegram (that message is the yes, for the
+wallet /test auto shows); /test auto off or `operate autotest --off` turns it off, and a request it wrote that has not
+started is then never started. The agents cannot: their start_job refuses `operate`, and none of their tools writes a
+file without an extension in operator/, or a .json other than candidates.json."""
 
 from __future__ import annotations
 
@@ -41,6 +44,7 @@ from typing import Any
 
 from ..config import Config
 from ..ops import redact
+from ..solana.base58 import is_pubkey
 from . import live_test, risk_guard
 from .paths import OperatorPaths
 from .tools import NoteSink
@@ -80,6 +84,31 @@ GRACE_SECS = 60  # our clock against block time, at the start of a block's windo
 
 def autotest_file(paths: OperatorPaths) -> Path:
     return paths.root / "AUTOTEST"
+
+
+def oktech_wallet_of(cfg: Config) -> str:
+    """The OKTech wallet a test of this config buys from (live_test.request writes the same into the request)."""
+    return cfg.oktech.wallet or live_test.DEFAULT_OKTECH_WALLET
+
+
+def _wallets(data: dict) -> tuple[str, str] | None:
+    """(the sniper wallet, the OKTech wallet) a yes on file is for, or None when it names no usable pair."""
+    w, ok = data.get("wallet"), data.get("oktech_wallet")
+    if isinstance(w, str) and is_pubkey(w) and isinstance(ok, str) and ok.strip() and len(ok) <= 64:
+        return w, ok.strip()
+    return None
+
+
+def wallet_mismatch(cfg: Config, yes: dict) -> str | None:
+    """Why the config's wallets are not the ones a yes (AUTOTEST, or a sequence's record) is for; None when they are."""
+    want_w, want_ok = yes.get("wallet"), yes.get("oktech_wallet")
+    have_w, have_ok = cfg.operator.wallet or "", oktech_wallet_of(cfg)
+    if have_w != want_w:
+        return (f"your standing yes is for sniper wallet {str(want_w)[:6]}…, and the config names another wallet, "
+                f"{have_w[:6] or 'none'}…")  # fmt: skip
+    if have_ok != want_ok:
+        return f"your standing yes is for OKTech wallet {want_ok}, and the config names OKTech wallet {have_ok}"
+    return None
 
 
 def sequence_path(paths: OperatorPaths) -> Path:
@@ -134,8 +163,9 @@ def _approval(data: dict) -> dict | None:
 
 def read_autotest(paths: OperatorPaths) -> dict[str, Any]:
     """The owner's switch: each cap that is a number inside its bounds, else the owner's 7 Nov value; `on` only while the
-    file says so and carries the owner's words; `approved` (the owner's words and when), `used` (the last sequence's
-    result). Never raises: no file, or one that cannot be read, is off."""
+    file says so and carries the owner's words and the wallet they are for; `approved` (the owner's words and when),
+    `wallet` and `oktech_wallet` (what the yes is for), `used` (the last sequence's result). Never raises: no file, or
+    one that cannot be read, is off."""
     data = _raw(paths)
     out: dict[str, Any] = dict(DEFAULTS)
     for name in FIELDS:
@@ -143,9 +173,11 @@ def read_autotest(paths: OperatorPaths) -> dict[str, Any]:
         if v is not None:
             out[name] = v
     approved = _approval(data)
+    wallets = _wallets(data)
     used = data.get("used") if isinstance(data.get("used"), dict) else None
-    return out | {"on": data.get("on") is True and approved is not None, "approved": approved, "ts": data.get("ts"),
-                  "by": data.get("by"), "used": used}  # fmt: skip
+    return out | {"on": data.get("on") is True and approved is not None and wallets is not None, "approved": approved,
+                  "wallet": wallets[0] if wallets else None, "oktech_wallet": wallets[1] if wallets else None,
+                  "ts": data.get("ts"), "by": data.get("by"), "used": used}  # fmt: skip
 
 
 def _write(paths: OperatorPaths, rec: dict) -> None:
@@ -157,11 +189,12 @@ def _write(paths: OperatorPaths, rec: dict) -> None:
 
 
 def set_autotest(paths: OperatorPaths, on: bool, *, values: dict | None = None, words: str | None = None,
-                 at: float | None = None, by: str, now: float | None = None) -> dict[str, Any]:  # fmt: skip
+                 at: float | None = None, by: str, now: float | None = None, wallet: str | None = None,
+                 oktech_wallet: str | None = None) -> dict[str, Any]:  # fmt: skip
     """Turn the owner's standing yes on (the caps given over the owner's 7 Nov values, the owner's `words` and when
-    they said them) or off (the file keeps its caps and words for the record). Every value is checked before anything is
-    written: an unknown name, a cap out of its bounds, or on without the owner's words raises ValueError in plain words
-    and changes nothing."""
+    they said them, the sniper `wallet` and the `oktech_wallet` the yes is for) or off (the file keeps its caps, words
+    and wallets for the record). Every value is checked before anything is written: an unknown name, a cap out of its
+    bounds, or on without the owner's words or the wallet raises ValueError in plain words and changes nothing."""
     now = time.time() if now is None else now
     values = dict(values or {})
     unknown = sorted(set(values) - set(FIELDS))
@@ -178,18 +211,21 @@ def set_autotest(paths: OperatorPaths, on: bool, *, values: dict | None = None, 
             said = redact(" ".join(str(words or "").split()))[:WORDS_MAX]
             if not said:
                 raise ValueError("turning it on needs the owner's words: their yes, as they said it")
+            pair = _wallets({"wallet": wallet, "oktech_wallet": oktech_wallet})
+            if pair is None:
+                raise ValueError("turning it on needs the sniper wallet and the OKTech wallet the owner's yes is for")
             seq = load_seq(paths)
             if seq and seq.get("state") == "running":  # one sequence per yes: a second would have a floor of its own
                 raise ValueError(f"a sequence is still running on your earlier yes ({seq.get('label')}, block "
                                  f"{seq['blocks'][-1]['n']}); it ends by itself (or with /stop), then turn it on "
                                  "again")  # fmt: skip
             rec = {"on": True, **caps, "approved": {"words": said, "at": int(now if at is None else at)},
-                   "ts": int(now), "by": by}  # fmt: skip
+                   "wallet": pair[0], "oktech_wallet": pair[1], "ts": int(now), "by": by}  # fmt: skip
         else:
             if values:
                 raise ValueError("the caps go with turning it on")
             cur = _raw(paths)
-            rec = {k: cur[k] for k in (*FIELDS, "approved", "used") if k in cur} | {
+            rec = {k: cur[k] for k in (*FIELDS, "approved", "used", "wallet", "oktech_wallet") if k in cur} | {
                 "on": False,
                 "ts": int(now),
                 "by": by,
@@ -205,7 +241,7 @@ def _turn_off_used(paths: OperatorPaths, seq: dict, result: str, now: float) -> 
         cur = _raw(paths)
         if _approval(cur) != seq.get("approved"):
             return False
-        rec = {k: cur[k] for k in (*FIELDS, "approved") if k in cur}
+        rec = {k: cur[k] for k in (*FIELDS, "approved", "wallet", "oktech_wallet") if k in cur}
         _write(paths, rec | {"on": False, "ts": int(now), "by": BY,
                              "used": {"sequence": seq["id"], "ended_at": int(now), "result": result[:600]}})  # fmt: skip
     return True
@@ -236,12 +272,20 @@ def save_seq(paths: OperatorPaths, seq: dict) -> None:
     os.replace(tmp, p)
 
 
-def holds(paths: OperatorPaths, t: dict) -> str | None:
-    """Why an automatic request may not start any more (None: it may): the owner's switch is still on, its caps still
-    cover the request, and the sequence in progress names it as its newest block (live_test._recheck asks)."""
+def holds(paths: OperatorPaths, t: dict, cfg: Config) -> str | None:
+    """Why an automatic request may not start any more (None: it may): the owner's switch is still on, for the wallets
+    the request and the config name, its caps still cover the request, and the sequence in progress names it as its
+    newest block (live_test._recheck asks)."""
     at = read_autotest(paths)
     if not at["on"]:
         return "the automatic test was turned off since the request"
+    if t.get("wallet") != at["wallet"]:
+        return f"the request's sniper wallet is not the one your standing yes is for ({str(at['wallet'])[:6]}…)"
+    if t.get("oktech_wallet") != at["oktech_wallet"]:
+        return f"the request's OKTech wallet is not the one your standing yes is for ({at['oktech_wallet']})"
+    mismatch = wallet_mismatch(cfg, at)
+    if mismatch:
+        return mismatch
     try:
         above = (float(t["buy_sol"]) > float(at["buy_sol"]) + 1e-9 or int(t["fills"]) > int(at["fills"])
                  or int(t["minutes"]) > int(at["minutes"]))  # fmt: skip
@@ -252,7 +296,8 @@ def holds(paths: OperatorPaths, t: dict) -> str | None:
     seq, own = load_seq(paths), t.get("sequence") or {}
     blocks = (seq or {}).get("blocks") or []
     if (not seq or seq.get("state") != "running" or seq.get("id") != own.get("id") or not blocks
-            or blocks[-1].get("requested_at") != t.get("requested_at")):  # fmt: skip
+            or blocks[-1].get("requested_at") != t.get("requested_at")
+            or (seq.get("wallet"), seq.get("oktech_wallet")) != (at["wallet"], at["oktech_wallet"])):  # fmt: skip
         return "the request is not the automatic sequence's own"
     try:
         beyond = int(own.get("block") or 0) > 1 + int((seq.get("caps") or at)["more_blocks"])
@@ -335,30 +380,35 @@ def _when(ts) -> str:
 
 
 def plan_words(c: dict) -> str:
-    """The plan a standing yes stands for, from its caps."""
-    return (f"one test starts by itself at the next round: {c['buy_sol']:g} SOL a buy, at most {c['fills']} buys one coin "
-            f"at a time, for at most {c['minutes']} minutes, stopping {c['loss_sol']:g} SOL below the wallet's start; "
+    """The plan a standing yes stands for, from its caps and the wallets it is for."""
+    where = (f"on sniper wallet {c['wallet'][:6]}… (OKTech wallet {c.get('oktech_wallet')}), " if c.get("wallet")
+             else "on no wallet yet (the config names no sniper wallet), ")  # fmt: skip
+    return (f"one test starts by itself at the next round {where}{c['buy_sol']:g} SOL a buy, at most {c['fills']} buys one "
+            f"coin at a time, for at most {c['minutes']} minutes, stopping {c['loss_sol']:g} SOL below the wallet's start; "
             f"after its {c['fills']} trades it goes on in blocks of {c['fills']} (at most {c['more_blocks']} more) only "
             f"while live is at least {_share(c['continue_at'])}, the whole sequence never more than {c['loss_sol']:g} "
             "SOL below the first block's start")  # fmt: skip
 
 
-def status_words(paths: OperatorPaths, now: float) -> str:
-    """/test auto: the sequence running, or the switch and the plan it stands for."""
+def status_words(paths: OperatorPaths, now: float, cfg: Config) -> str:
+    """/test auto: the sequence running, or the switch and the plan it stands for (off: the plan /test auto on says yes
+    to, for the wallets the config names now)."""
     at, seq = read_autotest(paths), load_seq(paths)
     if seq and seq.get("state") == "running":
         cur, caps = seq["blocks"][-1], seq.get("caps") or at
         return (f"Automatic live test running: {seq.get('label')} ({seq['strategy']}), block {cur['n']} of at most "
                 f"{1 + int(caps['more_blocks'])}, floor {float(seq['floor']):.2f} SOL for the whole sequence; "
-                f"{plan_words(caps)}. /test shows the block, /stop ends it, /test auto off starts no more.")  # fmt: skip
+                f"{plan_words(caps | {k: seq.get(k) for k in ('wallet', 'oktech_wallet')})}. /test shows the block, "
+                "/stop ends it, /test auto off starts no more.")  # fmt: skip
     if at["on"]:
         return (f"Automatic live test on since {_when(at['approved']['at'])} (your yes: \"{at['approved']['words']}\"). "
                 f"When a hunt strategy passes on paper (100 forward trades where a live hunt fill lands, at the measured "
                 f"cost of a trade, a lower bound above zero, also with each gain capped), {plan_words(at)}. /test auto "
                 "off turns it off; /stop ends a test now.")  # fmt: skip
     last = f" The last one: {at['used']['result']}." if at.get("used") and at["used"].get("result") else ""
+    here = {"wallet": cfg.operator.wallet or None, "oktech_wallet": oktech_wallet_of(cfg)}
     return (f"Automatic live test off.{last} /test auto on turns it on, and that message is your yes for this plan: "
-            f"{plan_words(dict(DEFAULTS))}.")  # fmt: skip
+            f"{plan_words(dict(DEFAULTS) | here)}.")  # fmt: skip
 
 
 def command(args: list[str], *, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: float,
@@ -367,17 +417,19 @@ def command(args: list[str], *, cfg: Config, paths: OperatorPaths, notes: NoteSi
     are: the CLI sets others with the owner's words), /test auto off. Nothing else is understood or repeated."""
     words = [w.lower() for w in args]
     if not words:
-        return status_words(paths, now)
+        return status_words(paths, now, cfg)
     if words == ["on"]:
         if read_autotest(paths)["on"]:
-            return "The automatic live test is already on. " + status_words(paths, now)
-        try:
+            return "The automatic live test is already on. " + status_words(paths, now, cfg)
+        if not cfg.operator.wallet:
+            return "Nothing changed: the sniper wallet is not set ([operator] wallet in the config)."
+        try:  # the yes is for the wallets /test auto showed: the ones the config names now
             at = set_autotest(paths, True, words="/test auto on", at=date if date is not None else now, by="telegram",
-                              now=now)  # fmt: skip
+                              now=now, wallet=cfg.operator.wallet, oktech_wallet=oktech_wallet_of(cfg))  # fmt: skip
         except ValueError as exc:
             return f"Nothing changed: {exc}."
         notes.write(f"owner turned the automatic live test on (/test auto on): {plan_words(at)}", "decision")
-        return "Automatic live test on. " + status_words(paths, now)
+        return "Automatic live test on. " + status_words(paths, now, cfg)
     if words == ["off"]:
         set_autotest(paths, False, by="telegram", now=now)
         notes.write("owner turned the automatic live test off (/test auto off)", "decision")
@@ -387,29 +439,37 @@ def command(args: list[str], *, cfg: Config, paths: OperatorPaths, notes: NoteSi
 
 
 def autotest_cli(cfg: Config, args, now: float | None = None) -> int:
-    """`snipetech operate autotest [--on --approved "<the owner's words>" [caps]] [--off]`: the cloud session runs it with
-    the owner's yes in chat, and records the owner's words. Prints where the file is and how it stands; a bad value, or
-    a flag of it without `autotest`, changes nothing and exits with the reason."""
+    """`snipetech operate autotest [--on --approved "<the owner's words>" --wallet <address> [caps]] [--off]`: the cloud
+    session runs it with the owner's yes in chat, and records the owner's words and the sniper wallet they named (it
+    must be the config's [operator] wallet). Prints where the file is and how it stands; a bad value, or a flag of it
+    without `autotest`, changes nothing and exits with the reason."""
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     values = {k: getattr(args, k) for k in FIELDS if getattr(args, k, None) is not None}
+    named = getattr(args, "autotest_wallet", None)
     if args.action != "autotest":
-        raise SystemExit("--on, --off, --approved and the caps go with `operate autotest`")
+        raise SystemExit("--on, --off, --approved, --wallet and the caps go with `operate autotest`")
     if args.autotest_on and args.autotest_off:
         raise SystemExit("operate autotest: --on or --off, not both")
-    if (values or args.approved) and not args.autotest_on:
-        raise SystemExit("operate autotest: --approved and the caps go with --on")
+    if (values or args.approved or named) and not args.autotest_on:
+        raise SystemExit("operate autotest: --approved, --wallet and the caps go with --on")
     now = time.time() if now is None else now
     try:
         if args.autotest_on:
             if not str(args.approved or "").strip():
                 raise SystemExit('operate autotest --on needs --approved "<the owner\'s words, as they said them>"')
-            set_autotest(paths, True, values=values, words=args.approved, by="cli", now=now)
+            if not named:
+                raise SystemExit("operate autotest --on needs --wallet <the sniper wallet the owner's yes names>")
+            if named != cfg.operator.wallet:  # a yes for one wallet never starts a test on another
+                raise SystemExit(f"operate autotest: not changed: the owner's yes names wallet {named[:6]}…, and the "
+                                 f"config's sniper wallet is {(cfg.operator.wallet or 'none')[:6]}…")  # fmt: skip
+            set_autotest(paths, True, values=values, words=args.approved, by="cli", now=now, wallet=named,
+                         oktech_wallet=oktech_wallet_of(cfg))  # fmt: skip
         elif args.autotest_off:
             set_autotest(paths, False, by="cli", now=now)
     except ValueError as exc:
         raise SystemExit(f"operate autotest: not changed: {exc}") from None
     print(f"automatic test file {autotest_file(paths)} on this machine")
-    print(status_words(paths, now))
+    print(status_words(paths, now, cfg))
     return 0
 
 
@@ -462,11 +522,18 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         return wait("your /stop is in force")
     if live_test.in_progress(paths, now):
         return wait("a live test is in progress")
+    if not wallet:
+        return wait("the sniper wallet is not set")
+    mismatch = wallet_mismatch(r.cfg, at)
+    if mismatch:  # rule 1: a yes is for a wallet; the owner hears it once a day, and a new /test auto on fixes it
+        sig = "no test starts by itself on another wallet"
+        if not r.notes.has_today(sig, now):
+            r.say(f"Automatic live test waits: {mismatch}, and {sig} than the one you said yes for. /test auto on is a "
+                  "yes for the wallet the config names now.")  # fmt: skip
+        return wait(mismatch)
     held_back, why = await risk_guard.tripped(r.svc, r.cfg, paths, now, snap=r.snap)  # cannot tell is never clear
     if held_back:
         return wait(f"the wallet-wide guard: {why}")
-    if not wallet:
-        return wait("the sniper wallet is not set")
     try:
         ok = live_test.eligible(store, r.cfg, now)
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
@@ -492,7 +559,8 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     except ValueError as exc:
         return wait(f"{best['id']} cannot be tested live: {exc}")
     seq = {"id": f"seq-{int(now)}", "state": "running", "strategy": best["id"], "label": p["label"],
-           "approved": at["approved"], "caps": {k: at[k] for k in FIELDS}, "buy_sol": p["buy_sol"], "floor": p["floor"],
+           "approved": at["approved"], "caps": {k: at[k] for k in FIELDS}, "wallet": at["wallet"],
+           "oktech_wallet": at["oktech_wallet"], "buy_sol": p["buy_sol"], "floor": p["floor"],
            "start_equity": round(eq, 4), "started_at": int(now), "blocks": [{"n": 1, "requested_at": int(now)}]}  # fmt: skip
     req = live_test.request(p, best, r.cfg, now, by=BY, sequence={"id": seq["id"], "block": 1}, approved=at["approved"])
     before = load_seq(paths)
@@ -510,7 +578,9 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     r.say(f"Automatic live test, on your standing yes of {_when(at['approved']['at'])} (\"{at['approved']['words']}\"): "
           f"{p['label']} ({best['id']}) passes on paper with {int(best['n']):,} forward trades where a live hunt fill "
           f"lands, at the measured cost of a trade, {float(best['mean']):+.4f} SOL a trade, lower bound "
-          f"{float(best['ev_lower']):+.4f}, also with each gain capped. Block 1 of at most {1 + int(caps['more_blocks'])} starts now: {p['buy_sol']:g} SOL a buy, at "
+          f"{float(best['ev_lower']):+.4f}, also with each gain capped. Block 1 of at most "
+          f"{1 + int(caps['more_blocks'])} starts now on sniper wallet {seq['wallet'][:6]}… (OKTech wallet "
+          f"{seq['oktech_wallet']}): {p['buy_sol']:g} SOL a buy, at "
           f"most {p['fills']} buys one coin at a time, {p['minutes']} minutes, floor {p['floor']:.2f} SOL "
           f"({float(caps['loss_sol']):g} SOL below the wallet's {eq:.2f}) for the whole sequence; it goes on only while "
           f"live is at least {_share(caps['continue_at'])}. /stop ends it; /test auto off starts no more.")  # fmt: skip
@@ -542,7 +612,7 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     /stop or the guard), waits for the measure stage, or goes on (None: the next block is to be requested)."""
     caps, n = seq["caps"], cur["n"]
     kind, why = _outcome(t, int(caps["fills"]))
-    store, wallet = r.svc.store, r.cfg.operator.wallet
+    store, wallet = r.svc.store, str(t.get("wallet") or seq.get("wallet") or "")  # the wallet the block ran on
     if kind == "not started":
         return await _end(r, seq, f"block {n} did not start: {why}")
     live = block_live(store, wallet, t, r.now)
@@ -589,6 +659,9 @@ def _hard_stop(r: _Round, seq: dict) -> str | None:
         return "you turned the automatic test off"
     if at["approved"] != seq.get("approved"):
         return "your standing yes changed since the sequence started (a new yes starts a new sequence)"
+    mismatch = wallet_mismatch(r.cfg, seq)
+    if mismatch:  # block 2 would run on another wallet with block 1's floor
+        return f"the sniper wallet changed since the sequence started: {mismatch.replace('your standing yes', 'it')}"
     if r.paths.stop_flag.exists():
         return "your /stop"
     g = risk_guard.from_snapshot(getattr(r.svc, "store", None), r.cfg, r.paths, r.now, r.snap)
@@ -687,6 +760,7 @@ async def _end(r: _Round, seq: dict, why: str) -> dict:
     save_seq(r.paths, seq)
     live_test._history(r.paths, {"kind": "sequence", "id": seq["id"], "strategy": seq["strategy"],
                                  "label": seq.get("label"), "approved": seq.get("approved"), "caps": seq.get("caps"),
+                                 "wallet": seq.get("wallet"), "oktech_wallet": seq.get("oktech_wallet"),
                                  "floor": seq.get("floor"), "blocks": seq["blocks"], "trades": n, "live_sol": total,
                                  "live_mean": round(total / n, 6) if n else None, "paper_mean": seq.get("paper"),
                                  "why": why, "started_at": seq.get("started_at"), "ended_at": int(r.now)})  # fmt: skip

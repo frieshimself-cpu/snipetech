@@ -21,6 +21,7 @@ from snipetech.operator.snapshot import Snapshot
 from tests.operator import test_live_test as LTT
 
 NOW, W, BEST, SECOND, OK_ID = LTT.NOW, LTT.W, LTT.BEST, LTT.SECOND, LTT.OK_ID
+OTHER = "9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin"  # another wallet the config could name
 YES = "Yes, use this plan"
 CAP = "cap reached: {n} fills since start; the wallet holds nothing, so the snipers it armed are stopped"
 HOUR = 3600
@@ -36,16 +37,18 @@ def env(tmp_path):
 
 
 def _on(e, **caps):
-    """The owner's yes, recorded by the cloud session an hour before the first round."""
-    return AT.set_autotest(e.paths, True, values=caps, words=YES, at=NOW - HOUR, by="cli", now=NOW - HOUR)
+    """The owner's yes, recorded by the cloud session an hour before the first round, for the sniper wallet it names."""
+    return AT.set_autotest(e.paths, True, values=caps, words=YES, at=NOW - HOUR, by="cli", now=NOW - HOUR, wallet=W,
+                           oktech_wallet="SNIPER")  # fmt: skip
 
 
 def _round(e, at, tape=True):
-    """One operator round at `at`, with a fresh snapshot and (unless `tape` is False) a current recorder."""
+    """One operator round at `at`, with a fresh snapshot of the configured wallet and (unless `tape` is False) a current
+    recorder."""
     if tape:
         LTT._tape(e.store, at - 5, k=10_000 + e.k)
         e.k += 1
-    e.snap = Snapshot(ts=at, wallet=W, native_sol=e.sol, wsol=0.1, held=[], snipers=[])
+    e.snap = Snapshot(ts=at, wallet=e.cfg.operator.wallet, native_sol=e.sol, wsol=0.1, held=[], snipers=[])
     return asyncio.run(
         LT.round_step(e.svc, e.cfg, e.paths, e.jobs, at, snap=e.snap, notes=e.notes, notifier=e.notifier)
     )
@@ -111,7 +114,7 @@ def test_turning_it_on_records_the_owners_words_and_time(env):
     data = json.loads(AT.autotest_file(env.paths).read_text())
     assert data["on"] is True and data["by"] == "cli" and data["ts"] == NOW - HOUR and data["buy_sol"] == 0.2
     with pytest.raises(ValueError, match="words"):
-        AT.set_autotest(env.paths, True, words="  ", by="cli", now=NOW)
+        AT.set_autotest(env.paths, True, words="  ", by="cli", now=NOW, wallet=W, oktech_wallet="SNIPER")
     off = AT.set_autotest(env.paths, False, by="telegram", now=NOW)
     assert off["on"] is False and off["approved"] == {"words": YES, "at": NOW - HOUR}  # kept for the record
 
@@ -135,13 +138,15 @@ def test_a_hand_edited_or_broken_file_never_starts_anything_wider(env):
     """A read never raises; a cap out of its bounds falls back to the owner's 7 Nov value alone; without the owner's
     words it is off."""
     f = AT.autotest_file(env.paths)
-    f.write_text(
-        json.dumps({"on": True, "buy_sol": 5, "fills": 40, "minutes": 120, "approved": {"words": YES, "at": NOW}})
-    )
+    yes = {"approved": {"words": YES, "at": NOW}, "wallet": W, "oktech_wallet": "SNIPER"}
+    f.write_text(json.dumps({"on": True, "buy_sol": 5, "fills": 40, "minutes": 120, **yes}))
     at = AT.read_autotest(env.paths)
     assert at["on"] and at["buy_sol"] == 0.2 and at["fills"] == 10
-    f.write_text(json.dumps({"on": True, "buy_sol": 0.2}))  # no words: no yes
+    f.write_text(json.dumps({"on": True, "buy_sol": 0.2, "wallet": W, "oktech_wallet": "SNIPER"}))  # no words: no yes
     assert AT.read_autotest(env.paths)["on"] is False
+    for wallet in ({"oktech_wallet": "SNIPER"}, {"wallet": "not a wallet", "oktech_wallet": "SNIPER"}, {"wallet": W}):
+        f.write_text(json.dumps({"on": True, "approved": yes["approved"], **wallet}))  # a yes names its wallet
+        assert AT.read_autotest(env.paths)["on"] is False, wallet
     for text in ("{not json", "[1]", json.dumps({"on": "yes", "approved": {"words": YES}}), ""):
         f.write_text(text)
         assert AT.read_autotest(env.paths)["on"] is False, text
@@ -157,28 +162,42 @@ def test_operate_autotest_turns_it_on_and_off_with_the_owners_words(env, capsys)
 
     assert run("autotest") == 0 and "off" in capsys.readouterr().out
     with pytest.raises(SystemExit, match="--approved"):
-        run("autotest", "--on")
-    assert run("autotest", "--on", "--approved", YES, "--fills", "5", "--minutes", "90") == 0
+        run("autotest", "--on", "--wallet", W)
+    # the owner's yes names its wallet (rule 1: a wallet, a size, a duration): the session passes the one they named
+    with pytest.raises(SystemExit, match="--wallet"):
+        run("autotest", "--on", "--approved", YES)
+    with pytest.raises(SystemExit, match="9xQeWv"):  # not the sniper wallet the config names: nothing changes
+        run("autotest", "--on", "--approved", YES, "--wallet", OTHER)
+    assert not AT.autotest_file(env.paths).exists()
+    assert run("autotest", "--on", "--approved", YES, "--wallet", W, "--fills", "5", "--minutes", "90") == 0
     at = AT.read_autotest(env.paths)
     assert at["on"] and at["approved"]["words"] == YES and (at["fills"], at["minutes"], at["buy_sol"]) == (5, 90, 0.2)
-    assert "0.2 SOL a buy" in capsys.readouterr().out
+    assert (at["wallet"], at["oktech_wallet"]) == (W, "SNIPER")
+    out = capsys.readouterr().out
+    assert "0.2 SOL a buy" in out and W[:6] in out and "SNIPER" in out
     with pytest.raises(SystemExit, match="0.5 SOL"):
-        run("autotest", "--on", "--approved", YES, "--buy-sol", "0.6")
+        run("autotest", "--on", "--approved", YES, "--wallet", W, "--buy-sol", "0.6")
     with pytest.raises(SystemExit, match="not both"):
-        run("autotest", "--on", "--off", "--approved", YES)
+        run("autotest", "--on", "--off", "--approved", YES, "--wallet", W)
     with pytest.raises(SystemExit, match="go with `operate autotest"):
-        run("--on", "--approved", YES)
+        run("--on", "--approved", YES, "--wallet", W)
     with pytest.raises(SystemExit, match="with --on"):
         run("autotest", "--off", "--fills", "3")
+    with pytest.raises(SystemExit, match="with --on"):
+        run("autotest", "--off", "--wallet", W)
     assert run("autotest", "--off") == 0 and AT.read_autotest(env.paths)["on"] is False
 
 
 def test_test_auto_on_off_from_telegram_is_the_owners_yes(env):
+    shown = LTT._send(env, "auto")  # the plan /test auto on says yes to names the wallet it is for
+    assert "off" in shown and W[:6] in shown and "SNIPER" in shown
     reply = LTT._send(env, "auto", "on")
     at = AT.read_autotest(env.paths)
     assert at["on"] and at["approved"]["words"] == "/test auto on" and at["approved"]["at"] == NOW - 5
     assert {k: at[k] for k in AT.DEFAULTS} == AT.DEFAULTS  # always the plan the owner said yes to
+    assert (at["wallet"], at["oktech_wallet"]) == (W, "SNIPER")  # the wallet the config names at the owner's yes
     assert "0.2 SOL a buy" in reply and "10 buys" in reply and "120 minutes" in reply and "half of paper" in reply
+    assert W[:6] in reply
     assert "/test auto off" in reply and "[decision]" in env.paths.notes.read_text()
     assert "on since" in LTT._send(env, "auto")
     reply = LTT._send(env, "auto", "off")
@@ -247,7 +266,7 @@ def test_the_best_passing_strategy_starts_at_once_with_the_owners_caps(env):
     assert job["argv"][job["argv"].index("--max-fills") + 1] == "5"
     assert job["argv"][job["argv"].index("--max-minutes") + 1] == "90"
     (asked,) = _said(env, "Automatic live test")
-    assert YES in asked and BEST in asked and "0.2 SOL a buy" in asked
+    assert YES in asked and BEST in asked and "0.2 SOL a buy" in asked and W[:6] in asked and "SNIPER" in asked
     assert _said(env, "Live test started") and "[decision] Automatic live test" in env.paths.notes.read_text()
     seq = _seq(env)
     assert seq["state"] == "running" and seq["strategy"] == BEST and seq["floor"] == 11.4
@@ -271,6 +290,49 @@ def test_a_smaller_strategy_is_tested_at_its_own_size(env):
     _on(env)
     _round(env, NOW + 60)
     assert LT.load(env.paths)["buy_sol"] == 0.1
+
+
+def test_the_standing_yes_is_for_the_wallet_it_names_and_no_other(env):
+    """The owner's yes of 7 Nov names sniper wallet 6VFrZ15V... (rule 1: a yes is for a wallet, a size, a duration).
+    With the config pointed at another wallet (a fresh sniper wallet, a key rotation), no test starts by itself there,
+    whatever that wallet holds; the owner is told once, and a new /test auto on is a yes for the new wallet."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    env.cfg.operator.wallet, env.sol = OTHER, 25.0
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and env.svc.created == [] and _seq(env) is None
+    (line,) = _said(env, "another wallet")
+    assert W[:6] in line and OTHER[:6] in line and "/test auto on" in line
+    _round(env, NOW + 960)
+    assert len(_said(env, "another wallet")) == 1 and env.svc.created == []  # said once, not every round
+    env.cfg.operator.wallet, env.sol = W, 11.8
+    env.cfg.oktech.wallet = "SNIPER2"  # the OKTech wallet the yes was for is SNIPER
+    _round(env, NOW + 1860)
+    assert LT.load(env.paths) is None and env.svc.created == []
+    env.cfg.oktech.wallet = ""  # back to SNIPER, the one the yes names
+    _round(env, NOW + 2760)
+    assert LT.load(env.paths)["state"] == "running" and LT.load(env.paths)["wallet"] == W
+    assert _seq(env)["wallet"] == W and _seq(env)["oktech_wallet"] == "SNIPER"
+
+
+def test_a_wallet_changed_between_blocks_ends_the_sequence(env):
+    """Block 2 would run on the new wallet with block 1's floor: the sequence ends instead."""
+    _start(env)
+    _play(env, [0.02] * 10)
+    env.cfg.operator.wallet, env.sol = OTHER, 25.0
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert len(env.svc.created) == 1 and _seq(env)["state"] == "ended" and "wallet" in _seq(env)["why"]
+    assert AT.read_autotest(env.paths)["on"] is False
+
+
+def test_the_round_never_starts_an_automatic_request_for_another_wallet(env):
+    _start(env)
+    t = LT.load(env.paths)
+    assert AT.holds(env.paths, t, env.cfg) is None
+    assert "wallet" in AT.holds(env.paths, t | {"wallet": OTHER}, env.cfg)
+    assert "OKTech wallet" in AT.holds(env.paths, t | {"oktech_wallet": "SNIPER2"}, env.cfg)
+    env.cfg.oktech.wallet = "SNIPER2"
+    assert "OKTech wallet" in AT.holds(env.paths, t, env.cfg)
 
 
 # -- the sequence ------------------------------------------------------------------------------------------------------
@@ -492,7 +554,7 @@ def test_it_cannot_be_turned_on_again_while_a_sequence_still_runs(env):
     reply = LTT._send(env, "auto", "on", at=NOW + 900)
     assert "running" in reply and AT.read_autotest(env.paths)["on"] is False
     with pytest.raises(ValueError, match="running"):
-        AT.set_autotest(env.paths, True, words=YES, by="cli", now=NOW + 900)
+        AT.set_autotest(env.paths, True, words=YES, by="cli", now=NOW + 900, wallet=W, oktech_wallet="SNIPER")
     _play(env, [0.02] * 10)
     _round(env, NOW + 60 + 2 * HOUR)
     assert _seq(env)["state"] == "ended"
@@ -516,10 +578,10 @@ def test_the_round_never_starts_an_automatic_request_beyond_its_blocks_or_its_fl
     block, at most 1 + more_blocks of them, at the sequence's floor."""
     _start(env)
     t, seq = LT.load(env.paths), _seq(env)
-    assert AT.holds(env.paths, t) is None
-    assert "floor" in AT.holds(env.paths, t | {"floor": t["floor"] - 1})
-    assert "blocks" in AT.holds(env.paths, t | {"sequence": seq and {"id": seq["id"], "block": 5}})
-    assert "own" in AT.holds(env.paths, t | {"requested_at": t["requested_at"] + 1})
+    assert AT.holds(env.paths, t, env.cfg) is None
+    assert "floor" in AT.holds(env.paths, t | {"floor": t["floor"] - 1}, env.cfg)
+    assert "blocks" in AT.holds(env.paths, t | {"sequence": seq and {"id": seq["id"], "block": 5}}, env.cfg)
+    assert "own" in AT.holds(env.paths, t | {"requested_at": t["requested_at"] + 1}, env.cfg)
 
 
 def test_stop_ends_the_sequence(env):

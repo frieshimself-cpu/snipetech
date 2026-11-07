@@ -434,11 +434,12 @@ on paper, one live test starts by itself at the next round, at the strategy's ow
 10 buys one coin at a time, 120 minutes, stopping 1 SOL below the wallet's start. After its 10 trades it goes on in
 blocks of 10 (at most 3 more) only while the live mean per trade, read from the measure stage's fills, is at least half
 of the paper mean; the whole sequence never goes more than 1 SOL below the first block's start. Otherwise it stops and
-the analyst works out why. `/test auto on` is the yes (`snipetech remote --wait run operate autotest --on --approved
-"<your words>"` from the cloud session); `/test auto` shows it; `/test auto off` starts no more (a running block runs to
-its end, `/stop` ends it now). At the end of a sequence it turns itself off, and a new one needs your yes again. Its
-files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can write neither
-(`operator/autotest.py`, docs/live-recipe.md).
+the analyst works out why. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote
+--wait run operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session);
+nothing starts by itself on another wallet. `/test auto` shows it; `/test auto off` starts no more (a running block
+runs to its end, `/stop` ends it now). At the end of a sequence it turns itself off, and a new one needs your yes
+again. Its files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can
+write neither (`operator/autotest.py`, docs/live-recipe.md).
 
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
 round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.

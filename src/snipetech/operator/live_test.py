@@ -754,7 +754,7 @@ async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: f
     if auto:
         from . import autotest
 
-        why = autotest.holds(paths, t)
+        why = autotest.holds(paths, t, cfg)
         if why:
             return why, False
     if not cfg.operator.wallet or t.get("wallet") != cfg.operator.wallet:

@@ -234,7 +234,8 @@ def test_the_guards_trip_pages_the_owner_while_the_standing_yes_is_on(tmp_env):
     """The book off and no test, but the owner's automatic test may start one: the trip matters, so it is a page."""
     from snipetech.operator.autotest import set_autotest
 
-    set_autotest(tmp_env["paths"], True, words="Yes, use this plan", by="cli", now=NOW - 60)
+    set_autotest(tmp_env["paths"], True, words="Yes, use this plan", by="cli", now=NOW - 60,
+                 wallet="6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at", oktech_wallet="SNIPER")  # fmt: skip
     sent: list[str] = []
     _op(tmp_env, send=lambda t: sent.append(t) or True)
     assert len([t for t in sent if "wallet-wide guard tripped" in t]) == 1
