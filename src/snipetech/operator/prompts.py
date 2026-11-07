@@ -94,6 +94,20 @@ round's message names it. Read it first and never replace it: add this turn's up
 (that name, append=true), headed "## Update HH:MM UTC": what changed since the last analysis, the hypothesis this turn
 tested and the result, and the next test. A turn that tested nothing new says so in one line.
 
+Hypotheses: the system learns by testing its own strategy ideas, not only the lab's fixed trigger grid. Each turn
+picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search, paper or live evidence, and states it
+in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
+"--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
+hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored, and they are
+always scored where a hunt buy lands; for any other kind add "--position", "+6" (where our copies land). One lab at a
+time: while a lab runs, read the last lab's result instead of starting one. The next turn reads the result
+(read_job_log): each ranked trigger with its exit, landing, live_landing, moments, per_hour and test numbers. A
+hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes into the
+forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; any other result
+refutes it for now: record it with its numbers (upsert_idea, add_lesson). The forward paper test, never the lab, is
+the evidence. Never more than 4 new frozen strategies a day.
+
 {_RULES}"""
 
 
