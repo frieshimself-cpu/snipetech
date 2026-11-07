@@ -6,6 +6,29 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The evening of 7 Nov: the lock fix is live; snipetech was using 2 of the server's 6 cores (19:45 UTC)
+
+- **Deployed d0b480e at 19:39,** between two labs: no writer holds the database's write lock for long (the
+  recorder's hourly prune goes in short steps beside its writes, every failed write rolls back, batch inserts commit
+  every 500 rows); MIG scored where its buys land, only on complete PumpSwap tape; every lab charged the live cost
+  (0.0045 SOL a transaction until measured) and OKTech's 1.3 s watch delay, and the live test refuses a rule scored
+  without them; measure no longer books another wallet's failed transfer into ours as our failed send (4 rows at
+  17:50, the owner's SOL coming in); the recorder says why when it falls behind (database, its own CPU, the load).
+- **The first reading of the server's limits (19:39, `remote status`):** the slice set on 4 Nov to share the box
+  still capped snipetech at **2 cores and 2.73 GB** on the 6-core, 16 GB machine. The CPU quota had throttled 15 % of
+  periods (12,888 s of CPU denied), memory.high had been hit 4,027,792 times, the recorder waited on the disk 9 % of
+  its time, the WAL file alone was 7.33 GB of the 19.71 GB, and nothing else on the machine held 100 MB. It showed:
+  `discover` hit its 50-minute limit at 17:57 and 18:57 (4 minutes on 6 Nov), and the recorder fell 125 s behind at
+  19:32 and lost its stream at 19:33.
+- **The fix needs the owner's one command** (root, over SSH): `sudo bash /opt/snipetech/deploy/setup.sh && sudo
+  systemctl set-property snipetech.slice CPUQuota= MemoryHigh=12G MemoryMax=14G && sudo systemctl restart
+  snipetech-tape snipetech-strategist.timer`. It installs the recorder's first call on the CPU (CPUWeight 1000), an
+  ops service whose restart no longer kills the jobs it started (KillMode=process), the strategist's daily timer, and
+  lifts the slice's limits (68f6d31 puts the same values in the repo's slice file).
+- **Being built:** short reads (no job holds a read snapshot of the live file for long; heavy readers read the hourly
+  copy; the WAL file capped after it restarts), reviewed before merge. Research round 2 runs its five labs one at a
+  time; its report goes to docs/research/ when it ends.
+
 ## The afternoon of 7 Nov: live copying armed, the tape stalled for 1 h 45 min and now heals itself (16:15 UTC)
 
 - **Deployed:** the owner's guard and the automatic test (c265fb7), then live trading that never stops (d682e4d: each
