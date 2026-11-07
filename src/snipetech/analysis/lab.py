@@ -33,6 +33,7 @@ from typing import Any
 
 import numpy as np
 
+from .. import CODE_ID, code_identity
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..oktech import EXITS
@@ -476,6 +477,9 @@ MAX_AUTO_WORKERS = 12
 LAB_CHUNK_COINS = 200  # coins a worker takes at a time; fewer when that would leave a worker without several chunks
 MIN_PARALLEL_COINS = 50  # under this many coins a lab stays in one process: seconds of work (~80 ms a synthetic coin)
 WATCH_LAB_SECS = 1.0  # how often a worker checks that the lab which started it still runs
+# `remote update` resets the checkout under the jobs the bot started; they keep the code they imported, but a worker
+# imports snipetech afresh. A lab never lets a worker score with code it does not run itself (snipetech.CODE_ID).
+CODE_MOVED = "the snipetech code on disk changed after the lab's process imported it; a worker would run the new code"
 
 
 def lab_workers(setting: int = 0, cpus: int | None = None) -> int:
@@ -597,10 +601,16 @@ def _watch_lab(lab_pid: int) -> None:
     threading.Thread(target=watch, name="lab-watch", daemon=True).start()
 
 
-def _worker_start(path: str, fid, run: _Run, lab_pid: int) -> None:
+def _worker_start(path: str, fid, code: str, run: _Run, lab_pid: int) -> None:
     """A worker's start: its own read-only connection to `path`, kept only when it opened the very file the lab planned
-    on (`fid`); `snapshot-db` renames a new copy over snipetech.ro.db every hour."""
+    on (`fid`); `snapshot-db` renames a new copy over snipetech.ro.db every hour. And only when it runs the lab's own
+    code (`code`, the lab's CODE_ID): a worker imports snipetech afresh, everything the scoring needs as it starts, and
+    `remote update` may have reset those files under the lab's job. Its CODE_ID and the files now must both be the
+    lab's."""
     _watch_lab(lab_pid)
+    if CODE_ID != code or code_identity() != code:
+        _WORKER.update(unfit=CODE_MOVED)
+        return
     try:
         store = Store(path, readonly=True)
     except sqlite3.Error as exc:
@@ -624,7 +634,7 @@ def _lab_pool(path: str, fid, run: _Run | None, n: int) -> ProcessPoolExecutor:
     the lab may run beside other threads (the CLI runs it under asyncio), and a forked child can inherit a held lock."""
     method = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
     return ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context(method),
-                               initializer=_worker_start, initargs=(path, fid, run, os.getpid()))  # fmt: skip
+                               initializer=_worker_start, initargs=(path, fid, CODE_ID, run, os.getpid()))  # fmt: skip
 
 
 def _shared_file(store: Store) -> tuple[str, tuple[int, int]] | None:
@@ -648,8 +658,9 @@ def _submit(pool: ProcessPoolExecutor, chunk) -> Future:
 
 def _parallel_rows(store: Store, run: _Run, items, n: int, path: str, fid) -> tuple[list[dict], int]:
     """The rows of `items` scored by up to `n` workers, in the items' order, and how many workers ran. A chunk a worker
-    refused (it found another file at the path) or lost (the pool broke: a worker killed for memory) is scored in the
-    lab's own process in its place, so the lab ends with the serial rows whatever happens to its workers."""
+    refused (it found another file at the path, or other code on disk than the lab's) or lost (the pool broke: a worker
+    killed for memory) is scored in the lab's own process in its place, so the lab ends with the serial rows whatever
+    happens to its workers."""
     size = max(1, min(LAB_CHUNK_COINS, math.ceil(len(items) / (n * 4))))
     chunks = [items[k : k + size] for k in range(0, len(items), size)]
     used = min(n, len(chunks))
@@ -690,7 +701,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
     read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
     process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
-    MIN_PARALLEL_COINS coins, or a file another copy has been renamed over since the store opened it."""
+    MIN_PARALLEL_COINS coins, a file another copy has been renamed over since the store opened it, or snipetech code
+    on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = list(exits) if exits else exit_set()
@@ -717,6 +729,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
     shared = _shared_file(store) if n > 1 and len(items) >= MIN_PARALLEL_COINS else None
+    if shared is not None and code_identity() != CODE_ID:
+        print(f"lab: one process: {CODE_MOVED}", file=sys.stderr, flush=True)
+        shared = None
     # one row per (token, trigger), with `groups` per (token, trigger, wallet): pnl per exit
     if shared is None:
         n, rows = 1, _chunk_rows(store, run, items)

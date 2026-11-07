@@ -2,6 +2,7 @@
 one core, and only one lab may run at a time). Its coins are spread over worker processes, each with its own read-only
 connection to the same database file, and the rows come back in the serial lab's order: the same numbers, sooner."""
 
+import json
 import os
 import shutil
 import signal
@@ -223,6 +224,101 @@ def test_a_read_only_store_reads_what_the_writer_wrote_and_never_writes(tmp_path
         Store(tmp_path / "missing.db", readonly=True)
     assert not (tmp_path / "missing.db").exists()  # a reader never creates a database
     assert S.file_identity(":memory:") is None and Store(":memory:").file_id is None
+
+
+def test_the_code_identity_follows_the_source_files_and_not_their_bytecode(tmp_path):
+    pkg = tmp_path / "pkg"
+    (pkg / "sim").mkdir(parents=True)
+    (pkg / "__init__.py").write_text('"""a package"""\n')
+    (pkg / "sim" / "exits.py").write_text("STOP = 1\n")
+    first = snipetech.code_identity(pkg)
+    assert snipetech.code_identity(pkg) == first  # the same files, the same identity
+    (pkg / "sim" / "__pycache__").mkdir()
+    (pkg / "sim" / "__pycache__" / "exits.cpython-313.pyc").write_bytes(b"\0")  # an import writes bytecode
+    (pkg / "dash.html").write_text("<html></html>")
+    assert snipetech.code_identity(pkg) == first
+    (pkg / "sim" / "exits.py").write_text("STOP = 12\n")  # an update rewrote a module
+    second = snipetech.code_identity(pkg)
+    assert second != first
+    (pkg / "sim" / "market.py").write_text("")  # and added one
+    assert snipetech.code_identity(pkg) not in (first, second)
+    # this process's own package: nothing has changed under it since it was imported
+    assert snipetech.code_identity() == snipetech.CODE_ID
+
+
+UPDATE_CHILD = '''
+import importlib
+import json
+import sys
+from pathlib import Path
+
+from snipetech.analysis import lab as L  # a job imports the lab when it starts
+from snipetech.config import Config
+from snipetech.store import Store
+
+# a commit that changes how a coin is scored (every pnl reads 0), written into the job's checkout by `remote update`
+UPDATE = """
+
+_scored_before_the_update = _coin_rows
+
+
+def _coin_rows(*args, **kwargs):
+    return [r | {"pnl": [0.0] * len(r["pnl"])} for r in _scored_before_the_update(*args, **kwargs)]
+"""
+
+
+def lab(store, workers):
+    return L.collect(store, Config(), 0.2, 0, "+6", exits=L.exit_set()[:3], workers=workers)
+
+
+if __name__ == "__main__":
+    db, out = sys.argv[1], Path(sys.argv[2])
+    lab_py = Path(L.__file__)
+    store = Store(db)
+    serial = lab(store, 1)
+    start_pool = L._lab_pool
+
+    def pool_after_update(*args, **kwargs):  # the update lands after the lab's own checks, as its workers start
+        lab_py.write_text(lab_py.read_text() + UPDATE)
+        return start_pool(*args, **kwargs)
+
+    L._lab_pool = pool_after_update
+    raced = lab(store, 2)
+    L._lab_pool = start_pool
+    later = lab(store, 2)  # a lab that starts after the update (its job waited on the lab lock meanwhile)
+    importlib.reload(L)  # what the workers would score with: the new code
+    new = lab(store, 1)
+    store.close()
+    out.write_text(json.dumps({
+        "lab": str(lab_py), "rows": len(serial["rows"]), "new_code_scores_otherwise": new["rows"] != serial["rows"],
+        "raced": [raced["workers"], raced["rows"] == serial["rows"]],
+        "later": [later["workers"], later["rows"] == serial["rows"]],
+    }))
+'''
+
+
+def test_a_lab_never_lets_its_workers_score_with_code_an_update_put_on_disk(world_db, tmp_path):
+    """`remote update` resets the checkout under the jobs the bot started, which keep the code they imported
+    (CLAUDE.md); a worker process imports snipetech afresh, from the new files. A lab started after the update stays in
+    one process; when the update lands as its workers start, they refuse their chunks and the lab scores them itself.
+    Either way the rows are the ones the job's own code gives. Run on a copy of the package, rewritten under a child
+    lab process."""
+    copy = tmp_path / "src"
+    shutil.copytree(SRC / "snipetech", copy / "snipetech", ignore=shutil.ignore_patterns("__pycache__"))
+    script = tmp_path / "update_child.py"
+    script.write_text(UPDATE_CHILD)
+    out = tmp_path / "out.json"
+    env = os.environ | {"PYTHONPATH": str(copy)}  # the copy only: the child must not import the checkout's own files
+    done = subprocess.run([sys.executable, str(script), str(world_db), str(out)], check=False, cwd=tmp_path,
+                          capture_output=True, text=True, timeout=300, env=env)  # fmt: skip
+    assert done.returncode == 0, done.stderr
+    got = json.loads(out.read_text())
+    assert Path(got["lab"]).is_relative_to(copy)  # the child ran the copy, the one the update rewrote
+    assert got["rows"] > 50 and got["new_code_scores_otherwise"]
+    assert got["raced"] == [2, True]  # a pool started; its workers refused every chunk; the lab scored them itself
+    assert "chunks ran in the lab's own process (the snipetech code on disk" in done.stderr
+    assert got["later"] == [1, True]  # no pool at all: the code on disk is not the code the job runs
+    assert "lab: one process: the snipetech code on disk" in done.stderr
 
 
 CHILD = """
