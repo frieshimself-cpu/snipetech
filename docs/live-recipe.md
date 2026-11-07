@@ -60,9 +60,16 @@ sequence's record in `operator/autotest.json`).
 
 **3. It goes on only while live is at least half of paper.**
 
-- After a block has made all its 10 buys and closed, its result is read from the measure stage's fills. Only our own
-  round trips count. The book's copies from the same wallet are left out. A buy still without a sell after 45 minutes
-  counts as its whole cost.
+- After a block has made all its 10 buys and closed, its result is read from the measure stage's fills, once that
+  stage has run after the block's last trade. Only our own round trips count, with their real fees, the failed
+  duplicate sells and the block's failed buy sends (OKTech sends buys that fail on chain anyway, about 0.001 SOL each;
+  paper does not model them). A buy counts once its sales cover its tokens (a scale-out exit sells it in two). A buy
+  not covered after 45 minutes counts its unsold part at its whole cost; a measure stage that has not read the block
+  45 minutes after it ended stops the sequence for the analyst.
+- The book trades from the same wallet, and the fills cannot tell its copies from the test's own buys for sure (they
+  name a copied leader on any buy in a coin one of the book's leaders bought first). So the block is read twice, with
+  the buys the fills call copies left out and with every buy of the wallet in the block, and the worse reading is the
+  one judged. A coin left held counts against the block only when the block bought it.
 - The live mean per trade, over every trade of the sequence so far, is compared with the strategy's forward paper mean.
 - At least half, and above zero: the next block starts at once, with the same strategy, size and caps. Its floor stays
   the first block's, so the whole sequence can lose at most 1 SOL. There are at most 3 more blocks (40 trades in all).

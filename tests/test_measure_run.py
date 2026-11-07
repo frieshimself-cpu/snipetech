@@ -424,6 +424,9 @@ def test_twin_fees_go_to_the_nearest_landed_sell_of_the_same_coin():
     out = twin_fees_by_sell(failed, sells)
     assert out == pytest.approx({"S1": 0.002005, "S2": 0.002005})
     assert twin_fees_by_sell(failed, sells, window_s=5)["S3"] == pytest.approx(0.002005)
+    from snipetech.measure.run import twin_sells  # which sale each twin is (a live test's block charges the others)
+
+    assert twin_sells(failed, sells) == {"F1": "S1", "F2": "S2"}
 
 
 def test_a_twin_is_charged_to_the_sell_before_it_never_to_a_later_one():

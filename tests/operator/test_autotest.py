@@ -42,12 +42,14 @@ def _on(e, **caps):
                            oktech_wallet="SNIPER")  # fmt: skip
 
 
-def _round(e, at, tape=True):
-    """One operator round at `at`, with a fresh snapshot of the configured wallet and (unless `tape` is False) a current
-    recorder."""
+def _round(e, at, tape=True, measure=True):
+    """One operator round at `at`, with a fresh snapshot of the configured wallet, (unless `tape` is False) a current
+    recorder and (unless `measure` is False) a measure stage that ran a minute before the round."""
     if tape:
         LTT._tape(e.store, at - 5, k=10_000 + e.k)
         e.k += 1
+    if measure:
+        e.store.set_coverage("measure:last_ts", {"ts": int(at) - 60})
     e.snap = Snapshot(ts=at, wallet=e.cfg.operator.wallet, native_sol=e.sol, wsol=0.1, held=[], snipers=[])
     return asyncio.run(
         LT.round_step(e.svc, e.cfg, e.paths, e.jobs, at, snap=e.snap, notes=e.notes, notifier=e.notifier)
@@ -63,10 +65,26 @@ def _measure(e, trades):
                           "sol": 0.202 + pnl, "tokens": 1_000_000.0, "pnl_sol": pnl, "buy_sig": sig})  # fmt: skip
 
 
+def _ours(e, sig, ts, mint, buy, sol, tokens=1_000_000):
+    """One trade of ours on the tape: `sol` paid on a buy (its fee included) or received on a sale (its fee taken)."""
+    fee = 2_000_000
+    e.store.add_trades([Trade(sig=sig, ev=0, slot=5_000 + e.k, pos=0, ts=int(ts), mint=mint, venue="curve", user=W,
+                              is_buy=buy, quote=round(sol * 1e9) + (-fee if buy else fee), base=int(tokens), fee=fee,
+                              fee_bps=100, q_after=1, b_after=1)])  # fmt: skip
+    e.k += 1
+
+
+def _cycler_ended(e, t, rep, at):
+    """The cycler's job ends at `at` with its report: its exit file is dated then, as the ops runner writes it."""
+    LTT._end_job(e.paths, t["job_id"], 0, rep)
+    os.utime(e.paths.jobs / f"{t['job_id']}.exit", (at, at))
+
+
 def _play(e, pnls, *, reason=None, measured=True, copies=(), report=None):
-    """The block running now: its sniper armed, one coin bought and sold for each of `pnls` (the tape has our buys), the
-    book's copies from the same wallet meanwhile (`copies`: their pnls), then its cycler ends with its report. Returns
-    the trades, for a measure stage that reads them later."""
+    """The block running now: its sniper armed, one coin bought and sold for each of `pnls` (the tape has our buys and
+    our sales), the book's copies from the same wallet meanwhile (`copies`: their pnls, a copied leader named in the
+    fills), then its cycler ends half a minute after the last sale with its report. Returns the trades, for a measure
+    stage that reads them later."""
     t = LT.load(e.paths)
     assert t["state"] == "running", t
     LTT._armed(e)
@@ -74,17 +92,15 @@ def _play(e, pnls, *, reason=None, measured=True, copies=(), report=None):
     trades = []
     for k, (pnl, leader) in enumerate([(p, None) for p in pnls] + [(p, "Leader" + "L" * 38) for p in copies]):
         sig, ts, mint = f"buy-{start}-{k}", start + 60 + 30 * k, f"Coin{start}x{k}"
-        e.store.add_trades([Trade(sig=sig, ev=0, slot=5_000 + e.k, pos=0, ts=ts, mint=mint, venue="curve", user=W,
-                                  is_buy=True, quote=200_000_000, base=1_000_000, fee=2_000_000, fee_bps=100, q_after=1,
-                                  b_after=1)])  # fmt: skip
-        e.k += 1
+        _ours(e, sig, ts, mint, True, 0.202)
+        _ours(e, f"sell-{sig}", ts + 20, mint, False, 0.202 + pnl)
         trades.append((sig, ts, mint, pnl, leader))
     if measured:
         _measure(e, trades)
     n = len(trades)
     rep = {"start_sol": 11.8, "end_sol": 11.8 + sum(pnls) + sum(copies), "reason": reason or CAP.format(n=n),
            "fills": n, "restarts": 20, "held": [], "left_running": []} | (report or {})  # fmt: skip
-    LTT._end_job(e.paths, t["job_id"], 0, rep)
+    _cycler_ended(e, t, rep, start + 60 + 30 * max(n - 1, 0) + 50)
     e.sol += sum(pnls) + sum(copies)
     return trades
 
@@ -470,6 +486,128 @@ def test_the_books_copies_from_the_same_wallet_are_not_the_tests_trades(env):
     assert _seq(env)["state"] == "ended"
     (line,) = _said(env, "Automatic live test ended")
     assert "7 live trades" in line and "+0.0020" in line
+
+
+def test_a_hunt_buy_the_fills_name_a_copy_still_counts_against_the_test(env):
+    """The measure stage names a copied leader on any buy of ours in a coin a wallet the book copies bought first, with
+    no time bound and no word of which sniper bought: a book sniper never deleted copies a launch sniper L, L buys the
+    launch a slot before the test's hunt buy, and that buy rugs. Left out as the book's, the block reads +0.012 a trade
+    (above half of paper); it really made -0.0092. The block is judged on the worse of the two readings: the buys the
+    fills do not call copies, and every buy of the wallet in the block."""
+    _start(env)
+    _play(env, [0.012] * 9, copies=[-0.2])
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert len(env.svc.created) == 1 and _seq(env)["state"] == "ended" and "below" in _seq(env)["why"]
+    (line,) = _said(env, "Automatic live test ended")
+    assert "-0.0092" in line and "10 live trades" in line and "copies" in line
+
+
+def test_a_book_coin_held_when_the_test_closes_does_not_end_a_complete_block(env):
+    """Block 1 made its 10 buys and sold each; its hunt sniper is spent. When the round closes the test, the book holds
+    a coin of its own copy, bought after the block. The block is complete, not "early", and the owner is not told that
+    nothing sells the book's coin (the book's sniper does); the next block waits for the wallet to hold nothing."""
+    _start(env)
+    _play(env, [0.02] * 10)
+    LTT._armed(env, status="finished")
+    book = "BookCoin" + "B" * 36
+    env.svc.held = [{"mint": book, "amount": 5.0, "raw": 5_000_000, "decimals": 6, "value_sol": 0.19, "priced": True}]
+    _round(env, NOW + 60 + 2 * HOUR)
+    seq = _seq(env)
+    assert (
+        seq["state"] == "running" and seq["blocks"][0]["decision"] == "continue" and AT.read_autotest(env.paths)["on"]
+    )
+    (closed,) = _said(env, "Live test ended")
+    assert "nothing sells" not in closed and "did not buy" in closed
+    env.svc.held = []  # the book's sniper sold its coin
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    assert LT.load(env.paths)["sequence"]["block"] == 2 and LT.load(env.paths)["state"] == "running"
+
+
+def test_a_buy_whose_sales_cover_only_part_of_it_waits_for_the_rest(env):
+    """With a scale-out exit (sell 35-50 % at +10-20 %, trail the rest) a buy is closed by two sales. The measure stage
+    may have written the first only when the round closes the test: judging then counts half a trade. A buy counts as
+    measured once its sales cover its tokens; until then the decision waits."""
+    _start(env)
+    t = LT.load(env.paths)
+    LTT._armed(env)
+    start = int(t["started_at"])
+    for k in range(10):
+        sig, ts, mint = f"buy-{start}-{k}", start + 60 + 30 * k, f"Coin{start}x{k}"
+        _ours(env, sig, ts, mint, True, 0.202)
+        env.store.put_fill({"sig": sig, "ts": ts, "wallet": W, "mint": mint, "side": "buy", "sol": 0.202,
+                            "tokens": 1_000_000.0})  # fmt: skip
+        if k < 9:  # nine at +0.005, measured
+            _ours(env, f"sell-{sig}", ts + 20, mint, False, 0.207)
+            env.store.put_fill({"sig": f"sell-{sig}", "ts": ts + 20, "wallet": W, "mint": mint, "side": "sell",
+                                "sol": 0.207, "tokens": 1_000_000.0, "pnl_sol": 0.005, "buy_sig": sig})  # fmt: skip
+        else:  # the last: its take-profit half measured (+0.06), its stop-loss half sold but not measured yet
+            _ours(env, f"tp-{sig}", ts + 5, mint, False, 0.161, tokens=500_000)
+            env.store.put_fill({"sig": f"tp-{sig}", "ts": ts + 5, "wallet": W, "mint": mint, "side": "sell", "sol": 0.161,
+                                "tokens": 500_000.0, "pnl_sol": 0.06, "buy_sig": sig})  # fmt: skip
+            _ours(env, f"sl-{sig}", ts + 25, mint, False, 0.051, tokens=500_000)
+    _cycler_ended(env, t, {"start_sol": 11.8, "end_sol": 11.8, "reason": CAP.format(n=10), "fills": 10, "restarts": 20,
+                           "held": [], "left_running": []}, start + 400)  # fmt: skip
+    _round(env, NOW + 60 + 2 * HOUR)
+    seq = _seq(env)
+    assert seq["state"] == "running" and "decision" not in seq["blocks"][0] and len(env.svc.created) == 1
+    sig = f"buy-{start}-9"  # the measure stage writes the stop-loss half: -0.05
+    env.store.put_fill({"sig": f"sl-{sig}", "ts": start + 60 + 270 + 25, "wallet": W, "mint": f"Coin{start}x9",
+                        "side": "sell", "sol": 0.051, "tokens": 500_000.0, "pnl_sol": -0.05, "buy_sig": sig})  # fmt: skip
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    assert _seq(env)["state"] == "ended" and len(env.svc.created) == 1  # +0.0055 a trade: under half of +0.02
+    assert "+0.0055" in _said(env, "Automatic live test ended")[0]
+
+
+def test_failed_buy_sends_count_against_the_live_mean(env):
+    """OKTech sends buys that fail on chain anyway (5 Nov: about 10 per 3 fills, about 0.001 SOL each), and the measure
+    stage records them with their fees. Paper does not model them: they are what the live comparison is for. Ten round
+    trips at +0.011 and 40 failed buy sends at 0.001 SOL make +0.007 a trade, under half of paper's +0.02."""
+    _start(env)
+    start = int(LT.load(env.paths)["started_at"])
+    _play(env, [0.011] * 10)
+    for k in range(40):
+        env.store.put_fill({"sig": f"failed-{k}", "ts": start + 100 + k, "wallet": W, "side": "failed", "sol": 0.0,
+                            "tokens": 0.0, "mint": f"Launch{k}", "priority_lamports": 995_000, "tip_lamports": 0,
+                            "exit_reason": "{'InstructionError': [3, {'Custom': 6010}]}"})  # fmt: skip
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert _seq(env)["state"] == "ended" and len(env.svc.created) == 1
+    (line,) = _said(env, "Automatic live test ended")
+    assert "+0.0070" in line and "40 failed" in line
+
+
+def test_a_failed_sell_twin_is_charged_once(env):
+    """A losing variant of a landed sale is already in that sale's result (twin_fee_sol); it is not charged again."""
+    from snipetech.solana.txmeta import PumpIx, TxMeta
+
+    _start(env)
+    start = int(LT.load(env.paths)["started_at"])
+    trades = _play(env, [0.01] * 10)
+    _sig, ts, mint, _pnl, _leader = trades[0]
+    env.store.put_fill({"sig": "twin-1", "ts": ts + 21, "slot": None, "wallet": W, "side": "failed", "sol": 0.0,
+                        "tokens": 0.0, "mint": mint, "priority_lamports": 5_000_000, "tip_lamports": 0})  # fmt: skip
+    meta = TxMeta(sig="twin-1", slot=0, block_time=ts + 21, version=0, fee_payer=W, signers=[W], n_signatures=1, fee=5000,
+                  priority_lamports=5_000_000, cu_limit=None, cu_price=None, cu_consumed=None,
+                  pump_ixs=[PumpIx("pump", "sell", W, {}, None, mint)])  # fmt: skip
+    env.store.add_tx_meta([meta])
+    assert start  # the block's window holds the twin
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert LT.load(env.paths)["sequence"]["block"] == 2  # +0.01 a trade: exactly half of paper, the twin not charged
+
+
+def test_a_block_is_judged_only_once_the_measure_stage_has_read_past_its_end(env):
+    """The failed sends of a block's last minutes reach the fills at the measure stage's next run: a block is judged
+    once that stage has run after the block's last trade. A stage that has not run for 45 minutes after the block ended
+    ends the sequence for the analyst (nothing is judged on numbers that were never read)."""
+    _start(env)
+    _play(env, [0.02] * 10)
+    env.store.set_coverage("measure:last_ts", {"ts": NOW + 60 + 100})  # it last ran before the block's last sale
+    _round(env, NOW + 60 + 2 * HOUR, measure=False)
+    assert _seq(env)["state"] == "running" and "decision" not in _seq(env)["blocks"][0]
+    _round(env, NOW + 60 + 2 * HOUR + 900, measure=False)
+    assert _seq(env)["state"] == "running"
+    for k in range(2, 4):
+        _round(env, NOW + 60 + 2 * HOUR + 900 * k, measure=False)
+    assert _seq(env)["state"] == "ended" and len(env.svc.created) == 1 and "measure stage" in _seq(env)["why"]
 
 
 def test_the_decision_waits_for_the_measure_stage(env):

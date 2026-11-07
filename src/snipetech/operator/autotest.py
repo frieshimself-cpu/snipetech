@@ -11,16 +11,18 @@ is started): while AUTOTEST is on and no sequence runs, the round writes the /te
 the best strategy live_test.eligible offers, once every refusal of the round's start holds no more, the owner's
 wallet-wide guard included; live_test's own start path then creates the strategy's hunt sniper and runs its cycler in
 the same round. One strategy per sequence, at the size it was scored at (never another: a round trip costs about 0.009
-SOL whatever the size). When a block has made all its buys, its live result is read from the measure stage's fills: our
-own round trips only, so a deposit, a withdrawal or OKTech wrapping SOL moves nothing (the cycler's start and end balance
-would: 6 Nov 15:16 the owner moved 2.54 SOL out mid-test). The live mean per trade over every trade of the sequence so far
-is compared with the strategy's forward paper mean: at least `continue_at` times it, and above zero, requests the next
-block of the same strategy with the same caps and the first block's floor (the whole sequence can lose at most
-`loss_sol`); else the sequence stops and the analyst works out why. At most `more_blocks` more blocks. A block that ends
-early (its time limit, its floor, /stop, the guard) or does not start ends the sequence, and so does the owner's /stop
-between blocks: it is recorded in AUTOTEST at once, so a /resume before the next round does not bring the sequence back.
-At its end AUTOTEST turns itself off (used, with the result), the owner gets one summary, and a new sequence needs the
-owner's yes again.
+SOL whatever the size). When a block has made all its buys, its live result is read from the measure stage's fills, once
+that stage has run after the block's last trade: our own round trips only, so a deposit, a withdrawal or OKTech wrapping
+SOL moves nothing (the cycler's start and end balance would: 6 Nov 15:16 the owner moved 2.54 SOL out mid-test), with the
+block's failed sends, and read twice (the book's copies left out, and every buy of the wallet) since the fills cannot
+tell the book's copies from the test's own buys for sure: the worse reading is judged (block_live). The live mean per
+trade over every trade of the sequence so far is compared with the strategy's forward paper mean: at least
+`continue_at` times it, and above zero, requests the next block of the same strategy with the same caps and the first
+block's floor (the whole sequence can lose at most `loss_sol`); else the sequence stops and the analyst works out why.
+At most `more_blocks` more blocks. A block that ends early (its time limit, its floor, /stop, the guard) or does not
+start ends the sequence, and so does the owner's /stop between blocks: it is recorded in AUTOTEST at once, so a /resume
+before the next round does not bring the sequence back. At its end AUTOTEST turns itself off (used, with the result),
+the owner gets one summary, and a new sequence needs the owner's yes again.
 
 The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and the
 OKTech wallet it names, and nothing starts by itself, and no sequence goes on, while the config names another.
@@ -78,6 +80,10 @@ WORDS_MAX = 300  # the owner's words kept in the file
 # after a block closed, how long its judgement waits for the measure stage to record its round trips (it runs every 5
 # minutes, or every 15 as the round's stand-in); past it a buy with no sell recorded counts as its whole cost
 MEASURE_WAIT_SECS = 45 * 60
+# the measure stage reads the tape: a block is judged once it has run this long after the block's last trade (the tape is
+# never more than 2 minutes behind while a test runs: live_test._tape_lag), so its last failed sends are in the fills
+MEASURE_SETTLE_SECS = 120
+MEASURE_KEY = "measure:last_ts"
 # how long the next block may wait on a refusal that passes by itself (the recorder behind, OKTech not answering, the
 # book's coin being sold) before the sequence ends
 CONTINUE_WAIT_SECS = 60 * 60
@@ -353,44 +359,118 @@ def holds(paths: OperatorPaths, t: dict, cfg: Config) -> str | None:
 # -- a block's live result ---------------------------------------------------------------------------------------------
 
 
-def block_live(store, wallet: str, t: dict, now: float) -> dict[str, Any]:
-    """A block's own round trips from the measure stage's fills. Its buys are the wallet's buys on the tape while its
-    cycler ran (what the cycler counted); a buy the fills show copying a leader is the book's (it trades from the same
-    wallet) and is left out; each other buy's result is that of the sells that closed it, real fees and failed duplicate
-    sends included. `trades`: those results; `unmeasured`: buys the fills have no sell for yet, with their cost;
-    `copies`: the book's buys left out. Only our own trades are read: a deposit or a withdrawal is in none of it."""
+def _window(t: dict, now: float) -> tuple[int, int, int]:
+    """(the block's first second, the second its cycler ended, the second by which every trade of it had landed). The
+    cycler's real end comes from its job record (finish_ended keeps it in the report); a cycler that ended with nothing
+    held had sold everything by then, else the test's close is when the wallet held nothing."""
+    rep = t.get("report") or {}
     start = int(float(t.get("started_at") or now)) - GRACE_SECS
-    end = int(float(t.get("cycler_ended_at") or t.get("ended_at") or now))
-    tape: dict[str, float] = {}
+    try:
+        job_end: int | None = int(float(rep["job_ended"]))
+    except (KeyError, TypeError, ValueError):
+        job_end = None
+    closed = int(float(t.get("ended_at") or now))
+    end = job_end if job_end is not None else int(float(t.get("cycler_ended_at") or closed))
+    settled = job_end if job_end is not None and rep.get("held") == [] else closed
+    return start, min(end, closed), min(settled, closed)
+
+
+def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, failed_fee_sol: float) -> dict[str, Any]:
+    """A block's live result from the measure stage's fills, read two ways, for the worse of the two to be judged:
+    `own`, the buys the fills do not mark as copying a leader, and `all`, every buy of the wallet while the cycler ran.
+    The book trades from the same wallet, and the fills name a copied leader on any buy of ours in a coin one of the
+    book's leaders bought earlier, with no time bound and no word of which sniper bought (a hunt buy right behind a
+    launch-sniping leader reads as a copy), so neither reading alone can be trusted to be the test's own.
+
+    Each buy's result is that of the sales that closed it (the measure stage's own result for each sale, real fees and
+    its failed duplicate sends included), shared out first in first out by tokens as the measure stage pairs them. A buy
+    is `measured` once its sales cover its tokens (less 1 % of dust): with a scale-out exit the first sale closes only
+    part of it. Each reading also pays the block's failed sends that are no sale's twin (OKTech's buys that fail on
+    chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result): every one
+    for `all`, all but those in the coins of the copies for `own`. Only our own trades are read: a deposit or a
+    withdrawal is in none of it."""
+    from ..measure.classify import _fill_fee_sol, pair_round_trips
+    from ..measure.run import BASE_FEE_LAMPORTS, _sells_a_coin, twin_sells
+
+    start, end, settled = _window(t, now)
+    tape: dict[str, dict] = {}
     for tr in store.trades_for_user(wallet, start):
         if tr.is_buy and tr.ts <= end:
-            tape.setdefault(tr.sig, (int(tr.quote) + int(tr.fee)) / 1e9)
-    buys = {f["sig"]: f for f in store.fills(wallet=wallet, since_ts=start, side="buy", limit=100_000)}
+            tape.setdefault(tr.sig, {"mint": tr.mint, "cost": (int(tr.quote) + int(tr.fee)) / 1e9 + per_tx_sol})
+    rows = store.fills(wallet=wallet, since_ts=start, limit=100_000)
+    buys = {f["sig"]: f for f in rows if f.get("side") == "buy"}
+    sells = [f for f in rows if f.get("side") == "sell"]
+    usable = [b | {"sol": float(b.get("sol") or 0), "tokens": float(b["tokens"])} for b in buys.values()
+              if b.get("mint") and float(b.get("tokens") or 0) > 0]  # fmt: skip
+    paired = [x | {"sol": float(x.get("sol") or 0), "tokens": float(x.get("tokens") or 0)} for x in sells
+              if x.get("mint") and float(x.get("tokens") or 0) > 0 and x.get("pnl_sol") is not None]  # fmt: skip
+    trips = pair_round_trips(usable, paired, per_tx_sol)["trips"]
+    closed_by_sell: dict[str, float] = {}
+    for tp in trips:
+        closed_by_sell[tp["sell_sig"]] = closed_by_sell.get(tp["sell_sig"], 0.0) + float(tp["tokens"])
+    result_of = {x["sig"]: float(x["pnl_sol"]) - float(x.get("twin_fee_sol") or 0.0) for x in paired}
+    closed: dict[str, float] = {}
     result: dict[str, float] = {}
-    for s in store.fills(wallet=wallet, since_ts=start, side="sell", limit=100_000):
-        b = s.get("buy_sig")
-        if b and s.get("pnl_sol") is not None:
-            result[b] = result.get(b, 0.0) + float(s["pnl_sol"]) - float(s.get("twin_fee_sol") or 0.0)
-    trades: list[float] = []
-    unmeasured: list[dict] = []
-    copies = 0
-    for sig, cost in tape.items():
+    for tp in trips:  # each sale's own result, shared by tokens among the buys it closed
+        share = float(tp["tokens"]) / closed_by_sell[tp["sell_sig"]] if closed_by_sell[tp["sell_sig"]] > 0 else 0.0
+        closed[tp["buy_sig"]] = closed.get(tp["buy_sig"], 0.0) + float(tp["tokens"])
+        result[tp["buy_sig"]] = result.get(tp["buy_sig"], 0.0) + result_of[tp["sell_sig"]] * share
+    out_buys: list[dict] = []
+    for sig, tb in tape.items():
         f = buys.get(sig)
-        if f is not None and f.get("wallet_copied"):
-            copies += 1
-        elif f is not None and sig in result:
-            trades.append(round(result[sig], 6))
-        else:
-            paid = float(f["sol"]) if f is not None and f.get("sol") is not None else cost
-            unmeasured.append({"sig": sig, "cost_sol": round(paid, 6)})
-    return {"trades": trades, "unmeasured": unmeasured, "copies": copies}
+        bought = float((f or {}).get("tokens") or 0)
+        if f is not None and bought > 0:
+            fee = _fill_fee_sol(f)
+            cost = float(f.get("sol") or 0) + (per_tx_sol if fee is None else fee)
+            got = min(closed.get(sig, 0.0), bought)
+            left_cost = cost * (bought - got) / bought
+            measured = got >= 0.99 * bought
+        else:  # not in the fills yet: what the tape says it cost
+            cost, left_cost, measured, got = tb["cost"], tb["cost"], False, 0.0
+        out_buys.append({"sig": sig, "mint": tb["mint"], "copy": bool((f or {}).get("wallet_copied")),
+                         "result": round(result.get(sig, 0.0), 6), "measured": measured,
+                         "left_cost": round(0.0 if measured else left_cost, 6)})  # fmt: skip
+    own_mints = {b["mint"] for b in out_buys if not b["copy"]}
+    copy_mints = {b["mint"] for b in out_buys if b["copy"]}
+    failed = [f for f in store.fills(wallet=wallet, since_ts=start, side="failed", limit=100_000)
+              if float(f.get("ts") or 0) <= end or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
+    metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
+    twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
+    charged = []
+    for f in failed:
+        if f["sig"] in twins:
+            continue
+        prio = f.get("priority_lamports")
+        fee = (int(prio) + BASE_FEE_LAMPORTS) / 1e9 if prio is not None else failed_fee_sol
+        charged.append({"sig": f["sig"], "mint": f.get("mint"), "fee": fee})
+    return {"buys": out_buys, "failed": charged, "own_mints": sorted(own_mints), "copy_mints": sorted(copy_mints),
+            "settled": settled, "copies": sum(1 for b in out_buys if b["copy"])}  # fmt: skip
 
 
-def _outcome(t: dict, fills: int) -> tuple[str, str]:
-    """("complete", why it ended) for a block that made all its buys, else ("early", why) or ("not started", why)."""
+def _reading(live: dict, own: bool, *, final: bool) -> dict[str, Any]:
+    """One reading of a block (see block_live): its trades, their sum with the failed sends it pays, the buys not
+    measured yet. `final`: a buy not measured counts what is known of it and its unsold part at its whole cost."""
+    buys = [b for b in live["buys"] if not (own and b["copy"])]
+    copy_mints = set(live["copy_mints"]) if own else set()
+    failed = [f for f in live["failed"] if not (f.get("mint") in copy_mints)]
+    total = sum(b["result"] - (b["left_cost"] if final else 0.0) for b in buys)
+    total -= sum(f["fee"] for f in failed)
+    return {
+        "n": len(buys),
+        "sum": round(total, 6),
+        "unmeasured": sum(1 for b in buys if not b["measured"]),
+        "failed": len(failed),
+        "failed_sol": round(sum(f["fee"] for f in failed), 6),
+    }
+
+
+def _outcome(t: dict, fills: int, own_mints) -> tuple[str, str]:
+    """("complete", why it ended) for a block that made all its buys, else ("early", why) or ("not started", why). A
+    coin left held counts only when the block bought it itself (`own_mints`): the book trades from the same wallet,
+    and its sniper sells its own coin."""
     if t.get("state") == "expired" or not t.get("started"):
         return "not started", str(t.get("error") or "it did not start")
-    held = [str(m) for m in t.get("held_at_end") or []]
+    held = [str(m) for m in t.get("held_at_end") or [] if str(m) in set(own_mints or ())]
     rep = t.get("report") or {}
     reason = str(rep.get("reason") or "no reason known")
     if held:
@@ -642,7 +722,7 @@ async def _advance(r: _Round, seq: dict) -> dict:
         return seq  # a block that runs ends by itself (its cycler reads the /stop flag every few seconds)
     if stop:
         if t.get("started") and not isinstance(cur.get("live"), dict):  # its numbers for the record, never judged
-            _record_live(r, cur, t, counted=False)
+            _record_live(cur, _live(r, t), counted=False)
         return await _end(r, seq, stop)
     if cur.get("decision") != "continue":
         verdict = await _judge(r, seq, cur, t)
@@ -651,31 +731,47 @@ async def _advance(r: _Round, seq: dict) -> dict:
     return await _next_block(r, seq)
 
 
+def _live(r: _Round, t: dict) -> dict:
+    """block_live for the block `t`, on the wallet it ran on, at the config's costs."""
+    return block_live(r.svc.store, str(t.get("wallet") or ""), t, r.now, per_tx_sol=r.cfg.costs.per_tx_sol(),
+                      failed_fee_sol=float(r.cfg.costs.priority_fee_sol) + 5000 / 1e9)  # fmt: skip
+
+
 async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     """The block that ended: the sequence ends (early, not started, below paper, all blocks done, the owner's switch,
     /stop or the guard), waits for the measure stage, or goes on (None: the next block is to be requested)."""
     caps, n = seq["caps"], cur["n"]
-    kind, why = _outcome(t, int(caps["fills"]))
-    store, wallet = r.svc.store, str(t.get("wallet") or seq.get("wallet") or "")  # the wallet the block ran on
+    kind, why = _outcome(t, int(caps["fills"]), ())
     if kind == "not started":
         return await _end(r, seq, f"block {n} did not start: {why}")
-    live = block_live(store, wallet, t, r.now)
+    live = _live(r, t)
+    kind, why = _outcome(t, int(caps["fills"]), live["own_mints"])
     paper = float((t.get("forward") or {}).get("mean") or 0)
     seq["paper"] = paper
     if kind == "early":
-        _record_live(r, cur, t, counted=False, live=live)
+        _record_live(cur, live, counted=False)
         return await _end(r, seq, f"block {n} ended early: {why}")
-    if live["unmeasured"] and r.now - float(t.get("ended_at") or r.now) < MEASURE_WAIT_SECS:
-        r.info(f"automatic test: block {n} waits for the measure stage ({len(live['unmeasured'])} of its buys have no "
-               "sell in the fills yet)")  # fmt: skip
+    waited = r.now - float(t.get("ended_at") or r.now)
+    last = (r.svc.store.coverage(MEASURE_KEY) or {}).get("ts")
+    if last is None or float(last) < live["settled"] + MEASURE_SETTLE_SECS:
+        # its last sales and failed sends reach the fills at the measure stage's first run after them
+        when = "never" if last is None else f"last at {_when(last)}"
+        if waited < MEASURE_WAIT_SECS:
+            r.info(f"automatic test: block {n} waits for the measure stage to read past its last trade (it ran {when})")
+            return seq
+        _record_live(cur, live, counted=False)
+        return await _end(r, seq, f"the measure stage has not read block {n}'s trades within {MEASURE_WAIT_SECS // 60} "
+                                  f"minutes of its end (it ran {when}): the analyst works out why")  # fmt: skip
+    open_buys = sum(1 for b in live["buys"] if not b["measured"])
+    if open_buys and waited < MEASURE_WAIT_SECS:
+        r.info(f"automatic test: block {n} waits for the measure stage ({open_buys} of its buys are not covered by "
+               "sales in the fills yet)")  # fmt: skip
         return seq
-    values = list(live["trades"]) + [-u["cost_sol"] for u in live["unmeasured"]]
-    cur["live"] = {"n": len(values), "sum": round(sum(values), 6), "unmeasured": len(live["unmeasured"]),
-                   "counted": True, "copies": live["copies"]}  # fmt: skip
-    total_n, total_sum = _tally(seq)
-    if total_n == 0:
+    _record_live(cur, live, counted=True)
+    tl = _tally(seq)
+    if tl["n"] == 0:
         return await _end(r, seq, f"block {n} had no live trade of the test's own to judge")
-    mean = total_sum / total_n
+    mean = tl["sum"] / tl["n"]
     cont = float(caps["continue_at"])
     if not (paper > 0 and mean > 0 and mean >= cont * paper - 1e-9):
         return await _end(r, seq, f"live is below {_share(cont)} after block {n}: the analyst works out why")
@@ -688,18 +784,21 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     seq["waiting_since"] = None
     save_seq(r.paths, seq)
     r.say(f"Automatic live test, block {n} of {seq['label']} ({seq['strategy']}) made all its {caps['fills']} buys: live "
-          f"{mean:+.4f} SOL a trade over the {total_n} trades of the sequence so far (the measure stage's fills, "
-          f"{total_sum:+.3f} SOL{_unmeasured_words(seq)}), paper {paper:+.4f}: at least {_share(cont)}, so block "
+          f"{mean:+.4f} SOL a trade over the {tl['n']} trades of the sequence so far (the measure stage's fills, "
+          f"{tl['sum']:+.3f} SOL{_live_words(seq)}), paper {paper:+.4f}: at least {_share(cont)}, so block "
           f"{n + 1} of at most {1 + int(caps['more_blocks'])} starts now, the same {seq['buy_sol']:g} SOL a buy, floor "
           f"{float(seq['floor']):.2f} SOL for the whole sequence.")  # fmt: skip
     return None
 
 
-def _record_live(r: _Round, cur: dict, t: dict, *, counted: bool, live: dict | None = None) -> None:
-    """A block's live numbers kept in its record without judging it (it ended early, or with the owner's /stop)."""
-    live = live if live is not None else block_live(r.svc.store, str(t.get("wallet") or ""), t, r.now)
-    cur["live"] = {"n": len(live["trades"]), "sum": round(sum(live["trades"]), 6),
-                   "unmeasured": len(live["unmeasured"]), "counted": counted, "copies": live["copies"]}  # fmt: skip
+def _record_live(cur: dict, live: dict, *, counted: bool) -> None:
+    """A block's two readings in its record (block_live). `counted`: judged, with each buy not measured counted at what
+    is known of it and its unsold part at its whole cost; else (it ended early, or with the owner's /stop) only what was
+    measured, the rest named as not measured yet."""
+    own, every = _reading(live, True, final=counted), _reading(live, False, final=counted)
+    cur["live"] = {"n": own["n"], "sum": own["sum"], "n_all": every["n"], "sum_all": every["sum"],
+                   "unmeasured": every["unmeasured"], "failed": every["failed"], "failed_sol": every["failed_sol"],
+                   "copies": live["copies"], "counted": counted}  # fmt: skip
 
 
 def _hard_stop(r: _Round, seq: dict) -> str | None:
@@ -781,24 +880,41 @@ async def _wait_next(r: _Round, seq: dict, why: str) -> dict:
     return seq
 
 
-def _tally(seq: dict) -> tuple[int, float]:
-    """(trades, SOL) over every block judged so far."""
+def _tally(seq: dict) -> dict[str, Any]:
+    """Every block's trades so far, read both ways (block_live), and the worse of the two readings: its trades, their
+    SOL, which reading it is, and the failed sends and copies in it."""
     lives = [b["live"] for b in seq["blocks"] if isinstance(b.get("live"), dict)]
-    return sum(int(x["n"]) for x in lives), round(sum(float(x["sum"]) for x in lives), 6)
+    own_n, own_sum = sum(int(x["n"]) for x in lives), sum(float(x["sum"]) for x in lives)
+    all_n = sum(int(x.get("n_all", x["n"])) for x in lives)
+    all_sum = sum(float(x.get("sum_all", x["sum"])) for x in lives)
+    readings = [(s_ / n_, k, n_, s_) for k, n_, s_ in (("own", own_n, own_sum), ("all", all_n, all_sum)) if n_ > 0]
+    _mean, which, n, total = min(readings) if readings else (0.0, "own", 0, 0.0)
+    return {"n": n, "sum": round(total, 6), "reading": which, "copies": sum(int(x.get("copies") or 0) for x in lives),
+            "failed": sum(int(x.get("failed") or 0) for x in lives),
+            "failed_sol": round(sum(float(x.get("failed_sol") or 0) for x in lives), 6)}  # fmt: skip
 
 
-def _unmeasured_words(seq: dict) -> str:
+def _live_words(seq: dict) -> str:
+    """What the live numbers include, for the owner's lines: failed sends, the book's copies, buys not measured."""
+    tl = _tally(seq)
     lives = [b["live"] for b in seq["blocks"] if isinstance(b.get("live"), dict)]
+    out = f"; {tl['failed']} failed sends included ({tl['failed_sol']:.3f} SOL)" if tl["failed"] else ""
+    if tl["copies"] and tl["reading"] == "all":
+        out += (f"; the book's {tl['copies']} copies counted in: the worse of two readings, since the fills cannot tell "
+                "them for sure from the test's own buys")  # fmt: skip
+    elif tl["copies"]:
+        out += f"; the book's {tl['copies']} copies left out: the worse of two readings"
     counted = sum(int(x.get("unmeasured") or 0) for x in lives if x.get("counted"))
     later = sum(int(x.get("unmeasured") or 0) for x in lives if not x.get("counted"))
-    out = f"; {counted} not measured, counted at their whole cost" if counted else ""
+    out += f"; {counted} not measured, counted at their whole cost" if counted else ""
     return out + (f"; {later} more not measured yet" if later else "")
 
 
 def _summary(seq: dict) -> str:
-    n, total = _tally(seq)
+    tl = _tally(seq)
+    n, total = tl["n"], tl["sum"]
     lt = (f"{n} live trades, {total / n:+.4f} SOL a trade (the measure stage's fills, {total:+.3f} SOL in all"
-          f"{_unmeasured_words(seq)})" if n else f"no live trade judged{_unmeasured_words(seq)}")  # fmt: skip
+          f"{_live_words(seq)})" if n else f"no live trade judged{_live_words(seq)}")  # fmt: skip
     paper = seq.get("paper")
     return f"{len(seq['blocks'])} block(s), {lt}" + (
         f"; paper {float(paper):+.4f} a trade" if paper is not None else ""
@@ -809,14 +925,16 @@ async def _end(r: _Round, seq: dict, why: str) -> dict:
     """The sequence's end: its record, one line in tests.jsonl, the owner's switch off (used, with the result), and the
     owner's one summary."""
     seq.update({"state": "ended", "ended_at": int(r.now), "why": why})
-    n, total = _tally(seq)
+    tl = _tally(seq)
+    n, total = tl["n"], tl["sum"]
     summary = _summary(seq)
     save_seq(r.paths, seq)
     live_test._history(r.paths, {"kind": "sequence", "id": seq["id"], "strategy": seq["strategy"],
                                  "label": seq.get("label"), "approved": seq.get("approved"), "caps": seq.get("caps"),
                                  "wallet": seq.get("wallet"), "oktech_wallet": seq.get("oktech_wallet"),
                                  "floor": seq.get("floor"), "blocks": seq["blocks"], "trades": n, "live_sol": total,
-                                 "live_mean": round(total / n, 6) if n else None, "paper_mean": seq.get("paper"),
+                                 "live_mean": round(total / n, 6) if n else None, "reading": tl["reading"],
+                                 "paper_mean": seq.get("paper"),
                                  "why": why, "started_at": seq.get("started_at"), "ended_at": int(r.now)})  # fmt: skip
     _turn_off_used(r.paths, seq, f"{why}; {summary}", r.now)
     r.say(f"Automatic live test ended: {why}. {seq.get('label')} ({seq['strategy']}): {summary}. The automatic test is "

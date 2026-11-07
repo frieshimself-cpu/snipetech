@@ -374,6 +374,21 @@ def _fills_since(store, wallet: str, since: float) -> int | None:
         return None
 
 
+TEST_GRACE_SECS = 60  # our clock against block time, at the start of a test's window (autotest.GRACE_SECS)
+
+
+def _bought(store, t: dict, now: float) -> set[str] | None:
+    """The coins the wallet bought while the test's cycler ran (its window on the tape), or None when the tape cannot
+    be read: the book trades from the same wallet, and only these can be the test's own coins."""
+    rep = t.get("report") or {}
+    start = float(t.get("started_at") or now) - TEST_GRACE_SECS
+    end = rep.get("job_ended") or t.get("cycler_ended_at") or now
+    try:
+        return {tr.mint for tr in store.trades_for_user(t["wallet"], int(start)) if tr.is_buy and tr.ts <= float(end)}
+    except Exception:  # noqa: BLE001 - every coin then counts as possibly the test's, as before
+        return None
+
+
 # -- the words the owner reads ---------------------------------------------------------------------------------------
 
 
@@ -913,20 +928,24 @@ def _json_tail(text: str) -> dict | None:
 
 def _cycle_report(paths: OperatorPaths, svc, cfg: Config, t: dict, meta: dict) -> dict:
     """What the cycler said at its end (fills, start and end balance, why it ended, the coins it saw held), or, when it
-    ended without its report, its exit code, its last words and the fills on the tape."""
+    ended without its report, its exit code, its last words and the fills on the tape (`held` None: not known then).
+    `job_ended`: when its job ended by the job record (the round that notices it comes up to 15 minutes later), None
+    when that is not known."""
     try:
         text = (paths.jobs / f"{t['job_id']}.log").read_text(errors="replace")
     except OSError:
         text = ""
     rep = _json_tail(text)
+    ended = meta.get("ended") if isinstance(meta.get("ended"), (int, float)) else None
     if rep is not None:
         return {"fills": rep.get("fills"), "start_sol": rep.get("start_sol"), "end_sol": rep.get("end_sol"),
                 "reason": redact(str(rep.get("reason") or ""))[:300], "restarts": rep.get("restarts"),
-                "held": _real_coins(svc, cfg, rep.get("held")), "exit_code": meta.get("exit_code")}  # fmt: skip
+                "held": _real_coins(svc, cfg, rep.get("held")), "exit_code": meta.get("exit_code"),
+                "job_ended": ended}  # fmt: skip
     last = " ".join(x.strip() for x in text.splitlines() if x.strip())[-240:]
     store = getattr(svc, "store", None)
     return {"fills": _fills_since(store, t["wallet"], t["started_at"]) if store is not None else None,
-            "start_sol": None, "end_sol": None, "exit_code": meta.get("exit_code"), "held": [],
+            "start_sol": None, "end_sol": None, "exit_code": meta.get("exit_code"), "held": None, "job_ended": ended,
             "reason": redact(f"the cycler ended without its report (exit {meta.get('exit_code')}): {last or 'no output'}")}  # fmt: skip
 
 
@@ -999,14 +1018,19 @@ async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, no
             return _closing(paths, t, now, notes, notifier, log, "stop",
                             f"its sniper {oid} could not be stopped ({type(exc).__name__}), so it may still be armed")  # fmt: skip
     sniper = f"its sniper {oid} is stopped: it buys nothing more" if stopped else f"its sniper {oid} is not running"
-    if held:  # its sniper is no longer running, so nothing sells these
-        sniper += f"; the wallet still holds {', '.join(mints)} and nothing sells it: /sell <coin> sells it now"
+    bought = _bought(svc.store, t, now) if held and getattr(svc, "store", None) is not None else None
+    own = [m for m in mints if bought is None or m in bought]
+    others = [m for m in mints if m not in own]
+    if own:  # its sniper is no longer running, so nothing of the test sells these
+        sniper += f"; the wallet still holds {', '.join(own)} and nothing sells it: /sell <coin> sells it now"
+    if others:  # bought outside the test's window: another sniper's (the book's), which manages it
+        sniper += f"; the wallet also holds {', '.join(others)}, which this test did not buy"
     _expect(paths, dict(NONE_EXPECTED))
     if t["state"] == "running":
         text = f"{_ended_words(t, now)} {sniper[0].upper()}{sniper[1:]}.{_record(t)}"
     else:
         text = f"Live test closed: {t.get('label') or t['id']} ({t['id']}); {sniper}."
-    done = t | {"sniper_stopped": stopped, "held_at_end": mints}
+    done = t | {"sniper_stopped": stopped, "held_at_end": mints, "held_own": own}
     for k in ("closing_kind", "closing_why"):
         done.pop(k, None)
     return _end(paths, done, now, notes, notifier, log, text=text)

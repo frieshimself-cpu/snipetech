@@ -434,8 +434,9 @@ cannot write it (`operator/risk_guard.py`).
 **The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan"): when a strategy passes
 on paper, one live test starts by itself at the next round, at the strategy's own size (0.2 SOL a buy at most), at most
 10 buys one coin at a time, 120 minutes, stopping 1 SOL below the wallet's start. After its 10 trades it goes on in
-blocks of 10 (at most 3 more) only while the live mean per trade, read from the measure stage's fills, is at least half
-of the paper mean; the whole sequence never goes more than 1 SOL below the first block's start. Otherwise it stops and
+blocks of 10 (at most 3 more) only while the live mean per trade, read from the measure stage's fills (failed sends
+included, and the worse of two readings while the book's copies from the same wallet cannot be told apart for sure),
+is at least half of the paper mean; the whole sequence never goes more than 1 SOL below the first block's start. Otherwise it stops and
 the analyst works out why. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote
 --wait run operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session);
 nothing starts by itself on another wallet. `/test auto` shows it; `/test auto off` starts no more (a running block
