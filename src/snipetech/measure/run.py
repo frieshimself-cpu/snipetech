@@ -284,6 +284,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         if not sig or (f.get("blockTime") or 0) > until_ts:
             continue
         meta = fmetas.get(sig)
+        if meta is not None and meta.fee_payer and meta.fee_payer != wallet:
+            # someone else's failed transaction that names our wallet (7 Nov 17:50: SOL sent in from wallets that
+            # could not cover their own rent): we neither sent nor paid for it. An unknown payer still counts.
+            if store.fill(sig) is not None:
+                store.drop_fill(sig)
+            continue
         ts = int(f.get("blockTime") or 0)
         mint, arm = None, "control"
         if meta is not None:

@@ -251,6 +251,33 @@ def test_failed_sends_take_their_arm_from_the_fee_and_count_as_overhead(tmp_path
     st.close()
 
 
+def test_a_failed_transfer_another_wallet_paid_for_is_not_our_failed_send(tmp_path):
+    """7 Nov 17:50: SOL came into the sniper wallet from several wallets in one second, and the senders that tried to
+    send their whole balance failed (InsufficientFundsForRent on their own account). The wallet's history lists those
+    failed transactions, but another wallet signed and paid for them: they are not our failed sends and cost us
+    nothing. A row an earlier run wrote for one goes; a failed send we paid for stays."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sender = addr("sender")
+        failed = [{"signature": "IN1", "blockTime": NOW - 1800, "slot": SLOT + 100, "err": {"InsufficientFundsForRent": {"account_index": 0}}},
+                  {"signature": "OURS", "blockTime": NOW - 1700, "slot": SLOT + 200, "err": {"InstructionError": [3, {"Custom": 6023}]}}]  # fmt: skip
+        metas = {"IN1": TxMeta(sig="IN1", slot=SLOT + 100, block_time=NOW - 1800, version=0, fee_payer=sender, signers=[sender],
+                               n_signatures=1, fee=5000, priority_lamports=4500, cu_limit=450, cu_price=10_000, cu_consumed=450, tips=[]),
+                 "OURS": _meta("OURS", priority=1_000_000, tip=0)}  # fmt: skip
+        st.put_fill({"sig": "IN1", "ts": NOW - 1800, "slot": SLOT + 100, "wallet": ME, "side": "failed", "sol": 0.0,
+                     "tokens": 0.0, "bid_arm": "control", "priority_lamports": 4500})  # fmt: skip  # an earlier run's row
+
+        async def failed_sigs(wallet, since):
+            return failed
+
+        out = asyncio.run(run_measure(svc, cfg, NOW, ensure_meta=_ensure(st, metas), failed_sigs=failed_sigs))
+        assert st.fill("IN1") is None
+        assert st.fill("OURS")["side"] == "failed"
+        assert out["failed"] == 1
+    finally:
+        st.close()
+
+
 def test_sells_inherit_the_arm_of_the_buy_they_close(tmp_path):
     """Sells bid the same fixed fee on every arm, so the fee cannot tell the arms apart: a sell belongs to the arm of
     the buy lot it closes (FIFO), and so does its realised PnL."""

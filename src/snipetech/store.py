@@ -711,6 +711,9 @@ class Store:
         self._exec(f"INSERT OR REPLACE INTO fills ({', '.join(_FILL_COLS)}) VALUES ({', '.join('?' * len(_FILL_COLS))})",
                    [row.get(c) for c in _FILL_COLS])  # fmt: skip
 
+    def drop_fill(self, sig: str) -> None:
+        self._exec("DELETE FROM fills WHERE sig=?", (sig,))
+
     def fill(self, sig: str) -> dict[str, Any] | None:
         rows = self._q(f"SELECT {', '.join(_FILL_COLS)} FROM fills WHERE sig=?", (sig,))
         return dict(zip(_FILL_COLS, rows[0])) if rows else None
