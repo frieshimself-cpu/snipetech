@@ -237,9 +237,9 @@ def test_book_equity_counts_the_coins_held(tmp_path):
     from snipetech.operator.risk_guard import set_risk
 
     st, cfg = _env(tmp_path)
-    # the owner's wallet-wide guard at its loosest floor: a 3.5 SOL wallet is under its 10 SOL, and this is about the
-    # book's own floor
-    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": 0}, "test", NOW)
+    # the owner's floor at the book's 3 SOL: a 3.5 SOL wallet is under the guard's 10 SOL, and this is about the floor
+    # itself (since 7 Nov the owner's /risk floor is the book's floor too)
+    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": 3.0}, "test", NOW)
     svc = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "value_sol": 2.5, "priced": True}])
     try:
         out = asyncio.run(
@@ -965,6 +965,85 @@ def test_a_guard_that_cannot_tell_says_why_the_book_halts(tmp_path):
         assert len([t for t in sent if "[book] kill" in t]) == 1
     finally:
         st.close()
+
+
+def test_the_books_stops_are_the_owners_risk_values_value_by_value(tmp_path):
+    """The owner's word in operator/RISK (a value, or off) is the book's floor and day stop; with none, the config's
+    pinned [book] values. The daily cap follows the day stop. A broken file is no word of the owner's."""
+    from snipetech.book.switch import book_stops
+    from snipetech.operator.risk_guard import risk_file, set_risk
+
+    st, cfg = _env(tmp_path)
+    paths = OperatorPaths(tmp_path / "data")
+    try:
+
+        def now_():
+            s = book_stops(cfg, paths)
+            return (s.floor_sol, s.day_stop_sol, s.daily_risk_sol, s.floor_from, s.day_from)
+
+        assert now_() == (3.0, 1.0, 2.0, "config", "config")
+        set_risk(paths, {"floor_sol": 0.0, "day_stop_sol": 5.0}, "telegram", NOW)  # the owner's values, 7 Nov 12:55
+        assert now_() == (0.0, 5.0, None, "owner", "owner")
+        set_risk(paths, {"floor_sol": "off"}, "telegram", NOW + 60)
+        assert now_() == (None, 5.0, None, "owner", "owner")
+        risk_file(paths).unlink()
+        set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW + 120)
+        assert now_() == (3.0, None, None, "config", "owner")
+        risk_file(paths).write_text("{broken")
+        assert now_() == (3.0, 1.0, 2.0, "config", "config")
+    finally:
+        st.close()
+
+
+def test_with_the_owners_guard_off_the_book_trades_below_its_pinned_floor_and_day_stop(tmp_path):
+    """7 Nov ~12:10 UTC the owner: "Just make it so live trading never stops". A 2 SOL wallet (under the pinned 3 SOL
+    floor), a day 1.2 SOL down (past the pinned 1 SOL day stop) and 2.4 SOL bought today (past the pinned 2 SOL daily
+    cap): the pinned values halt the book; the owner's /risk floor off and /risk stop 1.5 (then off) are what it obeys."""
+    from snipetech.operator.risk_guard import set_risk
+
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    paths = OperatorPaths(tmp_path / "data")
+    st.put_fill({"sig": "S1", "ts": NOW - 1800, "wallet": W, "mint": "Old", "side": "sell", "sol": 0.1,
+                 "tokens": 1000.0, "pnl_sol": -1.2})  # fmt: skip
+    for k in range(12):  # what the book bought today: 2.4 SOL
+        st.put_fill({"sig": f"B{k}", "ts": NOW - 3000 + k, "wallet": W, "side": "buy", "sol": 0.2})
+
+    def run():
+        svc = FakeSvc(st)
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (2.0, 0.0, [])))  # fmt: skip
+        return out["kill_reason"], [c[0] for c in svc.calls].count("create")
+
+    try:
+        assert run() == ("equity below floor", 0)
+        set_risk(paths, {"floor_sol": "off"}, "telegram", NOW)
+        assert run() == ("day stop", 0)  # the pinned day stop: the owner set none
+        set_risk(paths, {"day_stop_sol": 1.5}, "telegram", NOW)
+        assert run() == (None, 2)  # 1.2 down of the owner's 1.5, and no daily cap any more
+        set_risk(paths, {"day_stop_sol": "off"}, "telegram", NOW)
+        assert run() == (None, 2)
+    finally:
+        st.close()
+
+
+def test_the_book_says_which_stops_apply(tmp_path):
+    from snipetech.book.switch import book_line
+    from snipetech.operator.risk_guard import set_risk
+
+    _st, cfg = _env(tmp_path)
+    _st.close()
+    paths = OperatorPaths(tmp_path / "data")
+    line = book_line(cfg, paths)
+    assert "at most 2 SOL a day at risk" in line and "below 3 SOL equity" in line and "1 SOL day loss" in line
+    set_risk(paths, {"floor_sol": 0.0, "day_stop_sol": 5.0}, "telegram", NOW)
+    line = book_line(cfg, paths)
+    assert "below 0 SOL equity (your /risk floor)" in line and "5 SOL day loss (your /risk day stop" in line
+    assert "a day at risk" not in line
+    set_risk(paths, {"floor_sol": "off", "day_stop_sol": "off"}, "telegram", NOW)
+    line = book_line(cfg, paths)
+    assert "no equity floor" in line and "no day stop" in line and "3 SOL equity" not in line
+    assert "wallet-wide guard holds (/risk)" in line and "up to 3 more buys" in line
 
 
 def test_the_owners_risk_values_are_the_ones_the_book_obeys(tmp_path):

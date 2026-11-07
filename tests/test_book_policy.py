@@ -175,6 +175,55 @@ def test_day_stop_and_daily_risk():
     assert all(isinstance(a, Action) and a.reason for a in risk.actions)
 
 
+def test_the_books_own_stops_follow_the_owners_word_value_by_value():
+    """The server's config file pins [book] equity_floor_sol 3.0 and day_stop_sol 1.0 (a dump of every default;
+    changing one needs SSH, which the owner does not do). The owner's /risk value, or off, is the book's floor and day
+    stop instead, value by value (book/switch.book_stops). A stop the owner switched off never kills the book. The
+    daily cap of SOL bought halts the book for the day (it does not size it), so it follows the day stop."""
+    from snipetech.book.policy import BookStops
+
+    cfg = _cfg()
+    pinned = BookStops.pinned(cfg.book)
+    assert (pinned.floor_sol, pinned.day_stop_sol, pinned.daily_risk_sol) == (3.0, 1.0, 2.0)
+    assert plan_book(_inp(equity_sol=2.0), cfg.book).kill_reason == "equity below floor"  # none given: the pinned
+    off = BookStops(floor_sol=None, day_stop_sol=None, daily_risk_sol=None, floor_from="owner", day_from="owner")
+    for over in ({"equity_sol": 0.3}, {"equity_sol": None}, {"day_realised_sol": -4.0}, {"day_risk_used_sol": 50.0}):
+        plan = plan_book(_inp(stops=off, **over), cfg.book)
+        assert plan.kill_reason is None and any(a.kind == "create" for a in plan.actions), over
+    mine = BookStops(floor_sol=0.0, day_stop_sol=5.0, daily_risk_sol=None, floor_from="owner", day_from="owner")
+    calm = plan_book(_inp(stops=mine, equity_sol=0.5, day_realised_sol=-4.9, day_risk_used_sol=9.0), cfg.book)
+    assert calm.kill_reason is None
+    assert plan_book(_inp(stops=mine, day_realised_sol=-5.0), cfg.book).kill_reason == "day stop"
+    assert plan_book(_inp(stops=mine, equity_sol=None), cfg.book).kill_reason == "equity unknown"  # a floor is on
+    floor_off = BookStops(floor_sol=None, day_stop_sol=1.0, daily_risk_sol=2.0, floor_from="owner")
+    assert plan_book(_inp(stops=floor_off, equity_sol=0.1), cfg.book).kill_reason is None
+    assert plan_book(_inp(stops=floor_off, day_realised_sol=-1.0), cfg.book).kill_reason == "day stop"
+    assert plan_book(_inp(stops=floor_off, day_risk_used_sol=2.0), cfg.book).kill_reason == "daily risk used"
+    # what the owner did not switch off still halts it: /stop, /book off with a sniper running, and the guard
+    assert plan_book(_inp(stops=off, stopped=True), cfg.book).kill_reason == "owner /stop"
+    assert plan_book(_inp(stops=off, guard=True), cfg.book).kill_reason == "wallet-wide guard"
+    running = [{"id": "s1", "name": "snipetech copy book W1 arm:control", "status": "running"}]
+    assert plan_book(_inp(stops=off, switched_on=False, snipers=running), cfg.book).kill_reason == "book off"
+
+
+def test_per_wallet_rules_stay_whatever_the_owners_guard_says():
+    """The owner's off is for the book-wide stops only: a wallet paused on its live losses (live_kill_n), one under the
+    bar (min_score) and a sniper that made its relied-on buy are handled as always; each drops one wallet, the book goes
+    on."""
+    from snipetech.book.policy import BookStops
+
+    cfg = _cfg()
+    off = BookStops(floor_sol=None, day_stop_sol=None, daily_risk_sol=None, floor_from="owner", day_from="owner")
+    plan = plan_book(_inp(stops=off, live=LOSE5, qualified=[_q("W1", 0.03), _q("W2", 0.02), _q("W4", 0.001)]),
+                     cfg.book)  # fmt: skip
+    assert plan.kill_reason is None
+    assert next(a for a in plan.actions if a.wallet == "W1").reason.startswith("live paused")
+    assert [r["wallet"] for r in plan.ranked] == ["W2"]  # W4 scores under the 0.005 bar
+    made = [{"id": "s2", "name": "snipetech copy book W2 arm:control", "status": "running"}]
+    retire = plan_book(_inp(stops=off, snipers=made, buys_by_sniper={"s2": 1}, holdings_known=True), cfg.book)
+    assert any(a.kind == "retire" and a.sniper_id == "s2" for a in retire.actions)
+
+
 def test_starting_and_stopping_snipers_are_neither_replaced_nor_doubled():
     cfg = _cfg()
     snipers = [
