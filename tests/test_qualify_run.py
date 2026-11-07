@@ -326,3 +326,34 @@ def test_the_lab_charges_the_measured_round_trip_once_the_low_bid_has_30_fills()
         assert lab_tx_cost(st, cfg) == 0.0035  # only the low bid sets it
     finally:
         st.close()
+
+
+def test_the_rotation_may_run_the_lab_early_when_it_is_idle(tmp_path):
+    # 7 Nov 09:30: the rotation started the wallet checks early (no lab for 33 min, 15,603 wallets waiting) and the
+    # stage deferred them on its own 2 h interval ("last qualify lab 118 min ago"). --early skips that interval only;
+    # a running lab job still defers it (one lab at a time).
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W1", "W2"])
+        st.upsert_candidate("W1", "tape", {"positions": 3}, NOW - 3600)
+        calls = []
+        runner = lambda wallets, pos: (
+            calls.append(list(wallets))
+            or [
+                {"wallet": w, "n": 25, "mean": 0.02, "ev_lower": 0.005, "win_rate": 0.6, "total": 0.5, "exit": "x"}
+                for w in wallets
+            ]
+        )
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        st.upsert_candidate("W2", "tape", {"positions": 3}, NOW)
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 600, lab_runner=runner, early=True)
+        assert out["deferred"] is False and len(calls) == 2
+    finally:
+        svc.store.close()
+
+
+def test_the_command_line_passes_early_through():
+    from snipetech import cli
+
+    assert cli.build_parser().parse_args(["qualify", "run", "--early"]).early is True
+    assert cli.build_parser().parse_args(["qualify", "run"]).early is False

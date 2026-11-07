@@ -682,6 +682,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("action", choices=["run"])
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
+    sp.add_argument("--early", action="store_true",
+                    help="run the lab before [qualify] lab_interval_h (the rotation, when the lab has been idle)")  # fmt: skip
     cmd(
         "snapshot-db",
         "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst",
@@ -1588,7 +1590,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "qualify":
         from .qualify.run import run_qualify_cli
 
-        out = run_qualify_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs")
+        out = run_qualify_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs", early=args.early)
         print(json.dumps(out, indent=1, default=str))
         return 0
     if args.cmd == "vybe":

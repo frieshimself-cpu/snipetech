@@ -237,7 +237,8 @@ def plan(backlog: dict, metas: Iterable[dict], cfg: Config, now: float) -> list[
         why = f"check the {due} waiting wallets; the oldest has waited {_age(wait_h)}" + (
             f"; early: no lab has run for {_age(_lab_quiet_secs(metas, backlog, now) / 3600)}" if early else ""
         )
-        out.append(_option("qualify", ["qualify", "run", "--max", str(n)], value, why))
+        argv = ["qualify", "run", "--max", str(n)] + (["--early"] if early else [])
+        out.append(_option("qualify", argv, value, why))
     age = _hours(now, backlog["last"]["search"])
     if age is None or age >= SEARCH_EVERY_H:
         value = 80.0 if age is None else 60 + min(age - SEARCH_EVERY_H, 48.0) / 48.0 * 20

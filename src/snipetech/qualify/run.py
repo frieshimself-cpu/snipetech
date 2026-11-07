@@ -87,7 +87,9 @@ def _tape_start(store, now: float) -> int:
 
 
 def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRunner | None = None,
-                max_wallets: int | None = None) -> dict[str, Any]:  # fmt: skip
+                max_wallets: int | None = None, early: bool = False) -> dict[str, Any]:  # fmt: skip
+    """`early`: the research rotation found the lab idle (no lab for 30 min) with wallets waiting, so the stage's own
+    lab_interval_h does not defer this lab; a running lab job still does (one lab at a time)."""
     store = svc.store
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
@@ -121,7 +123,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         out["deferred"], out["reason"] = True, f"a lab job is running ({labs[0].get('id')}); retry next tick"
         return out
     last = store.coverage(LAST_LAB_KEY)
-    if last.get("ts") and now - float(last["ts"]) < q.lab_interval_h * 3600:
+    if not early and last.get("ts") and now - float(last["ts"]) < q.lab_interval_h * 3600:
         mins = int((now - float(last["ts"])) / 60)
         out["deferred"], out["reason"] = True, f"last qualify lab {mins} min ago; interval {q.lab_interval_h:g} h"
         return out
@@ -161,11 +163,11 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     return out
 
 
-def run_qualify_cli(cfg: Config, max_wallets: int | None, jobs_dir: Path) -> dict[str, Any]:
+def run_qualify_cli(cfg: Config, max_wallets: int | None, jobs_dir: Path, early: bool = False) -> dict[str, Any]:
     from ..service import Service
 
     svc = Service(cfg)
     try:
-        return run_qualify(svc, cfg, jobs_dir, time.time(), max_wallets=max_wallets)
+        return run_qualify(svc, cfg, jobs_dir, time.time(), max_wallets=max_wallets, early=early)
     finally:
         svc.store.close()

@@ -107,6 +107,8 @@ def test_an_idle_lab_checks_waiting_wallets_before_their_interval(env):
     st.set_coverage("qualify:last_lab", {"ts": NOW - 50 * 60, "wallets": 300})
     units = lambda metas: [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), metas, cfg, NOW)]
     assert "qualify" in units([])  # no lab for 50 min
+    early = next(o for o in RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW) if o["unit"] == "qualify")
+    assert early["argv"][-1] == "--early"  # the stage itself would defer on its own interval otherwise
     ended_lately = [_meta(["research", "search"], NOW - 40 * 60, ended=NOW - 10 * 60)]
     assert "qualify" not in units(ended_lately)  # a lab ended 10 min ago: the interval holds
     running = [_meta(["lab", "--json"], NOW - 5 * 60, running=True)]
