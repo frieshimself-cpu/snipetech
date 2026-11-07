@@ -631,3 +631,46 @@ def test_a_hot_streak_wallet_that_wins_in_its_window_and_loses_after_it_is_not_q
         assert steady["forward"]["n"] == 20 and steady["forward"]["lower"] > 0
     finally:
         st.close()
+
+
+def test_a_copy_that_would_dodge_a_dump_by_waiting_for_three_buys_is_scored_where_live_copies_land(tmp_path):
+    """Review of 7 Nov: holders sell in the three slots after the leader's buy, then three small buys come before the
+    leader's slot + 10, then a small recovery. Copied right behind the leader (where a live copy lands: 6 of 7 in its own
+    slot on 6 Nov, 7aPo3n's three 0-1 trades behind), every copy loses; behind the 3rd buy it entered after the dump,
+    13.9 % under the leader's fill, and won every time. The lab now enters at the worse of the two: the wallet loses at
+    +3x as it does right behind the leader, and is retired."""
+    from snipetech.qualify.run import default_lab_runner
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        D, W = addr("dev"), "DUMPED"
+        for k in range(12):
+            m = Market(st, addr(f"{W}:{k}"), D, NOW - 6000 + k * 100, SLOT + k * 250)
+            m.buy(D, 1.0, 0, sig=m.create_sig)
+            holders = [addr(f"{W}:{k}:h{j}") for j in range(3)]
+            for j, h in enumerate(holders):
+                m.buy(h, 1.0, 1 + j)
+            m.buy(W, 0.5, 5)  # alone in its slot
+            for j, h in enumerate(holders):  # the dump, in the three slots after the leader's
+                m.sell(h, 1.0, 6 + j)
+            for j in range(3):  # three small buys before the leader's slot + 10
+                m.buy(addr(f"{W}:{k}:b{j}"), 0.2, 10 + 2 * j)
+            for j in range(3):  # a small recovery, then the coin goes quiet
+                m.buy(addr(f"{W}:{k}:r{j}"), 1.0, 16 + j)
+            m.sell(W, 1.0, 60)
+            m.commit()
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+        st.upsert_candidate(W, "solanatracker", STRONG, NOW - 3600)
+        st.set_label(W, f"cand:{W}", "cand")
+        svc.cfg.verdict.bootstrap_samples = 200
+        run = default_lab_runner(svc, svc.cfg)
+        (behind,) = run([W], "+1")
+        (across,) = run([W], "+3x")
+        assert behind["n"] == across["n"] == 12 and behind["mean"] < 0 and behind["win_rate"] == 0.0
+        assert across["mean"] == pytest.approx(behind["mean"]) and across["win_rate"] == 0.0
+        run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        v = st.latest_verdicts()[0]
+        assert v["landing_pos"] == "+3x" and v["status"] == "retired" and v["mean_sol"] < 0, v["reasons"]
+        assert any(r.startswith("loses at +3x") for r in v["reasons"])
+    finally:
+        st.close()

@@ -439,6 +439,11 @@ def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int
 # leader's slot: a leader alone in its slot was copied right behind its own buy. OKTech sends the copy as it sees the
 # leader's buy (6 of 7 copies landed in the leader's own slot, 6 Nov), so in a quiet coin the copy is behind only the buys
 # that came by then; the window is as wide as MIG's (about 2 s at 0.214 s a slot), far longer than a live copy took.
+# Waiting that long is only ever worse for the copy, never better: where holders sell right after the leader's buy, the
+# 3rd buy can come after the dump, cheaper than the leader paid (review of 7 Nov: 13.9 % under the leader's fill on a
+# synthetic dump), a landing no live copy gets (7aPo3n's three landed 0-1 trades behind, 7 Nov 19:18-19:22). So a copy
+# enters at the worse price of the two: behind the N-th buy, or right behind the leader. And never in the create slot:
+# OKTech sees a buy there only once that block is out (research round 2: the create slot is where no copy lands).
 COPY_LAND_SLOTS = 10
 ACROSS = "x"  # "+3x": behind the 3rd buy after the trigger's, counted across slots
 
@@ -453,12 +458,20 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0) -> int:
     """The state a copy enters at, its leader's buy at state i ("+Nx"): behind the n-th buy after it, counted across
     slots, so every trade before that buy (a sell too) lands ahead of the copy; only buys within COPY_LAND_SLOTS of the
     leader's slot count, and when fewer came by then, behind the last of those, right behind the leader when none did.
-    With `latency`, never ahead of a trade of the slots before slot + latency (copies land at latency 0)."""
+    Never cheaper than right behind the leader, the closest a live copy lands: where the trades before the n-th buy left
+    the price under the one the leader's buy left, the copy enters right behind the leader instead (ahead of a dump that
+    came after it). Never in the coin's create slot (the tape's launch): behind its last trade at the earliest. With
+    `latency`, never ahead of a trade of the slots before slot + latency (copies land at latency 0)."""
     s = int(path.slot[i])
     hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
     buys = np.flatnonzero(path.is_buy[i + 1 : hi])
     e = i if n <= 0 or not len(buys) else i + 1 + int(buys[min(n, len(buys)) - 1])
-    return max(e, int(path.landing_index(s + int(latency), "start", i))) if latency else e
+    floor = int(path.landing_index(s + int(latency), "start", i)) if latency else i  # the closest a live copy lands
+    if path.launch is not None:  # behind every trade of the create slot
+        floor = max(floor, int(np.searchsorted(path.slot, int(path.launch.slot), side="right")) - 1)
+    e = max(e, floor)
+    # the worse price for the copy's buy: the higher of the two (reserves are positive, so compare cross-multiplied)
+    return e if float(path.q[e]) * float(path.b[floor]) >= float(path.q[floor]) * float(path.b[e]) else floor
 
 
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:

@@ -568,3 +568,64 @@ def test_a_copy_lands_behind_the_third_buy_after_its_leader_counted_across_slots
     still = MarketPath.build(st.trades_for_mint(s.mint), st.launch(s.mint))
     assert copy_entry(still, 2, 3) == 2
     st.close()
+
+
+def test_a_copy_counted_across_slots_never_lands_cheaper_than_right_behind_its_leader():
+    """Review of 7 Nov: "+3x" waits up to COPY_LAND_SLOTS for the 3rd buy, so where earlier holders sell right after
+    the leader's buy the copy entered after the dump, 13.9 % under the leader's own fill. No live copy waits for that: 6 of
+    7 landed in the leader's own slot (6 Nov), 7aPo3n's three 0-1 trades behind (7 Nov 19:18-19:22). Its entry is the
+    worse of the two: behind the 3rd buy, or right behind the leader (the closest a live copy lands)."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    lead, dev = addr("dd-lead"), addr("dd-dev")
+    holders = [addr(f"dd-h{j}") for j in range(3)]
+    m = Market(st, addr("dd-coin"), dev, NOW - 4000, 31_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    for j, h in enumerate(holders):  # states 2-4
+        m.buy(h, 1.0, 1 + j)
+    m.buy(lead, 0.5, 5)  # state 5: the leader, alone in its slot
+    for j, h in enumerate(holders):  # states 6-8: the dump, in the three slots after the leader's
+        m.sell(h, 1.0, 6 + j)
+    for j in range(3):  # states 9-11: three small buys, all of them under the leader's fill
+        m.buy(addr(f"dd-b{j}"), 0.2, 10 + 2 * j)
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[5] == lead and path.users[11] == addr("dd-b2")
+    assert path.q[11] / path.b[11] < path.q[5] / path.b[5]  # behind the 3rd buy is cheaper than the leader's fill
+    assert copy_entry(path, 5, 3) == 5  # so the copy lands right behind the leader, ahead of the dump
+    st.close()
+
+
+def test_a_copy_counted_across_slots_never_lands_in_the_coins_create_slot():
+    """Research round 2 (7 Nov): no copy lands in the create slot (the block the coin was made in, the creator's bundle);
+    OKTech sees a buy there only once the block is out, so the copy lands in a later slot at best. Behind the 3rd buy after
+    the leader's, or behind the whole create slot, whichever comes later."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    lead, dev = addr("cr-lead"), addr("cr-dev")
+    m = Market(st, addr("cr-coin"), dev, NOW - 3000, 32_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    m.buy(lead, 0.5, 0)  # state 2: the leader buys in the create slot
+    for j in range(4):  # states 3-6: four more buys in the create slot
+        m.buy(addr(f"cr-b{j}"), 0.5, 0)
+    for j in range(3):  # states 7-9
+        m.buy(addr(f"cr-l{j}"), 0.5, 2 + j)
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    created = int(st.launch(m.mint).slot)
+    assert path.users[2] == lead and int(path.slot[6]) == created and int(path.slot[7]) > created
+    assert copy_entry(path, 2, 3) == 6  # behind every trade of the create slot: it lands in the next slot at best
+    assert copy_entry(path, 2, 0) == 6
+    n = Market(st, addr("cr-coin2"), dev, NOW - 2000, 32_010_000)  # one buy after it in the create slot, two later
+    n.buy(dev, 1.0, 0, sig=n.create_sig)
+    n.buy(lead, 0.5, 0)  # state 2
+    n.buy(addr("cr-c0"), 0.5, 0)  # state 3
+    n.buy(addr("cr-c1"), 0.5, 2)  # state 4
+    n.buy(addr("cr-c2"), 0.5, 3)  # state 5: the 3rd buy after the leader's
+    n.buy(addr("cr-c3"), 0.5, 4)  # state 6
+    n.commit()
+    later = MarketPath.build(st.trades_for_mint(n.mint), st.launch(n.mint))
+    assert copy_entry(later, 2, 3) == 5
+    st.close()
