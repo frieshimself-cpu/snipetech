@@ -4,6 +4,24 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The owner's yes widened: live trading never stops (7 Nov 2026, about 12:10 UTC)
+
+Told that 5–8 SOL is enough for the test but that their guard blocks every live trade under 10 SOL, and asked what the
+floor should be, the owner wrote (in chat, word for word): "ngl ill just keep it at around 5-8 sol that's enough no?"
+and then "Just make it so live trading never stops". The wallet held 3.51 SOL at 12:15 (the owner moved SOL out at
+about 11:30 and 11:45; no trades). Wallet and size are unchanged: `6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at`,
+0.2 SOL a buy, one coin at a time. What it changes, as built:
+
+1. No wallet floor and no day stop: the wallet-wide guard never halts live trading (a buy still needs 0.2 SOL and its
+   fees in the wallet).
+2. The automatic test never turns itself off and has no limit on blocks or hours: a strategy that passes on paper
+   trades block after block while its live result stays at least half of its paper result and above zero.
+3. A strategy that falls below that, or is 1 SOL down live, is dropped, and the next strategy that passes on paper
+   takes over. With none passing, the bot waits for one: it never trades a strategy without paper evidence (at our
+   landing every Hunt setting loses about 0.007 SOL a trade).
+4. What still ends a sniper is an execution fault (OKTech errors, a coin OKTech fails to sell), never a trading result;
+   a sniper holding a coin is never stopped (CLAUDE.md rule 1).
+
 ## The owner's yes for the first launch-rule test (7 Nov 2026, 09:15 UTC)
 
 Asked "What's the most efficient way to do this without rinsing the 10 sol?", the owner answered the plan below with
