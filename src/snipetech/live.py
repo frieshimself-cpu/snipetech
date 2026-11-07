@@ -25,11 +25,13 @@ import binascii
 import itertools
 import json
 import logging
+import math
 import os
 import sqlite3
 import time
-from collections import OrderedDict, defaultdict
-from collections.abc import Callable, Iterable
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Iterable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import httpx
@@ -72,6 +74,11 @@ SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides a
 REPLAY_MAX_SLOTS = 450  # a new PumpSwap subscription replays at most 3 min; what lies further back is a skipped stretch
 SHRINK_RESTART_SECS = 120  # expired pools leave the PumpSwap subscription at its next restart, or after 2 min
 STALL_SECS = 30  # a PumpSwap subscription that sent no slot for this long is restarted (slots come every 0.4 s)
+# The stall meter (StallMeter): its window, and a single database call that holds the recorder's loop this long is
+# logged at once (at most once a minute)
+STALL_WINDOW_SECS = 60.0
+SLOW_CALL_SECS = 5.0
+SLOW_LOG_EVERY_SECS = 60.0
 AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
 
 ACTIONS = {
@@ -173,6 +180,100 @@ class RecentMigrations:
                 del self.keys[k]
 
 
+class StallMeter:
+    """Where the tape recorder's time went over the last `window_secs`: the seconds its event loop sat in each database
+    call (its streams wait meanwhile; 7 Nov 13:47 and 16:41 Helius dropped them as too slow), the longest single call,
+    the recorder's own CPU use (all its threads) and the machine's load. The valve's warning reads it, so a tape that
+    falls behind says whether the database held it, its own work kept it busy (CPU near a whole core), or other jobs
+    starved it (high load, little CPU, little database time). Calls are summed in one-second buckets: the hot path's
+    small writes add up there without a record each."""
+
+    def __init__(self, window_secs: float = STALL_WINDOW_SECS, clock: Callable[[], float] = time.monotonic,
+                 cpu: Callable[[], float] = time.process_time, load: Callable[[], float] | None = None,
+                 cores: int | None = None):  # fmt: skip
+        self.window = window_secs
+        self.clock, self.cpu = clock, cpu
+        self.load = load if load is not None else (lambda: os.getloadavg()[0])
+        self.cores = cores or os.cpu_count() or 1
+        self.buckets: deque[list[Any]] = deque()  # [second, {site: secs}, (site, secs) of its longest call]
+        self.marks: deque[tuple[float, float]] = deque()  # (wall, CPU), from tick()
+        self.slow_at = -math.inf  # when a slow call was last logged
+
+    @contextmanager
+    def timed(self, site: str) -> Iterator[None]:
+        t0 = self.clock()
+        try:
+            yield
+        finally:
+            self.add(site, t0, self.clock())
+
+    def add(self, site: str, t0: float, t1: float) -> None:
+        secs = max(0.0, t1 - t0)
+        second = int(t1)
+        if not self.buckets or self.buckets[-1][0] != second:
+            self.buckets.append([second, {}, ("", 0.0)])
+        bucket = self.buckets[-1]
+        bucket[1][site] = bucket[1].get(site, 0.0) + secs
+        if secs > bucket[2][1]:
+            bucket[2] = (site, secs)
+        self._trim(t1)
+        if secs >= SLOW_CALL_SECS and t1 - self.slow_at >= SLOW_LOG_EVERY_SECS:
+            self.slow_at = t1
+            log.warning("tape: one database call (%s) held the recorder's event loop for %.1f s, its streams waiting; %s",
+                        site, secs, self.words())  # fmt: skip
+
+    def tick(self) -> None:
+        """A CPU mark: the recorder's CPU share is measured between the oldest mark in the window and now."""
+        now = self.clock()
+        self.marks.append((now, self.cpu()))
+        self._trim(now)
+
+    def _trim(self, now: float) -> None:
+        start = now - self.window
+        while self.buckets and self.buckets[0][0] + 1 <= start:
+            self.buckets.popleft()
+        while len(self.marks) > 1 and self.marks[1][0] <= start:
+            self.marks.popleft()
+
+    def summary(self) -> dict[str, Any]:
+        now = self.clock()
+        self._trim(now)
+        db: dict[str, float] = {}
+        longest = ("", 0.0)
+        for _, sites, top in self.buckets:
+            for site, secs in sites.items():
+                db[site] = db.get(site, 0.0) + secs
+            if top[1] > longest[1]:
+                longest = top
+        span = share = None
+        if self.marks:
+            wall0, cpu0 = self.marks[0]
+            span = now - wall0
+            share = (self.cpu() - cpu0) / span if span > 0 else None
+        try:
+            load = float(self.load())
+        except (OSError, ValueError):
+            load = None
+        return {"db": db, "db_secs": sum(db.values()), "longest": longest if longest[1] > 0 else None, "span": span,
+                "cpu_share": share, "load": load, "cores": self.cores}  # fmt: skip
+
+    def words(self) -> str:
+        s = self.summary()
+        out = f"in the last {self.window:.0f} s its event loop sat {s['db_secs']:.1f} s in database calls"
+        sites = ", ".join(f"{k} {v:.1f} s" for k, v in sorted(s["db"].items(), key=lambda kv: -kv[1]) if v >= 0.05)
+        if sites:
+            out += (
+                f" ({sites}"
+                + (f"; the longest {s['longest'][1]:.1f} s, {s['longest'][0]}" if s["longest"] else "")
+                + ")"
+            )
+        if s["cpu_share"] is not None:
+            out += f"; the recorder used {s['cpu_share']:.2f} of a core over {s['span']:.0f} s"
+        if s["load"] is not None:
+            out += f"; load {s['load']:.1f} on {s['cores']} cores"
+        return out
+
+
 class LagValve:
     """Closes when the recorder has run more than `lag_secs` behind the chain for `sustain_secs` straight, and opens
     once it is back within `reopen_secs`. While it is closed the PumpSwap side records nothing and lists the chain time
@@ -246,6 +347,7 @@ class LiveWatcher:
         # recent-migrations mode: the tape only, and nothing to add when index_amm keeps every PumpSwap trade
         self.migrated = RecentMigrations(secs) if tape and secs > 0 and not self.cfg.live.index_amm else None
         self.valve = LagValve(VALVE_LAG_SECS, VALVE_SUSTAIN_SECS, VALVE_REOPEN_SECS)
+        self.meter = StallMeter()  # where the recorder's time went: the valve's warning says why it fell behind
         self.clock: Callable[[], float] = time.time  # the mode's wall clock
         # the recorder's event loop waits with each of its writes: never the batch jobs' ten minutes (7 Nov 13:47: the
         # streams fell behind while a write waited for the lock)
@@ -725,6 +827,7 @@ class LiveWatcher:
                 return
             ts, first = int(ts), self.head is None
             self.lag_due, self.lag = now + 1.0, max(0.0, now - ts)
+            self.meter.tick()
             if first or tx.slot >= self.head[0]:
                 self.head = (tx.slot, ts)
             change = self.valve.observe(now - ts, now)
@@ -737,9 +840,10 @@ class LiveWatcher:
             self.stats["amm_valve_closed"] += 1
             log.warning(
                 "tape: %.0f s behind the chain for %.0f s: recent coins' PumpSwap transactions are skipped until it "
-                "catches up (pump.fun and LaunchLab go on)",
+                "catches up (pump.fun and LaunchLab go on); %s",
                 now - ts,
                 now - (self.valve.behind_since or now),
+                self.meter.words(),
             )
         elif change == "opened":
             log.info(
@@ -799,11 +903,13 @@ class LiveWatcher:
                 self._park(norm.unresolved_pools, tx, pos)
         if norm.pools:
             self.pools.update(norm.pools)
-            self.store.add_pools(norm.pools)
+            with self.meter.timed("tx writes"):
+                self.store.add_pools(norm.pools)
         window = self.cfg.storage.live_window_secs
         for launch in norm.launches:
             self.stats["launches"] += 1
-            self.store.add_launches([launch])
+            with self.meter.timed("tx writes"):
+                self.store.add_launches([launch])
             self.recent[launch.mint] = launch.ts
             task = asyncio.get_running_loop().create_task(self._on_launch(launch))
             self.tasks.add(task)
@@ -817,9 +923,11 @@ class LiveWatcher:
             self.fbuffer.extend(norm.foreign)
             self.stats["foreign_trades"] += len(norm.foreign)
         if norm.completions:
-            self.store.add_completions(norm.completions)
+            with self.meter.timed("tx writes"):
+                self.store.add_completions(norm.completions)
         if norm.migrations:
-            self.store.add_migrations(norm.migrations)
+            with self.meter.timed("tx writes"):
+                self.store.add_migrations(norm.migrations)
         if self.migrated is not None and (norm.completions or norm.migrations):
             try:
                 self._note_departures(norm)
@@ -827,7 +935,8 @@ class LiveWatcher:
                 self._amm_failed("record", exc)
         while self.recent and next(iter(self.recent.values())) < time.time() - window - 60:
             mint, ts = self.recent.popitem(last=False)
-            launch = self.store.launch(mint)
+            with self.meter.timed("tx writes"):
+                launch = self.store.launch(mint)
             if launch:
                 self.closed_launches.append(launch)
         if len(self.buffer) + len(self.fbuffer) >= 500:
@@ -907,12 +1016,13 @@ class LiveWatcher:
         if hot and self.write_fail_since is not None:
             return
         try:
-            if self.buffer:
-                self.store.add_trades(self.buffer)
-                self.buffer = []
-            if self.fbuffer:
-                self.store.add_ftrades(self.fbuffer)
-                self.fbuffer = []
+            with self.meter.timed("flush"):
+                if self.buffer:
+                    self.store.add_trades(self.buffer)
+                    self.buffer = []
+                if self.fbuffer:
+                    self.store.add_ftrades(self.fbuffer)
+                    self.fbuffer = []
         except sqlite3.OperationalError as exc:
             if "locked" not in str(exc) and "busy" not in str(exc):
                 raise
@@ -1051,15 +1161,18 @@ class LiveWatcher:
         pruning: asyncio.Task | None = None
         while True:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
+            self.meter.tick()
             self._flush()
-            self._mark_coverage()
-            if self.tape:
-                self._mark_tape()
+            with self.meter.timed("coverage"):
+                self._mark_coverage()
+                if self.tape:
+                    self._mark_tape()
             if self.migrated is not None:
                 self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
                 self.stats["amm_recent_coins"] = len(self.migrated)
                 self.amm_wake.set()  # the PumpSwap side looks again (expired pools leave, a stalled stream restarts)
-                self._mark_amm_recent()
+                with self.meter.timed("coverage"):
+                    self._mark_amm_recent()
             now = time.time()
             if now - last_prune > 3600 and (pruning is None or pruning.done()):
                 # a task of its own: this tick (flush, tape coverage, rescore) goes on while it runs
@@ -1078,7 +1191,12 @@ class LiveWatcher:
         from there, and the recorder never stops for it (a failed prune used to end the maintenance task, and with it
         the recorder)."""
         try:
-            for _ in self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400)):
+            steps = self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400))
+            while True:
+                with self.meter.timed("prune"):
+                    step = next(steps, None)
+                if step is None:
+                    break
                 await asyncio.sleep(0)
         except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
