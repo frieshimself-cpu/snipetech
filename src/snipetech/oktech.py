@@ -768,6 +768,13 @@ def strategy_sniper(
         notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
                      "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy a slot or so after "
                      "the migration, where the lab assumes it lands) and that its exits fire")  # fmt: skip
+        # solana/sell.py skips a coin whose curve has completed; the recorder takes PumpSwap trades only with index_amm
+        notes.append("/sell cannot sell these coins: every MIG position is on PumpSwap, and /sell only sells coins still "
+                     "on the pump.fun curve. If a position's exits do not fire (hunt fills have been left unsold: HOUSE, "
+                     "CAT), it has to be sold by hand in OKTech or Axiom")  # fmt: skip
+        notes.append("keep [live] index_amm on while it runs: without it the tape has no record of the PumpSwap fill, "
+                     "so the measure stage cannot measure it and the unsold-coin watch takes it for a coin we never "
+                     "bought")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):
