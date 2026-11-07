@@ -265,6 +265,7 @@ def test_the_book_promises_only_what_it_enforces():
     line = book_line(cfg)
     assert "2 SOL a day at risk" in line and "up to 3 more buys" in line
     assert "relied on for one buy, keeps two spares, and is replaced once the wallet holds nothing" in line
+    assert "wallet-wide guard holds (/risk)" in line  # the owner's 1 SOL a day and 10 SOL stop it too
 
 
 LOSE5 = {"W1": {"wallet": "W1", "n": 5, "mean_sol": -0.058, "lower_sol": -0.075, "status": "warming"}}  # 2YDn, 6 Nov

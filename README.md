@@ -255,7 +255,7 @@ needs, disk, failed transactions in the last hour — and sends one Telegram lin
 exact thing to do (`[resources]` thresholds in the config; `snipetech config set resources.anthropic_credit_usd <n>`
 after a top-up). The first round after `digest_hour_utc` (07:00 UTC) sends a digest: wallet and its change since the
 last digest, snipers, spend today and over 7 days, resources not ok, notes written. The bot obeys these commands
-from your chat only (also `/book`, `/sell` and `/budget`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
+from your chat only (also `/book`, `/sell`, `/budget`, `/test` and `/risk`, below): `/status`, `/stop` (writes a STOP flag so no running sniper is expected, and stops running
 snipers only while the wallet holds nothing — a stopped sniper strands its coin, so holders are named and left
 alone), `/resume`. `/sell <coin address>` sells all of that coin from the sniper wallet within a minute (pump.fun
 curve coins only, signed with `SNIPER_SECRET` from `/etc/snipetech/env`; a coin off the curve is sold by hand in
@@ -319,10 +319,11 @@ with `read_fills`.
 mean after 10 live fills, else its verdict score; `min_score` floor), keeps one capped copy sniper per wallet in the
 top `max_wallets`, assigns bid arms (`[book] bid_arms`; the alternative arm for an `explore_share` of wallets), sizes
 each fill so the arm's fee is at most 3 % of it (an arm that cannot is skipped and named), and applies the stops:
-equity floor, day stop, daily risk. It never stops a sniper while the wallet holds a coin. With `enabled = false`
-(the default) it only writes `[book dry] would …` notes, once per action per day, and calls OKTech for nothing; the
-owner reads a day of those before flipping `enabled = true` in the config file, after which every stop, create and
-start is a Telegram line. `--live` on the command line is refused while the config says disabled.
+equity floor, day stop, daily risk, and the owner's wallet-wide guard (`/risk`, below). It never stops a sniper
+while the wallet holds a coin. With `enabled = false` (the default) it only writes `[book dry] would …` notes, once
+per action per day, and calls OKTech for nothing; the owner reads a day of those before flipping `enabled = true` in
+the config file, after which every stop, create and start is a Telegram line. `--live` on the command line is
+refused while the config says disabled.
 
 **Events (phase 5).** `snipetech events poll` (a service, once a minute) writes the trending and graduating lists
 from SolanaTracker and Birdeye into an `events` table, once per appearance (pump.fun's own feed sits behind a
@@ -416,6 +417,28 @@ ends with nothing left armed: its sniper is stopped as soon
 as the wallet holds nothing (until then the test is "closing"). One test at a time, also counted on OKTech (any active
 sniper that is not the book's refuses one), and none starts while the tape is behind; `/stop` cancels one not started
 and ends a running one; no agent tool can write the file or start a test (`operator/live_test.py`, docs/live-recipe.md).
+
+**The wallet-wide guard (`/risk`).** The owner's rule of 7 Nov: no new live trade once the day is 1 SOL down or the
+wallet is under 10 SOL. It is on from the start, with no off. `/risk` shows it with today's result; `/risk stop 1.5`
+and `/risk floor 9` change it (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 SOL), `/risk default` goes back to 1 and
+10. From the cloud session, with your OK in chat: `snipetech remote --wait run operate risk --day-stop 1.5 --floor 9`
+(`--default` to go back). The day's result is our own trading only: today's closed round trips from the measure
+stage's fills plus the coins our buys still hold at the tape's price, so a deposit or a withdrawal moves nothing. While
+it holds, nothing new starts: the book creates and starts nothing and stops its snipers that hold nothing, `/test go`
+and the round's start of a test refuse, and a running cycler stops re-arming (it reads the guard before each re-arm,
+like `/stop`). One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents
+cannot write it (`operator/risk_guard.py`).
+
+**The automatic test (`/test auto`).** The owner's standing yes of 7 Nov ("Yes, use this plan"): when a strategy passes
+on paper, one live test starts by itself at the next round, at the strategy's own size (0.2 SOL a buy at most), at most
+10 buys one coin at a time, 120 minutes, stopping 1 SOL below the wallet's start. After its 10 trades it goes on in
+blocks of 10 (at most 3 more) only while the live mean per trade, read from the measure stage's fills, is at least half
+of the paper mean; the whole sequence never goes more than 1 SOL below the first block's start. Otherwise it stops and
+the analyst works out why. `/test auto on` is the yes (`snipetech remote --wait run operate autotest --on --approved
+"<your words>"` from the cloud session); `/test auto` shows it; `/test auto off` starts no more (a running block runs to
+its end, `/stop` ends it now). At the end of a sequence it turns itself off, and a new one needs your yes again. Its
+files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can write neither
+(`operator/autotest.py`, docs/live-recipe.md).
 
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
 round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.

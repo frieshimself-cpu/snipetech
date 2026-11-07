@@ -102,7 +102,8 @@ def book_line(cfg: Config, paths: OperatorPaths | None = None) -> str:
     relied = relied_buys(b)
     spares = max(0, int(b.max_buys_per_sniper) - relied)
     return (f"it copies only wallets that clear every gate and score at least {bar:g} SOL a trade, {b.fill_min_sol:g}-{b.fill_max_sol:g} SOL a fill, "
-            f"at most {b.daily_risk_sol:g} SOL a day at risk; it stops below {b.equity_floor_sol:g} SOL equity or after a {b.day_stop_sol:g} SOL day loss. "
+            f"at most {b.daily_risk_sol:g} SOL a day at risk; it stops below {b.equity_floor_sol:g} SOL equity, after a {b.day_stop_sol:g} SOL day loss, "
+            f"or while the owner's wallet-wide guard holds (/risk). "
             f"Each sniper is relied on for {_count(relied, 'buy')}, keeps {_count(spares, 'spare')}, and is replaced once the wallet holds nothing. "
             f"A stop never strands a coin: while the wallet holds one, every book sniper keeps running until it is sold, and each can make up to "
             f"{b.max_buys_per_sniper} more buys first")  # fmt: skip

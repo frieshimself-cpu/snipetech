@@ -20,6 +20,57 @@ Asked "What's the most efficient way to do this without rinsing the 10 sol?", th
 Wallet at the time: 11.88 SOL, nothing held, no sniper running. Why 0.2 SOL and not less: a round trip costs about
 0.009 SOL whatever the size, so a 0.02 SOL test can only lose. Results go in this file as they come.
 
+### How the yes runs as code
+
+The guard is on from the start. The automatic test starts nothing until the owner's yes is recorded: `/test auto on` in
+Telegram (that message is the yes), or from the cloud session `snipetech remote --wait run operate autotest --on
+--approved "Yes, use this plan (7 Nov 09:15 UTC)"`. `/test auto` shows where it stands; `/test auto off` turns it off.
+
+**1. The wallet-wide guard** (`operator/risk_guard.py`; the owner's values in `operator/RISK`).
+
+- On at 1 SOL a day and 10 SOL. `/risk` shows it with today's result; `/risk stop 1.5`, `/risk floor 9` and
+  `/risk default` change it (`operate risk --day-stop N --floor N --default` does the same). The day stop is 0.1 to 5 SOL
+  and the floor 0 to 1000 SOL. There is no off.
+- The day's result is our own trading only: today's closed round trips in the measure stage's fills (real fees and
+  failed duplicate sells included), plus the coins our buys still hold, at the tape's price. A deposit or a withdrawal
+  moves nothing in it. The floor is the wallet itself: SOL, wrapped SOL and coins.
+- While it holds, nothing new starts. The book creates and starts nothing and stops its snipers that hold nothing (one
+  holding a coin keeps running to sell it). `/test go` and the round's start of a test refuse. The cycler does not
+  start, and it reads the guard before each re-arm (like `/stop`) and ends its run. The automatic test asks for nothing.
+  What the guard cannot read never counts as clear.
+- The owner hears it once when a stop trips (one line a day for each stop), and `/status` shows it.
+
+**2. The first test starts by itself** (`operator/autotest.py`; the owner's switch in `operator/AUTOTEST`, the
+sequence's record in `operator/autotest.json`).
+
+- Each round checks the conditions: the switch on, no test in progress, no `/stop`, the guard clear. When all hold, the
+  round writes the `/test go` request itself for the best strategy `/test` would offer (100+ forward trades where a hunt
+  fill lands, a lower bound above zero, also with gains capped).
+- It runs at the strategy's own size, never another. A strategy scored above the yes's 0.2 SOL is refused, and the owner
+  is told once a day: a test at another size says nothing about it.
+- The yes's caps apply: 10 buys, 120 minutes, the floor 1 SOL below the wallet's balance. The same round starts it, as
+  for a `/test go`: one hunt sniper, one cycler.
+
+**3. It goes on only while live is at least half of paper.**
+
+- After a block has made all its 10 buys and closed, its result is read from the measure stage's fills. Only our own
+  round trips count. The book's copies from the same wallet are left out. A buy still without a sell after 45 minutes
+  counts as its whole cost.
+- The live mean per trade, over every trade of the sequence so far, is compared with the strategy's forward paper mean.
+- At least half, and above zero: the next block starts at once, with the same strategy, size and caps. Its floor stays
+  the first block's, so the whole sequence can lose at most 1 SOL. There are at most 3 more blocks (40 trades in all).
+- Below half: the sequence stops, and a decision note says "the analyst works out why" for the post-mortem to pick up.
+
+**What ends it.** A block that ends early (its 120 minutes, the floor, `/stop`, the guard) or does not start. Live
+below half of paper. All 4 blocks done. No room above the floor for another block. The switch turned off: a block
+running then runs to its end (`/stop` ends it now), and a request not started yet never starts. At the end the switch
+turns itself off (marked used, with the result) and the owner gets one summary. A new sequence needs the owner's yes
+again; `/test auto on` is refused while a sequence still runs.
+
+**Recorded:** each block in `operator/TEST.json` and `operator/tests.jsonl` with its sequence and block number, and one
+`"kind": "sequence"` line per sequence there. A decision note and a Telegram line go out at every start, block end and
+sequence end.
+
 ## The strategy
 
 | | |
@@ -103,7 +154,8 @@ No SSH and no command line: the owner starts and ends a capped live test from Te
    `operator/TEST.json` (state `requested`), and only when the strategy qualifies now, no test is requested, running or
    closing, no OKTech cycler or guard runs, no sniper that is not the book's is active on OKTech (an earlier test's left
    armed, one started by hand), the tape is at most 2 minutes behind (the book's rule: the cap counts our buys there),
-   `/stop` is not set, the wallet holds no coin, and the wallet holds at least the floor plus one buy and its fees. It
+   `/stop` is not set, the wallet holds no coin, the wallet holds at least the floor plus one buy and its fees, and the
+   wallet-wide guard (above) is clear. It
    offers only strategies whose forward lower bound is above zero also with each gain capped at 2.5 times its buy (the
    7 Nov create-slot bundle artifact made a losing rule look like +10.6 SOL). A message more
    than 5 minutes old is refused, as for `/sell`.
