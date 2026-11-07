@@ -9,9 +9,9 @@
 * Copy targets are followed with one subscription per wallet (or HTTP polling with
   `--poll`), and every buy/sell becomes a signal annotated with the copy verdict.
 * The tape (`--tape`) also keeps the PumpSwap trades of coins that left their pump.fun curve
-  in the last `[live] amm_recent_secs` (recent-migrations mode): PumpSwap joins the
-  subscription and each PumpSwap-only transaction is kept or dropped from its raw account
-  keys before anything is decoded.
+  in the last `[live] amm_recent_secs` (recent-migrations mode), over a LaserStream
+  subscription of those coins' pools alone (without LaserStream: one `logsSubscribe` per
+  pool); the tape's own subscription stays what it was.
 
 Signals go to stdout (JSON lines), the `signals` table (served by the HTTP API) and an
 optional webhook.
@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import itertools
 import json
 import logging
 import os
@@ -36,16 +37,18 @@ import websockets
 from .models import Launch, Normalized, Trade
 from .service import Service
 from .solana.base58 import b58decode
+from .solana.laserstream import account_keys
 from .solana.normalize import normalize
 from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM, WSOL_MINT, pump_pool
 from .solana.tx import TxEvents, extract_from_logs, extract_from_transaction
 
 log = logging.getLogger(__name__)
 
-AMM_RECENT_KEY = "tape:amm_recent"  # coverage: since when the tape holds recent coins' PumpSwap trades
-# The recent-migrations pre-filter decodes every transaction that touches one of these programs, as without the mode.
-CURVE_KEYS = frozenset({b58decode(PUMP_PROGRAM), b58decode(LAUNCHLAB_PROGRAM)})
-CURVE_INVOKES = (f"Program {PUMP_PROGRAM} invoke", f"Program {LAUNCHLAB_PROGRAM} invoke")
+AMM_RECENT_KEY = "tape:amm_recent"  # coverage: the runs in which the tape holds recent coins' PumpSwap trades
+# The tape's own subscription carries every transaction touching these programs: the PumpSwap side records none.
+CURVE_PROGRAMS = (PUMP_PROGRAM, LAUNCHLAB_PROGRAM)
+CURVE_KEYS = frozenset(b58decode(p) for p in CURVE_PROGRAMS)
+CURVE_INVOKES = tuple(f"Program {p} invoke" for p in CURVE_PROGRAMS)
 MULTI_HOP_LOG = "Program log: Instruction: MultiHopSwap"  # PumpSwap's multi_hop_swap names the pump.fun program
 RECENT_MAX_COINS = 10_000
 # The valve sheds PumpSwap when the recorder runs 20 s behind the chain for 30 s straight, well before the book's own
@@ -54,6 +57,16 @@ RECENT_MAX_COINS = 10_000
 VALVE_LAG_SECS = 20.0
 VALVE_SUSTAIN_SECS = 30.0
 VALVE_REOPEN_SECS = 10.0
+# The window counts on the chain clock (the block times being recorded, not the wall clock), and a coin stays watched a
+# minute past it, so neither a lagging recorder nor a resubscription cuts its last seconds.
+EXPIRY_GRACE_SECS = 60
+SLOT_SECS = 0.4  # mainnet's slot time: places a slot on the chain clock
+SLOT_DRIFT = 0.1  # how far slot times wander from it: a slot's place is widened by this share of its distance
+SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides as well
+REPLAY_MAX_SLOTS = 450  # a new PumpSwap subscription replays at most 3 min; what lies further back is a skipped stretch
+SHRINK_RESTART_SECS = 120  # expired pools leave the PumpSwap subscription at its next restart, or after 2 min
+STALL_SECS = 30  # a PumpSwap subscription that sent no slot for this long is restarted (slots come every 0.4 s)
+AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
 
 ACTIONS = {
     "SNIPE": "snipe",
@@ -95,13 +108,14 @@ class RecentMigrations:
 
     Why: a MIG snipe buys at the migration and the migration-sell exit sells into it, so the lab needs each coin's first
     minutes of PumpSwap trades, which ride in PumpSwap-only transactions the tape used to skip (BRUH, 7 Nov: one trade
-    recorded in the 366 s after its curve). The recorder keeps a PumpSwap-only transaction when one of its account keys
-    is a pool in here. `max_coins` bounds the memory whatever `secs` is set to."""
+    recorded in the 366 s after its curve). The PumpSwap side subscribes to the pools in here and records a transaction
+    when one of its account keys is one of them. `max_coins` bounds the memory whatever `secs` is set to."""
 
     def __init__(self, secs: int, max_coins: int = RECENT_MAX_COINS):
         self.secs = secs
         self.max_coins = max_coins
-        self.coins: OrderedDict[str, tuple[int, frozenset[str]]] = OrderedDict()  # mint -> (when it left, its pools)
+        # mint -> (when it left, the slot its trades are replayed from or None, its pools)
+        self.coins: OrderedDict[str, tuple[int, int | None, frozenset[str]]] = OrderedDict()
         self.keys: dict[bytes, str] = {}  # each pool's raw 32-byte key -> its mint: what account keys are compared with
 
     def __len__(self) -> int:
@@ -110,18 +124,25 @@ class RecentMigrations:
     def __contains__(self, mint: object) -> bool:
         return mint in self.coins
 
-    def note(self, mint: str, ts: int, pools: Iterable[str]) -> None:
-        """A coin left its curve (completion) or reached its pool (migration) at `ts`: its window runs from the later
-        of the two, and it moves to the back of the record."""
-        old_ts, old_pools = self.coins.pop(mint, (ts, frozenset()))
+    def note(self, mint: str, ts: int, pools: Iterable[str], slot: int | None = None) -> bool:
+        """A coin left its curve (completion) or reached its pool (migration) at `ts`, in `slot`: its window runs from
+        the later of the two, a replay of its trades from the earlier slot, and it moves to the back of the record.
+        True when one of its pools is new here (the PumpSwap subscription has to take it in)."""
+        old_ts, old_slot, old_pools = self.coins.pop(mint, (ts, slot, frozenset()))
         both = old_pools | {p for p in pools if p}
-        self.coins[mint] = (max(old_ts, ts), both)
+        slots = [s for s in (old_slot, slot) if s is not None]
+        self.coins[mint] = (max(old_ts, ts), min(slots) if slots else None, both)
+        grew = False
         for p in both:
-            self.keys[b58decode(p)] = mint
+            key = b58decode(p)
+            grew = grew or key not in self.keys
+            self.keys[key] = mint
         while len(self.coins) > self.max_coins:
             self._forget_oldest()
+        return grew
 
     def expire(self, now: float) -> None:
+        """Forget the coins whose window ended before `now` (chain time)."""
         while self.coins and next(iter(self.coins.values()))[0] + self.secs < now:
             self._forget_oldest()
 
@@ -129,8 +150,17 @@ class RecentMigrations:
         """Whether any of these raw account keys is a recent coin's pool."""
         return not self.keys.keys().isdisjoint(keys)
 
+    def pools(self) -> tuple[str, ...]:
+        """Every recent coin's pools, sorted: what the PumpSwap side subscribes to."""
+        return tuple(sorted({p for _ts, _slot, pools in self.coins.values() for p in pools}))
+
+    def slot_of(self, pool: str) -> int | None:
+        """The slot from which this pool's coin's trades are replayed (None: they are not)."""
+        mint = self.keys.get(b58decode(pool))
+        return self.coins[mint][1] if mint in self.coins else None
+
     def _forget_oldest(self) -> None:
-        mint, (_ts, pools) = self.coins.popitem(last=False)
+        mint, (_ts, _slot, pools) = self.coins.popitem(last=False)
         for p in pools:
             k = b58decode(p)
             if self.keys.get(k) == mint:
@@ -139,14 +169,13 @@ class RecentMigrations:
 
 class LagValve:
     """Closes when the recorder has run more than `lag_secs` behind the chain for `sustain_secs` straight, and opens
-    once it is back within `reopen_secs`. While it is closed the recent-migrations mode skips PumpSwap-only
-    transactions, so the recorder spends its time on pump.fun and LaunchLab, the tape everything else reads."""
+    once it is back within `reopen_secs`. While it is closed the PumpSwap side records nothing and lists the chain time
+    of what it let go, so the recorder spends its time on pump.fun and LaunchLab, the tape everything else reads."""
 
     def __init__(self, lag_secs: float, sustain_secs: float, reopen_secs: float):
         self.lag_secs, self.sustain_secs, self.reopen_secs = lag_secs, sustain_secs, reopen_secs
         self.behind_since: float | None = None
         self.closed_at: float | None = None
-        self.spans: list[list[int]] = []  # [closed, reopened] in this run, for the coverage record
 
     @property
     def is_open(self) -> bool:
@@ -163,10 +192,20 @@ class LagValve:
             return None
         self.behind_since = None
         if self.closed_at is not None and lag <= self.reopen_secs:
-            self.spans.append([int(self.closed_at), int(now)])
             self.closed_at = None
             return "opened"
         return None
+
+
+def amm_recent_covers(cov: dict[str, Any], start: float, end: float) -> bool:
+    """Whether the tape holds every PumpSwap trade of a coin from `start`, when it left its curve, to `end` (block
+    times), read from the coverage record `tape:amm_recent` (`LiveWatcher._mark_amm_recent`): the stretch lies inside
+    one run, within that run's window, and clear of its skipped stretches. A stretch the tape ran without the mode (off,
+    older code, the logs fallback) is in no run, and a run with a shorter window does not cover a longer stretch."""
+    for run in cov.get("runs", []):
+        if run["from"] <= start and end <= run["to"] and end - start <= run["secs"]:
+            return not any(a <= end and start <= b for a, b in run["skipped"])
+    return False
 
 
 class LiveWatcher:
@@ -201,7 +240,22 @@ class LiveWatcher:
         # recent-migrations mode: the tape only, and nothing to add when index_amm keeps every PumpSwap trade
         self.migrated = RecentMigrations(secs) if tape and secs > 0 and not self.cfg.live.index_amm else None
         self.valve = LagValve(VALVE_LAG_SECS, VALVE_SUSTAIN_SECS, VALVE_REOPEN_SECS)
-        self.clock: Callable[[], float] = time.time  # the mode's clock (window, valve, coverage)
+        self.clock: Callable[[], float] = time.time  # the mode's wall clock
+        self.lag = 0.0  # how far behind the chain the tape's own stream last measured itself (s)
+        self.lag_due = 0.0  # when to measure it next (once a second)
+        self.head: tuple[int, int] | None = None  # (slot, block time) last measured there: the chain clock
+        self.amm_source: str | None = None  # "laserstream" or "logs": how run() started the PumpSwap side
+        self.amm_wake = asyncio.Event()  # something changed for the PumpSwap side (a coin joined, a tick)
+        self.amm_pools: tuple[str, ...] = ()  # the pools of its subscription
+        self.amm_up = False  # that subscription has handed over its first message
+        self.amm_replay = True  # False after a replaying subscription failed before its first message
+        self.amm_resume: int | None = None  # a new subscription replays from this slot: all before it was handed over
+        self.amm_gap: int | None = None  # the PumpSwap side has not handed over since this slot (it is down)
+        self.amm_slot_at: float | None = None  # when its subscription last sent a slot
+        self.amm_backoff = 1.0
+        self.amm_seen: OrderedDict[Any, None] = OrderedDict()  # signatures recorded on the PumpSwap side
+        self.amm_skipped: list[list[int]] = []  # stretches of chain time it missed (coverage)
+        self.amm_runs: dict[str, list[int]] = {}  # this process's runs of the coverage record: tag -> [from, to]
 
     # -- entry point --------------------------------------------------------------------------
 
@@ -211,9 +265,15 @@ class LiveWatcher:
         tasks = [asyncio.create_task(self._maintenance())]
         if self.firehose and self._use_laserstream():
             tasks.append(asyncio.create_task(self._laserstream()))
+            if self.migrated is not None:
+                self.amm_source = "laserstream"
+                tasks.append(asyncio.create_task(self._amm_stream()))
         elif self.firehose:
-            for program, amm_only in self._log_firehoses():
-                tasks.append(asyncio.create_task(self._firehose(program, amm_only)))
+            for program in self._log_firehoses():
+                tasks.append(asyncio.create_task(self._firehose(program)))
+            if self.migrated is not None:
+                self.amm_source = "logs"
+                tasks.append(asyncio.create_task(self._amm_logs()))
         tasks.append(asyncio.create_task(self._follow_wallets()))
         try:
             await asyncio.gather(*tasks)
@@ -225,19 +285,17 @@ class LiveWatcher:
 
     # -- firehose ------------------------------------------------------------------------------
 
-    def _log_firehoses(self) -> list[tuple[str, bool]]:
-        """The logs subscriptions when LaserStream is not used: (program, through the recent-migrations filter)."""
-        subs = [(PUMP_PROGRAM, False)]
+    def _log_firehoses(self) -> list[str]:
+        """The programs of the logs subscriptions when LaserStream is not used. The recent-migrations mode adds none:
+        its pools have a socket of their own (`_amm_logs`)."""
+        programs = [PUMP_PROGRAM]
         if self.cfg.live.index_amm:
-            subs.append((PUMP_AMM_PROGRAM, False))
-        elif self.migrated is not None:
-            subs.append((PUMP_AMM_PROGRAM, True))
+            programs.append(PUMP_AMM_PROGRAM)
         if self.tape:
-            subs.append((LAUNCHLAB_PROGRAM, False))
-        return subs
+            programs.append(LAUNCHLAB_PROGRAM)
+        return programs
 
-    async def _firehose(self, program: str, amm_only: bool = False) -> None:
-        on_logs = self._on_amm_logs if amm_only else self._on_logs
+    async def _firehose(self, program: str) -> None:
         url = self.cfg.rpc.websocket_url()
         backoff = 1.0
         while True:
@@ -257,7 +315,7 @@ class LiveWatcher:
                         msg = json.loads(raw)
                         res = (msg.get("params") or {}).get("result")
                         if res:
-                            on_logs(res["context"]["slot"], res["value"])
+                            self._on_logs(res["context"]["slot"], res["value"])
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # reconnect on anything network-shaped
@@ -281,7 +339,7 @@ class LiveWatcher:
         """The whole firehose over one LaserStream subscription: exact block order, every trader."""
         from .solana import laserstream as LS
 
-        programs, on_tx, route = self._stream_plan()
+        programs, on_tx = self._stream_plan()
         backoff = [1.0]
 
         def on_connect() -> None:
@@ -292,7 +350,7 @@ class LiveWatcher:
         while True:
             try:
                 await LS.stream(programs, on_tx, endpoint=self.cfg.live.laserstream_endpoint, commitment=self.cfg.rpc.commitment,
-                                on_connect=on_connect, route=route)  # fmt: skip
+                                on_connect=on_connect)  # fmt: skip
                 raise RuntimeError("stream ended")
             except asyncio.CancelledError:
                 raise
@@ -302,13 +360,11 @@ class LiveWatcher:
                 await asyncio.sleep(backoff[0])
                 backoff[0] = min(backoff[0] * 2, 60)
 
-    def _stream_plan(self) -> tuple[list[str], Callable[[dict[str, Any], int], None], Callable | None]:
-        """The LaserStream subscription: its programs, the handler of a transaction, and (recent-migrations mode only)
-        the route that picks the handler from the raw account keys before the transaction is converted."""
-        programs = [PUMP_PROGRAM, LAUNCHLAB_PROGRAM]
-        if self.cfg.live.index_amm or self.migrated is not None:
-            programs.append(PUMP_AMM_PROGRAM)
-        return programs, self._ls_tx, (self._ls_route if self.migrated is not None else None)
+    def _stream_plan(self) -> tuple[list[str], Callable[[dict[str, Any], int], None]]:
+        """The tape's own LaserStream subscription: its programs and the handler of a transaction. The recent-migrations
+        mode leaves it as it is: its pools have a subscription of their own (`_amm_stream`)."""
+        programs = [PUMP_PROGRAM, LAUNCHLAB_PROGRAM] + ([PUMP_AMM_PROGRAM] if self.cfg.live.index_amm else [])
+        return programs, self._ls_tx
 
     def _ls_tx(self, txj: dict[str, Any], index: int) -> None:
         ev = extract_from_transaction(txj)
@@ -319,54 +375,307 @@ class LiveWatcher:
             self._observe_lag(ev)
         self._on_tx(ev, index)
 
+    # -- recent-migrations mode: the PumpSwap side ------------------------------------------------------------------
+
+    async def _amm_stream(self) -> None:
+        """The recent-migrations mode over LaserStream: the recent coins' PumpSwap pools on a subscription of their own,
+        so the server sends only the transactions that touch one of them.
+
+        Why not the PumpSwap program on the tape's subscription (the first version, 7 Nov): the recorder then received
+        and parsed every PumpSwap transaction before anything could drop it, 75-87 us each (grpc.aio and protobuf,
+        a1/a2.bin through a local gRPC server, dev box) against about 1 ms for a pump.fun one, on the thread that
+        records pump.fun, and no valve could shed that. Here the tape's subscription stays as it was, and a failure on
+        this side reconnects this side only.
+
+        The subscription restarts when a coin joins, replaying from the slot of its completion: the migration comes in
+        that same transaction (BRUH, 7 Nov: its post_complete_buy) and a new subscription takes a moment to start, so
+        without the replay a coin's first PumpSwap trades, the ones a MIG snipe meets, would be missing. A restart or
+        a reconnect replays from where the last subscription stopped handing over (it sends each slot, so that point
+        is known even while no trade comes); what is handed over twice is recorded once."""
+        while True:
+            try:
+                await self._amm_subscription()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — this side reconnects on anything; the tape's stream stays
+                self.stats["amm_stream_errors"] += 1
+                log.warning("PumpSwap stream (recent coins) dropped (%s); reconnecting in %.0fs", str(exc)[:200],
+                            self.amm_backoff)  # fmt: skip
+                await asyncio.sleep(self.amm_backoff)
+                self.amm_backoff = min(self.amm_backoff * 2, 60)
+
+    async def _amm_subscription(self) -> None:
+        """One subscription of the recent pools, until it has to restart (returns) or fails (raises)."""
+        from .solana import laserstream as LS
+
+        want = self._amm_want()
+        if not want or self.head is None:  # no pool to watch, or no chain clock yet (the tape's first second)
+            if not want and self.amm_gap is not None:  # down when its last coin left: what it missed stays missed
+                self._skip(self._slot_ts(self.amm_gap, -1), self._chain_now() + SKIP_MARGIN_SECS)
+            self.amm_pools, self.amm_resume, self.amm_gap = (), None, None
+            await self._amm_wait()
+            return
+        start = self._amm_start(want)
+        self.amm_pools, self.amm_up, self.amm_gap, self.amm_slot_at = want, False, self.amm_resume, None
+        since = self.clock()
+
+        def on_connect() -> None:
+            self.amm_up, self.amm_replay, self.amm_gap, self.amm_backoff = True, True, None, 1.0
+            log.info(
+                "PumpSwap subscribed: %d recent pools%s", len(want), "" if start is None else f", from slot {start}"
+            )
+
+        request = LS.subscribe_request(list(want), self.cfg.rpc.commitment, exclude=CURVE_PROGRAMS, from_slot=start,
+                                       slots=True, name="amm")  # fmt: skip
+        task = asyncio.create_task(LS.stream([], self._ls_amm, endpoint=self.cfg.live.laserstream_endpoint,
+                                             on_connect=on_connect, route=self._amm_route, request=request,
+                                             on_slot=self._amm_slot))  # fmt: skip
+        why = None
+        try:
+            why = await self._amm_until_restart(task, want, since)
+            self.stats["amm_restarts"] += 1
+        except Exception:
+            if not self.amm_up and start is not None:
+                self.amm_replay = False  # a replaying subscription failed before its first message: start live
+            raise
+        finally:
+            # not handing over until the next one is up, which replays from here; nothing to make up for when its last
+            # coin left while it was handing over
+            self.amm_gap = None if why == "empty" and self.amm_up else self.amm_resume
+            self.amm_up = False
+            task.cancel()
+            await asyncio.wait({task})
+            if not task.cancelled():
+                task.exception()  # retrieved: how a stream given up on ended is of no interest
+
+    async def _amm_until_restart(self, task: asyncio.Task, subscribed: tuple[str, ...], since: float) -> str:
+        """Wait while the subscription runs, and say why it has to restart: a coin "joined" (at once, so the replay is
+        short), it is "empty" (no recent pool left), expired pools have stayed in it SHRINK_RESTART_SECS ("shrunk"),
+        or it sent no slot for STALL_SECS ("stalled"). Raises when the stream fails or ends."""
+        while True:
+            self.amm_wake.clear()
+            want = self._amm_want()
+            if not want:
+                return "empty"
+            if set(want) - set(subscribed):
+                return "joined"
+            if set(subscribed) - set(want) and self.clock() - since >= SHRINK_RESTART_SECS:
+                return "shrunk"
+            if self.amm_up and self.amm_slot_at is not None and self.clock() - self.amm_slot_at > STALL_SECS:
+                return "stalled"
+            wake = asyncio.ensure_future(self.amm_wake.wait())
+            try:
+                await asyncio.wait({task, wake}, return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                wake.cancel()
+            if task.done():
+                task.result()  # the stream's own failure
+                raise RuntimeError("stream ended")
+
+    def _amm_start(self, want: tuple[str, ...]) -> int | None:
+        """The slot a new subscription replays from: a joining coin's own slot (its completion), or where the last
+        subscription of these pools stopped handing over (`amm_resume`), whichever is earlier. What it cannot replay,
+        further back than REPLAY_MAX_SLOTS or after the server refused a replay, becomes a skipped stretch."""
+        assert self.migrated is not None and self.head is not None
+        head = self.head[0]
+        starts = [s for p in want if p not in self.amm_pools and (s := self.migrated.slot_of(p)) is not None]
+        if self.amm_pools and self.amm_resume is not None:
+            starts.append(self.amm_resume)
+        start = min(starts) if starts else None
+        if start is not None and start < head - REPLAY_MAX_SLOTS:
+            self._skip(self._slot_ts(start, -1), self._slot_ts(head - REPLAY_MAX_SLOTS, +1))
+            start = head - REPLAY_MAX_SLOTS
+        if start is not None and not self.amm_replay:
+            self._skip(self._slot_ts(start, -1), self._chain_now() + SKIP_MARGIN_SECS)
+            start = None
+        self.amm_resume = start if start is not None else head - 2  # live: the server is at least where the tape is
+        return start
+
+    def _amm_want(self) -> tuple[str, ...]:
+        """The pools the PumpSwap side watches: every recent coin's, the window counted on the chain clock."""
+        assert self.migrated is not None
+        self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
+        return self.migrated.pools()
+
+    async def _amm_wait(self) -> None:
+        """Until something changes for the PumpSwap side: a coin joins, the chain clock starts, a maintenance tick."""
+        self.amm_wake.clear()
+        await self.amm_wake.wait()
+
+    def _amm_slot(self, slot: int) -> None:
+        """A slot of the PumpSwap subscription: everything before it has been handed over."""
+        self.amm_slot_at = self.clock()
+        if self.amm_resume is None or slot > self.amm_resume:
+            self.amm_resume = slot
+
+    def _amm_route(self, info: Any, slot: int) -> Callable[[dict[str, Any], int], None] | None:
+        """Whether an update of the PumpSwap subscription is recorded, from its raw signature and account keys before
+        anything is converted: only one on a recent coin's pool, not one recorded already (a replay hands transactions
+        over again), not one the tape's own subscription carries (pump.fun or LaunchLab: the filter excludes them, this
+        makes sure), and none while the valve is closed. About 5 us an update let go, 1 us a duplicate (dev box)."""
+        assert self.migrated is not None
+        if self.amm_resume is None or slot > self.amm_resume:
+            self.amm_resume = slot
+        sig = bytes(info.signature)
+        if sig in self.amm_seen:
+            self.stats["amm_duplicates"] += 1
+            return None
+        keys = account_keys(info)
+        if not CURVE_KEYS.isdisjoint(keys):
+            self.stats["amm_curve"] += 1
+            return None
+        self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
+        if not self._amm_verdict(self.migrated.touches(keys), slot):
+            return None
+        self._remember(sig)
+        return self._ls_amm
+
     def _ls_amm(self, txj: dict[str, Any], index: int) -> None:
-        """A PumpSwap-only transaction on a recent coin's pool (recent-migrations mode)."""
+        """A PumpSwap-only transaction on a recent coin's pool, decoded like every other transaction."""
         try:
             ev = extract_from_transaction(txj)
             if ev.failed or not ev.events:
                 return
-            self._observe_lag(ev)
             self._on_tx(ev, index, amm_only=True)
         except Exception as exc:  # noqa: BLE001 — the tape never decoded these before: none may cost the stream
             self._amm_failed("decode", exc)
 
-    def _ls_route(self, keys: list[bytes]) -> Callable[[dict[str, Any], int], None] | None:
-        kind = self._route(keys, self.clock())
-        return self._ls_tx if kind == "curve" else self._ls_amm if kind == "amm" else None
+    def _amm_verdict(self, touched: bool, slot: int) -> bool:
+        if not touched:
+            self.stats["amm_dropped"] += 1
+            return False
+        if not self.valve.is_open:
+            self.stats["amm_valve_skipped"] += 1
+            self._skip(self._slot_ts(slot, -1), self._slot_ts(slot, +1))
+            return False
+        self.stats["amm_kept"] += 1
+        return True
 
-    def _route(self, keys: list[bytes], now: float) -> str | None:
-        """Where a transaction goes in the recent-migrations mode, from its raw account keys (static and loaded) alone:
-        "curve" when it touches pump.fun or LaunchLab, decoded exactly as without the mode; for a PumpSwap-only one,
-        "amm" when it touches a recent coin's pool, else None (dropped undecoded). Measured on the dev box, 7 Nov: a
-        dropped PumpSwap transaction costs 5.6 us against 0.97 ms decoded (a1.bin); a pump.fun or LaunchLab one pays
-        4-5 us more than without the mode, on 0.7-1.6 ms of decoding."""
-        if not CURVE_KEYS.isdisjoint(keys):
-            return "curve"
-        assert self.migrated is not None
-        self.migrated.expire(now)
-        return self._amm_verdict(self.migrated.touches(keys))
+    def _remember(self, sig: Any) -> None:
+        self.amm_seen[sig] = None
+        if len(self.amm_seen) > AMM_SEEN_MAX:
+            self.amm_seen.popitem(last=False)
 
-    def _route_logs(self, logs: list[str], now: float) -> str | None:
-        """`_route` for a notification of the PumpSwap logs subscription, which carries no account keys. One that runs
-        pump.fun or LaunchLab, or PumpSwap's multi_hop_swap (its accounts always include the pump.fun program), is
-        "curve": their own subscriptions deliver it too. A PumpSwap-only one touches a recent pool when one of its
-        event payloads holds that pool's key."""
+    def _skip(self, lo: float, hi: float) -> None:
+        """A stretch of chain time in which the PumpSwap side missed recent coins' trades (its bounds already the early
+        and the late one), merged into the list the coverage record's runs take theirs from."""
+        span = [int(lo), int(hi) + 1]
+        spans = self.amm_skipped
+        if spans and span[0] <= spans[-1][1] and span[1] >= spans[-1][0]:  # it touches the last one: the usual case
+            spans[-1] = [min(span[0], spans[-1][0]), max(span[1], spans[-1][1])]
+            return
+        merged: list[list[int]] = []
+        for a, b in sorted([*spans, span]):
+            if merged and a <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        self.amm_skipped = merged[-500:]
+
+    async def _amm_logs(self) -> None:
+        """The recent-migrations mode without LaserStream: one `logsSubscribe` per recent pool on a socket of its own,
+        so the node sends only those pools' transactions (a subscription to the PumpSwap program would hand the recorder
+        every PumpSwap transaction to parse and drop). Nothing replays here, so a coin's first trades can come before
+        its subscription does: this path records what it gets and writes no coverage record."""
+        url = self.cfg.rpc.websocket_url()
+        while True:
+            try:
+                if not self._amm_want():
+                    await self._amm_wait()
+                    continue
+                async with websockets.connect(url, max_size=2**25, ping_interval=20, open_timeout=20) as ws:
+                    await self._amm_logs_session(ws)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — reconnect on anything network-shaped
+                self.stats["amm_stream_errors"] += 1
+                log.warning("PumpSwap logs (recent coins) dropped (%s); reconnecting in %.0fs", exc, self.amm_backoff)
+                await asyncio.sleep(self.amm_backoff)
+                self.amm_backoff = min(self.amm_backoff * 2, 60)
+
+    async def _amm_logs_session(self, ws: Any) -> None:
+        """One socket: a subscription for each recent pool, an unsubscription for each one that expired, and every
+        notification handed over; returns when no recent pool is left."""
+        subs: dict[str, int] = {}  # pool -> its subscription
+        asked: dict[int, str] = {}  # request id -> the pool it subscribes
+        ids = itertools.count(1)
+        recv: asyncio.Future | None = None
+        try:
+            while True:
+                self.amm_wake.clear()
+                want = set(self._amm_want())
+                if not want:
+                    return
+                for pool in sorted(want - subs.keys() - set(asked.values())):
+                    asked[rid := next(ids)] = pool
+                    await ws.send(json.dumps({
+                        "jsonrpc": "2.0", "id": rid, "method": "logsSubscribe",
+                        "params": [{"mentions": [pool]}, {"commitment": self.cfg.rpc.commitment}],
+                    }))  # fmt: skip
+                for pool in sorted(subs.keys() - want):
+                    await ws.send(json.dumps({"jsonrpc": "2.0", "id": next(ids), "method": "logsUnsubscribe",
+                                              "params": [subs.pop(pool)]}))  # fmt: skip
+                recv = recv or asyncio.ensure_future(ws.recv())
+                wake = asyncio.ensure_future(self.amm_wake.wait())
+                try:
+                    await asyncio.wait({recv, wake}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    wake.cancel()
+                if not recv.done():
+                    continue
+                msg, recv = json.loads(recv.result()), None
+                if "id" in msg:  # the answer to a request: a pool's subscription, or an unsubscription's true
+                    pool = asked.pop(msg["id"], None)
+                    if pool is not None:
+                        if "error" in msg:
+                            raise RuntimeError(f"logsSubscribe rejected: {msg['error']}")
+                        subs[pool] = msg["result"]
+                        self.amm_backoff = 1.0
+                    continue
+                res = (msg.get("params") or {}).get("result")
+                if res:
+                    self._on_amm_logs(res["context"]["slot"], res["value"])
+        finally:
+            if recv is not None:
+                recv.cancel()
+
+    def _on_amm_logs(self, slot: int, value: dict[str, Any]) -> None:
+        """A notification of a recent pool's logs subscription (`_amm_logs`)."""
+        if value.get("err") is not None:
+            return
+        sig = value.get("signature")
+        if sig in self.amm_seen:  # it touches two recent pools: one notification per subscription
+            self.stats["amm_duplicates"] += 1
+            return
+        if self._route_logs(value.get("logs") or [], slot):
+            self._remember(sig)
+            try:
+                self._on_logs(slot, value, amm_only=True)
+            except Exception as exc:  # noqa: BLE001 — as in _ls_amm
+                self._amm_failed("decode", exc)
+
+    def _route_logs(self, logs: list[str], slot: int) -> bool:
+        """`_amm_route` for a logs notification, which carries no account keys. One that runs pump.fun or LaunchLab, or
+        PumpSwap's multi_hop_swap (its accounts always include the pump.fun program), is the tape's own subscriptions'
+        to record. A PumpSwap-only one is recorded when one of its event payloads holds a recent pool's key."""
         payloads = []
         stack: list[str] = []  # the invoke stack, as extract_from_logs tracks it
         for line in logs:
             if line.startswith(CURVE_INVOKES):
-                return "curve"
+                self.stats["amm_curve"] += 1
+                return False
             if line.startswith("Program ") and " invoke [" in line:
                 stack.append(line.split(" ", 2)[1])
             elif line.startswith("Program ") and (line.endswith(" success") or " failed" in line):
                 if stack:
                     stack.pop()
             elif line == MULTI_HOP_LOG and stack and stack[-1] == PUMP_AMM_PROGRAM:
-                return "curve"
+                self.stats["amm_curve"] += 1
+                return False
             elif line.startswith("Program data: "):
                 payloads.append(line[len("Program data: ") :])
         assert self.migrated is not None
-        self.migrated.expire(now)
+        self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
         recent = self.migrated.keys
         touched = False
         for data in payloads if recent else ():
@@ -377,27 +686,7 @@ class LiveWatcher:
             if any(key in payload for key in recent):
                 touched = True
                 break
-        return self._amm_verdict(touched)
-
-    def _amm_verdict(self, touched: bool) -> str | None:
-        if not touched:
-            self.stats["amm_dropped"] += 1
-            return None
-        if not self.valve.is_open:
-            self.stats["amm_valve_skipped"] += 1
-            return None
-        self.stats["amm_kept"] += 1
-        return "amm"
-
-    def _on_amm_logs(self, slot: int, value: dict[str, Any]) -> None:
-        """A notification of the PumpSwap logs subscription (recent-migrations mode)."""
-        if value.get("err") is not None:
-            return
-        if self._route_logs(value.get("logs") or [], self.clock()) == "amm":
-            try:
-                self._on_logs(slot, value, amm_only=True)
-            except Exception as exc:  # noqa: BLE001 — as in _ls_amm
-                self._amm_failed("decode", exc)
+        return self._amm_verdict(touched, slot)
 
     def _amm_failed(self, where: str, exc: Exception) -> None:
         """A failure inside the recent-migrations mode: counted (the first of each kind logged), and the stream goes
@@ -408,32 +697,54 @@ class LiveWatcher:
             log.warning("tape: recent-migrations %s failed (%r); counted as %s from here on", where, exc, key)
 
     def _observe_lag(self, tx: TxEvents) -> None:
-        """Tell the valve how far behind the chain this freshly received transaction is recorded: now minus the block
-        time its events carry (pump.fun's and PumpSwap's do, LaunchLab's do not; the stream's own block time is the
-        receive time). The book and the operator measure the tape's lag the same way, from the trades' block times."""
+        """Measure, once a second, how far behind the chain the tape's own stream records: now minus the block time its
+        newest transaction's events carry (pump.fun's do, LaunchLab's do not; the stream's own block time is the
+        receive time). It feeds the valve, `lag` and the chain clock `head` (where the window and the skipped
+        stretches are counted). The book and the operator measure the tape's lag the same way, from the trades' block
+        times. Once a second, so each of the tape's own transactions pays 0.2 us for it (1.3 us to measure; dev box)."""
+        now = self.clock()
+        if now < self.lag_due:
+            return
         try:
             ts = next((e.fields["timestamp"] for e in tx.events if e.fields.get("timestamp")), None)
             if ts is None:
                 return
-            now = self.clock()
-            lag = now - int(ts)
-            change = self.valve.observe(lag, now)
-        except Exception as exc:  # noqa: BLE001 — it runs on every pump.fun transaction: never at their cost
+            ts, first = int(ts), self.head is None
+            self.lag_due, self.lag = now + 1.0, max(0.0, now - ts)
+            if first or tx.slot >= self.head[0]:
+                self.head = (tx.slot, ts)
+            change = self.valve.observe(now - ts, now)
+        except Exception as exc:  # noqa: BLE001 — it runs on the tape's own transactions: never at their cost
             self._amm_failed("lag", exc)
             return
+        if first:
+            self.amm_wake.set()  # the PumpSwap side waits for the chain clock
         if change == "closed":
             self.stats["amm_valve_closed"] += 1
-            held = now - (self.valve.behind_since or now)
             log.warning(
                 "tape: %.0f s behind the chain for %.0f s: recent coins' PumpSwap transactions are skipped until it "
                 "catches up (pump.fun and LaunchLab go on)",
-                lag,
-                held,
+                now - ts,
+                now - (self.valve.behind_since or now),
             )
         elif change == "opened":
             log.info(
-                "tape: back within %.0f s of the chain: recent coins' PumpSwap transactions are recorded again", lag
+                "tape: back within %.0f s of the chain: recent coins' PumpSwap transactions are recorded again",
+                now - ts,
             )
+
+    def _chain_now(self) -> float:
+        """The block time the tape's own stream is recording now: the wall clock minus its last measured lag."""
+        return self.clock() - self.lag
+
+    def _slot_ts(self, slot: int, side: int = 0) -> float:
+        """A slot's block time on the chain clock: the last measured (slot, block time) plus SLOT_SECS a slot. `side`
+        -1 or +1 gives the early or the late bound, wider by SKIP_MARGIN_SECS and SLOT_DRIFT of the distance."""
+        if self.head is None:
+            return self._chain_now() + side * SKIP_MARGIN_SECS
+        head_slot, head_ts = self.head
+        secs = (slot - head_slot) * SLOT_SECS
+        return head_ts + secs + side * (SKIP_MARGIN_SECS + abs(secs) * SLOT_DRIFT)
 
     def _connected(self) -> None:
         if self.disconnected_at is not None:
@@ -458,7 +769,7 @@ class LiveWatcher:
                 del self.slot_pos[s]
         # receive time stands in for block time (LaunchLab events carry no timestamp; pump's do)
         tx = TxEvents(value["signature"], slot, int(time.time()), "", events)
-        if self.migrated is not None:
+        if self.migrated is not None and not amm_only:  # the tape's own subscriptions measure the lag
             self._observe_lag(tx)
         self._on_tx(tx, pos, amm_only=amm_only)
 
@@ -509,16 +820,20 @@ class LiveWatcher:
             self._flush()
 
     def _note_departures(self, norm: Normalized) -> None:
-        """Coins that left their curve in this transaction join the recent-migrations record with their pool. A
-        migration names it (pump.fun's CompletePumpAmmMigrationEvent and PumpSwap's CreatePoolEvent in the same
-        transaction); a completion comes before the pool exists, so its pool is the address the migration will create
-        (`pump_pool`), which also covers a migrate transaction the recorder missed (a gap) or saw after the first
-        PumpSwap trades."""
+        """Coins that left their curve in this transaction join the recent-migrations record with their pool and the
+        slot their trades are replayed from. A migration names the pool (pump.fun's CompletePumpAmmMigrationEvent and
+        PumpSwap's CreatePoolEvent in the same transaction); a completion may come before the pool exists, so its pool
+        is the address the migration creates (`pump_pool`), which also covers a migrate transaction the recorder missed
+        (a gap) or saw after the first PumpSwap trades. A new pool wakes the PumpSwap side."""
         assert self.migrated is not None
+        grew = False
         for c in norm.completions:
-            self.migrated.note(c.mint, c.ts, [self._derived_pool(c.mint)])
+            grew |= self.migrated.note(c.mint, c.ts, [self._derived_pool(c.mint)], c.slot)
         for m in norm.migrations:
-            self.migrated.note(m.mint, m.ts, [m.pool, *(p for p, (base, _q) in norm.pools.items() if base == m.mint)])
+            pools = [m.pool, *(p for p, (base, _q) in norm.pools.items() if base == m.mint)]
+            grew |= self.migrated.note(m.mint, m.ts, pools, m.slot)
+        if grew:
+            self.amm_wake.set()
 
     def _derived_pool(self, mint: str) -> str:
         """The pool a completed SOL-quoted coin migrates into. Its mints are part of the address, so the mapping is
@@ -529,7 +844,8 @@ class LiveWatcher:
 
     def _seed_recent(self, now: float) -> None:
         """Start with the coins that left their curve within the window before this start (a restart, `remote update`),
-        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it."""
+        from the tape's own completions and migrations tables, so their pools are recorded for the rest of it. Nothing
+        of theirs is replayed (a restart is a gap in the whole tape; the coverage record claims none of them)."""
         assert self.migrated is not None
         since = int(now - self.migrated.secs)
         try:
@@ -692,8 +1008,9 @@ class LiveWatcher:
             if self.tape:
                 self._mark_tape()
             if self.migrated is not None:
-                self.migrated.expire(self.clock())
+                self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
                 self.stats["amm_recent_coins"] = len(self.migrated)
+                self.amm_wake.set()  # the PumpSwap side looks again (expired pools leave, a stalled stream restarts)
                 self._mark_amm_recent()
             now = time.time()
             if now - last_prune > 3600:
@@ -715,24 +1032,34 @@ class LiveWatcher:
         self.store.set_coverage("tape", cov)
 
     def _mark_amm_recent(self) -> None:
-        """Coverage `tape:amm_recent`: from `since` on (the first start with the mode; an older start is kept) the tape
-        holds the PumpSwap trades of every coin in its first `secs` seconds off the curve, inside the tape's own spans,
-        except in the `skipped` stretches, when the valve shed them."""
-        if self.migrated is None or self.disconnected_at is not None or self.span_start is None:
+        """Coverage `tape:amm_recent`: one run per gap-free stretch of the tape's own stream (its spans) with the mode
+        on over LaserStream, each with its window `secs` and the chain-time stretches it `skipped` (the valve, a
+        PumpSwap subscription down for longer than a replay makes up for, or down right now). In a run the tape holds
+        every PumpSwap trade of each coin that left its curve inside it, for `secs` seconds, outside those stretches;
+        `amm_recent_covers` reads it. A stretch without the mode (off, older code, a restart) lies in no run, and a run
+        with another window is another run. This process's runs are tagged and rewritten every tick, the current one
+        extended while the tape's stream is up, and every one with each skipped stretch that reaches into it, also
+        when that came after its last tick. The logs fallback writes none (nothing replays there)."""
+        if self.migrated is None or self.amm_source != "laserstream":
             return
-        now = self.clock()
         try:
-            cov = self.store.coverage(AMM_RECENT_KEY)
-            since = cov.get("since")
-            mine = [list(s) for s in self.valve.spans]
-            if self.valve.closed_at is not None:
-                mine.append([int(self.valve.closed_at), int(now)])
-            earlier = [s for s in cov.get("skipped", []) if s[0] < self.started]  # earlier runs; this one's rewritten
-            self.store.set_coverage(AMM_RECENT_KEY, {
-                "since": self.span_start if since is None else min(int(since), self.span_start),
-                "secs": self.migrated.secs,
-                "skipped": (earlier + mine)[-200:],
-            })  # fmt: skip
+            chain = self._chain_now()
+            if self.disconnected_at is None and self.span_start is not None and int(chain) - 2 > self.span_start:
+                self.amm_runs[f"{int(self.started)}-{self.span_start}"] = [self.span_start, int(chain) - 2]
+                while len(self.amm_runs) > 500:
+                    del self.amm_runs[next(iter(self.amm_runs))]
+            if not self.amm_runs:
+                return
+            skipped = [list(s) for s in self.amm_skipped]
+            if self.amm_gap is not None:  # down now: a replay may still make up for it
+                skipped.append([int(self._slot_ts(self.amm_gap, -1)), int(chain) + 1 + SKIP_MARGIN_SECS])
+            mine = [{"run": tag, "from": a, "to": b, "secs": self.migrated.secs,
+                     "skipped": [s for s in skipped if s[0] <= b and s[1] >= a][-200:]}
+                    for tag, (a, b) in self.amm_runs.items()]  # fmt: skip
+            keys = mine[0].keys()
+            runs = [r for r in self.store.coverage(AMM_RECENT_KEY).get("runs", [])
+                    if isinstance(r, dict) and r.keys() == keys and r["run"] not in self.amm_runs]  # fmt: skip
+            self.store.set_coverage(AMM_RECENT_KEY, {"runs": sorted(runs + mine, key=lambda r: r["from"])[-500:]})
         except Exception as exc:  # noqa: BLE001 — the maintenance tick (flushes, the tape's own coverage) goes on
             self._amm_failed("coverage", exc)
 
