@@ -25,7 +25,9 @@ def _ops(tmp_path) -> O.Ops:
 
 @pytest.fixture
 def jobs(tmp_path) -> OperatorJobs:
-    j = OperatorJobs(repo=tmp_path, data=tmp_path / "data", db=tmp_path / "data" / "snipetech.db", branch="main", max_jobs=3)
+    j = OperatorJobs(
+        repo=tmp_path, data=tmp_path / "data", db=tmp_path / "data" / "snipetech.db", branch="main", max_jobs=3
+    )
     j.ops = _ops(tmp_path)  # the test probe instead of the real snipetech binary
     return j
 
@@ -37,6 +39,21 @@ def _meta(jobs_dir, jid, argv, running=True, pid=None):
 
 def test_research_commands_exclude_oktech_and_sweep():
     assert "oktech" not in RESEARCH_COMMANDS and "sweep" not in RESEARCH_COMMANDS and "lab" in RESEARCH_COMMANDS
+
+
+def test_research_commands_exclude_operate():
+    """`operate budget` writes the agents' own budget (operator/BUDGET): an agent that could start it could raise its
+    own spend. It is the owner's, with the commands that trade or switch the book, whatever RESEARCH_COMMANDS says."""
+    from snipetech.operator.jobs import OWNER_COMMANDS
+
+    assert "operate" not in RESEARCH_COMMANDS and {"operate", "oktech", "sweep", "book"} <= OWNER_COMMANDS
+    assert not RESEARCH_COMMANDS & OWNER_COMMANDS
+
+
+def test_start_refuses_the_owners_commands_and_says_whose_they_are(jobs):
+    for argv in (["operate", "budget", "--daily-usd", "500"], ["operate"], ["oktech", "start"], ["book", "on"]):
+        with pytest.raises(PermissionError, match="the owner's"):
+            jobs.start(argv)
 
 
 def test_start_refuses_oktech_and_unknown(jobs):
@@ -119,6 +136,13 @@ def test_start_job_tool_reports_refusals_as_text(toolbox):
     assert json.loads(_call(tools["start_job"], argv=["follow", "--kols"]))["id"]
 
 
+def test_the_agents_cannot_raise_their_own_budget(toolbox):
+    tools, paths, _ = toolbox
+    out = _call(tools["start_job"], argv=["operate", "budget", "--daily-usd", "500", "--turn-usd", "25"])
+    assert out.startswith("error") and "the owner's" in out and not (paths.root / "BUDGET").exists()
+    assert not list(paths.jobs.glob("*.json"))  # no job was started at all
+
+
 def test_write_note_format_and_levels(tmp_path):
     sink = NoteSink(OperatorPaths(tmp_path).ensure(), now=lambda: 1_793_923_200)
     assert sink.write("hello", "decision") == "- 2026-11-06T00:00:00Z [decision] hello"
@@ -177,12 +201,27 @@ def test_read_fills_tool(toolbox):
         st.put_fill({"sig": "OLD", "ts": now - 3 * 86400, "wallet": "ME", "mint": "M0", "side": "buy", "sol": 0.2})
         st.put_bid_model({"arm": "control", "n": 1, "failed_n": 0, "mean_pos": 5, "p25_pos": 5, "p75_pos": 5, "mean_gap_pct": 25.0,
                           "mean_fee_sol": 0.001, "updated_at": now})  # fmt: skip
-        st.put_wallet_live({"wallet": "LEAD", "n": 1, "mean_sol": 0.045, "lower_sol": 0.0, "last_fill": now - 300, "status": "warming", "updated_at": now})
+        st.put_wallet_live(
+            {
+                "wallet": "LEAD",
+                "n": 1,
+                "mean_sol": 0.045,
+                "lower_sol": 0.0,
+                "last_fill": now - 300,
+                "status": "warming",
+                "updated_at": now,
+            }
+        )
     finally:
         st.close()
     out = json.loads(_call(tools["read_fills"], hours=24))
     assert [f["sig"] for f in out["fills"]] == ["S1", "B1"] and out["bid_model"][0]["arm"] == "control"
-    assert out["wallet_live"][0]["wallet"] == "LEAD" and out["summary"] == {"buys": 1, "sells": 1, "failed": 0, "pnl_sol": 0.045}
+    assert out["wallet_live"][0]["wallet"] == "LEAD" and out["summary"] == {
+        "buys": 1,
+        "sells": 1,
+        "failed": 0,
+        "pnl_sol": 0.045,
+    }
     assert len(json.loads(_call(tools["read_fills"], hours=24 * 7))["fills"]) == 3
 
 
@@ -194,7 +233,14 @@ def test_read_events_tool(toolbox):
         st.add_events([{"ts": now - 600, "slot": 1, "kind": "trending", "mint": "M1", "wallet": None, "data": {"rank": 1}, "source": "solanatracker"},
                        {"ts": now - 300, "slot": 2, "kind": "curve_cross:30", "mint": "M2", "wallet": "W", "data": {}, "source": "tape"},
                        {"ts": now - 3 * 86400, "slot": 0, "kind": "trending", "mint": "OLD", "wallet": None, "data": {}, "source": "solanatracker"}])  # fmt: skip
-        st.set_coverage("events:edge", {"ts": now, "landing": "+6", "rows": [{"kind": "trending", "moments": 40, "mean": 0.01, "ev_lower": 0.002}]})
+        st.set_coverage(
+            "events:edge",
+            {
+                "ts": now,
+                "landing": "+6",
+                "rows": [{"kind": "trending", "moments": 40, "mean": 0.01, "ev_lower": 0.002}],
+            },
+        )
     finally:
         st.close()
     out = json.loads(_call(tools["read_events"], hours=24))
