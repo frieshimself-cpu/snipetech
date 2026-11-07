@@ -357,6 +357,50 @@ def test_paper_freeze_runs_its_lab_on_the_hourly_copy(tmp_path, monkeypatch, cap
         live.close()
 
 
+def test_paper_freeze_takes_the_copy_once_it_holds_the_lab_lock(tmp_path, monkeypatch, capsys):
+    """`paper freeze` waits for the lab lock, behind the strategy search (41 minutes on 7 Nov) or the qualify lab, and
+    snapshot-db may rename a new copy over snipetech.ro.db meanwhile. The CLI took the copy before that wait: its lab
+    read the replaced copy, by then possibly over two hours old, and in one process (its workers refuse a file no
+    longer at the path), holding the one-lab lock longer for the labs queued behind it. It takes the copy once the
+    lock is held, as `lab` and the strategy search do: the new copy, with its workers."""
+    import contextlib
+
+    from snipetech import cli
+    from snipetech.analysis import lab, paper
+    from snipetech.analysis import lab_lock as locks
+    from snipetech.store import file_identity
+    from tests.test_lab_hypotheses import HUNT_JSON, WHALE_JSON
+
+    monkeypatch.setattr(cli, "_yield_cpu", lambda cmd: None)
+    monkeypatch.setattr(lab, "lab_workers", lambda *a, **k: 2)
+    db = _freeze_db(tmp_path, "copied")
+    live = Store(db)
+    copy = _copy(live)
+    real_lock, real_collect, seen = locks.lab_lock, paper.collect, {}
+
+    @contextlib.contextmanager
+    def lock_after_a_new_copy(*args, **kwargs):  # the hourly copy is renamed over the path while freeze waits
+        _copy(live)
+        with real_lock(*args, **kwargs) as held:
+            yield held
+
+    def collect(tape, *args, **kwargs):
+        out = real_collect(tape, *args, **kwargs)
+        seen.update(workers=out["workers"], file=tape.file_id)
+        return out
+
+    monkeypatch.setattr(locks, "lab_lock", lock_after_a_new_copy)
+    monkeypatch.setattr(paper, "collect", collect)
+    try:
+        argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--hours", "1",
+                "--only-live", "--json"]  # fmt: skip
+        assert cli.main(argv) == 0
+        capsys.readouterr()
+        assert seen == {"workers": 2, "file": file_identity(copy)}
+    finally:
+        live.close()
+
+
 # -- the readers that need fresh trades: short pieces, each read whole before the work on it -------------------------
 
 ACTIVE_ONCE = ("SELECT mint, COUNT(*) c FROM (SELECT mint FROM trades WHERE ts>=? AND ts<=? "
