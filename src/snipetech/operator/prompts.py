@@ -37,10 +37,11 @@ one lab at a time) writes a verdict per wallet at the copy landing ("+3x": behin
 counted across slots, where live copies of early-curve leaders landed, 2-4 trades behind and 18-43 % above its price),
 scored with the exit the book sends and the wallet's copy plan (copy_plan: the smallest leader buy worth copying, the
 leader's selling style). Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound),
-crowding, relationship and create-slot gates all passed, and so did its own copies on the tape after it was first
-picked (`forward`: 20+ of them over 6+ h, lower bound above 0); "forward pending" is a wallet waiting for those copies,
-not copied meanwhile. `kept_armed` marks a wallet the book copied before these rules (7 Nov): kept qualified while it
-is copied, its reason saying it no longer qualifies; whether it goes is the owner's call. The snapshot's `verdicts`
+crowding, relationship and create-slot gates all passed, and so did its own copies on the tape after it was picked
+(`forward`: 20+ of them over 6+ h, lower bound above 0; picked again after it failed a gate, its copies since its first
+pick must not lose either); "forward pending" is a wallet waiting for those copies, not copied meanwhile. `kept_armed`
+marks a wallet the book copied before these rules (7 Nov): kept qualified while a book sniper still buys for it, at
+least at the score it was armed on, its reason saying whether it still qualifies; whether it goes is the owner's call. The snapshot's `verdicts`
 counts change when a run wrote something. Build set_candidates from read_verdicts, not from raw lab logs, and treat a
 newly qualified wallet as the decision-level event it is. The book copies qualified wallets whose verdict scores at
 least the owner's bar, one sniper per wallet.

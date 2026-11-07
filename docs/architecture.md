@@ -57,17 +57,27 @@ the 6 h before them. The verdicts caught hot streaks that then stopped. So the q
 of a wallet before the book may copy it. First, its copies are scored where live copies land: behind the 3rd buy after
 the leader's, whatever slot that buy is in ("+3x"), not up to six trades behind it inside the leader's own slot ("+6"),
 which put a leader alone in its slot right behind its own buy. Only a worse landing measured live moves it, never a
-closer one. The exit is the one OKTech runs: sell after 1 s without a trade, at -30 %, after 300 s, or when the leader
-sells half its bag. Second, a wallet with 10 % or more of its first buys in a coin's create slot is not copied: two of
-the search's best rows were such artifacts. Third, the forward check: a wallet must also pass on its own copies after it
-was first picked, at least 20 of them over at least 6 h of later tape, with a lower bound above 0. Copies that lose
-there retire it. Until then it is "forward pending" and not copied; 16 of 24 verdict wallets never bought again within
-9-13 h. Each verdict carries these numbers (`forward`, `create_slot`). Nothing in the book changed: it still copies only
-qualified wallets. A wallet it copied before these rules is not stopped by them: its verdict stays the one the book
-armed it on and says it no longer qualifies (`kept_armed`); whether it goes is the owner's decision. The measure stage
-now records, for each live copy, where on its curve the leader bought (`fills.leader_progress`), next to the trades
-behind and the price gap, so live landings can be read by curve progress (7aPo3n, buying at 79-93 %, was copied 0-1
-trades behind).
+closer one. Waiting for the 3rd buy is only ever worse for the copy: where holders sell right after the leader's buy,
+the 3rd buy can come after the dump, at a price no live copy got (the review of 7 Nov found a losing wallet that won
+every copy that way), so the copy then enters right behind the leader; and it never enters inside the coin's create
+slot. The exit is the one OKTech runs: sell after 1 s without a trade, at -30 %, after 300 s, or when the leader sells
+half its bag. Second, a
+wallet with 10 % or more of its first buys in a coin's create slot is not copied: two of the search's best rows were
+such artifacts. Third, the forward check: a wallet must also pass on its own copies after it was picked, at least 20
+of them over at least 6 h of later tape, with a lower bound above 0. Copies that lose there retire it. Until then it is
+"forward pending" and not copied; 16 of 24 verdict wallets never bought again within 9-13 h. Picked means its latest
+pick: a wallet that failed a gate and passes them again on a new streak is picked again, so the streak that brought it
+back never counts as its forward copies, and its copies since its first pick must not lose either. The tape keeps 3 to
+30 days, so each run keeps the wallet's copies since its first pick with its working data (scores "qualify", `record`)
+and judges the ones the tape no longer holds from there. Each verdict carries these numbers (`forward`, `create_slot`).
+Nothing in what the book arms changed: it still copies only qualified wallets. A wallet it copied before these rules is
+not stopped by them while one of its own snipers still buys for it, which each book run records from OKTech's task
+statuses (`book:copying`: running or starting; a stopped sniper keeps its local row, so rows never decide it): its
+verdict stays the one the book armed it on and says it no longer qualifies, or, meeting these rules, keeps at least the
+score it was armed on so the book's bar never drops it (`kept_armed`); whether it goes is the owner's decision. The
+measure stage now records, for each live copy, where on its curve the leader bought (`fills.leader_progress`), next
+to the trades behind and the price gap, so live landings can be read by curve progress (7aPo3n, buying at 79-93 %, was
+copied 0-1 trades behind).
 
 ## One database, many writers: every write is a short transaction
 

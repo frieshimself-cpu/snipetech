@@ -386,8 +386,8 @@ def armed_before_rules(prev: dict[str, Any] | None) -> bool:
 
 def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg: QualifyConfig,
                now: float) -> dict[str, Any]:  # fmt: skip
-    """The verdict to write for a wallet a copy sniper copies now (`armed`), given its latest verdict before this run
-    (`prev`). The book arms only qualified wallets and drops any other; a wallet it copied before these rules (its last
+    """The verdict to write for a wallet the book copies now (`armed`: one of its own snipers still buys for it at its
+    last reading of OKTech, book/state.copying_now), given its latest verdict before this run (`prev`). The book arms only qualified wallets and drops any other; a wallet it copied before these rules (its last
     verdict qualified under the old ones, with a copy plan, or already kept) is not stopped by them: the owner decides
     (research round 2, 7 Nov: keep 7aPo3n armed as a live measurement, judge it at 30 copies).
 

@@ -172,11 +172,11 @@ _ADDED_COLUMNS = (
     ("fills", "twin_fee_sol", "REAL"),  # what the sell's failed twins cost (priority + base fee each)
     # JSON: how many of the wallet's first buys sat in a coin's create slot (qualify/gates.py create_slot_share)
     ("verdicts", "create_slot", "TEXT"),
-    # JSON: the wallet's copies on the tape after it was first picked, and the bar they met (qualify/gates.forward_gate)
+    # JSON: the wallet's copies on the tape after it was picked, and the bar they met (qualify/gates.forward_gate)
     ("verdicts", "forward", "TEXT"),
     # a copy buy: the copied wallet's curve progress at its buy (measure/classify.curve_progress)
     ("fills", "leader_progress", "REAL"),
-    # JSON: a wallet the book copied before the 7 Nov verdict rules, kept qualified while copied (qualify/gates.keep_armed)
+    # JSON: a wallet the book copied before the 7 Nov verdict rules, kept while copied (qualify/gates.keep_armed)
     ("verdicts", "kept_armed", "TEXT"),
 )
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
