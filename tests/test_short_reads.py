@@ -61,6 +61,18 @@ class Wal:
 
         monkeypatch.setattr(Store, "_connect", connect)
 
+    def during(self, monkeypatch, owner, name: str) -> None:
+        """Check once more at `owner.name`'s first call: a slow step mid-run, between the reader's own reads."""
+        real, done = getattr(owner, name), []
+
+        def step(*args, **kwargs):
+            if not done:
+                done.append(1)
+                self.check()
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(owner, name, step)
+
     @property
     def whole(self) -> bool:
         """At least one check ran, and every one found the WAL checkpointed whole: no read pinned it."""
@@ -287,6 +299,55 @@ def test_the_events_scan_reads_the_hourly_copy(tmp_path, monkeypatch):
         keys = ("kind", "mint", "wallet", "slot", "ts", "data")
         found = sorted(tuple(str(e[k]) for k in keys) for e in live.events(since_ts=0, limit=10_000))
         assert len(expected) == 40 and found == sorted(tuple(str(e[k]) for k in keys) for e in expected)
+        assert wal.whole, wal.checks
+    finally:
+        wal.close()
+        live.close()
+
+
+def _freeze_db(tmp_path, name: str) -> Path:
+    """The lab tests' whale world (80 coins, 56 in the tape's newest hour) under 15,000 more trades of 40 other coins."""
+    from tests.test_lab_hypotheses import NOW, _tape_db
+
+    db = _tape_db(tmp_path, name=name)
+    st = Store(db)
+    try:
+        st.add_trades(_trades(0, 15_000, t0=NOW - 3500, per_sec=5.0))
+    finally:
+        st.close()
+    return db
+
+
+def test_paper_freeze_runs_its_lab_on_the_hourly_copy(tmp_path, monkeypatch, capsys):
+    """The analysts freeze their hypotheses with `paper freeze --trigger ... --hours 24`: a whole lab, and it read the
+    live file (its list of the day's coins alone: 10 s cold for 24 h on the 2.4M-trade copy). A lab is research on
+    the tape as recorded, fine up to two hours old: it reads the hourly copy, as `lab` and the strategy search do,
+    and freezes the same strategies it froze from the live file."""
+    import json
+
+    from snipetech import cli
+    from snipetech.analysis import lab
+    from tests.test_lab_hypotheses import HUNT_JSON, WHALE_JSON
+
+    monkeypatch.setattr(cli, "_yield_cpu", lambda cmd: None)
+    monkeypatch.setattr(lab, "lab_workers", lambda *a, **k: 1)  # one process: every read on a connection we watch
+
+    def freeze(db) -> list:
+        argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--hours", "1",
+                "--only-live", "--json"]  # fmt: skip
+        assert cli.main(argv) == 0
+        rep = json.loads(capsys.readouterr().out)
+        return [(s["id"], s["label"], s["lab"]) for s in rep["frozen"]]
+
+    on_live = freeze(_freeze_db(tmp_path, "live"))  # no copy: the lab reads the live file
+    db = _freeze_db(tmp_path, "copied")
+    live = Store(db)
+    _copy(live)
+    wal = Wal(db)
+    wal.every_store(monkeypatch)
+    wal.during(monkeypatch, lab, "_coin_rows")
+    try:
+        assert on_live and freeze(db) == on_live
         assert wal.whole, wal.checks
     finally:
         wal.close()

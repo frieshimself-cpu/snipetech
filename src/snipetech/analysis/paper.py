@@ -211,7 +211,7 @@ def live_id(strategy: dict) -> str:
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0, buy_sol: float = 0.2,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
-           hours: float | None = None, per_tx_source: str | None = None) -> dict[str, Any]:  # fmt: skip
+           hours: float | None = None, per_tx_source: str | None = None, tape: Store | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
@@ -220,7 +220,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     `lab.parse_trigger`) instead of the grid, each where it trades live (`live_landing`: a copy at the copy landing,
     whatever `latency`/`position` say); `hours`: only the newest N hours of tape. `per_tx_source`: where `per_tx_sol`
     came from (qualify.run.lab_tx_cost_info: measured, last measured, estimate; flag for --per-tx), kept with each
-    strategy it freezes, so a cost that was not measured is never read as one that was."""
+    strategy it freezes, so a cost that was not measured is never read as one that was. `tape`: where the lab reads the
+    tape (the CLI hands it the hourly copy, `Service.tape_store`, as `lab` and the strategy search do: a lab's reads
+    held the live WAL back for as long as they took); the frozen strategies are written to `store`."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
     if data is None:
@@ -229,11 +231,11 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         if triggers:  # a hypothesis has no landing of its own to get wrong: its copies are scored where ours land
             latency, position = 0, copy_pos
         with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
-            tape = store
+            tape = tape or store
             if hours:
                 from ..operator.research import recent_tape  # the strategy search's window on the tape
 
-                tape = recent_tape(store, hours)
+                tape = recent_tape(tape, hours)
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
             data = collect(tape, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
                            triggers=triggers)  # fmt: skip
