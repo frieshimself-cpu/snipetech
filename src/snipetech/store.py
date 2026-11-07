@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import Iterable, Iterator
@@ -13,6 +15,8 @@ from typing import Any
 
 from .models import Completion, Launch, Migration, Trade
 from .solana.txmeta import TxMeta
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -225,6 +229,14 @@ def _tables(conn: sqlite3.Connection) -> dict[str, set[str]]:
     return {name: {r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')} for name in names}
 
 
+def _caller() -> str:
+    """The first frame outside this module: the job's own code that asked for the write (file:line function)."""
+    f = sys._getframe(1)
+    while f is not None and f.f_code.co_filename == __file__:
+        f = f.f_back
+    return f"{Path(f.f_code.co_filename).name}:{f.f_lineno} {f.f_code.co_name}" if f is not None else "unknown"
+
+
 class Store:
     # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
     # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
@@ -256,7 +268,7 @@ class Store:
         self.file_id = file_identity(self.path)  # the file this connection reads, even after another is renamed over it
         # through the retrying write: the first opener after a deploy that adds a table or a column writes the schema
         # and waits its turn for the lock instead of dying on it (an up-to-date schema takes no lock at all)
-        self._write(self._create_schema)
+        self._write(self._create_schema, immediate=False)
 
     def _create_schema(self) -> None:
         self.conn.executescript(SCHEMA)
@@ -324,19 +336,30 @@ class Store:
     # on its own: on a 2.4M-trade copy (7 Nov) a batch of 500 trades or of 500 deletes held the lock 20-40 ms, and
     # another writer never waited more than 0.08 s; the server's database is ten times larger and mostly uncached.
     WRITE_BATCH = 500
+    # a write that holds the write lock this long logs the code that asked for it (7 Nov 20:52: the recorder waited
+    # 23.5 s for a write while the events scan finished, and nothing said who held the lock)
+    SLOW_WRITE_SECS = 5.0
 
-    def _write(self, fn) -> None:
+    def _write(self, fn, immediate: bool = True) -> None:
         """Run `fn` (its statements on self.conn) as one transaction and commit it. Whatever goes wrong inside rolls it
         back before the error goes on: a transaction left open keeps the write lock until this connection's next
-        commit, and its snapshot pins the WAL. A refused lock ("locked", "busy") is waited out for LOCK_PATIENCE."""
+        commit, and its snapshot pins the WAL. A refused lock ("locked", "busy") is waited out for LOCK_PATIENCE.
+
+        `immediate` (every write but the schema step at open): BEGIN IMMEDIATE takes the write lock first, so any wait
+        for it happens there and the hold that follows is timed alone; a hold of SLOW_WRITE_SECS or more is logged
+        with the code that asked for it. The schema step stays deferred: an up-to-date schema takes no lock at all."""
         deadline = time.monotonic() + self.LOCK_PATIENCE
         delay = 0.5
         while True:
             try:
                 with self.lock:
                     try:
+                        if immediate and not self.conn.in_transaction:
+                            self.conn.execute("BEGIN IMMEDIATE")
+                        held = time.monotonic()
                         fn()
                         self.conn.commit()
+                        held = time.monotonic() - held
                     except BaseException:
                         # 7 Nov 14:07-15:48: a refused write left its transaction open and every later write of the
                         # tape recorder failed on it until a restart. Any other error left it open too, the lock held
@@ -345,6 +368,8 @@ class Store:
                         # lands in the failed transaction first.
                         self._rollback()
                         raise
+                if immediate and held >= self.SLOW_WRITE_SECS:
+                    log.warning("store: a write held the database's write lock for %.1f s (%s)", held, _caller())
                 return
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) and "busy" not in str(e):

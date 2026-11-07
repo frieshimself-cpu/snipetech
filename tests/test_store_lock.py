@@ -122,3 +122,44 @@ def test_reopen_gives_the_store_a_fresh_connection_to_the_same_file(tmp_path):
     with pytest.raises(sqlite3.ProgrammingError):
         old.execute("SELECT 1")
     st.close()
+
+
+def test_a_write_that_holds_the_lock_for_long_says_where_it_came_from(tmp_path, caplog):
+    """7 Nov 20:52 the recorder waited 23.5 s for one write while the events scan finished, and 12.6 s at 20:56 during
+    the qualify run; nothing said which job held the lock. A write that holds it longer than SLOW_WRITE_SECS logs the
+    code that asked for it and how long it held it."""
+    import logging
+
+    st = Store(str(tmp_path / "t.db"))
+    st.SLOW_WRITE_SECS = 0.1
+
+    def slow():
+        st.conn.execute("CREATE TABLE IF NOT EXISTS x(a)")
+        time.sleep(0.25)
+
+    with caplog.at_level(logging.WARNING, logger="snipetech.store"):
+        st._write(slow)
+    msgs = [r.getMessage() for r in caplog.records if "held the database's write lock" in r.getMessage()]
+    assert len(msgs) == 1
+    assert "test_store_lock.py" in msgs[0] and "test_a_write_that_holds_the_lock_for_long" in msgs[0]
+    st.close()
+
+
+def test_waiting_for_the_lock_is_not_counted_as_holding_it(tmp_path, caplog):
+    """The holder is the one to name: a write that waits 0.6 s for another connection and then holds the lock for a
+    moment logs nothing (the wait is in BEGIN IMMEDIATE, before the hold is timed)."""
+    import logging
+
+    path = tmp_path / "t.db"
+    st = Store(str(path))
+    st.SLOW_WRITE_SECS = 0.3
+    other = sqlite3.connect(str(path), isolation_level=None, check_same_thread=False)
+    other.execute("BEGIN IMMEDIATE")
+    threading.Timer(0.6, lambda: other.execute("COMMIT")).start()
+    t0 = time.monotonic()
+    with caplog.at_level(logging.WARNING, logger="snipetech.store"):
+        st._exec("CREATE TABLE IF NOT EXISTS y(a)")
+    assert time.monotonic() - t0 >= 0.5  # it did wait
+    assert not [r for r in caplog.records if "held the database's write lock" in r.getMessage()]
+    other.close()
+    st.close()
