@@ -944,6 +944,29 @@ def test_a_guard_that_cannot_tell_starts_nothing_in_the_book_either(tmp_path):
         st.close()
 
 
+def test_a_guard_that_cannot_tell_says_why_the_book_halts(tmp_path):
+    """The measure stage has not run for an hour and the wallet traded since: the guard cannot tell the day, and cannot
+    tell is never clear, so the live book halts. Its trip line is only for a stop that holds, so the book's own kill
+    line says why, once a day."""
+    st, cfg = _env(tmp_path, enabled=True)
+    st.set_coverage("measure:last_ts", {"ts": int(NOW) - 3600})
+    _coin(st, "c1", NOW - 1200, 400_000_000, 0, 3, sell_slot=10)  # a round trip of ours since, not in the fills
+    _fresh_tape(st)
+    sent: list[str] = []
+    svc = FakeSvc(st)
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                                   balances=lambda w: (12.0, 0.0, [])))  # fmt: skip
+        assert out["kill_reason"] == "wallet-wide guard" and not any(c[0] in ("create", "start") for c in svc.calls)
+        (line,) = [t for t in sent if "[book] kill" in t]
+        assert "measure stage" in line and "cannot tell" in line
+        asyncio.run(run_book(FakeSvc(st), cfg, NOW + 300, notifier=Notifier("T", 7, post=lambda u, d: sent.append(d["text"])),
+                             balances=lambda w: (12.0, 0.0, [])))  # fmt: skip
+        assert len([t for t in sent if "[book] kill" in t]) == 1
+    finally:
+        st.close()
+
+
 def test_the_owners_risk_values_are_the_ones_the_book_obeys(tmp_path):
     """/risk floor 8: at 9 SOL the guard is clear and the book trades as before."""
     from snipetech.operator.risk_guard import set_risk

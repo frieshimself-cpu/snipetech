@@ -308,15 +308,19 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
     kept = [a for a in plan.actions if a.kind == "keep" and "never stop a holder" in a.reason]
+    # the guard's own line (risk_guard.announce) is only for a stop that holds; a guard that cannot tell (a stalled
+    # measure stage, coins that could not be read) halts the book all the same, and this line says why
+    blind = plan.kill_reason == GUARD_KILL and (guard is None or not guard.tripped)
     if plan.kill_reason and not notes.has_today(f"[decision] [book] kill: {plan.kill_reason}", now):
         line = (
             f"[book] kill: {plan.kill_reason}"
+            + (f" ({guard.reason if guard is not None else 'the guard could not be read'})" if blind else "")
             + (" (stopping its snipers that hold nothing)" if act_on_stops and stops else "")
             + (f"; {len(kept)} book sniper(s) kept running while the wallet holds a coin (each can still buy up to "
                f"{b.max_buys_per_sniper})" if kept else "")
         )  # fmt: skip
         guarded = (
-            plan.kill_reason == GUARD_KILL and not kept
+            plan.kill_reason == GUARD_KILL and not blind and not kept
         )  # the guard's own line told the owner; each stop has its own
         if not guarded and (
             live_mode or (act_on_stops and stops) or kept
