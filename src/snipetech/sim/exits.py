@@ -317,11 +317,11 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         at = fires_at(reason, t_rel)
         if reason == "take_profit" and ex.tp_sell_fraction < 1.0:
             sales.append(("take_profit", at, exec_abs, lands(at), ex.tp_sell_fraction))
-            held = p.held - p.held * ex.tp_sell_fraction
+            rest = p.held - p.held * ex.tp_sell_fraction
             # The remainder rides: trailing / stop / dev-exit / time, valued on what is left.
-            rest_basis = basis * (held / p.held)
+            rest_basis = basis * (rest / p.held)
             start_rel = exec_abs - p.e
-            v2 = path.value_series(p.e, held)
+            v2 = path.value_series(p.e, rest)
             peak2 = np.maximum.accumulate(np.where(np.arange(n_rel) >= start_rel, v2, 0.0))
             more: dict[str, int] = {}
             if ex.stop_loss > 0:
