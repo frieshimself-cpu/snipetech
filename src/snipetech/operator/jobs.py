@@ -48,6 +48,23 @@ class OperatorJobs:
                         f"path not allowed: {a} (only inputs/, reports/, operator/ under the data directory)"
                     )
 
+    @staticmethod
+    def _check_triggers(argv: list[str]) -> None:
+        """An agent's hypothesis (--trigger JSON) is read with the lab's own parser before anything starts, so a trigger
+        the lab would refuse comes back at once in the lab's words. 7 Nov 11:01: a refused trigger came back as a job
+        id, the job died on start, and the analyst ended its turn thinking the lab was running."""
+        from itertools import pairwise
+
+        from ..analysis.lab import parse_trigger
+
+        specs = [v for a, v in pairwise(argv) if a == "--trigger"]
+        specs += [a.split("=", 1)[1] for a in argv if a.startswith("--trigger=")]
+        for spec in specs:
+            try:
+                parse_trigger(spec)
+            except ValueError as exc:
+                raise PermissionError(f"--trigger refused, no job started: {exc}") from None
+
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
         for p in (self.ops.data / "jobs").glob("*.json"):
             meta = self.ops._meta(p.stem)
@@ -63,6 +80,7 @@ class OperatorJobs:
         if not argv or argv[0] not in RESEARCH_COMMANDS:
             raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
         self._check_paths(argv)
+        self._check_triggers(argv)
         now = time.time() if now is None else now
         dup = self._recent_identical(argv, now)
         if dup:

@@ -70,6 +70,18 @@ def test_one_lab_at_a_time(jobs):
     assert jobs.start(["follow", "--kols"])["id"]
 
 
+def test_start_refuses_a_hypothesis_the_lab_would_refuse_before_any_job_starts(jobs):
+    """7 Nov 11:01: the analyst sent a hunt with dev_max 0.5. start_job returned a job id, the job died at once on the
+    whole-number rule, and the analyst ended its turn saying the lab was running. The lab's refusal comes back at
+    once, in the lab's own words, so the agent fixes the trigger in the same turn, and no job is started."""
+    bad = '{"kind": "hunt", "sol": 3, "window": 1, "max_buyers": 2, "dev_max": 0.5}'
+    for argv in (["lab", "--trigger", bad, "--hours", "24", "--json"], ["paper", "freeze", f"--trigger={bad}"],
+                 ["lab", "--trigger", HYPOTHESIS, "--trigger", bad]):  # fmt: skip
+        with pytest.raises(PermissionError, match="whole numbers only: dev_max"):
+            jobs.start(argv)
+    assert not list((jobs.ops.data / "jobs").glob("*.json"))
+
+
 def test_max_jobs_enforced(jobs):
     for i in range(3):
         _meta(jobs.ops.data / "jobs", f"j{i}", ["follow"], running=True, pid=os.getpid())

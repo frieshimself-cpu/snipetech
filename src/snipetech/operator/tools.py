@@ -240,8 +240,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study and copy are allowed; one lab at a time. A
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
-        whale, kol, momentum or hunt, with its numbers), refused with its reason when a number is out of range or
-        OKTech could not run it. Hunt triggers are the ones OKTech can run exactly as scored.
+        whale, kol, momentum or hunt, with its numbers), refused at once with its reason, before any job starts, when a
+        number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt triggers
+        are the ones OKTech can run exactly as scored.
 
         Args:
             argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"],
