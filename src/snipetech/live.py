@@ -35,6 +35,8 @@ from typing import Any
 import httpx
 import websockets
 
+# the coverage record this recorder writes; its reader stays importable from here (the lab reads amm_tape)
+from .amm_tape import AMM_RECENT_KEY, amm_recent_covers  # noqa: F401
 from .models import Launch, Normalized, Trade
 from .service import Service
 from .solana.base58 import b58decode
@@ -45,7 +47,6 @@ from .solana.tx import TxEvents, extract_from_logs, extract_from_transaction
 
 log = logging.getLogger(__name__)
 
-AMM_RECENT_KEY = "tape:amm_recent"  # coverage: the runs in which the tape holds recent coins' PumpSwap trades
 # The tape's own subscription carries every transaction touching these programs: the PumpSwap side records none.
 CURVE_PROGRAMS = (PUMP_PROGRAM, LAUNCHLAB_PROGRAM)
 CURVE_KEYS = frozenset(b58decode(p) for p in CURVE_PROGRAMS)
@@ -201,17 +202,6 @@ class LagValve:
             self.closed_at = None
             return "opened"
         return None
-
-
-def amm_recent_covers(cov: dict[str, Any], start: float, end: float) -> bool:
-    """Whether the tape holds every PumpSwap trade of a coin from `start`, when it left its curve, to `end` (block
-    times), read from the coverage record `tape:amm_recent` (`LiveWatcher._mark_amm_recent`): the stretch lies inside
-    one run, within that run's window, and clear of its skipped stretches. A stretch the tape ran without the mode (off,
-    older code, the logs fallback) is in no run, and a run with a shorter window does not cover a longer stretch."""
-    for run in cov.get("runs", []):
-        if run["from"] <= start and end <= run["to"] and end - start <= run["secs"]:
-            return not any(a <= end and start <= b for a, b in run["skipped"])
-    return False
 
 
 class LiveWatcher:

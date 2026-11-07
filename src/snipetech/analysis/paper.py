@@ -30,6 +30,7 @@ from typing import Any
 
 import numpy as np
 
+from ..amm_tape import AMM_RECENT_KEY
 from ..config import Config
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
@@ -40,15 +41,14 @@ from .lab import (
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
-    NO_AMM_TAPE,
     Trigger,
     _fire,
-    amm_on_tape,
     collect,
     curve_done,
     fired_at,
     label_groups,
     leader_sell_fractions,
+    mig_gap,
     rank,
     span_slot_secs,
 )
@@ -225,8 +225,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
-    freeze). A strategy that buys on PumpSwap (MIG) is scored only while the tape records PumpSwap trades; `unscored`
-    names the ones left out and why."""
+    freeze). A strategy that buys on PumpSwap (MIG) gets a trade only where the PumpSwap tape (coverage
+    `tape:amm_recent`) holds the coin from its migration to the end of its exit's timer, as in the lab (`lab.mig_gap`);
+    `skipped` counts, per strategy, the trades left out and why (amm_tape.GAP_WORDS)."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -239,13 +240,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
     kols = label_groups(store)
-    amm = amm_on_tape(cfg)
-    unscored = {
-        s["id"]: NO_AMM_TAPE for s in strategies if not amm and (s.get("trigger") or {}).get("kind") in AMM_KINDS
-    }
+    unscored: dict[str, str] = {}
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
     mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
+    amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs else {}
+    skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades}: MIG trades the PumpSwap tape does not hold
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)
@@ -278,6 +278,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     continue
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger
                 e = int(path.landing_index(t_slot + s["latency"], s["position"], i))
+                if trig.kind in AMM_KINDS:  # a PumpSwap buy: only where the tape holds its PumpSwap trades whole
+                    why = mig_gap(amm_cov, path, e, migs.get(mint), ex.max_hold_secs)
+                    if why is not None:
+                        skipped.setdefault(s["id"], {})
+                        skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
+                        continue
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
@@ -292,7 +298,14 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
-    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored}
+    return {
+        "new_trades": added,
+        "since": since,
+        "until": until,
+        "landing": landings(copy_pos),
+        "unscored": unscored,
+        "skipped": skipped,
+    }
 
 
 def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:

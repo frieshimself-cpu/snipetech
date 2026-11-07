@@ -30,12 +30,13 @@ import time
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import numpy as np
 
 from .. import CODE_ID, code_identity
+from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_holes
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..oktech import EXITS, _whole_hunt, _whole_secs
@@ -337,20 +338,29 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
 # MIG is not one of them: its buy is on PumpSwap, after the curve has completed, by design.
 LAUNCH_KINDS = frozenset({"launch", "hunt", "whale", "burst"})
 
-# Triggers whose every position is a PumpSwap buy. The tape holds PumpSwap trades only when the recorder subscribes to
-# PumpSwap ([live] index_amm); without it, it keeps just the few that ride in a pump.fun transaction (7 Nov, BRUH: its
-# pool fell from 149.2 to 98.6 SOL between its two recorded PumpSwap trades, 366 s apart). A MIG position there sees
-# none of the trades after its buy and every exit sells at its entry price: a number that is only the fees, not
-# evidence either way, so neither the lab nor the paper test scores one. For a day after index_amm is switched on, the
-# search's day of tape still mixes in hours recorded without it.
+# Triggers whose every position is a PumpSwap buy. Outside the recorder's recent-migrations runs (coverage
+# `tape:amm_recent`, amm_tape.py) the tape keeps just the few PumpSwap trades that ride in a pump.fun transaction (7 Nov,
+# BRUH: its pool fell from 149.2 to 98.6 SOL between its two recorded PumpSwap trades, 366 s apart), and a MIG position
+# there sees none of the trades after its buy: every exit sells at its entry price, a number that is only the fees. So a
+# MIG moment counts only where one run holds the coin's PumpSwap trades from the migration to the end of the exits'
+# horizon (`mig_gap`), and that record decides it whatever [live] index_amm says: the recorder keeps no runs with
+# index_amm on (live.py), so a stretch recorded that way is skipped too, with its reason.
 AMM_KINDS = frozenset({"mig"})
-NO_AMM_TAPE = ("not scored: the tape records PumpSwap trades only with [live] index_amm on, and without them a MIG "
-               "position would see none of the trades after its buy")  # fmt: skip
+SELL_SLOT_SECS = 1.0  # a sell lands a slot after its exit fires, and block times are whole seconds
 
 
-def amm_on_tape(cfg: Config) -> bool:
-    """Whether the recorder takes every PumpSwap trade onto the tape, so a position on PumpSwap can be scored."""
-    return bool(cfg.live.index_amm)
+def exits_horizon(exits: Sequence[ExitParams]) -> float:
+    """How long after its buy a position scored on these exits can still be held: the longest timer among them. Every
+    exit of a lab is scored on the same moments, so the tape must hold that long of each."""
+    return max((float(ex.max_hold_secs) for ex in exits), default=0.0)
+
+
+def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
+    """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
+    when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
+    exits' `horizon`, plus a slot for the last sell (`amm_tape.amm_recent_gap`, which agrees with `amm_recent_covers`)."""
+    start = float(mig.ts)
+    return amm_recent_gap(cov, start, max(start, float(path.ts[e])) + float(horizon) + SELL_SLOT_SECS)
 
 
 def curve_done(path: MarketPath, i: int) -> bool:
@@ -668,6 +678,9 @@ class _Run:
     costs: Costs
     exits: list[ExitParams]
     min_trades: int
+    # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts
+    amm_cov: dict[str, Any] = field(default_factory=dict)
+    horizon: float = 0.0
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
@@ -695,7 +708,9 @@ def _span_migration(store: Store, mint: str, a, b):
 def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> list[dict]:
     """One coin's moments in the tape span [a, b]: every trigger that fires on it, entered at the trigger's landing and
     sold by every exit. The serial lab and each worker of a parallel one run this same code. A MIG trigger fires on
-    the coin's migration the tape recorded in the span, and its landing counts from the migration's slot."""
+    the coin's migration the tape recorded in the span, and its landing counts from the migration's slot; a MIG moment
+    the PumpSwap tape does not hold whole (`mig_gap`) comes back as {"mint", "trigger", "ts", "skipped": why} instead
+    of a scored row."""
     trades = [t for t in store.trades_for_mint(mint, a, b)]
     if len(trades) < run.min_trades:
         return []
@@ -717,10 +732,15 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             fired = [] if i is None else [i]
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)
-            if t_ts > b - 60:
-                continue
             lat, pos = run.landings.get(trig.kind, (run.latency_slots, run.position))
             e = int(path.landing_index(t_slot + lat, pos, i))
+            if trig.kind in AMM_KINDS:  # a PumpSwap buy: only where the tape holds its PumpSwap trades whole
+                why = mig_gap(run.amm_cov, path, e, mig, run.horizon)
+                if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
+            if t_ts > b - 60:
+                continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                 continue  # a launch sniper's buy fails on a completed curve: no position
             own, frac = None, None
@@ -868,9 +888,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
     other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at. `triggers`: run
     only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them.
-    A trigger that buys on PumpSwap (MIG) runs only when the tape records PumpSwap trades (`amm_on_tape`); otherwise
-    `unscored` says why it has no rows. It fires on the migrations the tape recorded in the span, and its landing
-    counts from the migration's slot (`fired_at`).
+    A trigger that buys on PumpSwap (MIG) fires on the migrations the tape recorded in the span, and its landing counts
+    from the migration's slot (`fired_at`); a MIG moment counts only where the PumpSwap tape (coverage
+    `tape:amm_recent`) holds the coin from its migration to the end of the exits' horizon (`mig_gap`), whatever
+    [live] index_amm says. `amm_tape` reports, per MIG trigger, how many moments were scored and how many were skipped
+    and why, and lists the stretches of the scored tape the PumpSwap tape does not hold (`amm_recent_holes`).
     `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
     read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
     process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
@@ -888,9 +910,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             (ti, t) for ti, t in enumerate(all_triggers) if (t.kind == "kol" and t.group in groups) or t.kind == "event"
         ]
     unscored: dict[str, str] = {}
-    if not amm_on_tape(cfg):
-        unscored = {t.kind: NO_AMM_TAPE for _, t in triggers if t.kind in AMM_KINDS}
-        triggers = [(ti, t) for ti, t in triggers if t.kind not in AMM_KINDS]
+    amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
+    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs else {}
     events_by_mint: dict[str, list[tuple]] = {}
     if event_kinds:
         marks = ",".join("?" * len(event_kinds))
@@ -901,7 +922,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
-               costs=costs, exits=exits, min_trades=min_trades)  # fmt: skip
+               costs=costs, exits=exits, min_trades=min_trades, amm_cov=amm_cov,
+               horizon=exits_horizon(exits))  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
@@ -914,12 +936,38 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         n, rows = 1, _chunk_rows(store, run, items)
     else:
         rows, n = _parallel_rows(store, run, items, n, *shared)
+    skipped = [r for r in rows if "skipped" in r]  # moments the PumpSwap tape does not hold whole: never scored
+    rows = [r for r in rows if "skipped" not in r]
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
-    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
-            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
-            "workers": n, "unscored": unscored}  # fmt: skip
+    out = {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
+           "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
+           "workers": n, "unscored": unscored}  # fmt: skip
+    if amm_runs:
+        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, run.horizon)
+    return out
+
+
+def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped: list[dict],
+                horizon: float) -> dict[str, Any]:  # fmt: skip
+    """What the PumpSwap tape let the lab score of its MIG triggers: the exits' horizon each moment needed, the
+    stretches of the scored tape the PumpSwap tape does not hold (7 Nov 14:03-15:48 among them, though the tape recorded
+    no migration in it), and per MIG trigger the moments scored and the ones skipped, by reason (`why` in words)."""
+    lo = min((a for a, _b in spans), default=0)
+    hi = max((b for _a, b in spans), default=0)
+    per: dict[str, dict[str, Any]] = {}
+    for ti, t in triggers:
+        if t.kind not in AMM_KINDS:
+            continue
+        why: dict[str, int] = {}
+        for r in skipped:
+            if r["trigger"] == ti:
+                why[r["skipped"]] = why.get(r["skipped"], 0) + 1
+        per[t.label()] = {"scored": sum(r["trigger"] == ti for r in rows), "skipped": why}
+    codes = sorted({r["skipped"] for r in skipped})
+    return {"horizon_secs": float(horizon), "holes": amm_recent_holes(cov, lo, hi) if spans else [],
+            "triggers": per, "why": {c: GAP_WORDS.get(c, c) for c in codes}}  # fmt: skip
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from snipetech.amm_tape import AMM_RECENT_KEY
 from snipetech.analysis import paper
 from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
 from snipetech.config import Config
@@ -96,12 +97,19 @@ def _own_pool_coin(store: Store, name: str, ts: int, slot: int) -> Market:
     return m
 
 
+def _tape(store: Store, start: int = T0, end: int = T0 + 3 * H) -> None:
+    """The tape recorded [start, end] whole, PumpSwap included: one span, and one run of the recorder's recent-migrations
+    mode over it (coverage tape:amm_recent), which is what lets a MIG moment count."""
+    store.set_coverage("tape", {"spans": [[start, end]]})
+    store.set_coverage(AMM_RECENT_KEY, {"runs": [{"run": "t", "from": start, "to": end, "secs": 1800, "skipped": []}]})
+
+
 def _mig_world(store: Store, n: int = 40) -> None:
     """`n` coins bought out and migrated in their create slot (BRUH's shape), each then bought on PumpSwap for a few
     seconds."""
     for i in range(n):
         _graduate(store, f"mig-w{i}", T0 + 600 + i * 60, SLOT0 + i * 1000)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
 
 
 def _path(store: Store, m: Market) -> tuple[MarketPath, object]:
@@ -109,10 +117,9 @@ def _path(store: Store, m: Market) -> tuple[MarketPath, object]:
     return MarketPath.build(store.trades_for_mint(m.mint), launch), launch
 
 
-def _amm_cfg() -> Config:
-    """A config whose recorder takes PumpSwap trades onto the tape ([live] index_amm), with a light bootstrap."""
+def _cfg() -> Config:
+    """The default config ([live] index_amm off, as on the server) with a light bootstrap."""
     cfg = Config()
-    cfg.live.index_amm = True
     cfg.verdict.bootstrap_samples = 200
     return cfg
 
@@ -166,8 +173,8 @@ def test_mig_fires_on_the_migration_not_on_the_completed_curve():
 def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
     store = Store(":memory:")
     ms = [_late_migration(store, f"mig-lag{k}", T0 + 600 + 60 * k, SLOT0 + 1000 * k) for k in range(3)]
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
-    rows = _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+    _tape(store)
+    rows = _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
     # every window fires (the migration comes 2 s after the create), each timed from the migration: its slot, and the
     # last state at or before it (the pool's fourth buy), not the completed curve two slots earlier
     assert len(rows) == 3 * 3
@@ -178,9 +185,9 @@ def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
 def test_the_paper_test_buys_a_slot_after_the_recorded_migration():
     store = Store(":memory:")
     m = _late_migration(store, "mig-paper", T0 + 600, SLOT0)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
     s = _frozen(store, MIG, paper.MIG_LANDING, T0)
-    paper.run(store, _amm_cfg(), now=T0 + 3 * H)
+    paper.run(store, _cfg(), now=T0 + 3 * H)
     (row,) = store.paper_trades(s["id"])
     assert row["trigger_ts"] == m.migration.ts and row["data"]["trigger_slot"] == m.migration.slot
     # bought behind the pool's first four buys and the next slot's two, priced on the pool after them
@@ -191,30 +198,30 @@ def test_the_paper_test_buys_a_slot_after_the_recorded_migration():
 def test_a_completed_curve_whose_migration_is_not_on_the_tape_is_no_mig_buy():
     store = Store(":memory:")
     m = _late_migration(store, "mig-unseen", T0 + 600, SLOT0, on_tape=False)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
     assert store.migration(m.mint) is None
-    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+    assert not _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
 
 
 def test_a_pumpswap_trade_on_a_coin_still_on_its_curve_is_no_migration():
     store = Store(":memory:")
     m = _own_pool_coin(store, "mig-own-pool", T0 + 600, SLOT0)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
     path, _ = _path(store, m)
     assert path.amm.any() and not path.amm[-1] and path.b[-1] > 279_900_000_000_000  # the curve trades on
-    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+    assert not _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
 
 
 def test_mig_never_fires_on_a_coin_that_never_completes():
     store = Store(":memory:")
     ms = [pump_launch(store, i, addr("mig-never-dev"), T0 + 600 + 60 * i, SLOT0 + 1000 * i) for i in range(3)]
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
     for m in ms:  # 40 buyers, 32 SOL: far from done, and no migration on the tape
         path, launch = _path(store, m)
         assert store.migration(m.mint) is None
         for w in (10.0, 60.0, 0.0):
             assert _fire(Trigger("mig", window=w), path, launch, set(), mig=None) is None
-    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+    assert not _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
 
 
 def test_mig_buys_only_a_migration_inside_its_window():
@@ -234,8 +241,8 @@ def test_the_migration_window_runs_from_the_create_to_the_migration():
     m = _late_migration(store, "mig-12s", T0 + 600, SLOT0, done_at=23, mig_at=30)
     launch = store.launch(m.mint)
     assert (m.trades[2].ts - launch.ts, m.migration.ts - launch.ts) == (9, 12)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
-    data = collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
+    _tape(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
     assert {data["triggers"][r["trigger"]].window for r in _mig_rows(data)} == {60.0, 0.0}
 
 
@@ -315,10 +322,10 @@ def test_a_pumpswap_entry_is_priced_on_the_pool_reserves():
 def test_a_mig_buy_lands_a_slot_after_the_migration_three_trades_in():
     store = Store(":memory:")
     _graduate(store, "mig-land", T0 + 600, SLOT0)
-    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    _tape(store)
     assert paper.live_landing("mig", "+6") == paper.MIG_LANDING
     _frozen(store, MIG, (0, "+6"), T0)  # frozen at the copy landing: the paper test moves it to the MIG landing
-    paper.run(store, _amm_cfg(), now=T0 + 3 * H)
+    paper.run(store, _cfg(), now=T0 + 3 * H)
     (live,) = store.coverage("paper_strategies")["strategies"]
     assert (live["latency"], live["position"]) == paper.MIG_LANDING
     (row,) = store.paper_trades(live["id"])
@@ -330,7 +337,7 @@ def test_a_mig_buy_lands_a_slot_after_the_migration_three_trades_in():
 def test_the_lab_scores_mig_at_the_mig_landing_on_pumpswap():
     store = Store(":memory:")
     _mig_world(store)
-    cfg = _amm_cfg()
+    cfg = _cfg()
     data = collect(store, cfg, 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
     kinds = {ti: t.kind for ti, t in enumerate(data["triggers"])}
     migs = [ti for ti, k in kinds.items() if k == "mig"]
@@ -347,7 +354,7 @@ def test_the_lab_scores_mig_at_the_mig_landing_on_pumpswap():
 def test_freeze_keeps_mig_strategies_at_the_mig_landing():
     store = Store(":memory:")
     _mig_world(store)
-    rep = paper.freeze(store, _amm_cfg(), top=10, position="+6", latency=0, now=T0 + 3 * H, only_live=True)
+    rep = paper.freeze(store, _cfg(), top=10, position="+6", latency=0, now=T0 + 3 * H, only_live=True)
     frozen = [s for s in rep["frozen"] if s["trigger"]["kind"] == "mig"]
     assert frozen
     for s in frozen:
@@ -362,7 +369,7 @@ def test_the_search_scores_and_freezes_mig_at_the_mig_landing(tmp_path):
     data_dir = tmp_path / "data"
     (data_dir / "jobs").mkdir(parents=True)
     store = Store(data_dir / "snipetech.db")
-    cfg = _amm_cfg()
+    cfg = _cfg()
     cfg.storage.db_path = str(data_dir / "snipetech.db")
     _mig_world(store)
     try:
@@ -376,21 +383,22 @@ def test_the_search_scores_and_freezes_mig_at_the_mig_landing(tmp_path):
 
 
 def test_mig_is_not_scored_on_a_tape_without_pumpswap_trades():
-    """With [live] index_amm off (the default) the recorder keeps only the PumpSwap trades that ride in a pump.fun
+    """Outside the recorder's recent-migrations runs the tape keeps only the PumpSwap trades that ride in a pump.fun
     transaction: BRUH's pool fell from 149.2 to 98.6 SOL between its two recorded PumpSwap trades, 366 s apart. A MIG
-    position there sees none of the trades after its buy, and every exit would sell at its entry price."""
+    position there sees none of the trades after its buy, and every exit would sell at its entry price. With no run on
+    record, no MIG moment counts (tests/test_mig_score.py has the runs, the holes and the 7 Nov stall)."""
     store = Store(":memory:")
     _mig_world(store)
-    cfg = Config()
-    cfg.verdict.bootstrap_samples = 200
-    data = collect(store, cfg, 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
+    store.set_coverage(AMM_RECENT_KEY, {})
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
     assert not _mig_rows(data)
-    assert "index_amm" in data["unscored"]["mig"]
-    assert collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)["unscored"] == {}
+    assert {k: v["skipped"] for k, v in data["amm_tape"]["triggers"].items()} == {
+        t.label(): {"no_tape": 40} for t in TRIGGERS if t.kind == "mig"
+    }
     s = _frozen(store, MIG, paper.MIG_LANDING, T0)
-    out = paper.run(store, cfg, now=T0 + 3 * H)
+    out = paper.run(store, _cfg(), now=T0 + 3 * H)
     assert out["new_trades"] == 0 and store.paper_trades(s["id"]) == []
-    assert "index_amm" in out["unscored"][s["id"]]
+    assert out["skipped"] == {s["id"]: {"no_tape": 40}}
 
 
 # -- what OKTech is sent ---------------------------------------------------------------------------------------------

@@ -1089,6 +1089,8 @@ async def _run(args, cfg: Config) -> int:
                                                            copy_pos),
                                     "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked)}
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
+            if data.get("amm_tape"):  # MIG: what the PumpSwap tape let it score, and why the rest was skipped
+                res["amm_tape"] = data["amm_tape"]
             if args.by_wallet:
                 res["wallets"] = lab_rank_wallets(data, cfg, svc.store.labels(), top=max(args.top, 40))
             _out(args, res, R.render_lab)

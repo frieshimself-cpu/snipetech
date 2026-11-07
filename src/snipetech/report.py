@@ -724,6 +724,28 @@ def render_follow(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _amm_tape_lines(t: dict) -> list[str]:
+    """The lab's MIG moments against the PumpSwap tape: scored, skipped and why, and the holes in that tape (UTC)."""
+    import time as _t
+
+    def hm(ts: float) -> str:
+        return _t.strftime("%d %b %H:%M", _t.gmtime(ts))
+
+    def stretch(a: float, b: float) -> str:  # 07 Nov 14:03-15:48, the day said once when both ends share it
+        sa, sb = hm(a), hm(b)
+        return f"{sa}-{sb[-5:]}" if sa[:6] == sb[:6] else f"{sa}-{sb}"
+
+    head = (f"MIG is scored only where the PumpSwap tape holds the coin from its migration to {t['horizon_secs']:g} s "
+            "after the buy (coverage tape:amm_recent):")  # fmt: skip
+    out = [head]
+    for label, c in (t.get("triggers") or {}).items():
+        skipped = ", ".join(f"{n} {t.get('why', {}).get(code, code)}" for code, n in sorted(c["skipped"].items()))
+        out.append(f"  {label}: {c['scored']} scored" + (f"; skipped: {skipped}" if skipped else ""))
+    if t.get("holes"):
+        out.append("  PumpSwap tape missing: " + ", ".join(stretch(a, b) for a, b in t["holes"]))
+    return out
+
+
 def render_lab(r: dict) -> str:
     out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL, "
            f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)", "=" * 72]  # fmt: skip
@@ -748,6 +770,8 @@ def render_lab(r: dict) -> str:
         out.append(
             "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
         )
+    if r.get("amm_tape"):
+        out += [""] + _amm_tape_lines(r["amm_tape"])
     if r.get("wallets"):
         out += [
             "",
@@ -778,7 +802,12 @@ def render_paper(action: str, r: dict) -> str:
             if r.get("landing")
             else ""
         )
-        return f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        line = f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        from .amm_tape import GAP_WORDS
+
+        for sid, why in sorted((r.get("skipped") or {}).items()):  # MIG trades the PumpSwap tape does not hold whole
+            line += f"\n  {sid}: left out " + ", ".join(f"{n} {GAP_WORDS.get(c, c)}" for c, n in sorted(why.items()))
+        return line
     rows = r["strategies"]
     if not rows:
         return "nothing frozen yet: run `snipetech paper freeze`"
