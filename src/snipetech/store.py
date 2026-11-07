@@ -219,20 +219,40 @@ def file_identity(path: str | Path) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def _tables(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """Every table of the database on `conn`, with its columns."""
+    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    return {name: {r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')} for name in names}
+
+
 class Store:
-    def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False):
+    # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
+    # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
+    # long reads pinned it, and never shrank. A routine checkpoint cycle is 1,000 frames (4 MB), far under the limit, so
+    # a routine restart never trims a file it would grow again at once; while a read pins it the recorder writes about
+    # 2 GB of WAL an hour (16:00-17:58), so 64 MiB is two minutes of that. sqlite trims at the first commit after a
+    # restart, on whichever connection makes it: every connection carries the limit.
+    JOURNAL_SIZE_LIMIT = 64 << 20
+
+    def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False, immutable: bool = False):
         """`readonly`: a reader of an existing database file beside its writers (a lab worker; WAL lets it read while
-        the tape recorder writes): no schema, no migration, never a write, and a missing file is an error."""
+        the tape recorder writes): no schema, no migration, never a write, and a missing file is an error. `immutable`
+        (read-only too): the hourly copy, written whole and renamed into place by `snapshot-db` and never written
+        again. SQLite then reads the file alone, without locks, and never opens a -wal or -shm beside it: a job on the
+        code before 7 Nov evening opened the copy read-write, in WAL mode, and until snapshot-db clears it its -wal lies
+        under the path's name when the next copy is renamed over it; a read-only connection to the new copy takes that
+        -wal for its own and reads "database disk image is malformed"."""
         self.path = str(path)
+        self.immutable = immutable
+        self.readonly = readonly or immutable
         self.lock = threading.RLock()
-        if readonly:
-            uri = Path(self.path).resolve().as_uri() + "?mode=ro"
-            self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+        if self.readonly:
+            self.conn = self._connect()
             self.file_id = file_identity(self.path)
             return
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        self.conn = self._connect()
         self.file_id = file_identity(self.path)  # the file this connection reads, even after another is renamed over it
         # through the retrying write: the first opener after a deploy that adds a table or a column writes the schema
         # and waits its turn for the lock instead of dying on it (an up-to-date schema takes no lock at all)
@@ -249,6 +269,32 @@ class Store:
                     if "duplicate column name" not in str(e):
                         raise
 
+    def schema_gaps(self) -> list[str]:
+        """What this code's schema has and the file lacks: tables, and columns as `table.column`; none when the file is
+        up to date. A read-only store never migrates its file, and the hourly copy taken before a deploy that added a
+        table or a column lacks it until the next copy."""
+        fresh = Store(":memory:")
+        try:
+            want = _tables(fresh.conn)
+        finally:
+            fresh.close()
+        with self.lock:
+            have = _tables(self.conn)
+        return sorted(t for t in want if t not in have) + sorted(
+            f"{t}.{c}" for t, cols in want.items() if t in have for c in cols - have[t]
+        )
+
+    def _connect(self) -> sqlite3.Connection:
+        """A connection to this store's file (read-only, by URI, for a `readonly` store, immutable too for the hourly
+        copy) with the WAL size limit set."""
+        if self.readonly:
+            uri = Path(self.path).resolve().as_uri() + ("?mode=ro&immutable=1" if self.immutable else "?mode=ro")
+            conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+        else:
+            conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+        conn.execute(f"PRAGMA journal_size_limit = {int(self.JOURNAL_SIZE_LIMIT)}")
+        return conn
+
     def close(self) -> None:
         with self.lock:
             self.conn.close()
@@ -261,7 +307,7 @@ class Store:
                 self.conn.close()
             except sqlite3.Error:
                 pass
-            self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+            self.conn = self._connect()
             self.file_id = file_identity(self.path)
 
     def _q(self, sql: str, params: Iterable[Any] = ()) -> list[tuple]:
@@ -364,12 +410,33 @@ class Store:
                        "ORDER BY 3, 4, 2", (mint, start_ts, end_ts, mint, start_ts, end_ts))  # fmt: skip
         return [_trade(r) for r in rows]
 
+    # The most tape one read covers. A read holds its snapshot of the WAL until its last row: no checkpoint passes it
+    # and the WAL cannot start over (7 Nov: the database plus WAL grew about 2 GB an hour while long reads ran). The
+    # server's busiest ten minutes held 55,000 trades (to 19:06 UTC, 7 Nov); a list of a whole day's coins took 10 s
+    # cold on a 2.4M-trade copy in one read.
+    READ_SPAN_SECS = 600
+
     def active_mints(self, start_ts: int, end_ts: int, min_trades: int = 1) -> list[tuple[str, int]]:
-        """Tokens traded in a time range (SOL and foreign), with their trade counts."""
-        rows = self._q("SELECT mint, COUNT(*) c FROM (SELECT mint FROM trades WHERE ts>=? AND ts<=? "
-                       "UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND ts<=?) GROUP BY mint HAVING c>=?",
-                       (start_ts, end_ts, start_ts, end_ts, min_trades))  # fmt: skip
-        return [(r[0], r[1]) for r in rows]
+        """Tokens traded in a time range (SOL and foreign), with their trade counts, in mint order. Read in pieces of
+        READ_SPAN_SECS, each read whole before the next one starts, no transaction between them: [start, start + span),
+        ... and the last one up to `end_ts` itself, so a trade on the edge of two pieces is counted in one. The labs and
+        the paper test read their spans here, the paper test on the live file. On the 2.4M-trade copy (7 Nov, cold) a
+        day took 8.9 s in 144 pieces of at most 0.15 s each, against 9.0 s in one read, with the same answer."""
+        counts: dict[str, int] = {}
+        lo = start_ts
+        while lo <= end_ts:
+            hi = lo + self.READ_SPAN_SECS
+            last = hi >= end_ts
+            upper = "ts<=?" if last else "ts<?"
+            rows = self._q(f"SELECT mint, COUNT(*) FROM (SELECT mint FROM trades WHERE ts>=? AND {upper} "
+                           f"UNION ALL SELECT mint FROM ftrades WHERE ts>=? AND {upper}) GROUP BY mint",
+                           (lo, end_ts if last else hi) * 2)  # fmt: skip
+            for mint, n in rows:
+                counts[mint] = counts.get(mint, 0) + n
+            if last:
+                break
+            lo = hi
+        return [(mint, n) for mint, n in sorted(counts.items()) if n >= min_trades]
 
     def user_market(self, user: str, since_ts: int = 0) -> list[Trade]:
         """A wallet's trades, SOL- and foreign-quoted, in block order."""

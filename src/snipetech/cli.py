@@ -84,6 +84,7 @@ def _discover(args, cfg) -> int:
                 c.close()
             except Exception:  # noqa: BLE001
                 pass
+        svc.reset_tape_store()
         svc.store.close()
 
 
@@ -143,7 +144,7 @@ def _events(args, cfg) -> int:
         if args.action == "scan":
             from .events.dev import dev_transfers
 
-            out = scan_tape(svc.store, time.time(), hours=args.hours)
+            out = scan_tape(svc.store, time.time(), hours=args.hours, tape=svc.tape_store)
 
             async def dev():
                 try:
@@ -1151,7 +1152,8 @@ async def _run(args, cfg: Config) -> int:
                                               cost["per_tx_sol"], args.replace, only_live=args.only_live,
                                               triggers=args.trigger, hours=args.hours,
                                               lock_dir=Path(cfg.storage.db_path).resolve().parent,
-                                              per_tx_source=cost["per_tx_source"])  # fmt: skip
+                                              per_tx_source=cost["per_tx_source"],
+                                              tape=lambda: svc.tape_store)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             else:

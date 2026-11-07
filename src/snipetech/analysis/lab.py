@@ -750,12 +750,19 @@ def label_groups(store: Store) -> dict[str, set[str]]:
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet}
 
 
+# Wallets one read of `_mints_with_buys_by` asks about. The read walks every trade each wallet ever made (the wallet
+# index has no time in it): 5.5 s cold for 500 wallets on the 2.4M-trade copy (7 Nov), and the qualify lab reads the
+# live file when no copy under two hours old exists, where a read that long holds the WAL back.
+WALLETS_PER_READ = 50
+
+
 def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[str]:
-    """Coins in [a, b] where any of `wallets` bought (chunked IN lists; thousands of candidates are normal)."""
+    """Coins in [a, b] where any of `wallets` bought, WALLETS_PER_READ wallets a read (thousands of candidates are
+    normal)."""
     out: set[str] = set()
     ws = sorted(wallets)
-    for i in range(0, len(ws), 500):
-        chunk = ws[i : i + 500]
+    for i in range(0, len(ws), WALLETS_PER_READ):
+        chunk = ws[i : i + WALLETS_PER_READ]
         out |= {
             m
             for (m,) in store._q(
@@ -993,18 +1000,18 @@ def _watch_lab(lab_pid: int) -> None:
     threading.Thread(target=watch, name="lab-watch", daemon=True).start()
 
 
-def _worker_start(path: str, fid, code: str, run: _Run, lab_pid: int) -> None:
-    """A worker's start: its own read-only connection to `path`, kept only when it opened the very file the lab planned
-    on (`fid`); `snapshot-db` renames a new copy over snipetech.ro.db every hour. And only when it runs the lab's own
-    code (`code`, the lab's CODE_ID): a worker imports snipetech afresh, everything the scoring needs as it starts, and
-    `remote update` may have reset those files under the lab's job. Its CODE_ID and the files now must both be the
-    lab's."""
+def _worker_start(path: str, fid, code: str, run: _Run, lab_pid: int, immutable: bool = False) -> None:
+    """A worker's start: its own read-only connection to `path` (immutable, as the lab opened it, when the lab reads
+    the hourly copy), kept only when it opened the very file the lab planned on (`fid`); `snapshot-db` renames a new
+    copy over snipetech.ro.db every hour. And only when it runs the lab's own code (`code`, the lab's CODE_ID): a worker
+    imports snipetech afresh, everything the scoring needs as it starts, and `remote update` may have reset those files
+    under the lab's job. Its CODE_ID and the files now must both be the lab's."""
     _watch_lab(lab_pid)
     if CODE_ID != code or code_identity() != code:
         _WORKER.update(unfit=CODE_MOVED)
         return
     try:
-        store = Store(path, readonly=True)
+        store = Store(path, readonly=True, immutable=immutable)
     except sqlite3.Error as exc:
         _WORKER.update(unfit=f"a worker cannot open {path}: {exc}")
         return
@@ -1021,22 +1028,23 @@ def _worker_rows(chunk) -> list[dict]:
     return _chunk_rows(_WORKER["store"], _WORKER["run"], chunk)
 
 
-def _lab_pool(path: str, fid, run: _Run | None, n: int) -> ProcessPoolExecutor:
+def _lab_pool(path: str, fid, run: _Run | None, n: int, immutable: bool = False) -> ProcessPoolExecutor:
     """`n` workers reading `path` (`_worker_start`). Started by forkserver (spawn where there is none), never by fork:
     the lab may run beside other threads (the CLI runs it under asyncio), and a forked child can inherit a held lock."""
     method = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
-    return ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context(method),
-                               initializer=_worker_start, initargs=(path, fid, CODE_ID, run, os.getpid()))  # fmt: skip
+    return ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context(method), initializer=_worker_start,
+                               initargs=(path, fid, CODE_ID, run, os.getpid(), immutable))  # fmt: skip
 
 
-def _shared_file(store: Store) -> tuple[str, tuple[int, int]] | None:
-    """The database file workers can open beside `store`, as (absolute path, identity); None when there is none
-    (":memory:", a store without a path) or another file has been renamed over the path since the store opened it. A
-    wrapper such as `recent_tape`'s window passes `path` and `file_id` through to the store it wraps."""
+def _shared_file(store: Store) -> tuple[str, tuple[int, int], bool] | None:
+    """The database file workers can open beside `store`, as (absolute path, identity, immutable: whether the store
+    reads it as the hourly copy, `Store(immutable=True)`, and so must they); None when there is none (":memory:", a
+    store without a path) or another file has been renamed over the path since the store opened it. A wrapper such as
+    `recent_tape`'s window passes `path`, `file_id` and `immutable` through to the store it wraps."""
     path, fid = getattr(store, "path", None), getattr(store, "file_id", None)
     if not path or fid is None or file_identity(path) != fid:
         return None
-    return os.path.abspath(path), fid
+    return os.path.abspath(path), fid, bool(getattr(store, "immutable", False))
 
 
 def _submit(pool: ProcessPoolExecutor, chunk) -> Future:
@@ -1048,7 +1056,8 @@ def _submit(pool: ProcessPoolExecutor, chunk) -> Future:
         return failed
 
 
-def _parallel_rows(store: Store, run: _Run, items, n: int, path: str, fid) -> tuple[list[dict], int]:
+def _parallel_rows(store: Store, run: _Run, items, n: int, path: str, fid,
+                   immutable: bool = False) -> tuple[list[dict], int]:  # fmt: skip
     """The rows of `items` scored by up to `n` workers, in the items' order, and how many workers ran. A chunk a worker
     refused (it found another file at the path, or other code on disk than the lab's) or lost (the pool broke: a worker
     killed for memory) is scored in the lab's own process in its place, so the lab ends with the serial rows whatever
@@ -1056,7 +1065,7 @@ def _parallel_rows(store: Store, run: _Run, items, n: int, path: str, fid) -> tu
     size = max(1, min(LAB_CHUNK_COINS, math.ceil(len(items) / (n * 4))))
     chunks = [items[k : k + size] for k in range(0, len(items), size)]
     used = min(n, len(chunks))
-    pool = _lab_pool(path, fid, run, used)
+    pool = _lab_pool(path, fid, run, used, immutable)
     rows: list[dict] = []
     here, why = 0, None
     try:

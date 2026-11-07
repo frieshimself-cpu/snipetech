@@ -40,6 +40,9 @@ from typing import Any
 SKEW_SECS = 300
 MAX_BODY = 6 << 20
 MAX_WRITE = 5 << 20
+# `remote sql` reads the live database, and a read holds its WAL back until it ends (no checkpoint passes it, the WAL
+# cannot start over): a query is cut at this many seconds, whatever a request asks for
+SQL_MAX_SECS = 30.0
 SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_URL", "SNIPETECH_WS_URL")
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
@@ -401,12 +404,17 @@ class Ops:
         p.write_text(content)
         return {"path": str(p), "bytes": p.stat().st_size}
 
-    def op_sql(self, query: str, params: list | None = None, rows: int = 500, seconds: float = 30) -> dict[str, Any]:
+    def op_sql(
+        self, query: str, params: list | None = None, rows: int = 500, seconds: float = SQL_MAX_SECS
+    ) -> dict[str, Any]:
         try:
             con = self._ro()
         except sqlite3.Error as exc:
             raise OpsError(503, f"database: {exc}") from exc
-        deadline = time.monotonic() + float(seconds)
+        limit = float(seconds)
+        if not 0 < limit < SQL_MAX_SECS:  # none, more than the cap, infinite, or NaN (it never passes a deadline)
+            limit = SQL_MAX_SECS
+        deadline = time.monotonic() + limit
         con.set_progress_handler(lambda: 1 if time.monotonic() > deadline else 0, 20000)
         con.set_authorizer(_read_only_authorizer)
         try:

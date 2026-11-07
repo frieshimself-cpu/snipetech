@@ -35,6 +35,11 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _tape(ctx: DiscoverContext):
+    """Where a source reads the tape: the hourly copy when the service has a fresh one, else the live store."""
+    return getattr(ctx.svc, "tape_store", ctx.svc.store)
+
+
 class TapeSource:
     """Wallets with consistently profitable round trips in our own tape (no network)."""
 
@@ -109,7 +114,9 @@ class VybeSource:
 class CoinFirstBuyersSource:
     """Coin-first: the first buyers of coins that ran (price x `min_multiple` within 10 minutes of the launch).
     First buyers come from SolanaTracker when a client is present, else from the tape; a wallet early in several
-    runners has `hits` > 1."""
+    runners has `hits` > 1. The tape is the hourly copy (`Service.tape_store`), as for every discover source: a
+    six-hour window read every hour loses nothing to a copy up to two hours old, and the live file stays free of a
+    run's 5,000 reads."""
 
     name = "coinfirst"
 
@@ -130,7 +137,7 @@ class CoinFirstBuyersSource:
         )
 
     def runner_coins(self, ctx: DiscoverContext) -> list[str]:
-        store = ctx.svc.store
+        store = _tape(ctx)
         since = int(ctx.now - self.hours * 3600)
         launches = store._q(
             "SELECT mint, user, creator, ts FROM launches WHERE ts >= ? ORDER BY ts DESC LIMIT 5000", (since,)
@@ -154,7 +161,7 @@ class CoinFirstBuyersSource:
         return out
 
     def _tape_first_buyers(self, ctx: DiscoverContext, mint: str) -> list[str]:
-        store = ctx.svc.store
+        store = _tape(ctx)
         launch = store.launch(mint)
         dev = launch.deployers() if launch else set()
         rows = store._q(
