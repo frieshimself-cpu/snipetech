@@ -11,6 +11,7 @@ import anthropic
 from anthropic import AsyncAnthropic
 
 from ..config import Config
+from ..ops import redact
 from .budget import Ledger
 from .budget_switch import effective_daily_usd, effective_max_tool_calls, effective_turn_usd
 from .gate import Decision, analyst_update_target, mark_analyst_ran
@@ -58,6 +59,22 @@ def _read_inbox(paths: OperatorPaths) -> str:
         return ""
 
 
+API_WORDS_MAX = 600
+
+
+def api_words(exc: anthropic.APIError) -> str:
+    """What the API said, whole, after its status code: in a 403 the part the owner acts on comes last ("An Admin of
+    ... must ..."), and the old 160-character cut hid it (7 Nov 11:16). Redacted and capped at API_WORDS_MAX."""
+    body = getattr(exc, "body", None)
+    err = body.get("error") if isinstance(body, dict) else None
+    said = err.get("message") if isinstance(err, dict) else None
+    if not isinstance(said, str) or not said.strip():
+        said = getattr(exc, "message", None) or str(exc)
+    code = getattr(exc, "status_code", None)
+    head = f"{code}: " if isinstance(code, int) else f"{type(exc).__name__}: "
+    return redact(head + " ".join(str(said).split()))[:API_WORDS_MAX]
+
+
 async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decision: Decision, ledger: Ledger,
                    notifier: Notifier, notes: NoteSink, *, jobs: OperatorJobs, client: AsyncAnthropic | None = None,
                    now: Callable[[], float] = time.time) -> dict:  # fmt: skip
@@ -88,6 +105,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         fallbacks="default",
     )
     usd, calls, stopped, message_stop_reason = 0.0, 0, "end_turn", None
+    error = None
     notes_before, decisions_before = notes.count, len(notes.decisions)
     # the cadence counts from this turn as soon as it starts: one the unit kills is not started over by the next round
     # (a turn the API refused puts back the time it found, below)
@@ -127,12 +145,9 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                     "finished", "info")  # fmt: skip
         stopped = "wall_time"
     except anthropic.APIError as exc:
-        stopped = "api_error"
+        stopped, error = "api_error", api_words(exc)
         if not notes.has_today("api error", now()):
-            notes.write(
-                f"api error: {type(exc).__name__}: {str(exc)[:160]} — no more Claude rounds until this clears",
-                "decision",
-            )
+            notes.write(f"api error: {error} — no more Claude rounds until this clears", "decision")
     finally:
         close = getattr(
             runner, "close", None
@@ -165,4 +180,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
             pass
     for line in notes.decisions[decisions_before:]:
         notifier.send(line)
-    return {"usd": round(usd, 4), "tool_calls": calls, "stopped": stopped, "notes": notes.count - notes_before}
+    out = {"usd": round(usd, 4), "tool_calls": calls, "stopped": stopped, "notes": notes.count - notes_before}
+    if error:  # the round's log line carries the API's own words too
+        out["error"] = error
+    return out

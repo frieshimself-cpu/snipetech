@@ -188,6 +188,24 @@ def test_api_error_writes_one_note(env):
     assert env["paths"].notes.read_text().count("api error") == 1 and len(env["sent"]) == 1
 
 
+def test_an_api_refusal_keeps_the_apis_whole_message_for_the_owner(env):
+    """7 Nov 11:16: the note cut the API's 403 at 160 characters, in the middle of "An Admin of ...", so the owner
+    could not read what their Anthropic account needed. The note and the round's log line carry the API's own message
+    whole (up to 600 characters), with its status code."""
+    said = (
+        "This organization can't receive replies from Claude right now. An Admin of Owner Org must add credits "
+        "or raise the spend limit at console.anthropic.com/settings/billing before replies resume."
+    )
+
+    def handler(request):
+        return httpx2.Response(403, json={"type": "error", "error": {"type": "permission_error", "message": said}})
+
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    note = env["paths"].notes.read_text()
+    assert out["stopped"] == "api_error" and out["error"] == f"403: {said}"
+    assert said in note and "403" in note and said in env["sent"][0]
+
+
 def test_user_message_has_reasons_and_no_secrets(env):
     m = user_message(env["snap"], Decision(True, "operator", ["tape stale 400 s"]), inbox="")
     assert "tape stale 400 s" in m and "sk-ant" not in m and '"wallet": "W"' in m
