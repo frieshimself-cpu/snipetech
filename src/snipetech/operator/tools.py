@@ -340,7 +340,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))
 
-    written: set[str] = set()  # the reports this turn wrote: it may redo its own, never an earlier turn's analysis
+    # the reports this turn created: it may redo its own, never an earlier turn's analysis. Appending to a report does
+    # not make it the turn's own (7 Nov review: an append followed by a plain write wiped the morning's analysis)
+    written: set[str] = set()
 
     @beta_async_tool
     async def write_report(name: str, text: str, append: bool = False) -> str:
@@ -367,7 +369,6 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             old = p.read_text(errors="replace")
             with p.open("a") as f:
                 f.write(("\n" if old.endswith("\n") else "\n\n") + text + ("" if text.endswith("\n") else "\n"))
-            written.add(p.name)
             return f"appended to {p.name}"
         if p.name.startswith("analyst-") and p.exists() and p.name not in written:
             return (f"error: operator/{p.name} holds an earlier analysis and is never replaced: read it (read_file "
