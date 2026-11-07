@@ -914,11 +914,20 @@ class Service:
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
-        sniper has been armed for `rearm_after` seconds without a fill (a failed send also spends the shot). Stops
-        re-arming once `max_fills` buys have been seen since the cycler started, on the emergency floor, or at the time
-        limit, and the snipers are left running so they finish selling. The owner's /stop flag is read every tick: it
-        ends the run too, and then the snipers this run armed are stopped if the wallet holds nothing (a re-arm one
-        minute later would otherwise undo the /stop that found them idle); a coin held keeps them running to sell it."""
+        sniper has been armed for `rearm_after` seconds without a fill (a failed send also spends the shot), and never
+        while the tape is more than the book's TAPE_STALE_SECS behind: the fills are counted on it (it does not start
+        then either).
+
+        The run ends at `max_fills` buys since it started, counted as the larger of the wallet's buys on the tape and
+        the coins seen in the wallet (with the recorder missing our buys the tape alone counted none: a probe made 118
+        buys under a cap of 10), on the emergency floor, at the time limit, or at the owner's /stop (read every tick).
+        Every end leaves nothing armed: the snipers this run armed are stopped when the wallet holds nothing (one left
+        armed buys once more at the next launch that qualifies, past the time limit or under the floor, with nobody
+        watching); a coin held, or a wallet that cannot be read, keeps them running to sell it (a stopped sniper strands
+        its coin). The report's `held` is the wallet's coins by the shared rule (positions.py), and `left_running` the
+        snipers this run armed and did not stop."""
+        from .book.run import TAPE_STALE_SECS, _tape_age
+
         address = self._check(address)
         if self.stop_flag_set():
             raise SystemExit("the owner's /stop flag is set: /resume first; nothing cycled")
@@ -938,7 +947,20 @@ class Service:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
         def fills_since(ts: float) -> int:
-            return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
+            """The wallet's buys on the tape since `ts` (0 when the tape cannot be read: then nothing is re-armed)."""
+            try:
+                return sum(1 for t in self.store.trades_for_user(address, int(ts)) if t.is_buy)
+            except Exception:  # noqa: BLE001 - tape_lag says so, and the coins seen in the wallet still count
+                return 0
+
+        def tape_lag() -> str | None:
+            """Why the tape cannot count this run's fills now, or None. An empty tape is a fresh install, as for the
+            book."""
+            try:
+                age = _tape_age(self.store, time.time())
+            except Exception as exc:  # noqa: BLE001
+                return f"the tape could not be read ({type(exc).__name__})"
+            return f"the tape is {age:.0f} s behind" if age is not None and age > TAPE_STALE_SECS else None
 
         async def open_positions() -> list[dict]:
             # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
@@ -946,21 +968,23 @@ class Service:
             # ignore_mints: positions no sniper manages (to be sold by hand)
             return await self.open_positions(address, ignore=ignore_mints)
 
-        async def owner_stop() -> str:
-            # nothing held: the snipers this run armed are stopped (a stopped sniper with nothing held strands nothing,
-            # and one left armed can still buy once); a coin held or an unreadable wallet: they keep running to sell
+        async def disarm(why: str) -> tuple[str, list[dict] | None]:
+            """How every run ends: with nothing held the snipers this run armed are stopped (a stopped sniper with
+            nothing held strands nothing, and one left armed can still buy once); a coin held or an unreadable wallet
+            keeps them running to sell. (The reason with what was done, the coins held or None when unreadable.)"""
             try:
                 held = await open_positions()
             except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
-                log(f"holdings check after /stop failed ({exc})")
-                held = None
-            why = "stopped by the owner's /stop: no more re-arms"
+                log(f"holdings check at the end failed ({exc})")
+                return (
+                    f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)",
+                    None,
+                )
             if held:
                 return (
-                    f"{why}; a coin is held, so the snipers keep running to sell it (a stopped sniper strands its coin)"
+                    f"{why}; a coin is held, so the snipers keep running to sell it (a stopped sniper strands its coin)",
+                    held,
                 )
-            if held is None:
-                return f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)"
             failed = []
             for i in [i for i in ids if i in armed]:
                 try:
@@ -968,15 +992,20 @@ class Service:
                     armed.discard(i)
                 except Exception as exc:  # noqa: BLE001 - said in the reason: the owner stops it by hand
                     failed.append(i)
-                    log(f"stop of {i[:8]} after /stop failed: {exc}")
+                    log(f"stop of {i[:8]} at the end failed: {exc}")
             return f"{why}; the wallet holds nothing, so the snipers it armed are stopped" + (
-                f" except {', '.join(failed)} (stop them with /stop again)" if failed else ""
-            )
+                f" except {', '.join(failed)} (stop them with /stop)" if failed else ""
+            ), held
 
         t0 = time.time()
         reason, restarts = "time limit", 0
         armed_at: dict[str, float] = {}
         armed: set[str] = set()  # the snipers this run started and has not stopped since
+        seen: set[str] = set()  # the coins the wallet has held since the start: each one is at least one buy
+
+        def fills_now() -> int:
+            return max(fills_since(t0), len(seen))
+
         try:
             b0 = await balance()
             held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
@@ -989,6 +1018,9 @@ class Service:
             )
             if b0 <= floor_sol:
                 raise SystemExit(f"balance {b0:.4f} is at or below the floor {floor_sol}")
+            lag = tape_lag()
+            if lag:  # the fills cap is counted on the tape: a run that cannot count them does not start
+                raise SystemExit(f"{lag} (more than {TAPE_STALE_SECS} s): not cycling, its fills are counted there")
             for i in ids:
                 with contextlib.suppress(Exception):  # a sniper left running from an earlier run has spent its shot
                     await client.stop(i)
@@ -997,11 +1029,11 @@ class Service:
                 armed_at[i] = time.time()
                 armed.add(i)
                 log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
-            low = b0
+            low, paused = b0, False
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
                 if self.stop_flag_set():
-                    reason = await owner_stop()
+                    reason = "stopped by the owner's /stop: no more re-arms"
                     break
                 try:
                     b = await balance()
@@ -1009,18 +1041,28 @@ class Service:
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
+                seen.update(str(h["mint"]) for h in held if h.get("mint"))
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
                 if b < floor_sol and b + sum(float(h.get("value_sol") or 0) for h in held) < floor_sol:
-                    reason = f"EMERGENCY: equity below floor {floor_sol} (balance {b:.4f}); stopped re-arming (snipers left running to sell)"
+                    reason = f"EMERGENCY: equity below floor {floor_sol} (balance {b:.4f}); stopped re-arming"
                     break
-                fills = fills_since(t0)
+                fills = fills_now()
                 if fills >= max_fills:
-                    reason = f"cap reached: {fills} fills since start; snipers left running to finish selling"
+                    reason = f"cap reached: {fills} fills since start"
                     break
                 if held:
                     continue  # a position is open: never restart now
+                lag = tape_lag()
+                if lag:  # a re-arm now could buy without being counted
+                    if not paused:
+                        log(f"{lag}: no re-arm until it catches up (the fills are counted there)")
+                    paused = True
+                    continue
+                if paused:
+                    log("the tape has caught up: re-arming again")
+                    paused = False
                 now = time.time()
                 for i in ids:
                     since = now - armed_at.get(i, now)
@@ -1043,14 +1085,23 @@ class Service:
                         except Exception as exc:
                             log(f"re-arm of {i[:8]} failed: {exc}")
                         break  # one restart per tick keeps the rate limits and the state readable
+            reason, held = await disarm(reason)
             log(reason)
-            b1 = await balance()
-            log(f"wallet {b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f}); {fills_since(t0)} fills; {restarts} re-arms")
-            held = await self.holdings(address)
-            log(("still held (the running snipers manage them): " + ", ".join(f"{h['mint']} ({h['amount']:,.0f})" for h in held))
-                if held else "no tokens held")  # fmt: skip
-            return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills_since(t0), "restarts": restarts,
-                    "held": held, "events": events}  # fmt: skip
+            try:
+                b1: float | None = await balance()
+            except Exception as exc:  # noqa: BLE001 - the report still says what was done
+                b1 = None
+                log(f"final balance check failed ({exc})")
+            fills = fills_now()
+            moved = f"{b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f})" if b1 is not None else f"{b0:.4f} -> unknown"
+            log(f"wallet {moved}; {fills} fills; {restarts} re-arms")
+            if held:
+                log("still held (the running snipers manage them): "
+                    + ", ".join(f"{h['mint']} ({float(h.get('amount') or 0):,.0f})" for h in held))  # fmt: skip
+            elif held is not None:
+                log("no coins held")
+            return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills, "restarts": restarts,
+                    "held": held or [], "left_running": sorted(armed), "events": events}  # fmt: skip
         finally:
             await client.close()
 

@@ -390,8 +390,10 @@ zero) and the plan for the best one, ending with the line to send: `/test <id> g
 exactly that plan and only writes `operator/TEST.json`; the next operator round checks everything again, creates the
 strategy's own hunt sniper and starts one `oktech cycle` job (the round's jobs survive deploys; the minute pass would
 kill it): the strategy's own size a buy (0.5 SOL at most), at most 10 buys one coin at a time, 120 minutes, and a floor
-of the wallet less all 10 buys and 0.5 SOL of fees. One test at a time; `/stop` cancels one not started and ends a
-running one; no agent tool can write the file or start a test (`operator/live_test.py`, docs/live-recipe.md).
+of the wallet less all 10 buys and 0.5 SOL of fees. A test ends with nothing left armed: its sniper is stopped as soon
+as the wallet holds nothing (until then the test is "closing"). One test at a time, also counted on OKTech (any active
+sniper that is not the book's refuses one), and none starts while the tape is behind; `/stop` cancels one not started
+and ends a running one; no agent tool can write the file or start a test (`operator/live_test.py`, docs/live-recipe.md).
 
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
 round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.

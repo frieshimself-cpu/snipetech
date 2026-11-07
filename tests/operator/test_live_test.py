@@ -50,8 +50,9 @@ def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=
 
 
 class Svc:
-    """The service as the live test uses it: the store with the paper test, the wallet's coins, and OKTech's create,
-    which here only records what would be made (idle). Nothing in it can start a sniper."""
+    """The service as the live test uses it: the store with the paper test, the wallet's coins, OKTech's snipers and
+    their states, and OKTech's create, which here only records what would be made (idle). Nothing in it can start a
+    sniper, and the only stop it takes is of the test's own sniper while the wallet holds nothing."""
 
     def __init__(self, store, paths):
         self.store, self.paths = store, paths
@@ -60,6 +61,10 @@ class Svc:
         self.created: list[dict] = []
         self.on_create = None  # runs inside the create call
         self.answer = None  # what the create answers (an exception is raised)
+        self.tasks: list[dict] = []  # OKTech's snipers: id, name, status
+        self.oktech_down = False
+        self.stops: list[str] = []
+        self.stop_error: Exception | None = None
 
     async def open_positions(self, address, ignore=None, unknown=None):
         if self.unreadable:
@@ -75,14 +80,42 @@ class Svc:
             self.on_create()
         if isinstance(self.answer, BaseException):
             raise self.answer
-        return self.answer or {"wallet": wallet, "snipers": [{"id": strategy_id, "label": "x", "name": "n", "summary": [],
-                                                              "notes": [], "config": {}, "oktech_id": OK_ID, "status": "idle"}]}  # fmt: skip
+        if self.answer:
+            return self.answer
+        self.tasks.append({"id": OK_ID, "name": f"snipetech strategy {strategy_id} hunt", "status": "idle"})
+        return {"wallet": wallet, "snipers": [{"id": strategy_id, "label": "x", "name": "n", "summary": [], "notes": [],
+                                               "config": {}, "oktech_id": OK_ID, "status": "idle"}]}  # fmt: skip
 
     async def oktech_status(self):
-        return {"snipers": []}
+        if self.oktech_down:
+            raise RuntimeError("OKTech answered 502")
+        return {"snipers": [dict(t) for t in self.tasks]}
 
     async def oktech_task(self, action, task_id):
-        raise AssertionError(f"the live test touched OKTech task {task_id} ({action})")
+        if action != "stop" or task_id != OK_ID or self.held:  # a stopped sniper strands its coin
+            raise AssertionError(
+                f"the live test touched OKTech task {task_id} ({action}), {len(self.held)} coin(s) held"
+            )
+        if self.stop_error is not None:
+            raise self.stop_error
+        self.stops.append(task_id)
+        for t in self.tasks:
+            if t["id"] == task_id:
+                t["status"] = "idle"
+        return {"success": True}
+
+
+def _armed(e, status="running"):
+    """What the cycler does to the test's own sniper on OKTech (running: armed, or holding its coin)."""
+    for t in e.svc.tasks:
+        if t["id"] == OK_ID:
+            t["status"] = status
+
+
+def _tape(store, ts, k=0):
+    """One trade by someone else on the tape at `ts`: the recorder was current then."""
+    store.add_trades([Trade(sig=f"tape{k}", ev=0, slot=900 + k, pos=0, ts=int(ts), mint="TapeMint1111", venue="curve",
+                            user="SomeoneElse", is_buy=True, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
 
 
 @pytest.fixture
@@ -126,12 +159,13 @@ def _round(e, at=NOW + 60):
 
 
 def _refused(e, *words, **kw):
-    """A /test that must change nothing: no request written or changed, nothing created on OKTech."""
+    """A /test that must change nothing: no request written or changed, nothing created, started or stopped."""
     p = LT.state_path(e.paths)
     before = p.read_text() if p.exists() else None
+    done = (len(e.svc.created), len(e.started), len(e.svc.stops))
     reply = _send(e, *words, **kw)
     assert (p.read_text() if p.exists() else None) == before, reply
-    assert e.svc.created == [] and e.started == [], reply
+    assert (len(e.svc.created), len(e.started), len(e.svc.stops)) == done, reply
     assert reply.startswith("Nothing started"), reply
     return reply
 
@@ -274,6 +308,39 @@ def test_go_refuses_while_an_oktech_cycler_or_guard_runs(env):
     assert "20261107-095000-aaaaaa" in _refused(env, BEST, "go")
 
 
+def test_go_refuses_while_a_sniper_that_is_not_the_books_runs_on_oktech(env):
+    """One live test at a time, counted on OKTech itself and not only on our own files: an earlier test's sniper left
+    armed, or one started by hand, refuses a new test (two snipers on one wallet can buy two coins at once). The book's
+    own snipers trade from the same wallet by design and do not; OKTech not answering refuses too."""
+    _freeze(env.store, BEST, pnl=0.02)
+    env.svc.oktech_down = True
+    assert "OKTech" in _refused(env, BEST, "go")
+    env.svc.oktech_down = False
+    env.svc.tasks = [{"id": "f00dcafe01", "name": f"snipetech strategy {BEST} hunt", "status": "running"}]
+    reply = _refused(env, BEST, "go")
+    assert "f00dcafe01" in reply and "/stop" in reply
+    env.svc.tasks = [{"id": "f00dcafe01", "name": f"snipetech strategy {BEST} hunt", "status": "idle"},
+                     {"id": "b00c", "name": "snipetech copy book 6VFrZ1 arm:fast", "status": "running"}]  # fmt: skip
+    _send(env, BEST, "go")
+    assert LT.load(env.paths)["state"] == "requested"
+
+
+def test_go_and_the_round_wait_for_the_tape_to_catch_up(env):
+    """The test's buys are counted on the tape (the cap; the coins seen in the wallet count too). With the recorder more
+    than two minutes behind (the book's rule), /test go is refused, and a request waits for it rather than start."""
+    _freeze(env.store, BEST, pnl=0.02)
+    _tape(env.store, NOW - 3600)  # the recorder stopped an hour ago
+    assert "tape" in _refused(env, BEST, "go")
+    _tape(env.store, NOW - 10, k=1)  # it is current again
+    _send(env, BEST, "go")
+    assert LT.load(env.paths)["state"] == "requested"
+    _round(env, NOW + 600)  # ten minutes on with nothing new on the tape: the request waits
+    assert LT.load(env.paths)["state"] == "requested" and env.svc.created == [] and env.started == []
+    _tape(env.store, NOW + 1190, k=2)
+    _round(env, NOW + 1200)
+    assert LT.load(env.paths)["state"] == "running" and len(env.started) == 1
+
+
 def test_an_old_or_malformed_go_is_refused_and_never_echoed(env):
     _freeze(env.store, BEST, pnl=0.02)
     assert "10 min old" in _refused(env, BEST, "go", date=NOW - 600)  # it waited out an outage: send it again
@@ -395,6 +462,130 @@ def test_a_cycler_that_ended_without_its_report_still_ends_the_test(env):
     assert any("Live test ended" in s for s in env.sent)
 
 
+TIME_UP = {"start_sol": 11.8, "end_sol": 11.62, "reason": "time limit", "fills": 3, "restarts": 117, "held": [],
+           "left_running": [OK_ID], "events": []}  # fmt: skip  # a cycler that stopped nothing on its way out
+
+
+def _cycler_ends(e, report=None, code=0, log=None):
+    _end_job(e.paths, LT.load(e.paths)["job_id"], code, report, log=log)
+
+
+def _started(e):
+    """A test requested, started by the round, and its sniper armed by the cycler."""
+    _freeze(e.store, BEST, pnl=0.02)
+    _send(e, BEST, "go")
+    _round(e)
+    _armed(e)
+    e.sent.clear()
+
+
+def test_a_test_whose_sniper_is_still_armed_at_its_end_stops_it_before_it_is_done(env):
+    """The time limit is how a test usually ends, and its sniper has then just been re-armed: left armed it buys at the
+    next launch that qualifies, past the minutes the owner approved, watched by nobody and in no report. With the
+    wallet holding nothing the round stops the test's own sniper (that strands nothing), and only then is the test done
+    with nothing running expected."""
+    _started(env)
+    _cycler_ends(env, TIME_UP)
+    _round(env, NOW + 60 + 7200)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [OK_ID] and t["state"] == "done" and t["sniper_stopped"] is True
+    assert json.loads(env.paths.expected.read_text()) == {"snipers_running": 0, "held": 0}
+    (msg,) = env.sent
+    assert "Live test ended" in msg and "time limit" in msg and f"sniper {OK_ID} is stopped" in msg
+    _round(env, NOW + 9000)
+    assert env.svc.stops == [OK_ID] and len(env.sent) == 1  # done once, stopped once
+
+
+def test_a_cycler_killed_mid_test_leaves_no_sniper_armed(env):
+    """A reboot (7 Nov: the resize) or a kill takes the cycler down with its sniper armed and no report: the round
+    finds the process gone, stops the sniper while the wallet holds nothing, and ends the test."""
+    _started(env)
+    jid = LT.load(env.paths)["job_id"]
+    meta = json.loads((env.paths.jobs / f"{jid}.json").read_text())
+    (env.paths.jobs / f"{jid}.json").write_text(json.dumps(meta | {"pid": 0}))  # no exit file, the process is gone
+    _round(env, NOW + 3600)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [OK_ID] and t["state"] == "done" and "without its report" in t["report"]["reason"]
+    assert any(f"sniper {OK_ID} is stopped" in s for s in env.sent)
+
+
+def test_a_test_that_ends_holding_a_coin_closes_once_the_coin_is_sold(env):
+    """At its end the test's last coin may still be held: its sniper keeps running to sell it (a stopped sniper strands
+    its coin), the test stays closing with its sniper and its coin expected (the gate stays quiet), no other test
+    starts, and the round that finds the wallet empty stops the sniper and closes the test."""
+    _started(env)
+    coin = {"mint": MINT, "amount": 1.0, "raw": 1_000_000, "decimals": 6, "value_sol": 0.07, "priced": True}
+    _cycler_ends(env, TIME_UP | {"reason": "cap reached: 10 fills since start; a coin is held", "fills": 10,
+                                 "held": [coin]})  # fmt: skip
+    env.svc.held = [coin]
+    _round(env, NOW + 3600)
+    t = LT.load(env.paths)
+    assert t["state"] == "closing" and env.svc.stops == []
+    assert json.loads(env.paths.expected.read_text()) == {"snipers_running": 1, "held": 1}
+    from snipetech.operator.gate import decide  # its sniper selling its coin is the test, not a deviation
+
+    snap = Snapshot(ts=NOW + 3600, wallet=W, native_sol=11.6, wsol=0.1, held=[coin | {"since": NOW + 3500}],
+                    tape_last_ts=NOW + 3595, snipers=[{"id": OK_ID, "name": "x", "status": "running"}])  # fmt: skip
+    assert not [r for r in decide(snap, snap, NOW + 3600, env.cfg.operator, env.paths).reasons if "expected" in r]
+    (msg,) = env.sent
+    assert "Live test ended" in msg and MINT in msg and "/sell" in msg and "keeps running" in msg
+    assert "closing" in _refused(env, BEST, "go", at=NOW + 3660)  # no other test meanwhile
+    assert MINT[:6] in _send(env, at=NOW + 3660)  # /test says what it waits for
+    env.sent.clear()
+    _round(env, NOW + 4500)  # still held: nothing changes and nothing more is said
+    assert LT.load(env.paths)["state"] == "closing" and env.sent == [] and env.svc.stops == []
+    env.svc.held = []  # its sniper sold it
+    _round(env, NOW + 5400)
+    t = LT.load(env.paths)
+    assert env.svc.stops == [OK_ID] and t["state"] == "done" and t["sniper_stopped"] is True
+    assert json.loads(env.paths.expected.read_text()) == {"snipers_running": 0, "held": 0}
+    (msg,) = env.sent
+    assert "closed" in msg and OK_ID in msg
+    history = [json.loads(x) for x in LT.history_path(env.paths).read_text().splitlines()]
+    assert [(h["id"], h["state"]) for h in history] == [(BEST, "done")]
+
+
+def test_a_test_whose_sniper_cannot_be_stopped_yet_stays_closing_and_says_so(env):
+    """OKTech not answering, or refusing the stop, keeps the test closing (never written done over an armed sniper):
+    the owner hears that its sniper may still be armed, and each round tries again."""
+    _started(env)
+    _cycler_ends(env, TIME_UP)
+    env.svc.oktech_down = True
+    _round(env, NOW + 7300)
+    assert LT.load(env.paths)["state"] == "closing" and env.svc.stops == []
+    assert len(env.sent) == 1 and "may still be armed" in env.sent[0] and "/stop" in env.sent[0]
+    env.svc.oktech_down, env.svc.stop_error = False, RuntimeError("OKTech answered 502")
+    _round(env, NOW + 8200)
+    assert LT.load(env.paths)["state"] == "closing" and env.svc.stops == []
+    assert len(env.sent) == 2 and "could not be stopped" in env.sent[1]
+    env.svc.stop_error = None
+    _round(env, NOW + 9100)
+    assert env.svc.stops == [OK_ID] and LT.load(env.paths)["state"] == "done" and "closed" in env.sent[-1]
+
+
+def test_the_end_names_only_real_coins(env):
+    """'Still held' is the wallet's coins by the one shared rule (positions.py): no stablecoin, no dust a sale leaves
+    behind, none of the owner's ignored coins. The cycler's list was every token account (6 Nov: 0.0006 USDC sat in
+    this wallet), so the owner was told of coins stranded when none were."""
+    usdc, dust, ignored = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "Dust1111" + "1" * 36, "Ign0red1" + "1" * 36
+    env.cfg.operator.ignore_mints = [ignored]
+    _started(env)
+    # the tape's last prices: the coin held at 70 lamports a raw unit, the coin sold at a pump.fun price
+    env.store.add_trades([Trade(sig=f"p{m[:4]}", ev=0, slot=2_000 + k, pos=0, ts=NOW + 600, mint=m, venue="curve", user="x",
+                                is_buy=True, quote=1, base=1, fee=0, fee_bps=0, q_after=q, b_after=b)
+                          for k, (m, q, b) in enumerate(((MINT, 70, 1), (dust, 30 * 10**9, 10**15)))])  # fmt: skip
+    row = {"amount": 1.0, "raw": 1_000_000, "decimals": 6, "account": "acct"}
+    held = [row | {"mint": usdc, "raw": 600, "amount": 0.0006}, row | {"mint": dust, "raw": 3_200_000, "amount": 3.2},
+            row | {"mint": ignored}, row | {"mint": MINT}]  # fmt: skip
+    _cycler_ends(env, TIME_UP | {"held": held})
+    env.svc.held = [row | {"mint": MINT, "value_sol": 0.07, "priced": True}]  # the wallet by the shared rule
+    _round(env, NOW + 7300)
+    t = LT.load(env.paths)
+    assert t["report"]["held"] == [MINT]
+    (msg,) = env.sent
+    assert MINT in msg and usdc not in msg and dust not in msg and ignored not in msg
+
+
 def test_a_request_no_round_started_within_30_minutes_expires(env):
     _freeze(env.store, BEST, pnl=0.02)
     _send(env, BEST, "go")
@@ -478,6 +669,8 @@ def test_the_round_checks_everything_again_before_it_creates(env):
         guard["id"]: (lambda: guard_file.write_text(json.dumps(guard)), lambda: guard_file.unlink()),
         "not a frozen paper strategy": (lambda: env.store.set_coverage("paper_strategies", {"strategies": []}),
                                         lambda: env.store.set_coverage("paper_strategies", frozen)),
+        "hand1": (lambda: env.svc.tasks.append({"id": "hand1", "name": "started by hand", "status": "running"}),
+                  lambda: env.svc.tasks.clear()),
     }  # fmt: skip
     for k, (word, (change, undo)) in enumerate(cases.items()):
         at = NOW + k * 1000
@@ -500,7 +693,10 @@ def test_a_wallet_that_cannot_be_read_waits_for_the_next_round(env):
     env.svc.unreadable = True
     _round(env)
     assert LT.load(env.paths)["state"] == "requested" and env.svc.created == []
-    env.svc.unreadable = False
+    env.svc.unreadable, env.svc.oktech_down = False, True  # OKTech not answering: the same
+    _round(env, NOW + 600)
+    assert LT.load(env.paths)["state"] == "requested" and env.svc.created == []
+    env.svc.oktech_down = False
     _round(env, NOW + 900)
     assert LT.load(env.paths)["state"] == "running" and len(env.started) == 1
 

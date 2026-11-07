@@ -659,12 +659,14 @@ class _CycleClient:
         pass
 
 
-def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda secs: None):
+def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda secs: None, balance=lambda: 5.0,
+               coins=None, clock=None):  # fmt: skip
     """The cycler on a fake clock (each sleep moves it, so its one-minute re-arm really comes round), one capped sniper
-    "a", a wallet with 5 SOL that holds a coin while `holds()` says so, and the owner's /stop flag in `flag`."""
+    "a", a wallet with `balance()` SOL that holds coin M1 while `holds()` says so (or the coins `coins(now)` lists),
+    and the owner's /stop flag in `flag`. The tape is empty unless a test adds trades to the store."""
     from snipetech.service import Service
 
-    clock = {"t": 1_794_045_600.0}
+    clock = clock if clock is not None else {"t": 1_794_045_600.0}
 
     async def sleep(secs):
         clock["t"] += secs
@@ -672,7 +674,7 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
 
     class Rpc:
         async def call(self, method, params):
-            return {"value": 5_000_000_000} if method == "getBalance" else {"value": []}
+            return {"value": int(balance() * 1e9)} if method == "getBalance" else {"value": []}
 
     store = Store(":memory:")
     store.add_oktech_sniper(
@@ -682,6 +684,8 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
     svc._rpc = Rpc()
 
     async def positions(address, ignore=None, unknown=None):
+        if coins is not None:
+            return coins(clock["t"])
         return [{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []
 
     monkeypatch.setattr(svc, "_oktech", lambda: client)
@@ -734,6 +738,88 @@ def test_a_stop_during_a_rearm_is_never_undone_by_its_start(monkeypatch):
     rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
     assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a")]
     assert "/stop" in rep["reason"] and rep["restarts"] == 0
+    store.close()
+
+
+def _tape_trade(store, ts: float, k: int = 0) -> None:
+    """One trade by someone else on the tape at `ts`: the recorder was current then."""
+    from snipetech.models import Trade
+
+    store.add_trades([Trade(sig=f"tape{k}", ev=0, slot=1_000 + k, pos=0, ts=int(ts), mint="TapeMint", venue="curve",
+                            user="SomeoneElse", is_buy=True, quote=1, base=1, fee=0, fee_bps=0, q_after=1, b_after=1)])  # fmt: skip
+
+
+def test_a_cycle_that_runs_out_of_time_leaves_nothing_armed(monkeypatch):
+    """The time limit is how a test usually ends, and by then its sniper has almost always just been re-armed (a
+    minute without a fill) and has not fired. Left armed, it buys at the next launch that qualifies: past the minutes
+    the owner approved, with nobody watching (a probe: 117 re-arms, the last OKTech call a start). With the wallet
+    holding nothing, the cycler stops what it armed on the way out."""
+    flag = {"stop": False}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag)
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 10))
+    assert client.calls[-2:] == [("start", "a"), ("stop", "a")]  # the last re-arm, then the stop on the way out
+    assert rep["restarts"] >= 5 and rep["reason"].startswith("time limit") and "stopped" in rep["reason"]
+    assert rep["left_running"] == []
+    store.close()
+
+
+def test_a_cycle_under_its_floor_leaves_nothing_armed(monkeypatch):
+    """Under the floor the plan promises no more buys. With nothing held, the armed sniper is stopped; before, it was
+    left running "to sell" a coin it did not hold, and could buy once more under the floor."""
+    flag = {"stop": False}
+    sol = {"now": 5.0}
+    client = _CycleClient(on_start=lambda n: sol.update(now=0.9 if n >= 2 else 5.0))  # after the first re-arm: 0.9 SOL
+    svc, store = _cycle_svc(monkeypatch, client, flag, balance=lambda: sol["now"])
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a"), ("start", "a"), ("stop", "a")]
+    assert rep["reason"].startswith("EMERGENCY") and "stopped" in rep["reason"] and rep["left_running"] == []
+    store.close()
+
+
+def test_the_cap_counts_the_coins_the_wallet_bought_when_the_tape_misses_them(monkeypatch):
+    """The cap was counted on the tape alone: with the recorder missing our buys the cycler re-armed until its time
+    limit (a probe: 118 buys under --max-fills 10). Each coin seen in the wallet is a buy too, and the larger count is
+    the one capped. At the cap the last coin is still held, so its sniper keeps running to sell it."""
+    flag = {"stop": False}
+    clock = {"t": 1_794_045_600.0}
+    bought: list[float] = []  # each start buys a new coin at once; it is held 30 s, then sold
+    client = _CycleClient(on_start=lambda n: bought.append(clock["t"]))
+
+    def coins(now):
+        return [{"mint": f"M{k}", "amount": 1.0, "value_sol": 0.2, "priced": True}
+                for k, at in enumerate(bought) if at <= now < at + 30]  # fmt: skip
+
+    svc, store = _cycle_svc(monkeypatch, client, flag, coins=coins, clock=clock)
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120, max_fills=3))
+    assert len(bought) == 3 and rep["fills"] == 3 and rep["reason"].startswith("cap reached")
+    assert client.calls[-1] == ("start", "a") and "held" in rep["reason"] and rep["left_running"] == ["a"]
+    store.close()
+
+
+def test_a_cycle_does_not_rearm_while_the_tape_is_behind(monkeypatch):
+    """The fills are counted on the tape: while the recorder is more than two minutes behind (the book's rule) a
+    re-arm could buy uncounted, so none happens; when the time runs out the sniper it armed is stopped."""
+    flag = {"stop": False}
+    clock = {"t": 1_794_045_600.0}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, clock=clock)
+    _tape_trade(store, clock["t"] - 30)  # current at the start, then the recorder stops
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 10))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a"), ("start", "a"), ("stop", "a")]
+    assert rep["restarts"] == 1 and any("tape" in e and "behind" in e for e in rep["events"])
+    store.close()
+
+
+def test_a_cycle_does_not_start_while_the_tape_is_behind(monkeypatch):
+    flag = {"stop": False}
+    clock = {"t": 1_794_045_600.0}
+    client = _CycleClient()
+    svc, store = _cycle_svc(monkeypatch, client, flag, clock=clock)
+    _tape_trade(store, clock["t"] - 7200)  # the recorder has been down for two hours
+    with pytest.raises(SystemExit, match="tape"):
+        asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == []
     store.close()
 
 

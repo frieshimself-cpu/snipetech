@@ -7,13 +7,20 @@ duration). It writes a request to operator/TEST.json and nothing else. The next 
 again, creates the strategy's own hunt sniper on OKTech (idle, one buy a start) and starts one `oktech cycle` job that
 keeps it armed (a hunt sniper fires once per start, 5 Nov) until 10 fills, 120 minutes, the floor or the owner's /stop.
 
+A test ends with nothing left armed. The cycler stops its sniper on the way out while the wallet holds nothing, and
+the round checks it on OKTech: a test is done only once its sniper is stopped (or OKTech no longer runs it). While the
+wallet holds a coin, that sniper keeps running to sell it (a stopped sniper strands its coin) and the test stays
+"closing", its sniper and its coin expected, until a round finds the wallet empty and stops the sniper.
+
 Only the round starts it: its unit leaves the jobs it starts running when the round ends and through deploys
 (KillMode=process), while the one-minute commands pass kills its children when it exits and the ops service kills its
-jobs on every deploy. One test at a time: a test requested, starting or running refuses another, and so does an OKTech
-cycler or guard already running. A crash mid-start never leaves a second sniper: "starting" is written before the
-create call, and nothing is created or started from "starting" again. /stop cancels a test that has not started and
-ends a running one (the cycler stops re-arming; a sniper holding a coin keeps running to sell it). No agent tool
-reaches this module: their job allowlist excludes `oktech`, and none of their tools writes TEST.json."""
+jobs on every deploy. One test at a time: a test requested, starting, running or closing refuses another, and so do an
+OKTech cycler or guard already running and any sniper active on OKTech that is not the book's. Nothing starts while the
+tape is more than two minutes behind: the cap counts the test's buys there. A crash mid-start never leaves a second
+sniper: "starting" is written before the create call, and nothing is created or started from "starting" again. /stop
+cancels a test that has not started and ends a running one (the cycler stops re-arming; a sniper holding a coin keeps
+running to sell it). No agent tool reaches this module: their job allowlist excludes `oktech`, and none of their tools
+writes TEST.json."""
 
 from __future__ import annotations
 
@@ -30,6 +37,7 @@ from pathlib import Path
 
 from ..config import Config
 from ..ops import redact
+from ..positions import is_active
 from .paths import OperatorPaths
 from .snapshot import running_jobs
 from .tools import NoteSink
@@ -50,11 +58,14 @@ JOB_MARGIN_SECS = 30 * 60  # the cycler's own time limit past its minutes (its l
 # retried for about 250 s (operator/run.py WATCH_TIMEOUT_SECS); past it the owner asks again, the round tries again
 WALLET_READ_SECS = 20
 SHOWN = 3  # strategies /test lists
-STATES = ("requested", "starting", "running", "done", "expired")
-ACTIVE = ("requested", "starting", "running")
+# closing: the cycler has ended, and the test's sniper still runs (it sells the coin the wallet holds, or it could not
+# be stopped yet); each round looks again, and the test is done once nothing of it is left armed
+STATES = ("requested", "starting", "running", "closing", "done", "expired")
+ACTIVE = ("requested", "starting", "running", "closing")
 DEFAULT_OKTECH_WALLET = "SNIPER"  # what `oktech strategy` and `oktech push` buy from when [oktech] wallet is empty
 DRIVERS = ("cycle", "guard")  # OKTech jobs that drive a live test: while one runs, no second test starts
 NONE_EXPECTED = {"snipers_running": 0, "held": 0}
+TEST_EXPECTED = {"snipers_running": 1, "held": 1}  # while a test runs or closes: its one sniper and its one coin
 _ID = re.compile(r"[0-9a-f]{6,16}")  # a frozen strategy's id (paper.strategy_id: ten hex digits)
 
 Log = Callable[[str], None]
@@ -260,6 +271,63 @@ async def _held(svc, cfg: Config, wallet: str) -> list[dict]:
     return list(await asyncio.wait_for(svc.open_positions(wallet, ignore=ignore), WALLET_READ_SECS) or [])
 
 
+def _tape_lag(svc, now: float) -> str | None:
+    """Why the tape cannot count a test's buys now, or None. The cycler's cap counts them there, so the book's rule
+    holds: nothing starts while it is more than TAPE_STALE_SECS behind. An empty tape is a fresh install, as for the
+    book."""
+    from ..book.run import TAPE_STALE_SECS, _tape_age
+
+    store = getattr(svc, "store", None)
+    if store is None:
+        return "the tape cannot be read"
+    try:
+        age = _tape_age(store, now)
+    except Exception as exc:  # noqa: BLE001 - said to the owner; the next try reads it again
+        return f"the tape could not be read ({type(exc).__name__})"
+    if age is not None and age > TAPE_STALE_SECS:
+        return f"the tape (the trade recorder) is {age / 60:.0f} min behind"
+    return None
+
+
+async def _other_snipers(svc) -> list[dict]:
+    """The snipers active on OKTech now that are not the book's: an earlier test's left armed, or one started by hand.
+    One test at a time is counted there too, not only in our own files: two snipers on one wallet can buy two coins
+    at once. The book's snipers trade from the same wallet by design (their buys count toward the cap). Waited for
+    WALLET_READ_SECS at most; raises when OKTech does not answer."""
+    from ..book.policy import BOOK_NAME_RE
+
+    st = await asyncio.wait_for(svc.oktech_status(), WALLET_READ_SECS)
+    return [s for s in (st or {}).get("snipers") or [] if is_active(s.get("status"))
+            and not BOOK_NAME_RE.match(str(s.get("name") or ""))]  # fmt: skip
+
+
+def _sniper_words(s: dict) -> str:
+    return f"sniper {s.get('id')} ({str(s.get('name') or 'no name')[:60]}) is {s.get('status')} on OKTech"
+
+
+async def _sniper_status(svc, oid: str) -> str | None:
+    """OKTech's status of one sniper (None: OKTech does not list it), waited for WALLET_READ_SECS at most."""
+    st = await asyncio.wait_for(svc.oktech_status(), WALLET_READ_SECS)
+    row = next((s for s in (st or {}).get("snipers") or [] if str(s.get("id")) == oid), None)
+    return None if row is None else str(row.get("status") or "")
+
+
+def _real_coins(svc, cfg: Config, rows) -> list[str]:
+    """The coins among a cycler's `held` rows by the one shared rule (positions.filter_positions: no stablecoin, no dust
+    a sale leaves behind, none of the owner's ignored coins). Cyclers started before 7 Nov listed every token account
+    (6 Nov: 0.0006 USDC sat in this wallet), and the owner was told of coins stranded when none were."""
+    from ..positions import filter_positions
+
+    rows = [h for h in rows or [] if isinstance(h, dict) and h.get("mint")]
+    ignore = tuple(cfg.operator.ignore_mints or ())
+    store = getattr(svc, "store", None)
+    try:
+        kept = filter_positions(rows, store.last_price if store is not None else (lambda m: None), ignore=ignore)
+    except Exception:  # noqa: BLE001 - the tape's prices could not be read: each coin unpriced, still a coin
+        kept = filter_positions(rows, lambda m: None, ignore=ignore)
+    return list(dict.fromkeys(str(h["mint"]) for h in kept))
+
+
 def _fills_since(store, wallet: str, since: float) -> int | None:
     """The wallet's buys on the tape since `since`: what the cycler counts as fills."""
     try:
@@ -290,8 +358,9 @@ def _plan_words(p: dict, cfg: Config, paths: OperatorPaths) -> list[str]:
         (f"- caps: at most {p['fills']} buys, one coin at a time, for at most {p['minutes']} minutes; it stops buying "
          f"once the wallet (SOL and coins) is below {p['floor']:.2f} SOL (it holds {p['equity_sol']:.2f} SOL now)"),
         f"- worst case: {p['worst']}",
-        ("- /stop ends it at any time; a sniper holding a coin keeps running until the coin is sold, and the unsold-coin "
-         "watch and /sell are there for a coin OKTech does not sell (5 Nov: 2 of 11 hunt fills got no sell)"),
+        ("- /stop ends it at any time. When it ends, its sniper is stopped as soon as the wallet holds nothing: a sniper "
+         "holding a coin keeps running until the coin is sold, and the unsold-coin watch and /sell are there for a coin "
+         "OKTech does not sell (5 Nov: 2 of 11 hunt fills got no sell)"),
     ]  # fmt: skip
     if book_live(cfg, paths):
         lines.append("- the book is on and trades from the same wallet: its buys count toward the cap, and while it "
@@ -313,6 +382,10 @@ def _status(svc, t: dict, now: float) -> str:
                 f"{_hm(float(t['requested_at']) + REQUEST_TTL_SECS)} UTC. /stop cancels it.")  # fmt: skip
     if t["state"] == "starting":
         return f"Live test starting now: {head}; the round is creating its sniper. {_caps(t)}."
+    if t["state"] == "closing":
+        return (f"Live test {head} ended at {_hm(t.get('cycler_ended_at') or now)} UTC: {_result(t.get('report') or {})}. "
+                f"It is not closed yet: {t.get('closing_why') or 'its sniper is being stopped'}. The round looks again "
+                "every 15 minutes, and no other test starts until it is closed.")  # fmt: skip
     store = getattr(svc, "store", None)
     fills = _fills_since(store, t["wallet"], t["started_at"]) if store is not None else None
     left = max(0.0, float(t["minutes"]) - (now - float(t["started_at"])) / 60)
@@ -454,6 +527,9 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
     only if no other test was written meanwhile."""
     no = "Nothing started: "
     t = load(paths)
+    if _active(t, now) and t["state"] == "closing":
+        return no + (f"the last live test ({t['id']}) is still closing: "
+                     f"{t.get('closing_why') or 'its sniper is being stopped'}. Send /test to see it.")  # fmt: skip
     if _active(t, now):
         return no + f"a live test is already {t['state']} ({t['id']}). Send /test to see it."
     if paths.stop_flag.exists():
@@ -483,6 +559,17 @@ async def _go(sid: str, *, svc, cfg: Config, paths: OperatorPaths, snap, notes: 
     if busy:
         return no + (f"an OKTech job is running ({busy[0]['id']}: {' '.join(busy[0]['argv'][:2])}): one live test at "
                      "a time.")  # fmt: skip
+    lag = _tape_lag(svc, now)
+    if lag:
+        return no + f"{lag}, and the test's buys are counted on it. Send /test {sid} go again in a few minutes."
+    try:
+        others = await _other_snipers(svc)
+    except Exception as exc:  # noqa: BLE001 - the owner hears it and sends it again
+        return no + f"I could not read OKTech's snipers ({type(exc).__name__}). Try again in a minute."
+    if others:
+        return no + (f"{_sniper_words(others[0])} and is not the book's: one live test at a time (an earlier test's "
+                     f"sniper, or one started by hand). /stop stops every sniper that holds nothing; then /resume and "
+                     f"send /test {sid} go again.")  # fmt: skip
     try:
         held = await _held(svc, cfg, wallet)
     except Exception as exc:  # noqa: BLE001 - the owner hears it and sends it again
@@ -525,6 +612,9 @@ def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
             return None
     if t["state"] == "starting":
         return f"The live test ({t['id']}) was starting: with /stop set, its cycler does not start, or stops at once."
+    if t["state"] == "closing":
+        return (f"The live test ({t['id']}) has already ended; its sniper is stopped as soon as the wallet holds "
+                "nothing.")  # fmt: skip
     return (f"The live test ({t['id']}) stops re-arming within seconds; a sniper holding a coin keeps running until "
             "the coin is sold.")  # fmt: skip
 
@@ -542,24 +632,16 @@ def _say(text: str, notes: NoteSink, notifier, log: Log | None) -> None:
 
 
 def _end(paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier, log: Log | None, *, state: str = "done",
-         error: str | None = None, report: dict | None = None) -> dict:  # fmt: skip
+         error: str | None = None, text: str | None = None) -> dict:  # fmt: skip
+    """The test's last record (TEST.json, one line in tests.jsonl) and the owner's line: `text` for a test that ran,
+    else why it expired or did not start."""
     done = t | {"state": state, "ended_at": int(now), "started": bool(t.get("job_id"))}
     if error is not None:
         done["error"] = redact(error)
-    if report is not None:
-        done["report"] = report
     _put(paths, done)
     _history(paths, done)
     head = f"{t.get('label') or t['id']} ({t['id']})"
-    if report is not None:
-        mins = (now - float(t.get("started_at") or now)) / 60
-        held = report.get("held") or []
-        text = f"Live test ended: {head}, after {mins:.0f} minutes. {_result(report)}."
-        if held:
-            text += (f" Still held: {', '.join(held)}; its sniper keeps running to sell it, and /sell <coin> sells "
-                     "it now.")  # fmt: skip
-        if t.get("job_id"):
-            text += f" The record: jobs/{t['job_id']}.log."
+    if text is not None:
         _say(text, notes, notifier, log)
     elif state == "expired":
         _say(f"Live test request expired: {head}. No round started it within {REQUEST_TTL_SECS // 60} minutes, so "
@@ -597,6 +679,15 @@ async def _recheck(svc, cfg: Config, paths: OperatorPaths, t: dict, snap, now: f
     busy = _drivers(paths)
     if busy:
         return f"an OKTech job is running ({busy[0]['id']}: {' '.join(busy[0]['argv'][:2])})", False
+    lag = _tape_lag(svc, now)
+    if lag:  # the recorder catching up is the usual end of it
+        return lag, True
+    try:
+        others = await _other_snipers(svc)
+    except Exception as exc:  # noqa: BLE001 - the next round reads it again
+        return f"OKTech's snipers could not be read ({type(exc).__name__})", True
+    if others:
+        return f"{_sniper_words(others[0])} and is not the book's", False
     eq = equity_now(snap, now, t["wallet"])
     if eq is None:
         return "the wallet's balance is not known this round", True
@@ -637,7 +728,7 @@ def _resolve_starting(paths: OperatorPaths, t: dict, now: float, notes: NoteSink
         running = _put(
             paths, t | {"state": "running", "job_id": job["id"], "started_at": int(job.get("started") or now)}
         )
-        _expect(paths, {"snipers_running": 1, "held": 1})
+        _expect(paths, dict(TEST_EXPECTED))
         notes.write(f"live test {t['id']}: the round that started it stopped before writing it down; its cycler "
                     f"{job['id']} runs, so the test is adopted as running", "decision")  # fmt: skip
         if log is not None:
@@ -701,7 +792,7 @@ async def start_requested(svc, cfg: Config, paths: OperatorPaths, jobs, now: flo
                     error=f"not started: the cycler did not start ({type(exc).__name__}); its sniper {oid} is idle on "
                           "OKTech (it buys nothing)")  # fmt: skip
     running = _put(paths, created | {"state": "running", "job_id": job.get("id"), "started_at": int(now)})
-    _expect(paths, {"snipers_running": 1, "held": 1})
+    _expect(paths, dict(TEST_EXPECTED))
     _say(f"Live test started: {running['label']} ({running['id']}), OKTech sniper {oid}, kept armed by job "
          f"{running['job_id']}: {_caps(running)}. /test shows how it goes; /stop ends it (a sniper holding a coin keeps "
          "running until the coin is sold).", notes, notifier, log)  # fmt: skip
@@ -723,8 +814,8 @@ def _json_tail(text: str) -> dict | None:
     return None
 
 
-def _cycle_report(paths: OperatorPaths, svc, t: dict, meta: dict) -> dict:
-    """What the cycler said at its end (fills, start and end balance, why it ended, coins still held), or, when it
+def _cycle_report(paths: OperatorPaths, svc, cfg: Config, t: dict, meta: dict) -> dict:
+    """What the cycler said at its end (fills, start and end balance, why it ended, the coins it saw held), or, when it
     ended without its report, its exit code, its last words and the fills on the tape."""
     try:
         text = (paths.jobs / f"{t['job_id']}.log").read_text(errors="replace")
@@ -732,10 +823,9 @@ def _cycle_report(paths: OperatorPaths, svc, t: dict, meta: dict) -> dict:
         text = ""
     rep = _json_tail(text)
     if rep is not None:
-        held = [str(h.get("mint")) for h in rep.get("held") or [] if isinstance(h, dict) and h.get("mint")]
         return {"fills": rep.get("fills"), "start_sol": rep.get("start_sol"), "end_sol": rep.get("end_sol"),
-                "reason": redact(str(rep.get("reason") or ""))[:300], "restarts": rep.get("restarts"), "held": held,
-                "exit_code": meta.get("exit_code")}  # fmt: skip
+                "reason": redact(str(rep.get("reason") or ""))[:300], "restarts": rep.get("restarts"),
+                "held": _real_coins(svc, cfg, rep.get("held")), "exit_code": meta.get("exit_code")}  # fmt: skip
     last = " ".join(x.strip() for x in text.splitlines() if x.strip())[-240:]
     store = getattr(svc, "store", None)
     return {"fills": _fills_since(store, t["wallet"], t["started_at"]) if store is not None else None,
@@ -743,29 +833,116 @@ def _cycle_report(paths: OperatorPaths, svc, t: dict, meta: dict) -> dict:
             "reason": redact(f"the cycler ended without its report (exit {meta.get('exit_code')}): {last or 'no output'}")}  # fmt: skip
 
 
-def finish_ended(svc, cfg: Config, paths: OperatorPaths, jobs, now: float, *, notes: NoteSink | None = None,
-                 notifier=None, log: Log | None = None) -> dict | None:  # fmt: skip
-    """A running test whose cycler has ended: TEST.json done with the cycler's report, the owner's summary, and
-    operator/expected.json back to none running. None while it still runs (or when no test runs)."""
-    t = load(paths)
-    if t is None or t["state"] != "running":
-        return None
-    meta = jobs.ops._meta(str(t["job_id"])) if t.get("job_id") else None
-    if meta is not None and meta.get("running"):
-        return None
-    notes = notes or NoteSink(paths, now=lambda: now)
-    report = _cycle_report(paths, svc, t, meta or {}) if meta is not None else {
-        "fills": None, "start_sol": None, "end_sol": None, "held": [], "exit_code": None,
-        "reason": "the cycler's job record is missing"}  # fmt: skip
+def _ended_words(t: dict, now: float) -> str:
+    """The first line on a test whose cycler has ended: how long it ran and what its cycler reported."""
+    mins = (now - float(t.get("started_at") or now)) / 60
+    return (
+        f"Live test ended: {t.get('label') or t['id']} ({t['id']}), after {mins:.0f} minutes. {_result(t['report'])}."
+    )
+
+
+def _record(t: dict) -> str:
+    return f" The record: jobs/{t['job_id']}.log." if t.get("job_id") else ""
+
+
+def _closing(paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier, log: Log | None, kind: str,
+             why: str) -> dict:  # fmt: skip
+    """The cycler has ended and the test's sniper may still run: the test stays closing, its sniper and its coin
+    expected (the gate stays quiet about them), and the next round looks again. The owner hears it when the cycler
+    ends and whenever the reason changes (a coin sold, then a stop refused); a round that finds it unchanged only logs."""
+    first = t["state"] == "running"
+    closing = t | {"state": "closing", "closing_kind": kind, "closing_why": why,
+                   "cycler_ended_at": t.get("cycler_ended_at") or int(now)}  # fmt: skip
+    _put(paths, closing)
+    _expect(paths, dict(TEST_EXPECTED))
+    if first:
+        _say(f"{_ended_words(t, now)} It is not closed yet: {why}. The round looks again every 15 minutes; /stop stops "
+             f"every sniper that holds nothing.{_record(t)}", notes, notifier, log)  # fmt: skip
+    elif kind != t.get("closing_kind"):
+        _say(f"Live test {t.get('label') or t['id']} ({t['id']}) is still closing: {why}. The next round looks again.",
+             notes, notifier, log)  # fmt: skip
+    elif log is not None:
+        log(f"{t['id']} still closing: {why}")
+    return closing
+
+
+async def _close(svc, cfg: Config, paths: OperatorPaths, t: dict, now: float, notes: NoteSink, notifier,
+                 log: Log | None) -> dict:  # fmt: skip
+    """One look at a test whose cycler has ended (see finish_ended): done when nothing of it is left armed, else
+    closing. Only the test's own sniper is ever stopped, and only while the wallet holds nothing (a stopped sniper
+    strands its coin, rule 1)."""
+    oid = str(t.get("oktech_id") or "")
+    try:
+        held = await _held(svc, cfg, t["wallet"])
+    except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
+        return _closing(paths, t, now, notes, notifier, log, "wallet", f"the wallet's coins could not be read "
+                        f"({type(exc).__name__}), so its sniper {oid} is not stopped yet and may still be armed")  # fmt: skip
+    status, unread = None, None
+    if oid:
+        try:
+            status = await _sniper_status(svc, oid)
+        except Exception as exc:  # noqa: BLE001 - the next round asks again
+            unread = type(exc).__name__
+    mints = list(dict.fromkeys(str(h.get("mint")) for h in held))
+    if held and (unread or is_active(status)):
+        return _closing(paths, t, now, notes, notifier, log, "held",
+                        f"the wallet still holds {', '.join(mints)}: its sniper keeps running until the wallet holds "
+                        "nothing (a stopped sniper strands its coin), then the round stops it. /sell <coin> sells one "
+                        "now")  # fmt: skip
+    if unread:
+        return _closing(paths, t, now, notes, notifier, log, "oktech",
+                        f"OKTech did not answer ({unread}), so its sniper {oid} is not stopped yet and may still be "
+                        "armed")  # fmt: skip
+    stopped = False
+    if is_active(status):  # the wallet holds nothing here: stopping its own sniper strands nothing
+        try:
+            await asyncio.wait_for(svc.oktech_task("stop", oid), WALLET_READ_SECS)
+            stopped = True
+        except Exception as exc:  # noqa: BLE001 - the next round tries again
+            return _closing(paths, t, now, notes, notifier, log, "stop",
+                            f"its sniper {oid} could not be stopped ({type(exc).__name__}), so it may still be armed")  # fmt: skip
+    sniper = f"its sniper {oid} is stopped: it buys nothing more" if stopped else f"its sniper {oid} is not running"
+    if held:  # its sniper is no longer running, so nothing sells these
+        sniper += f"; the wallet still holds {', '.join(mints)} and nothing sells it: /sell <coin> sells it now"
     _expect(paths, dict(NONE_EXPECTED))
-    return _end(paths, t, now, notes, notifier, log, report=report)
+    if t["state"] == "running":
+        text = f"{_ended_words(t, now)} {sniper[0].upper()}{sniper[1:]}.{_record(t)}"
+    else:
+        text = f"Live test closed: {t.get('label') or t['id']} ({t['id']}); {sniper}."
+    done = t | {"sniper_stopped": stopped, "held_at_end": mints}
+    for k in ("closing_kind", "closing_why"):
+        done.pop(k, None)
+    return _end(paths, done, now, notes, notifier, log, text=text)
+
+
+async def finish_ended(svc, cfg: Config, paths: OperatorPaths, jobs, now: float, *, notes: NoteSink | None = None,
+                       notifier=None, log: Log | None = None) -> dict | None:  # fmt: skip
+    """A running test whose cycler has ended, or one closing. Nothing of a test may outlive it armed: at the time limit
+    (the usual end) its sniper has just been re-armed and has not fired, and a cycler that dies (a reboot, a kill)
+    leaves it armed too, free to buy past the minutes the owner approved with nobody watching. So the test is done
+    (TEST.json with the cycler's report, the owner's summary, operator/expected.json back to none running) only once
+    the wallet holds nothing and its own sniper is stopped, or OKTech no longer runs it. While the wallet holds a coin
+    that sniper keeps running to sell it and the test stays closing. None while the cycler runs (or no test does)."""
+    t = load(paths)
+    if t is None or t["state"] not in ("running", "closing"):
+        return None
+    if t["state"] == "running":
+        meta = jobs.ops._meta(str(t["job_id"])) if t.get("job_id") else None
+        if meta is not None and meta.get("running"):
+            return None
+        report = _cycle_report(paths, svc, cfg, t, meta) if meta is not None else {
+            "fills": None, "start_sol": None, "end_sol": None, "held": [], "exit_code": None,
+            "reason": "the cycler's job record is missing"}  # fmt: skip
+        t = t | {"report": report, "cycler_ended_at": int(now)}
+    notes = notes or NoteSink(paths, now=lambda: now)
+    return await _close(svc, cfg, paths, t, now, notes, notifier, log)
 
 
 async def round_step(svc, cfg: Config, paths: OperatorPaths, jobs, now: float, *, snap=None,
                      notes: NoteSink | None = None, notifier=None) -> list[str]:  # fmt: skip
-    """One round's live-test work, from `operate` (never on a dry run, never from the one-minute pass): end a test
+    """One round's live-test work, from `operate` (never on a dry run, never from the one-minute pass): close a test
     whose cycler ended, then start (or expire) a request. Returns lines for the operator log."""
     lines: list[str] = []
-    finish_ended(svc, cfg, paths, jobs, now, notes=notes, notifier=notifier, log=lines.append)
+    await finish_ended(svc, cfg, paths, jobs, now, notes=notes, notifier=notifier, log=lines.append)
     await start_requested(svc, cfg, paths, jobs, now, snap=snap, notes=notes, notifier=notifier, log=lines.append)
     return lines
