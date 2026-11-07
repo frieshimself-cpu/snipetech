@@ -331,6 +331,24 @@ def test_status_says_what_the_kernel_allows_snipetech_and_how_often_it_held_it_b
     assert st["wal_gb"] == 0.02
 
 
+def test_status_says_what_else_runs_on_the_machine(env, tmp_path, monkeypatch):
+    """The 4 Nov cap was for sharing the box with a latency-sensitive trading server: the status shows whether anything
+    else runs there, as the CPU the whole machine used next to snipetech's, and the other services holding memory."""
+    root = tmp_path / "cg"
+    (root / "snipetech.slice").mkdir(parents=True)
+    (root / "cpu.stat").write_text("usage_usec 9000000000\n")
+    (root / "snipetech.slice" / "cpu.stat").write_text("usage_usec 6000000000\nnr_periods 0\n")
+    for name, mem in (("caddy.service", 40_000_000), ("trader.service", 1_500_000_000), ("ssh.service", 5_000_000),
+                      ("big.service", 900_000_000)):  # fmt: skip
+        (root / "system.slice" / name).mkdir(parents=True)
+        (root / "system.slice" / name / "memory.current").write_text(f"{mem}\n")
+    monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    ops, key = env
+    st = req(ops, key, "status")
+    assert st["machine"] == {"cpu_secs": 9000.0, "snipetech_cpu_secs": 6000.0,
+                             "other_units": {"trader.service": 1.5, "big.service": 0.9}}  # fmt: skip
+
+
 def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
     monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "no-cgroup")
     (tmp_path / "no-cgroup" / "snipetech.slice").mkdir(parents=True)

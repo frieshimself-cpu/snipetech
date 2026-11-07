@@ -297,6 +297,7 @@ class Ops:
         out["wal_gb"] = round(wal.stat().st_size / 1e9, 2) if wal.is_file() else 0.0
         out["slice"] = _slice_limits(CGROUP_ROOT / SLICE)
         out["tape_pressure"] = _pressure(CGROUP_ROOT / SLICE / "snipetech-tape.service")
+        out["machine"] = _machine(CGROUP_ROOT)
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -603,6 +604,30 @@ def _pressure(d: Path) -> dict[str, float] | None:
                 if "avg60" in fields:
                     out[kind] = float(fields["avg60"])
     return out or None
+
+
+OTHER_UNIT_MIN_BYTES = 100_000_000  # an other service holding this much memory is listed in the status
+
+
+def _cpu_secs(d: Path) -> float | None:
+    usage = _pairs(_cgroup_file(d, "cpu.stat")).get("usage_usec")
+    return round(int(usage) / 1e6, 1) if usage is not None else None
+
+
+def _machine(root: Path) -> dict[str, Any] | None:
+    """What else runs on the machine (the 4 Nov slice capped snipetech to share it with a trading server): the CPU
+    seconds the whole machine used since boot next to snipetech's, and the other services holding 100 MB or more
+    (GB, largest first). None without cgroup v2."""
+    if not (root / "cpu.stat").is_file():
+        return None
+    others: list[tuple[str, float]] = []
+    system = root / "system.slice"
+    for unit in sorted(system.iterdir()) if system.is_dir() else []:
+        mem = _cgroup_file(unit, "memory.current") if unit.is_dir() else None
+        if mem and mem.isdigit() and int(mem) >= OTHER_UNIT_MIN_BYTES:
+            others.append((unit.name, round(int(mem) / 1e9, 2)))
+    return {"cpu_secs": _cpu_secs(root), "snipetech_cpu_secs": _cpu_secs(root / SLICE),
+            "other_units": dict(sorted(others, key=lambda kv: -kv[1]))}  # fmt: skip
 
 
 def _mem_gb() -> float | None:
