@@ -257,6 +257,16 @@ def test_cli_operate_commands_parses():
     assert a.cmd == "operate" and a.commands is True
 
 
+def test_status_names_the_owners_daily_budget(tmp_path):
+    from snipetech.operator.budget_switch import set_budget
+
+    snap = Snapshot(ts=NOW - 60, wallet=W, native_sol=1.0, wsol=0.0, held=[], snipers=[], spent_today=1.92)
+    ctx, _ = _ctx(tmp_path, FakeSvc(held=[], snipers=[]), snap)
+    assert "claude spend today 1.92 $ of 15 $" in asyncio.run(handle_command(_cmd("status"), **ctx))
+    set_budget(ctx["paths"], ctx["cfg"], {"daily_usd": 200}, "telegram", NOW)
+    assert "claude spend today 1.92 $ of 200 $" in asyncio.run(handle_command(_cmd("status"), **ctx))
+
+
 def test_status_counts_a_starting_sniper_as_running(tmp_path):
     svc = FakeSvc(
         held=[], snipers=[{"id": "s1", "name": "a", "status": "starting"}, {"id": "s2", "name": "b", "status": "idle"}]

@@ -10,6 +10,7 @@ from anthropic import AsyncAnthropic
 
 from ..config import Config
 from .budget import Ledger
+from .budget_switch import effective_max_tool_calls, effective_turn_usd
 from .gate import Decision
 from .jobs import OperatorJobs
 from .learning import context as learning_context
@@ -33,6 +34,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                    notifier: Notifier, notes: NoteSink, *, jobs: OperatorJobs, client: AsyncAnthropic | None = None,
                    now: Callable[[], float] = time.time) -> dict:  # fmt: skip
     op = cfg.operator
+    turn_usd, max_calls = effective_turn_usd(cfg, paths), effective_max_tool_calls(cfg, paths)  # the owner's /budget
     analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
     mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
     inbox = _read_inbox(paths)
@@ -67,11 +69,11 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                 break
             if not tool_uses:
                 break
-            if usd >= op.turn_usd:
-                notes.write(f"turn budget reached ({usd:.2f} $ of {op.turn_usd:.2f}) before the round finished", "info")
+            if usd >= turn_usd:
+                notes.write(f"turn budget reached ({usd:.2f} $ of {turn_usd:.2f}) before the round finished", "info")
                 stopped = "turn_usd"
                 break
-            if calls + len(tool_uses) > op.max_tool_calls:
+            if calls + len(tool_uses) > max_calls:
                 stopped = "tool_calls"
                 break
             calls += len(tool_uses)

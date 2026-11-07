@@ -104,6 +104,27 @@ def test_budget_note_once_per_day(tmp_env):
     assert tmp_env["paths"].notes.read_text().count("budget reached") == 1 and tmp_env["calls"] == []
 
 
+def test_the_budget_lines_name_the_owners_daily_cap(tmp_env):
+    """The log line and the once-a-day note say the cap that applies: the owner's /budget, not the pinned config."""
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(tmp_env["paths"], tmp_env["cfg"], {"daily_usd": 20}, "telegram", NOW)
+    tmp_env["paths"].spend.write_text(json.dumps({"ts": NOW - 10, "mode": "operator", "usd": 21.0}) + "\n")
+    _op(tmp_env)
+    assert "budget reached: 21.00 $ of 20.00 $ today" in tmp_env["paths"].notes.read_text()
+    assert "budget: 21.00 $ of 20.00 $ spent today" in tmp_env["paths"].log.read_text() and tmp_env["calls"] == []
+
+
+def test_the_owners_higher_budget_lets_the_round_call_claude_past_the_configs_cap(tmp_env):
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(tmp_env["paths"], tmp_env["cfg"], {"daily_usd": 200}, "telegram", NOW)
+    tmp_env["paths"].spend.write_text(json.dumps({"ts": NOW - 10, "mode": "operator", "usd": 15.0}) + "\n")
+    _op(tmp_env)
+    _op(tmp_env, balances=lambda w: (2.0, 0.0, []))  # equity +1 SOL: news
+    assert len(tmp_env["calls"]) == 1 and "budget reached" not in tmp_env["paths"].notes.read_text()
+
+
 def _sells(st, n, start, wallet="W"):
     for i in range(n):
         st.put_fill({"sig": f"{wallet}-{start + i}", "ts": int(start + i * 60), "wallet": wallet, "mint": f"M{start + i}",

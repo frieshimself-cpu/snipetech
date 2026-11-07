@@ -10,6 +10,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
+from .budget_switch import effective_daily_usd
 from .learning import last_postmortem_ts
 from .paths import OperatorPaths
 from .standin import loop_stage
@@ -123,8 +124,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     OKTech unknown, tape stale, service down, a loop stage failing) call when they appear and then at most once per
     `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
     (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
-    analysis reviews them itself."""
-    if snap.spent_today >= cfg.daily_usd:
+    analysis reviews them itself. The day's cap is the owner's /budget when set, else the config's daily_usd."""
+    if snap.spent_today >= effective_daily_usd(cfg, paths):
         return Decision(False, "none", ["budget"])
     events: list[str] = []
     states: list[str] = []

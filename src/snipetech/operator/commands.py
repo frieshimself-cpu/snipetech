@@ -20,6 +20,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
+from .budget_switch import effective_daily_usd
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
 from .snapshot import Snapshot
@@ -118,7 +119,7 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
         f"snipers: {len(running)} running of {len(snap.snipers or [])}"
         if snap.snipers is not None
         else "snipers: unknown (OKTech not answering)",
-        f"claude spend today {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.0f} $",
+        f"claude spend today {snap.spent_today:.2f} $ of {effective_daily_usd(cfg, paths):g} $",
         f"book: {'on' if book_live(cfg, paths) else 'off'}",
     ]
     if snap.fills:

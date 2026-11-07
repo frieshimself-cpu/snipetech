@@ -289,6 +289,36 @@ def test_the_daily_cap_is_respected(tmp_path):
     st.close()
 
 
+def test_the_strategist_shares_the_owners_daily_budget(tmp_path):
+    """30 $ spent today: past the config's 15 $ but inside the owner's 200 $ (/budget), so the turn runs with what is
+    left of the day; with the owner's 20 $ it waits, and its note names that cap."""
+    from snipetech.operator.budget import Ledger
+    from snipetech.operator.budget_switch import set_budget
+
+    cfg = _cfg_file(tmp_path)
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+    _trips(st, 20, NOW - 86400)
+    Ledger(paths.spend, cfg.operator.prices).record("operator", {"input_tokens": 10_000_000}, NOW - 60)  # 30 $
+    caps = []
+
+    async def turn(cfg_, evidence, ledger, notes, client=None, now=None, **kw):
+        caps.append(kw.get("turn_usd"))
+        return {"patch": {}, "reason": "x", "usd": 0.0, "stopped": "end_turn"}
+
+    note = Notifier("T", 7, post=lambda u, d: None)
+    try:
+        set_budget(paths, cfg, {"daily_usd": 20}, "telegram", NOW)
+        out = asyncio.run(run_strategist(FakeSvc(st), cfg, NOW, notifier=note, turn=turn))
+        assert "budget" in out.get("skipped", "") and caps == []
+        assert "daily budget reached (20 $)" in paths.notes.read_text()
+        set_budget(paths, cfg, {"daily_usd": 200}, "telegram", NOW)
+        asyncio.run(run_strategist(FakeSvc(st), cfg, NOW, notifier=note, turn=turn))
+        assert caps == [170.0]
+    finally:
+        st.close()
+
+
 def test_relative_bounds_use_the_owners_file_on_the_server(tmp_path):
     cfg = _cfg_file(tmp_path)
     OperatorPaths(tmp_path / "data").ensure()

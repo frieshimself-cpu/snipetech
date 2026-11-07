@@ -18,6 +18,7 @@ from ..config import Config
 from ..ops import _pid_alive
 from . import learning
 from .budget import Ledger
+from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
 from .digest import digest_due, digest_text, mark_sent
 from .gate import Decision, decide, refire_secs
@@ -244,10 +245,11 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         snap.reason_ts = carry_reason_ts(prev_ts, decision, t0)
         save(snap, paths)
         if decision.reasons == ["budget"]:
-            _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} spent today")
+            daily = effective_daily_usd(cfg, paths)  # the owner's /budget when set, else the config's
+            _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {daily:.2f} $ spent today")
             if not notes.has_today("budget reached", t0):
                 line = notes.write(
-                    f"budget reached: {snap.spent_today:.2f} $ of {cfg.operator.daily_usd:.2f} $ today; no more Claude rounds until tomorrow",
+                    f"budget reached: {snap.spent_today:.2f} $ of {daily:.2f} $ today; no more Claude rounds until tomorrow",
                     "decision",
                 )
                 notifier.send(line)

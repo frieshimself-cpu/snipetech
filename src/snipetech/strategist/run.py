@@ -11,6 +11,7 @@ from typing import Any
 
 from ..config import Config
 from ..operator.budget import Ledger
+from ..operator.budget_switch import effective_daily_usd
 from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.tools import NoteSink
@@ -65,12 +66,10 @@ async def run_strategist(svc, cfg: Config, now: float, *, dry_run: bool = False,
             notes.write(f"[strategist] {why}", "info")
         return {"skipped": why, "applied": {}, "new_trips": trips["n"]}
     ledger = Ledger(paths.spend, cfg.operator.prices)
-    left = cfg.operator.daily_usd - ledger.spent_today(now)
+    daily = effective_daily_usd(cfg, paths)  # the owner's /budget when set, else the config's
+    left = daily - ledger.spent_today(now)
     if left <= 0:  # the operator's daily budget is shared: none left today, so the turn is still due
-        notes.write(
-            f"[strategist] daily budget reached ({cfg.operator.daily_usd:.0f} $); the turn waits for the next run",
-            "info",
-        )
+        notes.write(f"[strategist] daily budget reached ({daily:g} $); the turn waits for the next run", "info")
         return {"skipped": "daily budget reached; runs on the next try", "applied": {}}
     evidence = week_evidence(store, cfg, now, days=WINDOW_DAYS)
     last_turn = time.strftime("%Y-%m-%d %H:%M", time.gmtime(trips["since_ts"])) if trips["on_record"] else None

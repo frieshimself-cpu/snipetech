@@ -65,8 +65,17 @@ def env(tmp_path):
     notifier = Notifier("T", 7, post=lambda u, d: sent.append(d["text"]))
     ledger = Ledger(paths.spend, cfg.operator.prices)
     notes = NoteSink(paths, now=lambda: NOW)
-    snap = Snapshot(ts=NOW, wallet="W", native_sol=1.0, wsol=0.0, snipers=[], jobs_ended=[{"id": "j1", "argv": ["lab"], "exit_code": 0}])
-    yield dict(cfg=cfg, svc=Svc(), paths=paths, jobs=jobs, notifier=notifier, sent=sent, ledger=ledger, notes=notes, snap=snap)
+    snap = Snapshot(
+        ts=NOW,
+        wallet="W",
+        native_sol=1.0,
+        wsol=0.0,
+        snipers=[],
+        jobs_ended=[{"id": "j1", "argv": ["lab"], "exit_code": 0}],
+    )
+    yield dict(
+        cfg=cfg, svc=Svc(), paths=paths, jobs=jobs, notifier=notifier, sent=sent, ledger=ledger, notes=notes, snap=snap
+    )
     st.close()
 
 
@@ -82,7 +91,17 @@ def _run(env, decision, handler, **kw):
 
 def test_turn_records_usage_and_sends_decisions(env):
     handler, requests = _scripted(
-        ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "wallet X cleared all gates", "level": "decision"}}], "tool_use"),
+        (
+            [
+                {
+                    "type": "tool_use",
+                    "id": "t1",
+                    "name": "write_note",
+                    "input": {"text": "wallet X cleared all gates", "level": "decision"},
+                }
+            ],
+            "tool_use",
+        ),
         ([{"type": "text", "text": "ok"}], "end_turn"),
     )
     out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
@@ -111,10 +130,43 @@ def test_turn_stops_at_turn_usd(env):
 
 def test_turn_stops_at_max_tool_calls(env):
     env["cfg"].operator.max_tool_calls = 2
-    tool = lambda i: ([{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}], "tool_use")
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+    )
     handler, requests = _scripted(tool(1), tool(2), tool(3), tool(4))
     out = _run(env, Decision(True, "operator", ["x"]), handler)
     assert out["stopped"] == "tool_calls" and out["tool_calls"] == 2
+
+
+def test_the_owners_budget_sets_the_turns_dollar_cap(env):
+    """0.9 $ a response: the config's 2 $ turn would take three; the owner's 0.5 $ stops after the first."""
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"turn_usd": 0.5}, "telegram", NOW)
+    mid = {"input_tokens": 300_000, "output_tokens": 0}  # 0.9 $ at Sonnet rates
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+        mid,
+    )
+    handler, requests = _scripted(tool(1), tool(2), tool(3), tool(4))
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out["stopped"] == "turn_usd" and len(requests) == 1
+    assert "turn budget reached (0.90 $ of 0.50)" in env["paths"].notes.read_text()
+
+
+def test_the_owners_budget_sets_the_turns_tool_calls(env):
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"max_tool_calls": 5}, "telegram", NOW)  # the config allows 20
+    tool = lambda i: (
+        [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
+        "tool_use",
+    )
+    handler, _ = _scripted(*(tool(i) for i in range(1, 9)))
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out["stopped"] == "tool_calls" and out["tool_calls"] == 5
 
 
 def test_turn_without_note_adds_one(env):
@@ -125,7 +177,10 @@ def test_turn_without_note_adds_one(env):
 
 def test_api_error_writes_one_note(env):
     def handler(request):
-        return httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error", "message": "credit balance is too low"}})
+        return httpx2.Response(
+            400,
+            json={"type": "error", "error": {"type": "invalid_request_error", "message": "credit balance is too low"}},
+        )
 
     out1 = _run(env, Decision(True, "operator", ["x"]), handler)
     out2 = _run(env, Decision(True, "operator", ["x"]), handler)
@@ -140,7 +195,9 @@ def test_user_message_has_reasons_and_no_secrets(env):
 
 def test_inbox_text_is_included_and_cleared(env):
     env["paths"].inbox.write_text("please check wallet Q\n")
-    handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "checked"}}], "tool_use"))
+    handler, requests = _scripted(
+        ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "checked"}}], "tool_use")
+    )
     _run(env, Decision(True, "operator", ["inbox has a request"]), handler)
     assert "please check wallet Q" in requests[0]["messages"][0]["content"]
     assert not env["paths"].inbox.exists() or env["paths"].inbox.read_text().strip() == ""

@@ -273,10 +273,14 @@ def test_a_stand_in_that_cannot_start_stages_is_raised(paths):
     assert d.call and any("loop stages not starting" in r for r in d.reasons)
 
 
-
 def test_the_stuck_coin_reminder_key_does_not_change_with_the_coins(paths):
     """Which coins are stuck, and in which order, must not make the state look new inside its six-hour window."""
-    a = snap(held=[{"mint": "AAA111", "amount": 1.0, "since": NOW - 3600}, {"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
+    a = snap(
+        held=[
+            {"mint": "AAA111", "amount": 1.0, "since": NOW - 3600},
+            {"mint": "BBB222", "amount": 1.0, "since": NOW - 3600},
+        ]
+    )
     b = snap(held=[{"mint": "BBB222", "amount": 1.0, "since": NOW - 3600}])
     ka = [k for k in decide(a, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
     kb = [k for k in decide(b, snap(), NOW, CFG, paths).state_reasons if "held over" in k]
@@ -357,3 +361,19 @@ def test_a_post_mortem_waits_for_a_daily_analysis_due_within_the_hour(paths):
 def test_the_daily_budget_stops_a_post_mortem_too(paths):
     d = _pm(paths, 9, spent_today=15.0)
     assert not d.call and d.reasons == ["budget"]
+
+
+# -- the owner's budget (operator/BUDGET, /budget in Telegram) -----------------------------------------------------------
+
+
+def test_the_owners_budget_file_sets_the_daily_cap(paths):
+    """The server's config pins daily_usd at 15 $: /budget 200 lifts it, a lower budget stops the day sooner."""
+    from snipetech.operator.budget_switch import set_budget
+
+    ended = [{"id": "x", "argv": ["follow", "W"], "exit_code": 0}]
+    assert decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
+    set_budget(paths, CFG, {"daily_usd": 200}, "telegram", NOW)
+    d = decide(snap(spent_today=15.0, jobs_ended=ended), snap(), NOW, CFG, paths)
+    assert d.call and d.reasons != ["budget"]
+    set_budget(paths, CFG, {"daily_usd": 10}, "telegram", NOW)
+    assert decide(snap(spent_today=12.0, jobs_ended=ended), snap(), NOW, CFG, paths).reasons == ["budget"]
