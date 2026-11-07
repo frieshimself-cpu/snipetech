@@ -84,6 +84,7 @@ def _discover(args, cfg) -> int:
                 c.close()
             except Exception:  # noqa: BLE001
                 pass
+        svc.reset_tape_store()
         svc.store.close()
 
 

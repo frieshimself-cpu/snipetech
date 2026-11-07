@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -98,30 +99,38 @@ class Service:
         self.progress = progress or (lambda msg: None)
         self._rpc: SolanaRpc | None = None
         self._tape_store: Store | None = None
+        self._tape_lock = threading.Lock()
 
     TAPE_COPY_MAX_AGE_SECS = 2 * 3600
 
     @property
     def tape_store(self) -> Store:
-        """The store the heavy tape readers (labs, the analyst) should read: the hourly read-only copy next to the
-        database (`snipetech.ro.db`, written by `snapshot-db`) when it exists and is under two hours old, else the
-        live store. Writes (verdicts, coverage, fills) always go to `self.store`."""
-        if self._tape_store is None:
-            self._tape_store = self.store
-            try:
-                from .infra.snapshot_db import RO_SUFFIX
+        """The store the heavy tape readers (labs, discovery, the events scan) should read: the hourly read-only copy
+        next to the database (`snipetech.ro.db`, written by `snapshot-db`) when it exists and is under two hours old,
+        else the live store. Writes (verdicts, coverage, fills) always go to `self.store`. A long read of the live file
+        keeps its WAL from being checkpointed or starting over (7 Nov: 2 GB of WAL an hour while they ran). Chosen
+        once, under a lock: discover's sources ask from their own threads at the same moment, and a thread that came
+        while the first one was still opening the copy was handed the live store."""
+        with self._tape_lock:
+            if self._tape_store is None:
+                self._tape_store = self._open_tape_store()
+            return self._tape_store
 
-                live = Path(self.store.path)
-                ro = live.with_name(live.stem + RO_SUFFIX)
-                if (
-                    self.store.path != ":memory:"
-                    and ro.exists()
-                    and time.time() - ro.stat().st_mtime < self.TAPE_COPY_MAX_AGE_SECS
-                ):
-                    self._tape_store = Store(ro)
-            except OSError:
-                self._tape_store = self.store
-        return self._tape_store
+    def _open_tape_store(self) -> Store:
+        try:
+            from .infra.snapshot_db import RO_SUFFIX
+
+            live = Path(self.store.path)
+            ro = live.with_name(live.stem + RO_SUFFIX)
+            if (
+                self.store.path != ":memory:"
+                and ro.exists()
+                and time.time() - ro.stat().st_mtime < self.TAPE_COPY_MAX_AGE_SECS
+            ):
+                return Store(ro)
+        except OSError:
+            pass
+        return self.store
 
     def stop_flag_set(self) -> bool:
         """The owner's /stop flag (operator/STOP next to the database): no start path runs while it exists."""
@@ -152,9 +161,10 @@ class Service:
         return risk_guard.limits(paths)["floor_sol"] is not None
 
     def reset_tape_store(self) -> None:
-        if self._tape_store is not None and self._tape_store is not self.store:
-            self._tape_store.close()
-        self._tape_store = None
+        with self._tape_lock:
+            if self._tape_store is not None and self._tape_store is not self.store:
+                self._tape_store.close()
+            self._tape_store = None
 
     @property
     def rpc(self) -> SolanaRpc:
@@ -1341,13 +1351,16 @@ class Service:
             n += 1
         return {"labeled": n, "kind": kind}
 
+    # Discovery reads the tape from the hourly copy (`tape_store`): its count of buys by wallet and its hottest coins
+    # each walk the whole trades table through one index, 14 s and 4 s cold on a 2.4M-trade copy (7 Nov), one read of
+    # tens of minutes on the server's 11M trades, and a wallet search is as good on a tape up to two hours old.
     def discover_wallets(self, days: float = 3.0, min_positions: int = 5, limit: int = 30) -> list[dict]:
-        return discover_wallets(self.store, self.cfg, int(time.time() - days * 86400), min_positions, limit)
+        return discover_wallets(self.tape_store, self.cfg, int(time.time() - days * 86400), min_positions, limit)
 
     def hottest_mints(self, since_ts: int, limit: int) -> list[str]:
         """Coins whose curve reached the most SOL since `since_ts` — where early wallets made the money."""
-        rows = self.store._q("select mint, max(q_after) peak from trades where ts > ? and venue = 'curve' group by mint order by peak desc limit ?",
-                             (since_ts, limit))  # fmt: skip
+        rows = self.tape_store._q("select mint, max(q_after) peak from trades where ts > ? and venue = 'curve' group by mint order by peak desc limit ?",
+                                  (since_ts, limit))  # fmt: skip
         return [m for m, _ in rows]
 
     async def discover_solanatracker(self, client, days: int | None = None, pages: int | None = None) -> list[dict]:
