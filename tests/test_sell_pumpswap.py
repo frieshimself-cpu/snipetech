@@ -464,6 +464,32 @@ def test_a_pool_that_would_pay_nothing_is_refused(tmp_path, key):
     assert row["skipped"].startswith("PumpSwap: ") and "pay nothing" in row["skipped"] and chain.sent == []
 
 
+def test_a_holding_worth_less_than_the_fee_to_sell_it_is_left_alone(tmp_path, key):
+    """Review finding (7 Nov evening): a leftover worth less than the sale's own fee (about 0.001 SOL: 140,000 CU at the
+    sell's priority price plus the base fee) was sold at a loss by /sell all and the sweep: 40,000 tokens of the
+    fixture coin quote 0.00086 SOL. It is left alone, with the reason, and nothing is sent."""
+    user, secret = key
+    chain, st = Chain(user), _store(tmp_path)
+    try:
+        row = asyncio.run(S.Seller(chain, secret, store=st).sell(_holding(user, amount=40_000_000_000), 0.5))
+    finally:
+        st.close()
+    assert row["skipped"].startswith("PumpSwap: worth less than the fee to sell it") and chain.sent == []
+
+
+def test_a_curve_holding_worth_less_than_the_fee_is_left_alone_too(tmp_path, key):
+    user, secret = key
+    live = (S.BONDING_CURVE_DISCRIMINATOR + struct.pack("<QQQQQ", 10**15, 40 * 10**9, 7 * 10**14, 10 * 10**9, 10**15)
+            + bytes([0]) + bytes(32) + bytes(64))  # fmt: skip
+    chain, st = Chain(user), _store(tmp_path)
+    chain.accounts[S.bonding_curve(MINT)] = {"data": [base64.b64encode(live).decode(), "base64"]}
+    try:
+        row = asyncio.run(S.Seller(chain, secret, store=st).sell(_holding(user, amount=10_000_000_000), 0.5))
+    finally:
+        st.close()
+    assert row["skipped"].startswith("worth less than the fee to sell it") and chain.sent == []
+
+
 def test_nothing_held_is_never_sold(tmp_path, key):
     """The sweep sells only what the wallet's own token accounts hold: a coin asked for but not held is not tried."""
     user, secret = key

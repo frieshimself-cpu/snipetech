@@ -81,6 +81,9 @@ SELL_V2_DISCRIMINATOR = bytes([93, 246, 130, 60, 231, 233, 64, 178])
 # the compute budget of both landed templates (price first there; the order does not matter)
 CU_LIMIT = 140_000
 CU_PRICE_MICRO = 7_142_857  # ~0.001 SOL of priority fee at the full limit
+# what one sale costs (the priority fee at the full limit plus the base fee): a holding worth no more is left alone
+# (review of 7 Nov evening: /sell all sold a 0.00086 SOL leftover for 0.001 SOL of fees)
+SALE_FEE_LAMPORTS = CU_PRICE_MICRO * CU_LIMIT // 1_000_000 + 5_000
 
 
 def _pk(s: str):
@@ -464,6 +467,8 @@ class Seller:
         if c.complete:
             return await self._sell_on_pumpswap(holding, slippage, dry_run)
         quote = c.sol_out(holding.amount)
+        if quote <= SALE_FEE_LAMPORTS:
+            return {"mint": holding.mint, "skipped": _not_worth_it(quote)}
         floor = max(1, int(quote * (1 - slippage)))
         row: dict[str, Any] = {
             "mint": holding.mint,
@@ -485,6 +490,8 @@ class Seller:
         quote = pool.sol_out(holding.amount)
         if quote <= 0:
             return {"mint": holding.mint, "skipped": "PumpSwap: the pool would pay nothing for it"}
+        if quote <= SALE_FEE_LAMPORTS:
+            return {"mint": holding.mint, "skipped": f"PumpSwap: {_not_worth_it(quote)}"}
         floor = max(1, int(quote * (1 - slippage)))
         row: dict[str, Any] = {
             "mint": holding.mint,
@@ -514,6 +521,10 @@ async def sweep(rpc, mints: list[str] | None = None, slippage: float = 0.5, dry_
         except Exception as exc:  # noqa: BLE001 - one refused coin (dust, sold a moment ago) never stops the others
             results.append({"mint": h.mint, "skipped": f"refused: {_refused(exc)}"})
     return {"wallet": s.user, "holdings": len(held), "results": results}
+
+
+def _not_worth_it(quote: int) -> str:
+    return f"worth less than the fee to sell it ({quote / LAMPORTS:.6f} SOL against {SALE_FEE_LAMPORTS / LAMPORTS:.6f})"
 
 
 def _refused(exc: Exception) -> str:
