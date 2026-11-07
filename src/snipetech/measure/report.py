@@ -1,6 +1,8 @@
 """The fee-test report: did paying for position move us up? Both arms copy the same leaders from one wallet, so each
 leader signal gives a matched pair (a control fill and a paid fill on the same coin within seconds). The paired
-differences are the answer; the per-arm totals are the cost side."""
+differences are the answer; the per-arm totals are the cost side. An arm's realised result is its sells' whole
+result, each cost once (their failed duplicate sends included); its fees column counts every fee paid, failed sends
+too, and is not added to it."""
 
 from __future__ import annotations
 
@@ -9,6 +11,7 @@ import time
 from typing import Any
 
 from ..store import Store
+from .attribution import trip_result_sol
 
 BASE_FEE = 5000
 
@@ -39,8 +42,9 @@ def _arm_totals(fills: list[dict]) -> dict[str, dict[str, Any]]:
                     d[dst].append(float(f[src]))
         elif side == "sell":
             d["sells"] += 1
-            if f.get("pnl_sol") is not None:
-                d["realised_sol"] += float(f["pnl_sol"])
+            result = trip_result_sol(f)  # the whole result: its failed duplicate sends in it once
+            if result is not None:
+                d["realised_sol"] += result
         elif side == "failed":
             d["failed"] += 1
             d["fees_sol"] += ((f.get("priority_lamports") or 0) + BASE_FEE) / 1e9

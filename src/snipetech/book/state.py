@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from ..measure.attribution import trip_result_sol
 from ..store import Store
 
 DAY_KEY = "book:day"
@@ -12,9 +13,9 @@ LAST_RUN_KEY = "book:last_run"
 
 
 def _realised(fills: list[dict]) -> float:
-    # a sell's failed duplicate sends (twin_fee_sol, measure) are part of what it cost
-    return round(sum(float(f.get("pnl_sol") or 0.0) - float(f.get("twin_fee_sol") or 0.0)
-                     for f in fills if f.get("side") == "sell"), 6)  # fmt: skip
+    # each sell's whole result: its failed duplicate sends (twin_fee_sol, measure) are part of what it cost, once
+    results = [trip_result_sol(f) for f in fills if f.get("side") == "sell"]
+    return round(sum(r for r in results if r is not None), 6)
 
 
 def realised_today(store: Store, wallet: str, now: float) -> float:

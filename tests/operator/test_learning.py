@@ -282,12 +282,40 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
                     "mean_sol": 0.009, "lower_sol": 0.002, "landing_pos": "+6",
                     "copy_plan": {"min_leader_sol": 0.5, "leader_style": "dumper"}})  # fmt: skip
     out = L.round_trips(st, "W", NOW - 6 * H)
-    assert out["summary"] == {"trips": 1, "wins": 0, "losses": 1, "pnl_sol": -0.041}
+    s = out["summary"]  # the whole result counts the failed duplicate sell once (7 Nov: it was left out)
+    assert (s["trips"], s["wins"], s["losses"], s["pnl_sol"], s["recorded_sol"]) == (1, 0, 1, -0.0431, -0.041)
     (trip,) = out["trips"]
     assert trip["leader"] == "LEAD" and trip["held_secs"] == 300 and trip["trades_behind"] == 3
     assert trip["price_gap_pct"] == 31.0 and trip["exit_reason"] == "copy_exit" and trip["twin_fee_sol"] == 0.0021
     assert trip["verdict"]["mean_sol"] == 0.009 and trip["verdict"]["copy_plan"]["min_leader_sol"] == 0.5
     assert trip["sig"] == "S" * 12 and "B" * 20 not in json.dumps(out)  # short signatures only
+    st.close()
+
+
+def test_the_post_mortem_reads_each_trip_broken_into_its_parts_each_cost_once(paths):
+    """7 Nov 19:18-19:22, three copies of 7aPo3n: the landed records say -0.0038 SOL; with the four failed duplicate
+    sells beside them it is -0.0119, and the post-mortem must see that, the parts behind it, the causes ranked by SOL
+    and the change that would have saved the most, computed by code, not by the model."""
+    from snipetech.store import Store
+    from tests import loss_7nov as F
+
+    st = Store(":memory:")
+    F.load(st)
+    out = L.round_trips(st, F.WALLET, F.FIRST_BUY_TS - 60)
+    s = out["summary"]
+    assert (s["trips"], s["wins"], s["losses"]) == (3, 1, 2)
+    assert s["pnl_sol"] == pytest.approx(-0.011862) and s["recorded_sol"] == pytest.approx(-0.003842)
+    assert round(s["price_sol"], 4) == 0.0294 and round(s["costs_sol"], 4) == 0.0412 and s["duplicates"] == 4
+    assert [c["cause"] for c in s["causes"]] == ["venue_fee", "buy_fees", "sell_fees", "duplicates"]
+    assert [x["lever"] for x in s["levers"]] == ["single_send", "sell_fee", "exit"]
+    trips = {t["mint"][:6]: t for t in out["trips"]}
+    first = trips["8RJQ2b"]
+    assert first["result_sol"] == pytest.approx(-0.010577) and first["pnl_sol"] == -0.006567
+    b = first["breakdown"]
+    assert (round(b["price_sol"], 4), b["dups"], b["kind"]) == (0.0044, 2, "lost_to_costs")
+    assert trips["EZaNbQ"]["breakdown"]["exit"] == {"ran": "lab", "fired": "dead_exit", "best": "hold60",
+                                                    "gain_sol": pytest.approx(0.001984)}  # fmt: skip
+    assert "sell_sig" not in b and F.SELLS["8RJQ2b"] not in json.dumps(out)  # short signatures only
     st.close()
 
 
@@ -384,6 +412,30 @@ def test_the_post_mortem_reads_each_round_trip_in_one_call(toolbox):
     out = json.loads(_call(tools["read_round_trips"], hours=6))
     assert out["summary"]["trips"] == 1 and out["trips"][0]["leader"] == "LEAD"
     assert json.loads(_call(tools["read_round_trips"], hours=48))["summary"]["trips"] == 2
+
+
+def test_read_round_trips_gives_the_analyst_the_breakdown_the_causes_and_the_levers(paths):
+    """The analyst gets the night's arithmetic done: each trip's parts, the causes ranked by SOL and the change that
+    would have saved the most, with who can make it."""
+    from snipetech.operator.tools import make_learning_tools
+    from snipetech.store import Store
+    from tests import loss_7nov as F
+
+    st = Store(":memory:")
+    F.load(st)
+
+    class Svc:
+        store = st
+
+    now = F.LAST_SELL_TS + 600
+    tools = {t.name: t for t in make_learning_tools(paths, lambda: now, "postmortem", svc=Svc(), wallet=F.WALLET)}
+    out = json.loads(_call(tools["read_round_trips"], hours=1))
+    s = out["summary"]
+    assert s["trips"] == 3 and s["pnl_sol"] == pytest.approx(-0.011862)
+    assert s["causes"][0]["cause"] == "venue_fee" and s["levers"][0] == pytest.approx(
+        {"lever": "single_send", "sol": 0.00802, "trips": 2, "who": "oktech", "words": s["levers"][0]["words"]}
+    )
+    assert {t["breakdown"]["kind"] for t in out["trips"]} == {"won", "lost_to_costs"}
 
 
 def test_a_post_mortem_cannot_write_the_days_analyst_report(toolbox):

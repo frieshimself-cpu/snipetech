@@ -8,6 +8,7 @@ import time
 from typing import Any
 
 from ..config import Config
+from ..measure.attribution import trip_result_sol
 from ..measure.exits import crossed_sells, exit_reason_counts
 from ..store import Store
 
@@ -43,8 +44,9 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
             d["sells"] += 1
             # the landed sell pays the buy priority fee again (OKTech, 7 of 7 fee-test sells) plus the sell tip
             d["sell_fees_sol"] += ((f.get("priority_lamports") or 0) + (f.get("tip_lamports") or 0) + BASE_FEE) / 1e9
-            if f.get("pnl_sol") is not None:
-                d["realised_sol"] += float(f["pnl_sol"])
+            result = trip_result_sol(f)  # the whole result: the sell's failed duplicate sends in it once (7 Nov)
+            if result is not None:
+                d["realised_sol"] += result
         elif side == "failed":
             d["failed"] += 1
             d["fees_sol"] += ((f.get("priority_lamports") or 0) + BASE_FEE) / 1e9

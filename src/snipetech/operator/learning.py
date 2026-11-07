@@ -429,19 +429,49 @@ def _sol_or_worst(v: Any) -> float:
     return float("-inf") if v is None else float(v)
 
 
-def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> dict[str, Any]:
+# what a post-mortem reads of each trip's breakdown and of the batch's totals (measure/attribution.py)
+_BREAKDOWN_KEYS = ("price_sol", "venue_fee_sol", "price_net_sol", "buy_fee_sol", "sell_fee_sol", "dup_fee_sol", "dups",
+                   "result_sol", "recorded_sol", "fees_known", "kind", "flips", "biggest", "levers", "bid_over_minimum")  # fmt: skip
+_TOTAL_KEYS = ("price_sol", "price_rose_sol", "price_fell_sol", "rose", "fell", "venue_fee_sol", "buy_fees_sol",
+               "sell_fees_sol", "duplicates_sol", "duplicates", "costs_sol", "lost_to_costs", "lost_on_price", "unsplit",
+               "unsplit_price_net_sol", "causes", "worst_leader")  # fmt: skip
+
+
+def _breakdown_view(b: dict[str, Any] | None) -> dict[str, Any] | None:
+    """A trip's breakdown as the post-mortem reads it: the parts, the kind of loss, the levers, the exit that ran
+    against the best one replayed (the replay of every exit is in the trip's `shadow`)."""
+    if b is None:
+        return None
+    out = {k: b[k] for k in _BREAKDOWN_KEYS}
+    e = b.get("exit")
+    out["exit"] = {k: e[k] for k in ("ran", "fired", "best", "gain_sol")} if e else None
+    return out
+
+
+def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40, cfg: Any = None) -> dict[str, Any]:
     """Each live round trip since `since_ts`, newest first, read for a post-mortem: the landing (the buy's trades
     behind the copied wallet, price gap, place in the slot), the exit (which one fired, crossed, failed duplicate
     sends), the money, what the copied wallet's latest verdict predicted (mean at the landing, copy plan), and what
     every exit on the menu would have made of the whole position from the same entry (`shadow`: measure's replay,
     exit name -> its SOL and the exit that would have sold; `shadow_best`: the exit that did best; None until the buy
-    is six minutes old and replayed)."""
+    is six minutes old and replayed).
+
+    Each trip's money is broken down in code (measure/attribution.py): `result_sol`, its whole result with each cost
+    once (pnl_sol, the landed trades, less twin_fee_sol, its failed duplicate sells), and `breakdown`, the parts that
+    add up to it (the price move before any cost, the venue's fee, the buy's and the landed sell's fees, the
+    duplicates), whether it made money on the price and lost it to the costs or lost on the price itself, and what
+    each change would have saved. The summary adds them up: wins and losses by the whole result, the causes ranked by
+    SOL, the levers ranked by what they would have saved and who can make each (`cfg` for the bounds and costs)."""
+    from ..measure.attribution import break_down, levers, totals, trip_result_sol
+
     sells = store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=max(1, int(limit)))
     verdicts: dict[str, dict[str, Any] | None] = {}
     shadows: dict[str, dict[str, dict[str, Any]]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in sells if s.get("buy_sig")})
     for r in store.exit_shadow(buy_sigs, EXIT_MENU_VERSION) if buy_sigs else []:
         shadows.setdefault(r["buy_sig"], {})[r["exit_name"]] = {"pnl_sol": r["sim_pnl_sol"], "exit": r["sim_reason"]}
+    per_tx = cfg.costs.per_tx_sol() if cfg is not None else None  # what measure charged a fill of unknown fee
+    parts = break_down(store, wallet, sells, per_tx_sol=per_tx) if sells else {}
     trips = []
     for s in sells:
         buy = (store.fill(s["buy_sig"]) if s.get("buy_sig") else None) or {}
@@ -460,14 +490,22 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> 
         held = int(s["ts"]) - int(buy["ts"]) if buy.get("ts") is not None and s.get("ts") is not None else None
         shadow = shadows.get(s.get("buy_sig") or "") or None
         best = max(shadow, key=lambda n: _sol_or_worst(shadow[n]["pnl_sol"])) if shadow else None
+        result = trip_result_sol(s)
         trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
                       "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
+                      "result_sol": None if result is None else round(result, 9),
                       "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
                       "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
                       "exit_reason": s.get("exit_reason"), "exit_name": s.get("exit_name"), "crossed": s.get("crossed"),
                       "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None,
-                      "shadow": shadow, "shadow_best": best})  # fmt: skip
-    pnl = [float(t["pnl_sol"]) for t in trips if t["pnl_sol"] is not None]
-    summary = {"trips": len(trips), "wins": sum(p > 0 for p in pnl), "losses": sum(p <= 0 for p in pnl),
-               "pnl_sol": round(sum(pnl), 6)}  # fmt: skip
+                      "shadow": shadow, "shadow_best": best, "breakdown": _breakdown_view(parts.get(s["sig"]))})  # fmt: skip
+    results = [float(t["result_sol"]) for t in trips if t["result_sol"] is not None]
+    recorded = [float(t["pnl_sol"]) for t in trips if t["pnl_sol"] is not None]
+    summary = {"trips": len(trips), "wins": sum(p > 0 for p in results), "losses": sum(p <= 0 for p in results),
+               "pnl_sol": round(sum(results), 6), "recorded_sol": round(sum(recorded), 6)}  # fmt: skip
+    broken = [b for b in parts.values() if b]
+    if broken:
+        tot = totals(broken)
+        summary |= {k: tot[k] for k in _TOTAL_KEYS if k in tot}
+        summary["levers"] = levers(broken, cfg=cfg)
     return {"since_ts": int(since_ts), "summary": summary, "trips": trips}

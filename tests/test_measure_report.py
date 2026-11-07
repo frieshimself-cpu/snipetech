@@ -1,7 +1,6 @@
 """The fee-test report: fills of two arms on the same leader signal are paired (same coin, within a few seconds), and the
 paired differences say whether paying moved us up; a text rendering the owner can read."""
 
-
 from snipetech.cli import build_parser
 from snipetech.measure.report import fee_test_report, pair_arms, render_fee_test
 from snipetech.store import Store
@@ -61,6 +60,21 @@ def test_fee_test_report_and_rendering():
         assert rep["paired"]["n_pairs"] == 2 and rep["verdict"].startswith("paid landed earlier")
         text = render_fee_test(rep)
         assert "paid" in text and "control" in text and "2 paired" in text and "SOL" in text
+    finally:
+        st.close()
+
+
+def test_the_arms_result_counts_each_sells_failed_duplicates_once():
+    """A sell's failed duplicate sends are beside its pnl_sol (twin_fee_sol): an arm's result is the whole result
+    (7 Nov: the fee test's -0.282 and -0.325 left them out)."""
+    st = Store(":memory:")
+    try:
+        st.put_fill(_fill("s1", NOW + 50, "M1", "control", behind=None, pos=0, gap=None, prio=1_000_000, tip=2_000_000,
+                          side="sell", pnl=-0.006567) | {"twin_fee_sol": 0.00401})  # fmt: skip
+        st.put_fill(_fill("s2", NOW + 60, "M2", "control", behind=None, pos=0, gap=None, prio=1_000_000, tip=2_000_000,
+                          side="sell", pnl=0.012845))  # fmt: skip
+        rep = fee_test_report(st, W, NOW - 60)
+        assert rep["arms"]["control"]["realised_sol"] == round(-0.006567 - 0.00401 + 0.012845, 6)
     finally:
         st.close()
 

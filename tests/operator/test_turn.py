@@ -267,6 +267,21 @@ def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
         assert words in ANALYST_SYSTEM, words
 
 
+def test_the_post_mortem_works_from_the_codes_breakdown_and_ranks_the_causes_and_the_changes():
+    """7 Nov, the owner: "just make it understand why it lost and how to do better". The arithmetic was the model's:
+    read_round_trips now breaks every trip into its parts in code. The analyst uses those numbers as they are, ranks the
+    causes by SOL, says which change would have saved the most and who can make it, and tells a trip that made money
+    on the price and lost it to the costs from one that lost on the price itself."""
+    from snipetech.operator.prompts import _CLOSING
+
+    text = " ".join(ANALYST_SYSTEM.split())
+    for words in ("never redo the arithmetic", "rank the causes by SOL", "would have saved the most",
+                  "who can make it", "lost_to_costs", "lost_on_price", "result_sol"):  # fmt: skip
+        assert words in text, words
+    for mode in ("postmortem", "analyst"):
+        assert "causes ranked by SOL" in _CLOSING[mode] and "saved the most" in _CLOSING[mode], mode
+
+
 def test_an_analyst_turn_records_when_it_ran_for_the_cadence(env):
     """operator/analyst.last is written once an analyst turn ran; a post-mortem, an operator round or an analyst turn
     the API refused never moves it (the next round tries again)."""

@@ -11,6 +11,7 @@ from pathlib import Path
 from anthropic import beta_async_tool
 
 from ..config import OperatorConfig
+from ..measure.attribution import trip_result_sol
 from ..ops import _read_only_authorizer, redact
 from . import learning
 from .jobs import OperatorJobs
@@ -150,10 +151,21 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
     async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
         """Each live round trip of the last `hours`, newest first, for a post-mortem: the copied wallet, the landing
         (trades behind it, price gap, place in the slot), the exit that fired (exit_reason, exit_name, crossed,
-        failed duplicate sends in twin_fee_sol), the money (pnl_sol), what the wallet's latest verdict predicted
-        (mean_sol and lower_sol at the landing, copy_plan), and what every exit on the menu would have made of the
-        same entry (shadow: exit name -> pnl_sol and the exit that would have sold; shadow_best: the best of them;
-        None until the buy is six minutes old); plus wins, losses and the total.
+        failed duplicate sends in twin_fee_sol), the money, what the wallet's latest verdict predicted (mean_sol and
+        lower_sol at the landing, copy_plan), and what every exit on the menu would have made of the same entry
+        (shadow: exit name -> pnl_sol and the exit that would have sold; shadow_best: the best of them; None until
+        the buy is six minutes old).
+
+        The money is worked out in code; use its numbers as they are. result_sol is the trip's whole result, each
+        cost once (pnl_sol is the landed trades alone, without the failed duplicate sells). breakdown holds the parts
+        that add up to result_sol: price_sol (the price move before any cost), venue_fee_sol (pump.fun's 1.25 % a
+        side), buy_fee_sol, sell_fee_sol, dup_fee_sol (dups: how many); kind (won, lost_to_costs: it made money on
+        the price and the costs took it, lost_on_price: it lost on the price itself); flips (the single costs whose
+        removal would have made it a win); levers (what each change would have saved on it); exit (the exit that
+        ran against the best one in measure's replay, gain_sol between them). The summary adds them up: wins and
+        losses by the whole result, pnl_sol (whole) and recorded_sol (landed only), each part's total, causes ranked
+        by SOL, and levers ranked by what each would have saved on these trips, with who can make it (strategist:
+        inside its bounds; owner: needs the owner's yes; oktech: OKTech's to change, asked through the owner).
 
         Args:
             hours: Look back this many hours (the post-mortem window is in the round's reasons).
@@ -161,7 +173,8 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         """
         try:
             since = now_fn() - max(1, int(hours)) * 3600
-            out = learning.round_trips(svc.store, wallet, since, limit=min(200, max(1, int(limit))))
+            out = learning.round_trips(svc.store, wallet, since, limit=min(200, max(1, int(limit))),
+                                       cfg=getattr(svc, "cfg", None))  # fmt: skip
         except Exception as exc:  # noqa: BLE001
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))
@@ -308,7 +321,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     async def read_fills(hours: int = 24, limit: int = 50) -> str:
         """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
-        provisional once a wallet's live n reaches 10.
+        provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
+        sends are beside it in twin_fee_sol; the summary's pnl_sol is the sells' whole result, each cost once.
 
         Args:
             hours: Look back this many hours (default 24).
@@ -317,9 +331,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         try:
             since = int(now_fn() - max(1, int(hours)) * 3600)
             rows = svc.store.fills(since_ts=since, limit=max(1, int(limit)))
+            results = [trip_result_sol(r) for r in rows if r["side"] == "sell"]
             summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": sum(r["side"] == "sell" for r in rows),
                        "failed": sum(r["side"] == "failed" for r in rows),
-                       "pnl_sol": round(sum(r["pnl_sol"] or 0.0 for r in rows if r["side"] == "sell"), 6)}  # fmt: skip
+                       "pnl_sol": round(sum(p for p in results if p is not None), 6)}  # fmt: skip
             out = {
                 "summary": summary,
                 "fills": rows,
