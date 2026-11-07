@@ -41,6 +41,7 @@ from .lab import (
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
+    SKIP_WORDS,
     Trigger,
     _fire,
     collect,
@@ -49,6 +50,7 @@ from .lab import (
     label_groups,
     leader_sell_fractions,
     mig_gap,
+    migration_sell_gap,
     rank,
     span_slot_secs,
 )
@@ -244,7 +246,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
     mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
-    amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs else {}
+    # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
+    sell_runs = any(ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS for _, trig, ex, _ in parsed)
+    amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
     skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades}: MIG trades the PumpSwap tape does not hold
     added = 0
     for a, b in store.tape_spans():
@@ -256,7 +260,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         # the window gives the fit enough span), exits that sell one slot after they fire, the copy exit on the
         # copied wallet's own sells; a MIG trigger fires on the migrations the tape recorded
         slot_secs = span_slot_secs(store, max(int(a), int(lo) - 3600), int(hi))
-        migs = store.migrations_between(int(a), int(end)) if mig_runs else {}
+        migs = store.migrations_between(int(a), int(end)) if mig_runs or sell_runs else {}
         for mint, _count in store.active_mints(lo, hi, 1):
             trades = store.trades_for_mint(mint, a, end)
             if len(trades) < min_trades:
@@ -286,8 +290,16 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                         continue
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
+                if ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS:
+                    why = migration_sell_gap(amm_cov, path, e, migs.get(mint), ex.max_hold_secs)
+                    if why is not None:
+                        skipped.setdefault(s["id"], {})
+                        skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
+                        continue
                 frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+                mig = migs.get(mint)
+                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                               migration_slot=None if mig is None else mig.slot)  # fmt: skip
                 if prep is None:
                     continue
                 res = run_exit(prep, ex, costs, end_ts=float(end))
@@ -298,14 +310,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
-    return {
-        "new_trades": added,
-        "since": since,
-        "until": until,
-        "landing": landings(copy_pos),
-        "unscored": unscored,
-        "skipped": skipped,
-    }
+    codes = sorted({c for why in skipped.values() for c in why})
+    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
+            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
 
 
 def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:

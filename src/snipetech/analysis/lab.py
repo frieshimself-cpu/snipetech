@@ -355,12 +355,35 @@ def exits_horizon(exits: Sequence[ExitParams]) -> float:
     return max((float(ex.max_hold_secs) for ex in exits), default=0.0)
 
 
+# why a moment was left out, in the words the lab reports: the PumpSwap tape's reasons, and a curve position whose coin
+# left its curve while held when the tape has no migration for it to time a migration sell from
+SKIP_WORDS = {**GAP_WORDS, "no_migration": "left its curve while held, and the tape has no migration for it"}
+
+
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
     """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
     when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
     exits' `horizon`, plus a slot for the last sell (`amm_tape.amm_recent_gap`, which agrees with `amm_recent_covers`)."""
     start = float(mig.ts)
     return amm_recent_gap(cov, start, max(start, float(path.ts[e])) + float(horizon) + SELL_SLOT_SECS)
+
+
+def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
+    """Why a position bought on the curve at state e cannot be scored with a migration sell among its exits, or None
+    when it can. A migration sell trades on PumpSwap right after the migration, so when the coin migrates while held
+    (the recorded migration `mig` within `horizon` of the buy) the PumpSwap tape must hold it from the migration to the
+    end of the horizon, like a MIG buy (`mig_gap`); a coin that leaves its curve while held with no migration on the
+    tape gives its sale nothing to time from ("no_migration"). A coin that does not migrate while held needs nothing."""
+    end = float(path.ts[e]) + float(horizon)
+    if mig is not None:
+        if int(mig.slot) < int(path.slot[e]) or float(mig.ts) > end:
+            return None  # it migrated before the buy (no migration while held) or after the timer
+        return amm_recent_gap(cov, float(mig.ts), end + SELL_SLOT_SECS)
+    oc = getattr(path, "off_curve", None)
+    if oc is None or len(oc) != path.n or oc[e]:
+        return None
+    left = np.flatnonzero(oc[e + 1 :])
+    return "no_migration" if len(left) and float(path.ts[e + 1 + int(left[0])]) <= end else None
 
 
 def curve_done(path: MarketPath, i: int) -> bool:
@@ -678,9 +701,11 @@ class _Run:
     costs: Costs
     exits: list[ExitParams]
     min_trades: int
-    # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts
+    # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts, and
+    # (`mig_sell`: an exit of the run sells into the migration) where a curve position that migrates while held does
     amm_cov: dict[str, Any] = field(default_factory=dict)
     horizon: float = 0.0
+    mig_sell: bool = False
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
@@ -718,7 +743,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
     if path.n < run.min_trades:
         return []
-    mig = _span_migration(store, mint, a, b) if any(t.kind == "mig" for _, t in run.triggers) else None
+    wants_mig = run.mig_sell or any(t.kind in AMM_KINDS for _, t in run.triggers)
+    mig = _span_migration(store, mint, a, b) if wants_mig else None
     rows: list[dict] = []
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
     for ti, trig in run.triggers:
@@ -743,12 +769,18 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                 continue  # a launch sniper's buy fails on a completed curve: no position
+            if run.mig_sell and trig.kind not in AMM_KINDS:  # its migration sell trades on PumpSwap if it migrates
+                why = migration_sell_gap(run.amm_cov, path, e, mig, run.horizon)
+                if why is not None:  # the row scores every exit on the same moment: the moment is left out whole
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
             own, frac = None, None
             if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                 by_user = _trades_by_user(path) if by_user is None else by_user
                 own = by_user[path.users[i]]
                 frac = leader_sell_fractions(path, path.users[i], own)
-            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                           migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 continue
             pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in run.exits]
@@ -911,7 +943,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         ]
     unscored: dict[str, str] = {}
     amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
-    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs else {}
+    mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
+    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell else {}
     events_by_mint: dict[str, list[tuple]] = {}
     if event_kinds:
         marks = ",".join("?" * len(event_kinds))
@@ -923,7 +956,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, min_trades=min_trades, amm_cov=amm_cov,
-               horizon=exits_horizon(exits))  # fmt: skip
+               horizon=exits_horizon(exits), mig_sell=mig_sell)  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
@@ -944,30 +977,30 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     out = {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored}  # fmt: skip
-    if amm_runs:
-        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, run.horizon)
+    if amm_runs or mig_sell:
+        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, run.horizon, mig_sell)
     return out
 
 
-def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped: list[dict],
-                horizon: float) -> dict[str, Any]:  # fmt: skip
-    """What the PumpSwap tape let the lab score of its MIG triggers: the exits' horizon each moment needed, the
-    stretches of the scored tape the PumpSwap tape does not hold (7 Nov 14:03-15:48 among them, though the tape recorded
-    no migration in it), and per MIG trigger the moments scored and the ones skipped, by reason (`why` in words)."""
+def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped: list[dict], horizon: float,
+                mig_sell: bool) -> dict[str, Any]:  # fmt: skip
+    """What the PumpSwap tape let the lab score: the exits' horizon each moment needed, the stretches of the scored
+    tape the PumpSwap tape does not hold (7 Nov 14:03-15:48 among them, though the tape recorded no migration in it),
+    whether a migration sell among the exits gated the curve rules too (`migration_sell`), and per MIG trigger (and
+    per other trigger that lost a moment to it) the moments scored and the ones skipped, by reason (`why` in words)."""
     lo = min((a for a, _b in spans), default=0)
     hi = max((b for _a, b in spans), default=0)
     per: dict[str, dict[str, Any]] = {}
     for ti, t in triggers:
-        if t.kind not in AMM_KINDS:
-            continue
         why: dict[str, int] = {}
         for r in skipped:
             if r["trigger"] == ti:
                 why[r["skipped"]] = why.get(r["skipped"], 0) + 1
-        per[t.label()] = {"scored": sum(r["trigger"] == ti for r in rows), "skipped": why}
+        if t.kind in AMM_KINDS or why:
+            per[t.label()] = {"scored": sum(r["trigger"] == ti for r in rows), "skipped": why}
     codes = sorted({r["skipped"] for r in skipped})
     return {"horizon_secs": float(horizon), "holes": amm_recent_holes(cov, lo, hi) if spans else [],
-            "triggers": per, "why": {c: GAP_WORDS.get(c, c) for c in codes}}  # fmt: skip
+            "migration_sell": bool(mig_sell), "triggers": per, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:

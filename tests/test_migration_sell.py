@@ -2,8 +2,9 @@
 
 OKTech's auto-sell can sell part of a position when its coin migrates: `autoSell.migrationSell {sellPercent, delayMs}`,
 "on migration to a new pool, sell % after delay (100 ms - 1 min)" (docs/oktech-settings.md). The simulator sells that
-share `delay` seconds after the state at which the coin leaves its pump.fun curve (MarketPath.off_curve), where a sell
-fired then lands, never inside OKTech's watch delay; the rest stays with the other exits. The sniper builder sends it
+share `delay` seconds after the coin's migration (the one the tape records when the lab passes it, else the state at
+which the coin leaves its pump.fun curve, MarketPath.off_curve), where a sell fired then lands, never inside OKTech's
+watch delay; the rest stays with the other exits. The sniper builder sends it
 exactly as scored and refuses one the app cannot take. No live migration sell has fired yet: OKTech accepts settings it
 then ignores (playbook fact 8), so every sniper that carries one says so."""
 
@@ -222,3 +223,53 @@ def test_the_strategy_sniper_carries_the_migration_sell():
     assert p.config["autoSell"]["migrationSell"] == {"enabled": True, "sellPercent": 100.0, "delayMs": 1000}
     assert any("migration" in n and "live" in n for n in p.notes)
     assert any("migrates" in s for s in p.summary)  # the plan the owner reads before a yes says it sells there
+
+
+# -- the migration the tape records (7 Nov, research round 1) -------------------------------------------------------
+
+
+def _late_pool(gap_slots: int = 5) -> MarketPath:
+    """A coin whose curve completes in slot 11 and which pump.fun migrates `gap_slots` slots later, in a transaction of
+    its own: nothing trades in between (the curve is done, the pool does not exist yet), three 2 SOL PumpSwap buys come
+    in the migration's slot, then one 0.5 SOL buy a slot. 212 of the 230 coins that migrated 10 s - 5 min after their
+    create on 6-7 Nov migrated 1-10 slots after their curve completed (research round 1, migration screen q1)."""
+    m = Market(Store(":memory:"), addr("late-pool"), addr("late-pool-dev"), T0, SLOT0)
+    m.buy(m.deployer, 1.0, 0, sig=m.create_sig)
+    for k in range(10):
+        m.buy(addr(f"late-pool-fan-{k}"), 0.5, 1 + k)
+    m.buy(addr("late-pool-whale"), 80.0, 11)
+    q = float(m.q - Q0)
+    b = q * m.b / m.q
+    mig = 11 + gap_slots
+    for k, (slot, sol) in enumerate([(mig, 2.0)] * 3 + [(mig + 1 + j, 0.5) for j in range(20)]):
+        lamports = int(sol * 1e9)
+        tokens = b * lamports / (q + lamports)
+        q, b = q + lamports, b - tokens
+        m.n += 1
+        m.trades.append(Trade(addr(f"late-pool-amm-{k}"), 0, SLOT0 + slot, m.n, m._ts(SLOT0 + slot), m.mint, AMM,
+                              addr(f"late-pool-amm-{k}-u"), True, lamports, int(tokens), lamports * FEE_BPS // 10_000,
+                              FEE_BPS, int(q), int(b)))  # fmt: skip
+    return MarketPath.build(m.trades, m.launch, slot_secs=0.4)
+
+
+def test_the_migration_sell_waits_for_the_migration_the_tape_records():
+    """OKTech sells "on migration to a new pool": a pool that does not exist yet cannot be sold into, so the sale comes
+    after the migration's slot, behind the pool's first buys, not at the completed curve (where the branch's model,
+    timed from the completion, sold it 0.1 s after the curve's last buy)."""
+    path = _late_pool()
+    fast = replace(MIG, migration_sell_delay=0.1)
+    prep = prepare(path, 2, 0.2, NO_COSTS, 1, "start", migration_slot=SLOT0 + 16)
+    r = run_exit(prep, fast, NO_COSTS)
+    last_in_slot = max(i for i in range(path.n) if path.slot[i] == SLOT0 + 16)
+    assert r.exit_reason == "migration_sell"
+    assert r.exit_idx == last_in_slot and r.exit_slot == SLOT0 + 17  # behind the three 2 SOL buys of slot 16
+    # timed from the completed curve it sold before the pool existed, at the curve's last price
+    blind = run_exit(prepare(path, 2, 0.2, NO_COSTS, 1, "start"), fast, NO_COSTS)
+    assert blind.exit_idx == 12 and r.proceeds_sol > blind.proceeds_sol
+    # bought after the migration (a MIG buy): the coin does not migrate while held, whatever the record says
+    after = prepare(path, last_in_slot + 1, 0.2, NO_COSTS, 1, "start", migration_slot=SLOT0 + 16)
+    assert run_exit(after, fast, NO_COSTS) == run_exit(after, replace(fast, migration_sell_frac=0.0), NO_COSTS)
+    # a migration after the timer: nothing sells into it
+    late = prepare(path, 2, 0.2, NO_COSTS, 1, "start", migration_slot=SLOT0 + 16)
+    short = replace(fast, max_hold_secs=3.0)
+    assert run_exit(late, short, NO_COSTS) == run_exit(late, replace(short, migration_sell_frac=0.0), NO_COSTS)

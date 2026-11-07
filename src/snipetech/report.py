@@ -725,7 +725,8 @@ def render_follow(rows: list[dict]) -> str:
 
 
 def _amm_tape_lines(t: dict) -> list[str]:
-    """The lab's MIG moments against the PumpSwap tape: scored, skipped and why, and the holes in that tape (UTC)."""
+    """The lab's moments against the PumpSwap tape: MIG moments, and with a migration sell among the exits the curve
+    rules' moments whose coin migrates while held: scored, skipped and why, and the holes in that tape (UTC)."""
     import time as _t
 
     def hm(ts: float) -> str:
@@ -738,6 +739,9 @@ def _amm_tape_lines(t: dict) -> list[str]:
     head = (f"MIG is scored only where the PumpSwap tape holds the coin from its migration to {t['horizon_secs']:g} s "
             "after the buy (coverage tape:amm_recent):")  # fmt: skip
     out = [head]
+    if t.get("migration_sell"):
+        out.append("  A migration sell is among the exits: a curve moment whose coin migrates while held counts only "
+                   "where the PumpSwap tape holds the migration (each such moment is left out for every exit).")  # fmt: skip
     for label, c in (t.get("triggers") or {}).items():
         skipped = ", ".join(f"{n} {t.get('why', {}).get(code, code)}" for code, n in sorted(c["skipped"].items()))
         out.append(f"  {label}: {c['scored']} scored" + (f"; skipped: {skipped}" if skipped else ""))
@@ -803,10 +807,9 @@ def render_paper(action: str, r: dict) -> str:
             else ""
         )
         line = f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
-        from .amm_tape import GAP_WORDS
-
-        for sid, why in sorted((r.get("skipped") or {}).items()):  # MIG trades the PumpSwap tape does not hold whole
-            line += f"\n  {sid}: left out " + ", ".join(f"{n} {GAP_WORDS.get(c, c)}" for c, n in sorted(why.items()))
+        words = r.get("why") or {}
+        for sid, why in sorted((r.get("skipped") or {}).items()):  # trades the PumpSwap tape does not hold whole
+            line += f"\n  {sid}: left out " + ", ".join(f"{n} {words.get(c, c)}" for c, n in sorted(why.items()))
         return line
     rows = r["strategies"]
     if not rows:

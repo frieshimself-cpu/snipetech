@@ -132,6 +132,7 @@ class Prepared:
     rt: np.ndarray | None = None  # seconds after the entry of each state, from the slots at the path's slot time
     latency: int = 1  # slots between an exit firing and its sell landing
     off_curve: np.ndarray | None = None  # states e..n-1: True once off the pump.fun curve (None = unknown)
+    migration_slot: int | None = None  # the slot of the coin's migration to PumpSwap the tape records (None = unknown)
 
     @property
     def entry_ts(self) -> float:
@@ -151,7 +152,11 @@ def prepare(
     exit_position: str = "middle",
     insider_sell_mask: np.ndarray | None = None,
     leader_frac: np.ndarray | None = None,
+    migration_slot: int | None = None,
 ) -> Prepared | None:
+    """A position bought at state `entry_idx` for `spend_sol`. `migration_slot`: the slot of the coin's migration to
+    PumpSwap as the tape records it (`migrations`), which a migration sell reacts to; without it the sale is timed
+    from where the path leaves its curve."""
     if path.n == 0 or entry_idx < 0 or entry_idx >= path.n or spend_sol <= 0:
         return None
     e = int(entry_idx)
@@ -184,6 +189,7 @@ def prepare(
         rt=(path.slot[e:] - path.slot[e]) * float(getattr(path, "slot_secs", DEFAULT_SLOT_SECS) or DEFAULT_SLOT_SECS),
         latency=int(exit_latency_slots),
         off_curve=oc[e:] if oc is not None and len(oc) == path.n else None,
+        migration_slot=None if migration_slot is None else int(migration_slot),
     )
 
 
@@ -220,20 +226,29 @@ def _migration_sale(
 ) -> tuple[float, int] | None:
     """OKTech's migration sell on this position: (seconds after the entry it fires at, the state it sells at), or None.
 
-    It fires `ex.migration_sell_delay` s after the state at which the coin left its pump.fun curve, never inside the
-    watch delay (like a price exit, it then fires as the watch starts), and sells where a sell fired at that moment
-    lands: the `exec_idx` of the state then in effect. None when it is off, when the path does not say where the coin
+    It fires `ex.migration_sell_delay` s after the coin's migration ("on migration to a new pool": the recorded
+    migration's slot when the position knows it, else the state at which the path leaves its pump.fun curve), never
+    inside the watch delay (like a price exit, it then fires as the watch starts), and sells where a sell fired at that
+    moment lands: the `exec_idx` of the state then in effect, so behind every trade of the migration's slot. The
+    recorded migration matters: on 6-7 Nov 212 of the 230 coins that migrated 10 s - 5 min after their create did so 1-10
+    slots after their curve completed (research round 1), and timed from the completion a 0.1 s sale sold into a pool
+    that did not exist yet, at the curve's last price. None when it is off, when the path does not say where the coin
     left its curve, when the coin was already off it at the entry (bought on PumpSwap: it does not migrate while held),
-    or when the timer has sold everything first. No migration sell has fired on a live trade yet (playbook fact 8):
-    that OKTech sees the migration at the state the curve completed in, and that its sell lands like the other exits'
-    sells (a slot after it fires, before that slot's trades), are assumptions."""
+    or when the timer has sold everything first. No migration sell has fired on a live trade yet (playbook fact 8): that
+    its sell lands like the other exits' sells (a slot after it fires, before that slot's trades) is an assumption."""
     oc = p.off_curve
     if ex.migration_sell_frac <= 0 or oc is None or not len(oc) or oc[0]:
         return None
-    j = _first(oc, 1, last_rel)
-    if j is None:
-        return None
-    at = max(float(rt[j]) + max(float(ex.migration_sell_delay), 0.0), watch)
+    if p.migration_slot is not None:
+        if p.slot is None or p.migration_slot < int(p.slot[0]):
+            return None
+        left = (p.migration_slot - int(p.slot[0])) * p.slot_secs  # seconds after the entry, on the slots' clock
+    else:
+        j = _first(oc, 1, last_rel)
+        if j is None:
+            return None
+        left = float(rt[j])
+    at = max(left + max(float(ex.migration_sell_delay), 0.0), watch)
     k = int(np.searchsorted(rt, at, side="right")) - 1  # the state in effect when it fires
     return (at, int(p.exec_idx[k])) if k <= last_rel else None
 
