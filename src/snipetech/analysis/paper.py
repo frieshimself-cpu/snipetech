@@ -134,13 +134,15 @@ def landing_text(latency: int, position: str) -> str:
 
 
 def landings(copy_pos: str) -> dict[str, str]:
-    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING), "hunt": landing_key(*HUNT_LANDING)}
+    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING), "hunt": landing_key(*HUNT_LANDING),
+            "mig": landing_key(*MIG_LANDING)}  # fmt: skip
 
 
 def landing_note(copy_pos: str) -> str:
     return (f"Scored where live trades land: copies at {copy_pos} (up to {copy_pos[1:]} trades behind the leader, in its "
             f"slot: the regime live copies measured), launch snipes at the slot after the create, OKTech hunt snipes "
-            f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger.")  # fmt: skip
+            f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger, OKTech MIG buys {MIG_LANDING[1][1:]} "
+            "trades into the slot after the migration.")  # fmt: skip
 
 
 def _scored(store: Store, sid: str) -> bool:
@@ -235,8 +237,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
     freeze). A strategy that buys on PumpSwap (MIG) gets a trade only where the PumpSwap tape (coverage
-    `tape:amm_recent`) holds the coin from its migration to the end of its exit's timer, as in the lab (`lab.mig_gap`);
-    `skipped` counts, per strategy, the trades left out and why (amm_tape.GAP_WORDS)."""
+    `tape:amm_recent`) holds the coin from its migration to the end of its exit's timer, as in the lab (`lab.mig_gap`),
+    and so does a curve strategy whose exit sells into the migration when its coin migrates while held
+    (`lab.migration_sell_gap`); `skipped` counts, per strategy, the trades left out, `why` says why in words; a MIG
+    strategy whose exit holds past 300 s is not scored at all (`unscored`)."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -260,7 +264,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
     sell_runs = any(ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS for _, trig, ex, _ in parsed)
     amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
-    skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades}: MIG trades the PumpSwap tape does not hold
+    skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades} the PumpSwap tape does not hold whole
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)

@@ -732,8 +732,10 @@ def _amm_tape_lines(t: dict) -> list[str]:
     def hm(ts: float) -> str:
         return _t.strftime("%d %b %H:%M", _t.gmtime(ts))
 
-    def stretch(a: float, b: float) -> str:  # 07 Nov 14:03-15:48, the day said once when both ends share it
+    def stretch(a: float, b: float) -> str:  # 07 Nov 14:03-15:48, the day said once; seconds when within a minute
         sa, sb = hm(a), hm(b)
+        if sa == sb:  # a restart's 23 s (12:54:05-12:54:28 on 7 Nov)
+            return f"{sa}:{_t.strftime('%S', _t.gmtime(a))}-{_t.strftime('%H:%M:%S', _t.gmtime(b))}"
         return f"{sa}-{sb[-5:]}" if sa[:6] == sb[:6] else f"{sa}-{sb}"
 
     head = (f"MIG is scored only where the PumpSwap tape holds the coin from its migration to {t['horizon_secs']:g} s "

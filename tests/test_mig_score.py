@@ -173,6 +173,7 @@ def test_the_lab_command_says_what_it_skipped_and_where_the_pumpswap_tape_is_mis
     assert "within 10 s of the create: 2 scored; skipped: 1 before the PumpSwap tape began" in text
     assert "1 in a hole in the PumpSwap tape" in text and "1 too recent" in text
     assert "07 Nov 14:03-15:48" in text  # the stall
+    assert "07 Nov 12:54:05-12:54:28" in text  # the 12:54 restart, shorter than a minute
 
 
 def test_the_paper_test_scores_mig_only_where_the_pumpswap_tape_is_whole():
