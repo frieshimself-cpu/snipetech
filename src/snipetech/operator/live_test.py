@@ -174,9 +174,22 @@ def _expect(paths: OperatorPaths, values: dict) -> None:
 # -- which strategies, what plan -----------------------------------------------------------------------------------
 
 
-def _why_not(row: dict | None, frozen: dict | None, tx_cost: float = 0.0) -> str | None:
-    """Why a strategy may not go live now, in plain words; None when it may. `tx_cost`: the SOL a transaction costs
-    live, as the measure stage measures it (qualify.run.lab_tx_cost)."""
+def _cost_words(cost: dict) -> str:
+    """Where the live cost of a transaction came from, in words (qualify.run.lab_tx_cost_info)."""
+    source, at = cost.get("per_tx_source"), cost.get("per_tx_measured_at")
+    if source == "last measured":
+        day = time.strftime("%d %b", time.gmtime(float(at))) if at else "a date not known"
+        return f"last measured live, on {day} (too few fills since to measure it again)"
+    if source == "estimate":
+        return "a live one costs, estimated while it is not measured here (6 Nov measured 0.0047)"
+    return "measured live"
+
+
+def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None) -> str | None:
+    """Why a strategy may not go live now, in plain words; None when it may. `cost`: what a transaction costs live and
+    where that came from (qualify.run.lab_tx_cost_info: measured, last measured, or the estimate before anything is)."""
+    from ..analysis.lab import WATCH_SECS, WATCHED_KINDS
+
     if row is None or frozen is None:
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
@@ -184,16 +197,31 @@ def _why_not(row: dict | None, frozen: dict | None, tx_cost: float = 0.0) -> str
     if not row.get("live_landing"):
         return "was not scored where a live hunt fill lands"
     try:
+        watch = float((frozen.get("exit") or {}).get("watch_secs") or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        watch = 0.0
+    if row.get("trigger_kind") in WATCHED_KINDS and not watch >= WATCH_SECS - 1e-9:
+        # OKTech starts watching a coin about 1.3 s after its buy lands and no exit of its sniper acts sooner, but a
+        # launch-type rule frozen before 7 Nov evening was scored with exits acting from the buy (research round 1: up
+        # to 0.003 SOL a trade too kind). It keeps its id; the same rule frozen again carries the delay, and OKTech runs
+        # one sniper for both (it reads no watch delay), so the kinder unwatched twin must never be the one that starts
+        return (f"was scored without OKTech's {WATCH_SECS:g} s watch delay (its exits acted from the buy, before OKTech "
+                "watches a coin): its forward trades are not how it sells live; the same rule frozen again is scored "
+                "with the delay")  # fmt: skip
+    cost = cost or {}
+    tx = float(cost.get("per_tx_sol") or 0.0)
+    try:
         scored = float(frozen.get("per_tx_sol"))
     except (TypeError, ValueError):
         scored = -1.0
-    if not math.isfinite(scored) or scored < float(tx_cost) - 1e-9:
-        # the owner's yes covers a strategy that passes "at real costs": `paper freeze` takes 0.0035 SOL a transaction
-        # unless told otherwise (and accepts 0), while a live round trip cost about 0.0094 on 6 Nov; trades scored at
-        # less are not evidence at the real cost
+    if not math.isfinite(scored) or scored < tx - 1e-9:
+        # the owner's yes covers a strategy that passes "at real costs": `paper freeze` took 0.0035 SOL a transaction
+        # unless told otherwise until 7 Nov (and accepts 0), while a live round trip cost about 0.0094 on 6 Nov; trades
+        # scored at less are not evidence at the real cost. With nothing measured the bar is not the flat 0.0035 any
+        # more but what a live transaction costs (review of 7 Nov evening)
         at = f"{scored:g} SOL a transaction" if scored >= 0 else "no known cost"
-        return (f"was scored at {at}, below the {float(tx_cost):g} SOL a transaction measured live (a round trip about "
-                f"{2 * float(tx_cost):.4f}): its forward trades are not at the real cost")  # fmt: skip
+        return (f"was scored at {at}, below the {tx:g} SOL a transaction (a round trip about {2 * tx:.4f}) "
+                f"{_cost_words(cost)}: its forward trades are not at the real cost")  # fmt: skip
     n = int(row.get("n") or 0)
     if n < MIN_FORWARD_N:
         return f"has {n} forward trades of the {MIN_FORWARD_N} needed"
@@ -219,14 +247,15 @@ def _why_not(row: dict | None, frozen: dict | None, tx_cost: float = 0.0) -> str
 def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str], list[dict]]:
     """(the eligible strategies, best lower bound first; why each other one is not; every paper report row)."""
     from ..analysis import paper
-    from ..qualify.run import lab_tx_cost
+    from ..qualify.run import lab_tx_cost_info
 
     rows = paper.report(store, cfg, now=now)["strategies"]
     frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
-    tx_cost = lab_tx_cost(store, cfg)  # the measured cost of a transaction (the flat 0.0035 until it is measured)
+    # the measured cost of a transaction, the last one measured after a week without enough fills, 0.0045 before any
+    cost = lab_tx_cost_info(store, cfg)
     ok, why = [], {}
     for r in rows:
-        w = _why_not(r, frozen.get(r["id"]), tx_cost)
+        w = _why_not(r, frozen.get(r["id"]), cost)
         if w is None:
             ok.append(r)
         else:
@@ -236,9 +265,10 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
 
 def eligible(store, cfg: Config, now: float) -> list[dict]:
     """The frozen paper strategies a live test may run, best lower bound first (paper.report rows): hunt strategies (the
-    one kind OKTech runs exactly as the lab scored it), scored at the live landing and at no less than the measured cost
-    of a transaction, with MIN_FORWARD_N forward trades or more and a lower bound above zero, also with each gain
-    capped. The forward test at the real landing and the real cost is the evidence, never the lab."""
+    one kind OKTech runs exactly as the lab scored it), scored at the live landing, with OKTech's watch delay and at no
+    less than the measured cost of a transaction (0.0045 while none is measured), with MIN_FORWARD_N forward trades or
+    more and a lower bound above zero, also with each gain capped. The forward test at the real landing and the real
+    cost is the evidence, never the lab."""
     return _survey(store, cfg, now)[0]
 
 

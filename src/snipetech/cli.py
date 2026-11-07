@@ -429,8 +429,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
     sp.add_argument("--per-tx", type=float, default=None,
-                    help="SOL per transaction (priority + tip + base); default: the measured cost, as `paper freeze` "
-                         "and the search charge it (the flat 0.0035 until the measure stage has enough fills)")  # fmt: skip
+                    help="SOL per transaction (priority + tip + base + failed duplicate sends; default: the measured "
+                         "cost, half the low bid's measured round trip, the last one measured after a week without "
+                         "enough fills, 0.0045 until one is measured, as `paper freeze` charges; the output names the "
+                         "cost and where it came from)")  # fmt: skip
     sp.add_argument("--top", type=int, default=10)
     sp.add_argument(
         "--by-wallet",
@@ -612,7 +614,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
     sp.add_argument("--per-tx", type=float, default=None,
                     help="freeze: SOL per transaction (default: the measured cost, half the low bid's measured round "
-                         "trip, 0.0035 until it is measured; a strategy scored below it never goes live)")  # fmt: skip
+                         "trip, the last one measured after a week without enough fills, 0.0045 until one is measured; "
+                         "a strategy scored below it never goes live)")  # fmt: skip
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
@@ -1065,15 +1068,21 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import rank_wallets as lab_rank_wallets
             from .analysis.lab_lock import lab_lock
             from .operator.research import recent_tape
-            from .qualify.run import lab_tx_cost
+            from .qualify.run import lab_tx_cost_info
 
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
-            # what a trade costs live (the low bid's measured round trip, 0.009 SOL on 6 Nov), unless told: a lab at the
-            # flat 0.0035 is 0.002 SOL a trade too kind (research round 1, 7 Nov)
-            per_tx = args.per_tx if args.per_tx is not None else lab_tx_cost(svc.store, cfg)
             # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
             # of their own: their copies at the copy landing; the grid's copies at --latency / --position
             lat, pos = (0, copy_pos) if args.trigger else (args.latency, args.position)
+            # what a transaction costs live, as `paper freeze`, the qualify lab and the strategy search charge it, unless
+            # told: every lab of research round 1 (7 Nov) charged the flat 0.0035 against about 0.0045 live, so every
+            # mean was 0.002 SOL a trade too kind
+            cost = (
+                {"per_tx_sol": args.per_tx, "per_tx_source": "flag", "per_tx_measured_at": None}
+                if args.per_tx is not None
+                else lab_tx_cost_info(svc.store, cfg)
+            )
+            per_tx = cost["per_tx_sol"]
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
@@ -1087,7 +1096,7 @@ async def _run(args, cfg: Config) -> int:
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
             ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
-                   "copy_landing": copy_pos, "buy_sol": args.buy, "per_tx_sol": per_tx, "hours": args.hours,
+                   "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
                    "strategies": ranked}  # fmt: skip
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
@@ -1129,13 +1138,20 @@ async def _run(args, cfg: Config) -> int:
             from .analysis import paper
 
             if args.action == "freeze":
-                from .qualify.run import lab_tx_cost
+                from .qualify.run import lab_tx_cost_info
 
-                # the measured cost of a transaction unless told: live_test.eligible refuses a strategy scored below it
-                per_tx = args.per_tx if args.per_tx is not None else lab_tx_cost(svc.store, cfg)
+                # the measured cost of a transaction unless told: live_test.eligible refuses a strategy scored below it;
+                # each strategy frozen keeps where its cost came from
+                cost = (
+                    {"per_tx_sol": args.per_tx, "per_tx_source": "flag"}
+                    if args.per_tx is not None
+                    else lab_tx_cost_info(svc.store, cfg)
+                )
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
-                                              hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
+                                              cost["per_tx_sol"], args.replace, only_live=args.only_live,
+                                              triggers=args.trigger, hours=args.hours,
+                                              lock_dir=Path(cfg.storage.db_path).resolve().parent,
+                                              per_tx_source=cost["per_tx_source"])  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             else:

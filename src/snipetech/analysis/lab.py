@@ -31,7 +31,7 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field, fields, replace
 from typing import Any
 
 import numpy as np
@@ -51,9 +51,16 @@ LAMPORTS = 1e9
 # 2 = the lab replays what the live sniper does (measured slot time, OKTech's watch delay, the copy exit, sells a slot
 # after their exit) and scores each wallet on the buys its own floor lets through. Older verdicts have no copy plan.
 LAB_VERSION = 2
-# OKTech watches a position about this long after the buy: the 6 Nov copy fills replay right with 1.25-1.4 s
-# (tests/test_lab_replay.py). A sell lands one slot after its exit fires, before the trades of that slot.
+# OKTech starts watching a position about this long after its buy lands, and no exit of a live sniper acts before it:
+# the 12 copy fills OKTech sold on 6 Nov replay right with 1.25-1.4 s (tests/test_lab_replay.py), and in the replay of
+# that day's 13 copy fills the 1 s dead exit fires a median 1.9 s after the buy (exits_menu.py). The one watch delay
+# of every exit the lab scores as a live sniper sells: the copies' (`live_exits`, `menu_exits`) and, since 7 Nov
+# evening, every exit on a launch-type rule (`watched`). Research round 1 found the grid's hunt exits acting from the
+# buy (the 10/10/1 hunt's chosen exit had watch_secs 0; replaying hunt buys with a 2 s delay cost 0 to 0.003 SOL a
+# trade). Hunt and launch snipers get the same autoSell block as copy snipers (oktech.autosell); no hunt fill has timed
+# their delay apart yet. A launch-type strategy frozen with less never goes live (operator/live_test.py `_why_not`).
 WATCH_SECS = 1.3
+# A sell lands one slot after its exit fires, before the trades of that slot.
 EXIT_LATENCY_SLOTS, EXIT_POSITION = 1, "start"
 REBUY_MIN_N = 10  # re-buys of 0.1 SOL or more before a wallet's floor is read from them
 # A wallet's own exit (choose_wallet_exit): picked on its older 60 % of moments, each train mean shrunk toward the
@@ -353,6 +360,26 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
 # triggers a live launch sniper runs (OKTech hunt on the pump.fun curve): no trade once the coin has left its curve.
 # MIG is not one of them: its buy is on PumpSwap, after the curve has completed, by design.
 LAUNCH_KINDS = frozenset({"launch", "hunt", "whale", "burst"})
+# triggers whose every exit waits OKTech's watch delay in the lab (`kind_exits`): the rules a live launch sniper runs.
+# Kept apart from LAUNCH_KINDS, which also means "on the curve only": a rule run by another OKTech sniper whose exits
+# wait too (a MIG trigger buys on PumpSwap) belongs here and not there.
+WATCHED_KINDS = LAUNCH_KINDS
+
+
+def watched(ex: ExitParams, secs: float = WATCH_SECS) -> ExitParams:
+    """`ex` as a live OKTech sniper runs it: none of its rules acts before `secs` after the buy lands. An exit that
+    already waits that long or longer keeps its own wait."""
+    return ex if ex.watch_secs >= secs else replace(ex, watch_secs=secs)
+
+
+def kind_exits(exits: Sequence[ExitParams]) -> dict[str, list[ExitParams]]:
+    """The exits each launch-type kind (WATCHED_KINDS: launch, hunt, whale, burst) is scored with: `exits`, each
+    `watched`, since such a rule runs live through an OKTech launch sniper. Every other kind is scored with `exits` as
+    given: a copy keeps the exits it is given (the qualify lab's carry their own watch), and momentum and event rules
+    have no live sniper to time them. Every exit keeps its column, so a row's pnl list reads against either."""
+    launch = [watched(ex) for ex in exits]
+    return dict.fromkeys(sorted(WATCHED_KINDS), launch)
+
 
 # Triggers whose every position is a PumpSwap buy. Outside the recorder's recent-migrations runs (coverage
 # `tape:amm_recent`, amm_tape.py) the tape keeps just the few PumpSwap trades that ride in a pump.fun transaction (7 Nov,
@@ -832,6 +859,7 @@ class _Run:
     buy_sol: float
     costs: Costs
     exits: list[ExitParams]
+    kind_exits: dict[str, list[ExitParams]]  # the launch-type kinds' exits, watched (`kind_exits`); others use `exits`
     min_trades: int
     # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts, and
     # (`mig_sell`: an exit of the run sells into the migration) where a curve position that migrates while held does
@@ -922,7 +950,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 continue
-            exits = run.mig_exits if trig.kind in AMM_KINDS else run.exits
+            # MIG: its own exits (watched, `mig_exits`); a launch-type rule: its exits watched (`kind_exits`)
+            exits = run.mig_exits if trig.kind in AMM_KINDS else run.kind_exits.get(trig.kind, run.exits)
             pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in exits]
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
@@ -1055,9 +1084,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
     moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
     search set `exit_set()`, and MIG's own `mig_exit_set()` for a MIG trigger, `mig_exits` in the result) are simulated
-    the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a wallet's buy
-    (KOL triggers) the copy exit follows that wallet's sales. Every row records the trigger buy's size (`lead_sol`);
-    KOL rows also record how that wallet went on in the coin (`_leader_profile`).
+    the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a launch-type
+    trigger (launch, hunt, whale, burst) none acts before OKTech's watch delay (`kind_exits`: the exits each such kind
+    was scored with, in the result too), nor on a MIG trigger (its exits are watched); on a wallet's buy (KOL triggers)
+    the copy exit follows that wallet's sales. Every row records the trigger buy's size (`lead_sol`); KOL rows also
+    record how that wallet went on in the coin (`_leader_profile`).
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
@@ -1080,8 +1111,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
-    mig_exits = list(exits) if exits else mig_exit_set()  # handed exits score every trigger, MIG included
+    # handed exits score every trigger, MIG included, watched as a live OKTech sniper runs a MIG rule's auto-sell
+    mig_exits = [watched(ex) for ex in exits] if exits else mig_exit_set()
     exits = list(exits) if exits else exit_set()
+    by_kind = kind_exits(exits)
     kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip
     triggers = [(ti, t) for ti, t in enumerate(all_triggers)
@@ -1107,7 +1140,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
-               costs=costs, exits=exits, min_trades=min_trades, amm_cov=amm_cov,
+               costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits))  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
@@ -1127,7 +1160,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
-    out = {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
+    out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "tape_hours": sum(b - a for a, b in spans) / 3600,
+           "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits}  # fmt: skip
     if amm_runs or mig_sell:
@@ -1174,9 +1208,12 @@ def _landing_check(seen: list[tuple]) -> dict[str, Any]:
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
-    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. A MIG trigger
-    is ranked on the exits its moments were scored on (`mig_exits`)."""
+    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. Each row
+    names the exit its moments were scored with: on a launch-type trigger the watched one (`collect`'s `kind_exits`),
+    which is what `paper freeze` stores and the paper test then scores; a MIG trigger is ranked on the exits its
+    moments were scored on (`mig_exits`)."""
     rows, curve_exits = data["rows"], data["exits"]
+    by_kind = data.get("kind_exits") or {}
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     hours = max(data["tape_hours"], 1e-6)
     out = []
@@ -1192,8 +1229,9 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         test = m[cut:, k]
         span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
         st = summarize(test, conf, samples)
+        ex = by_kind.get(trig.kind, exits)[k]
         out.append({
-            "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": exits[k].label(), "exit_params": exits[k].to_dict(),
+            "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": ex.label(), "exit_params": ex.to_dict(),
             "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),

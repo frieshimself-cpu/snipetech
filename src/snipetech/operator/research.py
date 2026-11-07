@@ -331,8 +331,10 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
     # what a trade really costs: the qualify lab's measured cost of a transaction (the low bid's fees and its failed
-    # duplicate sends, 0.009 SOL a round trip on 6 Nov), the flat 0.0035 until enough fills are measured
-    per_tx = Q.lab_tx_cost(store, cfg)
+    # duplicate sends, 0.009 SOL a round trip on 6 Nov; the last one measured after a week without enough fills; 0.0045
+    # until one is measured), and where it came from, in the search's record and every strategy it freezes
+    cost = Q.lab_tx_cost_info(store, cfg)
+    per_tx = cost["per_tx_sol"]
     with _lab_lock(data_dir, wait=True):
         # launch-window rules (hunt, whale, burst) are scored in the same pass where a hunt buy lands
         data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, per_tx,
@@ -341,9 +343,9 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)
     frozen = paper.freeze(store, cfg, top=top, position=copy_pos, latency=0, buy_sol=buy, per_tx_sol=per_tx, now=now,
-                          data=data, only_live=True)  # fmt: skip
+                          data=data, only_live=True, per_tx_source=cost["per_tx_source"])  # fmt: skip
     out = {"ts": int(now), "landing": copy_pos, "buy_sol": buy, "tape_hours": round(float(data["tape_hours"]), 1),
-           "moments": len(data["rows"]),
+           "moments": len(data["rows"]), "per_tx_sol": per_tx, "per_tx_source": cost["per_tx_source"],
            "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],
                            "landing": paper.landing_key(*(r.get("landing") or (0, copy_pos))), **r["test"]} for r in ranked[:8]],
            "wallets": [{k: w.get(k) for k in ("wallet", "label", "n", "mean", "ev_lower", "win_rate")} for w in wallets[:8]],

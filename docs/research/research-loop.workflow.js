@@ -32,6 +32,7 @@ HARD FACTS (measured 5-7 Nov):
 - Our launch buys (OKTech hunt) land in the slot after the trigger, about 3 trades in ("+3@1"); a copy of a wallet lands 2-4 trades behind the leader at +18-43 % price ("+6"). Only these landings count; better landings are not evidence.
 - A live round trip costs about 0.009 SOL whatever the size; buys are 0.2 SOL.
 - The lab: snipetech lab --trigger '<JSON>' --hours N --json replays one trigger at its live landing over the newest N hours with the exit grid, picks the exit on the first part (train_mean), reports the later part as test {n, mean, ev_lower, win_rate, total} per strategy row, plus landing and live_landing. About 4-10 minutes on 24 h once it holds the server's lab lock.
+- The lab charges what a trade costs live and sells the way OKTech sells (since 7 Nov evening; round 1's labs did neither). Cost: the measured cost of a transaction, half the low bid's measured round trip (0.0047 SOL on 6 Nov); never pass --per-tx. Its output says what it charged: per_tx_sol, and per_tx_source "measured" (the low bid's last 7 days), "last measured" (the last cost measured, kept once a week passes without enough low-bid fills; per_tx_measured_at says when) or "estimate" (0.0045 while nothing has been measured); never the flat 0.0035 of round 1, 0.002 SOL a trade too kind (0.003 with a partial take profit). Exits: every exit of a launch, hunt, whale or burst rule waits OKTech's 1.3 s watch delay (watch1.3s in its name). Round 1's lab numbers were charged 0.0035 a transaction without the delay: they are 0.002 to 0.006 SOL a trade kinder than this lab's.
 - Trigger language: launch {plain}; burst {buyers, sol, window, max_age, plain}; whale {sol, max_age, plain, solo}; kol {sol, group (kol | wallet | cand), max_age, plain}; momentum {buyers, sol, progress, holders, ret, plain}; hunt {sol, buyers, window, max_buyers, dev_max} = OKTech's launch gate exactly (sol and dev_max whole numbers; window in seconds with whole milliseconds). Bounds: sol 0-100, buyers 0-200, window 0-60, max_age 0-600, max_buyers 0-200, dev_max 0-100, progress 0-1, holders 0-10000, ret -1-10; buyers, holders, max_buyers whole; plain and solo true/false. Launch, hunt, whale and burst are scored at the hunt landing and never buy a coin that left its curve; kol and momentum at the copy landing.
 - What OKTech can run live: hunt, copy (follow a wallet's buys), MIG (buy at the migration), and auto-sell exits; the bot can arm and disarm snipers on a schedule. A strategy OKTech cannot run is a build proposal, not a result.
 - Everything in docs/research/*.md and docs/roadmap.md marked refuted stays refuted unless you bring a genuinely new angle and say what is new.`
@@ -77,9 +78,19 @@ const LAB_SCHEMA = {
     ok: { type: 'boolean' }, n: { type: 'number' }, mean: { type: 'number' }, ev_lower: { type: 'number' },
     win_rate: { type: 'number' }, total: { type: 'number' }, train_mean: { type: 'number' }, per_hour: { type: 'number' },
     landing: { type: 'string' }, live_landing: { type: 'boolean' }, exit: { type: 'string' }, rows: { type: 'string' }, notes: { type: 'string' },
+    per_tx_sol: { type: 'number', description: 'the SOL a transaction the lab charged (per_tx_sol at the top of its result)' },
+    per_tx_source: { type: 'string', description: 'where that cost came from (per_tx_source): measured, last measured, estimate or flag; leave it out if the result has none' },
   },
   required: ['id', 'trigger', 'ok', 'n', 'mean', 'ev_lower', 'rows', 'notes'],
 }
+// A lab result counts at live cost only when the lab charged a measured cost of a transaction (per_tx_source
+// "measured", or "last measured" once a week passes without enough low-bid fills), or at least the 0.0045 SOL a live
+// transaction costs (round 1: about 0.009 a round trip; the lab's "estimate" while nothing is measured). One charged
+// less (a lab at the flat 0.0035 of round 1) or that does not say (a server without the 7 Nov evening lab) is held to
+// live cost first: 0.003 SOL a trade off its mean and lower bound (round 1: 0.002, 0.003 with a partial take profit).
+const LIVE_TX_SOL = 0.0045
+const LIVE_COST_GAP = 0.003
+const atLiveCost = r => ['measured', 'last measured'].includes(r.per_tx_source) || (r.per_tx_sol || 0) >= LIVE_TX_SOL
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: { refuted: { type: 'boolean' }, confidence: { type: 'number' }, reasons: { type: 'string' }, numbers: { type: 'string' } },
@@ -159,13 +170,14 @@ Steps:
 1. cd /home/user/snipetech and export the two variables (see SERVER ACCESS).
 2. Start it: .venv/bin/snipetech remote run lab --trigger '<the trigger JSON exactly>' --hours ${hours} --json   It prints the job record; note its "id". If the server refuses the trigger (exit code 2 with a reason in the log), report ok=false with the reason; do not invent a different trigger.
 3. Wait without a tight loop: run   timeout 540 bash -c 'until .venv/bin/snipetech remote read jobs/<id>.json | grep -q "\\"running\\": false"; do sleep 30; done'   and repeat that call until the job has ended (it may first wait for the server's lab lock; allow up to 90 minutes in all).
-4. Read the result: .venv/bin/snipetech remote read jobs/<id>.log (JSON with "strategies": rows with exit, landing, train_mean, test {n, mean, ev_lower, win_rate, total}, per_hour, live_landing). If the job ended without a result because the service restarted (no JSON, exit code not 0, no refusal reason), start it once more; a second failure is ok=false with the log's last lines.
-5. Report the best row (highest test ev_lower among rows with live_landing true) in the fields, and every row in "rows".`, { label: `r${ROUND}:lab:${h.id}`, phase: 'Lab', schema: LAB_SCHEMA, effort: 'low' })
+4. Read the result: .venv/bin/snipetech remote read jobs/<id>.log (JSON with "strategies": rows with exit, landing, train_mean, test {n, mean, ev_lower, win_rate, total}, per_hour, live_landing; at its top per_tx_sol and per_tx_source, the cost a transaction it charged and where it came from). If the job ended without a result because the service restarted (no JSON, exit code not 0, no refusal reason), start it once more; a second failure is ok=false with the log's last lines.
+5. Report the best row (highest test ev_lower among rows with live_landing true) in the fields, every row in "rows", and per_tx_sol and per_tx_source as the result gives them (leave them out if it has none).`, { label: `r${ROUND}:lab:${h.id}`, phase: 'Lab', schema: LAB_SCHEMA, effort: 'low' })
   if (!res) { log(`lab ${h.id}: no result`); continue }
   res.hypothesis = h
   labResults.push(res)
-  log(`lab ${h.id}: ok ${res.ok} n ${res.n} mean ${res.mean} ev_lower ${res.ev_lower}`)
-  const positive = res.ok && res.live_landing !== false && ((res.ev_lower > 0 && res.n >= 30) || (res.mean > 0 && res.n >= 100))
+  const gap = atLiveCost(res) ? 0 : LIVE_COST_GAP
+  log(`lab ${h.id}: ok ${res.ok} n ${res.n} mean ${res.mean} ev_lower ${res.ev_lower} per_tx ${res.per_tx_sol ?? '?'} (${res.per_tx_source || 'not said'})${gap ? `, held to live cost: -${gap} a trade` : ''}`)
+  const positive = res.ok && res.live_landing !== false && ((res.ev_lower - gap > 0 && res.n >= 30) || (res.mean - gap > 0 && res.n >= 100))
   if (!positive) continue
 
   phase('Verify')
@@ -173,7 +185,7 @@ Steps:
 
 THE CLAIM TO TEST: hypothesis ${h.id} (${h.lens}): ${h.statement}
 Mechanism claimed: ${h.mechanism}
-Lab result (${hours} h of newest tape): ${JSON.stringify({ trigger: res.trigger, n: res.n, mean: res.mean, ev_lower: res.ev_lower, win_rate: res.win_rate, total: res.total, train_mean: res.train_mean, landing: res.landing, exit: res.exit, per_hour: res.per_hour, job: res.job_id })}
+Lab result (${hours} h of newest tape): ${JSON.stringify({ trigger: res.trigger, n: res.n, mean: res.mean, ev_lower: res.ev_lower, win_rate: res.win_rate, total: res.total, train_mean: res.train_mean, landing: res.landing, exit: res.exit, per_hour: res.per_hour, per_tx_sol: res.per_tx_sol, per_tx_source: res.per_tx_source, job: res.job_id })}
 All rows: ${res.rows}
 
 You are a skeptic: try hard to REFUTE that this pays live at our landing. Default to refuted=true when the evidence is not clear. Report the numbers you found.`
@@ -204,7 +216,7 @@ YOUR JOB: synthesize round ${ROUND} into a ranked, honest report. No new server 
 
 ANGLES: ${JSON.stringify(ANGLES, null, 1)}
 HYPOTHESES (all lenses, with their SQL screens and dead ends): ${JSON.stringify(lensOut, null, 1)}
-LAB RESULTS: ${JSON.stringify(labResults.map(r => ({ id: r.id, trigger: r.trigger, hours: r.hours, ok: r.ok, n: r.n, mean: r.mean, ev_lower: r.ev_lower, win_rate: r.win_rate, total: r.total, train_mean: r.train_mean, landing: r.landing, exit: r.exit, rows: r.rows, notes: r.notes })), null, 1)}
+LAB RESULTS: ${JSON.stringify(labResults.map(r => ({ id: r.id, trigger: r.trigger, hours: r.hours, ok: r.ok, n: r.n, mean: r.mean, ev_lower: r.ev_lower, win_rate: r.win_rate, total: r.total, train_mean: r.train_mean, landing: r.landing, exit: r.exit, per_tx_sol: r.per_tx_sol, per_tx_source: r.per_tx_source, at_live_cost: atLiveCost(r), rows: r.rows, notes: r.notes })), null, 1)}
 SKEPTICS' VERDICTS: ${JSON.stringify(verdicts, null, 1)}
 
 Write: (1) a plain-words report (lead with the outcome; what was tested, what survived, what died and why, with numbers); (2) freezes: only triggers that survived the skeptics; (3) builds: what would have to be built, with evidence and how OKTech would run it, priority 1 (highest) to 5; (4) lessons, one line each with numbers; (5) next angles for round ${ROUND + 1}, each with why.`, { label: `r${ROUND}:synthesize`, phase: 'Synthesize', schema: SYNTH_SCHEMA })

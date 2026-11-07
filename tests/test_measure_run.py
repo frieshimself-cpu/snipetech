@@ -430,6 +430,33 @@ def test_stale_bid_model_rows_and_an_old_landing_are_dropped(tmp_path):
         st.close()
 
 
+def test_the_low_bids_last_measured_cost_outlives_the_bid_models_week(tmp_path):
+    """The bid model reads the last 7 days of fills, so a week without trading empties it and its rows are pruned (7 Nov
+    10:59 the wallet was emptied; nothing has traded since). The low bid's cost of a transaction, whenever it is
+    measured, is kept apart (measure:tx_cost), and the labs charge it once the week has too few fills, never an
+    unmeasured cost (review of 7 Nov evening: they fell back to the flat 0.0035, 0.002 SOL a trade too kind)."""
+    from snipetech.qualify.run import lab_tx_cost_info
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 3
+        sigs = _copy_world(st, coins=3)
+        metas = {b: _meta(b, priority=3_000_000) for b, _ in sigs}  # 0.003 priority + 0.002 tip + base: 0.005005 a buy
+        asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.005005, "per_tx_source": "measured",
+                                             "per_tx_measured_at": NOW}  # fmt: skip
+        assert st.coverage("measure:tx_cost") == {"per_tx_sol": 0.005005, "arm": "control", "n": 3, "ts": NOW}
+        later = NOW + 8 * 86400  # a week and a day without a fill
+        asyncio.run(run_measure(svc, cfg, later, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        assert st.bid_model() == []  # nothing in the window: every row pruned
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.005005, "per_tx_source": "last measured",
+                                             "per_tx_measured_at": NOW}  # fmt: skip
+    finally:
+        st.close()
+
+
 def test_twin_fees_go_to_the_nearest_landed_sell_of_the_same_coin():
     """A failed send carrying a sell of the same coin within 3 s of a landed sell is that sell's twin and costs its
     priority fee + 5,000 lamports; failed buys, other coins, sends further away and unread sends are not twins."""

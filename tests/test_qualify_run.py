@@ -244,7 +244,7 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
         # every exit on the menu is scored, lab first; the gating numbers are lab's, what book/run.py sends by default
         assert seen["kw"]["exits"] == list(L.menu_exits(cfg).values())
         assert seen["kw"]["exits"][0] == L.live_exits(cfg)["lab"] and row["exit"] == L.live_exits(cfg)["lab"].label()
-        assert seen["kw"]["per_tx_sol"] == 0.0035  # no measured round trip yet: the flat cost
+        assert seen["kw"]["per_tx_sol"] == 0.0045  # nothing measured yet: what a live transaction costs, estimated
         assert row["wallet"] == "W1" and row["exit_name"] == "lab" and row["lab_version"] == L.LAB_VERSION
         assert row["exit_params"] == L.LIVE_EXITS["lab"].to_dict() and row["min_leader_sol"] == cfg.book.min_copy_sol
         assert row["exit_source"] == "lab" and row["exit_test_n"] == 5  # 12 moments: 5 held out, too few for its own
@@ -313,17 +313,44 @@ def test_the_lab_charges_the_measured_round_trip_once_the_low_bid_has_30_fills()
 
     st, cfg = Store(":memory:"), Config()
     try:
-        assert lab_tx_cost(st, cfg) == 0.0035
+        # nothing measured here yet: about what a live transaction cost when measured on 6 Nov (0.0047), never the flat
+        # 0.0035, which is below every live cost measured (review of 7 Nov evening)
+        assert lab_tx_cost(st, cfg) == 0.0045
         arm = {"arm": "control", "n": 20, "failed_n": 33, "mean_fee_sol": 0.003005, "mean_overhead_sol": 0.00335,
                "updated_at": NOW}  # fmt: skip
         st.put_bid_model(arm)
-        assert lab_tx_cost(st, cfg) == 0.0035  # 20 fills: not enough yet
+        assert lab_tx_cost(st, cfg) == 0.0045  # 20 fills: not enough yet
         st.put_bid_model(arm | {"n": 30})  # buy 0.003005 + sell at the same fees + 1.67 failed twins a trade
         assert lab_tx_cost(st, cfg) == pytest.approx((2 * 0.003005 + 0.00335) / 2)  # 0.0047 a transaction
         st.put_bid_model(arm | {"n": 30, "mean_fee_sol": 0.001, "mean_overhead_sol": 0.0})
         assert lab_tx_cost(st, cfg) == 0.0035  # never below the flat cost
         st.put_bid_model({"arm": "paid", "n": 50, "mean_fee_sol": 0.04, "mean_overhead_sol": 0.02, "updated_at": NOW})
         assert lab_tx_cost(st, cfg) == 0.0035  # only the low bid sets it
+    finally:
+        st.close()
+
+
+def test_a_week_with_too_few_low_bid_fills_charges_the_last_measured_cost_and_says_when():
+    """Review of 7 Nov evening: the bid model reads the last 7 days of fills, and with no live fills for a week the
+    measure stage prunes the low bid's row (7 Nov 10:59 the wallet was emptied; nothing has traded since). Every lab,
+    freeze and qualify run then fell back to the flat 0.0035, 0.002 SOL a trade too kind again. They charge the last
+    cost the measure stage measured instead (measure:tx_cost), and say that it is and when it was measured."""
+    from snipetech.qualify.run import lab_tx_cost, lab_tx_cost_info
+
+    st, cfg = Store(":memory:"), Config()
+    try:
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.0045, "per_tx_source": "estimate",
+                                             "per_tx_measured_at": None}  # fmt: skip
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400})
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.0047, "per_tx_source": "last measured",
+                                             "per_tx_measured_at": NOW - 8 * 86400}  # fmt: skip
+        week = {"arm": "control", "n": 12, "failed_n": 3, "mean_fee_sol": 0.003, "mean_overhead_sol": 0.002,
+                "updated_at": NOW}  # fmt: skip
+        st.put_bid_model(week)
+        assert lab_tx_cost(st, cfg) == 0.0047  # 12 fills this week: still too few, the last measured cost
+        st.put_bid_model(week | {"n": 30})  # measured again: this week's own cost
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": pytest.approx(0.004), "per_tx_source": "measured",
+                                             "per_tx_measured_at": NOW}  # fmt: skip
     finally:
         st.close()
 

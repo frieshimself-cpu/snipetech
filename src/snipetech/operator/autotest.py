@@ -371,8 +371,42 @@ def dropped(paths: OperatorPaths) -> list[dict]:
             continue
         if isinstance(h, dict) and h.get("kind") == "sequence" and h.get("dropped") is True and h.get("strategy"):
             seen.setdefault(str(h["strategy"]), {"strategy": h["strategy"], "label": h.get("label"),
-                                                 "why": h.get("why"), "at": h.get("ended_at")})  # fmt: skip
+                                                 "why": h.get("why"), "at": h.get("ended_at"),
+                                                 "live_id": h.get("live_id")})  # fmt: skip
     return sorted(seen.values(), key=lambda d: float(d.get("at") or 0))
+
+
+def live_ids(store) -> dict[str, str]:
+    """Each frozen strategy's id (superseded ones too) and the id of the sniper OKTech runs for it (paper.live_id): the
+    same for a launch-type rule frozen before 7 Nov evening without OKTech's watch delay and for that rule frozen since
+    with it. Empty when the paper test cannot be read: every strategy is then only itself."""
+    from ..analysis import paper
+
+    try:
+        cov = store.coverage("paper_strategies") or {}
+    except Exception:  # noqa: BLE001 - unreadable
+        return {}
+    out: dict[str, str] = {}
+    for s in [*(cov.get("strategies") or []), *(cov.get("superseded") or [])]:
+        try:
+            out.setdefault(str(s["id"]), paper.live_id(s))
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return out
+
+
+def _line_live_id(h: dict, live: dict[str, str]) -> str:
+    """The sniper a sequence line (or a drop) is about: the live id kept with it since 7 Nov evening, else its
+    strategy's from the paper test, else its own id (a strategy run before then had no watch delay: its own id)."""
+    sid = str(h.get("strategy"))
+    return str(h.get("live_id") or live.get(sid, sid))
+
+
+def gone_ids(paths: OperatorPaths, live: dict[str, str]) -> set[str]:
+    """The ids the automatic test never starts again: every dropped strategy's own and its sniper's (paper.live_id). A
+    drop is the verdict on that sniper's live trades, so it holds for every strategy OKTech runs as that sniper (review
+    of 7 Nov evening: a rule dropped under its old id could be armed again under the id it got with the watch delay)."""
+    return {x for d in dropped(paths) for x in (str(d["strategy"]), _line_live_id(d, live))}
 
 
 def holds(paths: OperatorPaths, t: dict, cfg: Config) -> str | None:
@@ -873,8 +907,10 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         ok = live_test.eligible(store, r.cfg, now)
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
         return wait(f"the paper test could not be read ({type(exc).__name__})")
-    gone = {str(d["strategy"]) for d in dropped(paths)}
-    ok = [x for x in ok if x["id"] not in gone]  # a dropped strategy is never started again
+    live = live_ids(store)
+    gone = gone_ids(paths, live)
+    # a dropped strategy is never started again, nor its sniper under another id (the same rule with another watch delay)
+    ok = [x for x in ok if not {x["id"], live.get(x["id"], x["id"])} & gone]
     if not ok:
         return wait("no hunt strategy passes on paper" + (" that was not dropped" if gone else " yet"))
     size = float(ok[0].get("buy_sol") or 0)
@@ -894,7 +930,7 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         return wait("the wallet's balance is not known this round")
     # a strategy that ran before and was not dropped starts again with its live record (review of 7 Nov: a run that
     # ended, its paper flickering or the owner's off, forgot its losses): what is left of its loss, and its trades
-    carried = _carried(paths, best["id"])
+    carried = _carried(paths, best["id"], live)
     allowance = float(at["loss_sol"])
     left = allowance + (_spent({"carried": carried})["sum"] if carried else 0.0)
     try:
@@ -903,7 +939,8 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     except ValueError as exc:
         return wait(f"{best['id']} cannot be traded live: {exc}")
     before = load_seq(paths)
-    seq = {"id": f"seq-{int(now)}", "state": "running", "plan": PLAN, "strategy": best["id"], "label": p["label"],
+    seq = {"id": f"seq-{int(now)}", "state": "running", "plan": PLAN, "strategy": best["id"],
+           "live_id": live.get(best["id"], best["id"]), "label": p["label"],
            "approved": at["approved"], "caps": _caps(at), "wallet": at["wallet"], "oktech_wallet": at["oktech_wallet"],
            "buy_sol": p["buy_sol"], "floor": p["floor"], "start_equity": round(eq, 4), "started_at": int(now),
            "allowance": allowance, "paper": float(best.get("mean") or 0),
@@ -1089,11 +1126,14 @@ def _floor_for(total: float, left: float) -> float:
     return math.floor(max(live_test.MIN_FLOOR_SOL, float(total) - float(left)) * 100 + 1e-6) / 100
 
 
-def _carried(paths: OperatorPaths, sid: str) -> dict | None:
+def _carried(paths: OperatorPaths, sid: str, live: dict[str, str] | None = None) -> dict | None:
     """The strategy's live record from its earlier runs that were not dropped (their "sequence" lines in tests.jsonl):
     every block's trades, read both ways, so a run that starts it again judges it, and keeps its floor, on every live
-    trade it made (review of 7 Nov: a run that ended, its paper flickering or the owner's off, forgot its losses). None
-    when it has none."""
+    trade it made (review of 7 Nov: a run that ended, its paper flickering or the owner's off, forgot its losses). Its
+    sniper's runs under another id count too (`live`: live_ids; the same rule with another watch delay is the same
+    sniper live, review of 7 Nov evening). None when it has none."""
+    live = live or {}
+    mine = live.get(sid, sid)
     try:
         lines = live_test.history_path(paths).read_text().splitlines()
     except OSError:
@@ -1104,8 +1144,8 @@ def _carried(paths: OperatorPaths, sid: str) -> dict | None:
             h = json.loads(line)
         except ValueError:
             continue
-        if (isinstance(h, dict) and h.get("kind") == "sequence" and str(h.get("strategy")) == sid and h.get("id")
-                and h.get("dropped") is not True):  # fmt: skip
+        if (isinstance(h, dict) and h.get("kind") == "sequence" and h.get("id") and h.get("dropped") is not True
+                and (str(h.get("strategy")) == sid or _line_live_id(h, live) == mine)):  # fmt: skip
             runs[str(h["id"])] = [b["live"] for b in h.get("blocks") or []
                                   if isinstance(b, dict) and isinstance(b.get("live"), dict)]  # fmt: skip
     lives = [x for v in runs.values() for x in v]
@@ -1461,7 +1501,8 @@ def _history(r: _Round, seq: dict, *, drop: bool) -> None:
     tl = _tally(seq)
     n, total = tl["n"], tl["sum"]
     live_test._history(r.paths, {"kind": "sequence", "id": seq["id"], "strategy": seq["strategy"],
-                                 "label": seq.get("label"), "plan": seq.get("plan"), "approved": seq.get("approved"),
+                                 "live_id": seq.get("live_id"), "label": seq.get("label"), "plan": seq.get("plan"),
+                                 "approved": seq.get("approved"),
                                  "caps": seq.get("caps"), "wallet": seq.get("wallet"),
                                  "oktech_wallet": seq.get("oktech_wallet"), "floor": seq.get("floor"),
                                  "allowance": seq.get("allowance"), "carried": seq.get("carried"),
@@ -1475,8 +1516,8 @@ async def _drop(r: _Round, seq: dict, why: str) -> dict:
     """The strategy is dropped for good: its record with why and the numbers, one line in tests.jsonl, and the owner's
     one line. The next strategy that passes on paper starts in the same round (step), with a floor of its own."""
     tl = _tally(seq)
-    entry = {"strategy": seq["strategy"], "label": seq.get("label"), "sequence": seq["id"], "at": int(r.now),
-             "why": why, "trades": tl["n"], "live_sol": tl["sum"],
+    entry = {"strategy": seq["strategy"], "live_id": seq.get("live_id"), "label": seq.get("label"),
+             "sequence": seq["id"], "at": int(r.now), "why": why, "trades": tl["n"], "live_sol": tl["sum"],
              "live_mean": round(tl["sum"] / tl["n"], 6) if tl["n"] else None, "paper_mean": seq.get("paper"),
              "blocks": len(seq.get("blocks") or []), "reading": tl["reading"]}  # fmt: skip
     seq.update({"state": "dropped", "ended_at": int(r.now), "why": why, "hold": None, "waiting": None,

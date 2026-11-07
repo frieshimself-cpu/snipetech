@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import snipetech
+from snipetech.analysis import paper
 from snipetech.models import Trade
 from snipetech.operator import autotest as AT
 from snipetech.operator import live_test as LT
@@ -286,11 +287,11 @@ def test_nothing_starts_while_no_strategy_passes_on_paper(env):
 
 
 def test_nothing_starts_by_itself_on_a_strategy_scored_below_the_measured_cost(env):
-    """The standing yes covers a strategy that passes "at real costs". An analyst's freeze takes the CLI's 0.0035 SOL a
-    transaction (0.007 a round trip) while the measure stage measures 0.0094 a round trip: a lower bound of +0.001 there
-    is negative at the real cost, and no live test may start on it with no human in the loop."""
+    """The standing yes covers a strategy that passes "at real costs". An analyst's freeze took the CLI's 0.0035 SOL a
+    transaction (0.007 a round trip) until 7 Nov while the measure stage measures 0.0094 a round trip: a lower bound of
+    +0.001 there is negative at the real cost, and no live test may start on it with no human in the loop."""
     LTT.measured_cost(env.store)
-    LTT._freeze(env.store, BEST, pnl=0.02)
+    LTT._freeze(env.store, BEST, pnl=0.02, per_tx=0.0035)
     _on(env)
     _round(env, NOW + 60)
     assert LT.load(env.paths) is None and env.svc.created == [] and _seq(env) is None
@@ -506,6 +507,71 @@ def test_a_dropped_strategy_is_never_started_again_and_it_waits_for_another(env)
     t = LT.load(env.paths)
     assert t["id"] == SECOND and t["state"] == "running" and t["floor"] == 11.5  # 12.5 less 1 SOL: its own floor
     assert [d["strategy"] for d in _seq(env)["dropped"]] == [BEST]  # the record carries the drop with it
+
+
+TWIN_EXIT = {"stop_loss": 0.3, "max_hold_secs": 300}  # LTT._freeze's exit, with its watch delay left out
+
+
+def _twin(watch: float) -> str:
+    """The id of LTT.HUNT with LTT._freeze's exit and `watch` s of watch delay where a hunt fill lands: one rule, frozen
+    before the lab gave launch-type exits OKTech's watch delay (0) or since (1.3), or with another delay."""
+    return paper.strategy_id(LTT.HUNT, TWIN_EXIT | ({"watch_secs": watch} if watch else {}), "+3", 1, 0.2)
+
+
+def test_a_rule_dropped_under_its_old_id_never_comes_back_with_the_watch_delay(env):
+    """Review of 7 Nov evening. A hunt rule frozen before the watch delay and the same rule frozen since are two
+    strategies (two ids) but one OKTech sniper, which reads no watch delay. A drop is the verdict on that sniper's live
+    trades, so a rule the automatic test dropped under its old id is never armed again under its new one."""
+    old, new = _twin(0), _twin(1.3)
+    LTT._freeze(env.store, old, trigger=dict(LTT.HUNT), pnl=0.03, watch=0)  # still in the paper test, as on the server
+    # dropped before this change: its line in tests.jsonl as the code then wrote it, with no word of a twin
+    LT._history(env.paths, {"kind": "sequence", "id": "seq-1", "strategy": old, "label": "hunt 2 SOL", "dropped": True,
+                            "why": "live below half of paper", "blocks": [], "ended_at": NOW - HOUR})  # fmt: skip
+    LTT._freeze(env.store, new, trigger=dict(LTT.HUNT), pnl=0.02)  # passes on paper with OKTech's watch delay
+    _on(env)
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and env.svc.created == []
+    LTT._freeze(env.store, SECOND, pnl=0.01)  # another rule
+    _round(env, NOW + 960)
+    assert LT.load(env.paths)["id"] == SECOND
+
+
+def test_a_strategy_dropped_with_the_watch_delay_holds_for_every_twin_once_its_record_is_gone(env):
+    """The drop keeps the rule it was the verdict on (paper.live_id), so a twin with another watch delay never starts
+    either, even after `paper freeze --replace` took the dropped strategy's own record out of the paper test."""
+    new = _twin(1.3)
+    LTT._freeze(env.store, new, trigger=dict(LTT.HUNT), pnl=0.02)
+    _on(env)
+    _round(env, NOW + 60)
+    assert LT.load(env.paths)["id"] == new
+    _play(env, [0.005] * 10)  # below half of +0.02: dropped
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert _seq(env)["state"] == "dropped" and AT.dropped(env.paths)[-1]["live_id"] == _twin(0)
+    env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
+    longer = _twin(2.0)
+    LTT._freeze(env.store, longer, trigger=dict(LTT.HUNT), pnl=0.03, watch=2.0)  # the same sniper live
+    LTT._freeze(env.store, SECOND, pnl=0.01)
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    assert LT.load(env.paths)["id"] == SECOND
+
+
+def test_a_rule_frozen_again_with_the_watch_delay_carries_its_old_ids_live_record(env):
+    """A run that ends without a drop leaves its live record to the strategy's next run (_carried). Under its new id the
+    rule is the same sniper, so it starts with that record, never afresh: 6 trades at -0.1 SOL under the old id leave it
+    0.4 SOL of its 1 SOL, its floor that far below the wallet."""
+    old, new = _twin(0), _twin(1.3)
+    live = {"n": 6, "sum": -0.6, "n_all": 6, "sum_all": -0.6, "unmeasured": 0, "failed": 0, "failed_sol": 0.0,
+            "copies": 0}  # fmt: skip
+    LT._history(env.paths, {"kind": "sequence", "id": "seq-1", "strategy": old, "label": "hunt 2 SOL", "dropped": False,
+                            "why": "you turned the automatic test off", "ended_at": NOW - HOUR,
+                            "blocks": [{"n": 1, "requested_at": NOW - 3 * HOUR, "floor": 10.9, "live": live}]})  # fmt: skip
+    LTT._freeze(env.store, new, trigger=dict(LTT.HUNT), pnl=0.02)
+    _on(env)
+    _round(env, NOW + 60)
+    seq, t = _seq(env), LT.load(env.paths)
+    assert seq["strategy"] == new and t["state"] == "running"
+    assert seq["carried"]["n"] == 6 and AT._tally(seq)["sum"] == pytest.approx(-0.6)
+    assert t["floor"] == 11.5  # 11.9 SOL less the 0.4 left of its 1 SOL
 
 
 def test_the_next_strategy_after_a_drop_starts_at_once_with_its_own_floor(env):

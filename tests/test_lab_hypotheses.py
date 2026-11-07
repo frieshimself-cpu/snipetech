@@ -326,11 +326,12 @@ def test_paper_freeze_from_the_command_line_freezes_only_the_hypotheses_at_their
 def test_paper_freeze_scores_at_the_measured_cost_of_a_trade_unless_told(tmp_path, capsys):
     """A strategy scored below the measured cost of a trade never goes live (live_test.eligible: the owner's yes is for
     a strategy that passes "at real costs"), so `paper freeze` without --per-tx scores at the measure stage's cost of a
-    transaction (qualify.run.lab_tx_cost: half its round trip, 0.0035 until it is measured), as the daily strategy
-    search does; the analysts' hypotheses freeze that way."""
+    transaction (qualify.run.lab_tx_cost: half its round trip, the last one measured after a week without enough fills,
+    0.0045 until one is measured), as the daily strategy search does; the analysts' hypotheses freeze that way. Each
+    frozen strategy keeps where its cost came from (review of 7 Nov evening: nothing frozen said)."""
     from snipetech import cli
 
-    def freeze(name: str, *flags: str) -> list[float]:
+    def freeze(name: str, *flags: str) -> list[tuple]:
         db = _tape_db(tmp_path, name=name)
         st = Store(db)
         try:  # the low bid's round trip as measured: 0.008 SOL, so 0.004 a transaction
@@ -340,10 +341,10 @@ def test_paper_freeze_scores_at_the_measured_cost_of_a_trade_unless_told(tmp_pat
             st.close()
         argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--hours", "1", *flags, "--json"]
         assert cli.main(argv) == 0
-        return [s["per_tx_sol"] for s in json.loads(capsys.readouterr().out)["frozen"]]
+        return [(s["per_tx_sol"], s["per_tx_source"]) for s in json.loads(capsys.readouterr().out)["frozen"]]
 
-    assert freeze("measured") == [pytest.approx(0.004)]
-    assert freeze("told", "--per-tx", "0.006") == [pytest.approx(0.006)]
+    assert freeze("measured") == [(pytest.approx(0.004), "measured")]
+    assert freeze("told", "--per-tx", "0.006") == [(pytest.approx(0.006), "flag")]
     assert cli.build_parser().parse_args(["paper", "freeze"]).per_tx is None
 
 
