@@ -220,6 +220,20 @@ def test_nothing_starts_while_no_strategy_passes_on_paper(env):
     assert LT.load(env.paths) is None and _seq(env) is None
 
 
+def test_nothing_starts_by_itself_on_a_strategy_scored_below_the_measured_cost(env):
+    """The standing yes covers a strategy that passes "at real costs". An analyst's freeze takes the CLI's 0.0035 SOL a
+    transaction (0.007 a round trip) while the measure stage measures 0.0094 a round trip: a lower bound of +0.001 there
+    is negative at the real cost, and no live test may start on it with no human in the loop."""
+    LTT.measured_cost(env.store)
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and env.svc.created == [] and _seq(env) is None
+    LTT._freeze(env.store, SECOND, pnl=0.01, per_tx=0.0047)  # frozen at the measured cost: it may start
+    _round(env, NOW + 960)
+    assert LT.load(env.paths)["id"] == SECOND and LT.load(env.paths)["state"] == "running"
+
+
 def test_the_best_passing_strategy_starts_at_once_with_the_owners_caps(env):
     LTT._freeze(env.store, SECOND, pnl=0.01)
     LTT._freeze(env.store, BEST, pnl=0.02)

@@ -33,12 +33,14 @@ HUNT = {"kind": "hunt", "sol": 2.0, "window": 1.0, "dev_max": 1.0}
 BEST, SECOND, THIRD, FOURTH = "9b2bd6f664", "a1b2c3d4e5", "b1b2c3d4e5", "c1b2c3d4e5"
 
 
-def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=0.2, trigger=None, outliers=(0, 0.0)):
+def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=0.2, trigger=None, outliers=(0, 0.0),
+            per_tx=0.0035):  # fmt: skip
     """A frozen paper strategy with `n` forward trades of `pnl` SOL each: with one value the lower bound is that value.
-    (1, "+3") is where a live hunt fill lands (paper.HUNT_LANDING). `outliers`: (count, pnl) of extra big trades."""
+    (1, "+3") is where a live hunt fill lands (paper.HUNT_LANDING). `outliers`: (count, pnl) of extra big trades.
+    `per_tx`: the SOL a transaction its trades were scored at (`paper freeze --per-tx`, 0.0035 by default)."""
     trig = trigger or (dict(HUNT) if kind == "hunt" else {"kind": kind, "sol": 2.0})
     s = {"id": sid, "label": f"{kind} {sid[:4]} | lab exit", "trigger": trig, "exit": {"stop_loss": 0.3, "max_hold_secs": 300},
-         "position": landing[1], "latency": landing[0], "buy_sol": buy, "per_tx_sol": 0.0035, "from_ts": NOW - 20 * 3600,
+         "position": landing[1], "latency": landing[0], "buy_sol": buy, "per_tx_sol": per_tx, "from_ts": NOW - 20 * 3600,
          "lab": {"mean": 0.01, "ev_lower": 0.004}}  # fmt: skip
     cov = store.coverage("paper_strategies")
     store.set_coverage("paper_strategies", {"strategies": cov.get("strategies", []) + [s], "superseded": []})
@@ -210,6 +212,28 @@ def test_only_hunt_strategies_the_forward_test_backs_at_the_real_landing_are_eli
     _freeze(st, "1d1d1d1d1d", pnl=-0.07, outliers=(20, 1.5))  # positive bound plain, negative with gains capped
     assert "1d1d1d1d1d" not in [r["id"] for r in LT.eligible(st, env.cfg, NOW)]
     assert rows[0]["n"] == 150 and rows[0]["ev_lower"] == pytest.approx(0.02) and rows[0]["buy_sol"] == 0.2
+
+
+def measured_cost(store, per_round_trip=0.0094):
+    """The measure stage's bid model for the low bid ("control"): enough fills that the lab's cost is the measured one,
+    `per_round_trip` SOL a round trip (6 Nov: 0.0094, the buy's fees, the sale's and the failed duplicate sends)."""
+    store.put_bid_model({"arm": "control", "n": 40, "failed_n": 12, "mean_fee_sol": 0.0035,
+                         "mean_overhead_sol": round(per_round_trip - 0.007, 6), "updated_at": NOW})  # fmt: skip
+
+
+def test_a_strategy_scored_below_the_measured_cost_of_a_trade_is_not_eligible(env):
+    """The owner's yes covers a strategy that passes on paper "at real costs". `paper freeze` takes 0.0035 SOL a
+    transaction unless told otherwise (and accepts 0), while the measure stage measures about 0.0047 (0.0094 a round
+    trip, 6 Nov): a strategy scored below the measured cost is not evidence at the real cost, whichever path asks."""
+    measured_cost(env.store)  # 0.0047 SOL a transaction
+    _freeze(env.store, BEST, pnl=0.02)  # the CLI default the agents' freeze uses
+    _freeze(env.store, SECOND, pnl=0.01, per_tx=0.0047)  # the daily search freezes at the measured cost
+    _freeze(env.store, THIRD, pnl=0.03, per_tx=0.0)  # `paper freeze --per-tx 0`
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    reply = _refused(env, BEST, "go")
+    assert "0.0035 SOL a transaction" in reply and "0.0047" in reply
+    assert "0 SOL a transaction" in _refused(env, THIRD, "go")
+    assert _send(env).splitlines()[-1] == f"/test {SECOND} go"
 
 
 def test_the_plan_caps_size_count_and_time_and_keeps_the_floor_below_all_of_it():

@@ -353,9 +353,9 @@ def status_words(paths: OperatorPaths, now: float) -> str:
                 f"{plan_words(caps)}. /test shows the block, /stop ends it, /test auto off starts no more.")  # fmt: skip
     if at["on"]:
         return (f"Automatic live test on since {_when(at['approved']['at'])} (your yes: \"{at['approved']['words']}\"). "
-                f"When a hunt strategy passes on paper (100 forward trades where a live hunt fill lands, a lower bound "
-                f"above zero, also with each gain capped), {plan_words(at)}. /test auto off turns it off; /stop ends a "
-                "test now.")  # fmt: skip
+                f"When a hunt strategy passes on paper (100 forward trades where a live hunt fill lands, at the measured "
+                f"cost of a trade, a lower bound above zero, also with each gain capped), {plan_words(at)}. /test auto "
+                "off turns it off; /stop ends a test now.")  # fmt: skip
     last = f" The last one: {at['used']['result']}." if at.get("used") and at["used"].get("result") else ""
     return (f"Automatic live test off.{last} /test auto on turns it on, and that message is your yes for this plan: "
             f"{plan_words(dict(DEFAULTS))}.")  # fmt: skip
@@ -509,8 +509,8 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     caps = seq["caps"]
     r.say(f"Automatic live test, on your standing yes of {_when(at['approved']['at'])} (\"{at['approved']['words']}\"): "
           f"{p['label']} ({best['id']}) passes on paper with {int(best['n']):,} forward trades where a live hunt fill "
-          f"lands, {float(best['mean']):+.4f} SOL a trade, lower bound {float(best['ev_lower']):+.4f}, also with each "
-          f"gain capped. Block 1 of at most {1 + int(caps['more_blocks'])} starts now: {p['buy_sol']:g} SOL a buy, at "
+          f"lands, at the measured cost of a trade, {float(best['mean']):+.4f} SOL a trade, lower bound "
+          f"{float(best['ev_lower']):+.4f}, also with each gain capped. Block 1 of at most {1 + int(caps['more_blocks'])} starts now: {p['buy_sol']:g} SOL a buy, at "
           f"most {p['fills']} buys one coin at a time, {p['minutes']} minutes, floor {p['floor']:.2f} SOL "
           f"({float(caps['loss_sol']):g} SOL below the wallet's {eq:.2f}) for the whole sequence; it goes on only while "
           f"live is at least {_share(caps['continue_at'])}. /stop ends it; /test auto off starts no more.")  # fmt: skip

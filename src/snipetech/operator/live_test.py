@@ -174,14 +174,26 @@ def _expect(paths: OperatorPaths, values: dict) -> None:
 # -- which strategies, what plan -----------------------------------------------------------------------------------
 
 
-def _why_not(row: dict | None, frozen: dict | None) -> str | None:
-    """Why a strategy may not go live now, in plain words; None when it may."""
+def _why_not(row: dict | None, frozen: dict | None, tx_cost: float = 0.0) -> str | None:
+    """Why a strategy may not go live now, in plain words; None when it may. `tx_cost`: the SOL a transaction costs
+    live, as the measure stage measures it (qualify.run.lab_tx_cost)."""
     if row is None or frozen is None:
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
         return "is not a hunt strategy (OKTech runs only its hunt launch gate exactly as the lab scored it)"
     if not row.get("live_landing"):
         return "was not scored where a live hunt fill lands"
+    try:
+        scored = float(frozen.get("per_tx_sol"))
+    except (TypeError, ValueError):
+        scored = -1.0
+    if not math.isfinite(scored) or scored < float(tx_cost) - 1e-9:
+        # the owner's yes covers a strategy that passes "at real costs": `paper freeze` takes 0.0035 SOL a transaction
+        # unless told otherwise (and accepts 0), while a live round trip cost about 0.0094 on 6 Nov; trades scored at
+        # less are not evidence at the real cost
+        at = f"{scored:g} SOL a transaction" if scored >= 0 else "no known cost"
+        return (f"was scored at {at}, below the {float(tx_cost):g} SOL a transaction measured live (a round trip about "
+                f"{2 * float(tx_cost):.4f}): its forward trades are not at the real cost")  # fmt: skip
     n = int(row.get("n") or 0)
     if n < MIN_FORWARD_N:
         return f"has {n} forward trades of the {MIN_FORWARD_N} needed"
@@ -207,12 +219,14 @@ def _why_not(row: dict | None, frozen: dict | None) -> str | None:
 def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str], list[dict]]:
     """(the eligible strategies, best lower bound first; why each other one is not; every paper report row)."""
     from ..analysis import paper
+    from ..qualify.run import lab_tx_cost
 
     rows = paper.report(store, cfg, now=now)["strategies"]
     frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
+    tx_cost = lab_tx_cost(store, cfg)  # the measured cost of a transaction (the flat 0.0035 until it is measured)
     ok, why = [], {}
     for r in rows:
-        w = _why_not(r, frozen.get(r["id"]))
+        w = _why_not(r, frozen.get(r["id"]), tx_cost)
         if w is None:
             ok.append(r)
         else:
@@ -222,8 +236,9 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
 
 def eligible(store, cfg: Config, now: float) -> list[dict]:
     """The frozen paper strategies a live test may run, best lower bound first (paper.report rows): hunt strategies (the
-    one kind OKTech runs exactly as the lab scored it), scored at the live landing, with MIN_FORWARD_N forward trades or
-    more and a lower bound above zero. The forward test at the real landing is the evidence, never the lab."""
+    one kind OKTech runs exactly as the lab scored it), scored at the live landing and at no less than the measured cost
+    of a transaction, with MIN_FORWARD_N forward trades or more and a lower bound above zero, also with each gain
+    capped. The forward test at the real landing and the real cost is the evidence, never the lab."""
     return _survey(store, cfg, now)[0]
 
 
@@ -447,7 +462,7 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
 
     near = sorted((r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")), key=closeness)[:SHOWN]
     lines = [(f"No hunt strategy qualifies for a live test yet: one needs at least {MIN_FORWARD_N} forward paper "
-              "trades where a live hunt fill lands, and a lower bound above zero.")]  # fmt: skip
+              "trades where a live hunt fill lands, at the cost a trade has live, and a lower bound above zero.")]  # fmt: skip
     if near:
         lines.append("Closest now:")
         for r in near:
