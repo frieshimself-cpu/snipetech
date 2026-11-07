@@ -62,6 +62,14 @@ What changed (code on the branch, each piece with its tests; README "How the boo
 - **`/sell <coin>` in Telegram**: the owner sells a coin OKTech abandoned with one message (it needs SNIPER_SECRET
   in /etc/snipetech/env); `/sell` alone lists the coins held with the line to send.
 
+- **The first strategy search with the fixed lab** (6 Nov 22:15-23:50, 46.7 h of tape, 442,656 moments, the +6
+  landing, 0.2 SOL fills): the best was "a non-dev buys 1 SOL or more in the first second of a coin that is not a
+  create bundle", lab exit: +0.0124 SOL a trade over 2,698 cases, lower bound +0.0089, about 144 signals an hour;
+  three variants +0.006 to +0.011. All four are frozen into the forward paper test. Caution from the same report:
+  every launch strategy frozen earlier (by the old lab, which predicted +0.02 to +0.32 a trade) lost on new tape at
+  our landing, for example "a non-dev buys 1 SOL or more" -0.008 a trade over 1,254 forward trades and "2 SOL in the
+  first second" -0.034 over 540. No live test of a launch strategy until the new four hold up on new tape.
+
 What happens after this deploy: the first runs re-qualify old-lab verdicts (qualified first), the book copies only
 verdicts of the fixed lab, the research rotation keeps one lab busy whenever the server is idle, and a digest goes
 to Telegram every 6 hours. Honest outlook: this closes the leaks; it does not make money by itself. No copied
