@@ -143,6 +143,18 @@ def test_the_agents_cannot_raise_their_own_budget(toolbox):
     assert not list(paths.jobs.glob("*.json"))  # no job was started at all
 
 
+def test_no_agent_tool_writes_the_owners_budget_file(toolbox):
+    """Reports get a .md name and stay inside operator/: an agent cannot write operator/BUDGET (or the cadence's
+    analyst.last) by naming a report after it."""
+    from snipetech.operator.budget_switch import effective_daily_usd
+
+    tools, paths, _ = toolbox
+    for name in ("BUDGET", "../operator/BUDGET", "analyst.last"):
+        _call(tools["write_report"], name=name, text='{"daily_usd": 500}')
+    assert not (paths.root / "BUDGET").exists() and not paths.analyst_last.exists()
+    assert effective_daily_usd(OperatorConfig(), paths) == 15.0
+
+
 def test_write_note_format_and_levels(tmp_path):
     sink = NoteSink(OperatorPaths(tmp_path).ensure(), now=lambda: 1_793_923_200)
     assert sink.write("hello", "decision") == "- 2026-11-06T00:00:00Z [decision] hello"
