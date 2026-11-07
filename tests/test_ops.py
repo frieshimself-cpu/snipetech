@@ -1,12 +1,12 @@
 import json
+import os
 import sqlite3
 import sys
 import threading
 import time
-
-import os
-import pytest
 from pathlib import Path
+
+import pytest
 
 from snipetech import ops as O
 
@@ -149,7 +149,9 @@ def test_vanity_keypair_is_valid_and_private(tmp_path):
     p = tmp_path / ".wallets" / f"{r['address']}.txt"
     if os.name != "nt":  # Windows has no POSIX modes
         assert oct(p.stat().st_mode & 0o777) == "0o600"
-    lines = dict(line.split(": ", 1) for line in p.read_text().splitlines() if ": " in line and not line.startswith("#"))
+    lines = dict(
+        line.split(": ", 1) for line in p.read_text().splitlines() if ": " in line and not line.startswith("#")
+    )
     n = 0
     for ch in lines["private_key"]:
         n = n * 58 + V.ALPHABET.index(ch)
@@ -244,7 +246,6 @@ def test_an_unreadable_job_file_is_skipped_and_running_jobs_always_list_first(tm
     assert listed[0]["id"] == "guard" and listed[0]["running"] is True and len(listed) <= 31
 
 
-
 def test_a_job_enforces_its_own_time_limit(tmp_path):
     """The operator round starts stages through a short-lived Ops object whose watch thread dies with the round: the
     limit must hold without it (coreutils timeout inside the job's own wrapper, exit code 124)."""
@@ -268,8 +269,17 @@ def test_op_jobs_survives_a_job_file_pruned_mid_listing(tmp_path, monkeypatch):
     data = tmp_path / "d"
     jobs = data / "jobs"
     jobs.mkdir(parents=True)
-    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main", command=[sys.executable, "-c", "pass"])
-    (jobs / "a.json").write_text(json.dumps({"id": "a", "argv": ["measure", "run"], "started": 1, "ended": 2, "exit_code": 0, "running": False}))
+    ops = O.Ops(
+        repo=tmp_path,
+        data=data,
+        db=data / "x.db",
+        keys_file=tmp_path / "k",
+        branch="main",
+        command=[sys.executable, "-c", "pass"],
+    )
+    (jobs / "a.json").write_text(
+        json.dumps({"id": "a", "argv": ["measure", "run"], "started": 1, "ended": 2, "exit_code": 0, "running": False})
+    )
     real_glob = pathlib.Path.glob
 
     def glob(self, pattern):
@@ -279,3 +289,11 @@ def test_op_jobs_survives_a_job_file_pruned_mid_listing(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pathlib.Path, "glob", glob)
     assert [j["id"] for j in ops.op_jobs()["jobs"]] == ["a"]
+
+
+def test_status_says_how_big_the_machine_is(env):
+    # 7 Nov: after the resize nothing reported the new CPU count, which sizes the lab's worker pool
+    ops, key = env
+    st = req(ops, key, "status")
+    assert isinstance(st["cpus"], int) and st["cpus"] >= 1
+    assert st["mem_gb"] is None or st["mem_gb"] > 0

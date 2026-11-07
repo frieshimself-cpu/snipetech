@@ -289,6 +289,8 @@ class Ops:
         except sqlite3.Error as exc:
             out["tape"] = {"error": str(exc)}
         out["jobs_running"] = sum(1 for j in self.jobs.values() if j.code is None)
+        out["cpus"] = os.cpu_count() or 1  # sizes the lab's worker pool ([lab] workers, auto: all but two)
+        out["mem_gb"] = _mem_gb()
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -536,6 +538,17 @@ def _read_only_authorizer(action, arg1, arg2, dbname, source):
     if action == sqlite3.SQLITE_PRAGMA and arg1 in ("table_info", "table_list", "index_list", "index_info"):
         return sqlite3.SQLITE_OK
     return sqlite3.SQLITE_DENY
+
+
+def _mem_gb() -> float | None:
+    """Total memory in GB from /proc/meminfo (Linux), or None where there is none."""
+    try:
+        for line in Path("/proc/meminfo").read_text().splitlines():
+            if line.startswith("MemTotal:"):
+                return round(int(line.split()[1]) / 1e6, 1)
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> ThreadingHTTPServer:
