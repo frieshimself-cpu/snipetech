@@ -4,6 +4,23 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
+
+The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy landing: n 35, +0.0271 SOL a trade,
+lower bound +0.0049, a seller at a median 19.5 s) made its first three round trips. Nothing is held; after each buy
+the book retired the sniper and armed a fresh one, so its spare buys are never needed.
+
+| buy (UTC) | coin | landing | sell | exit | result (fees in) |
+|---|---|---|---|---|---|
+| 19:18:49 | `8RJQ2bo2…pump` | 0 trades behind the leader, +0.5 % | 19:18:58, 0.1994 SOL | copy exit | −0.0066 SOL |
+| 19:20:44 | `9QUt8h52…pump` | 0 behind, +0.5 % | 19:20:47, 0.2189 SOL | copy exit | +0.0128 SOL |
+| 19:21:59 | `EZaNbQve…pump` | 1 behind, +0.8 % | 19:22:04, 0.1959 SOL | dead exit | −0.0101 SOL |
+
+Net −0.0039 SOL over 3 trades (−0.0013 a trade against the forecast +0.027; three trades say nothing yet). The
+landing is the news: 0–1 trades behind at +0.5–0.8 %, against 2–4 behind at +18–43 % for the earlier leaders' copies
+(the "+6 regime"). 7aPo3n buys late in the curve (79–93 %, research round 2), where fewer bots race the leader. Each
+sell carried two failed duplicate sends (Custom 6023), charged to its trip.
+
 ## The owner's yes widened: live trading never stops (7 Nov 2026, about 12:10 UTC)
 
 Told that 5–8 SOL is enough for the test but that their guard blocks every live trade under 10 SOL, and asked what the
