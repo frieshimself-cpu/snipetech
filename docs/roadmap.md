@@ -14,6 +14,12 @@ first on the server's recording and only then run live in capped batches.
   remote sql stops at 30 s, and every connection caps the WAL at 64 MiB once it restarts: the -wal file went from
   7.33 GB to 0.07 GB. The copy is now opened read-only and immutable and never written: its review found that a
   read-write open could leave a -wal beside it that the next renamed copy read as "malformed".
+- **The creator-0 crowd hunt is in the forward paper test, twice.** The analyst's 48 h lab of `{"kind": "hunt", "sol": 15,
+  "buyers": 15, "window": 1, "dev_max": 0}` (job 20261107-221611-769313, live landing and measured cost) made +0.045 a
+  trade on its test part (n 11, 10 won, lower bound +0.037; 26 moments in 45 h). Frozen at 23:00 as `7d6b4302ff`
+  (its freeze lab chose SL-15 % / trail 10 % / 60 s: +0.0179 a trade, bound +0.0106); the looser ">= 10 SOL from >= 10
+  wallets" version has been `f94add343f` since 21:31. Both fire about once every two hours, so the paper test needs
+  days; the owner can test it live sooner with `/test`, their call.
 - **Slow writes name themselves (21:34, 25a3891).** Every write takes the lock up front (BEGIN IMMEDIATE), and one
   that holds it 5 s or more logs the code that asked for it in that job's log. After the slice change the recorder
   still waited 23.5 s for one write at 20:52 (as the events scan ended) and 12.6 s at 20:56 (during a qualify run).
