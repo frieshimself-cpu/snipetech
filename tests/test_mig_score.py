@@ -449,8 +449,10 @@ def test_a_mig_plan_says_what_is_still_missing_live():
     p = _plan(MIG10, EXIT)
     notes = " ".join(p.notes)
     assert "playbook 8" in notes  # MIG has never run on this account
-    # the owner's /sell and the unsold-coin watch's /sell line cannot sell a PumpSwap coin (solana/sell.py)
-    assert "/sell" in notes and "unsold-coin watch" in notes and "by hand in OKTech or Axiom" in notes
+    # the owner's /sell and the unsold-coin watch's /sell line sell a PumpSwap coin since 7 Nov (solana/sell.py); what
+    # PumpSwap refuses (a cashback coin, two pools on record) is still sold by hand
+    assert "/sell sells these coins on PumpSwap" in notes and "unsold-coin watch" in notes
+    assert "by hand in OKTech or Axiom" in notes and "cannot sell" not in notes
     # the automatic test runs hunt strategies only (operator/live_test.py)
     assert "automatic test" in notes and "hunt" in notes
     assert "amm_recent_secs" in notes and "index_amm" not in notes.replace("index_amm off", "")

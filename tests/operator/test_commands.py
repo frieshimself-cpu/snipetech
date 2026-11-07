@@ -389,7 +389,10 @@ MINT3 = "EtWnCDAGDSFH5L8SPvbnYebZJf19gbwRre8R17eg6v8V"
 SIG = "3DavEsdqG12GHdBGLLbyAqx6EDnJwWQFvWq3wfCyAgZZwvQo1eM9ehXCp5QEmrZoEQ1nBZ7z28DBqyJi7HqNVnAT"
 SIG2 = "AeV8FxFdhFkkxGQvNU5yWkgx3pV4ScGj1JFVhZJe1CF9whgyQWRWWNsxZb1pUiFhSVdSnGrTtXiJhPzq9sxgWXy"
 RPC = object()  # the service's RPC client: /sell hands it to the sweep as it is
-MIGRATED = "curve complete: the coin migrated to PumpSwap (not handled yet)"  # solana/sell.py's own words
+TAPE = object()  # the service's tape: /sell hands it to the sweep, which reads a PumpSwap coin's migration from it
+# solana/sell.py's own words: a coin that left its curve, whose PumpSwap pool does not exist yet
+MIGRATED = ("PumpSwap: its pool does not exist yet (the coin has left its curve, and pump.fun's move to PumpSwap has "
+            "not landed); try again in a minute")  # fmt: skip
 NO_CURVE = "no bonding curve account (not a pump.fun curve coin)"
 
 
@@ -399,6 +402,7 @@ class SellSvc(FakeSvc):
     def __init__(self, held=()):
         super().__init__(held=list(held), snipers=[])
         self.rpc = RPC
+        self.store = TAPE
         self.asked: list[str] = []
 
     async def open_positions(self, address):
@@ -413,22 +417,27 @@ class SellSvc(FakeSvc):
 
 
 class FakeSweep:
-    """solana.sell.sweep as /sell calls it: records (rpc, mints, slippage) and answers like the real one."""
+    """solana.sell.sweep as /sell calls it: records (rpc, mints, slippage), and the tape it was handed in `stores`, and
+    answers like the real one."""
 
     def __init__(self, result=None, exc=None):
         self.calls: list[tuple] = []
+        self.stores: list = []
         self.result, self.exc = result, exc
 
-    async def __call__(self, rpc, mints, slippage):
+    async def __call__(self, rpc, mints, slippage, store=None):
         self.calls.append((rpc, mints, slippage))
+        self.stores.append(store)
         if self.exc is not None:
             raise self.exc
         return self.result
 
 
-def _sold(mint, quote=0.07, sig=SIG):
-    """A sale the real sweep sent: the whole holding, the curve's quote and the floor at half of it."""
-    return {"mint": mint, "amount": 675_849_878_442, "quote_sol": quote, "floor_sol": quote / 2, "signature": sig}
+def _sold(mint, quote=0.07, sig=SIG, pumpswap=False):
+    """A sale the real sweep sent: the whole holding, the quote and the floor at half of it; on PumpSwap the row also
+    names the venue and the pool (solana/sell.py)."""
+    row = {"mint": mint, "amount": 675_849_878_442, "quote_sol": quote, "floor_sol": quote / 2, "signature": sig}
+    return row | ({"venue": "pumpswap", "pool": "AHym5tFZM45gVWwe1DHthAPHD1V7SuCfppqKAiP4YJxA"} if pumpswap else {})
 
 
 def _held(mint, value, raw=675_849_878_442):
@@ -460,7 +469,9 @@ def test_sell_one_coin_sells_all_of_it_and_says_what_it_got(tmp_path, sell_key):
     svc, ctx, sent = _sell_ctx(tmp_path, wallet, sweep)
     reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
     assert sweep.calls == [(RPC, [MINT], 0.5)]  # only that coin; the floor at half the quote, as `snipetech sweep`
+    assert sweep.stores == [TAPE]  # the tape, where a coin that left its curve has its migration recorded
     assert MINT in reply and "0.07" in reply and "0.035" in reply and SIG in reply and sent == [reply]
+    assert "PumpSwap" not in reply  # a curve sale says nothing about PumpSwap
     notes = ctx["paths"].notes.read_text()
     assert "[decision]" in notes and MINT in notes and SIG in notes and "/sell" in notes
     assert secret not in reply and secret not in notes and svc.calls == [] and svc.asked == []
@@ -493,6 +504,7 @@ def test_sell_alone_lists_the_coins_with_the_line_to_send_and_sells_nothing(tmp_
     at = [lines.index(f"/sell {m}") for m in (MINT, MINT2, MINT3)]  # each coin's own line is the command to send
     assert at == sorted(at)  # the most valuable first, the unpriced last
     assert "0.069" in reply and "0.012" in reply and "not known" in reply and "/sell all" in reply
+    assert "PumpSwap" in lines[-1] and "still on the pump.fun curve" not in reply  # /sell all sells both kinds
     assert not ctx["paths"].notes.exists()  # a list decides nothing
     assert "/sell" in asyncio.run(handle_command(_cmd("help"), **ctx))
 
@@ -553,13 +565,37 @@ def test_sell_refuses_a_key_that_is_not_the_sniper_wallets(tmp_path, monkeypatch
     assert sweep.calls == [(RPC, [MINT], 0.5)]
 
 
-def test_sell_of_a_coin_off_the_curve_or_not_held(tmp_path, sell_key):
+def test_a_coin_sold_on_pumpswap_is_said_so_with_where_the_sol_lands(tmp_path, sell_key):
+    """A coin that left its curve is sold on PumpSwap (solana/sell.py): the reply and the note say so, and that the SOL
+    comes back as wrapped SOL into the wallet's WSOL account, as OKTech's own PumpSwap sale paid it (6 Nov)."""
     wallet, _ = sell_key
-    for skipped, why in ((MIGRATED, "left the pump.fun curve"), (NO_CURVE, "not a pump.fun curve coin")):
+    sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [_sold(MINT, 0.0549, SIG, pumpswap=True)]})
+    _, ctx, sent = _sell_ctx(tmp_path, wallet, sweep)
+    reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert reply.startswith(f"Sold coin {MINT} on PumpSwap") and "0.0549" in reply and SIG in reply and sent == [reply]
+    assert "WSOL" in reply and "only sells coins on the pump.fun curve" not in reply
+    assert "on PumpSwap" in ctx["paths"].notes.read_text()
+    sweep = FakeSweep({"wallet": wallet, "holdings": 2, "results": [_sold(MINT, 0.0549, SIG, pumpswap=True),
+                                                                    _sold(MINT2, 0.05, SIG2)]})  # fmt: skip
+    _, ctx, _ = _sell_ctx(tmp_path / "all", wallet, sweep)
+    reply = asyncio.run(handle_command(_cmd("sell", "all"), **ctx))
+    assert f"{MINT}: about 0.0549 SOL on PumpSwap" in reply and f"{MINT2}: about 0.0500 SOL, signature" in reply
+    assert "WSOL" in reply
+
+
+def test_sell_of_a_coin_off_the_curve_or_not_held(tmp_path, sell_key):
+    """A coin that left its curve is no longer one /sell cannot sell: when PumpSwap refuses it (here its pool does not
+    exist yet), the reply gives PumpSwap's reason, and the owner sells it by hand."""
+    wallet, _ = sell_key
+    for skipped, words in ((MIGRATED, ("moved to PumpSwap", "does not exist yet")),
+                           (NO_CURVE, ("not a pump.fun curve coin",))):  # fmt: skip
         sweep = FakeSweep({"wallet": wallet, "holdings": 1, "results": [{"mint": MINT, "skipped": skipped}]})
-        _, ctx, _ = _sell_ctx(tmp_path / why, wallet, sweep)
+        _, ctx, _ = _sell_ctx(tmp_path / words[0], wallet, sweep)
         reply = asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
-        assert reply.startswith("Not sold") and why in reply and "Axiom" in reply and "OKTech" in reply
+        assert (
+            reply.startswith("Not sold") and all(w in reply for w in words) and "Axiom" in reply and "OKTech" in reply
+        )
+        assert "only sells coins on the pump.fun curve" not in reply
         assert "not sold" in ctx["paths"].notes.read_text()
     sweep = FakeSweep({"wallet": wallet, "holdings": 0, "results": []})
     _, ctx, _ = _sell_ctx(tmp_path / "none", wallet, sweep)

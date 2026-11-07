@@ -863,8 +863,10 @@ def render_sweep(r: dict) -> str:
             out.append(f"  {x['mint']}: skipped, {x['skipped']}")
         else:
             tail = "dry run" if x.get("dry_run") else f"sent {x.get('signature')}"
+            where = f" on PumpSwap (pool {x.get('pool')})" if x.get("venue") == "pumpswap" else ""
             out.append(
-                f"  {x['mint']}: {x['amount']} units, quote {x['quote_sol']:.4f} SOL, floor {x['floor_sol']:.4f} SOL, {tail}"
+                f"  {x['mint']}: {x['amount']} units{where}, quote {x['quote_sol']:.4f} SOL, floor {x['floor_sol']:.4f} "
+                f"SOL, {tail}"
             )
     return "\n".join(out)
 

@@ -824,12 +824,13 @@ def strategy_sniper(
                      "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy behind the first 3 "
                      "PumpSwap trades after the migration's slot, a slot or so after it, where the lab assumes it "
                      "lands) and that its exits fire")  # fmt: skip
-        # still missing live (7 Nov, research round 1, P2), out of scope of the MIG lab: solana/sell.py skips a coin
-        # whose curve has completed, and operator/live_test.py accepts hunt strategies only
-        notes.append("/sell cannot sell these coins, nor the unsold-coin watch's /sell line: every MIG position is on "
-                     "PumpSwap, and /sell only sells coins still on the pump.fun curve (solana/sell.py). If a "
-                     "position's exits do not fire (hunt fills have been left unsold: HOUSE, CAT), it has to be sold "
-                     "by hand in OKTech or Axiom")  # fmt: skip
+        # since 7 Nov (research round 2, build 1) solana/sell.py sells a coin whose curve has completed on its PumpSwap
+        # pool; still missing live, out of scope of the MIG lab: operator/live_test.py accepts hunt strategies only
+        notes.append("/sell sells these coins on PumpSwap from the sniper wallet, and so does the unsold-coin watch's "
+                     "/sell line: every MIG position is on PumpSwap (solana/sell.py, built from OKTech's own landed "
+                     "PumpSwap sale). If a position's exits do not fire (hunt fills have been left unsold: HOUSE, CAT), "
+                     "send it; a coin PumpSwap's sale refuses (a cashback coin, two pools on record) has to be sold by "
+                     "hand in OKTech or Axiom")  # fmt: skip
         notes.append("the automatic test runs hunt strategies only (operator/live_test.py): a MIG strategy that passes "
                      "the paper test is not started by itself")  # fmt: skip
         notes.append("keep the recorder's recent-migrations mode on ([live] amm_recent_secs, 1800, over LaserStream; "

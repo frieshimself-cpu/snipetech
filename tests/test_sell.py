@@ -52,7 +52,7 @@ def test_one_refused_coin_never_stops_the_sweep(monkeypatch):
             self.mint = mint
 
     class FakeSeller:
-        def __init__(self, rpc, secret_b58=None):
+        def __init__(self, rpc, secret_b58=None, store=None):
             self.user = "W"
 
         async def holdings(self):

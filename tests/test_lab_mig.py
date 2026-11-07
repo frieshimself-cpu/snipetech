@@ -535,13 +535,13 @@ def test_strategy_sniper_sends_a_mig_trigger_exactly_as_scored():
     assert "playbook 8" in notes and "never" in notes  # no live MIG fill on this account yet
 
 
-def test_a_mig_plan_says_sell_cannot_reach_its_coin_and_the_tape_needs_pumpswap_trades():
-    # every MIG position is a PumpSwap coin: the owner's /sell skips a coin whose curve has completed (solana/sell.py),
-    # and the recorder's recent-migrations mode is what puts the fill on the tape, which the measure stage and the
-    # unsold-coin watch read
+def test_a_mig_plan_says_sell_reaches_its_coin_on_pumpswap_and_the_tape_needs_pumpswap_trades():
+    # every MIG position is a PumpSwap coin: since 7 Nov the owner's /sell sells a coin whose curve has completed on its
+    # PumpSwap pool (solana/sell.py), and the recorder's recent-migrations mode is what puts the fill on the tape, which
+    # the measure stage and the unsold-coin watch read
     p = strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": MIG.__dict__}, 1)
     notes = " ".join(p.notes)
-    assert "/sell" in notes and "by hand in OKTech or Axiom" in notes
+    assert "/sell sells these coins on PumpSwap" in notes and "by hand in OKTech or Axiom" in notes
     assert "amm_recent_secs" in notes
 
 

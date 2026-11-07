@@ -1,0 +1,1094 @@
+{
+ "address": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+ "metadata": {
+  "name": "pump_fees",
+  "version": "0.1.0",
+  "spec": "0.1.0",
+  "description": "Created with Anchor"
+ },
+ "source": "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/pump_fees.json",
+ "instructions": [
+  {
+   "name": "admin_cto_sharing_config",
+   "discriminator": [
+    60,
+    100,
+    144,
+    156,
+    64,
+    138,
+    182,
+    37
+   ],
+   "accounts": [
+    "pool_authority",
+    "authority",
+    "global",
+    "mint",
+    "sharing_config",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "new_admin",
+     "type": {
+      "option": "pubkey"
+     }
+    }
+   ]
+  },
+  {
+   "name": "claim_social_fee_pda",
+   "discriminator": [
+    225,
+    21,
+    251,
+    133,
+    161,
+    30,
+    199,
+    226
+   ],
+   "accounts": [
+    "recipient",
+    "social_fee_pda",
+    "fee_program_global",
+    "social_claim_authority",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "user_id",
+     "type": "string"
+    },
+    {
+     "name": "platform",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "claim_social_fee_pda_v2",
+   "discriminator": [
+    17,
+    77,
+    240,
+    134,
+    58,
+    188,
+    53,
+    149
+   ],
+   "accounts": [
+    "recipient",
+    "social_fee_pda",
+    "quote_mint",
+    "associated_social_fee_pda",
+    "associated_recipient",
+    "quote_token_program",
+    "associated_token_program",
+    "fee_program_global",
+    "social_claim_authority",
+    "system_program",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "user_id",
+     "type": "string"
+    },
+    {
+     "name": "platform",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "crank_donation_fee_pda",
+   "discriminator": [
+    220,
+    10,
+    189,
+    167,
+    169,
+    17,
+    25,
+    69
+   ],
+   "accounts": [
+    "event_authority",
+    "program",
+    "payer",
+    "system_program",
+    "token_program",
+    "associated_token_program",
+    "rent",
+    "fee_program_global",
+    "donation_fee_pda",
+    "quote_mint",
+    "donation_fee_pda_ata",
+    "donation_relay_program",
+    "donation_relay_event_authority",
+    "mint_whitelist",
+    "epoch_tracker",
+    "debouncer",
+    "debouncer_ata"
+   ],
+   "args": []
+  },
+  {
+   "name": "create_donation_fee_pda",
+   "discriminator": [
+    244,
+    139,
+    16,
+    88,
+    14,
+    255,
+    122,
+    26
+   ],
+   "accounts": [
+    "event_authority",
+    "program",
+    "payer",
+    "system_program",
+    "fee_program_global",
+    "donation_fee_pda",
+    "config_id",
+    "base_mint",
+    "bonding_curve",
+    "pool",
+    "sharing_config"
+   ],
+   "args": []
+  },
+  {
+   "name": "create_fee_sharing_config",
+   "discriminator": [
+    195,
+    78,
+    86,
+    76,
+    111,
+    52,
+    251,
+    213
+   ],
+   "accounts": [
+    "event_authority",
+    "program",
+    "payer",
+    "global",
+    "mint",
+    "sharing_config",
+    "system_program",
+    "bonding_curve",
+    "pump_program",
+    "pump_event_authority",
+    "pool",
+    "pump_amm_program",
+    "pump_amm_event_authority"
+   ],
+   "args": []
+  },
+  {
+   "name": "create_social_fee_pda",
+   "discriminator": [
+    144,
+    224,
+    59,
+    211,
+    78,
+    248,
+    202,
+    220
+   ],
+   "accounts": [
+    "payer",
+    "social_fee_pda",
+    "system_program",
+    "fee_program_global",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "user_id",
+     "type": "string"
+    },
+    {
+     "name": "platform",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "extend_fee_config",
+   "discriminator": [
+    68,
+    179,
+    244,
+    90,
+    173,
+    56,
+    17,
+    217
+   ],
+   "accounts": [
+    "fee_config",
+    "user",
+    "config_program_id",
+    "system_program",
+    "event_authority",
+    "program"
+   ],
+   "args": []
+  },
+  {
+   "name": "get_fees",
+   "discriminator": [
+    231,
+    37,
+    126,
+    85,
+    207,
+    91,
+    63,
+    52
+   ],
+   "accounts": [
+    "fee_config",
+    "config_program_id"
+   ],
+   "args": [
+    {
+     "name": "is_pump_pool",
+     "type": "bool"
+    },
+    {
+     "name": "market_cap_lamports",
+     "type": "u128"
+    },
+    {
+     "name": "trade_size_lamports",
+     "type": "u64"
+    },
+    {
+     "name": "is_new_quote_mint",
+     "type": {
+      "defined": {
+       "name": "OptionBool"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "get_fees_with_quote_mint",
+   "discriminator": [
+    154,
+    237,
+    138,
+    92,
+    162,
+    2,
+    162,
+    187
+   ],
+   "accounts": [
+    "fee_config",
+    "config_program_id"
+   ],
+   "args": [
+    {
+     "name": "is_pump_pool",
+     "type": "bool"
+    },
+    {
+     "name": "market_cap_lamports",
+     "type": "u128"
+    },
+    {
+     "name": "quote_mint",
+     "type": "pubkey"
+    }
+   ]
+  },
+  {
+   "name": "initialize_buyback",
+   "discriminator": [
+    250,
+    129,
+    236,
+    160,
+    227,
+    36,
+    103,
+    134
+   ],
+   "accounts": [
+    "payer",
+    "buyback_vault",
+    "buyback_vault_ata",
+    "system_program",
+    "associated_token_program",
+    "mint",
+    "token_program",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "index",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "initialize_fee_config",
+   "discriminator": [
+    62,
+    162,
+    20,
+    133,
+    121,
+    65,
+    145,
+    27
+   ],
+   "accounts": [
+    "admin",
+    "fee_config",
+    "system_program",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": []
+  },
+  {
+   "name": "initialize_fee_program_global",
+   "discriminator": [
+    35,
+    215,
+    130,
+    84,
+    233,
+    56,
+    124,
+    167
+   ],
+   "accounts": [
+    "authority",
+    "pump_global",
+    "fee_program_global",
+    "system_program",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "social_claim_authority",
+     "type": "pubkey"
+    },
+    {
+     "name": "disable_flags",
+     "type": "u8"
+    },
+    {
+     "name": "claim_rate_limit",
+     "type": "u64"
+    }
+   ]
+  },
+  {
+   "name": "revoke_fee_sharing_authority",
+   "discriminator": [
+    18,
+    233,
+    158,
+    39,
+    185,
+    207,
+    58,
+    104
+   ],
+   "accounts": [],
+   "args": []
+  },
+  {
+   "name": "set_authority",
+   "discriminator": [
+    133,
+    250,
+    37,
+    21,
+    110,
+    163,
+    26,
+    121
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "new_authority",
+     "type": "pubkey"
+    }
+   ]
+  },
+  {
+   "name": "set_claim_rate_limit",
+   "discriminator": [
+    185,
+    211,
+    159,
+    174,
+    212,
+    49,
+    88,
+    4
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "claim_rate_limit",
+     "type": "u64"
+    }
+   ]
+  },
+  {
+   "name": "set_disable_flags",
+   "discriminator": [
+    194,
+    217,
+    112,
+    35,
+    114,
+    222,
+    51,
+    190
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "disable_flags",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "set_exotic_flat_fees",
+   "discriminator": [
+    30,
+    234,
+    149,
+    138,
+    252,
+    230,
+    39,
+    73
+   ],
+   "accounts": [
+    "fee_config",
+    "admin",
+    "config_program_id",
+    "system_program",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "exotic_flat_fees",
+     "type": {
+      "defined": {
+       "name": "Fees"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "set_social_claim_authority",
+   "discriminator": [
+    147,
+    54,
+    184,
+    154,
+    136,
+    237,
+    185,
+    153
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "social_claim_authority",
+     "type": "pubkey"
+    }
+   ]
+  },
+  {
+   "name": "sweep_buyback",
+   "discriminator": [
+    138,
+    33,
+    204,
+    38,
+    207,
+    161,
+    159,
+    226
+   ],
+   "accounts": [
+    "destination",
+    "authority",
+    "buyback_vault",
+    "buyback_vault_ata",
+    "destination_ata",
+    "system_program",
+    "associated_token_program",
+    "mint",
+    "token_program",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "index",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "transfer_fee_sharing_authority",
+   "discriminator": [
+    202,
+    10,
+    75,
+    200,
+    164,
+    34,
+    210,
+    96
+   ],
+   "accounts": [],
+   "args": []
+  },
+  {
+   "name": "update_admin",
+   "discriminator": [
+    161,
+    176,
+    40,
+    213,
+    60,
+    184,
+    179,
+    228
+   ],
+   "accounts": [
+    "admin",
+    "fee_config",
+    "new_admin",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": []
+  },
+  {
+   "name": "update_buyback_authority",
+   "discriminator": [
+    66,
+    98,
+    113,
+    202,
+    121,
+    37,
+    219,
+    107
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "buyback_vault",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "index",
+     "type": "u8"
+    },
+    {
+     "name": "new_authority",
+     "type": "pubkey"
+    }
+   ]
+  },
+  {
+   "name": "update_buyback_claim_rate_limit",
+   "discriminator": [
+    186,
+    95,
+    135,
+    190,
+    255,
+    199,
+    137,
+    170
+   ],
+   "accounts": [
+    "authority",
+    "fee_program_global",
+    "buyback_vault",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "index",
+     "type": "u8"
+    },
+    {
+     "name": "claim_rate_limit",
+     "type": "i64"
+    }
+   ]
+  },
+  {
+   "name": "update_fee_config",
+   "discriminator": [
+    104,
+    184,
+    103,
+    242,
+    88,
+    151,
+    107,
+    20
+   ],
+   "accounts": [
+    "fee_config",
+    "admin",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "fee_tiers",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "FeeTier"
+       }
+      }
+     }
+    },
+    {
+     "name": "flat_fees",
+     "type": {
+      "defined": {
+       "name": "Fees"
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "update_fee_shares",
+   "discriminator": [
+    189,
+    13,
+    136,
+    99,
+    187,
+    164,
+    237,
+    35
+   ],
+   "accounts": [
+    "event_authority",
+    "program",
+    "authority",
+    "global",
+    "mint",
+    "sharing_config",
+    "bonding_curve",
+    "pump_creator_vault",
+    "system_program",
+    "pump_program",
+    "pump_event_authority",
+    "pump_amm_program",
+    "amm_event_authority",
+    "wsol_mint",
+    "token_program",
+    "associated_token_program",
+    "coin_creator_vault_authority",
+    "coin_creator_vault_ata"
+   ],
+   "args": [
+    {
+     "name": "shareholders",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "Shareholder"
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "update_fee_shares_v2",
+   "discriminator": [
+    111,
+    251,
+    49,
+    6,
+    78,
+    78,
+    106,
+    18
+   ],
+   "accounts": [
+    "event_authority",
+    "program",
+    "authority",
+    "global",
+    "mint",
+    "sharing_config",
+    "bonding_curve",
+    "pump_creator_vault",
+    "pump_creator_vault_ata",
+    "system_program",
+    "pump_program",
+    "pump_event_authority",
+    "pump_amm_program",
+    "amm_event_authority",
+    "quote_mint",
+    "token_program",
+    "associated_token_program",
+    "coin_creator_vault_authority",
+    "coin_creator_vault_ata"
+   ],
+   "args": [
+    {
+     "name": "shareholders",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "Shareholder"
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "update_stable_fee_config",
+   "discriminator": [
+    107,
+    169,
+    100,
+    179,
+    134,
+    155,
+    146,
+    221
+   ],
+   "accounts": [
+    "fee_config",
+    "admin",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "fee_tiers",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "FeeTier"
+       }
+      }
+     }
+    }
+   ]
+  },
+  {
+   "name": "upsert_fee_tiers",
+   "discriminator": [
+    227,
+    23,
+    150,
+    12,
+    77,
+    86,
+    94,
+    4
+   ],
+   "accounts": [
+    "fee_config",
+    "admin",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "fee_tiers",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "FeeTier"
+       }
+      }
+     }
+    },
+    {
+     "name": "offset",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "upsert_stable_fee_tiers",
+   "discriminator": [
+    181,
+    160,
+    162,
+    252,
+    74,
+    76,
+    224,
+    221
+   ],
+   "accounts": [
+    "fee_config",
+    "admin",
+    "config_program_id",
+    "event_authority",
+    "program"
+   ],
+   "args": [
+    {
+     "name": "fee_tiers",
+     "type": {
+      "vec": {
+       "defined": {
+        "name": "FeeTier"
+       }
+      }
+     }
+    },
+    {
+     "name": "offset",
+     "type": "u8"
+    }
+   ]
+  },
+  {
+   "name": "withdraw",
+   "discriminator": [
+    183,
+    18,
+    70,
+    156,
+    148,
+    109,
+    161,
+    34
+   ],
+   "accounts": [
+    "user",
+    "referral_vault",
+    "quote_mint",
+    "vault_ata",
+    "user_ata",
+    "token_program",
+    "system_program",
+    "event_authority",
+    "program"
+   ],
+   "args": []
+  }
+ ],
+ "accounts": [
+  {
+   "name": "FeeConfig",
+   "discriminator": [
+    143,
+    52,
+    146,
+    187,
+    219,
+    123,
+    76,
+    155
+   ]
+  }
+ ],
+ "events": [],
+ "types": [
+  {
+   "name": "FeeConfig",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     {
+      "name": "bump",
+      "docs": [
+       "The bump for the PDA"
+      ],
+      "type": "u8"
+     },
+     {
+      "name": "admin",
+      "docs": [
+       "The admin account that can update the fee config"
+      ],
+      "type": "pubkey"
+     },
+     {
+      "name": "flat_fees",
+      "docs": [
+       "The flat fees for non-pump pools"
+      ],
+      "type": {
+       "defined": {
+        "name": "Fees"
+       }
+      }
+     },
+     {
+      "name": "fee_tiers",
+      "docs": [
+       "The fee tiers"
+      ],
+      "type": {
+       "vec": {
+        "defined": {
+         "name": "FeeTier"
+        }
+       }
+      }
+     },
+     {
+      "name": "stable_fee_tiers",
+      "docs": [
+       "The fee tiers"
+      ],
+      "type": {
+       "vec": {
+        "defined": {
+         "name": "FeeTier"
+        }
+       }
+      }
+     },
+     {
+      "name": "exotic_flat_fees",
+      "type": {
+       "defined": {
+        "name": "Fees"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "FeeTier",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     {
+      "name": "market_cap_lamports_threshold",
+      "type": "u128"
+     },
+     {
+      "name": "fees",
+      "type": {
+       "defined": {
+        "name": "Fees"
+       }
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "Fees",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     {
+      "name": "lp_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "protocol_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "creator_fee_bps",
+      "type": "u64"
+     }
+    ]
+   }
+  },
+  {
+   "name": "OptionBool",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     "bool"
+    ]
+   }
+  },
+  {
+   "name": "Shareholder",
+   "type": {
+    "kind": "struct",
+    "fields": [
+     {
+      "name": "address",
+      "type": "pubkey"
+     },
+     {
+      "name": "share_bps",
+      "type": "u16"
+     }
+    ]
+   }
+  }
+ ]
+}

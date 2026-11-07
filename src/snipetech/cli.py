@@ -449,7 +449,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
 
     sp = cmd(
-        "sweep", "sell every pump.fun curve token the sniper wallet holds (SNIPER_SECRET): the exit OKTech can drop"
+        "sweep",
+        "sell every pump.fun coin the sniper wallet holds (SNIPER_SECRET), on its curve or, once it has left it, on "
+        "its PumpSwap pool: the exit OKTech can drop",
     )
     sp.add_argument("--mint", action="append", help="only these mints (repeatable)")
     sp.add_argument(
@@ -1116,8 +1118,10 @@ async def _run(args, cfg: Config) -> int:
         elif c == "sweep":
             from .solana.sell import sweep as _sweep
 
-            try:
-                _out(args, await _sweep(svc.rpc, args.mint, args.slippage, args.dry_run), R.render_sweep)
+            try:  # the tape: a coin that left its curve is sold on the PumpSwap pool its migration record names
+                _out(
+                    args, await _sweep(svc.rpc, args.mint, args.slippage, args.dry_run, store=svc.store), R.render_sweep
+                )
             except RuntimeError as exc:
                 raise SystemExit(f"sweep: {exc}") from None
         elif c == "follow":
