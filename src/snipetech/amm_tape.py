@@ -3,7 +3,8 @@
 The recorder's recent-migrations mode (live.py, `RecentMigrations`, from 7 Nov 12:13 UTC) records every PumpSwap trade of
 each coin that left its curve in the last `[live] amm_recent_secs`. It writes what it holds to the coverage record
 `tape:amm_recent`: a list of runs, each a gap-free stretch of the tape's own stream with the mode on over LaserStream,
-with its window `secs` (how long a coin is kept) and the chain-time stretches it `skipped`.
+with its window `secs` (how long a coin is kept), the chain-time stretches it `skipped` and the chain's slot time it
+placed them at (`slot_secs`; runs written before the recorder measured it have none, and are read with care).
 
 Why a lab reads it: a MIG buy and a migration sell trade on PumpSwap in the minutes after a migration. Outside the runs
 (tape recorded before the mode, a restart, the 7 Nov 14:03-15:48 stall) the tape holds only the PumpSwap trades that rode
@@ -18,6 +19,12 @@ from typing import Any
 
 AMM_RECENT_KEY = "tape:amm_recent"  # coverage: the runs in which the tape holds recent coins' PumpSwap trades
 _RUN_KEYS = frozenset({"from", "to", "secs", "skipped"})
+# A run without `slot_secs` was written before the recorder measured the chain's slot time (7 Nov): it placed a slot
+# 0.4 s a slot from its head while the chain ran at 0.214 s, so a stretch it skipped may lie away from where it is
+# written: a replay cut 450 slots back ended 60 s before the miss did; the valve, shedding updates ahead of a head 20-120
+# s behind the chain, started 9-77 s after what it let go (0.68 s per second of lag, less its 5 s margin). Each of its
+# skipped stretches is read this much wider on both sides: enough for a valve lag up to 4.5 min.
+OLD_SKIP_SLACK_SECS = 180
 
 # why a stretch is not covered (`amm_recent_gap`), in the words the lab reports
 GAP_WORDS = {
@@ -37,14 +44,25 @@ def _runs(cov: dict[str, Any]) -> list[dict[str, Any]]:
     return sorted(runs, key=lambda r: r["from"])
 
 
+def _skipped(run: dict[str, Any]) -> list[list[float]]:
+    """A run's skipped stretches as a lab reads them: as written by a recorder that measured the slot time it placed
+    them at (`slot_secs`, None when it had not measured it yet and used its widest bounds), OLD_SKIP_SLACK_SECS wider on
+    both sides in a run written before that (no `slot_secs`), and never past the run itself (a stretch that reaches
+    into a later run is written into that run too)."""
+    slack = 0 if "slot_secs" in run else OLD_SKIP_SLACK_SECS
+    lo, hi = run["from"], run["to"]
+    return [[max(lo, a - slack), min(hi, b + slack)] for a, b in run["skipped"]]
+
+
 def amm_recent_covers(cov: dict[str, Any], start: float, end: float) -> bool:
     """Whether the tape holds every PumpSwap trade of a coin from `start`, when it left its curve, to `end` (block
     times), read from the coverage record `tape:amm_recent` (`LiveWatcher._mark_amm_recent`): the stretch lies inside
-    one run, within that run's window, and clear of its skipped stretches. A stretch the tape ran without the mode (off,
-    older code, the logs fallback) is in no run, and a run with a shorter window does not cover a longer stretch."""
+    one run, within that run's window, and clear of its skipped stretches (`_skipped`: those of a run written before the
+    recorder measured its slot time read wider). A stretch the tape ran without the mode (off, older code, the logs
+    fallback) is in no run, and a run with a shorter window does not cover a longer stretch."""
     for run in _runs(cov):
         if run["from"] <= start and end <= run["to"] and end - start <= run["secs"]:
-            return not any(a <= end and start <= b for a, b in run["skipped"])
+            return not any(a <= end and start <= b for a, b in _skipped(run))
     return False
 
 
@@ -74,9 +92,9 @@ def amm_recent_gap(cov: dict[str, Any], start: float, end: float) -> str | None:
 
 
 def amm_recent_holes(cov: dict[str, Any], start: float, end: float) -> list[list[float]]:
-    """The stretches of [start, end] the PumpSwap tape does not hold: outside every run, or skipped inside one; merged
-    and in time order. What a lab lists beside the moments it skipped, so an outage shows even where the tape recorded
-    no migration in it (7 Nov 14:03-15:48: nothing was written at all)."""
+    """The stretches of [start, end] the PumpSwap tape does not hold: outside every run, or skipped inside one (as the
+    lab reads them, `_skipped`); merged and in time order. What a lab lists beside the moments it skipped, so an outage
+    shows even where the tape recorded no migration in it (7 Nov 14:03-15:48: nothing was written at all)."""
     pieces: list[list[float]] = []
     at = start
     for run in _runs(cov):
@@ -86,7 +104,7 @@ def amm_recent_holes(cov: dict[str, Any], start: float, end: float) -> list[list
             continue
         if run["from"] > at:
             pieces.append([at, run["from"]])
-        pieces += [[max(a, start), min(b, end)] for a, b in run["skipped"] if a <= end and b >= start]
+        pieces += [[max(a, start), min(b, end)] for a, b in _skipped(run) if a <= end and b >= start]
         at = max(at, run["to"])
     if at < end:
         pieces.append([at, end])

@@ -74,16 +74,43 @@ def test_the_14_03_to_15_48_outage_is_a_hole():
 
 
 def test_the_holes_of_a_stretch_of_tape():
+    from snipetech.amm_tape import OLD_SKIP_SLACK_SECS as slack
+
     cov = outage_7nov()
     holes = amm_recent_holes(cov, hm(11, 56, 40), hm(16, 40))
     assert holes == [
         [hm(11, 56, 40), hm(12, 13, 21)],  # earlier tape
         [1794056045, 1794056068],  # the 12:54 restart
-        [1794058993, 1794059053],  # the skipped minute
+        # the skipped minute, written before the recorder measured its slot time: read wider, it may lie elsewhere
+        [1794058993 - slack, 1794059053 + slack],
         [hm(14, 3), hm(15, 48)],  # the outage
     ]
     assert amm_recent_holes(cov, hm(13, 0), hm(13, 30)) == []
     assert amm_recent_holes({}, hm(13, 0), hm(13, 30)) == [[hm(13, 0), hm(13, 30)]]
+
+
+def test_a_run_written_before_the_recorder_measured_its_slot_time_has_its_skipped_stretches_read_wider():
+    """Review finding (7 Nov): until then the recorder placed a slot 0.4 s a slot from its head, and the chain ran at
+    0.214 s a slot. A PumpSwap side down for 150 s that came back replaying 450 slots wrote its miss, really 150-96 s
+    before the head, as 313-156 s before it; the valve, shedding updates ahead of a head 20-120 s behind the chain,
+    started its stretches 9-77 s after what it let go. Such a run says no `slot_secs`, and each of its skipped stretches
+    is read OLD_SKIP_SLACK_SECS wider on both sides; a run that says its slot time is read as written."""
+    from snipetech.amm_tape import OLD_SKIP_SLACK_SECS
+
+    head = hm(13, 0)
+    run = {"run": "r", "from": hm(12, 0), "to": hm(14, 0), "secs": 1800, "skipped": [[head - 313, head - 156]]}
+    old, new = {"runs": [run]}, {"runs": [run | {"slot_secs": 0.2142}]}
+    # a coin that migrated 120 s before the head: its first 24 s of PumpSwap trades lie in the real miss
+    coin = (head - 120, head + 181)
+    assert amm_recent_gap(old, *coin) == "skipped" and not amm_recent_covers(old, *coin)
+    assert amm_recent_gap(new, *coin) is None
+    assert OLD_SKIP_SLACK_SECS >= 77
+    slack = OLD_SKIP_SLACK_SECS
+    assert amm_recent_holes(old, hm(12, 0), hm(14, 0)) == [[head - 313 - slack, head - 156 + slack]]
+    assert amm_recent_holes(new, hm(12, 0), hm(14, 0)) == [[head - 313, head - 156]]
+    # never wider than its own run: what lies outside it is a hole of its own or another run's
+    edge = {"runs": [run | {"skipped": [[hm(12, 0) + 10, hm(12, 0) + 20]]}]}
+    assert amm_recent_holes(edge, hm(11, 50), hm(14, 0)) == [[hm(11, 50), hm(12, 0) + 20 + slack]]
 
 
 def test_a_record_with_no_runs_covers_nothing():

@@ -28,7 +28,7 @@ import logging
 import os
 import sqlite3
 import time
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -67,12 +67,24 @@ EXPIRY_GRACE_SECS = 60
 WRITE_PATIENCE_SECS = 20.0
 REOPEN_AFTER_SECS = 180.0
 RESTART_AFTER_SECS = 600.0
-SLOT_SECS = 0.4  # mainnet's slot time: places a slot on the chain clock
-SLOT_DRIFT = 0.1  # how far slot times wander from it: a slot's place is widened by this share of its distance
+# A slot is placed on the chain clock at the slot time the recorder measures on its own stream (`fit_slot_secs`): the
+# chain ran at 0.214 s a slot on 5-7 Nov (5 Nov slot 465852872 at block time 1793913232, 7 Nov 466371927 at 1794024424).
+# Review finding (7 Nov): a fixed 0.4 s ended a replay cut 450 slots back 60 s before the miss did, and put what the valve
+# let go 117 slots ahead of the tape's head 12-31 s after it really lay, so chain time that was missed read as covered.
+SLOT_SECS_PRIOR = (0.1, 0.5)  # before it has measured: a slot is placed anywhere this range puts it (the widest bounds)
+SLOT_FIT_SECS = 120  # the slot time is fitted once the heads span this much chain time (block times are whole seconds)
+SLOT_FIT_KEEP = 900  # heads it is fitted on, one a second: the last 15 minutes
+SLOT_REFIT_SECS = 10  # refitted this often
+SLOT_DRIFT = 0.1  # how far slot times may wander from the measured one: a slot's place is widened by this share of its
+# distance from the head (the tape shows 0.2136-0.2142 s a slot over 5-7 Nov: 0.3 %)
 SKIP_MARGIN_SECS = 5  # every skipped stretch is widened by this on both sides as well
-REPLAY_MAX_SLOTS = 450  # a new PumpSwap subscription replays at most 3 min; what lies further back is a skipped stretch
+# a new PumpSwap subscription replays at most this many slots (96 s at 0.214 s a slot); what lies further back is a
+# skipped stretch
+REPLAY_MAX_SLOTS = 450
+# the fields of a run of the coverage record that every version of this recorder wrote: a run with them is kept
+RUN_FIELDS = frozenset({"run", "from", "to", "secs", "skipped"})
 SHRINK_RESTART_SECS = 120  # expired pools leave the PumpSwap subscription at its next restart, or after 2 min
-STALL_SECS = 30  # a PumpSwap subscription that sent no slot for this long is restarted (slots come every 0.4 s)
+STALL_SECS = 30  # a PumpSwap subscription that sent no slot for this long is restarted (slots come every 0.2 s)
 AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
 
 ACTIONS = {
@@ -85,6 +97,28 @@ ACTIONS = {
     "UNKNOWN": "unknown",
     None: "unknown",
 }
+
+
+def fit_slot_secs(heads: Iterable[tuple[int, int]]) -> tuple[float, float] | None:
+    """The chain's seconds a slot, measured on (slot, block time) heads of the tape's own stream by least squares, with
+    the fit's largest miss in seconds (how far a head's block time lies from the line: block times are whole seconds,
+    and slot times wander). None while the heads span less than SLOT_FIT_SECS of chain time or give no sensible slope
+    (outside 0.05-2 s, as `sim.market.slot_secs_from`). Pure Python: the recorder does not load numpy for it."""
+    pairs = list(heads)
+    if len(pairs) < 2:
+        return None
+    times = [t for _s, t in pairs]
+    if max(times) - min(times) < SLOT_FIT_SECS:
+        return None
+    n = len(pairs)
+    ms, mt = sum(s for s, _t in pairs) / n, sum(times) / n
+    var = sum((s - ms) ** 2 for s, _t in pairs)
+    if var <= 0:
+        return None
+    slope = sum((s - ms) * (t - mt) for s, t in pairs) / var
+    if not 0.05 <= slope <= 2.0:
+        return None
+    return slope, max(abs(t - mt - slope * (s - ms)) for s, t in pairs)
 
 
 class SignalSink:
@@ -245,6 +279,9 @@ class LiveWatcher:
         self.lag = 0.0  # how far behind the chain the tape's own stream last measured itself (s)
         self.lag_due = 0.0  # when to measure it next (once a second)
         self.head: tuple[int, int] | None = None  # (slot, block time) last measured there: the chain clock
+        self.heads: deque[tuple[int, int]] = deque(maxlen=SLOT_FIT_KEEP)  # every head, one a second: fitted on
+        self.slot_fit: tuple[float, float] | None = None  # (seconds a slot, the fit's largest miss) measured on them
+        self.slot_fit_due = 0.0  # when to fit it again
         self.amm_source: str | None = None  # "laserstream" or "logs": how run() started the PumpSwap side
         self.amm_wake = asyncio.Event()  # something changed for the PumpSwap side (a coin joined, a tick)
         self.amm_pools: tuple[str, ...] = ()  # the pools of its subscription
@@ -490,7 +527,9 @@ class LiveWatcher:
             self._skip(self._slot_ts(start, -1), self._slot_ts(head - REPLAY_MAX_SLOTS, +1))
             start = head - REPLAY_MAX_SLOTS
         if start is not None and not self.amm_replay:
-            self._skip(self._slot_ts(start, -1), self._chain_now() + SKIP_MARGIN_SECS)
+            # missed up to the chain's tip, where the live subscription starts: the wall clock, ahead of the block time
+            # the tape's own stream records by its lag
+            self._skip(self._slot_ts(start, -1), self.clock() + SKIP_MARGIN_SECS)
             start = None
         self.amm_resume = start if start is not None else head - 2  # live: the server is at least where the tape is
         return start
@@ -704,8 +743,10 @@ class LiveWatcher:
         """Measure, once a second, how far behind the chain the tape's own stream records: now minus the block time its
         newest transaction's events carry (pump.fun's do, LaunchLab's do not; the stream's own block time is the
         receive time). It feeds the valve, `lag` and the chain clock `head` (where the window and the skipped
-        stretches are counted). The book and the operator measure the tape's lag the same way, from the trades' block
-        times. Once a second, so each of the tape's own transactions pays 0.2 us for it (1.3 us to measure; dev box)."""
+        stretches are counted), and every SLOT_REFIT_SECS the chain's slot time is fitted again on the heads
+        (`slot_fit`, which places a slot on that clock). The book and the operator measure the tape's lag the same way,
+        from the trades' block times. Once a second, so each of the tape's own transactions pays 0.2 us for it (1.3 us
+        to measure; dev box); the fit, on 900 heads, takes 0.4 ms every 10 s (dev box, 7 Nov)."""
         now = self.clock()
         if now < self.lag_due:
             return
@@ -717,7 +758,10 @@ class LiveWatcher:
             self.lag_due, self.lag = now + 1.0, max(0.0, now - ts)
             if first or tx.slot >= self.head[0]:
                 self.head = (tx.slot, ts)
+                self.heads.append(self.head)
             change = self.valve.observe(now - ts, now)
+            if now >= self.slot_fit_due:
+                self.slot_fit_due, self.slot_fit = now + SLOT_REFIT_SECS, fit_slot_secs(self.heads)
         except Exception as exc:  # noqa: BLE001 — it runs on the tape's own transactions: never at their cost
             self._amm_failed("lag", exc)
             return
@@ -741,14 +785,23 @@ class LiveWatcher:
         """The block time the tape's own stream is recording now: the wall clock minus its last measured lag."""
         return self.clock() - self.lag
 
-    def _slot_ts(self, slot: int, side: int = 0) -> float:
-        """A slot's block time on the chain clock: the last measured (slot, block time) plus SLOT_SECS a slot. `side`
-        -1 or +1 gives the early or the late bound, wider by SKIP_MARGIN_SECS and SLOT_DRIFT of the distance."""
+    def _slot_ts(self, slot: int, side: int) -> float:
+        """The early (`side` -1) or the late (+1) bound of a slot's block time on the chain clock: the last measured
+        (slot, block time) plus the slot time measured on the tape's own stream (`slot_fit`), give or take SLOT_DRIFT of
+        it, and SKIP_MARGIN_SECS plus the fit's largest miss on top. A slot behind the head is placed early at the
+        longest slot time and late at the shortest, one ahead of it the other way round. Before the slot time is
+        measured (the first SLOT_FIT_SECS of a start) the range is SLOT_SECS_PRIOR: wide, never short."""
         if self.head is None:
             return self._chain_now() + side * SKIP_MARGIN_SECS
         head_slot, head_ts = self.head
-        secs = (slot - head_slot) * SLOT_SECS
-        return head_ts + secs + side * (SKIP_MARGIN_SECS + abs(secs) * SLOT_DRIFT)
+        if self.slot_fit is None:
+            (short, long), miss = SLOT_SECS_PRIOR, 0.0
+        else:
+            secs, miss = self.slot_fit
+            short, long = secs * (1 - SLOT_DRIFT), secs * (1 + SLOT_DRIFT)
+        d = slot - head_slot
+        per_slot = (long if d < 0 else short) if side < 0 else (short if d < 0 else long)
+        return head_ts + d * per_slot + side * (SKIP_MARGIN_SECS + miss)
 
     def _connected(self) -> None:
         if self.disconnected_at is not None:
@@ -1076,7 +1129,10 @@ class LiveWatcher:
         `amm_recent_covers` reads it. A stretch without the mode (off, older code, a restart) lies in no run, and a run
         with another window is another run. This process's runs are tagged and rewritten every tick, the current one
         extended while the tape's stream is up, and every one with each skipped stretch that reaches into it, also
-        when that came after its last tick. The logs fallback writes none (nothing replays there)."""
+        when that came after its last tick. Each says the slot time its stretches were placed at (`slot_secs`, measured
+        on the tape's own stream; None before that, when they were placed at the widest bounds); a run written before
+        the recorder measured it has none and stays as it was written (the lab reads its stretches wider, amm_tape.py).
+        The logs fallback writes none (nothing replays there)."""
         if self.migrated is None or self.amm_source != "laserstream":
             return
         try:
@@ -1090,12 +1146,12 @@ class LiveWatcher:
             skipped = [list(s) for s in self.amm_skipped]
             if self.amm_gap is not None:  # down now: a replay may still make up for it
                 skipped.append([int(self._slot_ts(self.amm_gap, -1)), int(chain) + 1 + SKIP_MARGIN_SECS])
+            slot_secs = None if self.slot_fit is None else round(self.slot_fit[0], 6)
             mine = [{"run": tag, "from": a, "to": b, "secs": self.migrated.secs,
-                     "skipped": [s for s in skipped if s[0] <= b and s[1] >= a][-200:]}
+                     "skipped": [s for s in skipped if s[0] <= b and s[1] >= a][-200:], "slot_secs": slot_secs}
                     for tag, (a, b) in self.amm_runs.items()]  # fmt: skip
-            keys = mine[0].keys()
             runs = [r for r in self.store.coverage(AMM_RECENT_KEY).get("runs", [])
-                    if isinstance(r, dict) and r.keys() == keys and r["run"] not in self.amm_runs]  # fmt: skip
+                    if isinstance(r, dict) and RUN_FIELDS <= r.keys() and r["run"] not in self.amm_runs]  # fmt: skip
             self.store.set_coverage(AMM_RECENT_KEY, {"runs": sorted(runs + mine, key=lambda r: r["from"])[-500:]})
         except Exception as exc:  # noqa: BLE001 — the maintenance tick (flushes, the tape's own coverage) goes on
             self._amm_failed("coverage", exc)
