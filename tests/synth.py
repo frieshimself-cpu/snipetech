@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 
-from snipetech.models import Completion, Launch, Trade
+from snipetech.models import Completion, Launch, Migration, Trade
 from snipetech.solana.base58 import b58encode
 from snipetech.store import Store
 
 Q0, B0, R0 = 30_000_000_000, 1_073_000_000_000_000, 793_100_000_000_000
 FEE_BPS = 125
+DONE_B = B0 - R0  # a curve's virtual token reserve once it has sold its last token: the curve has completed
+POOL_B0 = 206_900_000_000_000  # the tokens a completed curve hands to its PumpSwap pool (BRUH, 7 Nov: 206.9e12)
 
 
 def addr(name: str) -> str:
@@ -22,6 +24,8 @@ class Market:
         self.store, self.mint, self.deployer = store, mint, deployer
         self.ts0, self.slot0 = ts, slot
         self.q, self.b = Q0, B0
+        self.venue = "curve"  # "amm" once the coin has migrated to its PumpSwap pool
+        self.migration: Migration | None = None  # the migration the tape records (`migrations`), once there is one
         self.n = 0
         self.trades: list[Trade] = []
         self.holdings: dict[str, int] = {}
@@ -43,8 +47,9 @@ class Market:
         )  # several trades in one tx (a create bundle) get distinct events
         t = Trade(
             sig=sig, ev=ev, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
-            venue="curve", user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
-            fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=R0 - (B0 - self.b), ix="buy" if is_buy else "sell",
+            venue=self.venue, user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
+            fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=0 if self.venue == "amm" else R0 - (B0 - self.b),
+            ix="buy" if is_buy else "sell",
         )  # fmt: skip
         self.trades.append(t)
         return t
@@ -67,12 +72,38 @@ class Market:
         self.holdings[user] -= tokens
         return self._push(user, self.slot0 + slot_offset, False, out, tokens)
 
+    def complete(self, user: str, slot_offset: int, sig: str | None = None) -> Trade:
+        """A buy of every token the curve has left: its virtual token reserve ends at DONE_B, the curve completes."""
+        tokens = self.b - DONE_B
+        s = -(-self.q * tokens // DONE_B)  # the SOL that takes exactly `tokens` out of the curve
+        self.q += s
+        self.b = DONE_B
+        self.holdings[user] = self.holdings.get(user, 0) + tokens
+        return self._push(user, self.slot0 + slot_offset, True, s, tokens, sig)
+
+    def migrate(self, slot_offset: int, sig: str | None = None, on_tape: bool = True) -> Migration:
+        """pump.fun's migration, `slot_offset` slots after the create: the completed curve's SOL and the pool's share of
+        the supply move to a new PumpSwap pool, and every trade from here on is a PumpSwap trade on the pool's own
+        reserves (it opens at the curve's last price). `sig`: the transaction that migrated it (BRUH, 7 Nov: the one
+        that completed its curve; anyone may send the migration, so it can also come later in a transaction of its
+        own). `on_tape`: the tape records it, as the recorder does from pump.fun's CompletePumpAmmMigrationEvent
+        (`migrations`)."""
+        assert self.b == DONE_B, "only a completed curve migrates"
+        self.q, self.b, self.venue = self.q - Q0, POOL_B0, "amm"
+        slot = self.slot0 + slot_offset
+        mig = Migration(self.mint, addr(f"{self.mint}:pool"), slot, self._ts(slot), sig or addr(f"{self.mint}:migrate"))
+        if on_tape:
+            self.migration = mig
+        return mig
+
     def commit(self, completed: bool = False) -> None:
         self.store.add_trades(self.trades)
         if completed:
             self.store.add_completions(
                 [Completion(self.mint, self.trades[-1].slot, self.trades[-1].ts, self.trades[-1].sig)]
             )
+        if self.migration is not None:
+            self.store.add_migrations([self.migration])
 
 
 def rinse_launch(store: Store, i: int, deployer: str, ts: int, slot: int) -> Market:

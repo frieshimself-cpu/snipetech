@@ -46,9 +46,11 @@ def test_launch_window_rules_land_where_oktech_hunt_buys():
         assert paper.live_landing(kind, "+6") == paper.HUNT_LANDING, kind
     assert paper.live_landing("launch", "+6") == paper.LAUNCH_LANDING
     assert paper.live_landing("kol", "+6") == (0, "+6")  # a copy of a known wallet still lands in its slot
-    # one map for every launch-type rule, so a lab pass scores each where it lands live
+    # one map for every launch-type rule (and OKTech MIG, tests/test_lab_mig.py), so a lab pass scores each where it
+    # lands live
     assert paper.LAUNCH_LANDINGS == {"launch": paper.LAUNCH_LANDING, "hunt": paper.HUNT_LANDING,
-                                     "whale": paper.HUNT_LANDING, "burst": paper.HUNT_LANDING}  # fmt: skip
+                                     "whale": paper.HUNT_LANDING, "burst": paper.HUNT_LANDING,
+                                     "mig": paper.MIG_LANDING}  # fmt: skip
 
 
 def test_a_coin_that_completes_its_curve_in_the_create_slot_is_no_launch_trade():

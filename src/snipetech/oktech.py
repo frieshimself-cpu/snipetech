@@ -229,12 +229,37 @@ def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[f
 
 
 UNREACHABLE_STAGE = {"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}
+# OKTech's migration sell: "on migration to a new pool, sell % after delay (100 ms - 1 min)" (its auto-sell form,
+# docs/oktech-features.md). It has never fired on one of our live trades.
+MIGRATION_SELL_MIN_MS, MIGRATION_SELL_MAX_MS = 100, 60_000
+
+
+def migration_sell(exit_params: dict | None) -> dict | None:
+    """An exit's migration sell (`migration_sell_frac` of what is held, `migration_sell_delay` s after the coin leaves
+    its curve) as OKTech's autoSell.migrationSell; None when it is off. Sent exactly as the lab scored it: a share above
+    the whole position, or a delay outside the app's 100 ms - 1 min or not a whole number of milliseconds, raises
+    instead of going out as an exit nobody scored (the hunt thresholds' lesson: OKTech ignores what it cannot read)."""
+    e = exit_params or {}
+    frac, delay = float(e.get("migration_sell_frac") or 0), float(e.get("migration_sell_delay") or 0)
+    if not math.isfinite(frac) or frac > 1 + 1e-9:
+        raise ValueError(f"a migration sell of {frac:g} x the position: OKTech sells at most all of it")
+    if frac <= 0:
+        return None
+    ms = delay * 1000
+    if not math.isfinite(ms) or abs(ms - round(ms)) > 1e-6:
+        raise ValueError(
+            f"OKTech takes the migration sell delay in whole milliseconds: {delay:g} s is not sent as scored"
+        )
+    if not MIGRATION_SELL_MIN_MS <= round(ms) <= MIGRATION_SELL_MAX_MS:
+        raise ValueError(f"OKTech's migration sell waits 100 ms to 60 s after the migration, not {delay:g} s")
+    return {"enabled": True, "sellPercent": _round(frac * 100, 2), "delayMs": round(ms)}
 
 
 def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0.001) -> dict | None:
     """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell. A take-profit that
     sells part of the position is followed by an unreachable 100 % stage (OKTech's app: "100 % must be last"). Never
-    sends autoStop: it switches the exits off on a fast pump (playbook 9)."""
+    sends autoStop: it switches the exits off on a fast pump (playbook 9). A migration sell goes out as scored
+    (`migration_sell`) and is flagged as never seen live."""
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = (
@@ -244,7 +269,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     )
     hold = float(e.get("max_hold_secs") or 0)
     stale = float(e.get("stale_secs") or 0)
-    if not (tp or sl or trail or hold or stale):
+    mig = migration_sell(e)
+    if not (tp or sl or trail or hold or stale or mig):
         return None
     stages = []
     if tp > 0:
@@ -289,6 +315,11 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
         out["trailingStopLoss"] = {"enabled": True, "percentFromPeak": _round(trail * 100, 2), "sellPercent": 100,
                                    "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None,
                                    "confirmMs": 0}  # a dip from the peak sells at once  # fmt: skip
+    if mig:
+        out["migrationSell"] = mig
+        notes.append(f"migration sell ({mig['sellPercent']:g} % {mig['delayMs']} ms after the coin migrates) has never "
+                     "fired on one of our live trades, and OKTech accepts settings it then ignores (playbook fact 8): "
+                     "check on the tape that the first coin that migrates while held is sold then")  # fmt: skip
     if e.get("sell_on_dev_sell") and not e.get("copy_exit"):
         notes.append("'sell when the dev sells' has no OKTech equivalent on this sniper; not applied")
     return out
@@ -496,6 +527,9 @@ def _describe_exit(e: dict | None) -> str:
         parts.append(f"trailing {e['trailing_stop']:.0%}")
     if e.get("max_hold_secs"):
         parts.append(f"max hold {e['max_hold_secs']:.0f}s")
+    if e.get("migration_sell_frac"):
+        parts.append(f"sell {float(e['migration_sell_frac']):.0%} {float(e.get('migration_sell_delay') or 0):g}s after "
+                     "the coin migrates")  # fmt: skip
     return ", ".join(parts) or "none"
 
 
@@ -648,25 +682,45 @@ def _whole_hunt(value: Any, name: str) -> int:
     return round(v)
 
 
+# The lab scores a MIG rule only on exits that sell within this many seconds of the buy (analysis/lab.py, MIG_CAP: the
+# PumpSwap tape must hold every second of it, and research round 1's coins lost when held 900 s); a MIG plan with a
+# longer exit would be a rule nobody scored.
+MIG_MAX_HOLD_SECS = 300.0
+
+
+def _whole_secs(value: Any, name: str) -> int:
+    """A time OKTech takes in whole seconds (MIG's Migration Window). A fraction would not be the window the lab
+    scored, so it is refused here rather than sent."""
+    v = float(value or 0)
+    if not math.isfinite(v) or v < 0 or abs(v - round(v)) > 1e-9:
+        raise ValueError(f"OKTech takes {name} in whole seconds: {v:g} s is not a window it can run as scored")
+    return round(v)
+
+
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60
 ) -> PlannedSniper:
-    """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
+    """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun), a `hunt` sniper
+    for the launch-window rules, or a `mig` sniper (OKTech's pump migration sniper) for a MIG rule.
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
     the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL."""
     trig, ex = strategy["trigger"], dict(strategy["exit"])
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
+    kind = trig.get("kind")
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
                               "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
                               "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
     if not preexec:
         config["preexec"] = {"enabled": False}
-    summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
+    if kind == "mig":
+        watched, dry = "every pump.fun coin as it moves to PumpSwap", " with OKTech's local dry run on"
+    else:
+        watched, dry = "every new pump.fun launch", " and only after a local dry run of the create + buy succeeds"
+    summary = [f"{watched}, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
                f"stops buying by itself after {config['totalSnipes']} buys; earlier positions keep their exits, but the buy that uses up the cap can be left with no exit (DTAU, 4siK)",
-               "buys straight into the wallet (no seed account)" + (" and only after a local dry run of the create + buy succeeds" if preexec else ", no local dry run")]  # fmt: skip
-    kind = trig.get("kind")
+               "buys straight into the wallet (no seed account)" + (dry if preexec else ", no local dry run")]  # fmt: skip
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
         buyers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
@@ -737,6 +791,50 @@ def strategy_sniper(
                        + " (OKTech hunt, exactly as the lab scored it)")  # fmt: skip
         notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
                      "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
+    elif kind == "mig":
+        # the lab scored this rule (analysis/lab.py `_mig`): OKTech MIG buys the coin on PumpSwap once it has migrated,
+        # only when the migration came within migrationExpirySec of the create
+        config["mode"] = "mig"
+        del config["monitorProgram"]  # a normal-mode switch (docs/oktech-features.md, "Normal extras")
+        window = _whole_secs(trig.get("window"), "the Migration Window (migrationExpirySec)")
+        if not window:
+            # the form's default window is 10 s, and how to send "no window" is not known: an any-time rule sent without
+            # one would most likely run as the 10 s rule, which the lab scores as a rule of its own
+            raise ValueError("an any-time MIG rule cannot be sent as scored: OKTech's Migration Window defaults to 10 s, "
+                             "and how to send no window is not known (ask OKTech first)")  # fmt: skip
+        if trig.get("dev_paid") is not None:
+            # the lab's paid-creator split (lab.dev_paid_earlier): OKTech MIG has no filter for it. Each coin's creator
+            # is a fresh wallet, so blockedCreators cannot do it; web.tracking on the paying creators is untested (7 Nov)
+            raise ValueError("a MIG rule split on whether an earlier coin's creator paid the coin's creator cannot be "
+                             "sent as scored: OKTech MIG has no such filter, and sent without it the rule would run "
+                             "as plain MIG")  # fmt: skip
+        if float(ex.get("migration_sell_frac") or 0) > 0:
+            # a MIG buy lands after its coin migrated: the lab never fires a migration sell on one (sim/exits.py), and
+            # whether OKTech would fire it on a coin bought after its migration is not known
+            raise ValueError("a MIG exit with a migration sell cannot be sent as scored: a MIG buy comes after the "
+                             "migration it would sell into, so the lab never fired it")  # fmt: skip
+        hold = float(ex.get("max_hold_secs") or 0)
+        if not 0 < hold <= MIG_MAX_HOLD_SECS:
+            raise ValueError(f"the lab scores MIG only on exits that sell within {MIG_MAX_HOLD_SECS:g} s of the buy; "
+                             f"this one {'holds ' + format(hold, 'g') + ' s' if hold else 'has no timer'}")  # fmt: skip
+        config["migrationExpirySec"] = window
+        summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
+                       "Window, as the lab scored it)")  # fmt: skip
+        notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
+                     "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy behind the first 3 "
+                     "PumpSwap trades after the migration's slot, a slot or so after it, where the lab assumes it "
+                     "lands) and that its exits fire")  # fmt: skip
+        # still missing live (7 Nov, research round 1, P2), out of scope of the MIG lab: solana/sell.py skips a coin
+        # whose curve has completed, and operator/live_test.py accepts hunt strategies only
+        notes.append("/sell cannot sell these coins, nor the unsold-coin watch's /sell line: every MIG position is on "
+                     "PumpSwap, and /sell only sells coins still on the pump.fun curve (solana/sell.py). If a "
+                     "position's exits do not fire (hunt fills have been left unsold: HOUSE, CAT), it has to be sold "
+                     "by hand in OKTech or Axiom")  # fmt: skip
+        notes.append("the automatic test runs hunt strategies only (operator/live_test.py): a MIG strategy that passes "
+                     "the paper test is not started by itself")  # fmt: skip
+        notes.append("keep the recorder's recent-migrations mode on ([live] amm_recent_secs, 1800, over LaserStream; "
+                     "index_amm off, as on the server): it records the PumpSwap fill and its sells, which the measure "
+                     "stage and the unsold-coin watch read, and it is the only tape a MIG rule is scored on")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):
@@ -744,7 +842,8 @@ def strategy_sniper(
         notes.append("OKTech documents no switch that skips mayhem / holder-reward coins: find it on the Sniper form, "
                      "or accept them (they cost a little on paper)")  # fmt: skip
     ex.setdefault("sell_on_dev_sell", False)
-    if stale and not ex.get("stale_secs"):
+    # a MIG plan is the scored exit exactly (1:1): it sells within MIG_MAX_HOLD_SECS anyway, so no dead exit is added
+    if stale and not ex.get("stale_secs") and kind != "mig":
         # a coin with no trades for a minute is dead: OKTech's dead exit frees the (one-shot) sniper instead of
         # holding to the timer. Not part of the paper exit, so it is a cap on hold time, never a widening.
         ex["stale_secs"] = float(stale)

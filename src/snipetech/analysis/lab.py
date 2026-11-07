@@ -4,7 +4,8 @@ No wallet to copy. Every token on the tape is a candidate, and each strategy is 
 buy), a filter (which of those moments), and an exit:
 
 * triggers — `launch` (at the create), `burst` (>= N buyers and >= X SOL bought within W seconds),
-  `whale` (a buy of >= X SOL by a wallet that isn't the dev), `kol` (a labeled KOL buys);
+  `whale` (a buy of >= X SOL by a wallet that isn't the dev), `kol` (a labeled KOL buys), `hunt` (OKTech's launch
+  gate), `mig` (OKTech MIG: the tape records the coin's migration to PumpSwap, within a window of its create);
   each fires at most once per token, the way a sniper takes one position per token;
 * entry — your measured latency after the trigger (OKTech: slots + position in the slot),
   your costs per transaction;
@@ -26,18 +27,20 @@ import sqlite3
 import sys
 import threading
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
 
 import numpy as np
 
 from .. import CODE_ID, code_identity
+from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_holes
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
-from ..oktech import EXITS, _whole_hunt
+from ..oktech import EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -74,6 +77,8 @@ def _as_live(e: Mapping[str, Any], copy_exit_pct: float) -> ExitParams:
         stale_secs=float(e.get("stale_secs") or 0),
         watch_secs=WATCH_SECS,
         copy_exit_pct=copy_exit_pct,
+        migration_sell_frac=float(e.get("migration_sell_frac") or 0),  # autosell sends it as it stands
+        migration_sell_delay=float(e.get("migration_sell_delay") or 0),
     )
 
 
@@ -99,10 +104,10 @@ LIVE_EXITS = live_exits()
 
 @dataclass(frozen=True)
 class Trigger:
-    kind: str  # launch | burst | whale | kol | momentum
+    kind: str  # launch | burst | whale | kol | momentum | hunt | mig | event
     buyers: int = 0
     sol: float = 0.0
-    window: float = 0.0
+    window: float = 0.0  # burst / hunt: seconds counted; mig: OKTech's Migration Window from the create (above 0)
     progress: float = 0.0  # momentum: bonding-curve progress at least this
     holders: int = 0  # momentum: holders (from the tape) at least this
     ret: float = 0.0  # momentum: price change over 300 s at least this
@@ -115,6 +120,9 @@ class Trigger:
     # `window` = timeWindowMs / 1000, and these two (unset at their defaults)
     max_buyers: int = 0  # maxUniqueBuyers: skip the launch once more distinct wallets bought (0 = no limit)
     dev_max: float | None = None  # maxDevBuySol: skip the launch when its creator bought more with it (None = no limit)
+    # mig: True = only coins whose creator an earlier coin's creator paid before the create (paid_by_dev edges), False =
+    # only the others, None = no filter (the default). OKTech cannot filter on it: a lab knob, to decide buy or block
+    dev_paid: bool | None = None
 
     def label(self) -> str:
         base = self._label()
@@ -138,6 +146,11 @@ class Trigger:
                     + (f", creator's own buy <= {self.dev_max:g} SOL" if self.dev_max is not None else ""))  # fmt: skip
         if self.kind == "whale":
             return f"buy >= {self.sol:g} SOL by a non-dev"
+        if self.kind == "mig":
+            when = f"within {self.window:g} s of the create" if self.window else "any time after the create"
+            paid = {True: ", creator paid by an earlier coin's creator",
+                    False: ", creator not paid by an earlier coin's creator"}.get(self.dev_paid, "")  # fmt: skip
+            return f"OKTech MIG: buy at the migration, {when}{paid}"
         if self.kind == "event":
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
@@ -177,6 +190,14 @@ TRIGGERS = (
         for v in (3.0, 6.0)
         for pr in (0.3, 0.5)
     ]
+    # OKTech MIG as it runs (docs/oktech-features.md): a buy on PumpSwap once the coin has migrated there, within the
+    # Migration Window of its create. 10 s is OKTech's default and the round-1 pick (7 Nov: it catches the ~260 coins a
+    # day whose launch bundle fills the curve at once, none mayhem); 60 s only to compare it with (wider windows bought
+    # mostly mayhem coins, 17 of 18 down 80 % within 15 minutes). Never any time: OKTech cannot be sent no window.
+    + [Trigger("mig", window=w) for w in (10.0, 60.0)]
+    # MIG-10 split on its coins' creators: paid by an earlier coin's creator before the create, or not (7 Nov: 30 of 31
+    # such coins finished their curve in the create second, so they feed this window; whether to buy or block them)
+    + [Trigger("mig", window=10.0, dev_paid=p) for p in (True, False)]
 )
 
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
@@ -188,6 +209,8 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "kol": ("sol", "group", "max_age", "plain"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max"),
+    # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
+    "mig": ("window", "dev_paid"),
 }
 HUNT_CANNOT = ("OKTech hunt cannot skip mayhem or holder-reward coins (plain), see the create transaction (solo) or "
                "limit the coin's age beyond its own window (max_age)")  # fmt: skip
@@ -212,8 +235,12 @@ def _trigger_value(name: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be true or false, not {value!r}")
         return value
-    if name == "dev_max" and value is None:
+    if name in ("dev_max", "dev_paid") and value is None:
         return None
+    if name == "dev_paid":
+        if not isinstance(value, bool):
+            raise ValueError(f"dev_paid must be true, false or null, not {value!r}")
+        return value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number, not {value!r}")  # noqa: TRY004 - every refusal is a ValueError
     lo, hi = TRIGGER_BOUNDS[name]
@@ -229,11 +256,12 @@ def _trigger_value(name: str, value: Any) -> Any:
 def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     """An agent's own trigger (a hypothesis to test), from a JSON object with Trigger's fields. A ValueError in plain
     words for anything the lab could not score as meant: an unknown field, a kind other than launch, burst, whale, kol,
-    momentum or hunt (an event trigger needs the events table), a number outside its bounds, a field its kind does not
-    read. A hunt trigger must also be one OKTech runs exactly as scored: sol (minTotalSol) and dev_max (maxDevBuySol)
-    whole numbers, the window a whole number of milliseconds (5 Nov 22:11: OKTech ignored 2.5 / 1.0 and bought every
-    launch), so every hunt hypothesis that wins can be sent with `oktech strategy` as it was tested. Numbers are typed
-    the way the grid's are, so a hypothesis equal to a grid trigger gets the grid's strategy id."""
+    momentum, hunt or mig (an event trigger needs the events table), a number outside its bounds, a field its kind
+    does not read. A hunt trigger must also be one OKTech runs exactly as scored: sol (minTotalSol) and dev_max
+    (maxDevBuySol) whole numbers, the window a whole number of milliseconds (5 Nov 22:11: OKTech ignored 2.5 / 1.0 and
+    bought every launch), so every hunt hypothesis that wins can be sent with `oktech strategy` as it was tested; a MIG
+    trigger's window (migrationExpirySec) is whole seconds. Numbers are typed the way the grid's are, so a hypothesis
+    equal to a grid trigger gets the grid's strategy id."""
     if isinstance(spec, str):
         try:
             spec = json.loads(spec)
@@ -264,6 +292,11 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
             raise ValueError("a hunt trigger needs a window above 0 s (OKTech timeWindowMs)")
         if trig.max_buyers and trig.max_buyers < trig.buyers:
             raise ValueError(f"max_buyers {trig.max_buyers} is below buyers {trig.buyers}: the hunt could never fire")
+    # OKTech takes the Migration Window in whole seconds (`oktech strategy` refuses anything else), and above 0
+    if kind == "mig" and _whole_secs(trig.window, "the Migration Window (migrationExpirySec)") <= 0:
+        raise ValueError("a MIG trigger needs a Migration Window above 0 s (OKTech migrationExpirySec): its form "
+                         "defaults to 10 s and cannot be sent 'any time', so an any-time rule would run as another "
+                         "rule live")  # fmt: skip
     return trig
 
 
@@ -317,8 +350,100 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
     return None
 
 
-# triggers a live launch sniper runs (OKTech hunt on the pump.fun curve): no trade once the coin has left its curve
+# triggers a live launch sniper runs (OKTech hunt on the pump.fun curve): no trade once the coin has left its curve.
+# MIG is not one of them: its buy is on PumpSwap, after the curve has completed, by design.
 LAUNCH_KINDS = frozenset({"launch", "hunt", "whale", "burst"})
+
+# Triggers whose every position is a PumpSwap buy. Outside the recorder's recent-migrations runs (coverage
+# `tape:amm_recent`, amm_tape.py) the tape keeps just the few PumpSwap trades that ride in a pump.fun transaction (7 Nov,
+# BRUH: its pool fell from 149.2 to 98.6 SOL between its two recorded PumpSwap trades, 366 s apart), and a MIG position
+# there sees none of the trades after its buy: every exit sells at its entry price, a number that is only the fees. So a
+# MIG moment counts only where one run holds the coin's PumpSwap trades from the migration to the end of the exits'
+# horizon (`mig_gap`), and that record decides it whatever [live] index_amm says: the recorder keeps no runs with
+# index_amm on (live.py), so a stretch recorded that way is skipped too, with its reason.
+AMM_KINDS = frozenset({"mig"})
+SELL_SLOT_SECS = 1.0  # a sell lands a slot after its exit fires, and block times are whole seconds
+
+
+def exits_horizon(exits: Sequence[ExitParams]) -> float:
+    """How long after its buy a position scored on these exits can still be held: the longest timer among them. Every
+    exit of a lab is scored on the same moments, so the tape must hold that long of each."""
+    return max((float(ex.max_hold_secs) for ex in exits), default=0.0)
+
+
+# Where a MIG buy lands (`mig_entry`; no live MIG fill exists yet, playbook fact 8): never in the migration's own slot,
+# behind the first N PumpSwap trades after it, counted across slots (N = 3, the "+3" of paper.MIG_LANDING: round 1's
+# screen measured from the 3rd, and live hunt fills had 2-7 buys ahead of ours, so a buy is never put ahead of the
+# traders who beat it), within MIG_LAND_SLOTS of the migration: OKTech sends its buy the moment it sees the migration, so
+# in a coin slower than that it lands behind those that came by then. Review finding (7 Nov): the landing counted only
+# the slot after the migration, so an empty one put the buy ahead of a rush a slot later, and a migration with no
+# PumpSwap trade in its own slot priced the buy on the completed curve, its timers counted from before the pool existed.
+MIG_LAND_SLOTS = 10  # about 2 s at 0.214 s a slot: 2.5 times the slowest 3rd PumpSwap trade round 1 saw (4 slots)
+
+# why a moment was left out, in the words the lab reports: the PumpSwap tape's reasons, a curve position whose coin
+# left its curve while held when the tape has no migration for it to time a migration sell from, and a MIG buy with no
+# PumpSwap trade to land behind
+SKIP_WORDS = {**GAP_WORDS, "no_migration": "left its curve while held, and the tape has no migration for it",
+              "no_landing": f"with no PumpSwap trade in the {MIG_LAND_SLOTS} slots (about 2 s) after the migration's slot "
+                            "for a MIG buy to land behind"}  # fmt: skip
+
+
+def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int | None:
+    """The state a MIG buy enters at, the trigger at state i (the last at or before the migration's slot): behind the
+    first N PumpSwap trades after the migration's slot, counted across slots (N from a "+N" position; any other counts
+    as one, besides its own place in slot migration + `latency`), the ones within MIG_LAND_SLOTS of the migration, and
+    behind all of those when fewer came. Never a curve state or one before the first PumpSwap trade after the
+    migration's slot: None when there is none in that window, so the buy has nothing to land behind."""
+    m = int(mig.slot)
+    n = int(position[1:]) if position.startswith("+") and position[1:].isdigit() else 1
+    lo = int(np.searchsorted(path.slot, m, side="right"))  # the first state after the migration's slot
+    hi = int(np.searchsorted(path.slot, m + max(int(latency), MIG_LAND_SLOTS), side="right"))
+    pool = np.flatnonzero(path.amm[lo:hi])
+    if not len(pool):
+        return None
+    e = max(lo + int(pool[min(max(n, 1), len(pool)) - 1]), int(path.landing_index(m + int(latency), position, i)))
+    return e if path.amm[e] else None
+
+
+def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:
+    """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
+    when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
+    exits' `horizon`, plus a slot for the last sell (`amm_tape.amm_recent_gap`, which agrees with `amm_recent_covers`).
+    With no entry (e None) from the migration to its horizon: the stretch where a buy would have found its landing."""
+    start = float(mig.ts)
+    entry = start if e is None else max(start, float(path.ts[e]))
+    return amm_recent_gap(cov, start, entry + float(horizon) + SELL_SLOT_SECS)
+
+
+def mig_moment(cov: Mapping[str, Any], path: MarketPath, i: int, mig, latency: int, position: str,
+               horizon: float) -> tuple[int | None, str | None]:  # fmt: skip
+    """Where a MIG buy fired at state i enters (`mig_entry`) and why it cannot be scored (a key of SKIP_WORDS), or None
+    when it can: the PumpSwap tape must hold the coin from its migration to the entry plus the exits' `horizon`
+    (`mig_gap`; where it does not, a missing trade says nothing), and the coin must have had a PumpSwap trade for the
+    buy to land behind ("no_landing"). The lab and the paper test both score MIG with this."""
+    e = mig_entry(path, i, mig, latency, position)
+    why = mig_gap(cov, path, e, mig, horizon)
+    if why is None and e is None:
+        why = "no_landing"
+    return e, why
+
+
+def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
+    """Why a position bought on the curve at state e cannot be scored with a migration sell among its exits, or None
+    when it can. A migration sell trades on PumpSwap right after the migration, so when the coin migrates while held
+    (the recorded migration `mig` within `horizon` of the buy) the PumpSwap tape must hold it from the migration to the
+    end of the horizon, like a MIG buy (`mig_gap`); a coin that leaves its curve while held with no migration on the
+    tape gives its sale nothing to time from ("no_migration"). A coin that does not migrate while held needs nothing."""
+    end = float(path.ts[e]) + float(horizon)
+    if mig is not None:
+        if int(mig.slot) < int(path.slot[e]) or float(mig.ts) > end:
+            return None  # it migrated before the buy (no migration while held) or after the timer
+        return amm_recent_gap(cov, float(mig.ts), end + SELL_SLOT_SECS)
+    oc = getattr(path, "off_curve", None)
+    if oc is None or len(oc) != path.n or oc[e]:
+        return None
+    left = np.flatnonzero(oc[e + 1 :])
+    return "no_migration" if len(left) and float(path.ts[e + 1 + int(left[0])]) <= end else None
 
 
 def curve_done(path: MarketPath, i: int) -> bool:
@@ -329,6 +454,66 @@ def curve_done(path: MarketPath, i: int) -> bool:
     if oc is not None and len(oc) == path.n:
         return bool(oc[i])
     return bool(path.amm[i])
+
+
+def dev_paid_earlier(store: Store, launch) -> bool | None:
+    """Whether an earlier coin's creator paid this coin's creator before its create: a `paid_by_dev` edge (written by the
+    dev-transfer scan, events/dev.py) into the coin's signer or creator, first paid at or before the create, from a
+    wallet that created a coin before this one. None when the create is off the tape. The edges are what the scan had
+    found when the lab ran, which can be later than the migration a live sniper decides at."""
+    if launch is None:
+        return None
+    rows = store._q(
+        "SELECT 1 FROM edges e WHERE e.dst IN (?, ?) AND e.kind = 'paid_by_dev' AND e.first_ts <= ? AND EXISTS "
+        "(SELECT 1 FROM launches l WHERE (l.creator = e.src OR l.user = e.src) AND l.ts < ? AND l.mint != ?) LIMIT 1",
+        (launch.creator or launch.user, launch.user, int(launch.ts), int(launch.ts), launch.mint),
+    )
+    return bool(rows)
+
+
+def _mig(trig: Trigger, path: MarketPath, launch, mig, paid: bool | None = None) -> int | None:
+    """OKTech MIG as its settings read (no live MIG fill yet): it fires on the coin's migration to PumpSwap as the tape
+    records it (`mig`, from the `migrations` table: pump.fun's CompletePumpAmmMigrationEvent, the transaction that
+    creates the pool), once per coin. A completed curve is not a migration: OKTech can buy only once the pool exists,
+    and the migration is an instruction of its own (migrate_v2) that anyone may send, in the completing transaction
+    (BRUH, 7 Nov) or slots later. No migration on the tape, no buy, whatever the trades say (a trade on a PumpSwap pool
+    someone opened for a coin still on its curve is no migration). With `window` (OKTech's Migration Window: at most
+    that many seconds from the create to the migration) only a migration that soon after a create on the tape; 0 = any
+    time. Returns the last state at or before the migration's slot (the buy lands behind the PumpSwap trades after
+    it: `mig_entry`), or None when the tape has nothing of the coin before its migration. With `dev_paid` set, only a
+    coin whose `paid` (`dev_paid_earlier`) matches it."""
+    if mig is None:
+        return None
+    if trig.window and (launch is None or mig.ts - launch.ts > trig.window):
+        return None
+    if trig.dev_paid is not None and (paid is None or bool(paid) != trig.dev_paid):
+        return None
+    i = int(np.searchsorted(path.slot, int(mig.slot), side="right")) - 1
+    return i if i >= 0 else None
+
+
+def mig_landing(path: MarketPath, i: int, e: int, mig) -> tuple[int, int, int, float | None]:
+    """What a MIG buy entered at state e (`mig_entry`; the trigger at state i, the last at or before the migration's
+    slot) lands behind, measured on the tape: the PumpSwap trades in the migration's own slot (no buy that reacts to the
+    migration can be among them), the trades of later slots ahead of the buy, how many slots after the migration it
+    lands, and the entry price against the first PumpSwap trade after the migration's slot (None when there is none).
+    The lab sums these up (`_landing_check`)."""
+    first = int(np.searchsorted(path.slot, int(mig.slot), side="left"))
+    in_slot = int(path.amm[first : i + 1].sum())
+    after = int(np.searchsorted(path.slot, int(mig.slot), side="right"))
+    vs = None
+    if after < path.n and path.b[after] > 0 and path.b[e] > 0:
+        vs = float((path.q[e] / path.b[e]) / (path.q[after] / path.b[after]) - 1.0)
+    return in_slot, int(e - i), int(path.slot[e]) - int(mig.slot), vs
+
+
+def fired_at(trig: Trigger, path: MarketPath, i: int, mig=None) -> tuple[int, float]:
+    """(slot, block time) of the moment `trig` fired at state i, which its buy's landing counts from: a MIG trigger
+    fires on the migration itself (state i, the last before it, can be slots earlier), every other trigger on the trade
+    at state i."""
+    if trig.kind == "mig" and mig is not None:
+        return int(mig.slot), float(mig.ts)
+    return int(path.slot[i]), float(path.ts[i])
 
 
 def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
@@ -361,6 +546,42 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
     return None
 
 
+# A MIG position is scored on exits that sell within 300 s of its buy (MIG_MAX_HOLD_SECS, in oktech.py so the sniper
+# builder refuses a longer one). Research round 1 (7 Nov, 20 MIG-10 coins): +4.3 % at 30 s and +6.6 % at 300 s before
+# costs, but held 900 s it lost (-0.071 SOL a 0.2 SOL trade; 7 of 19 fell more than 80 %), the launch bundles' wallets
+# doing 82 % of their selling within 300 s; and every second of the horizon is a second the PumpSwap tape must hold
+# (`mig_gap`).
+MIG_CAP = (f"not scored: MIG is scored only on exits that sell within {MIG_MAX_HOLD_SECS:g} s of the buy, and this run "
+           "has one that holds longer (or has no timer)")  # fmt: skip
+
+
+def mig_exit_set() -> list[ExitParams]:
+    """The exits a MIG buy is scored on when the lab is not handed its own: timers alone, a stop, take profit with a
+    stop, trailing, the dead exit and one scale-out, every one selling within MIG_MAX_HOLD_SECS and watched from
+    OKTech's WATCH_SECS after the buy, so each is what OKTech's auto-sell would do (`oktech.autosell` sends each as
+    scored). No migration sell: a MIG buy comes after its coin migrated, so it would never fire."""
+    w, hold = WATCH_SECS, MIG_MAX_HOLD_SECS
+    out = [ExitParams(take_profit=0, stop_loss=0, max_hold_secs=h, sell_on_dev_sell=False, watch_secs=w)
+           for h in (10, 30, 60, 120, 300)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=sl, max_hold_secs=hold, sell_on_dev_sell=False, watch_secs=w)
+            for sl in (0.1, 0.2, 0.3)]  # fmt: skip
+    # round 1's live proposal, take profit 30 % / stop 20 % / everything at 300 s, among its neighbours
+    out += [ExitParams(take_profit=tp, stop_loss=sl, max_hold_secs=hold, sell_on_dev_sell=False, watch_secs=w)
+            for tp in (0.1, 0.2, 0.3, 0.5) for sl in (0.1, 0.2)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=0.2, trailing_stop=trail, trailing_activation=act, max_hold_secs=hold,
+                       sell_on_dev_sell=False, watch_secs=w) for trail in (0.1, 0.2) for act in (0.0, 0.1)]  # fmt: skip
+    out += [ExitParams(take_profit=0, stop_loss=0.2, max_hold_secs=hold, sell_on_dev_sell=False, stale_secs=stale,
+                       watch_secs=w) for stale in (2.0, 5.0)]  # fmt: skip
+    out.append(ExitParams(take_profit=0.1, tp_sell_fraction=0.5, stop_loss=0.15, trailing_stop=0.1, max_hold_secs=hold,
+                          sell_on_dev_sell=False, watch_secs=w))  # fmt: skip
+    return out
+
+
+def within_mig_cap(exits: Sequence[ExitParams]) -> bool:
+    """Every exit sells within MIG_MAX_HOLD_SECS of the buy (an exit with no timer holds until the tape ends)."""
+    return all(0 < float(ex.max_hold_secs) <= MIG_MAX_HOLD_SECS for ex in exits)
+
+
 def exit_set() -> list[ExitParams]:
     out = []
     for stale in (1.0, 2.0, 5.0):
@@ -386,10 +607,21 @@ def exit_set() -> list[ExitParams]:
                 for stale in (0.0, 1.0):
                     out.append(ExitParams(take_profit=tp, tp_sell_fraction=frac, stop_loss=sl, trailing_stop=trail,
                                           max_hold_secs=300, sell_on_dev_sell=False, stale_secs=stale))  # fmt: skip
+    # OKTech's migration sell (7 Nov): a share sold 100 ms to 1 min after the coin's migration (the one the tape
+    # records), scored only where the PumpSwap tape holds it. It changes only the coins that migrate while held: it
+    # sells into the graduation. The lab exit with everything
+    # sold 1 s after the migration; a 300 s hold that sells half, or all, at it (0.1 s: OKTech's shortest delay, so each
+    # is sent exactly as scored). It has never fired live: where its sell lands is an assumption (sim/exits.py).
+    out.append(ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1.0,
+                          migration_sell_frac=1.0, migration_sell_delay=1.0))  # fmt: skip
+    for frac in (0.5, 1.0):
+        out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False,
+                              migration_sell_frac=frac, migration_sell_delay=0.1))  # fmt: skip
     return out
 
 
-def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None) -> int | None:
+def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
+          paid: bool | None = None) -> int | None:  # fmt: skip
     if trig.kind == "event":
         # events: [(kind, ts, slot)] for this coin; fire on the first trade at or after the earliest event of the kind
         hits = sorted((ts, slot or 0) for kind, ts, slot in (events or []) if kind == trig.event)
@@ -401,7 +633,9 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
                 return i
         return None
     """Index of the trade at which `trig` fires on this token (first time only).
-    `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}."""
+    `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}. `mig`: the coin's migration
+    to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else); `paid`: whether an earlier coin's creator
+    paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set)."""
     dev = launch.deployers() if launch is not None else set()
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
@@ -411,6 +645,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return _momentum(trig, path, dev)
     if trig.kind == "hunt":
         return _hunt(trig, path, launch, dev)
+    if trig.kind == "mig":
+        return _mig(trig, path, launch, mig, paid)
     if trig.kind == "launch":
         if launch is None:
             return None
@@ -597,6 +833,14 @@ class _Run:
     costs: Costs
     exits: list[ExitParams]
     min_trades: int
+    # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts, and
+    # (`mig_sell`: an exit of the run sells into the migration) where a curve position that migrates while held does
+    amm_cov: dict[str, Any] = field(default_factory=dict)
+    horizon: float = 0.0
+    mig_sell: bool = False
+    # the exits a MIG trigger's moments are scored on (default: `mig_exit_set`), and their horizon
+    mig_exits: list[ExitParams] = field(default_factory=list)
+    mig_horizon: float = 0.0
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
@@ -615,9 +859,18 @@ def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) 
     return plan
 
 
+def _span_migration(store: Store, mint: str, a, b):
+    """The coin's migration to PumpSwap as the tape recorded it (`migrations`), when it lies in the span [a, b]."""
+    mig = store.migration(mint)
+    return mig if mig is not None and a <= mig.ts <= b else None
+
+
 def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> list[dict]:
     """One coin's moments in the tape span [a, b]: every trigger that fires on it, entered at the trigger's landing and
-    sold by every exit. The serial lab and each worker of a parallel one run this same code."""
+    sold by every exit. The serial lab and each worker of a parallel one run this same code. A MIG trigger fires on
+    the coin's migration the tape recorded in the span, and its buy lands behind the PumpSwap trades after the
+    migration's slot (`mig_entry`); a MIG moment with nothing to land behind, or that the PumpSwap tape does not hold
+    whole (`mig_moment`), comes back as {"mint", "trigger", "ts", "skipped": why} instead of a scored row."""
     trades = [t for t in store.trades_for_mint(mint, a, b)]
     if len(trades) < run.min_trades:
         return []
@@ -625,6 +878,11 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
     if path.n < run.min_trades:
         return []
+    wants_mig = run.mig_sell or any(t.kind in AMM_KINDS for _, t in run.triggers)
+    mig = _span_migration(store, mint, a, b) if wants_mig else None
+    in_span_launch = launch if (launch and a <= launch.ts) else None
+    wants_paid = mig is not None and any(t.kind in AMM_KINDS and t.dev_paid is not None for _, t in run.triggers)
+    paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
     rows: list[dict] = []
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
     for ti, trig in run.triggers:
@@ -634,29 +892,45 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
-            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint))
+            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
             fired = [] if i is None else [i]
         for i in fired:
-            if path.ts[i] > b - 60:
-                continue
+            t_slot, t_ts = fired_at(trig, path, i, mig)
             lat, pos = run.landings.get(trig.kind, (run.latency_slots, run.position))
-            e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
+            if trig.kind in AMM_KINDS:  # a PumpSwap buy: behind PumpSwap trades, where the tape holds them whole
+                e, why = mig_moment(run.amm_cov, path, i, mig, lat, pos, run.mig_horizon)
+                if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
+            else:
+                e = int(path.landing_index(t_slot + lat, pos, i))
+            if t_ts > b - 60:
+                continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                 continue  # a launch sniper's buy fails on a completed curve: no position
+            if run.mig_sell and trig.kind not in AMM_KINDS:  # its migration sell trades on PumpSwap if it migrates
+                why = migration_sell_gap(run.amm_cov, path, e, mig, run.horizon)
+                if why is not None:  # the row scores every exit on the same moment: the moment is left out whole
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
             own, frac = None, None
             if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                 by_user = _trades_by_user(path) if by_user is None else by_user
                 own = by_user[path.users[i]]
                 frac = leader_sell_fractions(path, path.users[i], own)
-            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                           migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 continue
-            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in run.exits]
-            row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
+            exits = run.mig_exits if trig.kind in AMM_KINDS else run.exits
+            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in exits]
+            row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
                    "landing": f"{pos}@{int(lat)}"}  # fmt: skip
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
+            if trig.kind in AMM_KINDS:
+                row["mig_landing"] = mig_landing(path, i, e, mig)
             rows.append(row)
     return rows
 
@@ -780,14 +1054,25 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
     moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
-    search set `exit_set()`) are simulated the way the live sniper sells: at each span's measured slot time, a slot
-    after the exit fires; on a wallet's buy (KOL triggers) the copy exit follows that wallet's sales. Every row records
-    the trigger buy's size (`lead_sol`); KOL rows also record how that wallet went on in the coin (`_leader_profile`).
+    search set `exit_set()`, and MIG's own `mig_exit_set()` for a MIG trigger, `mig_exits` in the result) are simulated
+    the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a wallet's buy
+    (KOL triggers) the copy exit follows that wallet's sales. Every row records the trigger buy's size (`lead_sol`);
+    KOL rows also record how that wallet went on in the coin (`_leader_profile`).
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
     other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at. `triggers`: run
     only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them.
+    A trigger that buys on PumpSwap (MIG) fires on the migrations the tape recorded in the span, and its buy lands
+    behind the first PumpSwap trades after the migration's slot (`mig_entry`: 3 at the MIG landing, counted across
+    slots, within MIG_LAND_SLOTS); a MIG moment counts only where it has a PumpSwap trade to land behind and the
+    PumpSwap tape (coverage `tape:amm_recent`) holds the coin from its migration to the end of the exits' horizon
+    (`mig_moment`), whatever [live] index_amm says; MIG exits that hold past 300 s leave MIG unscored (`unscored` says
+    why). With a migration sell among the exits, a curve moment whose coin migrates while held counts only where the
+    PumpSwap tape holds the migration (`migration_sell_gap`). `amm_tape` reports, per MIG trigger (and per other
+    trigger that lost a moment), how many moments were scored and how many were skipped and why, where the MIG buys
+    landed (`landing`), and lists the stretches of the scored tape the PumpSwap tape does not hold
+    (`amm_recent_holes`).
     `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
     read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
     process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
@@ -795,6 +1080,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
+    mig_exits = list(exits) if exits else mig_exit_set()  # handed exits score every trigger, MIG included
     exits = list(exits) if exits else exit_set()
     kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip
@@ -804,6 +1090,13 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         triggers = [
             (ti, t) for ti, t in enumerate(all_triggers) if (t.kind == "kol" and t.group in groups) or t.kind == "event"
         ]
+    unscored: dict[str, str] = {}
+    if not within_mig_cap(mig_exits):
+        unscored = {t.kind: MIG_CAP for _, t in triggers if t.kind in AMM_KINDS}
+        triggers = [(ti, t) for ti, t in triggers if t.kind not in AMM_KINDS]
+    amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
+    mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
+    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell else {}
     events_by_mint: dict[str, list[tuple]] = {}
     if event_kinds:
         marks = ",".join("?" * len(event_kinds))
@@ -814,7 +1107,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
-               costs=costs, exits=exits, min_trades=min_trades)  # fmt: skip
+               costs=costs, exits=exits, min_trades=min_trades, amm_cov=amm_cov,
+               horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
+               mig_horizon=exits_horizon(mig_exits))  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
@@ -827,17 +1122,61 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         n, rows = 1, _chunk_rows(store, run, items)
     else:
         rows, n = _parallel_rows(store, run, items, n, *shared)
+    skipped = [r for r in rows if "skipped" in r]  # moments the PumpSwap tape does not hold whole: never scored
+    rows = [r for r in rows if "skipped" not in r]
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
-    return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
-            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
-            "workers": n}  # fmt: skip
+    out = {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
+           "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
+           "workers": n, "unscored": unscored, "mig_exits": mig_exits}  # fmt: skip
+    if amm_runs or mig_sell:
+        horizon = run.mig_horizon if amm_runs else run.horizon
+        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)
+    return out
+
+
+def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped: list[dict], horizon: float,
+                mig_sell: bool) -> dict[str, Any]:  # fmt: skip
+    """What the PumpSwap tape let the lab score: the exits' horizon each moment needed, the stretches of the scored
+    tape the PumpSwap tape does not hold (7 Nov 14:03-15:48 among them, though the tape recorded no migration in it),
+    whether a migration sell among the exits gated the curve rules too (`migration_sell`), and per MIG trigger (and
+    per other trigger that lost a moment to it) the moments scored and the ones skipped, by reason (`why` in words)."""
+    lo = min((a for a, _b in spans), default=0)
+    hi = max((b for _a, b in spans), default=0)
+    scored = Counter(r["trigger"] for r in rows)
+    whys: dict[int, dict[str, int]] = {}
+    for r in skipped:
+        why = whys.setdefault(r["trigger"], {})
+        why[r["skipped"]] = why.get(r["skipped"], 0) + 1
+    per = {t.label(): {"scored": scored.get(ti, 0), "skipped": whys.get(ti, {})}
+           for ti, t in triggers if t.kind in AMM_KINDS or ti in whys}  # fmt: skip
+    codes = sorted({r["skipped"] for r in skipped})
+    return {"horizon_secs": float(horizon), "holes": amm_recent_holes(cov, lo, hi) if spans else [],
+            "migration_sell": bool(mig_sell), "triggers": per, "why": {c: SKIP_WORDS.get(c, c) for c in codes},
+            "landing": _landing_check([r["mig_landing"] for r in rows if "mig_landing" in r])}  # fmt: skip
+
+
+def _landing_check(seen: list[tuple]) -> dict[str, Any]:
+    """The MIG landing measured on the scored moments (`mig_landing`): how many, and the median PumpSwap trades in
+    the migration's slot, the median trades of later slots ahead of the buy, the slots after the migration it landed
+    (median and 90th percentile), and the entry price against the first PumpSwap trade after the migration's slot
+    (median and 90th percentile). What the landing choice costs on the tape."""
+    vs = [v for *_rest, v in seen if v is not None]
+    out: dict[str, Any] = {"n": len(seen)}
+    if seen:
+        out |= {"slot_trades": float(np.median([s[0] for s in seen])), "ahead": float(np.median([s[1] for s in seen])),
+                "slots": float(np.median([s[2] for s in seen])),
+                "slots_p90": float(np.percentile([s[2] for s in seen], 90))}  # fmt: skip
+    if vs:
+        out |= {"vs_first": float(np.median(vs)), "vs_first_p90": float(np.percentile(vs, 90))}
+    return out
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
-    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%."""
-    rows, exits = data["rows"], data["exits"]
+    """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. A MIG trigger
+    is ranked on the exits its moments were scored on (`mig_exits`)."""
+    rows, curve_exits = data["rows"], data["exits"]
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     hours = max(data["tape_hours"], 1e-6)
     out = []
@@ -846,6 +1185,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         if len(rs) < min_train + 5:
             continue
         m = np.array([r["pnl"] for r in rs])  # moments x exits
+        exits = (data.get("mig_exits") or curve_exits) if trig.kind in AMM_KINDS else curve_exits
         cut = int(len(rs) * 0.6)
         train_means = m[:cut].mean(axis=0)
         k = int(np.argmax(train_means))

@@ -78,6 +78,27 @@ def at(w: LiveWatcher, wall: float, chain: float | None = None, slot: int = A1_S
     w.head, w.lag = (slot, int(chain)), wall - chain
 
 
+# The chain's slot time on 5-7 Nov 2026 as the tape shows it: 5 Nov slot 465852872 at block time 1793913232, 7 Nov slot
+# 466371927 at 1794024424, 0.2142 s a slot (sim/market.py and book/watch.py measured the same). The recorder used 0.4.
+CHAIN_SLOT_SECS = (1794024424 - 1793913232) / (466371927 - 465852872)
+
+
+def chain_ts(slot: int) -> float:
+    """Where a slot really lies on the chain clock: a1's block time, CHAIN_SLOT_SECS a slot from a1's slot."""
+    return A1_TS + (slot - A1_SLOT) * CHAIN_SLOT_SECS
+
+
+def clocked(w: LiveWatcher, slot: int, ts: int, secs: int = 600, lag: float = 1.0) -> LiveWatcher:
+    """The tape's own stream handing over a pump.fun transaction a second for `secs` seconds, up to block time `ts` in
+    `slot`, on a chain at CHAIN_SLOT_SECS a slot, recorded `lag` seconds after its block: what the recorder measures
+    its chain clock and the chain's slot time on."""
+    for k in range(secs, -1, -1):
+        w.clock = lambda k=k: ts - k + lag
+        w._observe_lag(pump_tx(ts - k, slot - round(k / CHAIN_SLOT_SECS)))
+    assert w.head == (slot, ts)
+    return w
+
+
 def migration(mint: str, pool: str, ts: int, slot: int = 1) -> TxEvents:
     """pump.fun's migrate transaction as normalize() sees it: the pool comes in the event."""
     fields = {"user": addr("migrator"), "mint": mint, "pool": pool, "timestamp": ts, "quote_mint": WSOL_MINT}
@@ -562,7 +583,9 @@ def test_the_lag_is_measured_once_a_second_on_the_tapes_own_transactions():
     w.clock = lambda: A1_TS + 4
     w._observe_lag(pump_tx(A1_TS + 2, A1_SLOT + 5))
     assert (w.lag, w.head, w._chain_now()) == (2, (A1_SLOT + 5, A1_TS + 2), A1_TS + 2)
-    assert w._slot_ts(A1_SLOT + 10) == A1_TS + 4  # 0.4 s a slot from there
+    # two heads 2 s apart measure no slot time: a slot 5 past the head lies 0.1-0.5 s a slot from it, margin on top
+    assert w.slot_fit is None
+    assert (w._slot_ts(A1_SLOT + 10, -1), w._slot_ts(A1_SLOT + 10, +1)) == (A1_TS + 2 + 0.5 - 5, A1_TS + 2 + 2.5 + 5)
 
 
 # -- the record ---------------------------------------------------------------------------------------------------
@@ -754,8 +777,8 @@ def test_the_coverage_record_lists_the_runs_in_which_the_tape_holds_post_migrati
     assert w.store.coverage(AMM_RECENT_KEY) == {}
     running(w, 1_000)
     w._mark_amm_recent()
-    assert w.store.coverage(AMM_RECENT_KEY) == {
-        "runs": [{"run": "990-1000", "from": 1_000, "to": 1_098, "secs": 1800, "skipped": []}]
+    assert w.store.coverage(AMM_RECENT_KEY) == {  # no slot time measured here (`clocked` measures one)
+        "runs": [{"run": "990-1000", "from": 1_000, "to": 1_098, "secs": 1800, "skipped": [], "slot_secs": None}]
     }
     at(w, 1_200, chain=1_180)  # 20 s behind: what it claims ends at the chain time it records
     w._mark_amm_recent()  # rewritten each tick, never listed twice
@@ -830,21 +853,106 @@ def test_a_pumpswap_subscription_that_is_down_is_written_down_until_a_replay_mak
 
 
 @needs_grpc
-@needs_grpc
 def test_a_replay_that_would_reach_too_far_back_is_cut_and_the_rest_written_down(monkeypatch):
     async def go():
         streams = FakeLaserStream(monkeypatch)
         w = watcher()
         at(w, A1_TS, slot=A1_SLOT)
-        w._on_tx(completion(A1_MINT, A1_TS - 300, slot=A1_SLOT - 750), 0)  # seen 5 min late (the tape lagging)
+        w._on_tx(completion(A1_MINT, A1_TS - 161, slot=A1_SLOT - 750), 0)  # seen 161 s late (the tape lagging)
         side = asyncio.create_task(w._amm_stream())
         await settle()
         assert streams.subs[0]["request"].from_slot == A1_SLOT - REPLAY_MAX_SLOTS
         ((a, b),) = w.amm_skipped
-        assert a <= A1_TS - 300 and b >= A1_TS - REPLAY_MAX_SLOTS * 0.4
+        assert a <= chain_ts(A1_SLOT - 750) and b >= chain_ts(A1_SLOT - REPLAY_MAX_SLOTS)
         side.cancel()
 
     asyncio.run(go())
+
+
+# -- where a skipped stretch lies: the chain's slot time, measured -----------------------------------------------------
+
+
+def test_the_recorder_measures_the_chains_slot_time_on_its_own_stream():
+    w = clocked(watcher(), A1_SLOT, A1_TS)
+    secs, miss = w.slot_fit
+    assert secs == pytest.approx(CHAIN_SLOT_SECS, rel=0.01)
+    assert miss < 1.5  # block times are whole seconds: the fit misses none by more than that
+    assert clocked(watcher(), A1_SLOT, A1_TS, secs=60).slot_fit is None  # a minute after a start: too little to fit
+
+
+def test_a_pumpswap_outage_longer_than_a_replay_is_written_down_where_it_lies_on_the_chain():
+    """Review finding (7 Nov): slots were placed 0.4 s apart on the chain clock, which ran at 0.214 s a slot. A PumpSwap
+    side that stopped handing over 700 slots ago (150 s) comes back replaying the last REPLAY_MAX_SLOTS (450, 96 s);
+    the stretch before them, really 150-96 s ago, was written down as 313-156 s ago, so a coin that migrated 120 s ago,
+    its first 24 s of PumpSwap trades never recorded, read as covered. Both with the slot time measured and in a
+    recorder that has only just started, which has not measured it yet."""
+    for secs in (600, 30):
+        w = clocked(running(watcher(), A1_TS - 3600), A1_SLOT, A1_TS, secs=secs)
+        watched, moved = addr("a watched coin"), addr("a coin that migrated while the side was down")
+        w.migrated.note(watched, A1_TS - 600, [pump_pool(watched)], A1_SLOT - 2800)
+        w.amm_pools, w.amm_resume = (pump_pool(watched),), A1_SLOT - 700  # where its subscription stopped handing over
+        w.migrated.note(moved, A1_TS - 120, [pump_pool(moved)], A1_SLOT - 560)
+        assert w._amm_start(w._amm_want()) == A1_SLOT - REPLAY_MAX_SLOTS
+        (skip,) = w.amm_skipped
+        assert skip[0] <= chain_ts(A1_SLOT - 700) and skip[1] >= chain_ts(A1_SLOT - REPLAY_MAX_SLOTS), secs
+        # the replay hands everything after it over, and the tape's own stream goes on for 5 min
+        clocked(w, A1_SLOT + round(300 / CHAIN_SLOT_SECS), A1_TS + 300, secs=300)
+        w._mark_amm_recent()
+        assert not amm_recent_covers(w.store.coverage(AMM_RECENT_KEY), A1_TS - 120, A1_TS - 120 + 301), secs
+
+
+@needs_grpc
+def test_what_the_valve_sheds_ahead_of_the_tapes_head_is_written_down_where_it_lies_on_the_chain():
+    """Review finding (7 Nov): with the tape's own stream 25 s behind the chain the valve is closed, while the PumpSwap
+    side, at the chain's tip, hands over updates about 117 slots past the tape's head: really 25 s past it, written
+    down 37-57 s past it, so the second it let go read as covered."""
+    for secs in (600, 60):
+        w = clocked(running(watcher(), A1_TS - 3600), A1_SLOT, A1_TS, secs=secs, lag=25)
+        assert not w.valve.is_open
+        w.migrated.note(A1_MINT, A1_TS - 60, [A1_POOL], A1_SLOT - 280)
+        amm(w, a1_copy(A1_SLOT + 117, 1))
+        assert w.stats["amm_valve_skipped"] == 1
+        assert any(a <= chain_ts(A1_SLOT + 117) <= b for a, b in w.amm_skipped), secs
+
+
+@needs_grpc
+def test_a_refused_replay_writes_its_stretch_down_to_the_chains_tip(monkeypatch):
+    """The next subscription starts live, at the chain's tip, which is ahead of the tape's own stream by its lag: the
+    stretch it cannot make up for runs to the wall clock, not to the block time the tape is recording."""
+
+    async def go():
+        streams = FakeLaserStream(monkeypatch)
+        w = clocked(running(watcher(), A1_TS - 3600), A1_SLOT, A1_TS, lag=15)  # 15 s behind: the valve stays open
+        w._on_tx(completion(A1_MINT, A1_TS - 4, slot=A1_SLOT - 19), 0)
+        side = asyncio.create_task(w._amm_stream())
+        await settle()
+        w.amm_backoff = 0.001
+        streams.subs[0]["end"].set_exception(RuntimeError("from_slot not available"))  # before any message
+        await until(lambda: len(streams.subs) == 2)
+        assert not streams.subs[1]["request"].HasField("from_slot")
+        (skip,) = w.amm_skipped
+        assert skip[0] <= A1_TS - 4 and skip[1] >= A1_TS + 15  # to the tip, 15 s past the tape's own block time
+        side.cancel()
+
+    asyncio.run(go())
+
+
+def test_the_record_says_the_slot_time_it_placed_its_stretches_at_and_keeps_older_runs():
+    """A run written before the recorder measured the chain's slot time has no `slot_secs`; it stays in the record as it
+    was written, and the lab reads its skipped stretches wider (amm_tape.py)."""
+    store = Store(":memory:")
+    old = {"run": "1794053599-1794053601", "from": 1794053601, "to": 1794056045, "secs": 1800,
+           "skipped": [[1794055000, 1794055060]]}  # fmt: skip
+    store.set_coverage(AMM_RECENT_KEY, {"runs": [old]})
+    w = clocked(running(watcher(store=store), A1_TS - 3600), A1_SLOT, A1_TS)
+    w._mark_amm_recent()
+    young = clocked(running(watcher(store=Store(":memory:")), A1_TS - 3600), A1_SLOT, A1_TS, secs=30)
+    young._mark_amm_recent()
+    by = {r["run"]: r for r in store.coverage(AMM_RECENT_KEY)["runs"]}
+    assert len(by) == 2 and by.pop(old["run"]) == old
+    ((_tag, mine),) = by.items()
+    assert mine["slot_secs"] == pytest.approx(CHAIN_SLOT_SECS, rel=0.01)
+    assert young.store.coverage(AMM_RECENT_KEY)["runs"][0]["slot_secs"] is None  # not measured yet: widest bounds
 
 
 def test_whatever_is_stored_under_the_coverage_key_does_not_stop_the_record():

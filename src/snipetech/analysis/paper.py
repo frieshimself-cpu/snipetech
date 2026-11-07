@@ -30,23 +30,33 @@ from typing import Any
 
 import numpy as np
 
+from ..amm_tape import AMM_RECENT_KEY
 from ..config import Config
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
 from .lab import (
+    AMM_KINDS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
+    MIG_CAP,
+    MIG_LAND_SLOTS,
+    SKIP_WORDS,
     Trigger,
     _fire,
     collect,
     curve_done,
+    dev_paid_earlier,
+    fired_at,
     label_groups,
     leader_sell_fractions,
+    mig_moment,
+    migration_sell_gap,
     rank,
     span_slot_secs,
+    within_mig_cap,
 )
 from .stats import summarize
 
@@ -55,18 +65,32 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
 HUNT_LANDING = (1, "+3")
+# OKTech MIG sends its PumpSwap buy once it has seen the migration: a slot after the migration at the earliest, behind
+# the first 3 PumpSwap trades after the migration's slot, counted across slots, within 10 slots of the migration
+# (`lab.mig_entry`). No live MIG fill exists yet (playbook 8), so the 3 are the hunt's (live hunt fills had 2-7 buys
+# ahead), and the tape says what the choice costs: on 19 MIG-10 coins (7 Nov 12:13-13:53 UTC, research round 1) the
+# migration's own slot carried 1-6 PumpSwap trades (median 3), the first trade after it came 0-1 s later, and the 3rd
+# trade after it, 1-4 slots after the migration (median 2), was 0-1.1 % above the first (median +0.2 %). Counted in the
+# slot after the migration alone (until the 7 Nov review) an empty slot put the buy ahead of the next slot's rush. Every
+# MIG lab re-measures it (`lab._landing_check`); the first live fill replaces it.
+MIG_LANDING = (1, "+3")
 # every launch-window rule runs live through OKTech hunt (`oktech strategy` maps whale and burst triggers to hunt):
 # each is scored where a hunt buy lands, never at the copy landing inside the trigger's own slot (7 Nov: at the copy
-# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach)
-LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING}
+# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach);
+# a MIG rule is scored where a MIG buy lands
+LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING,
+                   "mig": MIG_LANDING}  # fmt: skip
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
     """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
     so a strategy frozen before it existed keeps its id and is not frozen a second time."""
-    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
+    # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
+    # sell (7 Nov)
+    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
-    later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
+    # trigger fields added on 7 Nov, at their defaults: OKTech hunt's two, then MIG's paid-creator split
+    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None}
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
@@ -99,9 +123,13 @@ def landing_fields(row: dict, copy_pos: str) -> dict[str, Any]:
     return {"landing": landing_key(lat, pos), "live_landing": live}
 
 
-def landing_text(latency: int, position: str) -> str:
-    """The landing in words, for the report."""
+def landing_text(latency: int, position: str, kind: str | None = None) -> str:
+    """The landing in words, for the report; a MIG strategy's (`kind` mig) as `lab.mig_entry` lands it."""
     latency, position = int(latency), str(position)
+    if kind in AMM_KINDS:
+        n = position[1:] if position.startswith("+") and position[1:].isdigit() else "1"
+        return (f"behind the first {n} PumpSwap trades after the migration's slot, a slot after it at the earliest and "
+                f"within {MIG_LAND_SLOTS} slots of it")  # fmt: skip
     if (latency, position) == LAUNCH_LANDING:
         return "the first trade of the slot after the create"
     if latency == 0 and position.startswith("+") and position[1:].isdigit():
@@ -113,13 +141,15 @@ def landing_text(latency: int, position: str) -> str:
 
 
 def landings(copy_pos: str) -> dict[str, str]:
-    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING), "hunt": landing_key(*HUNT_LANDING)}
+    return {"copies": copy_pos, "launch": landing_key(*LAUNCH_LANDING), "hunt": landing_key(*HUNT_LANDING),
+            "mig": landing_key(*MIG_LANDING)}  # fmt: skip
 
 
 def landing_note(copy_pos: str) -> str:
     return (f"Scored where live trades land: copies at {copy_pos} (up to {copy_pos[1:]} trades behind the leader, in its "
             f"slot: the regime live copies measured), launch snipes at the slot after the create, OKTech hunt snipes "
-            f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger.")  # fmt: skip
+            f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger, OKTech MIG buys "
+            f"{landing_text(*MIG_LANDING, 'mig')}.")  # fmt: skip
 
 
 def _scored(store: Store, sid: str) -> bool:
@@ -213,7 +243,11 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
-    freeze)."""
+    freeze). A strategy that buys on PumpSwap (MIG) lands behind PumpSwap trades after the migration and gets a trade
+    only where the PumpSwap tape (coverage `tape:amm_recent`) holds the coin from its migration to the end of its exit's
+    timer, as in the lab (`lab.mig_moment`), and so does a curve strategy whose exit sells into the migration when its
+    coin migrates while held (`lab.migration_sell_gap`); `skipped` counts, per strategy, the trades left out, `why`
+    says why in words; a MIG strategy whose exit holds past 300 s is not scored at all (`unscored`)."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -226,8 +260,18 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
     kols = label_groups(store)
+    unscored = {  # a MIG strategy whose exit holds past MIG_MAX_HOLD_SECS: the lab never scored one, nor does this
+        s["id"]: MIG_CAP for s in strategies
+        if (s.get("trigger") or {}).get("kind") in AMM_KINDS and not within_mig_cap([ExitParams(**s["exit"])])
+    }  # fmt: skip
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
-              for s in strategies]  # fmt: skip
+              for s in strategies if s["id"] not in unscored]  # fmt: skip
+    mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
+    paid_runs = any(trig.kind == "mig" and trig.dev_paid is not None for _, trig, _, _ in parsed)
+    # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
+    sell_runs = any(ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS for _, trig, ex, _ in parsed)
+    amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
+    skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades} the PumpSwap tape does not hold whole
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)
@@ -236,8 +280,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         end = min(b, int(now))
         # the lab's simulator settings (lab.collect): the slot time measured on this stretch of tape (an hour before
         # the window gives the fit enough span), exits that sell one slot after they fire, the copy exit on the
-        # copied wallet's own sells
+        # copied wallet's own sells; a MIG trigger fires on the migrations the tape recorded
         slot_secs = span_slot_secs(store, max(int(a), int(lo) - 3600), int(hi))
+        migs = store.migrations_between(int(a), int(end)) if mig_runs or sell_runs else {}
         for mint, _count in store.active_mints(lo, hi, 1):
             trades = store.trades_for_mint(mint, a, end)
             if len(trades) < min_trades:
@@ -247,32 +292,52 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             path = MarketPath.build(trades, in_span, slot_secs=slot_secs)
             if path.n < min_trades:
                 continue
+            paid = dev_paid_earlier(store, in_span) if paid_runs and mint in migs else None
             for s, trig, ex, costs in parsed:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                i = _fire(trig, path, in_span, kols)
+                i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue
-                t = int(path.ts[i])
+                t_slot, t_ts = fired_at(trig, path, i, migs.get(mint))
+                t = int(t_ts)
                 if not (lo <= t < hi) or t < s["from_ts"]:
                     continue
-                # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger
-                e = int(path.landing_index(int(path.slot[i]) + s["latency"], s["position"], i))
+                # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger; a PumpSwap
+                # buy behind PumpSwap trades, only where the tape holds them whole (`lab.mig_moment`)
+                if trig.kind in AMM_KINDS:
+                    e, why = mig_moment(amm_cov, path, i, migs.get(mint), s["latency"], s["position"], ex.max_hold_secs)
+                    if why is not None:
+                        skipped.setdefault(s["id"], {})
+                        skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
+                        continue
+                else:
+                    e = int(path.landing_index(t_slot + s["latency"], s["position"], i))
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
+                if ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS:
+                    why = migration_sell_gap(amm_cov, path, e, migs.get(mint), ex.max_hold_secs)
+                    if why is not None:
+                        skipped.setdefault(s["id"], {})
+                        skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
+                        continue
                 frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+                mig = migs.get(mint)
+                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                               migration_slot=None if mig is None else mig.slot)  # fmt: skip
                 if prep is None:
                     continue
                 res = run_exit(prep, ex, costs, end_ts=float(end))
                 added += store.put_paper_trade({
                     "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": res.entry_ts, "exit_ts": res.exit_ts,
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
-                    "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": int(path.slot[i]),
+                    "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
-    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos)}
+    codes = sorted({c for why in skipped.values() for c in why})
+    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
+            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
 
 
 def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:
@@ -311,7 +376,7 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         robust = _robust(pnl, s["buy_sol"], conf, samples)
         hours = max(((done_until or now) - s["from_ts"]) / 3600, 0)
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
-                    "landing": landing_text(lat, pos), "live_landing": (lat, pos) == live_landing(kind, copy_pos),
+                    "landing": landing_text(lat, pos, kind), "live_landing": (lat, pos) == live_landing(kind, copy_pos),
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": len(pnl), "mean": st.get("mean"),
                     "ev_lower": st.get("ev_lower"), "total": float(pnl.sum()), "win_rate": st.get("win_rate"),
                     "per_hour": len(pnl) / hours if hours else None, "lab_mean": s["lab"].get("mean"),

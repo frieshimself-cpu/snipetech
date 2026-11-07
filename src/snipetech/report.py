@@ -724,8 +724,44 @@ def render_follow(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _amm_tape_lines(t: dict) -> list[str]:
+    """The lab's moments against the PumpSwap tape: MIG moments, and with a migration sell among the exits the curve
+    rules' moments whose coin migrates while held: scored, skipped and why, and the holes in that tape (UTC)."""
+    import time as _t
+
+    def hm(ts: float) -> str:
+        return _t.strftime("%d %b %H:%M", _t.gmtime(ts))
+
+    def stretch(a: float, b: float) -> str:  # 07 Nov 14:03-15:48, the day said once; seconds when within a minute
+        sa, sb = hm(a), hm(b)
+        if sa == sb:  # a restart's 23 s (12:54:05-12:54:28 on 7 Nov)
+            return f"{sa}:{_t.strftime('%S', _t.gmtime(a))}-{_t.strftime('%H:%M:%S', _t.gmtime(b))}"
+        return f"{sa}-{sb[-5:]}" if sa[:6] == sb[:6] else f"{sa}-{sb}"
+
+    head = (f"MIG is scored only where the PumpSwap tape holds the coin from its migration to {t['horizon_secs']:g} s "
+            "after the buy (coverage tape:amm_recent):")  # fmt: skip
+    out = [head]
+    if t.get("migration_sell"):
+        out.append("  A migration sell is among the exits: a curve moment whose coin migrates while held counts only "
+                   "where the PumpSwap tape holds the migration (each such moment is left out for every exit).")  # fmt: skip
+    for label, c in (t.get("triggers") or {}).items():
+        skipped = ", ".join(f"{n} {t.get('why', {}).get(code, code)}" for code, n in sorted(c["skipped"].items()))
+        out.append(f"  {label}: {c['scored']} scored" + (f"; skipped: {skipped}" if skipped else ""))
+    if t.get("holes"):
+        out.append("  PumpSwap tape missing: " + ", ".join(stretch(a, b) for a, b in t["holes"]))
+    land = t.get("landing") or {}
+    if land.get("n") and land.get("vs_first") is not None:  # what landing behind the PumpSwap trades after it cost
+        slots = f"{land['slots']:g} slot{'' if land['slots'] == 1 else 's'}"
+        out.append(f"  Where the {land['n']} MIG buys landed: behind a median {land['slot_trades']:g} PumpSwap trades in the "
+                   f"migration's slot and {land['ahead']:g} after it, {slots} after the migration (90th percentile "
+                   f"{land['slots_p90']:g}), at {land['vs_first']:+.1%} against the first trade after the migration's "
+                   f"slot (90th percentile {land['vs_first_p90']:+.1%})")  # fmt: skip
+    return out
+
+
 def render_lab(r: dict) -> str:
-    out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL, "
+    cost = f" at {r['per_tx_sol']:g} SOL a transaction" if r.get("per_tx_sol") is not None else ""
+    out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL{cost}, "
            f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)", "=" * 72]  # fmt: skip
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
@@ -748,6 +784,8 @@ def render_lab(r: dict) -> str:
         out.append(
             "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
         )
+    if r.get("amm_tape"):
+        out += [""] + _amm_tape_lines(r["amm_tape"])
     if r.get("wallets"):
         out += [
             "",
@@ -778,7 +816,11 @@ def render_paper(action: str, r: dict) -> str:
             if r.get("landing")
             else ""
         )
-        return f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        line = f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        words = r.get("why") or {}
+        for sid, why in sorted((r.get("skipped") or {}).items()):  # trades the PumpSwap tape does not hold whole
+            line += f"\n  {sid}: left out " + ", ".join(f"{n} {words.get(c, c)}" for c, n in sorted(why.items()))
+        return line
     rows = r["strategies"]
     if not rows:
         return "nothing frozen yet: run `snipetech paper freeze`"
