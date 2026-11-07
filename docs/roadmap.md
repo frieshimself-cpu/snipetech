@@ -6,6 +6,30 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The wallet was emptied at 10:59; no rule has an edge where our buys land yet (7 Nov, 11:15 UTC)
+
+- **The sniper wallet:** at 10:59:53 UTC one transfer, signed with the wallet's own key, sent its 11.69 SOL to
+  `GXcAHhvu…4SinHRtQ`. In the same second 15 other wallets were emptied into that address, the owner's funding wallet
+  `95o2L9Jm…D6WaiC3` among them; 15 s later that address sent 8.73 SOL back to `95o2L9Jm…` and 8.73 SOL to `CcFLnC…`,
+  and it takes payouts from Axiom's address. It reads as the owner gathering their Axiom wallets; the owner was asked
+  to confirm. This repo holds no wallet key and sent nothing. The wallet holds 0 SOL and 0.22 wSOL; the book stopped
+  itself below its floor; nothing is held and no sniper runs. Nothing trades live until the wallet holds 10 SOL again
+  (the owner's guard, 09:15).
+- **Address poisoning:** at 07:21 a look-alike address, `95o22tih…2aiC3` (the same first and last four characters as
+  the owner's `95o2L9Jm…WaiC3`), sent the wallet 0.00001 SOL so the fake appears in its history. Check the whole
+  address before any transfer.
+- **The corrected search (08:16–08:57, 23.6 h of tape, at the real landing):** all 24 Hunt settings lose about
+  0.007 SOL a trade, about what a round trip costs: no gross edge where our buys land. Nothing was frozen. Copying the
+  tracked wallets' buys of 2 SOL or more: −0.0079 a trade.
+- **The analyst, hourly, one hypothesis a turn:** a 1 SOL hunt in 5 s capped at 4 buyers lost 0.0067 a trade over
+  1,738 trades (refuted). The one qualified wallet, `2Tp9`, draws 13.9 other buyers in the 2 s after its buys, as many
+  as the two wallets whose live copies all lost. The best paper strategy (`7b15e38f74`, n 83, +0.0013 a trade) owes
+  all of it to its five best trades. A trigger the lab would refuse now comes back to the agent at once (a11f72b).
+- **The owner's yes (09:15, `docs/live-recipe.md`):** the first strategy that passes on paper starts one capped live
+  test (0.2 SOL a buy, at most 10 buys and 2 hours, a 1 SOL stop) and goes on only at half of paper. `/test` in
+  Telegram is live; the automatic start and the wallet-wide guard are being built, with PumpSwap trades of coins that
+  just migrated, so MIG snipes and the migration sell can be scored.
+
 ## The launch rule that "held" was a landing artifact; the lab now scores where OKTech buys (7 Nov, 08:30 UTC)
 
 - **Correction (08:20):** the forward paper "winner" below is not evidence. Its whole profit came from a handful of
