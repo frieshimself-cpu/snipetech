@@ -39,7 +39,7 @@ from .. import CODE_ID, code_identity
 from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_holes
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
-from ..oktech import EXITS, _whole_hunt, _whole_secs
+from ..oktech import EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -499,11 +499,11 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
     return None
 
 
-# A MIG position is scored on exits that sell within 300 s of its buy. Research round 1 (7 Nov, 20 MIG-10 coins): +4.3 %
+# A MIG position is scored on exits that sell within 300 s of its buy (MIG_MAX_HOLD_SECS, in oktech.py so the sniper
+# builder refuses a longer one). Research round 1 (7 Nov, 20 MIG-10 coins): +4.3 %
 # at 30 s and +6.6 % at 300 s before costs, but held 900 s it lost (-0.071 SOL a 0.2 SOL trade; 7 of 19 fell more than
 # 80 %), the launch bundles' wallets doing 82 % of their selling within 300 s; and every second of the horizon is a
 # second the PumpSwap tape must hold (`mig_gap`).
-MIG_MAX_HOLD_SECS = 300.0
 MIG_CAP = (f"not scored: MIG is scored only on exits that sell within {MIG_MAX_HOLD_SECS:g} s of the buy, and this run "
            "has one that holds longer (or has no timer)")  # fmt: skip
 

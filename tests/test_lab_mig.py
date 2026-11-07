@@ -425,12 +425,12 @@ def test_strategy_sniper_sends_a_mig_trigger_exactly_as_scored():
 
 def test_a_mig_plan_says_sell_cannot_reach_its_coin_and_the_tape_needs_pumpswap_trades():
     # every MIG position is a PumpSwap coin: the owner's /sell skips a coin whose curve has completed (solana/sell.py),
-    # and without [live] index_amm the tape has no record of the fill, which the measure stage and the unsold-coin
-    # watch read
+    # and the recorder's recent-migrations mode is what puts the fill on the tape, which the measure stage and the
+    # unsold-coin watch read
     p = strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": MIG.__dict__}, 1)
     notes = " ".join(p.notes)
     assert "/sell" in notes and "by hand in OKTech or Axiom" in notes
-    assert "index_amm" in notes
+    assert "amm_recent_secs" in notes
 
 
 @pytest.mark.parametrize("window", [10.5, 0.25, -10.0])

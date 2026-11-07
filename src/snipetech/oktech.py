@@ -682,6 +682,12 @@ def _whole_hunt(value: Any, name: str) -> int:
     return round(v)
 
 
+# The lab scores a MIG rule only on exits that sell within this many seconds of the buy (analysis/lab.py, MIG_CAP: the
+# PumpSwap tape must hold every second of it, and research round 1's coins lost when held 900 s); a MIG plan with a
+# longer exit would be a rule nobody scored.
+MIG_MAX_HOLD_SECS = 300.0
+
+
 def _whole_secs(value: Any, name: str) -> int:
     """A time OKTech takes in whole seconds (MIG's Migration Window). A fraction would not be the window the lab
     scored, so it is refused here rather than sent."""
@@ -802,19 +808,32 @@ def strategy_sniper(
             raise ValueError("a MIG rule split on whether an earlier coin's creator paid the coin's creator cannot be "
                              "sent as scored: OKTech MIG has no such filter, and sent without it the rule would run "
                              "as plain MIG")  # fmt: skip
+        if float(ex.get("migration_sell_frac") or 0) > 0:
+            # a MIG buy lands after its coin migrated: the lab never fires a migration sell on one (sim/exits.py), and
+            # whether OKTech would fire it on a coin bought after its migration is not known
+            raise ValueError("a MIG exit with a migration sell cannot be sent as scored: a MIG buy comes after the "
+                             "migration it would sell into, so the lab never fired it")  # fmt: skip
+        hold = float(ex.get("max_hold_secs") or 0)
+        if not 0 < hold <= MIG_MAX_HOLD_SECS:
+            raise ValueError(f"the lab scores MIG only on exits that sell within {MIG_MAX_HOLD_SECS:g} s of the buy; "
+                             f"this one {'holds ' + format(hold, 'g') + ' s' if hold else 'has no timer'}")  # fmt: skip
         config["migrationExpirySec"] = window
         summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
                        "Window, as the lab scored it)")  # fmt: skip
         notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
                      "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy a slot or so after "
                      "the migration, where the lab assumes it lands) and that its exits fire")  # fmt: skip
-        # solana/sell.py skips a coin whose curve has completed; the recorder takes PumpSwap trades only with index_amm
-        notes.append("/sell cannot sell these coins: every MIG position is on PumpSwap, and /sell only sells coins still "
-                     "on the pump.fun curve. If a position's exits do not fire (hunt fills have been left unsold: HOUSE, "
-                     "CAT), it has to be sold by hand in OKTech or Axiom")  # fmt: skip
-        notes.append("keep [live] index_amm on while it runs: without it the tape has no record of the PumpSwap fill, "
-                     "so the measure stage cannot measure it and the unsold-coin watch takes it for a coin we never "
-                     "bought")  # fmt: skip
+        # still missing live (7 Nov, research round 1, P2), out of scope of the MIG lab: solana/sell.py skips a coin
+        # whose curve has completed, and operator/live_test.py accepts hunt strategies only
+        notes.append("/sell cannot sell these coins, nor the unsold-coin watch's /sell line: every MIG position is on "
+                     "PumpSwap, and /sell only sells coins still on the pump.fun curve (solana/sell.py). If a "
+                     "position's exits do not fire (hunt fills have been left unsold: HOUSE, CAT), it has to be sold "
+                     "by hand in OKTech or Axiom")  # fmt: skip
+        notes.append("the automatic test runs hunt strategies only (operator/live_test.py): a MIG strategy that passes "
+                     "the paper test is not started by itself")  # fmt: skip
+        notes.append("keep the recorder's recent-migrations mode on ([live] amm_recent_secs, 1800, over LaserStream; "
+                     "index_amm off, as on the server): it records the PumpSwap fill and its sells, which the measure "
+                     "stage and the unsold-coin watch read, and it is the only tape a MIG rule is scored on")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):
@@ -822,7 +841,8 @@ def strategy_sniper(
         notes.append("OKTech documents no switch that skips mayhem / holder-reward coins: find it on the Sniper form, "
                      "or accept them (they cost a little on paper)")  # fmt: skip
     ex.setdefault("sell_on_dev_sell", False)
-    if stale and not ex.get("stale_secs"):
+    # a MIG plan is the scored exit exactly (1:1): it sells within MIG_MAX_HOLD_SECS anyway, so no dead exit is added
+    if stale and not ex.get("stale_secs") and kind != "mig":
         # a coin with no trades for a minute is dead: OKTech's dead exit frees the (one-shot) sniper instead of
         # holding to the timer. Not part of the paper exit, so it is a cap on hold time, never a widening.
         ex["stale_secs"] = float(stale)

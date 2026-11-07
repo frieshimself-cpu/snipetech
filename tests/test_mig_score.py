@@ -409,6 +409,65 @@ def test_mig_is_not_scored_on_exits_longer_than_300_s():
     assert out["new_trades"] == 0 and "300 s" in out["unscored"][s["id"]]
 
 
+# -- what OKTech is sent: a MIG plan, 1:1 ----------------------------------------------------------------------------
+
+
+def _plan(trigger: Trigger, ex: ExitParams | dict, buy: float = 0.2):
+    from snipetech.oktech import strategy_sniper
+
+    exit_params = ex.to_dict() if isinstance(ex, ExitParams) else ex
+    return strategy_sniper({"id": "m1", "label": "t", "buy_sol": buy, "exit": exit_params,
+                            "trigger": trigger.__dict__}, 1)  # fmt: skip
+
+
+def test_a_mig_plan_is_the_scored_rule_and_nothing_else():
+    """mode mig, migrationExpirySec = the window, buyAmount = the buy, the auto-sell = the scored exit exactly: no dead
+    exit added (a hunt plan adds a 60 s one when its exit has none), no field the lab did not score."""
+    from snipetech.analysis.lab import mig_exit_set
+    from snipetech.oktech import autosell
+
+    tp30 = next(e for e in mig_exit_set() if (e.take_profit, e.stop_loss, e.max_hold_secs) == (0.3, 0.2, 300))
+    p = _plan(MIG10, tp30, buy=0.25)
+    assert p.config == {
+        "mode": "mig", "platforms": ["pumpfun"], "migrationExpirySec": 10, "buyAmount": 0.25, "priorityFee": 0.001,
+        "tipAmount": 0.002, "singleSnipe": True, "totalSnipes": 1,
+        "extraParams": {"globalSendCount": 1, "seedAccount": False}, "preexec": {"enabled": True}, "preconf": True,
+        "autoSell": autosell(tp30.to_dict() | {"sell_on_dev_sell": False}, []),
+    }  # fmt: skip
+    assert "deadExit" not in p.config["autoSell"]
+    assert p.config["autoSell"]["stages"][0] == {"gainPercent": 30.0, "sellPercent": 100.0, "delaySellAllSeconds": 0}
+    assert p.config["autoSell"]["stopLoss"]["stages"] == [{"percentLoss": 20.0, "sellPercent": 100}]
+    assert p.config["autoSell"]["sellAfterSeconds"] == 300.0
+    assert any("within 10 s of their create" in line for line in p.summary)
+
+
+def test_a_mig_plan_says_what_is_still_missing_live():
+    p = _plan(MIG10, EXIT)
+    notes = " ".join(p.notes)
+    assert "playbook 8" in notes  # MIG has never run on this account
+    # the owner's /sell and the unsold-coin watch's /sell line cannot sell a PumpSwap coin (solana/sell.py)
+    assert "/sell" in notes and "unsold-coin watch" in notes and "by hand in OKTech or Axiom" in notes
+    # the automatic test runs hunt strategies only (operator/live_test.py)
+    assert "automatic test" in notes and "hunt" in notes
+    assert "amm_recent_secs" in notes and "index_amm" not in notes.replace("index_amm off", "")
+
+
+def test_a_mig_plan_refuses_what_the_lab_never_scored():
+    import pytest
+
+    longer = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=600, sell_on_dev_sell=False)
+    with pytest.raises(ValueError, match="300 s"):
+        _plan(MIG10, longer)
+    with pytest.raises(ValueError, match="300 s"):  # no timer: it holds until something else sells
+        _plan(MIG10, {"stop_loss": 0.3})
+    sells = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False,
+                       migration_sell_frac=1.0, migration_sell_delay=1.0)  # fmt: skip
+    with pytest.raises(ValueError, match="migration sell"):  # a MIG buy comes after the migration it would sell into
+        _plan(MIG10, sells)
+    with pytest.raises(ValueError, match="10 s"):  # any time: OKTech cannot be sent no window
+        _plan(Trigger("mig"), EXIT)
+
+
 def test_the_lab_command_charges_the_measured_cost_unless_told(tmp_path, capsys, monkeypatch):
     import json
 
