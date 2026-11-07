@@ -536,6 +536,11 @@ class Store:
         rows = self._q("SELECT mint, pool, slot, ts, sig FROM migrations WHERE mint=?", (mint,))
         return Migration(*rows[0]) if rows else None
 
+    def migrations_between(self, start_ts: int, end_ts: int) -> dict[str, Migration]:
+        """The migrations to PumpSwap the tape recorded in a time range, by coin (one each)."""
+        rows = self._q("SELECT mint, pool, slot, ts, sig FROM migrations WHERE ts>=? AND ts<=?", (start_ts, end_ts))
+        return {r[0]: Migration(*r) for r in rows}
+
     def pools(self) -> dict[str, tuple[str, str]]:
         return {r[0]: (r[1], r[2]) for r in self._q("SELECT pool, base_mint, quote_mint FROM pools")}
 

@@ -35,14 +35,18 @@ from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
 from .lab import (
+    AMM_KINDS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
+    NO_AMM_TAPE,
     Trigger,
     _fire,
+    amm_on_tape,
     collect,
     curve_done,
+    fired_at,
     label_groups,
     leader_sell_fractions,
     rank,
@@ -55,10 +59,16 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
 HUNT_LANDING = (1, "+3")
+# OKTech MIG sends its PumpSwap buy once it has seen the migration: assumed to land like a hunt buy, a slot after the
+# migration, 3 trades in. An assumption, not a measurement: no live MIG fill exists yet (playbook 8); the first one
+# on the tape replaces it.
+MIG_LANDING = (1, "+3")
 # every launch-window rule runs live through OKTech hunt (`oktech strategy` maps whale and burst triggers to hunt):
 # each is scored where a hunt buy lands, never at the copy landing inside the trigger's own slot (7 Nov: at the copy
-# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach)
-LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING}
+# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach);
+# a MIG rule is scored where a MIG buy lands
+LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING,
+                   "mig": MIG_LANDING}  # fmt: skip
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
@@ -213,7 +223,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
-    freeze)."""
+    freeze). A strategy that buys on PumpSwap (MIG) is scored only while the tape records PumpSwap trades; `unscored`
+    names the ones left out and why."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -226,8 +237,13 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
     kols = label_groups(store)
+    amm = amm_on_tape(cfg)
+    unscored = {
+        s["id"]: NO_AMM_TAPE for s in strategies if not amm and (s.get("trigger") or {}).get("kind") in AMM_KINDS
+    }
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
-              for s in strategies]  # fmt: skip
+              for s in strategies if s["id"] not in unscored]  # fmt: skip
+    mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)
@@ -236,8 +252,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         end = min(b, int(now))
         # the lab's simulator settings (lab.collect): the slot time measured on this stretch of tape (an hour before
         # the window gives the fit enough span), exits that sell one slot after they fire, the copy exit on the
-        # copied wallet's own sells
+        # copied wallet's own sells; a MIG trigger fires on the migrations the tape recorded
         slot_secs = span_slot_secs(store, max(int(a), int(lo) - 3600), int(hi))
+        migs = store.migrations_between(int(a), int(end)) if mig_runs else {}
         for mint, _count in store.active_mints(lo, hi, 1):
             trades = store.trades_for_mint(mint, a, end)
             if len(trades) < min_trades:
@@ -250,14 +267,15 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             for s, trig, ex, costs in parsed:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                i = _fire(trig, path, in_span, kols)
+                i = _fire(trig, path, in_span, kols, mig=migs.get(mint))
                 if i is None:
                     continue
-                t = int(path.ts[i])
+                t_slot, t_ts = fired_at(trig, path, i, migs.get(mint))
+                t = int(t_ts)
                 if not (lo <= t < hi) or t < s["from_ts"]:
                     continue
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger
-                e = int(path.landing_index(int(path.slot[i]) + s["latency"], s["position"], i))
+                e = int(path.landing_index(t_slot + s["latency"], s["position"], i))
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
@@ -268,11 +286,11 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 added += store.put_paper_trade({
                     "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": res.entry_ts, "exit_ts": res.exit_ts,
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
-                    "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": int(path.slot[i]),
+                    "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
-    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos)}
+    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored}
 
 
 def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:
