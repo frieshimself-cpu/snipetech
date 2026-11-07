@@ -9,6 +9,11 @@ script, run from the cloud session with `args: {round: N}`); it only reads the r
 
 Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on choose their own.
 
+- [Round 1](2026-11-07-round-1.md), 7 Nov 12:20-16:25: 8 labs, none positive; MIG the one open idea.
+- [Round 2](2026-11-07-round-2.md), 7 Nov 16:27-20:48: 5 labs, none past the skeptics' bar; copy verdicts do not carry
+  forward (-0.0147 a copy on later tape); leads: MIG on Qm-uri coins (decided by a forward test about 8 Nov 04:00 UTC)
+  and the creator-0 crowd hunt (15 test trades, +0.0234; decided on 30 new firings, about 9 Nov).
+
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
 from the moment of the buy (it starts about 1.3 s later), so its numbers are 0.002 to 0.006 SOL a trade too kind. Since
