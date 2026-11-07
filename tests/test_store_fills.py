@@ -111,11 +111,14 @@ def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
         old = st.fill("S0")
         assert old["exit_reason"] == "sold" and old["sol"] == 0.19
         assert old["exit_name"] is None and old["crossed"] is None and old["twin_fee_sol"] is None
+        assert old["leader_progress"] is None
         st.put_fill(
             _fill("S1", NOW + 1, side="sell", exit_reason="dead_exit", exit_name="lab", crossed=1, twin_fee_sol=0.00401)
         )
         new = st.fill("S1")
         assert new["exit_name"] == "lab" and new["crossed"] == 1 and new["twin_fee_sol"] == 0.00401
+        st.put_fill(_fill("B1", NOW + 2, wallet_copied="LEAD", leader_progress=0.8512))
+        assert st.fill("B1")["leader_progress"] == 0.8512
         assert [r["sig"] for r in st.fills(side="sell")] == ["S1", "S0"]
         migrated = [r[1] for r in st._q("PRAGMA table_info(fills)")]
     finally:
@@ -123,6 +126,6 @@ def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
     fresh = Store(tmp_path / "fresh.db")
     try:
         assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
-        assert migrated[-3:] == ["exit_name", "crossed", "twin_fee_sol"]
+        assert migrated[-4:] == ["exit_name", "crossed", "twin_fee_sol", "leader_progress"]
     finally:
         fresh.close()

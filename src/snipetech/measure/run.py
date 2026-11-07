@@ -105,6 +105,34 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
     return out
 
 
+# Where the copied wallet bought on its curve, in bands (the leader's curve progress at its buy, measure/classify): research
+# round 2 (7 Nov) found the copy landing depends on it (early-curve copies 2-4 trades behind at +18-43 %, 7aPo3n's at
+# 79-93 % of the curve 0-1 behind at +0.5-0.8 %), and a closer landing for late-curve leaders waits for 10+ live fills.
+PROGRESS_BANDS = (("under 10%", 0.0, 0.1), ("10-60%", 0.1, 0.6), ("60-100%", 0.6, 1.0))
+MIGRATED_BAND = "PumpSwap"  # the leader bought on PumpSwap (or with the buy that completed the curve)
+
+
+def landing_by_progress(buys: list[dict]) -> dict[str, dict[str, Any]]:
+    """Our live copy buys by where the copied wallet bought on its curve: per band, how many, and the median trades
+    behind the leader and price gap over it. Buys that copied no one, or whose leader traded off pump.fun, are left out;
+    a band with no buy is not listed."""
+    groups: dict[str, list[dict]] = {}
+    for b in buys:
+        p = b.get("leader_progress")
+        if not b.get("wallet_copied") or p is None:
+            continue
+        band = MIGRATED_BAND if p >= 1.0 else next(name for name, lo, hi in PROGRESS_BANDS if p < hi)
+        groups.setdefault(band, []).append(b)
+
+    def p50(rows: list[dict], key: str, digits: int) -> float | None:
+        vals = [float(r[key]) for r in rows if r.get(key) is not None]
+        return round(statistics.median(vals), digits) if vals else None
+
+    order = [name for name, _lo, _hi in PROGRESS_BANDS] + [MIGRATED_BAND]
+    return {band: {"n": len(groups[band]), "trades_behind_p50": p50(groups[band], "trades_behind", 1),
+                   "price_gap_pct_p50": p50(groups[band], "price_gap_pct", 2)} for band in order if band in groups}  # fmt: skip
+
+
 def keep_tx_cost(store: Store, cfg: Config, arms: list[dict[str, Any]], now: float) -> dict[str, Any] | None:
     """Keep the low bid's cost of a transaction (qualify.run.TX_COST_KEY) whenever its bid model has enough fills to
     measure it; the record kept, or None when this run measured none. The bid model reads only the last 7 days, and a
@@ -415,7 +443,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
-            "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed}  # fmt: skip
+            "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
+            "landing_by_progress": landing_by_progress(all_buys)}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:

@@ -156,7 +156,8 @@ CREATE TABLE IF NOT EXISTS exit_shadow (
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
-              "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol")  # fmt: skip
+              "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol",
+              "leader_progress")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -173,6 +174,8 @@ _ADDED_COLUMNS = (
     ("verdicts", "create_slot", "TEXT"),
     # JSON: the wallet's copies on the tape after it was first picked, and the bar they met (qualify/gates.forward_gate)
     ("verdicts", "forward", "TEXT"),
+    # a copy buy: the copied wallet's curve progress at its buy (measure/classify.curve_progress)
+    ("fills", "leader_progress", "REAL"),
 )
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"

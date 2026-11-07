@@ -273,7 +273,8 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
 
     st = Store(":memory:")
     st.put_fill({"sig": "B" * 88, "ts": NOW - 400, "wallet": "W", "wallet_copied": "LEAD", "mint": "M1", "side": "buy", "sol": 0.2,
-                 "tokens": 1.0, "trades_behind": 3, "price_gap_pct": 31.0, "pos_in_slot": 4, "bid_arm": "control"})  # fmt: skip
+                 "tokens": 1.0, "trades_behind": 3, "price_gap_pct": 31.0, "pos_in_slot": 4, "bid_arm": "control",
+                 "leader_progress": 0.0846})  # fmt: skip
     _sell(st, "S" * 88, NOW - 100, buy_sig="B" * 88, pnl_sol=-0.041, exit_reason="copy_exit", exit_name="lab", crossed=0,
           twin_fee_sol=0.0021)  # fmt: skip
     _sell(st, "old", NOW - 9 * H, pnl_sol=0.01)
@@ -288,6 +289,7 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     (trip,) = out["trips"]
     assert trip["leader"] == "LEAD" and trip["held_secs"] == 300 and trip["trades_behind"] == 3
     assert trip["price_gap_pct"] == 31.0 and trip["exit_reason"] == "copy_exit" and trip["twin_fee_sol"] == 0.0021
+    assert trip["leader_progress"] == 0.0846  # where on its curve the leader bought, beside where we landed
     assert trip["verdict"]["mean_sol"] == 0.009 and trip["verdict"]["copy_plan"]["min_leader_sol"] == 0.5
     assert trip["verdict"]["forward"] == forward  # what its copies made after the pick, next to what the trip made
     assert trip["sig"] == "S" * 12 and "B" * 20 not in json.dumps(out)  # short signatures only

@@ -461,6 +461,7 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> 
         trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
                       "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
                       "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
+                      "leader_progress": buy.get("leader_progress"),
                       "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
                       "exit_reason": s.get("exit_reason"), "exit_name": s.get("exit_name"), "crossed": s.get("crossed"),
                       "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None,
