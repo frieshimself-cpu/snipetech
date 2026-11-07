@@ -1093,3 +1093,35 @@ def test_the_owners_risk_values_are_the_ones_the_book_obeys(tmp_path):
         assert out["kill_reason"] is None and [c[0] for c in svc.calls].count("create") == 2
     finally:
         st.close()
+
+
+def test_each_book_run_records_the_wallets_its_own_snipers_still_buy_for(tmp_path):
+    """Review of 7 Nov: the qualify stage keeps a wallet the book copied before the 7 Nov rules only while the book
+    copies it now. A book stop never deletes the sniper's local row (only a retire does), a stopped OKTech task reads
+    idle (docs/oktech-audit-2026-11-06.md), and the snipers the owner makes by hand are not the book's. So every run,
+    whatever it then does (here the book is off and the run only previews), records the wallets of its own snipers that
+    OKTech reports running or starting, by the six characters their names carry, with when it read them. A run that
+    cannot read OKTech records nothing, and a reading over an hour old says nothing about now."""
+    from snipetech.book.state import copying_now
+
+    st, cfg = _env(tmp_path)
+    snipers = [{"id": "a", "name": "snipetech copy book RUNNIN arm:control", "status": "running"},
+               {"id": "b", "name": "snipetech copy book STARTS arm:alt", "status": "starting"},
+               {"id": "c", "name": "snipetech copy book STOPPD arm:control", "status": "idle"},  # a stopped task
+               {"id": "d", "name": "snipetech copy book FINISH arm:control", "status": "finished"},
+               {"id": "e", "name": "snipetech copy book STOPNG arm:control", "status": "stopping"},
+               {"id": "f", "name": "snipetech vcopy HANDWA test", "status": "running"}]  # fmt: skip  # the owner's
+    try:
+        assert copying_now(st, NOW) is None  # the book has not read OKTech yet
+        asyncio.run(run_book(FakeSvc(st, snipers=snipers), cfg, NOW, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        assert copying_now(st, NOW + 60) == {"RUNNIN", "STARTS"}
+
+        class Down(FakeSvc):
+            async def oktech_status(self):
+                raise RuntimeError("OKTech down")
+
+        asyncio.run(run_book(Down(st), cfg, NOW + 1800, dry=True, balances=lambda w: (10.0, 0.0, [])))
+        assert copying_now(st, NOW + 1800) == {"RUNNIN", "STARTS"}  # the last reading stands
+        assert copying_now(st, NOW + 3601) is None
+    finally:
+        st.close()

@@ -84,6 +84,30 @@ def test_tip_shaped_transfers_of_our_own_fills_count_as_tips():
     assert f["tip_lamports"] == 3_000_000 and f["landing_service"] == "nozomi"
 
 
+def test_a_copy_fill_records_the_leaders_curve_progress_at_the_leaders_buy():
+    """Research round 2 (7 Nov): where a copy lands depends on where on its curve the leader buys (the model's gap was
+    +18.5 % on curves under 10 % full, +2.5 % above), and 7aPo3n, buying when the curve was 79-93 % full, was copied 0-1
+    trades behind at +0.5-0.8 %. Every copy fill records the leader's curve progress at the leader's buy (the share of
+    the 793.1M tokens a curve sells that it had sold), next to trades behind and the price gap; a buy on PumpSwap is 1."""
+    st = Store(":memory:")
+    _tl, tme, tsell, tfirst = _world(st)
+    row = classify_trade(st, tme, {LEAD}, None)
+    # 2 SOL into a fresh curve (30 SOL virtual): its virtual token reserve is 1.073e15 * 30 / 32 = 1.0059375e15, so it
+    # had sold 67.0625M of its 793.1M tokens
+    assert row["leader_progress"] == 0.0846 and row["trades_behind"] == 2 and row["price_gap_pct"] > 0
+    assert classify_trade(st, tfirst, {LEAD}, None)["leader_progress"] is None  # nobody bought before us to copy
+    assert classify_trade(st, tsell, {LEAD}, None)["leader_progress"] is None  # a sell copies no one
+    m = Market(st, addr("m-amm"), D, NOW + 3000, SLOT + 7500)
+    m.buy(D, 1.0, 0)
+    m.complete(addr("whale"), 2)
+    m.migrate(3)
+    m.buy(LEAD, 1.0, 5)
+    mine = m.buy(ME, 0.2, 6)
+    m.commit()
+    assert classify_trade(st, mine, {LEAD}, None)["leader_progress"] == 1.0
+    st.close()
+
+
 def test_trades_behind_counts_other_wallets_only():
     """Two arms on one wallet fire on the same leader buy: the second of our own fills must not count the first as a
     trade it landed behind, or the arm that goes second measures worse by construction."""

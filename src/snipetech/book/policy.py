@@ -316,6 +316,18 @@ def _book_snipers(snipers: list[dict]) -> list[dict]:
     return out
 
 
+# OKTech task statuses that still buy: a stopped task reads idle (docs/oktech-audit-2026-11-06.md), a stopping one is
+# on its way there, and finished, failed and the rest are done
+BUYING_STATUSES = frozenset({"running", "starting"})
+
+
+def buying_book_wallets(snipers: list[dict]) -> set[str]:
+    """The wallets the book's own snipers that can still buy copy, by the six characters their names carry (the book's
+    own key for a sniper's wallet): those OKTech reports running or starting. A sniper the owner made by hand is not the
+    book's, and a stopped one keeps its local row until it is deleted (review of 7 Nov), so neither is counted."""
+    return {s["w6"] for s in _book_snipers(snipers) if str(s.get("status")) in BUYING_STATUSES}
+
+
 def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     plan = BookPlan()
     usable = usable_arms(cfg)

@@ -13,7 +13,17 @@ from typing import Any
 from ..analysis.lab_lock import LabBusy, lab_lock
 from ..config import Config
 from ..operator.snapshot import running_jobs
-from .gates import crowding, normalise_history, relationship_gate, venue_share, verdict_for
+from .gates import (
+    armed_before_rules,
+    create_slot_share,
+    crowding,
+    forward_gate,
+    keep_armed,
+    normalise_history,
+    relationship_gate,
+    venue_share,
+    verdict_for,
+)
 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
@@ -92,28 +102,97 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                          groups=("cand",), exits=list(menu.values()), kols=kols)  # fmt: skip
         return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
-                              gate=menu["lab"])  # fmt: skip
+                              gate=menu["lab"], with_moments=True)  # fmt: skip
 
     return run
 
 
-def effective_landing_pos(store, q, now: float | None = None, max_age_secs: float = 7 * 86400) -> str:
-    """The configured landing, or the measured one (coverage measure:landing_pos, written by the measure stage after
-    enough fills) when that is *further back* and was measured within `max_age_secs`. A measured landing never moves
-    the labs closer than the config: paper results at a better landing than the one we get are not evidence
-    (CLAUDE.md rule 2). An untimed or old measurement is ignored."""
+def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
+    """When the wallet was picked: (its first pick, its latest), each None when there is none. A pick is a verdict
+    every in-sample gate passed: one qualified before 7 Nov, as every such verdict was, or one that carries a forward
+    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick
+    starts its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a
+    wallet that lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as
+    forward copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research
+    round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
+    rows = store._q("SELECT computed_at, status, forward IS NOT NULL, kept_armed IS NOT NULL FROM verdicts "
+                    "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
+    first = latest = None
+    for at, status, checked, kept in rows:
+        if checked or (status == "qualified" and not kept):
+            first = int(at) if first is None else first
+            latest = int(at) if latest is None else latest
+        else:
+            latest = None
+    return first, latest
+
+
+def with_recorded(recorded: list | None, moments: list | None, spans) -> list[list[float]]:
+    """The wallet's copies to judge, oldest first: the lab's, on the tape it read, and older than that tape the ones
+    earlier runs recorded (`recorded`, from the stage's working data). The tape keeps 3 to 30 days
+    (SNIPETECH_RETAIN_DAYS, deploy/bootstrap.sh), so without the record the losses after a pick older than the tape
+    would drop out and the forward check would judge only what the lab scored in-sample too (review of 7 Nov). A
+    recorded copy is a score from the lab of its own run (its exit, its cost); on the tape the lab's own score wins."""
+    tape_from = min((float(a) for a, _ in spans or []), default=None)
+    old = [[float(ts), float(p)] for ts, p in (recorded or []) if tape_from is not None and float(ts) < tape_from]
+    return sorted(old + [[float(ts), float(p)] for ts, p in (moments or [])], key=lambda c: c[0])
+
+
+def _measured_landing(store, now: float | None, max_age_secs: float) -> dict:
+    """The measure stage's landing record (coverage measure:landing_pos) when it was measured within `max_age_secs`,
+    else {} (an untimed or old measurement says nothing about today's landing)."""
     try:
         cov = store.coverage("measure:landing_pos") or {}
     except Exception:  # noqa: BLE001
         cov = {}
-    pos, ts = cov.get("pos"), cov.get("ts")
     now = time.time() if now is None else now
-    if not pos or ts is None or now - float(ts) > max_age_secs:
+    return cov if cov.get("ts") is not None and now - float(cov["ts"]) <= max_age_secs else {}
+
+
+def effective_landing_pos(store, q, now: float | None = None, max_age_secs: float = 7 * 86400) -> str:
+    """The in-slot landing the paper test's copy strategies and the event edge score at: the configured one, or the
+    measured one (coverage measure:landing_pos, written by the measure stage after enough fills) when that is *further
+    back* and was measured within `max_age_secs`. A measured landing never moves the labs closer than the config:
+    paper results at a better landing than the one we get are not evidence (CLAUDE.md rule 2). An untimed or old
+    measurement is ignored. The qualify lab lands its copies across slots instead (`qualify_landing`)."""
+    pos = _measured_landing(store, now, max_age_secs).get("pos")
+    if not pos:
         return q.landing_pos
     try:
         return str(pos) if int(str(pos).lstrip("+")) > int(str(q.landing_pos).lstrip("+")) else q.landing_pos
     except ValueError:
         return q.landing_pos
+
+
+# Where the qualify lab enters a copy: behind the 3rd buy after the leader's, counted across slots (lab.copy_entry).
+# Research round 2 (7 Nov): live copies of early-curve leaders landed 2-4 buys behind the leader at +18-43 %, while the
+# in-slot "+6" stopped at the end of the leader's slot. The 27 wallets the verdicts rated positive lost -0.0147 SOL a
+# copy on the tape after their verdicts (257 copies). 7aPo3n's three late-curve copies landed 0-1 behind (7 Nov
+# 19:18-19:22): a closer landing for such leaders only once 10+ live fills show it, so nothing here moves it closer.
+COPY_LANDING_BUYS = 3
+
+
+def qualify_landing(store, q, now: float | None = None, max_age_secs: float = 7 * 86400) -> str:
+    """The qualify lab's landing, "+Nx": behind the N-th buy after the leader's, counted across slots. N is
+    COPY_LANDING_BUYS (3), or more when [qualify] landing_pos asks for a landing further back (the owner's or the
+    strategist's in-slot "+N", which the 6 Nov copy test calibrated as N - 3 buys behind: measure.run.LANDING_OFFSET) or
+    when the measure stage measured one within `max_age_secs` (its 75th percentile of buys behind the leader over 30+
+    live fills, rounded up). Like `effective_landing_pos`, nothing moves it closer: paper at a better landing than ours
+    is not evidence (CLAUDE.md rule 2)."""
+    from ..measure.run import LANDING_OFFSET
+
+    n = COPY_LANDING_BUYS
+    try:
+        n = max(n, int(str(q.landing_pos).lstrip("+")) - LANDING_OFFSET)
+    except ValueError:
+        pass
+    behind = _measured_landing(store, now, max_age_secs).get("behind_p75")
+    try:
+        if behind is not None and math.isfinite(float(behind)):
+            n = max(n, math.ceil(float(behind) - 1e-9))
+    except (TypeError, ValueError):
+        pass
+    return f"+{n}x"
 
 
 def _tape_start(store, now: float) -> int:
@@ -131,7 +210,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     store = svc.store
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
-    out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "deferred": False, "no_tape": 0,
+    out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
+                           "forward_failed": 0, "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0,
                            "labelled": 0, "lab_wallets": 0}  # fmt: skip
     due = [c for c in store.candidates(due_before=int(now), limit=max_wallets * 4) if c["status"] != "banned"][
         :max_wallets
@@ -173,7 +253,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             out["labelled"] += 1
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
-    landing = effective_landing_pos(store, q, now=now)
+    landing = qualify_landing(store, q, now=now)
     try:
         with lab_lock(Path(jobs_dir).parent, wait=False):
             rows = {r["wallet"]: r for r in runner(wallets, landing) if r.get("wallet")}
@@ -183,21 +263,48 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
     out["lab_wallets"] = len(wallets)
     q_eff = replace(q, landing_pos=landing)
+    spans = getattr(svc, "tape_store", store).tape_spans()  # the tape the lab read: the forward window's hours
+    from ..book.state import copying_now
+
+    # the wallets (first six characters) the book's own snipers still buy for at its last reading of OKTech, None when
+    # it has not read OKTech within the hour; never the local sniper rows: a book stop leaves the row in place, and the
+    # owner's hand-made snipers have rows too (review of 7 Nov)
+    copying = copying_now(store, now)
     for c in measurable:
         w = c["wallet"]
         hist = normalise_history(c["stats"])
         venue = venue_share(store, w, since)
         crowd = crowding(store, w, since)
         rel_ok, rel_reasons = relationship_gate(store, w)
-        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q_eff, now)
+        create = create_slot_share(store, w, since)
+        row = rows.get(w)
+        moments = row.pop("moments", None) if row else None  # its copies, for the forward check only
+        record = (store.get_score("qualify", w) or {}).get("record") or {}  # its copies since its first pick, so far
+        copies = with_recorded(record.get("copies"), moments, spans)
+        first, latest = pick_times(store, w)
+        v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
+        v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
+                         samples=cfg.verdict.bootstrap_samples, first_picked_at=first)  # fmt: skip
+        if first is None and v.get("forward") is not None:
+            first = int(now)  # picked for the first time now
+        if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
+            record = {"first_picked_at": first, "copies": [c for c in copies if c[0] > first]}
+        prev = c.get("verdict")
+        if copying is None and armed_before_rules(prev):
+            # whether the book copies it is unknown: keeping it could arm a wallet nobody copies, dropping it could stop
+            # one it does. Its verdict stays as it is and it stays due, for a run after the book has read OKTech.
+            out["armed_unknown"] += 1
+            continue
+        v = keep_armed(v, prev, copying is not None and w[:6] in copying, q_eff, now)  # never stops a copied wallet
+        out["kept_armed"] += bool((v.get("kept_armed") or {}).get("kept"))
         store.put_verdict(v)
-        store.put_score(
-            "qualify",
-            w,
-            {"verdict": v, "lab": rows.get(w), "crowding": crowd, "history": hist, "computed_at": int(now)},
-        )
+        store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
+                                       "computed_at": int(now), "record": record or None})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
+        fwd = (v.get("forward") or {}).get("status")
+        out["forward_pending"] += fwd == "pending"
+        out["forward_failed"] += fwd == "failed"
     return out
 
 

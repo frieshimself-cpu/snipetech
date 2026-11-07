@@ -160,7 +160,8 @@ CREATE TABLE IF NOT EXISTS exit_shadow (
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
-              "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol")  # fmt: skip
+              "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol",
+              "leader_progress")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -173,6 +174,14 @@ _ADDED_COLUMNS = (
     ("fills", "exit_name", "TEXT"),  # the exit preset of the sniper that bought (measure/exits.py)
     ("fills", "crossed", "INTEGER"),  # 1: the landed sell paid another sniper's priority fee
     ("fills", "twin_fee_sol", "REAL"),  # what the sell's failed twins cost (priority + base fee each)
+    # JSON: how many of the wallet's first buys sat in a coin's create slot (qualify/gates.py create_slot_share)
+    ("verdicts", "create_slot", "TEXT"),
+    # JSON: the wallet's copies on the tape after it was picked, and the bar they met (qualify/gates.forward_gate)
+    ("verdicts", "forward", "TEXT"),
+    # a copy buy: the copied wallet's curve progress at its buy (measure/classify.curve_progress)
+    ("fills", "leader_progress", "REAL"),
+    # JSON: a wallet the book copied before the 7 Nov verdict rules, kept while copied (qualify/gates.keep_armed)
+    ("verdicts", "kept_armed", "TEXT"),
 )
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
@@ -183,7 +192,8 @@ _SHADOW_COLS = ("buy_sig", "exit_name", "menu_version", "sim_pnl_sol", "sim_reas
 # (candidates() reads `v.*` by position, so a fresh and a migrated database must agree)
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
                  "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons",
-                 "copy_plan", "gap3_pct")  # fmt: skip
+                 "copy_plan", "gap3_pct", "create_slot", "forward", "kept_armed")  # fmt: skip
+_VERDICT_JSON = ("copy_plan", "create_slot", "forward", "kept_armed")  # verdict columns holding a JSON object (or None)
 _LATEST_VERDICT = "SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet ORDER BY computed_at DESC, id DESC LIMIT 1)"
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")
@@ -729,11 +739,12 @@ class Store:
             d["reasons"] = json.loads(d["reasons"]) if d.get("reasons") else []
         except ValueError:
             d["reasons"] = [str(d["reasons"])]
-        try:  # the copy plan is a dict or None (verdicts from before the lab fix of 6 Nov 2026 have none)
-            plan = json.loads(d["copy_plan"]) if d.get("copy_plan") else None
-        except ValueError:
-            plan = None
-        d["copy_plan"] = plan if isinstance(plan, dict) else None
+        for col in _VERDICT_JSON:  # a dict or None (verdicts from before the lab fix of 6 Nov 2026 have no copy plan)
+            try:
+                obj = json.loads(d[col]) if d.get(col) else None
+            except ValueError:
+                obj = None
+            d[col] = obj if isinstance(obj, dict) else None
         return d
 
     def candidates(
@@ -772,7 +783,7 @@ class Store:
             x = v.get(c)
             if c == "reasons":
                 x = json.dumps(list(x or []), default=str)
-            elif c == "copy_plan":
+            elif c in _VERDICT_JSON:
                 x = json.dumps(x, default=str) if x else None
             vals.append(x)
         holder: dict[str, int] = {}

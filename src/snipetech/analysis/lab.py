@@ -432,6 +432,48 @@ def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int
     return e if path.amm[e] else None
 
 
+# Where a copy lands when its position counts buys across slots ("+Nx", `copy_entry`; the qualify lab since 7 Nov): behind
+# the N-th buy after the leader's, whatever slot it is in, within COPY_LAND_SLOTS of the leader's slot. Research round 2
+# (7 Nov): live copies of early-curve leaders landed 2-4 buys behind the leader (the measure stage's trades_behind counts
+# other wallets' buys between the two) at +18-43 %, often in later slots, while the in-slot "+N" never passes the
+# leader's slot: a leader alone in its slot was copied right behind its own buy. OKTech sends the copy as it sees the
+# leader's buy (6 of 7 copies landed in the leader's own slot, 6 Nov), so in a quiet coin the copy is behind only the buys
+# that came by then; the window is as wide as MIG's (about 2 s at 0.214 s a slot), far longer than a live copy took.
+# Waiting that long is only ever worse for the copy, never better: where holders sell right after the leader's buy, the
+# 3rd buy can come after the dump, cheaper than the leader paid (review of 7 Nov: 13.9 % under the leader's fill on a
+# synthetic dump), a landing no live copy gets (7aPo3n's three landed 0-1 trades behind, 7 Nov 19:18-19:22). So a copy
+# enters at the worse price of the two: behind the N-th buy, or right behind the leader. And never in the create slot:
+# OKTech sees a buy there only once that block is out (research round 2: the create slot is where no copy lands).
+COPY_LAND_SLOTS = 10
+ACROSS = "x"  # "+3x": behind the 3rd buy after the trigger's, counted across slots
+
+
+def across_slots(position: Any) -> int | None:
+    """N of a landing that counts buys across slots ("+Nx"), or None for every other position."""
+    p = str(position)
+    return int(p[1:-1]) if p.startswith("+") and p.endswith(ACROSS) and p[1:-1].isdigit() else None
+
+
+def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0) -> int:
+    """The state a copy enters at, its leader's buy at state i ("+Nx"): behind the n-th buy after it, counted across
+    slots, so every trade before that buy (a sell too) lands ahead of the copy; only buys within COPY_LAND_SLOTS of the
+    leader's slot count, and when fewer came by then, behind the last of those, right behind the leader when none did.
+    Never cheaper than right behind the leader, the closest a live copy lands: where the trades before the n-th buy left
+    the price under the one the leader's buy left, the copy enters right behind the leader instead (ahead of a dump that
+    came after it). Never in the coin's create slot (the tape's launch): behind its last trade at the earliest. With
+    `latency`, never ahead of a trade of the slots before slot + latency (copies land at latency 0)."""
+    s = int(path.slot[i])
+    hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
+    buys = np.flatnonzero(path.is_buy[i + 1 : hi])
+    e = i if n <= 0 or not len(buys) else i + 1 + int(buys[min(n, len(buys)) - 1])
+    floor = int(path.landing_index(s + int(latency), "start", i)) if latency else i  # the closest a live copy lands
+    if path.launch is not None:  # behind every trade of the create slot
+        floor = max(floor, int(np.searchsorted(path.slot, int(path.launch.slot), side="right")) - 1)
+    e = max(e, floor)
+    # the worse price for the copy's buy: the higher of the two (reserves are positive, so compare cross-multiplied)
+    return e if float(path.q[e]) * float(path.b[floor]) >= float(path.q[floor]) * float(path.b[e]) else floor
+
+
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:
     """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
     when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
@@ -937,6 +979,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
                     continue
+            elif (across := across_slots(pos)) is not None:  # a copy counted across slots (the qualify lab)
+                e = copy_entry(path, i, across, lat)
             else:
                 e = int(path.landing_index(t_slot + lat, pos, i))
             if t_ts > b - 60:
@@ -1101,7 +1145,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
-    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at. `triggers`: run
+    other trigger lands at `latency_slots` / `position`. A position "+Nx" lands behind the N-th buy after the trigger's,
+    counted across slots (`copy_entry`: where the qualify lab copies a wallet since 7 Nov); "+N" stays inside the
+    trigger's slot. Each row records the landing it was scored at. `triggers`: run
     only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them.
     A trigger that buys on PumpSwap (MIG) fires on the migrations the tape recorded in the span, and its buy lands
     behind the first PumpSwap trades after the migration's slot (`mig_entry`: 3 at the MIG landing, counted across
@@ -1334,7 +1380,8 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
 
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
                  min_n: int = 4, floor: float | None = None, wallets=None, gate: ExitParams | None = None,
-                 shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST) -> list[dict]:  # fmt: skip
+                 shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
+                 with_moments: bool = False) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
     60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
     its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
@@ -1348,7 +1395,10 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     (`choose_wallet_exit`, shrunk toward every wallet's older moments): `exit_name`, `exit_params` and `exit_source`
     ("wallet" or "lab") say what its sniper should run, with `exit_menu`, `exit_candidate`, `exit_test_n`,
     `exit_gain_sol` and `exit_gain_lower`. The gating numbers (`n`, `mean`, `ev_lower`, `win_rate`, `total`, `exit`)
-    stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies."""
+    stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies.
+
+    `with_moments`: each row also carries the copies behind its numbers, `moments` = [[the leader's buy ts, SOL the
+    gating exit made], ...] oldest first, for the qualify stage's check on the tape after the wallet was picked."""
     rows, exits = data["rows"], list(data["exits"])
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
@@ -1405,6 +1455,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                    "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
                    "moments_all": len(by[w]), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
                    "lab_version": LAB_VERSION} | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
+            if with_moments:
+                row["moments"] = [[int(rs[i]["ts"]), float(m[i, k])] for i in kept]
             if g is not None:
                 own = cols if choose else [g]
                 group = group_before(kept) if choose else None

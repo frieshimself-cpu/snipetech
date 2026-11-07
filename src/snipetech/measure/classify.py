@@ -7,7 +7,8 @@ import re
 from typing import Any
 
 from ..analysis.audit import _position_in_slot
-from ..models import Trade
+from ..analysis.lab import CURVE_REAL_TOKENS, VIRTUAL_OFFSET
+from ..models import AMM, CURVE, Trade
 from ..solana.txmeta import TxMeta
 from ..store import Store
 
@@ -105,7 +106,7 @@ def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
     for i in range(0, len(ws), 500):
         chunk = ws[i : i + 500]
         rows = store._q(
-            "SELECT user, slot, pos, quote, q_after, b_after FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
+            "SELECT user, slot, pos, quote, q_after, b_after, venue FROM trades WHERE mint=? AND is_buy=1 AND user IN (%s) "
             "AND (slot<? OR (slot=? AND pos<?)) ORDER BY slot DESC, pos DESC LIMIT 1" % ",".join("?" * len(chunk)),
             (trade.mint, *chunk, trade.slot, trade.slot, trade.pos),
         )
@@ -114,8 +115,19 @@ def _leader_buy(store: Store, trade: Trade, leaders: set[str]) -> tuple | None:
     return best
 
 
+def curve_progress(venue: str | None, b_after) -> float | None:
+    """How far along its pump.fun curve a coin was after a trade: the share of the 793.1M tokens a curve sells that it
+    had sold (its virtual token reserve less the curve's fixed virtual part, lab.VIRTUAL_OFFSET), to 4 decimals; 1.0 on
+    PumpSwap (the curve completed and migrated); None on any other venue (LaunchLab curves are another shape)."""
+    if venue == AMM:
+        return 1.0
+    if venue != CURVE or not b_after:
+        return None
+    return round(min(1.0, max(0.0, 1.0 - (float(b_after) - VIRTUAL_OFFSET) / CURVE_REAL_TOKENS)), 4)
+
+
 def _gap_pct(trade: Trade, leader: tuple) -> float | None:
-    _, _, _, _, lq, lb = leader
+    lq, lb = leader[4], leader[5]
     if trade.venue == "curve":
         return round(100 * ((trade.q_after / lq) ** 2 - 1), 1) if lq else None
     if lb and trade.b_after:
@@ -164,13 +176,13 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
         "wallet_copied": None, "event_kind": None, "mint": trade.mint, "side": "buy" if trade.is_buy else "sell",
         "sol": round((trade.quote + trade.fee) / 1e9, 6) if trade.is_buy else round((trade.quote - trade.fee) / 1e9, 6),
         "tokens": float(trade.base), "trades_behind": None, "price_gap_pct": None, "pnl_sol": None, "exit_reason": None,
-        "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None,
+        "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None, "leader_progress": None,
     }  # fmt: skip
     row.update(fees)
     if trade.is_buy:
         lead = _leader_buy(store, trade, leaders)
         if lead is not None:
-            user, lslot, lpos, _lquote, _lq, _lb = lead
+            user, lslot, lpos, _lquote, _lq, lb, lvenue = lead
             # other wallets' buys between the leader's and ours: our own other fills (the second arm) do not count,
             # or the arm that goes second measures worse by construction
             between = store._q(
@@ -178,6 +190,9 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
                 (trade.mint, trade.user, lslot, lslot, lpos, trade.slot, trade.slot, trade.pos),
             )[0][0]
             row["wallet_copied"], row["trades_behind"], row["price_gap_pct"] = user, int(between), _gap_pct(trade, lead)
+            # where on its curve the leader bought (research round 2, 7 Nov: early-curve copies landed 2-4 trades behind
+            # at +18-43 %, 7aPo3n's at 79-93 % of the curve 0-1 behind at +0.5-0.8 %): live landings by curve progress
+            row["leader_progress"] = curve_progress(lvenue, lb)
     return row
 
 

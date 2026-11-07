@@ -429,6 +429,13 @@ def _sol_or_worst(v: Any) -> float:
     return float("-inf") if v is None else float(v)
 
 
+# what a post-mortem reads of the copied wallet's latest verdict: its prediction at the landing, its copy plan, what its
+# copies made on the tape after it was picked (qualify/gates.forward_gate), and whether it is copied only because the
+# book copied it before the 7 Nov rules (qualify/gates.keep_armed: then "new" holds what those rules found)
+TRIP_VERDICT_KEYS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "copy_plan", "forward",
+                     "kept_armed")  # fmt: skip
+
+
 def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> dict[str, Any]:
     """Each live round trip since `since_ts`, newest first, read for a post-mortem: the landing (the buy's trades
     behind the copied wallet, price gap, place in the slot), the exit (which one fired, crossed, failed duplicate
@@ -449,20 +456,14 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40) -> 
         if leader and leader not in verdicts:
             rows = store._q(f"SELECT * FROM ({_LATEST_VERDICT}) v WHERE v.wallet = ?", (leader,))
             v = Store._verdict_dict(rows[0]) if rows else None
-            verdicts[leader] = (
-                {
-                    k: v.get(k)
-                    for k in ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "copy_plan")
-                }
-                if v
-                else None
-            )
+            verdicts[leader] = {k: v.get(k) for k in TRIP_VERDICT_KEYS} if v else None
         held = int(s["ts"]) - int(buy["ts"]) if buy.get("ts") is not None and s.get("ts") is not None else None
         shadow = shadows.get(s.get("buy_sig") or "") or None
         best = max(shadow, key=lambda n: _sol_or_worst(shadow[n]["pnl_sol"])) if shadow else None
         trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
                       "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
                       "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
+                      "leader_progress": buy.get("leader_progress"),
                       "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
                       "exit_reason": s.get("exit_reason"), "exit_name": s.get("exit_name"), "crossed": s.get("crossed"),
                       "twin_fee_sol": s.get("twin_fee_sol"), "verdict": verdicts.get(leader) if leader else None,

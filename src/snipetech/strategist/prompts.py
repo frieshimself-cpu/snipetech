@@ -24,8 +24,9 @@ What the keys mean:
   coin once, so two arms on one wallet never give a paired comparison.
 - qualify.max_gap3_pct: the largest price gap to the third buyer behind the leader that still counts as uncrowded.
   qualify.min_n_tape: how many tape trades a wallet needs before its lab number counts. qualify.landing_pos: the
-  landing the labs assume ("+6" = six trades behind the leader, the regime the live copies measured); only move it
-  further back when live fills say the landing got worse, never closer.
+  landing the labs assume ("+6" = up to six trades behind the leader in its slot: the paper test and the event edge
+  score copies there; the wallet checks land 3 buys behind the leader counted across slots, one buy further back for
+  each step above +6); only move it further back when live fills say the landing got worse, never closer.
 
 Fills can come from snipers the owner started by hand (tests such as the fee test) as well as from the book's own
 (`snipetech copy book …`); "book enabled: false" with live fills is normal, not a fault to report.

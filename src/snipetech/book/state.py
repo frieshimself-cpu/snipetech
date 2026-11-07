@@ -3,12 +3,40 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Iterable
 from typing import Any
 
 from ..store import Store
 
 DAY_KEY = "book:day"
 LAST_RUN_KEY = "book:last_run"
+# the wallets (first six characters) the book's own snipers that can still buy copied at its last reading of OKTech
+# (policy.buying_book_wallets), and when it read them: {"ts", "w6"}. The qualify stage keeps a wallet the book armed
+# before the 7 Nov verdict rules only while it is in here (qualify/gates.keep_armed).
+COPYING_KEY = "book:copying"
+# The book reads OKTech every 5 minutes; a reading older than this says nothing about now.
+COPYING_MAX_AGE_SECS = 3600
+
+
+def record_copying(store: Store, w6: Iterable[str], now: float) -> dict[str, Any]:
+    """Keep the book's reading of which wallets its snipers still buy for (COPYING_KEY)."""
+    rec = {"ts": int(now), "w6": sorted({str(x) for x in w6})}
+    store.set_coverage(COPYING_KEY, rec)
+    return rec
+
+
+def copying_now(store: Store, now: float, max_age: float = COPYING_MAX_AGE_SECS) -> set[str] | None:
+    """The wallets (first six characters) a book sniper still bought for at the book's last reading of OKTech, or None
+    when there is no reading from the last `max_age` seconds (the book has not run since an update, or OKTech has not
+    answered): then nobody knows."""
+    try:
+        rec = store.coverage(COPYING_KEY) or {}
+    except Exception:  # noqa: BLE001 - nothing readable: nobody knows
+        return None
+    ts = rec.get("ts")
+    if ts is None or float(now) - float(ts) > max_age:
+        return None
+    return {str(x) for x in rec.get("w6") or []}
 
 
 def _realised(fills: list[dict]) -> float:

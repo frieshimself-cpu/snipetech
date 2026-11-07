@@ -150,6 +150,40 @@ def test_wallet_live_decay():
     assert wallet_live_rows(many, NOW, 7.0)[0]["status"] == "live"
 
 
+def test_live_landings_are_read_by_the_leaders_curve_progress():
+    """The record needs live landings by where the leader bought on its curve (research round 2: use a closer landing
+    for late-curve leaders only once 10+ live fills show it). Copy buys only, in four bands, each with how many, and the
+    median trades behind and price gap."""
+    from snipetech.measure.run import landing_by_progress
+
+    def buy(progress, behind, gap, copied="L"):
+        return {"side": "buy", "wallet_copied": copied, "leader_progress": progress, "trades_behind": behind,
+                "price_gap_pct": gap}  # fmt: skip
+
+    buys = [buy(0.02, 2, 30.0), buy(0.08, 4, 40.0), buy(0.3, 3, 5.0), buy(0.85, 0, 0.5), buy(0.93, 1, 0.8),
+            buy(0.79, 1, None), buy(1.0, 3, 0.3), buy(None, 9, 99.0), buy(0.5, 9, 99.0, copied=None)]  # fmt: skip
+    assert landing_by_progress(buys) == {
+        "under 10%": {"n": 2, "trades_behind_p50": 3.0, "price_gap_pct_p50": 35.0},
+        "10-60%": {"n": 1, "trades_behind_p50": 3.0, "price_gap_pct_p50": 5.0},
+        "60-100%": {"n": 3, "trades_behind_p50": 1.0, "price_gap_pct_p50": 0.65},
+        "PumpSwap": {"n": 1, "trades_behind_p50": 3.0, "price_gap_pct_p50": 0.3},
+    }
+    assert landing_by_progress([]) == {}
+
+
+def test_the_run_writes_each_copy_fills_leader_progress_and_reports_the_landings_by_it(tmp_path):
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st)
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200,
+                                      ensure_meta=_ensure(st, {b: _meta(b) for b, _ in sigs}), failed_sigs=_no_failed))  # fmt: skip
+        assert {st.fill(b)["leader_progress"] for b, _ in sigs} == {0.0846}  # LEAD buys after 2 SOL in, every coin
+        assert out["landing_by_progress"] == {"under 10%": {"n": 3, "trades_behind_p50": 2.0,
+                                                            "price_gap_pct_p50": st.fill(sigs[0][0])["price_gap_pct"]}}  # fmt: skip
+    finally:
+        st.close()
+
+
 def test_landing_override_after_30_fills(tmp_path):
     svc, st, cfg = _svc(tmp_path)
     try:

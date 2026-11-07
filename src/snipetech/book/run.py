@@ -20,8 +20,17 @@ from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from ..positions import is_active
-from .policy import BOOK_NAME_RE, GUARD_KILL, BookInputs, BookPlan, ExitChoice, copied_leaders, plan_book
-from .state import day_accounting, record_run
+from .policy import (
+    BOOK_NAME_RE,
+    GUARD_KILL,
+    BookInputs,
+    BookPlan,
+    ExitChoice,
+    buying_book_wallets,
+    copied_leaders,
+    plan_book,
+)
+from .state import day_accounting, record_copying, record_run
 from .switch import book_live, book_stops, effective_min_score
 from .watch import watch_pass, watched_within
 
@@ -247,6 +256,10 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         record_run(store, {"actions": [], "kill_reason": "oktech unknown"}, True, now)
         _watch(cfg, store, notifier, notes, wallet, holdings, None, now)
         return {"dry": True, "kill_reason": "oktech unknown", "actions": {}, "ranked": 0}
+    try:  # which wallets its snipers still buy for, whatever this run does next: the qualify stage reads it
+        record_copying(store, buying_book_wallets(snipers), now)
+    except Exception as exc:  # noqa: BLE001 - never breaks the book; the qualify stage then waits on a stale reading
+        notes.write(f"book: could not record which wallets its snipers copy ({type(exc).__name__})", "info")
     acc = day_accounting(store, wallet, now, equity_now=equity)
     live_mode = book_live(cfg, paths) if dry is None else not dry
     act_on_stops = dry is not True  # an explicit dry preview never acts; the routine run always applies its stops
