@@ -1,7 +1,7 @@
 """Every read of the live database is short; the heavy readers read the hourly copy. 7 Nov the database file plus its
-WAL (remote status db_gb) grew from 11.3 GB before 14:03 to 15.08 at 16:00 and 19.28 at 17:58, about 2 GB an hour, and
-never shrank: a checkpoint copies only the WAL frames no open read still needs, the WAL starts over from its beginning
-only when no reader uses it, and without a journal size limit the -wal file keeps its high-water mark for good.
+WAL (remote status db_gb) grew from 11.3 GB before 14:03 to 15.08 at 16:00 and 19.28 at 17:58 (about 2 GB an hour from
+16:00), and never shrank: a checkpoint copies only the WAL frames no open read still needs, the WAL starts over from its
+beginning only when no reader uses it, and without a journal size limit the -wal file keeps its high-water mark.
 
 The guard: a second connection commits a row (a new frame) and runs PRAGMA wal_checkpoint(PASSIVE) while the reader is
 mid-run, from inside its long statement (the connection's progress handler, the one place a Python step can stand in
@@ -104,8 +104,8 @@ def _trades(first: int, n: int, t0: int = T0, per_sec: float = 1.0, mints: int =
 
 
 def test_every_store_connection_limits_its_wal(tmp_path):
-    """64 MiB: a normal checkpoint cycle is 1,000 frames (4 MB), so a routine restart never trims, and the recorder writes
-    about 2 GB of WAL an hour while something pins it (7 Nov 16:00-17:58): two minutes of it."""
+    """64 MiB: a routine checkpoint cycle is 1,000 frames (4 MB), far under it, and the recorder writes about 2 GB of
+    WAL an hour while something pins it (7 Nov 16:00-17:58): two minutes of that."""
     path = tmp_path / "t.db"
     st = Store(path)
     ro = Store(path, readonly=True)
@@ -124,7 +124,7 @@ def test_a_wal_a_reader_pinned_shrinks_back_to_the_limit_once_it_restarts(tmp_pa
     """While a reader holds its snapshot the WAL grows past every checkpoint; once it lets go, a checkpoint copies every
     frame, the next write starts the WAL over from its beginning, and its commit trims the file to the limit (1 MiB
     here). Without the limit the file kept its high-water mark."""
-    monkeypatch.setattr(Store, "JOURNAL_SIZE_LIMIT", 1 << 20, raising=False)
+    monkeypatch.setattr(Store, "JOURNAL_SIZE_LIMIT", 1 << 20)
     path = tmp_path / "t.db"
     st = Store(path)
     wal = Path(f"{path}-wal")
@@ -444,7 +444,7 @@ def test_the_qualify_lab_on_the_live_file_reads_its_wallets_a_few_at_a_time(tmp_
         return lab.collect(st, cfg, 0.1, 0, "+6", groups=("cand",), kols={"cand": set(wallets), "kol": set(),
                            "wallet": set()}, workers=1)["rows"]  # fmt: skip
 
-    monkeypatch.setattr(lab, "WALLETS_PER_READ", 10**6, raising=False)  # every wallet in one read, as before
+    monkeypatch.setattr(lab, "WALLETS_PER_READ", 10**6)  # every wallet in one read, as before
     want = collect()
     monkeypatch.undo()
     wal = Wal(st.path)
@@ -463,6 +463,7 @@ def test_remote_sql_holds_its_read_thirty_seconds_at_most_whatever_it_asks(tmp_p
     """`remote sql` reads the live file, cut at 30 s by a progress handler; a signed request could ask for any number
     of seconds (or none: NaN never passes a deadline) and hold the WAL back that long. Thirty seconds at most."""
     import sys
+    import time
 
     from snipetech import ops as O
 
@@ -474,7 +475,6 @@ def test_remote_sql_holds_its_read_thirty_seconds_at_most_whatever_it_asks(tmp_p
     Store(data / "snipetech.db").close()
     ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=keys, branch="main",
                 command=[sys.executable], use_sudo=False)  # fmt: skip
-    import time
 
     class Clock:  # a second passes every time the query looks at the clock; past 100 the test stops it itself
         now = 0.0

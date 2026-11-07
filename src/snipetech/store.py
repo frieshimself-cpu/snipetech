@@ -222,10 +222,10 @@ def file_identity(path: str | Path) -> tuple[int, int] | None:
 class Store:
     # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
     # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
-    # long reads pinned it, and never shrank. A routine checkpoint cycle is 1,000 frames (4 MB), so a restart never trims
-    # below what the next minutes need; while a read pins it the recorder writes about 2 GB of WAL an hour (16:00-17:58),
-    # so 64 MiB is two minutes of it. sqlite trims at the first commit after a restart, on whichever connection makes
-    # it: every connection carries the limit.
+    # long reads pinned it, and never shrank. A routine checkpoint cycle is 1,000 frames (4 MB), far under the limit, so
+    # a routine restart never trims a file it would grow again at once; while a read pins it the recorder writes about
+    # 2 GB of WAL an hour (16:00-17:58), so 64 MiB is two minutes of that. sqlite trims at the first commit after a
+    # restart, on whichever connection makes it: every connection carries the limit.
     JOURNAL_SIZE_LIMIT = 64 << 20
 
     def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False):

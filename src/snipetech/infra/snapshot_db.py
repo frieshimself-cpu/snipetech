@@ -30,6 +30,12 @@ def snapshot_db(db_path: str | Path, disk_free: Callable[[Path], float] | None =
     if free - size < MIN_FREE_AFTER_BYTES:
         return {"path": str(target), "skipped": f"disk: {free / 1e9:.1f} GB free, a new copy needs about {size / 1e9:.1f} GB "
                 f"and {MIN_FREE_AFTER_BYTES / 1e9:.0f} GB must stay free; the labs keep the last copy"}  # fmt: skip
+    # The copy is one read of the live file from its first page to its last, and the WAL can neither be checkpointed
+    # past it nor start over until it ends: 18:33:07-18:41:56 on 7 Nov (2 min of CPU); 4.5 s for a 1.43 GB
+    # server-shaped database on a fast disk, where not one of 61 checkpoints run meanwhile was whole. The backup API in
+    # one step pins as long (3.8 s there) and writes an uncompacted copy; in steps it starts over whenever the recorder
+    # commits, so it never ends. VACUUM INTO stays: about nine minutes an hour of WAL left in place (about 0.3 GB at
+    # 7 Nov's 2 GB an hour), trimmed back to Store.JOURNAL_SIZE_LIMIT once the WAL starts over.
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=60)
     try:
         con.execute("VACUUM INTO ?", (str(tmp),))
