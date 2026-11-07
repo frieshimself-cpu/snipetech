@@ -741,9 +741,13 @@ def render_lab(r: dict) -> str:
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."
     )
-    out.append(
-        "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
-    )
+    if "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
+        out.append(f"Each hypothesis is scored where it trades live: copies at {r.get('copy_landing', r['position'])} "
+                   "(where ours land), launch, hunt, whale and burst triggers where a hunt buy lands.")  # fmt: skip
+    else:
+        out.append(
+            "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
+        )
     if r.get("wallets"):
         out += [
             "",

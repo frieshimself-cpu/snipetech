@@ -356,6 +356,17 @@ def test_the_analyst_is_told_launch_window_hypotheses_land_where_a_hunt_buy_land
     assert "for any other kind" not in text
 
 
+def test_the_analyst_reads_an_unmeasured_hypothesis_as_not_refuted():
+    """A hypothesis scored off its live landing, or with too few moments to be ranked, was not measured: the protocol
+    says so instead of calling it refuted, reads where our copies land from the lab (copy_landing), and gives the lab
+    no landing of its own to get wrong."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    protocol = text[text.index("Hypotheses:") : text.index("4 new frozen strategies a day")]
+    for words in ("live_landing false", "ranked false", "not measured, not refuted", "copy_landing"):
+        assert words in protocol, words
+    assert '"--position"' not in protocol
+
+
 def test_runner_is_closed_after_the_turn(env, monkeypatch):
     """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
     'generator didn't stop after athrow()' on the server. The turn closes it itself."""

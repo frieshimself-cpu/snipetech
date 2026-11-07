@@ -20,6 +20,8 @@ LAB_EXIT = {"stop_loss": 0.3, "max_hold_secs": 300, "stale_secs": 1.0}
 HUNT = Trigger("hunt", sol=2.0, window=2.0, dev_max=1.0)  # fires on every whale-world coin at its 2.5 SOL buy
 WHALE = Trigger("whale", sol=2.2)  # not in the grid: an agent's own variant
 HUNT_JSON, WHALE_JSON = '{"kind": "hunt", "sol": 2, "window": 2, "dev_max": 1}', '{"kind": "whale", "sol": 2.2}'
+KOL = Trigger("kol", sol=2.0)  # a copy: a labeled KOL's first buy of 2 SOL or more (`_tape_db(kols=True)`: the whales)
+KOL_JSON, LAUNCH_JSON = '{"kind": "kol", "sol": 2}', '{"kind": "launch"}'
 
 
 @pytest.mark.parametrize(
@@ -151,12 +153,26 @@ def test_freeze_reads_only_the_newest_hours_of_tape():
     assert s["lab"]["n"] == 23  # 56 moments: the exit picked on the older 33, judged on the newer 23
 
 
+def test_freeze_scores_a_copy_hypothesis_where_copies_land_as_measured():
+    """The measure stage found our copies land 7 trades behind the leader: a KOL hypothesis is scored there, whatever
+    `position` the freeze was given, so --only-live freezes it there instead of dropping it unmeasured."""
+    store = Store(":memory:")
+    whale_world(store)
+    for i in range(40):
+        store.set_label(addr(f"lab-whale-{i}"), f"whale-{i}", "kol")
+    store.set_coverage("measure:landing_pos", {"pos": "+7", "ts": NOW})
+    rep = paper.freeze(store, _cfg(), top=4, position="+6", latency=0, triggers=[KOL], only_live=True, now=NOW)
+    got = [(s["trigger"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"]]
+    assert got == [(KOL.__dict__, 0, "+7", "+7@0")]
+
+
 # -- the commands the agents start (start_job) -------------------------------------------------------------------------
 
 
-def _tape_db(tmp_path, n: int = 80, kols: bool = False, name: str = "data"):
+def _tape_db(tmp_path, n: int = 80, kols: bool = False, name: str = "data", copies: str | None = None):
     """A database file holding the whale world: 80 coins a minute apart, 56 of them in the tape's newest hour. `kols`:
-    every coin's whale is a labeled KOL, so a KOL trigger (a copy) fires on its buy."""
+    every coin's whale is a labeled KOL, so a KOL trigger (a copy) fires on its buy. `copies`: where the measure stage
+    found our copies land (e.g. "+7"; the config's +6 otherwise)."""
     db = tmp_path / name / "snipetech.db"
     db.parent.mkdir(parents=True)
     st = Store(db)
@@ -164,6 +180,8 @@ def _tape_db(tmp_path, n: int = 80, kols: bool = False, name: str = "data"):
         whale_world(st, n)
         for i in range(n if kols else 0):
             st.set_label(addr(f"lab-whale-{i}"), f"whale-{i}", "kol")
+        if copies:
+            st.set_coverage("measure:landing_pos", {"pos": copies, "ts": NOW})
     finally:
         st.close()
     return db
@@ -209,13 +227,52 @@ def test_the_lab_command_scores_every_launch_window_rule_where_a_hunt_buy_lands(
                      ("burst", "+3@1", True), ("kol", "+1@0", False)}  # fmt: skip
 
 
-def test_the_lab_text_says_which_rows_are_scored_at_another_landing(tmp_path, capsys):
+def test_the_lab_command_scores_every_hypothesis_where_it_trades_live(tmp_path, capsys):
+    """Copies measured 7 trades behind the leader: with --trigger the lab scores a KOL copy there, and a whale or a
+    launch where its hunt buy lands, whatever --latency / --position say (a hypothesis has no landing to get wrong),
+    and it says where our copies land (copy_landing)."""
+    from snipetech import cli
+
+    db = _tape_db(tmp_path, kols=True, copies="+7")
+    argv = ["--db", str(db), "lab", "--trigger", KOL_JSON, "--trigger", WHALE_JSON, "--trigger", LAUNCH_JSON,
+            "--hours", "1", "--latency", "2", "--position", "+1", "--json"]  # fmt: skip
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["copy_landing"] == "+7"
+    rows = {r["trigger_spec"]["kind"]: (r["landing"], r["live_landing"]) for r in out["strategies"]}
+    assert rows == {"kol": ("+7@0", True), "whale": ("+3@1", True), "launch": ("start@1", True)}
+    assert [(t["landing"], t["live_landing"]) for t in out["triggers"]] == [
+        ("+7@0", True),
+        ("+3@1", True),
+        ("start@1", True),
+    ]
+
+
+def test_the_lab_command_ranks_every_hypothesis_and_says_which_fired_too_rarely(tmp_path, capsys):
+    """--top shortens the grid's list, never a hypothesis's: each one with enough moments is ranked, and one that fired
+    too rarely to judge says so (ranked false, with its moments), so the agent reads it as not measured."""
+    from snipetech import cli
+
+    db = _tape_db(tmp_path)
+    rare = '{"kind": "whale", "sol": 50}'  # no buy of 50 SOL on this tape
+    argv = ["--db", str(db), "lab", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--trigger", rare, "--hours", "1",
+            "--top", "1", "--json"]  # fmt: skip
+    assert cli.main(argv) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert sorted(r["trigger_spec"]["kind"] for r in out["strategies"]) == ["hunt", "whale"]
+    assert [(t["moments"], t["ranked"]) for t in out["triggers"]] == [(56, True), (56, True), (0, False)]
+
+
+def test_the_lab_text_says_where_each_hypothesis_was_scored(tmp_path, capsys):
+    """The header gives the copy landing a hypothesis lab used (not the --position it ignored); a hunt is listed where
+    its buy lands."""
     from snipetech import cli
 
     db = _tape_db(tmp_path)
     assert cli.main(["--db", str(db), "lab", "--trigger", HUNT_JSON, "--hours", "1", "--position", "+1"]) == 0
     text = capsys.readouterr().out
-    assert "(+1 of the slot)" in text and "hunt triggers at +3@1" in text
+    assert "(+6 of the slot)" in text and "hunt triggers at +3@1" in text
+    assert "Each hypothesis is scored where it trades live: copies at +6" in text
 
 
 def test_the_lab_command_refuses_a_hypothesis_oktech_could_not_run_before_any_lab(tmp_path, capsys, monkeypatch):
@@ -296,12 +353,30 @@ def _protocol_command(verb: str, trigger: str) -> list[str]:
     raise AssertionError(f"the analyst prompt names no {verb} hypothesis command")
 
 
-def test_the_analysts_lab_command_scores_a_whale_hypothesis_where_it_trades_live(tmp_path, capsys):
-    """The analyst runs the prompt's lab command as written: a whale hypothesis comes back scored where it trades live
-    (a slot after its trigger, where a hunt buy lands), so its lower bound can decide it."""
+@pytest.mark.parametrize(
+    "spec,trigger,landing",
+    [(WHALE_JSON, WHALE, "+3@1"), (LAUNCH_JSON, Trigger("launch"), "start@1"), (HUNT_JSON, HUNT, "+3@1"),
+     (KOL_JSON, KOL, "+7@0")],
+)  # fmt: skip
+def test_the_analysts_lab_command_scores_each_hypothesis_where_it_trades_live(tmp_path, capsys, spec, trigger, landing):
+    """The analyst runs the prompt's lab command as written, with no landing of its own: every kind of hypothesis comes
+    back scored where it trades live (a copy where ours land as measured, +7 here), so its lower bound can decide it."""
     from snipetech import cli
 
-    db = _tape_db(tmp_path)
-    assert cli.main(["--db", str(db), *_protocol_command("lab", WHALE_JSON)]) == 0
+    db = _tape_db(tmp_path, kols=True, copies="+7")
+    assert cli.main(["--db", str(db), *_protocol_command("lab", spec)]) == 0
     (row,) = json.loads(capsys.readouterr().out)["strategies"]
-    assert (row["trigger_spec"], row["landing"], row["live_landing"]) == (WHALE.__dict__, "+3@1", True)
+    assert (row["trigger_spec"], row["landing"], row["live_landing"]) == (trigger.__dict__, landing, True)
+
+
+def test_the_analysts_freeze_command_freezes_a_copy_hypothesis_where_copies_land(tmp_path, capsys):
+    """The prompt's freeze command, as written, freezes a KOL hypothesis that pays where our copies land (+7, as
+    measured) at that landing."""
+    from snipetech import cli
+
+    db = _tape_db(tmp_path, kols=True, copies="+7")
+    assert cli.main(["--db", str(db), *_protocol_command("paper", KOL_JSON), "--json"]) == 0
+    rep = json.loads(capsys.readouterr().out)
+    assert [(s["trigger"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"]] == [
+        (KOL.__dict__, 0, "+7", "+7@0")
+    ]

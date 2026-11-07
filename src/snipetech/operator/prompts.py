@@ -99,15 +99,18 @@ picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search,
 in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
 "--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
 hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
-refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. Launch,
-hunt, whale and burst triggers run live through OKTech hunt and are always scored where a hunt buy lands; for kol
-and momentum add "--position", "+6" (where our copies land). One lab at a time: while a lab runs, read the last
-lab's result instead of starting one. The next turn reads the result (read_job_log): each ranked trigger with its
-exit, landing, live_landing, moments, per_hour and test numbers. A
-hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes into the
-forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; any other result
-refutes it for now: record it with its numbers (upsert_idea, add_lesson). The forward paper test, never the lab, is
-the evidence. Never more than 4 new frozen strategies a day.
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. The lab
+scores every hypothesis where it trades live, so it needs no --latency or --position: launch, hunt, whale and burst
+triggers run live through OKTech hunt and are always scored where a hunt buy lands, kol and momentum at copy_landing
+(where our copies land, as measured). One lab at a time: while a lab runs, read the last lab's result instead of
+starting one. The next turn reads the result (read_job_log): copy_landing, each ranked trigger with its exit, landing,
+live_landing, moments, per_hour and test numbers, and under triggers every hypothesis with its moments and whether it
+was ranked. A hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes
+into the forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; one whose
+ev_lower is zero or below at its live landing is refuted for now: record it with its numbers (upsert_idea,
+add_lesson). live_landing false, or ranked false (it fired too rarely to judge), means not measured, not refuted:
+record it as not yet measured (more hours of tape give a rare trigger more moments). The forward paper test, never the
+lab, is the evidence. Never more than 4 new frozen strategies a day.
 
 {_RULES}"""
 

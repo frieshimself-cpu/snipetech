@@ -168,11 +168,15 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
     second lab). `only_live`: keep only strategies the lab measured at their live landing. `lock_dir`: hold the
     one-lab-at-a-time lock there while the lab runs. `triggers`: the lab runs only these (an agent's own hypotheses,
-    `lab.parse_trigger`) instead of the grid; `hours`: only the newest N hours of tape."""
+    `lab.parse_trigger`) instead of the grid, each where it trades live (`live_landing`: a copy at the copy landing,
+    whatever `latency`/`position` say); `hours`: only the newest N hours of tape."""
     now = now or time.time()
+    copy_pos = copy_landing(store, cfg, now)
     if data is None:
         from .lab_lock import lab_lock
 
+        if triggers:  # a hypothesis has no landing of its own to get wrong: its copies are scored where ours land
+            latency, position = 0, copy_pos
         with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
             tape = store
             if hours:
@@ -182,7 +186,6 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
             data = collect(tape, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
                            triggers=triggers)  # fmt: skip
-    copy_pos = copy_landing(store, cfg, now)
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
