@@ -172,8 +172,9 @@ TRIGGERS = (
         for pr in (0.3, 0.5)
     ]
     # OKTech MIG as its settings read (docs/oktech-features.md): a buy on PumpSwap once the coin has migrated there,
-    # within the Migration Window of its create (10 s is OKTech's default; 0 = any time). Three settings only: the lab
-    # runs every trigger on every coin
+    # within the Migration Window of its create (10 s is OKTech's default; 0 = any time, scored for research only:
+    # `oktech strategy` refuses it until OKTech says how to send no window). Three settings only: the lab runs every
+    # trigger on every coin
     + [Trigger("mig", window=w) for w in (10.0, 60.0, 0.0)]
 )
 

@@ -752,23 +752,22 @@ def strategy_sniper(
         notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
                      "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
     elif kind == "mig":
-        # the lab scored this rule (analysis/lab.py `_mig`): OKTech MIG buys the coin on PumpSwap as its curve
-        # migrates, only when the migration came within migrationExpirySec of the create; "any time" sends no window
+        # the lab scored this rule (analysis/lab.py `_mig`): OKTech MIG buys the coin on PumpSwap once it has migrated,
+        # only when the migration came within migrationExpirySec of the create
         config["mode"] = "mig"
         del config["monitorProgram"]  # a normal-mode switch (docs/oktech-features.md, "Normal extras")
         window = _whole_secs(trig.get("window"), "the Migration Window (migrationExpirySec)")
-        if window:
-            config["migrationExpirySec"] = window
-            summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's "
-                           "Migration Window, as the lab scored it)")  # fmt: skip
-        else:
-            summary.append("every migration, however long after the create (the lab scored it with no window)")
+        if not window:
+            # the form's default window is 10 s, and how to send "no window" is not known: an any-time rule sent without
+            # one would most likely run as the 10 s rule, which the lab scores as a rule of its own
+            raise ValueError("an any-time MIG rule cannot be sent as scored: OKTech's Migration Window defaults to 10 s, "
+                             "and how to send no window is not known (ask OKTech first)")  # fmt: skip
+        config["migrationExpirySec"] = window
+        summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
+                       "Window, as the lab scored it)")  # fmt: skip
         notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
                      "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy a slot or so after "
                      "the migration, where the lab assumes it lands) and that its exits fire")  # fmt: skip
-        if not window:
-            notes.append("no Migration Window sent (the lab scored every migration): OKTech's form default is 10 s, so "
-                         "check that it also buys migrations that come later than that")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):

@@ -410,9 +410,6 @@ def test_strategy_sniper_sends_a_mig_trigger_exactly_as_scored():
     }  # fmt: skip
     notes = " ".join(p.notes)
     assert "playbook 8" in notes and "never" in notes  # no live MIG fill on this account yet
-    anytime = strategy_sniper(strat | {"trigger": Trigger("mig").__dict__}, 1)
-    assert "migrationExpirySec" not in anytime.config and anytime.config["mode"] == "mig"
-    assert "10 s" in " ".join(anytime.notes)  # OKTech's own default may apply when no window is sent
 
 
 @pytest.mark.parametrize("window", [10.5, 0.25, -10.0])
@@ -422,12 +419,25 @@ def test_strategy_sniper_refuses_a_migration_window_that_is_not_whole_seconds(wi
         strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
 
 
-def test_every_mig_trigger_the_search_ranks_is_one_oktech_can_run():
+def test_strategy_sniper_refuses_an_any_time_mig_rule():
+    # OKTech's Migration Window defaults to 10 s, and how to send "no window" is not known: sent without one, the rule
+    # would most likely run as the 10 s rule, which the lab scores as a rule of its own (mostly create-bundle coins)
+    trig = Trigger("mig").__dict__
+    with pytest.raises(ValueError, match="10 s"):
+        strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
+
+
+def test_the_search_ranks_mig_windows_oktech_runs_as_scored_and_any_time_as_research():
     migs = [t for t in TRIGGERS if t.kind == "mig"]
     assert {10.0, 0.0} <= {t.window for t in migs}  # OKTech's default window, and any time
     for t in migs:
-        assert strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__},
-                               1).config["mode"] == "mig"  # fmt: skip
+        strat = {"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}
+        if not t.window:  # scored, but not sent until OKTech says how to send no window
+            with pytest.raises(ValueError):
+                strategy_sniper(strat, 1)
+            continue
+        p = strategy_sniper(strat, 1)
+        assert p.config["mode"] == "mig" and p.config["migrationExpirySec"] == t.window
 
 
 def test_strategies_frozen_before_the_mig_trigger_keep_their_ids():
