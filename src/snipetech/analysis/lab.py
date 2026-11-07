@@ -432,6 +432,35 @@ def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int
     return e if path.amm[e] else None
 
 
+# Where a copy lands when its position counts buys across slots ("+Nx", `copy_entry`; the qualify lab since 7 Nov): behind
+# the N-th buy after the leader's, whatever slot it is in, within COPY_LAND_SLOTS of the leader's slot. Research round 2
+# (7 Nov): live copies of early-curve leaders landed 2-4 buys behind the leader (the measure stage's trades_behind counts
+# other wallets' buys between the two) at +18-43 %, often in later slots, while the in-slot "+N" never passes the
+# leader's slot: a leader alone in its slot was copied right behind its own buy. OKTech sends the copy as it sees the
+# leader's buy (6 of 7 copies landed in the leader's own slot, 6 Nov), so in a quiet coin the copy is behind only the buys
+# that came by then; the window is as wide as MIG's (about 2 s at 0.214 s a slot), far longer than a live copy took.
+COPY_LAND_SLOTS = 10
+ACROSS = "x"  # "+3x": behind the 3rd buy after the trigger's, counted across slots
+
+
+def across_slots(position: Any) -> int | None:
+    """N of a landing that counts buys across slots ("+Nx"), or None for every other position."""
+    p = str(position)
+    return int(p[1:-1]) if p.startswith("+") and p.endswith(ACROSS) and p[1:-1].isdigit() else None
+
+
+def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0) -> int:
+    """The state a copy enters at, its leader's buy at state i ("+Nx"): behind the n-th buy after it, counted across
+    slots, so every trade before that buy (a sell too) lands ahead of the copy; only buys within COPY_LAND_SLOTS of the
+    leader's slot count, and when fewer came by then, behind the last of those, right behind the leader when none did.
+    With `latency`, never ahead of a trade of the slots before slot + latency (copies land at latency 0)."""
+    s = int(path.slot[i])
+    hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
+    buys = np.flatnonzero(path.is_buy[i + 1 : hi])
+    e = i if n <= 0 or not len(buys) else i + 1 + int(buys[min(n, len(buys)) - 1])
+    return max(e, int(path.landing_index(s + int(latency), "start", i))) if latency else e
+
+
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:
     """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
     when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
@@ -930,6 +959,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
                     continue
+            elif (across := across_slots(pos)) is not None:  # a copy counted across slots (the qualify lab)
+                e = copy_entry(path, i, across, lat)
             else:
                 e = int(path.landing_index(t_slot + lat, pos, i))
             if t_ts > b - 60:
@@ -1092,7 +1123,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
-    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at. `triggers`: run
+    other trigger lands at `latency_slots` / `position`. A position "+Nx" lands behind the N-th buy after the trigger's,
+    counted across slots (`copy_entry`: where the qualify lab copies a wallet since 7 Nov); "+N" stays inside the
+    trigger's slot. Each row records the landing it was scored at. `triggers`: run
     only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them.
     A trigger that buys on PumpSwap (MIG) fires on the migrations the tape recorded in the span, and its buy lands
     behind the first PumpSwap trades after the migration's slot (`mig_entry`: 3 at the MIG landing, counted across

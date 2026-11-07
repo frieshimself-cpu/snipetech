@@ -503,3 +503,50 @@ def test_a_wallet_exit_is_chosen_without_looking_at_its_held_out_period():
         by = {r["wallet"]: r for r in rank_wallets(world(delta), cfg, top=20, min_n=4, gate=menu["lab"])}
         picks.append((by["W"]["exit_name"], by["W"]["exit_source"]))
     assert picks[0] == picks[1] == ("lab", "lab")
+
+
+def test_a_copy_lands_behind_the_third_buy_after_its_leader_counted_across_slots():
+    """Research round 2 (7 Nov): live copies of early-curve leaders landed 2-4 buys behind the leader (the measure
+    stage's trades_behind) at +18-43 %, often in later slots. The lab's in-slot "+6" never passes the leader's slot, so
+    a leader alone in its slot was copied right behind its own buy. "+3x" counts the buys after the leader's across
+    slots: every trade before the 3rd buy (a sell too) lands ahead of the copy. Within COPY_LAND_SLOTS of the leader's
+    slot only: a copy lands within a slot or two (6 of 7 in the leader's own slot, 6 Nov), so in a quiet coin it sits
+    behind the buys that came by then, right behind the leader when none did."""
+    from snipetech.analysis.lab import COPY_LAND_SLOTS, across_slots, copy_entry
+
+    st = Store(":memory:")
+    lead, dev = addr("xs-lead"), addr("xs-dev")
+    m = Market(st, addr("xs-coin"), dev, NOW - 4000, 30_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1 (state 0: the post-create genesis)
+    m.buy(lead, 0.5, 5)  # state 2: the leader, alone in its slot
+    m.buy(addr("xs-a"), 0.3, 6)  # state 3
+    m.sell(dev, 0.5, 7)  # state 4: a sell between the buys lands ahead of the copy too
+    m.buy(addr("xs-b"), 0.3, 8)  # state 5
+    m.buy(addr("xs-c"), 0.3, 9)  # state 6: the 3rd buy after the leader's
+    m.buy(addr("xs-d"), 0.3, 12)  # state 7
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[2] == lead and path.users[6] == addr("xs-c")
+    assert int(path.landing_index(int(path.slot[2]), "+6", 2)) == 2  # in-slot: right behind the leader, alone there
+    assert copy_entry(path, 2, 3) == 6  # behind a, the dev's sell, b and c
+    assert copy_entry(path, 2, 1) == 3 and copy_entry(path, 2, 0) == 2
+    assert across_slots("+3x") == 3 and across_slots("+12x") == 12
+    assert across_slots("+6") is None and across_slots("start") is None and across_slots("+x") is None
+
+    q = Market(st, addr("xs-quiet"), dev, NOW - 2000, 30_010_000)  # a quiet coin: one buy in the window
+    q.buy(dev, 1.0, 0, sig=q.create_sig)
+    q.buy(lead, 0.5, 5)  # state 2
+    q.buy(addr("xs-e"), 0.3, 7)  # state 3
+    q.buy(addr("xs-f"), 0.3, 5 + COPY_LAND_SLOTS + 1)  # state 4: after the window, the copy has landed by then
+    q.buy(addr("xs-g"), 0.3, 5 + COPY_LAND_SLOTS + 2)  # state 5
+    q.commit()
+    quiet = MarketPath.build(st.trades_for_mint(q.mint), st.launch(q.mint))
+    assert copy_entry(quiet, 2, 3) == 3  # behind the one buy that came in the window
+    s = Market(st, addr("xs-still"), dev, NOW - 1000, 30_020_000)  # nothing in the window: right behind the leader
+    s.buy(dev, 1.0, 0, sig=s.create_sig)
+    s.buy(lead, 0.5, 5)  # state 2
+    s.buy(addr("xs-h"), 0.3, 5 + COPY_LAND_SLOTS + 1)  # state 3
+    s.commit()
+    still = MarketPath.build(st.trades_for_mint(s.mint), st.launch(s.mint))
+    assert copy_entry(still, 2, 3) == 2
+    st.close()

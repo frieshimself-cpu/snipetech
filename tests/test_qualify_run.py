@@ -120,7 +120,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             return [dict(rows[w], wallet=w) for w in wallets if w in rows]
 
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
-        assert seen["wallets"] == ["BAD", "GOOD", "WEAK"] and seen["pos"] == "+6"  # banned never measured
+        assert seen["wallets"] == ["BAD", "GOOD", "WEAK"] and seen["pos"] == "+3x"  # banned never measured
         assert out == {
             "evaluated": 3,
             "qualified": 1,
@@ -303,7 +303,7 @@ def test_a_due_loser_keeps_its_lab_row_behind_a_thousand_better_candidates(tmp_p
         run_qualify(svc, cfg, data / "jobs", NOW)
         v = st.latest_verdicts()[0]
         assert (v["status"], v["n_tape"]) == ("retired", 25), v["reasons"]
-        assert any(r.startswith("loses at +6: mean -0.0500 SOL over 25") for r in v["reasons"])
+        assert any(r.startswith("loses at +3x: mean -0.0500 SOL over 25") for r in v["reasons"])
     finally:
         st.close()
 
@@ -384,3 +384,70 @@ def test_the_command_line_passes_early_through():
 
     assert cli.build_parser().parse_args(["qualify", "run", "--early"]).early is True
     assert cli.build_parser().parse_args(["qualify", "run"]).early is False
+
+
+def test_the_qualify_landing_is_three_buys_behind_the_leader_or_further_back_never_closer():
+    """Research round 2 (7 Nov): the qualify lab enters behind the 3rd buy after the leader's, counted across slots
+    ("+3x"), where live copies of early-curve leaders landed (2-4 buys behind). The owner's or the strategist's
+    [qualify] landing_pos (in-slot, "+N" = N - 3 buys behind: the 6 Nov calibration) and the measure stage's measured
+    landing (the 75th percentile of buys behind over 30+ live fills, rounded up) can only move it further back; an
+    untimed or week-old measurement is ignored. 7aPo3n's live copies landed 0-1 behind: no closer landing until 10+
+    live fills show it (the record), so neither the "+3" choice nor a close measurement moves it forward."""
+    from snipetech.config import QualifyConfig
+    from snipetech.qualify.run import qualify_landing
+
+    st = Store(":memory:")
+    try:
+        q = QualifyConfig()
+        assert qualify_landing(st, q, now=NOW) == "+3x"
+        assert qualify_landing(st, QualifyConfig(landing_pos="+9"), now=NOW) == "+6x"
+        assert qualify_landing(st, QualifyConfig(landing_pos="+3"), now=NOW) == "+3x"
+        st.set_coverage("measure:landing_pos", {"pos": "+7", "behind_p75": 4.2, "ts": NOW - 3600})
+        assert qualify_landing(st, q, now=NOW) == "+5x"
+        st.set_coverage("measure:landing_pos", {"pos": "+4", "behind_p75": 1.0, "ts": NOW - 3600})
+        assert qualify_landing(st, q, now=NOW) == "+3x"
+        st.set_coverage("measure:landing_pos", {"pos": "+7", "behind_p75": 4.2, "ts": NOW - 8 * 86400})
+        assert qualify_landing(st, q, now=NOW) == "+3x"
+        st.set_coverage("measure:landing_pos", {"pos": "+7", "behind_p75": 4.2})
+        assert qualify_landing(st, q, now=NOW) == "+3x"
+    finally:
+        st.close()
+
+
+STRONG = {"trades": 300, "win_rate": 64.0, "realized_usd": 2500.0, "max_single_pnl_usd": 500.0, "tokens": 120,
+          "trading_days": 40}  # fmt: skip
+
+
+def _alone_in_its_slot(st, w, coins, t0, s0, tag=""):
+    """W buys alone in its slot; three wallets buy 0.7 SOL in the next three slots, then the coin pauses until W sells
+    it all. Copied right behind W (the in-slot +6), the copy sells into the pause at the top; copied behind the third
+    buy, it is still holding when W dumps. Coins 100 s apart at 0.4 s a slot, like the rest of the tape."""
+    D = addr("dev")
+    for k in range(coins):
+        m = Market(st, addr(f"{w}:{tag}{k}"), D, t0 + k * 100, s0 + k * 250)
+        m.buy(D, 1.0, 0, sig=m.create_sig)
+        m.buy(w, 0.5, 5)
+        for j in range(3):
+            m.buy(addr(f"{w}:{tag}{k}:f{j}"), 0.7, 6 + j)
+        m.sell(w, 1.0, 40)
+        m.commit()
+
+
+def test_a_wallet_the_in_slot_landing_qualified_loses_where_its_copies_land(tmp_path):
+    from snipetech.qualify.run import default_lab_runner
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _alone_in_its_slot(st, "LONE", 12, NOW - 6000, SLOT)
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+        st.upsert_candidate("LONE", "solanatracker", STRONG, NOW - 3600)
+        st.set_label("LONE", "cand:LONE", "cand")
+        svc.cfg.verdict.bootstrap_samples = 50
+        (old,) = default_lab_runner(svc, svc.cfg)(["LONE"], "+6")
+        assert old["n"] == 12 and old["mean"] > 0  # right behind the leader, it sells into the pause at the top
+        run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        v = st.latest_verdicts()[0]
+        assert v["landing_pos"] == "+3x" and v["n_tape"] == 12 and v["mean_sol"] < 0
+        assert v["status"] == "retired" and any(r.startswith("loses at +3x") for r in v["reasons"]), v["reasons"]
+    finally:
+        st.close()
