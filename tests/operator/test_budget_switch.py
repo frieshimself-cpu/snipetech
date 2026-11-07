@@ -212,3 +212,17 @@ def test_cli_operate_still_parses_without_the_budget_action():
     assert a.action is None and a.dry_run and a.daily_usd is None and not a.budget_default
     a = build_parser().parse_args(["operate", "budget", "--tool-calls", "40", "--default"])
     assert a.action == "budget" and a.tool_calls == 40 and a.budget_default
+
+
+def test_the_budget_line_says_what_the_alert_rounds_keep(paths):
+    """The analyses between the daily ones pause before the day runs out (gate.py); the owner reads where, in dollars,
+    and that /budget moves it."""
+    from snipetech.operator.budget_switch import budget_line, room_for_extra_analysis
+
+    line = budget_line(OperatorConfig(), paths, 3.2)
+    assert "extra analyses pause when less than 6 $ of the day is left, so the alert rounds keep 4 $" in line
+    assert room_for_extra_analysis(OperatorConfig(), paths, 9.0)
+    assert not room_for_extra_analysis(OperatorConfig(), paths, 9.01)
+    set_budget(paths, OperatorConfig(), {"daily_usd": 200, "turn_usd": 6}, "telegram", NOW)
+    assert "less than 18 $ of the day is left, so the alert rounds keep 12 $" in budget_line(OperatorConfig(), paths, 0)
+    assert room_for_extra_analysis(OperatorConfig(), paths, 182.0)

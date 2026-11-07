@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import time
 from collections.abc import Callable
@@ -23,6 +24,32 @@ from .tools import NoteSink, make_operator_tools
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
+# The operator unit ends a round after 30 minutes (deploy/systemd/snipetech-operator.service, TimeoutStartSec=30m) with
+# a SIGTERM nothing handles, so a turn still running then lost its end: no analyst.last, no stub report, no Telegram
+# lines, no inbox clear, and the next round started the same analysis again (7 Nov review; the owner's /budget allows
+# 80 tool calls and 25 $ a turn). A turn starts no new reply after TURN_WALL_SECS, and is cut off at TURN_HARD_SECS
+# whatever it waits for (a reply or a tool that hangs); the snapshot and the commands before it keep their minutes.
+TURN_WALL_SECS = 20 * 60
+TURN_HARD_SECS = 24 * 60
+
+
+def _analyst_last(paths: OperatorPaths) -> str | None:
+    try:
+        return paths.analyst_last.read_text()
+    except OSError:
+        return None
+
+
+def _restore_analyst_last(paths: OperatorPaths, text: str | None) -> None:
+    """Put operator/analyst.last back as the turn found it (none: no file)."""
+    with contextlib.suppress(OSError):
+        if text is None:
+            paths.analyst_last.unlink(missing_ok=True)
+        else:
+            tmp = paths.analyst_last.with_name(paths.analyst_last.name + ".tmp")
+            tmp.write_text(text)
+            tmp.replace(paths.analyst_last)
+
 
 def _read_inbox(paths: OperatorPaths) -> str:
     try:
@@ -42,7 +69,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
     update_of = analyst_update_target(paths, started, op) if decision.mode == "analyst" else None
     ceiling = {"tool_calls": max_calls, "turn_usd": turn_usd, "spent_usd": ledger.spent_today(started),
-               "daily_usd": effective_daily_usd(cfg, paths)}  # fmt: skip
+               "daily_usd": effective_daily_usd(cfg, paths), "minutes": TURN_WALL_SECS // 60}  # fmt: skip
     inbox = _read_inbox(paths)
     tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
     client = client or AsyncAnthropic()
@@ -62,25 +89,43 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     )
     usd, calls, stopped, message_stop_reason = 0.0, 0, "end_turn", None
     notes_before, decisions_before = notes.count, len(notes.decisions)
+    # the cadence counts from this turn as soon as it starts: one the unit kills is not started over by the next round
+    # (a turn the API refused puts back the time it found, below)
+    last_before = _analyst_last(paths) if decision.mode == "analyst" else None
+    if decision.mode == "analyst":  # a post-mortem never stands in for the day's analysis
+        with contextlib.suppress(OSError):  # without it the cadence counts from the day's report (gate.py)
+            mark_analyst_ran(paths, started)
     try:
-        async for message in runner:
-            message_stop_reason = message.stop_reason
-            usd += ledger.record(mode, message.usage.model_dump(), now())
-            tool_uses = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
-            if message.stop_reason == "refusal":
-                stopped = "refusal"
-                break
-            if not tool_uses:
-                break
-            if usd >= turn_usd:
-                notes.write(f"turn budget reached ({usd:.2f} $ of {turn_usd:.2f}) before the round finished", "info")
-                stopped = "turn_usd"
-                break
-            if calls + len(tool_uses) > max_calls:
-                stopped = "tool_calls"
-                break
-            calls += len(tool_uses)
-            await runner.generate_tool_call_response()
+        async with asyncio.timeout(TURN_HARD_SECS):
+            async for message in runner:
+                message_stop_reason = message.stop_reason
+                usd += ledger.record(mode, message.usage.model_dump(), now())
+                tool_uses = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
+                if message.stop_reason == "refusal":
+                    stopped = "refusal"
+                    break
+                if not tool_uses:
+                    break
+                if usd >= turn_usd:
+                    notes.write(
+                        f"turn budget reached ({usd:.2f} $ of {turn_usd:.2f}) before the round finished", "info"
+                    )
+                    stopped = "turn_usd"
+                    break
+                if calls + len(tool_uses) > max_calls:
+                    stopped = "tool_calls"
+                    break
+                calls += len(tool_uses)
+                await runner.generate_tool_call_response()  # this reply's calls run: they may be the report and note
+                if now() - started >= TURN_WALL_SECS:
+                    notes.write(f"turn time limit reached ({(now() - started) / 60:.0f} min of "
+                                f"{TURN_WALL_SECS // 60}) before the round finished", "info")  # fmt: skip
+                    stopped = "wall_time"
+                    break
+    except TimeoutError:  # a reply or a tool hung past TURN_HARD_SECS: cut off, the turn still ends below
+        notes.write(f"turn time limit reached ({TURN_HARD_SECS / 60:g} min, a reply or a tool hung) before the round "
+                    "finished", "info")  # fmt: skip
+        stopped = "wall_time"
     except anthropic.APIError as exc:
         stopped = "api_error"
         if not notes.has_today("api error", now()):
@@ -98,15 +143,15 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
             except Exception:  # noqa: BLE001 - closing is a courtesy to the SDK, never a reason to fail the round
                 pass
     ran = stopped not in ("api_error", "refusal")
+    if decision.mode == "analyst" and not ran:  # the API refused the turn: the next round tries again
+        _restore_analyst_last(paths, last_before)
     if stopped in ("tool_calls",) or (ran and message_stop_reason == "max_tokens"):
         notes.write(
             f"round cut off ({stopped if stopped != 'end_turn' else 'max_tokens'}) before the model finished", "info"
         )
     if notes.count == notes_before and ran:
         notes.write(f"turn ended without a note (stopped: {stopped}, reasons: {'; '.join(decision.reasons)})", "info")
-    if decision.mode == "analyst" and ran:  # a post-mortem never stands in for the day's analysis
-        with contextlib.suppress(OSError):  # without it the cadence counts from the day's report (gate.py)
-            mark_analyst_ran(paths, started)
+    if decision.mode == "analyst" and ran:
         marker = paths.report(f"analyst-{time.strftime('%Y-%m-%d', time.gmtime(now()))}")
         if update_of is None and not marker.exists():  # no report: mark the day done anyway, with what happened
             marker.write_text(

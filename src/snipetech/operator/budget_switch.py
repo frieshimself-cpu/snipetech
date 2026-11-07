@@ -35,6 +35,12 @@ FIELDS = tuple(RULES)
 # before its report; an analysis every two hours instead of once a day after 06:00 UTC
 WORK_HARDER: dict[str, float | int] = {"turn_usd": 6.0, "max_tool_calls": 40, "analyst_every_h": 2.0}
 
+# turns of the day that an analyst turn between the daily ones (by the cadence or a post-mortem) leaves for the
+# operator rounds, besides its own: those rounds carry the alerts (a sniper running, a coin held, the tape stalled), and
+# once the day is spent every round stops at "budget" until 00:00 UTC. 7 Nov review: at the server's pinned 15 $ a day
+# and 2 $ a turn, an analysis every two hours used the day up by about midday and the alerts went silent
+RESERVE_TURNS = 2
+
 
 def budget_file(paths: OperatorPaths) -> Path:
     return paths.root / "BUDGET"
@@ -97,6 +103,13 @@ def effective_analyst_every_h(cfg, paths: OperatorPaths | None) -> float:
     return float(effective_budget(cfg, paths)["analyst_every_h"])
 
 
+def room_for_extra_analysis(cfg, paths: OperatorPaths | None, spent_today: float) -> bool:
+    """Whether an analyst turn between the daily ones fits in what is left of the day: its own turn and RESERVE_TURNS
+    more for the operator rounds. The daily analysis does not ask (gate.py keeps its rule)."""
+    b = effective_budget(cfg, paths)
+    return float(spent_today or 0.0) + (1 + RESERVE_TURNS) * float(b["turn_usd"]) <= float(b["daily_usd"])
+
+
 def set_budget(
     paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None
 ) -> dict[str, float | int]:
@@ -145,11 +158,12 @@ def _set_at(paths: OperatorPaths) -> str:
 def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
     """The budget that applies, in the owner's words, and whose it is."""
     op, b = _operator(cfg), effective_budget(cfg, paths)
-    every = float(b["analyst_every_h"])
+    every, turn = float(b["analyst_every_h"]), float(b["turn_usd"])
     when = (f"an analysis every {every:g} h besides the daily one after {op.analyst_after_utc} UTC" if every > 0
             else f"the analysis once a day after {op.analyst_after_utc} UTC")  # fmt: skip
-    line = (f"Claude budget: {b['daily_usd']:g} $ a day ({spent_today:.2f} $ spent today), at most {b['turn_usd']:g} $ "
-            f"and {b['max_tool_calls']} tool calls a turn, {when}")  # fmt: skip
+    line = (f"Claude budget: {b['daily_usd']:g} $ a day ({spent_today:.2f} $ spent today), at most {turn:g} $ "
+            f"and {b['max_tool_calls']} tool calls a turn, {when}; extra analyses pause when less than "
+            f"{(1 + RESERVE_TURNS) * turn:g} $ of the day is left, so the alert rounds keep {RESERVE_TURNS * turn:g} $")  # fmt: skip
     if read_budget(paths):
         return (
             line

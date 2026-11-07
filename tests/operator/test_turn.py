@@ -323,7 +323,7 @@ def test_the_turn_is_told_its_ceiling(env):
     handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
     _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
     assert (
-        "This turn stops at 40 tool calls or 6 $ (0.00 $ of the day's 200 $ spent)"
+        "This turn stops at 40 tool calls, 6 $ or 20 minutes (0.00 $ of the day's 200 $ spent)"
         in requests[0]["messages"][0]["content"]
     )
 
@@ -383,3 +383,86 @@ def test_runner_is_closed_after_the_turn(env, monkeypatch):
     handler, _ = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
     out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
     assert out["stopped"] == "end_turn" and closed == [True]
+
+
+# -- a turn ends itself before the operator unit's 30 minutes (7 Nov review) ---------------------------------------------
+
+
+def _note_call(i, level="info"):
+    return ([{"type": "tool_use", "id": f"n{i}", "name": "write_note", "input": {"text": f"step {i}", "level": level}}],
+            "tool_use")  # fmt: skip
+
+
+def _run_clocked(env, decision, handler, clock):
+    return asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], decision, env["ledger"], env["notifier"],
+                                env["notes"], jobs=env["jobs"], client=_client(handler), now=lambda: clock[0]))  # fmt: skip
+
+
+def test_a_turn_starts_no_new_reply_after_twenty_minutes_and_ends_like_any_other(env):
+    """The operator unit ends a round after 30 minutes with a SIGTERM nothing handles: a turn still running then lost
+    its end (no analyst.last, no stub report, no Telegram lines) and the next round started the same analysis again.
+    With 8 minutes a reply, the third reply's tools still run (they may be the report and the note), then the turn
+    stops at a reply's end and does all its end-of-turn work."""
+    clock = [NOW]
+    inner, requests = _scripted(_note_call(1, "decision"), _note_call(2), _note_call(3), _note_call(4))
+
+    def handler(request):
+        clock[0] += 8 * 60  # each reply takes 8 minutes
+        return inner(request)
+
+    out = _run_clocked(env, Decision(True, "analyst", ["daily analysis due"]), handler, clock)
+    assert out["stopped"] == "wall_time" and len(requests) == 3 and out["tool_calls"] == 3
+    notes = env["paths"].notes.read_text()
+    assert "step 3" in notes and "step 4" not in notes and "turn time limit reached (24 min of 20)" in notes
+    assert env["sent"] == ["- 2026-11-06T01:00:00Z [decision] step 1"]  # notes.now is the fixture's clock
+    assert "no report was written by the model" in env["paths"].report("analyst-2026-11-06").read_text()
+    assert env["paths"].analyst_last.read_text() == str(NOW)
+
+
+def test_a_reply_that_hangs_is_cut_off_before_the_unit_kills_the_round(env, monkeypatch):
+    """A reply or a tool can hang (the API's own timeout and retries run for many minutes): the turn is cut off at
+    TURN_HARD_SECS whatever it waits for, and still ends like any other."""
+    from snipetech.operator import turn as T
+
+    monkeypatch.setattr(T, "TURN_HARD_SECS", 0.3)
+    requests = []
+
+    async def handler(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx2.Response(200, json=_message(*_note_call(1, "decision")))
+        await asyncio.sleep(30)  # the second reply never comes in time
+        return httpx2.Response(200, json=_message([{"type": "text", "text": "late"}], "end_turn"))
+
+    import time
+
+    t = time.monotonic()
+    out = _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    assert time.monotonic() - t < 10 and out["stopped"] == "wall_time" and len(requests) == 2
+    assert "turn time limit reached" in env["paths"].notes.read_text()
+    assert env["sent"] == ["- 2026-11-06T01:00:00Z [decision] step 1"]
+    assert env["paths"].report("analyst-2026-11-06").exists() and env["paths"].analyst_last.read_text() == str(NOW)
+
+
+class Killed(BaseException):
+    """What the disk sees of a SIGTERM: the turn's code after this point never runs."""
+
+
+def test_the_cadence_counts_from_a_turn_the_round_never_finished(env):
+    """analyst.last is written when an analyst turn starts, so a turn killed mid-way is not started over by the next
+    round; a turn the API refused puts back the time it found, and the next round tries again."""
+    from snipetech.operator.gate import last_analyst_ts, mark_analyst_ran
+
+    def killed(request):
+        raise Killed()
+
+    with pytest.raises(Killed):
+        _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), killed)
+    assert last_analyst_ts(env["paths"], NOW) == NOW
+
+    def refused(request):
+        return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+
+    mark_analyst_ran(env["paths"], NOW - 2 * 3600)
+    _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), refused)
+    assert last_analyst_ts(env["paths"], NOW) == NOW - 2 * 3600

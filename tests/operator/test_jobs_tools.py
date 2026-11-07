@@ -196,6 +196,7 @@ def test_write_note_format_and_levels(tmp_path):
     assert sink.write("hello", "decision") == "- 2026-11-06T00:00:00Z [decision] hello"
     assert sink.decisions == ["- 2026-11-06T00:00:00Z [decision] hello"]
     assert sink.has_today("hello", 1_793_923_200 + 100) and not sink.has_today("hello", 1_793_923_200 + 90000)
+    assert sink.has_today("hello", 1_793_923_200, "[decision]") and not sink.has_today("hello", 1_793_923_200, "[info]")
     with pytest.raises(ValueError):
         sink.write("x", "loud")
 
@@ -229,6 +230,26 @@ def test_write_report_appends_and_never_replaces_an_earlier_turns_analysis(toolb
     assert paths.report("analyst-2026-11-07").read_text() == "final"
     _call(tools["write_report"], name="study-notes", text="new", append=True)  # appending to nothing creates it
     assert paths.report("study-notes").read_text() == "new\n"
+
+
+def test_an_append_never_makes_an_earlier_analysis_this_turns_own(toolbox):
+    """Review, 7 Nov: an append counted the day's report as one this turn wrote, so a plain write right after it
+    replaced the whole file and the 06:00 shortlist and the 08:00 update were gone. After an append, a plain write is
+    refused like before it, and the earlier text stays; a correction goes in as one more append."""
+    tools, paths, _ = toolbox
+    report = paths.report("analyst-2026-11-06")
+    earlier = "# analyst 2026-11-06\n\nThe 06:00 shortlist.\n\n## Update 08:00 UTC\nW1 lost twice.\n"
+    report.write_text(earlier)
+    update = "## Update 10:00 UTC\nW2 qualified."
+    assert _call(tools["write_report"], name="analyst-2026-11-06", text=update, append=True) == (
+        "appended to analyst-2026-11-06.md"
+    )
+    out = _call(tools["write_report"], name="analyst-2026-11-06", text="## Update 10:00 UTC (corrected)\nW2 did not.")
+    assert out.startswith("error") and "append=true" in out
+    assert report.read_text() == earlier + "\n" + update + "\n"
+    # a report this turn created by appending to nothing is its own: it may still redo it
+    _call(tools["write_report"], name="analyst-2026-11-07", text="draft", append=True)
+    assert _call(tools["write_report"], name="analyst-2026-11-07", text="final") == "wrote analyst-2026-11-07.md"
 
 
 def test_read_job_log_tail(toolbox):

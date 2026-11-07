@@ -247,9 +247,14 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if decision.reasons == ["budget"]:
             daily = effective_daily_usd(cfg, paths)  # the owner's /budget when set, else the config's
             _log(paths, t0, f"budget: {snap.spent_today:.2f} $ of {daily:.2f} $ spent today")
-            if not notes.has_today("budget reached", t0):
+            # once a day for each cap, matched on this exact note: never on a turn's "turn budget reached (...)" or the
+            # strategist's line (7 Nov review: one turn at its own cap hid the day's), and a cap the owner raised with
+            # /budget is announced again when it is reached in its turn
+            cap = f"of {daily:.2f} $ today"
+            if not notes.has_today("[decision] budget reached: ", t0, cap):
                 line = notes.write(
-                    f"budget reached: {snap.spent_today:.2f} $ of {daily:.2f} $ today; no more Claude rounds until tomorrow",
+                    f"budget reached: {snap.spent_today:.2f} $ {cap}; the agents pause until 00:00 UTC, or until "
+                    "/budget raises the day's cap",
                     "decision",
                 )
                 notifier.send(line)

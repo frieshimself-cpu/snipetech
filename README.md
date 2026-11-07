@@ -268,7 +268,8 @@ password (`DASH_TOKEN` from `/etc/snipetech/env`, any user name) and does not ex
 **What the agents may spend, and how often the analyst runs, without SSH.** The server's config file pins every
 `[operator]` value, so you set the agents' budget from Telegram. `/budget` shows the budget that applies and today's
 spend. `/budget 200` allows 200 $ a day and, for whatever you do not name, lets the agents work harder: up to 6 $ and
-40 tool calls a turn, and an analysis every 2 hours. `/budget 200 turn 4 calls 30 every 3` sets each value;
+40 tool calls a turn, and an analysis every 2 hours. Whatever the budget, a turn starts no new reply after 20 minutes
+(the round is ended at 30), so it always finishes its notes. `/budget 200 turn 4 calls 30 every 3` sets each value;
 `/budget default` goes back to the config. A value outside its bounds (at most 500 $ a day; at most 25 $ a turn and
 never more than the day; 5 to 80 tool calls; an analysis every 0.5 to 24 hours, or 0 for once a day) changes nothing
 and the reply says why. The values live in `operator/BUDGET`; from the cloud session, with your OK in chat,
@@ -278,8 +279,10 @@ analyst now runs every 2 hours by default (`[operator] analyst_every_h`; your `e
 the day's report and adds a dated update at its end (what changed since the last analysis, the hypothesis it tested
 and the result, the next test) and never replaces it; before 06:00 the update goes to yesterday's report, so the
 morning analysis still writes the day's. A post-mortem waits when an analysis is due within the hour, since that turn
-reviews the same trades. At the config's 15 $ a day, the extra analyses can reach the cap before evening;
-`/budget 200` lifts it.
+reviews the same trades. An analysis or post-mortem between the daily ones starts only while its own turn and two
+more still fit in the day: the last turns are kept for the operator rounds that carry the alerts (a sniper running, a
+coin held, the tape stalled). At the config's 15 $ a day and 2 $ a turn, the extra analyses pause once 9 $ is spent;
+`/budget 200` moves that to 182 $.
 
 **Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
 `snipetech discover run` (hourly) puts every source's wallets into one `candidates` table: the tape's consistent

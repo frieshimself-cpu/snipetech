@@ -174,9 +174,10 @@ def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = 
     if inbox.strip():
         parts += ["Request from the owner (inbox):", inbox.strip()]
     if ceiling:
-        parts.append(f"This turn stops at {ceiling['tool_calls']} tool calls or {ceiling['turn_usd']:g} $ "
-                     f"({ceiling['spent_usd']:.2f} $ of the day's {ceiling['daily_usd']:g} $ spent); keep the last "
-                     "calls for the report and the note.")  # fmt: skip
+        limits = f"{ceiling['tool_calls']} tool calls" + (f", {ceiling['turn_usd']:g} $ or {ceiling['minutes']} minutes"
+                                                          if ceiling.get("minutes") else f" or {ceiling['turn_usd']:g} $")  # fmt: skip
+        parts.append(f"This turn stops at {limits} ({ceiling['spent_usd']:.2f} $ of the day's {ceiling['daily_usd']:g} $ "
+                     "spent); keep the last calls for the report and the note.")  # fmt: skip
     if decision.mode == "analyst" and update_of:
         parts.append(_update_closing(update_of))
     else:
