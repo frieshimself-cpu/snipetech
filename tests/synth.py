@@ -10,6 +10,8 @@ from snipetech.store import Store
 
 Q0, B0, R0 = 30_000_000_000, 1_073_000_000_000_000, 793_100_000_000_000
 FEE_BPS = 125
+DONE_B = B0 - R0  # a curve's virtual token reserve once it has sold its last token: the curve has completed
+POOL_B0 = 206_900_000_000_000  # the tokens a completed curve hands to its PumpSwap pool (BRUH, 7 Nov: 206.9e12)
 
 
 def addr(name: str) -> str:
@@ -22,6 +24,7 @@ class Market:
         self.store, self.mint, self.deployer = store, mint, deployer
         self.ts0, self.slot0 = ts, slot
         self.q, self.b = Q0, B0
+        self.venue = "curve"  # "amm" once the coin has migrated to its PumpSwap pool
         self.n = 0
         self.trades: list[Trade] = []
         self.holdings: dict[str, int] = {}
@@ -43,8 +46,9 @@ class Market:
         )  # several trades in one tx (a create bundle) get distinct events
         t = Trade(
             sig=sig, ev=ev, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
-            venue="curve", user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
-            fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=R0 - (B0 - self.b), ix="buy" if is_buy else "sell",
+            venue=self.venue, user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
+            fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=0 if self.venue == "amm" else R0 - (B0 - self.b),
+            ix="buy" if is_buy else "sell",
         )  # fmt: skip
         self.trades.append(t)
         return t
@@ -66,6 +70,21 @@ class Market:
         self.b += tokens
         self.holdings[user] -= tokens
         return self._push(user, self.slot0 + slot_offset, False, out, tokens)
+
+    def complete(self, user: str, slot_offset: int, sig: str | None = None) -> Trade:
+        """A buy of every token the curve has left: its virtual token reserve ends at DONE_B, the curve completes."""
+        tokens = self.b - DONE_B
+        s = -(-self.q * tokens // DONE_B)  # the SOL that takes exactly `tokens` out of the curve
+        self.q += s
+        self.b = DONE_B
+        self.holdings[user] = self.holdings.get(user, 0) + tokens
+        return self._push(user, self.slot0 + slot_offset, True, s, tokens, sig)
+
+    def migrate(self) -> None:
+        """The completed curve's SOL and the pool's share of the supply move to a PumpSwap pool; every trade from here on
+        is a PumpSwap trade on the pool's own reserves (it opens at the curve's last price)."""
+        assert self.b == DONE_B, "only a completed curve migrates"
+        self.q, self.b, self.venue = self.q - Q0, POOL_B0, "amm"
 
     def commit(self, completed: bool = False) -> None:
         self.store.add_trades(self.trades)

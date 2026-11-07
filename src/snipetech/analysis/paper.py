@@ -34,12 +34,15 @@ from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
 from .lab import (
+    AMM_KINDS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
     LAUNCH_KINDS,
+    NO_AMM_TAPE,
     Trigger,
     _fire,
+    amm_on_tape,
     collect,
     curve_done,
     label_groups,
@@ -54,10 +57,16 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
 HUNT_LANDING = (1, "+3")
+# OKTech MIG sends its PumpSwap buy once it has seen the migration: assumed to land like a hunt buy, a slot after the
+# migration, 3 trades in. An assumption, not a measurement: no live MIG fill exists yet (playbook 8); the first one
+# on the tape replaces it.
+MIG_LANDING = (1, "+3")
 # every launch-window rule runs live through OKTech hunt (`oktech strategy` maps whale and burst triggers to hunt):
 # each is scored where a hunt buy lands, never at the copy landing inside the trigger's own slot (7 Nov: at the copy
-# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach)
-LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING}
+# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach);
+# a MIG rule is scored where a MIG buy lands
+LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING,
+                   "mig": MIG_LANDING}  # fmt: skip
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
@@ -191,7 +200,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
-    freeze)."""
+    freeze). A strategy that buys on PumpSwap (MIG) is scored only while the tape records PumpSwap trades; `unscored`
+    names the ones left out and why."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -204,8 +214,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     if until <= since:
         return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
     kols = label_groups(store)
+    amm = amm_on_tape(cfg)
+    unscored = {
+        s["id"]: NO_AMM_TAPE for s in strategies if not amm and (s.get("trigger") or {}).get("kind") in AMM_KINDS
+    }
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
-              for s in strategies]  # fmt: skip
+              for s in strategies if s["id"] not in unscored]  # fmt: skip
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)
@@ -250,7 +264,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
-    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos)}
+    return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored}
 
 
 def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:

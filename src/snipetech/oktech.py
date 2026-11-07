@@ -648,25 +648,39 @@ def _whole_hunt(value: Any, name: str) -> int:
     return round(v)
 
 
+def _whole_secs(value: Any, name: str) -> int:
+    """A time OKTech takes in whole seconds (MIG's Migration Window). A fraction would not be the window the lab
+    scored, so it is refused here rather than sent."""
+    v = float(value or 0)
+    if not math.isfinite(v) or v < 0 or abs(v - round(v)) > 1e-9:
+        raise ValueError(f"OKTech takes {name} in whole seconds: {v:g} s is not a window it can run as scored")
+    return round(v)
+
+
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60
 ) -> PlannedSniper:
-    """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun).
+    """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun), a `hunt` sniper
+    for the launch-window rules, or a `mig` sniper (OKTech's pump migration sniper) for a MIG rule.
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
     the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL."""
     trig, ex = strategy["trigger"], dict(strategy["exit"])
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
+    kind = trig.get("kind")
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
                               "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
                               "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
     if not preexec:
         config["preexec"] = {"enabled": False}
-    summary = [f"every new pump.fun launch, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
+    if kind == "mig":
+        watched, dry = "every pump.fun coin as it moves to PumpSwap", " with OKTech's local dry run on"
+    else:
+        watched, dry = "every new pump.fun launch", " and only after a local dry run of the create + buy succeeds"
+    summary = [f"{watched}, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
                f"stops buying by itself after {config['totalSnipes']} buys; earlier positions keep their exits, but the buy that uses up the cap can be left with no exit (DTAU, 4siK)",
-               "buys straight into the wallet (no seed account)" + (" and only after a local dry run of the create + buy succeeds" if preexec else ", no local dry run")]  # fmt: skip
-    kind = trig.get("kind")
+               "buys straight into the wallet (no seed account)" + (dry if preexec else ", no local dry run")]  # fmt: skip
     if kind in ("whale", "burst"):
         min_sol = float(trig.get("sol") or 0)
         buyers = 1 if kind == "whale" else int(trig.get("buyers") or 2)
@@ -737,6 +751,24 @@ def strategy_sniper(
                        + " (OKTech hunt, exactly as the lab scored it)")  # fmt: skip
         notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
                      "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
+    elif kind == "mig":
+        # the lab scored this rule (analysis/lab.py `_mig`): OKTech MIG buys the coin on PumpSwap as its curve
+        # migrates, only when the migration came within migrationExpirySec of the create; "any time" sends no window
+        config["mode"] = "mig"
+        del config["monitorProgram"]  # a normal-mode switch (docs/oktech-features.md, "Normal extras")
+        window = _whole_secs(trig.get("window"), "the Migration Window (migrationExpirySec)")
+        if window:
+            config["migrationExpirySec"] = window
+            summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's "
+                           "Migration Window, as the lab scored it)")  # fmt: skip
+        else:
+            summary.append("every migration, however long after the create (the lab scored it with no window)")
+        notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
+                     "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy a slot or so after "
+                     "the migration, where the lab assumes it lands) and that its exits fire")  # fmt: skip
+        if not window:
+            notes.append("no Migration Window sent (the lab scored every migration): OKTech's form default is 10 s, so "
+                         "check that it also buys migrations that come later than that")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
     if trig.get("plain"):
