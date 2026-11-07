@@ -188,7 +188,14 @@ sequence's record in `operator/autotest.json`).
 - "At real costs": a strategy frozen below the cost of a transaction the measure stage measures (half the low bid's
   measured round trip: 0.0047 SOL a transaction, 0.0094 a round trip, on 6 Nov) is not eligible, for `/test go`
   either. `paper freeze` now scores at that measured cost unless `--per-tx` says otherwise (it used to take 0.0035,
-  and accepted 0).
+  and accepted 0). Since 7 Nov evening the bar never falls back to the flat 0.0035: the measure stage keeps the last
+  cost it measured, and after a week with too few low-bid fills (the bid model reads 7 days) labs, freezes and this
+  bar use that; with nothing ever measured they use 0.0045. Each frozen strategy records where its cost came from
+  (`per_tx_source`).
+- How OKTech sells: a hunt strategy frozen before 7 Nov evening, scored with exits that act from the buy, is not
+  eligible. OKTech starts watching a coin about 1.3 s after its buy lands, and every exit of a launch, hunt, whale or
+  burst rule frozen since waits that long. The same rule frozen again is a new strategy with the delay but the same
+  OKTech sniper, so a drop of either holds for both, and so does the live record a run leaves.
 - It runs at the strategy's own size, never another. A strategy scored above the yes's 0.2 SOL is refused, and the owner
   is told once a day: a test at another size says nothing about it.
 - The yes's caps apply: 10 buys, 120 minutes, the floor 1 SOL below the wallet's balance. The same round starts it, as

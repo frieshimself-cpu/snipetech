@@ -14,6 +14,8 @@ from types import SimpleNamespace
 import pytest
 
 import snipetech
+from snipetech.analysis import paper
+from snipetech.analysis.lab import WATCH_SECS
 from snipetech.config import Config
 from snipetech.models import Trade
 from snipetech.operator import live_test as LT
@@ -33,14 +35,24 @@ HUNT = {"kind": "hunt", "sol": 2.0, "window": 1.0, "dev_max": 1.0}
 BEST, SECOND, THIRD, FOURTH = "9b2bd6f664", "a1b2c3d4e5", "b1b2c3d4e5", "c1b2c3d4e5"
 
 
+def _rule_sol(sid: str) -> float:
+    """Each id its own rule: a hunt threshold of a whole number of SOL taken from the id. `paper freeze` gives every rule
+    one id (paper.strategy_id), so two frozen strategies never share a rule; two that did would be one sniper live
+    (paper.live_id), and the automatic test drops them and carries their live record as one."""
+    return float(2 + int(sid, 16) % 97)
+
+
 def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=0.2, trigger=None, outliers=(0, 0.0),
-            per_tx=0.0035):  # fmt: skip
+            per_tx=0.0047, watch=WATCH_SECS):  # fmt: skip
     """A frozen paper strategy with `n` forward trades of `pnl` SOL each: with one value the lower bound is that value.
     (1, "+3") is where a live hunt fill lands (paper.HUNT_LANDING). `outliers`: (count, pnl) of extra big trades.
-    `per_tx`: the SOL a transaction its trades were scored at (`paper freeze --per-tx`, 0.0035 by default)."""
-    trig = trigger or (dict(HUNT) if kind == "hunt" else {"kind": kind, "sol": 2.0})
-    s = {"id": sid, "label": f"{kind} {sid[:4]} | lab exit", "trigger": trig, "exit": {"stop_loss": 0.3, "max_hold_secs": 300},
-         "position": landing[1], "latency": landing[0], "buy_sol": buy, "per_tx_sol": per_tx, "from_ts": NOW - 20 * 3600,
+    `per_tx`: the SOL a transaction its trades were scored at (`paper freeze --per-tx`; by default 0.0047, the cost the
+    measure stage measured on 6 Nov). `watch`: its exit's watch delay, OKTech's 1.3 s by default as the lab scores every
+    exit of a launch-type rule since 7 Nov evening (0: frozen before that). Its rule is its own (_rule_sol)."""
+    trig = trigger or ({**HUNT, "sol": _rule_sol(sid)} if kind == "hunt" else {"kind": kind, "sol": _rule_sol(sid)})
+    ex = {"stop_loss": 0.3, "max_hold_secs": 300} | ({"watch_secs": watch} if watch else {})
+    s = {"id": sid, "label": f"{kind} {sid[:4]} | lab exit", "trigger": trig, "exit": ex, "position": landing[1],
+         "latency": landing[0], "buy_sol": buy, "per_tx_sol": per_tx, "from_ts": NOW - 20 * 3600,
          "lab": {"mean": 0.01, "ev_lower": 0.004}}  # fmt: skip
     cov = store.coverage("paper_strategies")
     store.set_coverage("paper_strategies", {"strategies": cov.get("strategies", []) + [s], "superseded": []})
@@ -226,7 +238,7 @@ def test_a_strategy_scored_below_the_measured_cost_of_a_trade_is_not_eligible(en
     transaction unless told otherwise (and accepts 0), while the measure stage measures about 0.0047 (0.0094 a round
     trip, 6 Nov): a strategy scored below the measured cost is not evidence at the real cost, whichever path asks."""
     measured_cost(env.store)  # 0.0047 SOL a transaction
-    _freeze(env.store, BEST, pnl=0.02)  # the CLI default the agents' freeze uses
+    _freeze(env.store, BEST, pnl=0.02, per_tx=0.0035)  # the CLI's flat default the agents' freeze took until 7 Nov
     _freeze(env.store, SECOND, pnl=0.01, per_tx=0.0047)  # the daily search freezes at the measured cost
     _freeze(env.store, THIRD, pnl=0.03, per_tx=0.0)  # `paper freeze --per-tx 0`
     assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
@@ -234,6 +246,51 @@ def test_a_strategy_scored_below_the_measured_cost_of_a_trade_is_not_eligible(en
     assert "0.0035 SOL a transaction" in reply and "0.0047" in reply
     assert "0 SOL a transaction" in _refused(env, THIRD, "go")
     assert _send(env).splitlines()[-1] == f"/test {SECOND} go"
+
+
+def test_with_nothing_measured_the_bar_is_what_a_live_transaction_costs_not_the_flat_cost(env):
+    """Review of 7 Nov evening: with the low bid unmeasured (fewer than 30 fills in the bid model's 7 days and nothing
+    measured before), the bar was the flat 0.0035 SOL a transaction, the very cost a freeze then charged, so a strategy
+    scored 0.002 SOL a trade too kind passed "at real costs" under the owner's standing yes. Until a cost is measured
+    the bar is 0.0045, about what a live transaction cost when it was measured on 6 Nov (0.0047)."""
+    _freeze(env.store, BEST, pnl=0.02, per_tx=0.0035)  # frozen at the flat cost
+    _freeze(env.store, SECOND, pnl=0.01, per_tx=0.0045)
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    reply = _refused(env, BEST, "go")
+    assert "0.0035 SOL a transaction" in reply and "0.0045" in reply and "not measured" in reply
+
+
+def test_a_week_without_fills_keeps_the_bar_at_the_last_measured_cost(env):
+    """The bid model reads 7 days of fills, and a week without trading prunes the low bid's row (7 Nov 10:59 the wallet
+    was emptied and nothing has traded since). The bar stays the last cost the measure stage measured, kept in
+    measure:tx_cost, never the flat 0.0035 a freeze then charges too (review of 7 Nov evening)."""
+    env.store.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400})
+    _freeze(env.store, BEST, pnl=0.02, per_tx=0.0035)
+    _freeze(env.store, SECOND, pnl=0.01, per_tx=0.0045)
+    _freeze(env.store, THIRD, pnl=0.005)  # 0.0047, what was measured
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [THIRD]
+    reply = _refused(env, SECOND, "go")
+    assert "0.0045 SOL a transaction" in reply and "0.0047" in reply and "last measured" in reply and "30 Oct" in reply
+
+
+def test_a_hunt_strategy_scored_without_oktechs_watch_delay_never_goes_live(env):
+    """OKTech starts watching a coin about 1.3 s after its buy lands, and no exit of its sniper acts before that. A hunt
+    frozen before the lab gave launch-type exits that delay (7 Nov evening) keeps its id, its exit and its paper trades,
+    which were scored with exits acting from the buy (research round 1: up to 0.003 SOL a trade too kind). The same rule
+    frozen since carries the delay and is a strategy of its own, and OKTech gets one sniper from both (it reads no watch
+    delay). The twin scored without the delay never goes live, however much kinder its lower bound (review of 7 Nov
+    evening: it ranked first and the automatic test starts the first)."""
+    ex = {"stop_loss": 0.3, "max_hold_secs": 300}
+    old = paper.strategy_id(HUNT, ex, "+3", 1, 0.2)
+    new = paper.strategy_id(HUNT, ex | {"watch_secs": WATCH_SECS}, "+3", 1, 0.2)
+    _freeze(env.store, old, trigger=dict(HUNT), pnl=0.03, watch=0)  # frozen before: no delay, the kinder bound
+    _freeze(env.store, new, trigger=dict(HUNT), pnl=0.02)  # the same rule frozen again, with OKTech's 1.3 s
+    _freeze(env.store, SECOND, pnl=0.04, watch=1.0)  # a delay, but shorter than OKTech's
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [new]
+    reply = _refused(env, old, "go")
+    assert "watch delay" in reply and "1.3 s" in reply
+    assert "watch delay" in _refused(env, SECOND, "go")
+    assert _send(env).splitlines()[-1] == f"/test {new} go"
 
 
 def test_the_plan_caps_size_count_and_time_and_keeps_the_floor_below_all_of_it():

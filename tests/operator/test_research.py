@@ -463,7 +463,8 @@ def test_a_job_lost_to_a_deploy_is_retried_soon_but_not_in_a_loop(env):
 def test_the_search_charges_the_measured_cost_of_a_trade(env, monkeypatch):
     # 7 Nov analyst: "the lab mean assumes the old 0.007 SOL round trip; at the measured 0.009 the edge is about zero".
     # The search, and the strategies it freezes into the paper test, charge what the qualify lab charges: the low-bid
-    # arm's measured cost of a transaction once enough fills exist.
+    # arm's measured cost of a transaction once enough fills exist (here the last one measured, a week without fills
+    # later). The search's record and every strategy it freezes say where that cost came from (review of 7 Nov evening).
     from snipetech.analysis import lab as L
     from snipetech.analysis import paper
     from snipetech.qualify import run as Q
@@ -472,7 +473,8 @@ def test_the_search_charges_the_measured_cost_of_a_trade(env, monkeypatch):
 
     st, cfg, data = env
     whale_world(st)
-    monkeypatch.setattr(Q, "lab_tx_cost", lambda store, cfg, arm="control": 0.0047)
+    cost = {"per_tx_sol": 0.0047, "per_tx_source": "last measured", "per_tx_measured_at": NOW - 8 * 86400}
+    monkeypatch.setattr(Q, "lab_tx_cost_info", lambda store, cfg, arm="control": dict(cost))
     seen = {}
     real_collect, real_freeze = L.collect, paper.freeze
 
@@ -486,7 +488,9 @@ def test_the_search_charges_the_measured_cost_of_a_trade(env, monkeypatch):
 
     monkeypatch.setattr(L, "collect", collect)
     monkeypatch.setattr(paper, "freeze", freeze)
-    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    out = RS.search(Service(cfg, store=st), cfg, data, NOW)
     assert seen == {"collect": 0.0047, "freeze": 0.0047}
     frozen = st.coverage("paper_strategies")["strategies"]
-    assert frozen and all(s["per_tx_sol"] == 0.0047 for s in frozen)
+    assert frozen and all((s["per_tx_sol"], s["per_tx_source"]) == (0.0047, "last measured") for s in frozen)
+    assert (out["per_tx_sol"], out["per_tx_source"]) == (0.0047, "last measured")
+    assert st.coverage(RS.SEARCH_KEY)["per_tx_source"] == "last measured"

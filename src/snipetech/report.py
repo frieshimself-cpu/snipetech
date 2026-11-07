@@ -743,9 +743,13 @@ def render_lab(r: dict) -> str:
     )
     if r.get("per_tx_sol") is not None:  # what each transaction was charged, and whether that is what live costs
         tx = float(r["per_tx_sol"])
+        at = r.get("per_tx_measured_at")
+        day = time.strftime("%d %b %H:%M UTC", time.gmtime(float(at))) if at else "a date not known"
         source = {"measured": "measured: half the low bid's live round trip",
-                  "flat": "the flat cost: the low bid's live round trip is not measured yet, and live costs more "
-                          "(about 0.009 a round trip on 6 Nov), so every mean here is too kind",
+                  "last measured": f"last measured live on {day}: half the low bid's round trip then (the last 7 days "
+                                   "hold too few low-bid fills to measure a newer one)",
+                  "estimate": "estimated: no live round trip of the low bid is measured here yet, so about what one "
+                              "cost when it was measured on 6 Nov (0.0094)",
                   "flag": "as --per-tx says"}.get(r.get("per_tx_source"), "source unknown")  # fmt: skip
         out.append(f"Costs: {tx:g} SOL a transaction ({2 * tx:g} a round trip), {source}.")
     if "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply

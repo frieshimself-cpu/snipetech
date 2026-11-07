@@ -105,6 +105,23 @@ def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dic
     return out
 
 
+def keep_tx_cost(store: Store, cfg: Config, arms: list[dict[str, Any]], now: float) -> dict[str, Any] | None:
+    """Keep the low bid's cost of a transaction (qualify.run.TX_COST_KEY) whenever its bid model has enough fills to
+    measure it; the record kept, or None when this run measured none. The bid model reads only the last 7 days, and a
+    week without trading empties it and prunes its rows: the labs then charge this last measured cost
+    (qualify.run.lab_tx_cost_info), never an unmeasured one (review of 7 Nov evening: they fell back to the flat 0.0035,
+    0.002 SOL a trade too kind)."""
+    from ..qualify.run import LOW_BID_ARM, TX_COST_KEY, measured_tx_cost
+
+    row = next((a for a in arms if a.get("arm") == LOW_BID_ARM), None)
+    cost = measured_tx_cost(row, cfg)
+    if cost is None:
+        return None
+    rec = {"per_tx_sol": cost, "arm": LOW_BID_ARM, "n": int(row["n"]), "ts": int(now)}
+    store.set_coverage(TX_COST_KEY, rec)
+    return rec
+
+
 TWIN_WINDOW_SECS = 3.0  # the losing variants of one exit land in the winner's slot or up to 5 slots later (6 Nov)
 
 
@@ -368,6 +385,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     for row in arms:
         store.put_bid_model(row)
     store.prune_bid_model([row["arm"] for row in arms])
+    keep_tx_cost(store, cfg, arms, now)
     live = wallet_live_rows(trips, now, m.half_life_days)
     for row in live:
         store.put_wallet_live(row)

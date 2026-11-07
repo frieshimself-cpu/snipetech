@@ -3,6 +3,7 @@ lab job, never more often than `lab_interval_h`; wallets the tape has never seen
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -17,30 +18,59 @@ from .gates import crowding, normalise_history, relationship_gate, venue_share, 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
 EMPTY_CROWD = {"followers_1s": None, "gap3_pct": None, "n": 0}
-FLAT_TX_SOL = 0.0035  # SOL a transaction the lab charges until the low bid's round trip is measured
+FLAT_TX_SOL = 0.0035  # the floor of a measured cost a transaction (the labs' flat cost until 7 Nov evening)
+# SOL a transaction a lab charges while nothing has been measured: about what a live one cost when it was measured on
+# 6 Nov (0.0047, a round trip 0.0094: docs/live-recipe.md), as research round 1 advised (--per-tx 0.0045). Never the
+# flat 0.0035: it is below every live cost measured, 0.002 SOL a trade too kind (0.003 with a partial take profit).
+LIVE_TX_SOL = 0.0045
 LOW_BID_ARM = "control"
+# the low bid's last measured cost a transaction, kept by the measure stage (measure.run) whenever its bid model
+# has enough fills: {"per_tx_sol", "arm", "n", "ts"}
+TX_COST_KEY = "measure:tx_cost"
 
 
-def lab_tx_cost_source(store, cfg: Config, arm: str = LOW_BID_ARM) -> tuple[float, str]:
-    """(SOL a transaction a lab charges, where that number came from). "measured" once the low-bid arm has
-    `[measure] min_arm_fills` measured fills: half its measured round trip (the buy's fees, the sale at the same fees,
-    and the failed duplicate sends per buy: 0.0094 SOL on 6 Nov), never below the flat cost. "flat" before that: the
-    flat 0.0035, which is below what a live trade costs, so a result charged at it is too kind (7 Nov, research round 1:
-    0.002 SOL a trade). The lab says which it charged, so nobody reads a flat-cost result as a live one."""
+def measured_tx_cost(row: dict | None, cfg: Config) -> float | None:
+    """SOL a transaction from one bid-model row: half its measured round trip (the buy's fees, the sale at the same
+    fees, and the failed duplicate sends per buy: 0.0094 SOL on 6 Nov), never below FLAT_TX_SOL; None with fewer than
+    `[measure] min_arm_fills` fills or no fee measured."""
+    if not row or (row.get("n") or 0) < cfg.measure.min_arm_fills or row.get("mean_fee_sol") is None:
+        return None
+    trip = 2.0 * float(row["mean_fee_sol"]) + float(row.get("mean_overhead_sol") or 0.0)
+    return max(FLAT_TX_SOL, round(trip / 2.0, 6))
+
+
+def lab_tx_cost_info(store, cfg: Config, arm: str = LOW_BID_ARM) -> dict[str, Any]:
+    """What a lab charges a transaction, where that number came from and when it was measured: {"per_tx_sol",
+    "per_tx_source", "per_tx_measured_at"}.
+
+    "measured": the low bid has `[measure] min_arm_fills` fills in the bid model's 7 days (measured_tx_cost).
+    "last measured": it has fewer now, and the measure stage kept the last cost it measured (TX_COST_KEY). The bid model
+    reads only the last 7 days, and a week without trading empties it (7 Nov 10:59 the wallet was emptied and nothing
+    has traded since): every lab, freeze and qualify run then fell back to the flat 0.0035 (review of 7 Nov evening).
+    "estimate": nothing measured here yet, LIVE_TX_SOL. A lab charged below what a trade costs live flatters every rule,
+    and the never-stops loop trades what passes paper without asking again (research round 1, 7 Nov)."""
     try:
         row = next((r for r in store.bid_model() if r.get("arm") == arm), None)
-    except Exception:  # noqa: BLE001 - no measure stage yet: the flat cost
-        return FLAT_TX_SOL, "flat"
-    if not row or (row.get("n") or 0) < cfg.measure.min_arm_fills or row.get("mean_fee_sol") is None:
-        return FLAT_TX_SOL, "flat"
-    trip = 2.0 * float(row["mean_fee_sol"]) + float(row.get("mean_overhead_sol") or 0.0)
-    return max(FLAT_TX_SOL, round(trip / 2.0, 6)), "measured"
+    except Exception:  # noqa: BLE001 - no measure stage yet
+        row = None
+    cost = measured_tx_cost(row, cfg)
+    if cost is not None:
+        return {"per_tx_sol": cost, "per_tx_source": "measured", "per_tx_measured_at": (row or {}).get("updated_at")}
+    try:
+        kept = store.coverage(TX_COST_KEY) or {}
+        sol = float(kept["per_tx_sol"]) if kept.get("arm", LOW_BID_ARM) == arm else None
+    except Exception:  # noqa: BLE001 - nothing kept, or nothing readable: what a live transaction costs, estimated
+        sol = None
+    if sol is not None and math.isfinite(sol) and sol > 0:
+        return {"per_tx_sol": max(FLAT_TX_SOL, sol), "per_tx_source": "last measured",
+                "per_tx_measured_at": kept.get("ts")}  # fmt: skip
+    return {"per_tx_sol": LIVE_TX_SOL, "per_tx_source": "estimate", "per_tx_measured_at": None}
 
 
 def lab_tx_cost(store, cfg: Config, arm: str = LOW_BID_ARM) -> float:
-    """SOL a transaction for a lab: the qualify lab, the strategy search, `paper freeze` and `snipetech lab` all charge
-    it (`lab_tx_cost_source` says where it came from)."""
-    return lab_tx_cost_source(store, cfg, arm)[0]
+    """SOL a transaction for a lab: the qualify lab, the strategy search, the event edge, `paper freeze` and `snipetech
+    lab` all charge it, and the live test holds a strategy to it (`lab_tx_cost_info` says where it came from)."""
+    return float(lab_tx_cost_info(store, cfg, arm)["per_tx_sol"])
 
 
 def default_lab_runner(svc, cfg: Config) -> LabRunner:

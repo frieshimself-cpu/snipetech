@@ -13,7 +13,9 @@ Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on cho
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
 from the moment of the buy (it starts about 1.3 s later), so its numbers are 0.002 to 0.006 SOL a trade too kind. Since
 7 Nov evening (on the server once deployed), `snipetech lab` charges the measured cost of a transaction unless
-`--per-tx` says otherwise and says which it charged (`per_tx_sol`, `per_tx_source`: measured, flat or flag), and every
-exit of a launch, hunt, whale or burst rule waits OKTech's 1.3 s watch delay (`watch1.3s` in the exit's name). The round
-script runs its labs without `--per-tx`, and holds a result charged less than live (the flat cost, while the low bid's
-cost is not measured) to live cost, 0.003 SOL a trade, before it counts as positive.
+`--per-tx` says otherwise and says which it charged (`per_tx_sol`, `per_tx_source`: measured, last measured, estimate
+or flag), and every exit of a launch, hunt, whale or burst rule waits OKTech's 1.3 s watch delay (`watch1.3s` in the
+exit's name). "Last measured" is the cost the measure stage last measured, kept once a week passes without 30 low-bid
+fills (the bid model reads only 7 days); "estimate" is 0.0045 while nothing has been measured. No lab charges the flat
+0.0035 any more. The round script runs its labs without `--per-tx`, and holds a result charged less than live (or one
+from a server that does not say) to live cost, 0.003 SOL a trade, before it counts as positive.

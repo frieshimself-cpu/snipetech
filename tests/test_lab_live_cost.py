@@ -6,8 +6,9 @@ about 0.009 live (six job records read; none set --per-tx, and the research roun
 mean was 0.002 SOL a trade too kind, 0.003 with a partial take profit. The never-stops loop trades whatever passes paper
 without asking again, so a lab that flatters a rule is a live risk. `snipetech lab`, the command the agents' hypothesis
 labs and the research rounds run, now charges what `paper freeze`, the qualify lab and the strategy search charge: the
-measured cost of a transaction (qualify.run.lab_tx_cost: half the low bid's measured round trip, the flat 0.0035
-until it is measured). --per-tx still overrides it, and the output says which cost it charged and where it came from.
+measured cost of a transaction (qualify.run.lab_tx_cost: half the low bid's measured round trip; once a week passes
+without enough low-bid fills, the last one measured; 0.0045 until one is measured, never the flat 0.0035). --per-tx
+still overrides it, and the output says which cost it charged and where it came from.
 
 Watch: OKTech starts watching a coin about 1.3 s after its buy lands (the 6 Nov copy fills replay right with 1.25-1.4 s,
 tests/test_lab_replay.py), but the grid's exits on launch-type rules acted from the buy: the chosen exit of round 1's
@@ -16,6 +17,7 @@ launch, hunt, whale or burst rule now waits the watch delay; copies keep the exi
 """
 
 import json
+import time
 
 import pytest
 
@@ -67,13 +69,36 @@ def test_per_tx_still_overrides_the_measured_cost_and_says_so(tmp_path, capsys):
     assert t["train_mean"] < m["train_mean"] - 0.003  # every exit pays 0.002 more a transaction, two or three of them
 
 
-def test_before_the_low_bid_is_measured_the_lab_says_it_charged_the_flat_cost(tmp_path, capsys):
+def test_before_the_low_bid_is_measured_the_lab_charges_a_live_estimate_and_says_so(tmp_path, capsys):
+    """Review of 7 Nov evening: before a cost was measured the lab charged the flat 0.0035, below what a live
+    transaction costs, and nothing on the server acted on its "flat". It charges 0.0045, about what a live transaction
+    cost when it was measured on 6 Nov (0.0047), and says it is an estimate."""
     db = _tape_db(tmp_path)
     out = _lab(capsys, db)
-    assert out["per_tx_sol"] == pytest.approx(0.0035) and out["per_tx_source"] == "flat"
-    _measure_low_bid(db, n=20)  # 20 fills: too few to trust; the flat cost still, and the output says so
+    assert out["per_tx_sol"] == pytest.approx(0.0045) and out["per_tx_source"] == "estimate"
+    _measure_low_bid(db, n=20)  # 20 fills: too few to trust; still the estimate, and the output says so
     out = _lab(capsys, db)
-    assert out["per_tx_sol"] == pytest.approx(0.0035) and out["per_tx_source"] == "flat"
+    assert out["per_tx_sol"] == pytest.approx(0.0045) and out["per_tx_source"] == "estimate"
+    assert out["per_tx_measured_at"] is None
+    assert cli.main(["--db", str(db), "lab", "--trigger", HUNT_JSON, "--hours", "1"]) == 0
+    assert "0.0045 SOL a transaction (0.009 a round trip), estimated" in capsys.readouterr().out
+
+
+def test_after_a_week_without_fills_the_lab_charges_the_last_measured_cost_and_says_when(tmp_path, capsys):
+    """The bid model reads 7 days of fills and a week without trading prunes the low bid's row. The lab then charges the
+    last cost the measure stage measured (measure:tx_cost), never an unmeasured one, and says when it was measured."""
+    db = _tape_db(tmp_path)
+    at = NOW - 8 * 86400
+    st = Store(db)
+    try:
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": at})
+    finally:
+        st.close()
+    out = _lab(capsys, db)
+    assert (out["per_tx_sol"], out["per_tx_source"], out["per_tx_measured_at"]) == (0.0047, "last measured", at)
+    assert cli.main(["--db", str(db), "lab", "--trigger", HUNT_JSON, "--hours", "1"]) == 0
+    day = time.strftime("%d %b", time.gmtime(at))
+    assert f"0.0047 SOL a transaction (0.0094 a round trip), last measured live on {day}" in capsys.readouterr().out
 
 
 def test_the_analysts_hypothesis_lab_charges_the_measured_cost(tmp_path, capsys):
@@ -186,6 +211,9 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
     assert set(strategies) == {old_id, new["id"]}
     assert strategies[old_id]["exit"] == LAB_EXIT.to_dict()  # its exit as frozen, never rewritten
     assert len(store.paper_trades(old_id)) == 24  # still scored under its own id
+    # one sniper live for both: the automatic test drops them and carries their live record as one, and the old one
+    # never goes live (tests/operator: test_live_test.py, test_autotest.py)
+    assert paper.live_id(strategies[new["id"]]) == paper.live_id(strategies[old_id]) == old_id
     (copy,) = [r for r in rank(data, _cfg(), top=10) if r["trigger_spec"]["kind"] == "kol"]
     assert paper.strategy_id(KOL.__dict__, copy["exit_params"], "+6", 0, 0.2) == "0035d424be"  # its id before
 

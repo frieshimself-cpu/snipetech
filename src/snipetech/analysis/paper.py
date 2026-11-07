@@ -68,7 +68,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     Since 7 Nov evening the lab scores every exit of a launch, hunt, whale or burst rule with OKTech's watch delay
     (lab.kind_exits), so such a rule frozen from then on stores watch_secs 1.3, a field that is set: it is a new
     strategy with its own id. One frozen before keeps its id, its stored exit (no delay) and its forward trades, and is
-    scored as it was frozen; nothing re-keys or replaces it. A copy's exit did not change, nor did its id."""
+    scored as it was frozen; nothing re-keys or replaces it. It never goes live (live_test refuses a launch-type exit
+    without the delay), and the automatic test treats it and its twin as the one sniper OKTech runs for both (`live_id`).
+    A copy's exit did not change, nor did its id."""
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
     later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
@@ -164,17 +166,31 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
     return live
 
 
+def live_id(strategy: dict) -> str:
+    """The id of a frozen strategy as OKTech runs it: its strategy_id with the exit's watch delay left out. OKTech's
+    sniper reads no watch delay (oktech.strategy_sniper), so a launch-type rule frozen before 7 Nov evening (no delay)
+    and the same rule frozen since (watch_secs 1.3) are two strategies of the paper test and one sniper live; for the
+    first this is its own id. The automatic test drops them, and carries their live record, as one (review of 7 Nov
+    evening: a rule dropped under one id could be armed again under the other)."""
+    ex = {k: v for k, v in dict(strategy["exit"]).items() if k != "watch_secs"}
+    return strategy_id(
+        strategy["trigger"], ex, str(strategy["position"]), int(strategy["latency"]), strategy["buy_sol"]
+    )
+
+
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0, buy_sol: float = 0.2,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
-           hours: float | None = None) -> dict[str, Any]:  # fmt: skip
+           hours: float | None = None, per_tx_source: str | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
     second lab). `only_live`: keep only strategies the lab measured at their live landing. `lock_dir`: hold the
     one-lab-at-a-time lock there while the lab runs. `triggers`: the lab runs only these (an agent's own hypotheses,
     `lab.parse_trigger`) instead of the grid, each where it trades live (`live_landing`: a copy at the copy landing,
-    whatever `latency`/`position` say); `hours`: only the newest N hours of tape."""
+    whatever `latency`/`position` say); `hours`: only the newest N hours of tape. `per_tx_source`: where `per_tx_sol`
+    came from (qualify.run.lab_tx_cost_info: measured, last measured, estimate; flag for --per-tx), kept with each
+    strategy it freezes, so a cost that was not measured is never read as one that was."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
     if data is None:
@@ -210,7 +226,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             continue
         have.add(sid)
         new.append({"id": sid, "label": f"{r['trigger']} | {r['exit']}", "trigger": r["trigger_spec"], "exit": r["exit_params"],
-                    "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol, "from_ts": int(now),
+                    "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
+                    "per_tx_source": per_tx_source, "from_ts": int(now),
                     "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **r["test"]}})  # fmt: skip
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     return {"frozen": new, "kept": old, "tape_hours": data["tape_hours"], "landing": landings(copy_pos)}

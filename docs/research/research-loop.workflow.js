@@ -32,7 +32,7 @@ HARD FACTS (measured 5-7 Nov):
 - Our launch buys (OKTech hunt) land in the slot after the trigger, about 3 trades in ("+3@1"); a copy of a wallet lands 2-4 trades behind the leader at +18-43 % price ("+6"). Only these landings count; better landings are not evidence.
 - A live round trip costs about 0.009 SOL whatever the size; buys are 0.2 SOL.
 - The lab: snipetech lab --trigger '<JSON>' --hours N --json replays one trigger at its live landing over the newest N hours with the exit grid, picks the exit on the first part (train_mean), reports the later part as test {n, mean, ev_lower, win_rate, total} per strategy row, plus landing and live_landing. About 4-10 minutes on 24 h once it holds the server's lab lock.
-- The lab charges what a trade costs live and sells the way OKTech sells (since 7 Nov evening; round 1's labs did neither). Cost: the measured cost of a transaction, half the low bid's measured round trip (0.0047 SOL on 6 Nov); never pass --per-tx. Its output says what it charged: per_tx_sol, and per_tx_source "measured", or "flat" (0.0035 while the low bid's cost is not measured: 0.002 SOL a trade too kind, 0.003 with a partial take profit). Exits: every exit of a launch, hunt, whale or burst rule waits OKTech's 1.3 s watch delay (watch1.3s in its name). Round 1's lab numbers were charged 0.0035 a transaction without the delay: they are 0.002 to 0.006 SOL a trade kinder than this lab's.
+- The lab charges what a trade costs live and sells the way OKTech sells (since 7 Nov evening; round 1's labs did neither). Cost: the measured cost of a transaction, half the low bid's measured round trip (0.0047 SOL on 6 Nov); never pass --per-tx. Its output says what it charged: per_tx_sol, and per_tx_source "measured" (the low bid's last 7 days), "last measured" (the last cost measured, kept once a week passes without enough low-bid fills; per_tx_measured_at says when) or "estimate" (0.0045 while nothing has been measured); never the flat 0.0035 of round 1, 0.002 SOL a trade too kind (0.003 with a partial take profit). Exits: every exit of a launch, hunt, whale or burst rule waits OKTech's 1.3 s watch delay (watch1.3s in its name). Round 1's lab numbers were charged 0.0035 a transaction without the delay: they are 0.002 to 0.006 SOL a trade kinder than this lab's.
 - Trigger language: launch {plain}; burst {buyers, sol, window, max_age, plain}; whale {sol, max_age, plain, solo}; kol {sol, group (kol | wallet | cand), max_age, plain}; momentum {buyers, sol, progress, holders, ret, plain}; hunt {sol, buyers, window, max_buyers, dev_max} = OKTech's launch gate exactly (sol and dev_max whole numbers; window in seconds with whole milliseconds). Bounds: sol 0-100, buyers 0-200, window 0-60, max_age 0-600, max_buyers 0-200, dev_max 0-100, progress 0-1, holders 0-10000, ret -1-10; buyers, holders, max_buyers whole; plain and solo true/false. Launch, hunt, whale and burst are scored at the hunt landing and never buy a coin that left its curve; kol and momentum at the copy landing.
 - What OKTech can run live: hunt, copy (follow a wallet's buys), MIG (buy at the migration), and auto-sell exits; the bot can arm and disarm snipers on a schedule. A strategy OKTech cannot run is a build proposal, not a result.
 - Everything in docs/research/*.md and docs/roadmap.md marked refuted stays refuted unless you bring a genuinely new angle and say what is new.`
@@ -79,18 +79,18 @@ const LAB_SCHEMA = {
     win_rate: { type: 'number' }, total: { type: 'number' }, train_mean: { type: 'number' }, per_hour: { type: 'number' },
     landing: { type: 'string' }, live_landing: { type: 'boolean' }, exit: { type: 'string' }, rows: { type: 'string' }, notes: { type: 'string' },
     per_tx_sol: { type: 'number', description: 'the SOL a transaction the lab charged (per_tx_sol at the top of its result)' },
-    per_tx_source: { type: 'string', description: 'where that cost came from (per_tx_source): measured, flat or flag; leave it out if the result has none' },
+    per_tx_source: { type: 'string', description: 'where that cost came from (per_tx_source): measured, last measured, estimate or flag; leave it out if the result has none' },
   },
   required: ['id', 'trigger', 'ok', 'n', 'mean', 'ev_lower', 'rows', 'notes'],
 }
-// A lab result counts at live cost only when the lab charged the measured cost of a transaction, or at least the
-// 0.0045 SOL a live transaction costs (round 1: about 0.009 a round trip). One charged less (per_tx_source "flat": the
-// flat 0.0035 while the low bid's cost is not measured) or that does not say (a server without the 7 Nov evening lab)
-// is held to live cost first: 0.003 SOL a trade off its mean and lower bound (round 1: 0.002, 0.003 with a partial
-// take profit).
+// A lab result counts at live cost only when the lab charged a measured cost of a transaction (per_tx_source
+// "measured", or "last measured" once a week passes without enough low-bid fills), or at least the 0.0045 SOL a live
+// transaction costs (round 1: about 0.009 a round trip; the lab's "estimate" while nothing is measured). One charged
+// less (a lab at the flat 0.0035 of round 1) or that does not say (a server without the 7 Nov evening lab) is held to
+// live cost first: 0.003 SOL a trade off its mean and lower bound (round 1: 0.002, 0.003 with a partial take profit).
 const LIVE_TX_SOL = 0.0045
 const LIVE_COST_GAP = 0.003
-const atLiveCost = r => r.per_tx_source === 'measured' || (r.per_tx_sol || 0) >= LIVE_TX_SOL
+const atLiveCost = r => ['measured', 'last measured'].includes(r.per_tx_source) || (r.per_tx_sol || 0) >= LIVE_TX_SOL
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: { refuted: { type: 'boolean' }, confidence: { type: 'number' }, reasons: { type: 'string' }, numbers: { type: 'string' } },

@@ -55,7 +55,7 @@ LAB_VERSION = 2
 # evening, every exit on a launch-type rule (`watched`). Research round 1 found the grid's hunt exits acting from the
 # buy (the 10/10/1 hunt's chosen exit had watch_secs 0; replaying hunt buys with a 2 s delay cost 0 to 0.003 SOL a
 # trade). Hunt and launch snipers get the same autoSell block as copy snipers (oktech.autosell); no hunt fill has timed
-# their delay apart yet.
+# their delay apart yet. A launch-type strategy frozen with less never goes live (operator/live_test.py `_why_not`).
 WATCH_SECS = 1.3
 # A sell lands one slot after its exit fires, before the trades of that slot.
 EXIT_LATENCY_SLOTS, EXIT_POSITION = 1, "start"
