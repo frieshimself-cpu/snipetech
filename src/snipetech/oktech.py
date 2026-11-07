@@ -229,12 +229,37 @@ def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[f
 
 
 UNREACHABLE_STAGE = {"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}
+# OKTech's migration sell: "on migration to a new pool, sell % after delay (100 ms - 1 min)" (its auto-sell form,
+# docs/oktech-features.md). It has never fired on one of our live trades.
+MIGRATION_SELL_MIN_MS, MIGRATION_SELL_MAX_MS = 100, 60_000
+
+
+def migration_sell(exit_params: dict | None) -> dict | None:
+    """An exit's migration sell (`migration_sell_frac` of what is held, `migration_sell_delay` s after the coin leaves
+    its curve) as OKTech's autoSell.migrationSell; None when it is off. Sent exactly as the lab scored it: a share above
+    the whole position, or a delay outside the app's 100 ms - 1 min or not a whole number of milliseconds, raises
+    instead of going out as an exit nobody scored (the hunt thresholds' lesson: OKTech ignores what it cannot read)."""
+    e = exit_params or {}
+    frac, delay = float(e.get("migration_sell_frac") or 0), float(e.get("migration_sell_delay") or 0)
+    if not math.isfinite(frac) or frac > 1 + 1e-9:
+        raise ValueError(f"a migration sell of {frac:g} x the position: OKTech sells at most all of it")
+    if frac <= 0:
+        return None
+    ms = delay * 1000
+    if not math.isfinite(ms) or abs(ms - round(ms)) > 1e-6:
+        raise ValueError(
+            f"OKTech takes the migration sell delay in whole milliseconds: {delay:g} s is not sent as scored"
+        )
+    if not MIGRATION_SELL_MIN_MS <= round(ms) <= MIGRATION_SELL_MAX_MS:
+        raise ValueError(f"OKTech's migration sell waits 100 ms to 60 s after the migration, not {delay:g} s")
+    return {"enabled": True, "sellPercent": _round(frac * 100, 2), "delayMs": round(ms)}
 
 
 def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0.001) -> dict | None:
     """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell. A take-profit that
     sells part of the position is followed by an unreachable 100 % stage (OKTech's app: "100 % must be last"). Never
-    sends autoStop: it switches the exits off on a fast pump (playbook 9)."""
+    sends autoStop: it switches the exits off on a fast pump (playbook 9). A migration sell goes out as scored
+    (`migration_sell`) and is flagged as never seen live."""
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = (
@@ -244,7 +269,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     )
     hold = float(e.get("max_hold_secs") or 0)
     stale = float(e.get("stale_secs") or 0)
-    if not (tp or sl or trail or hold or stale):
+    mig = migration_sell(e)
+    if not (tp or sl or trail or hold or stale or mig):
         return None
     stages = []
     if tp > 0:
@@ -289,6 +315,11 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
         out["trailingStopLoss"] = {"enabled": True, "percentFromPeak": _round(trail * 100, 2), "sellPercent": 100,
                                    "activateAfterGainPercent": _round(act * 100, 2) if act > 0 else None,
                                    "confirmMs": 0}  # a dip from the peak sells at once  # fmt: skip
+    if mig:
+        out["migrationSell"] = mig
+        notes.append(f"migration sell ({mig['sellPercent']:g} % {mig['delayMs']} ms after the coin migrates) has never "
+                     "fired on one of our live trades, and OKTech accepts settings it then ignores (playbook fact 8): "
+                     "check on the tape that the first coin that migrates while held is sold then")  # fmt: skip
     if e.get("sell_on_dev_sell") and not e.get("copy_exit"):
         notes.append("'sell when the dev sells' has no OKTech equivalent on this sniper; not applied")
     return out
@@ -496,6 +527,9 @@ def _describe_exit(e: dict | None) -> str:
         parts.append(f"trailing {e['trailing_stop']:.0%}")
     if e.get("max_hold_secs"):
         parts.append(f"max hold {e['max_hold_secs']:.0f}s")
+    if e.get("migration_sell_frac"):
+        parts.append(f"sell {float(e['migration_sell_frac']):.0%} {float(e.get('migration_sell_delay') or 0):g}s after "
+                     "the coin migrates")  # fmt: skip
     return ", ".join(parts) or "none"
 
 

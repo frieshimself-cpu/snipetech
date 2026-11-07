@@ -75,6 +75,8 @@ def _as_live(e: Mapping[str, Any], copy_exit_pct: float) -> ExitParams:
         stale_secs=float(e.get("stale_secs") or 0),
         watch_secs=WATCH_SECS,
         copy_exit_pct=copy_exit_pct,
+        migration_sell_frac=float(e.get("migration_sell_frac") or 0),  # autosell sends it as it stands
+        migration_sell_delay=float(e.get("migration_sell_delay") or 0),
     )
 
 
@@ -443,6 +445,15 @@ def exit_set() -> list[ExitParams]:
                 for stale in (0.0, 1.0):
                     out.append(ExitParams(take_profit=tp, tp_sell_fraction=frac, stop_loss=sl, trailing_stop=trail,
                                           max_hold_secs=300, sell_on_dev_sell=False, stale_secs=stale))  # fmt: skip
+    # OKTech's migration sell (7 Nov): a share sold once the coin leaves its curve, 100 ms to 1 min later. It changes
+    # only the coins that complete their curve while held: it sells into the graduation. The lab exit with everything
+    # sold 1 s after the migration; a 300 s hold that sells half, or all, at it (0.1 s: OKTech's shortest delay, so each
+    # is sent exactly as scored). It has never fired live: where its sell lands is an assumption (sim/exits.py).
+    out.append(ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1.0,
+                          migration_sell_frac=1.0, migration_sell_delay=1.0))  # fmt: skip
+    for frac in (0.5, 1.0):
+        out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False,
+                              migration_sell_frac=frac, migration_sell_delay=0.1))  # fmt: skip
     return out
 
 
