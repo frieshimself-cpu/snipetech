@@ -16,8 +16,8 @@ wallet holds nothing; /test go, the round's start of a test and the cycler's re-
 nothing. What it does not stop: while the wallet holds any coin every book sniper keeps running, because the book cannot
 tell which one holds it (book/run.py passes holders=None: a fill can name the wrong leader) and a stopped sniper strands
 its coin (CLAUDE.md rule 1), and each can still buy up to [book] max_buys_per_sniper; the trip line says so, and
-/sell <coin> lets the book stop them. What the guard cannot read never counts as clear. One decision line goes to Telegram when a stop trips (once a day for each of the two), and
-/status shows the guard.
+/sell <coin> lets the book stop them. What the guard cannot read never counts as clear. One decision line goes to
+Telegram when a stop trips (once a day for each of the two), and /status shows the guard.
 
 operator/RISK holds the owner's values (budget_switch.py's pattern: written atomically as JSON with when and who, a read
 never raises, a value out of its bounds falls back to the owner's 7 Nov value alone). With no file the guard is on at
@@ -50,8 +50,8 @@ RULES = {
 FIELDS = tuple(RULES)
 SNAPSHOT_MAX_AGE_SECS = 40 * 60  # the last round's snapshot: older than two rounds, the wallet is read instead
 SETTLE_SECS = 60  # a buy this recent may not be in a wallet read yet (book/run.py TAPE_SETTLE_SECS)
-# the measure stage writes our trades into the fills every 5 minutes (every 15 as the round's stand-in): a last run older
-# than two rounds, with trades of ours on the tape today since, means the fills cannot vouch for the day
+# the measure stage writes our trades into the fills every 5 minutes (every 15 as the round's stand-in): a last run
+# older than two rounds, with trades of ours on the tape today since, means the fills cannot vouch for the day
 MEASURE_KEY = "measure:last_ts"
 MEASURE_STALE_SECS = 40 * 60
 WALLET_READ_SECS = 20  # how long a wallet read may take before the guard says it cannot tell (live_test's rule)
@@ -186,9 +186,9 @@ def day_result(store, wallet: str, now: float, held: list[dict], *, per_tx_sol: 
     sale of it seen, counts its whole cost as lost if it was bought today (sold where the recorder does not look, or
     rugged to dust) until the measure stage says otherwise (`unread_sol`: the part of the day that rests on those).
 
-    Only what is known is counted: a coin no buy of ours explains (an airdrop) is no trading result, one the tape has not
-    priced has no value known (`unpriced`), and a coin with a buy after the wallet was read (a minute of grace) is not
-    judged on that read; each counts for nothing until it is known (`coins`: the held coins counted). The owner's
+    Only what is known is counted: a coin no buy of ours explains (an airdrop) is no trading result, one the tape has
+    not priced has no value known (`unpriced`), and a coin with a buy after the wallet was read (a minute of grace) is
+    not judged on that read; each counts for nothing until it is known (`coins`: the held coins counted). The owner's
     ignored coins are left out. A deposit or a withdrawal is in none of these numbers. `pending`: today's trades of
     ours on the tape that the fills do not have yet."""
     from ..book.state import realised_today
@@ -347,7 +347,8 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
         unread = (f", {_sol(day['unread_sol'])} of it in trades the measure stage has not written yet"
                   if abs(day.get("unread_sol") or 0) >= 0.005 else "")  # fmt: skip
         said.append(f"today is {-day['total_sol']:.2f} SOL down ({_sol(day['realised_sol'])} in trades closed today"
-                    f"{unread}, {_sol(day['open_sol'])} in coins still held), at or past the {stop:g} SOL day stop")  # fmt: skip
+                    f"{unread}, {_sol(day['open_sol'])} in coins still held), at or past the {stop:g} SOL day "
+                    "stop")  # fmt: skip
     equity = None
     if sol is None:
         unknown.append("the wallet's balance is not known")
@@ -459,12 +460,12 @@ def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> boo
     if not g.tripped or not new:
         return False
     said = "; ".join(f"{_WORDS[k]} {r}" for k, r in zip(g.kinds, g.reasons, strict=True) if k in new)
-    line = notes.write(f"{ANNOUNCED}: {said}. No new live trade starts: the book creates and starts nothing, and it stops "
-                       "its snipers once the wallet holds nothing (while it holds any coin every book sniper keeps "
-                       "running, since the book cannot tell which one holds it and a stopped sniper strands its coin, "
-                       "and each can still buy up to its cap: /sell <coin> sells the coin); no live test starts or "
-                       f"re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> changes it.",
-                       "decision" if page else "info")  # fmt: skip
+    line = notes.write(f"{ANNOUNCED}: {said}. No new live trade starts: the book creates and starts nothing, and it "
+                       "stops its snipers once the wallet holds nothing (while it holds any coin every book sniper "
+                       "keeps running, since the book cannot tell which one holds it and a stopped sniper strands its "
+                       "coin, and each can still buy up to its cap: /sell <coin> sells the coin); no live test starts "
+                       f"or re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> changes "
+                       "it.", "decision" if page else "info")  # fmt: skip
     if page and notifier is not None:
         notifier.send(line)
     return True

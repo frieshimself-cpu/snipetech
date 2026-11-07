@@ -58,8 +58,9 @@ sequence's record in `operator/autotest.json`).
   round writes the `/test go` request itself for the best strategy `/test` would offer (100+ forward trades where a hunt
   fill lands, a lower bound above zero, also with gains capped, scored at no less than the measured cost of a trade).
 - "At real costs": a strategy frozen below the cost of a transaction the measure stage measures (half the low bid's
-  round trip, 0.0094 SOL on 6 Nov) is not eligible, for `/test go` either. `paper freeze` now scores at that measured
-  cost unless `--per-tx` says otherwise (it used to take 0.0035, and accepted 0).
+  measured round trip: 0.0047 SOL a transaction, 0.0094 a round trip, on 6 Nov) is not eligible, for `/test go`
+  either. `paper freeze` now scores at that measured cost unless `--per-tx` says otherwise (it used to take 0.0035,
+  and accepted 0).
 - It runs at the strategy's own size, never another. A strategy scored above the yes's 0.2 SOL is refused, and the owner
   is told once a day: a test at another size says nothing about it.
 - The yes's caps apply: 10 buys, 120 minutes, the floor 1 SOL below the wallet's balance. The same round starts it, as
@@ -85,11 +86,11 @@ sequence's record in `operator/autotest.json`).
 **What ends it.** A block that ends early (its 120 minutes, the floor, `/stop`, the guard) or does not start. Live
 below half of paper. All 4 blocks done. No room above the floor for another block. The config naming another wallet
 than the yes. The switch turned off: a block running then runs to its end (`/stop` ends it now), and a request not
-started yet never starts. `/stop` between blocks ends the sequence too: it is written into `operator/AUTOTEST` at once,
-so a `/resume` before the next round does not bring it back. With no sequence in progress `/stop` leaves the switch as
-it is: nothing starts while the flag is set, and after `/resume` the standing yes may start a test again. At the end the switch
-turns itself off (marked used, with the result) and the owner gets one summary. A new sequence needs the owner's yes
-again; `/test auto on` is refused while a sequence still runs.
+started yet never starts. `/stop` between blocks ends the sequence too: it is written into `operator/AUTOTEST` at
+once, so a `/resume` before the next round does not bring it back. With no sequence in progress `/stop` leaves the
+switch as it is: nothing starts while the flag is set, and after `/resume` the standing yes may start a test again. At
+the end the switch turns itself off (marked used, with the result) and the owner gets one summary. A new sequence needs
+the owner's yes again; `/test auto on` is refused while a sequence still runs.
 
 **Recorded:** each block in `operator/TEST.json` and `operator/tests.jsonl` with its sequence and block number, and one
 `"kind": "sequence"` line per sequence there. A decision note and a Telegram line go out at every start, block end and

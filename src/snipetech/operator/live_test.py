@@ -477,7 +477,8 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
 
     near = sorted((r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")), key=closeness)[:SHOWN]
     lines = [(f"No hunt strategy qualifies for a live test yet: one needs at least {MIN_FORWARD_N} forward paper "
-              "trades where a live hunt fill lands, at the cost a trade has live, and a lower bound above zero.")]  # fmt: skip
+              "trades where a live hunt fill lands, at the cost a trade has live, and a lower bound above "
+              "zero.")]  # fmt: skip
     if near:
         lines.append("Closest now:")
         for r in near:

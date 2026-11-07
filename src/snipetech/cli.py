@@ -674,7 +674,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--off", dest="autotest_off", action="store_true", help="autotest: turn it off")
     sp.add_argument("--approved", help="autotest --on: the owner's yes, in their words as said in chat")
     sp.add_argument("--wallet", dest="autotest_wallet",
-                    help="autotest --on: the sniper wallet the owner's yes names (the config's [operator] wallet)")  # fmt: skip
+                    help="autotest --on: the sniper wallet the owner's yes names (the config's [operator] "
+                         "wallet)")  # fmt: skip
     sp.add_argument("--buy-sol", dest="buy_sol", type=float, help="autotest --on: SOL a buy (at most 0.5; 0.2)")
     sp.add_argument("--fills", type=float, help="autotest --on: buys a block (1 to 10; 10)")
     sp.add_argument("--minutes", type=float, help="autotest --on: minutes a block (1 to 180; 120)")

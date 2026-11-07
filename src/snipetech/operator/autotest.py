@@ -12,11 +12,12 @@ the best strategy live_test.eligible offers, once every refusal of the round's s
 wallet-wide guard included; live_test's own start path then creates the strategy's hunt sniper and runs its cycler in
 the same round. One strategy per sequence, at the size it was scored at (never another: a round trip costs about 0.009
 SOL whatever the size). When a block has made all its buys, its live result is read from the measure stage's fills, once
-that stage has run after the block's last trade: our own round trips only, so a deposit, a withdrawal or OKTech wrapping
-SOL moves nothing (the cycler's start and end balance would: 6 Nov 15:16 the owner moved 2.54 SOL out mid-test), with the
-block's failed sends, and read twice (the book's copies left out, and every buy of the wallet) since the fills cannot
-tell the book's copies from the test's own buys for sure: the worse reading is judged (block_live). The live mean per
-trade over every trade of the sequence so far is compared with the strategy's forward paper mean: at least
+that stage has run after the block's last trade: our own round trips only, so a deposit, a withdrawal or OKTech
+wrapping SOL moves nothing (the cycler's start and end balance would: 6 Nov 15:16 the owner moved 2.54 SOL out
+mid-test), with the block's failed sends, and read twice (the book's copies left out, and every buy of the wallet)
+since the fills cannot tell the book's copies from the test's own buys for sure: the worse reading is judged
+(block_live). The live mean per trade over every trade of the sequence so far is compared with the strategy's forward
+paper mean: at least
 `continue_at` times it, and above zero, requests the next block of the same strategy with the same caps and the first
 block's floor (the whole sequence can lose at most `loss_sol`); else the sequence stops and the analyst works out why.
 At most `more_blocks` more blocks. A block that ends early (its time limit, its floor, /stop, the guard) or does not
@@ -24,8 +25,8 @@ start ends the sequence, and so does the owner's /stop between blocks: it is rec
 before the next round does not bring the sequence back. At its end AUTOTEST turns itself off (used, with the result),
 the owner gets one summary, and a new sequence needs the owner's yes again.
 
-The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and the
-OKTech wallet it names, and nothing starts by itself, and no sequence goes on, while the config names another.
+The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and
+the OKTech wallet it names, and nothing starts by itself, and no sequence goes on, while the config names another.
 
 Only the owner turns it on: `snipetech operate autotest --on --approved "<the owner's words>" --wallet <the wallet they
 named>` (the cloud session, with the owner's yes in chat) or /test auto on in Telegram (that message is the yes, for the
@@ -80,8 +81,8 @@ WORDS_MAX = 300  # the owner's words kept in the file
 # after a block closed, how long its judgement waits for the measure stage to record its round trips (it runs every 5
 # minutes, or every 15 as the round's stand-in); past it a buy with no sell recorded counts as its whole cost
 MEASURE_WAIT_SECS = 45 * 60
-# the measure stage reads the tape: a block is judged once it has run this long after the block's last trade (the tape is
-# never more than 2 minutes behind while a test runs: live_test._tape_lag), so its last failed sends are in the fills
+# the measure stage reads the tape: a block is judged once it has run this long after the block's last trade (the tape
+# is never more than 2 minutes behind while a test runs: live_test._tape_lag), so its last failed sends are in the fills
 MEASURE_SETTLE_SECS = 120
 MEASURE_KEY = "measure:last_ts"
 # how long the next block may wait on a refusal that passes by itself (the recorder behind, OKTech not answering, the
@@ -226,8 +227,8 @@ def set_autotest(paths: OperatorPaths, on: bool, *, values: dict | None = None, 
             seq = load_seq(paths)
             if seq and seq.get("state") == "running":  # one sequence per yes: a second would have a floor of its own
                 if _stop_words(_raw(paths), seq):
-                    raise ValueError(f"your /stop ends the sequence on your earlier yes ({seq.get('label')}) at the next "
-                                     "round; turn it on again after that")  # fmt: skip
+                    raise ValueError(f"your /stop ends the sequence on your earlier yes ({seq.get('label')}) at the "
+                                     "next round; turn it on again after that")  # fmt: skip
                 raise ValueError(f"a sequence is still running on your earlier yes ({seq.get('label')}, block "
                                  f"{seq['blocks'][-1]['n']}); it ends by itself (or with /stop), then turn it on "
                                  "again")  # fmt: skip
@@ -286,10 +287,10 @@ def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
         _write(paths, rec | {"on": False, "ts": int(now), "by": "stop",
                              "stopped": {"sequence": seq["id"], "at": int(now)}})  # fmt: skip
     n = seq["blocks"][-1]["n"]
-    notes.write(f"owner's /stop ends the automatic live test's sequence {seq['id']} ({seq.get('label')}, block {n}): no "
-                "further block starts", "decision")  # fmt: skip
-    return (f"The automatic live test ({seq.get('label')}, block {n}) ends with this /stop: no further block starts, and "
-            "/resume does not bring it back. /test auto on is a new yes.")  # fmt: skip
+    notes.write(f"owner's /stop ends the automatic live test's sequence {seq['id']} ({seq.get('label')}, block {n}): "
+                "no further block starts", "decision")  # fmt: skip
+    return (f"The automatic live test ({seq.get('label')}, block {n}) ends with this /stop: no further block starts, "
+            "and /resume does not bring it back. /test auto on is a new yes.")  # fmt: skip
 
 
 def is_on(paths: OperatorPaths) -> bool:
@@ -433,7 +434,8 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     own_mints = {b["mint"] for b in out_buys if not b["copy"]}
     copy_mints = {b["mint"] for b in out_buys if b["copy"]}
     failed = [f for f in store.fills(wallet=wallet, since_ts=start, side="failed", limit=100_000)
-              if float(f.get("ts") or 0) <= end or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
+              if float(f.get("ts") or 0) <= end
+              or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
     charged = []
@@ -502,8 +504,9 @@ def plan_words(c: dict) -> str:
     """The plan a standing yes stands for, from its caps and the wallets it is for."""
     where = (f"on sniper wallet {c['wallet'][:6]}… (OKTech wallet {c.get('oktech_wallet')}), " if c.get("wallet")
              else "on no wallet yet (the config names no sniper wallet), ")  # fmt: skip
-    return (f"one test starts by itself at the next round {where}{c['buy_sol']:g} SOL a buy, at most {c['fills']} buys one "
-            f"coin at a time, for at most {c['minutes']} minutes, stopping {c['loss_sol']:g} SOL below the wallet's start; "
+    return (f"one test starts by itself at the next round {where}{c['buy_sol']:g} SOL a buy, at most {c['fills']} buys "
+            f"one coin at a time, for at most {c['minutes']} minutes, stopping {c['loss_sol']:g} SOL below the wallet's "
+            "start; "
             f"after its {c['fills']} trades it goes on in blocks of {c['fills']} (at most {c['more_blocks']} more) only "
             f"while live is at least {_share(c['continue_at'])}, the whole sequence never more than {c['loss_sol']:g} "
             "SOL below the first block's start")  # fmt: skip
@@ -521,7 +524,7 @@ def status_words(paths: OperatorPaths, now: float, cfg: Config) -> str:
                 "/stop ends it, /test auto off starts no more.")  # fmt: skip
     if at["on"]:
         return (f"Automatic live test on since {_when(at['approved']['at'])} (your yes: \"{at['approved']['words']}\"). "
-                f"When a hunt strategy passes on paper (100 forward trades where a live hunt fill lands, at the measured "
+                "When a hunt strategy passes on paper (100 forward trades where a live hunt fill lands, at the measured "
                 f"cost of a trade, a lower bound above zero, also with each gain capped), {plan_words(at)}. /test auto "
                 "off turns it off; /stop ends a test now.")  # fmt: skip
     last = f" The last one: {at['used']['result']}." if at.get("used") and at["used"].get("result") else ""
@@ -900,8 +903,8 @@ def _live_words(seq: dict) -> str:
     lives = [b["live"] for b in seq["blocks"] if isinstance(b.get("live"), dict)]
     out = f"; {tl['failed']} failed sends included ({tl['failed_sol']:.3f} SOL)" if tl["failed"] else ""
     if tl["copies"] and tl["reading"] == "all":
-        out += (f"; the book's {tl['copies']} copies counted in: the worse of two readings, since the fills cannot tell "
-                "them for sure from the test's own buys")  # fmt: skip
+        out += (f"; the book's {tl['copies']} copies counted in: the worse of two readings, since the fills cannot "
+                "tell them for sure from the test's own buys")  # fmt: skip
     elif tl["copies"]:
         out += f"; the book's {tl['copies']} copies left out: the worse of two readings"
     counted = sum(int(x.get("unmeasured") or 0) for x in lives if x.get("counted"))
