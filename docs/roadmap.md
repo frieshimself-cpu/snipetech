@@ -62,6 +62,11 @@ What changed (code on the branch, each piece with its tests; README "How the boo
 - **`/sell <coin>` in Telegram**: the owner sells a coin OKTech abandoned with one message (it needs SNIPER_SECRET
   in /etc/snipetech/env); `/sell` alone lists the coins held with the line to send.
 
+- **The fixed lab passes its first check (7 Nov 00:00):** 2YDn, qualified by the old lab at +0.0146 SOL a trade
+  (n 93), is retired by the fixed lab: -0.0075 SOL a trade over 220 moments at +6, lower bound -0.0144. Its live
+  copies lost -0.045 a trade (n 10), so the lab now agrees with live in sign. Its copy plan reads as live showed:
+  style "dumper" (82 % of its exits in one transaction, first sell after 7 s at the median), floor 2.962 SOL (its
+  openers), 41 % of its qualifying buys were re-buys. The audit had predicted exactly this.
 - **The first strategy search with the fixed lab** (6 Nov 22:15-23:50, 46.7 h of tape, 442,656 moments, the +6
   landing, 0.2 SOL fills): the best was "a non-dev buys 1 SOL or more in the first second of a coin that is not a
   create bundle", lab exit: +0.0124 SOL a trade over 2,698 cases, lower bound +0.0089, about 144 signals an hour;
