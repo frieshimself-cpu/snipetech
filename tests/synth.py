@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
-from snipetech.models import Completion, Launch, Trade
+from snipetech.models import Completion, Launch, Migration, Trade
 from snipetech.solana.base58 import b58encode
 from snipetech.store import Store
 
@@ -25,6 +25,7 @@ class Market:
         self.ts0, self.slot0 = ts, slot
         self.q, self.b = Q0, B0
         self.venue = "curve"  # "amm" once the coin has migrated to its PumpSwap pool
+        self.migration: Migration | None = None  # the migration the tape records (`migrations`), once there is one
         self.n = 0
         self.trades: list[Trade] = []
         self.holdings: dict[str, int] = {}
@@ -80,11 +81,20 @@ class Market:
         self.holdings[user] = self.holdings.get(user, 0) + tokens
         return self._push(user, self.slot0 + slot_offset, True, s, tokens, sig)
 
-    def migrate(self) -> None:
-        """The completed curve's SOL and the pool's share of the supply move to a PumpSwap pool; every trade from here on
-        is a PumpSwap trade on the pool's own reserves (it opens at the curve's last price)."""
+    def migrate(self, slot_offset: int, sig: str | None = None, on_tape: bool = True) -> Migration:
+        """pump.fun's migration, `slot_offset` slots after the create: the completed curve's SOL and the pool's share of
+        the supply move to a new PumpSwap pool, and every trade from here on is a PumpSwap trade on the pool's own
+        reserves (it opens at the curve's last price). `sig`: the transaction that migrated it (BRUH, 7 Nov: the one
+        that completed its curve; anyone may send the migration, so it can also come later in a transaction of its
+        own). `on_tape`: the tape records it, as the recorder does from pump.fun's CompletePumpAmmMigrationEvent
+        (`migrations`)."""
         assert self.b == DONE_B, "only a completed curve migrates"
         self.q, self.b, self.venue = self.q - Q0, POOL_B0, "amm"
+        slot = self.slot0 + slot_offset
+        mig = Migration(self.mint, addr(f"{self.mint}:pool"), slot, self._ts(slot), sig or addr(f"{self.mint}:migrate"))
+        if on_tape:
+            self.migration = mig
+        return mig
 
     def commit(self, completed: bool = False) -> None:
         self.store.add_trades(self.trades)
@@ -92,6 +102,8 @@ class Market:
             self.store.add_completions(
                 [Completion(self.mint, self.trades[-1].slot, self.trades[-1].ts, self.trades[-1].sig)]
             )
+        if self.migration is not None:
+            self.store.add_migrations([self.migration])
 
 
 def rinse_launch(store: Store, i: int, deployer: str, ts: int, slot: int) -> Market:

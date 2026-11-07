@@ -495,6 +495,11 @@ class Store:
         rows = self._q("SELECT mint, pool, slot, ts, sig FROM migrations WHERE mint=?", (mint,))
         return Migration(*rows[0]) if rows else None
 
+    def migrations_between(self, start_ts: int, end_ts: int) -> dict[str, Migration]:
+        """The migrations to PumpSwap the tape recorded in a time range, by coin (one each)."""
+        rows = self._q("SELECT mint, pool, slot, ts, sig FROM migrations WHERE ts>=? AND ts<=?", (start_ts, end_ts))
+        return {r[0]: Migration(*r) for r in rows}
+
     def pools(self) -> dict[str, tuple[str, str]]:
         return {r[0]: (r[1], r[2]) for r in self._q("SELECT pool, base_mint, quote_mint FROM pools")}
 
@@ -582,8 +587,10 @@ class Store:
         if where:
             sql += " WHERE " + " AND ".join(where)
         # never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
-        sql += (f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
-                f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?")
+        sql += (
+            f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
+            f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?"
+        )
         params.append(int(limit))
         out = []
         for row in self._q(sql, params):

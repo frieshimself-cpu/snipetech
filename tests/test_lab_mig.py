@@ -1,22 +1,35 @@
-"""OKTech MIG as a lab trigger (7 Nov). OKTech's MIG mode buys a pump.fun coin on PumpSwap when its curve migrates there,
-and only when the migration came within its Migration Window of the create (10 s by default; docs/oktech-features.md).
-The lab fires at the first state at which the coin has left its curve (MarketPath.off_curve), once per coin, and scores
-the buy where a MIG buy is assumed to land: a slot after the migration, 3 trades in (no live MIG fill exists yet).
-A completed curve is the point of a MIG buy, never a reason to skip it, unlike the launch-type rules."""
+"""OKTech MIG as a lab trigger (7 Nov). OKTech's MIG mode buys a pump.fun coin on PumpSwap when it migrates there, and
+only when the migration came within its Migration Window of the create (10 s by default; docs/oktech-features.md: "max
+seconds from CREATE to MIGRATE"). The lab fires on the migration as the tape records it (`migrations`: pump.fun's
+CompletePumpAmmMigrationEvent, the transaction that creates the pool), once per coin, and scores the buy where a MIG buy
+is assumed to land: a slot after the migration, 3 trades in (no live MIG fill exists yet). A completed curve is not a
+migration: the pool exists only from the migration, an instruction of its own that anyone may send, in the completing
+transaction (BRUH did) or slots later. A completed curve is the point of a MIG buy, never a reason to skip it, unlike
+the launch-type rules."""
+
+import json
+from pathlib import Path
 
 import pytest
 
 from snipetech.analysis import paper
 from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
 from snipetech.config import Config
+from snipetech.models import Migration, Trade
 from snipetech.oktech import strategy_sniper
 from snipetech.sim.exits import Costs, ExitParams, prepare, run_exit
 from snipetech.sim.market import MarketPath
+from snipetech.solana.normalize import normalize
+from snipetech.solana.tx import extract_from_transaction
 from snipetech.store import Store
 
 from .synth import Market, addr, pump_launch
 from .test_launch_landing import BRUH, _bruh
 
+FX = Path(__file__).parent / "fixtures"
+# BRUH's transaction 3PorWwJF… (getTransaction from mainnet RPC, 7 Nov): its buy sold the curve's last token, bought
+# 64 SOL more after the completion, and migrated the coin to PumpSwap, all in one transaction in the create slot
+MIGRATE_TX = FX / "graduating_bundle_7nov_migrate_tx.json"
 T0 = 1_793_923_200  # 6 Nov 2026 00:00 UTC
 H = 3600
 SLOT0 = 300_000_000
@@ -26,13 +39,14 @@ MIG = Trigger("mig", window=10.0)  # OKTech's default Migration Window
 
 
 def _graduate(store: Store, name: str, ts: int, slot: int, at: int = 0) -> Market:
-    """A coin that a whale buys out `at` slots after its create (its curve completes and it migrates), then four
-    PumpSwap buys in the next slot and eight more over the slots after; quiet; then those eight sell."""
+    """A coin that a whale buys out `at` slots after its create: its curve completes and the same transaction migrates
+    it (BRUH's shape); then four PumpSwap buys in the next slot and eight more over the slots after; quiet; then those
+    eight sell."""
     m = Market(store, addr(name), addr(f"{name}-dev"), ts, slot)
     m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
     m.buy(addr(f"{name}-small"), 0.3, min(at, 1))
-    m.complete(addr(f"{name}-whale"), at)
-    m.migrate()
+    done = m.complete(addr(f"{name}-whale"), at)
+    m.migrate(at, sig=done.sig)
     for k in range(4):
         m.buy(addr(f"{name}-early-{k}"), 1.0, at + 1)
     for k in range(8):
@@ -43,8 +57,48 @@ def _graduate(store: Store, name: str, ts: int, slot: int, at: int = 0) -> Marke
     return m
 
 
+def _late_migration(store: Store, name: str, ts: int, slot: int, done_at: int = 5, mig_at: int = 7,
+                    on_tape: bool = True) -> Market:  # fmt: skip
+    """A curve that completes `done_at` slots after the create and that pump.fun migrates `mig_at` slots after it, in
+    a transaction of its own; the pool's first buys (four of 2 SOL) come in the migration's slot, two of 1 SOL in the
+    next; quiet; then the 2 SOL buyers sell. `on_tape`: the tape records the migration."""
+    m = Market(store, addr(name), addr(f"{name}-dev"), ts, slot)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr(f"{name}-small"), 0.3, 1)
+    m.complete(addr(f"{name}-whale"), done_at)
+    m.migrate(mig_at, on_tape=on_tape)
+    for k in range(4):
+        m.buy(addr(f"{name}-first-{k}"), 2.0, mig_at)
+    for k in range(2):
+        m.buy(addr(f"{name}-next-{k}"), 1.0, mig_at + 1)
+    for k in range(4):
+        m.sell(addr(f"{name}-first-{k}"), 1.0, mig_at + 150 + 5 * k)
+    m.commit()
+    return m
+
+
+def _own_pool_coin(store: Store, name: str, ts: int, slot: int) -> Market:
+    """A coin still on its curve with one buy on a PumpSwap pool someone opened for it (the tape keeps that trade with
+    [live] index_amm on): no migration, and the curve trades on after it."""
+    m = Market(store, addr(name), addr(f"{name}-dev"), ts, slot)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for k in range(4):
+        m.buy(addr(f"{name}-a{k}"), 0.5, 1 + k)
+    q, b, sol = 2_000_000_000, 20_000_000_000_000, 100_000_000  # that pool's own small reserves; a 0.1 SOL buy
+    tokens = b * sol // (q + sol)
+    m.n += 1
+    m.trades.append(Trade(sig=addr(f"{name}:own-pool"), ev=0, slot=slot + 5, pos=m.n, ts=m._ts(slot + 5), mint=m.mint,
+                          venue="amm", user=addr(f"{name}-pool-buyer"), is_buy=True, quote=sol, base=tokens,
+                          fee=sol * 30 // 10_000, fee_bps=30, q_after=q + sol, b_after=b - tokens, ix="buy"))  # fmt: skip
+    for k in range(6):
+        m.buy(addr(f"{name}-b{k}"), 0.5, 6 + k)
+    m.commit()
+    return m
+
+
 def _mig_world(store: Store, n: int = 40) -> None:
-    """`n` coins bought out in their create slot (BRUH's shape), each then bought on PumpSwap for a few seconds."""
+    """`n` coins bought out and migrated in their create slot (BRUH's shape), each then bought on PumpSwap for a few
+    seconds."""
     for i in range(n):
         _graduate(store, f"mig-w{i}", T0 + 600 + i * 60, SLOT0 + i * 1000)
     store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
@@ -72,47 +126,95 @@ def _frozen(store: Store, trig: Trigger, landing: tuple[int, str], from_ts: int)
     return s
 
 
+def _mig_rows(data: dict) -> list[dict]:
+    return [r for r in data["rows"] if data["triggers"][r["trigger"]].kind == "mig"]
+
+
+def _bruh_migration() -> Migration:
+    """BRUH's migration as the recorder writes it: the repo's own decoder on its migrating transaction."""
+    (mig,) = normalize(extract_from_transaction(json.loads(MIGRATE_TX.read_text()))).migrations
+    return mig
+
+
 # -- when it fires -------------------------------------------------------------------------------------------------
 
 
-def test_mig_fires_where_the_coin_leaves_its_curve():
+def test_mig_fires_on_the_recorded_migration():
     store = Store(":memory:")
     m = _graduate(store, "mig-a", T0, SLOT0, at=5)
     path, launch = _path(store, m)
-    i = _fire(Trigger("mig"), path, launch, set())
-    assert i is not None and path.users[i] == addr("mig-a-whale")  # the buy that sold the curve's last token
+    assert store.migration(m.mint) == m.migration
+    i = _fire(Trigger("mig"), path, launch, set(), mig=m.migration)
+    # the migration rode in the buy that sold the curve's last token: the last state of its slot is that buy
+    assert i is not None and path.users[i] == addr("mig-a-whale") and path.slot[i] == m.migration.slot
     assert not path.amm[i] and path.amm[i + 1]  # the next trade is the pool's first
 
 
-def test_mig_fires_at_the_first_pumpswap_trade_when_the_completing_trade_is_not_seen():
-    # a curve that completes off the tape, or at a reserve other than 279.9e12: its first PumpSwap trade is the move
+def test_mig_fires_on_the_migration_not_on_the_completed_curve():
+    # the curve completes at +5 and pump.fun migrates it at +7: the pool's first four buys (8 SOL) come in the
+    # migration's slot, and a MIG buy, which needs the pool, lands a slot after it, behind them
     store = Store(":memory:")
-    m = Market(store, addr("mig-gap"), addr("mig-gap-dev"), T0, SLOT0)
-    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
-    m.buy(addr("mig-gap-small"), 0.3, 1)
-    m.complete(addr("mig-gap-whale"), 5)
-    m.migrate()
-    m.buy(addr("mig-gap-first"), 1.0, 7)
-    m.trades = [t for t in m.trades if t.user != addr("mig-gap-whale")]
-    m.commit()
+    m = _late_migration(store, "mig-gap", T0, SLOT0)
     path, launch = _path(store, m)
-    i = _fire(Trigger("mig"), path, launch, set())
-    assert i is not None and path.users[i] == addr("mig-gap-first") and path.amm[i]
+    i = _fire(MIG, path, launch, set(), mig=m.migration)
+    assert path.slot[i] == m.migration.slot == SLOT0 + 7 and path.users[i] == addr("mig-gap-first-3")
+    lat, pos = paper.MIG_LANDING
+    e = int(path.landing_index(m.migration.slot + lat, pos, i))
+    assert e == i + 2 and path.slot[e] == SLOT0 + 8 and path.amm[e]  # and behind the next slot's two buys
+
+
+def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
+    store = Store(":memory:")
+    ms = [_late_migration(store, f"mig-lag{k}", T0 + 600 + 60 * k, SLOT0 + 1000 * k) for k in range(3)]
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    rows = _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+    # every window fires (the migration comes 2 s after the create), each timed from the migration: its slot, and the
+    # last state at or before it (the pool's fourth buy), not the completed curve two slots earlier
+    assert len(rows) == 3 * 3
+    assert {r["order"] for r in rows} == {(m.migration.slot, 7) for m in ms}
+    assert {r["ts"] for r in rows} == {m.migration.ts for m in ms}
+
+
+def test_the_paper_test_buys_a_slot_after_the_recorded_migration():
+    store = Store(":memory:")
+    m = _late_migration(store, "mig-paper", T0 + 600, SLOT0)
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    s = _frozen(store, MIG, paper.MIG_LANDING, T0)
+    paper.run(store, _amm_cfg(), now=T0 + 3 * H)
+    (row,) = store.paper_trades(s["id"])
+    assert row["trigger_ts"] == m.migration.ts and row["data"]["trigger_slot"] == m.migration.slot
+    # bought behind the pool's first four buys and the next slot's two, priced on the pool after them
+    path, _ = _path(store, m)
+    assert row["data"]["behind"] == 2 and row["data"]["entry_mcap_sol"] == pytest.approx(path.mcap_sol(9))
+
+
+def test_a_completed_curve_whose_migration_is_not_on_the_tape_is_no_mig_buy():
+    store = Store(":memory:")
+    m = _late_migration(store, "mig-unseen", T0 + 600, SLOT0, on_tape=False)
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    assert store.migration(m.mint) is None
+    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
+
+
+def test_a_pumpswap_trade_on_a_coin_still_on_its_curve_is_no_migration():
+    store = Store(":memory:")
+    m = _own_pool_coin(store, "mig-own-pool", T0 + 600, SLOT0)
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    path, _ = _path(store, m)
+    assert path.amm.any() and not path.amm[-1] and path.b[-1] > 279_900_000_000_000  # the curve trades on
+    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
 
 
 def test_mig_never_fires_on_a_coin_that_never_completes():
     store = Store(":memory:")
-    m = pump_launch(store, 0, addr("mig-never-dev"), T0, SLOT0)  # 40 buyers, 32 SOL: far from done
-    path, launch = _path(store, m)
-    for w in (10.0, 60.0, 0.0):
-        assert _fire(Trigger("mig", window=w), path, launch, set()) is None
-    # BRUH (real tape) up to the trade before the one that completed it: 1,528 tokens short of done is still a curve
-    store, launch = _bruh()
-    trades = store.trades_for_mint(BRUH)
-    last = max(k for k, t in enumerate(trades) if t.b_after == 279_900_000_000_000 and t.venue == "curve")
-    short = MarketPath.build(trades[:last], launch)
-    assert short.b[-1] == 279_901_528_000_000
-    assert _fire(Trigger("mig"), short, launch, set()) is None
+    ms = [pump_launch(store, i, addr("mig-never-dev"), T0 + 600 + 60 * i, SLOT0 + 1000 * i) for i in range(3)]
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    for m in ms:  # 40 buyers, 32 SOL: far from done, and no migration on the tape
+        path, launch = _path(store, m)
+        assert store.migration(m.mint) is None
+        for w in (10.0, 60.0, 0.0):
+            assert _fire(Trigger("mig", window=w), path, launch, set(), mig=None) is None
+    assert not _mig_rows(collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
 
 
 def test_mig_buys_only_a_migration_inside_its_window():
@@ -121,20 +223,33 @@ def test_mig_buys_only_a_migration_inside_its_window():
     slow = _graduate(store, "mig-slow", T0 + 600, SLOT0 + 10_000, at=75)  # 30 s after its create
     for m, fires in ((fast, {10.0, 60.0, 0.0}), (slow, {60.0, 0.0})):
         path, launch = _path(store, m)
-        got = {w for w in (10.0, 60.0, 0.0) if _fire(Trigger("mig", window=w), path, launch, set()) is not None}
+        got = {w for w in (10.0, 60.0, 0.0)
+               if _fire(Trigger("mig", window=w), path, launch, set(), mig=m.migration) is not None}  # fmt: skip
         assert got == fires, m.mint
 
 
-def test_a_window_needs_the_create_on_the_tape_and_any_time_needs_the_migration_on_it():
+def test_the_migration_window_runs_from_the_create_to_the_migration():
+    # the curve completes 9 s after the create and pump.fun migrates it 12 s after: outside OKTech's 10 s window
+    store = Store(":memory:")
+    m = _late_migration(store, "mig-12s", T0 + 600, SLOT0, done_at=23, mig_at=30)
+    launch = store.launch(m.mint)
+    assert (m.trades[2].ts - launch.ts, m.migration.ts - launch.ts) == (9, 12)
+    store.set_coverage("tape", {"spans": [[T0, T0 + 3 * H]]})
+    data = collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
+    assert {data["triggers"][r["trigger"]].window for r in _mig_rows(data)} == {60.0, 0.0}
+
+
+def test_a_window_needs_the_create_on_the_tape_and_a_buy_needs_the_coin_before_its_migration():
     store = Store(":memory:")
     m = _graduate(store, "mig-late", T0, SLOT0, at=5)
     trades = store.trades_for_mint(m.mint)
     no_create = MarketPath.build(trades[1:], None)  # the tape starts after the create: the dev's buy is off it
-    assert _fire(MIG, no_create, None, set()) is None  # a window counts from a create the tape never saw
-    i = _fire(Trigger("mig"), no_create, None, set())
+    # a window counts from a create the tape never saw: no buy; any time: the migration is on the tape, so a buy
+    assert _fire(MIG, no_create, None, set(), mig=m.migration) is None
+    i = _fire(Trigger("mig"), no_create, None, set(), mig=m.migration)
     assert i is not None and no_create.users[i] == addr("mig-late-whale")
-    pool_only = MarketPath.build([t for t in trades if t.venue == "amm"], None)  # first seen trading on PumpSwap
-    assert _fire(Trigger("mig"), pool_only, None, set()) is None  # its migration came before the tape
+    pool_only = MarketPath.build([t for t in trades if t.venue == "amm"], None)  # the tape starts after the migration
+    assert _fire(Trigger("mig"), pool_only, None, set(), mig=m.migration) is None
 
 
 def test_mig_label_reads_as_the_oktech_setting():
@@ -145,25 +260,39 @@ def test_mig_label_reads_as_the_oktech_setting():
 # -- BRUH, real tape: the migration in its create slot ------------------------------------------------------------
 
 
+def test_bruh_migrated_in_the_transaction_that_completed_its_curve():
+    tx = json.loads(MIGRATE_TX.read_text())
+    norm = normalize(extract_from_transaction(tx))
+    (done,), (mig,) = norm.completions, norm.migrations
+    store, launch = _bruh()
+    assert mig.mint == BRUH and mig.sig == done.sig and mig.slot == done.slot == launch.slot and mig.ts == launch.ts
+    # the pool opened with the reserves the tape records after the 64 SOL buy that rode in the same transaction
+    (pool,) = [e.fields for e in extract_from_transaction(tx).events if e.name == "CreatePoolEvent"]
+    post = next(t for t in store.trades_for_mint(BRUH) if t.ix == "post_complete_buy")
+    assert post.sig == mig.sig and (pool["pool_quote_amount"], pool["pool_base_amount"]) == (post.q_after, post.b_after)
+
+
 def test_mig_buys_bruh_behind_the_pumpswap_buy_that_rode_in_its_migration():
     store, launch = _bruh()
+    mig = _bruh_migration()
     path = MarketPath.build(store.trades_for_mint(BRUH), launch)
     for w in (10.0, 60.0, 0.0):
-        i = _fire(Trigger("mig", window=w), path, launch, set())
-        assert i is not None and path.slot[i] == launch.slot, w  # the bundle completed the curve in the create slot
-    assert not path.amm[i] and path.b[i] == 279_900_000_000_000  # the trade that sold the curve's last token
-    assert path.amm[i + 1] and round(path.quote[i + 1] / 1e9, 3) == 64.197  # the same tx bought 64 SOL on PumpSwap
+        i = _fire(Trigger("mig", window=w), path, launch, set(), mig=mig)
+        assert i is not None and path.slot[i] == mig.slot == launch.slot, w  # migrated inside the create slot
+    # the last state of the migration's slot: the 64 SOL PumpSwap buy that rode in the migrating transaction
+    assert path.amm[i] and path.sigs[i] == mig.sig and round(path.quote[i] / 1e9, 3) == 64.197
     lat, pos = paper.MIG_LANDING
-    e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
-    assert e == i + 1  # a MIG buy lands behind it: the next trade on the tape is 366 s later
+    e = int(path.landing_index(mig.slot + lat, pos, i))
+    assert e == i  # a MIG buy lands behind it: the next trade on the tape is 366 s later
 
 
 def test_a_pumpswap_entry_is_priced_on_the_pool_reserves():
     store, launch = _bruh()
+    mig = _bruh_migration()
     path = MarketPath.build(store.trades_for_mint(BRUH), launch)
-    i = _fire(MIG, path, launch, set())
+    i = _fire(MIG, path, launch, set(), mig=mig)
     lat, pos = paper.MIG_LANDING
-    e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
+    e = int(path.landing_index(mig.slot + lat, pos, i))
     # the entry state is the pool's own: its reserves after the 64 SOL buy, and the fee that buy paid
     assert path.amm[e] and (path.q[e], path.b[e]) == (149_187_262_120, 117_868_677_552_549)
     assert path.fee_bps[e] == 125
@@ -193,8 +322,8 @@ def test_a_mig_buy_lands_a_slot_after_the_migration_three_trades_in():
     (live,) = store.coverage("paper_strategies")["strategies"]
     assert (live["latency"], live["position"]) == paper.MIG_LANDING
     (row,) = store.paper_trades(live["id"])
-    # genesis 0, the create 1, a small buy 2, the whale's completing buy 3 (the trigger); the next slot's PumpSwap
-    # buys are 4-7, and the buy lands behind the first three of them
+    # genesis 0, the create 1, a small buy 2, the whale's completing buy 3 (it migrated the coin: the trigger); the
+    # next slot's PumpSwap buys are 4-7, and the buy lands behind the first three of them
     assert row["data"]["landing"] == paper.landing_key(*paper.MIG_LANDING) and row["data"]["behind"] == 3
 
 
@@ -255,8 +384,7 @@ def test_mig_is_not_scored_on_a_tape_without_pumpswap_trades():
     cfg = Config()
     cfg.verdict.bootstrap_samples = 200
     data = collect(store, cfg, 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
-    kinds = {ti: t.kind for ti, t in enumerate(data["triggers"])}
-    assert not [r for r in data["rows"] if kinds[r["trigger"]] == "mig"]
+    assert not _mig_rows(data)
     assert "index_amm" in data["unscored"]["mig"]
     assert collect(store, _amm_cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)["unscored"] == {}
     s = _frozen(store, MIG, paper.MIG_LANDING, T0)
