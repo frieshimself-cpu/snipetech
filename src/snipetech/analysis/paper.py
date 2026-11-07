@@ -61,9 +61,12 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
 HUNT_LANDING = (1, "+3")
-# OKTech MIG sends its PumpSwap buy once it has seen the migration: assumed to land like a hunt buy, a slot after the
-# migration, 3 trades in. An assumption, not a measurement: no live MIG fill exists yet (playbook 8); the first one
-# on the tape replaces it.
+# OKTech MIG sends its PumpSwap buy once it has seen the migration: scored like a hunt buy, a slot after the migration,
+# behind up to 3 of that slot's trades. No live MIG fill exists yet (playbook 8), so the slot is the hunt's, and the
+# tape says what the choice costs: on 19 MIG-10 coins (7 Nov 12:13-13:53 UTC, research round 1) the migration's own slot
+# carried 1-6 PumpSwap trades (median 3), the first trade after it came 0-1 s later, and the 3rd trade after it, 1-4
+# slots after the migration (median 2), was 0-1.1 % above the first (median +0.2 %). Landing a slot or three later moves
+# the price by about 1 % at most. Every MIG lab re-measures it (`amm_tape.landing`); the first live fill replaces it.
 MIG_LANDING = (1, "+3")
 # every launch-window rule runs live through OKTech hunt (`oktech strategy` maps whale and burst triggers to hunt):
 # each is scored where a hunt buy lands, never at the copy landing inside the trigger's own slot (7 Nov: at the copy

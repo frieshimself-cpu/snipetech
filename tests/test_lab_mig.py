@@ -175,9 +175,9 @@ def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
     ms = [_late_migration(store, f"mig-lag{k}", T0 + 600 + 60 * k, SLOT0 + 1000 * k) for k in range(3)]
     _tape(store)
     rows = _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
-    # every window fires (the migration comes 2 s after the create), each timed from the migration: its slot, and the
-    # last state at or before it (the pool's fourth buy), not the completed curve two slots earlier
-    assert len(rows) == 3 * 3
+    # both windows of the grid fire (the migration comes 2 s after the create), each timed from the migration: its slot,
+    # and the last state at or before it (the pool's fourth buy), not the completed curve two slots earlier
+    assert len(rows) == 3 * 2
     assert {r["order"] for r in rows} == {(m.migration.slot, 7) for m in ms}
     assert {r["ts"] for r in rows} == {m.migration.ts for m in ms}
 
@@ -243,7 +243,7 @@ def test_the_migration_window_runs_from_the_create_to_the_migration():
     assert (m.trades[2].ts - launch.ts, m.migration.ts - launch.ts) == (9, 12)
     _tape(store)
     data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
-    assert {data["triggers"][r["trigger"]].window for r in _mig_rows(data)} == {60.0, 0.0}
+    assert {data["triggers"][r["trigger"]].window for r in _mig_rows(data)} == {60.0}
 
 
 def test_a_window_needs_the_create_on_the_tape_and_a_buy_needs_the_coin_before_its_migration():
@@ -445,15 +445,12 @@ def test_strategy_sniper_refuses_an_any_time_mig_rule():
         strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
 
 
-def test_the_search_ranks_mig_windows_oktech_runs_as_scored_and_any_time_as_research():
+def test_the_search_ranks_only_mig_windows_oktech_runs_as_scored():
+    # OKTech's default window and a wider one to compare it with; never any time, which OKTech cannot be sent
     migs = [t for t in TRIGGERS if t.kind == "mig"]
-    assert {10.0, 0.0} <= {t.window for t in migs}  # OKTech's default window, and any time
+    assert {t.window for t in migs} == {10.0, 60.0}
     for t in migs:
         strat = {"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}
-        if not t.window:  # scored, but not sent until OKTech says how to send no window
-            with pytest.raises(ValueError):
-                strategy_sniper(strat, 1)
-            continue
         p = strategy_sniper(strat, 1)
         assert p.config["mode"] == "mig" and p.config["migrationExpirySec"] == t.window
 

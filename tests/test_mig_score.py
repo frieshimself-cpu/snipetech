@@ -14,7 +14,7 @@ from snipetech.store import Store
 
 from .synth import Market, addr
 from .test_amm_tape import SERVER_1359, hm, outage_7nov
-from .test_lab_mig import _graduate
+from .test_lab_mig import _graduate, _late_migration
 
 MIG10 = Trigger("mig", window=10.0)
 EXIT = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1.0)
@@ -116,6 +116,30 @@ def test_the_server_record_at_13_59_scores_what_it_covers():
     (one,) = data["amm_tape"]["triggers"].values()
     # the coin that migrated at 13:59:02 had not played out yet; nothing after 13:59:20 was recorded then
     assert one["skipped"] == {"before": 1, "skipped": 1, "end": 1, "after": 2}
+
+
+def test_the_lab_measures_where_a_mig_buy_lands_on_the_tape():
+    """No MIG fill exists yet, so the landing is the hunt's: a slot after the migration, behind up to 3 of that slot's
+    trades. The lab measures, on every MIG moment it scores, what that choice is worth: the PumpSwap trades in the
+    migration's own slot (which no buy reacting to the migration can be among), the trades of the next slot ahead of
+    the buy, and the entry price against the first PumpSwap trade after the migration's slot."""
+    store = Store(":memory:")
+    for k in range(3):  # four 2 SOL buys in the migration's slot, two 1 SOL buys in the next
+        _late_migration(store, f"mig7-land-{k}", hm(13, 0) + 60 * k, SLOT7 + int((hm(13, 0) + 60 * k - hm(0, 0)) / 0.4))
+    store.set_coverage("tape", {"spans": [[hm(12, 30), hm(13, 50)]]})
+    store.set_coverage(AMM_RECENT_KEY, outage_7nov())
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10], exits=[EXIT])
+    assert len(data["rows"]) == 3
+    check = data["amm_tape"]["landing"]
+    assert check["n"] == 3 and check["slot_trades"] == 4.0 and check["ahead"] == 2.0
+    # bought behind the next slot's two 1 SOL buys: above the first of them, by the second's price impact
+    assert 0 < check["vs_first"] < 0.05 and check["vs_first_p90"] >= check["vs_first"]
+    assert paper.MIG_LANDING == paper.HUNT_LANDING == (1, "+3")
+    from snipetech import report as R
+
+    text = R.render_lab({"moments": 3, "tape_hours": data["tape_hours"], "buy_sol": 0.2, "latency_slots": 0,
+                         "position": "+6", "strategies": [], "amm_tape": data["amm_tape"]})  # fmt: skip
+    assert "Where the 3 MIG buys landed: behind a median 4 PumpSwap trades in the migration's slot and 2" in text
 
 
 def test_a_lab_on_two_workers_scores_and_skips_mig_exactly_as_the_serial_lab(tmp_path):

@@ -184,11 +184,11 @@ TRIGGERS = (
         for v in (3.0, 6.0)
         for pr in (0.3, 0.5)
     ]
-    # OKTech MIG as its settings read (docs/oktech-features.md): a buy on PumpSwap once the coin has migrated there,
-    # within the Migration Window of its create (10 s is OKTech's default; 0 = any time, scored for research only:
-    # `oktech strategy` refuses it until OKTech says how to send no window). Three settings only: the lab runs every
-    # trigger on every coin
-    + [Trigger("mig", window=w) for w in (10.0, 60.0, 0.0)]
+    # OKTech MIG as it runs (docs/oktech-features.md): a buy on PumpSwap once the coin has migrated there, within the
+    # Migration Window of its create. 10 s is OKTech's default and the round-1 pick (7 Nov: it catches the ~260 coins a
+    # day whose launch bundle fills the curve at once, none mayhem); 60 s only to compare it with (wider windows bought
+    # mostly mayhem coins, 17 of 18 down 80 % within 15 minutes). Never any time: OKTech cannot be sent no window.
+    + [Trigger("mig", window=w) for w in (10.0, 60.0)]
 )
 
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
@@ -279,8 +279,11 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
             raise ValueError("a hunt trigger needs a window above 0 s (OKTech timeWindowMs)")
         if trig.max_buyers and trig.max_buyers < trig.buyers:
             raise ValueError(f"max_buyers {trig.max_buyers} is below buyers {trig.buyers}: the hunt could never fire")
-    if kind == "mig":  # OKTech takes the Migration Window in whole seconds (`oktech strategy` refuses anything else)
-        _whole_secs(trig.window, "the Migration Window (migrationExpirySec)")
+    # OKTech takes the Migration Window in whole seconds (`oktech strategy` refuses anything else), and above 0
+    if kind == "mig" and _whole_secs(trig.window, "the Migration Window (migrationExpirySec)") <= 0:
+        raise ValueError("a MIG trigger needs a Migration Window above 0 s (OKTech migrationExpirySec): its form "
+                         "defaults to 10 s and cannot be sent 'any time', so an any-time rule would run as another "
+                         "rule live")  # fmt: skip
     return trig
 
 
@@ -412,6 +415,19 @@ def _mig(trig: Trigger, path: MarketPath, launch, mig) -> int | None:
         return None
     i = int(np.searchsorted(path.slot, int(mig.slot), side="right")) - 1
     return i if i >= 0 else None
+
+
+def mig_landing(path: MarketPath, i: int, e: int, mig) -> tuple[int, int, float | None]:
+    """What a MIG buy entered at state e (the trigger at state i, the last at or before the migration's slot) lands
+    behind, measured on the tape: the PumpSwap trades in the migration's own slot (no buy that reacts to the migration
+    can be among them), the trades of later slots ahead of the buy, and the entry price against the first PumpSwap
+    trade after the migration's slot (None when there is none). The lab sums these up (`amm_tape.landing`)."""
+    in_slot = int(sum(1 for j in range(i + 1) if path.slot[j] == int(mig.slot) and path.amm[j]))
+    after = int(np.searchsorted(path.slot, int(mig.slot), side="right"))
+    vs = None
+    if after < path.n and path.b[after] > 0 and path.b[e] > 0:
+        vs = float((path.q[e] / path.b[e]) / (path.q[after] / path.b[after]) - 1.0)
+    return in_slot, int(e - i), vs
 
 
 def fired_at(trig: Trigger, path: MarketPath, i: int, mig=None) -> tuple[int, float]:
@@ -789,6 +805,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                    "landing": f"{pos}@{int(lat)}"}  # fmt: skip
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
+            if trig.kind in AMM_KINDS:
+                row["mig_landing"] = mig_landing(path, i, e, mig)
             rows.append(row)
     return rows
 
@@ -1000,7 +1018,22 @@ def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped:
             per[t.label()] = {"scored": sum(r["trigger"] == ti for r in rows), "skipped": why}
     codes = sorted({r["skipped"] for r in skipped})
     return {"horizon_secs": float(horizon), "holes": amm_recent_holes(cov, lo, hi) if spans else [],
-            "migration_sell": bool(mig_sell), "triggers": per, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
+            "migration_sell": bool(mig_sell), "triggers": per, "why": {c: SKIP_WORDS.get(c, c) for c in codes},
+            "landing": _landing_check([r["mig_landing"] for r in rows if "mig_landing" in r])}  # fmt: skip
+
+
+def _landing_check(seen: list[tuple]) -> dict[str, Any]:
+    """The MIG landing measured on the scored moments (`mig_landing`): how many, and the median PumpSwap trades in
+    the migration's slot, the median trades of later slots ahead of the buy, and the entry price against the first
+    PumpSwap trade after the migration's slot (median and 90th percentile). What the landing choice costs on the tape."""
+    vs = [v for _s, _a, v in seen if v is not None]
+    out: dict[str, Any] = {"n": len(seen)}
+    if seen:
+        out |= {"slot_trades": float(np.median([s for s, _a, _v in seen])),
+                "ahead": float(np.median([a for _s, a, _v in seen]))}  # fmt: skip
+    if vs:
+        out |= {"vs_first": float(np.median(vs)), "vs_first_p90": float(np.percentile(vs, 90))}
+    return out
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
