@@ -143,3 +143,63 @@ def test_the_new_cadence_field_is_not_pinned_by_the_servers_old_file(tmp_path):
     p.write_text(dump_toml(old))
     assert "analyst_every_h" not in p.read_text() and "daily_usd = 15.0" in p.read_text()
     assert Config.load(p).operator.analyst_every_h == 2.0 and OperatorConfig().analyst_every_h == 2.0
+
+
+# -- `snipetech operate budget`: how the cloud session sets it, with the owner's OK in chat (`remote run operate budget`)
+
+
+def _cli(tmp_path, *args):
+    from snipetech import cli
+
+    return cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "operate", *args])
+
+
+def test_cli_operate_budget_sets_exactly_what_is_given_and_prints_what_applies(tmp_path, capsys):
+    paths = OperatorPaths(tmp_path / "data")
+    assert (
+        _cli(
+            tmp_path, "budget", "--daily-usd", "200", "--turn-usd", "6", "--tool-calls", "40", "--analyst-every-h", "2"
+        )
+        == 0
+    )
+    out = capsys.readouterr().out
+    assert str(tmp_path / "data" / "operator" / "BUDGET") in out and "Claude budget: 200 $ a day" in out
+    assert "at most 6 $ and 40 tool calls a turn, an analysis every 2 h" in out
+    assert json.loads(budget_file(paths).read_text())["by"] == "cli"
+    assert _cli(tmp_path, "budget", "--turn-usd", "4") == 0  # no profile here: only what is named changes
+    assert effective_budget(Config(), paths) == {
+        "daily_usd": 200.0,
+        "turn_usd": 4.0,
+        "max_tool_calls": 40,
+        "analyst_every_h": 2.0,
+    }
+    before = budget_file(paths).read_text()
+    assert _cli(tmp_path, "budget") == 0 and "Claude budget: 200 $ a day" in capsys.readouterr().out  # shows only
+    assert budget_file(paths).read_text() == before
+
+
+def test_cli_operate_budget_refuses_a_bad_value_and_goes_back_with_default(tmp_path, capsys):
+    paths = OperatorPaths(tmp_path / "data")
+    _cli(tmp_path, "budget", "--daily-usd", "200")
+    before = budget_file(paths).read_text()
+    for bad in (["--daily-usd", "900"], ["--tool-calls", "3"], ["--analyst-every-h", "30"], ["--turn-usd", "201"]):
+        with pytest.raises(SystemExit, match="not changed"):
+            _cli(tmp_path, "budget", *bad)
+        assert budget_file(paths).read_text() == before
+    with pytest.raises(SystemExit, match="alone"):
+        _cli(tmp_path, "budget", "--default", "--daily-usd", "50")
+    with pytest.raises(SystemExit, match="operate budget"):  # a budget flag without the action sets nothing
+        _cli(tmp_path, "--daily-usd", "50")
+    assert budget_file(paths).read_text() == before
+    capsys.readouterr()
+    assert _cli(tmp_path, "budget", "--default") == 0
+    assert not budget_file(paths).exists() and "the config's values" in capsys.readouterr().out
+
+
+def test_cli_operate_still_parses_without_the_budget_action():
+    from snipetech.cli import build_parser
+
+    a = build_parser().parse_args(["operate", "--dry-run"])
+    assert a.action is None and a.dry_run and a.daily_usd is None and not a.budget_default
+    a = build_parser().parse_args(["operate", "budget", "--tool-calls", "40", "--default"])
+    assert a.action == "budget" and a.tool_calls == 40 and a.budget_default

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import OperatorConfig
+from .budget import Ledger
 from .paths import OperatorPaths
 
 # each value's bounds, in the words the owner reads when one is refused: a typo can never open more than 500 $ a day or
@@ -28,6 +29,11 @@ RULES: dict[str, tuple[Callable[[float], bool], str]] = {
     "analyst_every_h": (lambda v: v == 0 or 0.5 <= v <= 24, "hours between analyses are 0 (once a day) or 0.5 to 24"),
 }
 FIELDS = tuple(RULES)
+
+# what `/budget <dollars a day>` brings for every value not named: "the agents need to work harder, I can afford 200$
+# a day" (owner, 7 Nov). Three times the config's turn and twice its tool calls, so a deeper analysis is not cut off
+# before its report; an analysis every two hours instead of once a day after 06:00 UTC
+WORK_HARDER: dict[str, float | int] = {"turn_usd": 6.0, "max_tool_calls": 40, "analyst_every_h": 2.0}
 
 
 def budget_file(paths: OperatorPaths) -> Path:
@@ -100,7 +106,8 @@ def set_budget(
     for name, value in values.items():
         v = _sane(name, value)
         if v is None:
-            raise ValueError(f"{RULES[name][1]}, not {value!r}")
+            shown = f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else repr(value)
+            raise ValueError(f"{RULES[name][1]}, not {shown}")
         new[name] = v
     day = {**effective_budget(cfg, None), **new}
     if day["turn_usd"] > day["daily_usd"]:  # the gate checks the day before a turn, so a turn would overrun it
@@ -117,3 +124,120 @@ def set_budget(
 def clear_budget(paths: OperatorPaths) -> None:
     """Back to the config's values (`/budget default`, `operate budget --default`)."""
     budget_file(paths).unlink(missing_ok=True)
+
+
+def _set_at(paths: OperatorPaths) -> str:
+    try:
+        ts = json.loads(budget_file(paths).read_text())["ts"]
+        return time.strftime(" since %d %b %H:%M UTC", time.gmtime(float(ts)))
+    except (OSError, ValueError, KeyError, TypeError, OverflowError):
+        return ""
+
+
+def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
+    """The budget that applies, in the owner's words, and whose it is."""
+    op, b = _operator(cfg), effective_budget(cfg, paths)
+    every = float(b["analyst_every_h"])
+    when = (f"an analysis every {every:g} h besides the daily one after {op.analyst_after_utc} UTC" if every > 0
+            else f"the analysis once a day after {op.analyst_after_utc} UTC")  # fmt: skip
+    line = (f"Claude budget: {b['daily_usd']:g} $ a day ({spent_today:.2f} $ spent today), at most {b['turn_usd']:g} $ "
+            f"and {b['max_tool_calls']} tool calls a turn, {when}")  # fmt: skip
+    if read_budget(paths):
+        return (
+            line
+            + f". Your setting{_set_at(paths)}; /budget default goes back to the config's {op.daily_usd:g} $ a day."
+        )
+    w = WORK_HARDER
+    return line + (f". These are the config's values; /budget 200 lets the agents work harder: 200 $ a day, "
+                   f"{w['turn_usd']:g} $ and {w['max_tool_calls']} tool calls a turn, an analysis every "
+                   f"{w['analyst_every_h']:g} h.")  # fmt: skip
+
+
+_WORDS = {"daily": "daily_usd", "day": "daily_usd", "turn": "turn_usd", "calls": "max_tool_calls",
+          "every": "analyst_every_h"}  # fmt: skip
+_UNKNOWN = "a word I do not know: after the dollars a day I know turn, calls and every, each with its number"
+
+
+def _number(word: str) -> float:
+    """200, 200$, $200, 1.5h: the number, else ValueError (whose text never repeats the word)."""
+    try:
+        return float(word.strip().lower().replace("$", "").removesuffix("h"))
+    except ValueError:
+        raise ValueError("not a number") from None
+
+
+def parse_budget(words: list[str]) -> dict[str, float]:
+    """`200`, `200 turn 4 calls 30 every 3`, `turn 4`: the values named. Dollars a day given (first, or after "daily")
+    bring the work-harder profile for every value not named, the turn cut to the day when the day is smaller. A word
+    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log again."""
+    rest, values = [w.lower() for w in words], {}
+    try:
+        values["daily_usd"] = _number(rest[0])
+        rest = rest[1:]
+    except (ValueError, IndexError):
+        pass
+    while rest:
+        name = _WORDS.get(rest[0])
+        if name is None:
+            raise ValueError(_UNKNOWN)
+        if len(rest) < 2:
+            raise ValueError(f"{rest[0]} needs a number after it")
+        try:
+            values[name] = _number(rest[1])
+        except ValueError:
+            raise ValueError(f"{rest[0]} needs a number after it") from None
+        rest = rest[2:]
+    if "daily_usd" in values:
+        for name, v in WORK_HARDER.items():
+            values.setdefault(name, min(v, values["daily_usd"]) if name == "turn_usd" else v)
+    return values
+
+
+def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float | None = None) -> str:
+    """`/budget` (show), `/budget 200` (the work-harder profile), `/budget 200 turn 4 calls 30 every 3`, `/budget
+    default`. A bad value changes nothing and says why; what still applies follows."""
+    now = time.time() if now is None else now
+    spent = Ledger(paths.spend, {}).spent_today(now)
+    words = [w.lower() for w in args]
+    if not words:
+        return budget_line(cfg, paths, spent)
+    try:
+        if words[0] == "default":
+            if len(words) > 1:
+                raise ValueError("/budget default goes alone")
+            clear_budget(paths)
+            return "budget back to the config: " + budget_line(cfg, paths, spent)
+        set_budget(paths, cfg, parse_budget(words), by, now)
+    except ValueError as exc:
+        return (f"budget not changed: {exc}. Send /budget 200 (the work-harder profile), /budget 200 turn 4 calls 30 "
+                f"every 3, or /budget default. {budget_line(cfg, paths, spent)}")  # fmt: skip
+    return "budget set: " + budget_line(cfg, paths, spent)
+
+
+def budget_cli(cfg, args, now: float | None = None) -> int:
+    """`snipetech operate budget [--daily-usd N] [--turn-usd N] [--tool-calls N] [--analyst-every-h N] [--default]`.
+    Sets exactly the values given, with no profile: the cloud session names each value the owner agreed to in chat
+    (`remote --wait run operate budget ...`). Prints where the file is and the budget that applies; a bad value, or a
+    budget flag without `budget`, changes nothing and exits with the reason."""
+    paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
+    given = {"daily_usd": args.daily_usd, "turn_usd": args.turn_usd, "max_tool_calls": args.tool_calls,
+             "analyst_every_h": args.analyst_every_h}  # fmt: skip
+    values = {k: v for k, v in given.items() if v is not None}
+    if args.action != "budget":
+        raise SystemExit(
+            "--daily-usd, --turn-usd, --tool-calls, --analyst-every-h and --default go with `operate budget`"
+        )
+    if args.budget_default and values:
+        raise SystemExit("operate budget: --default goes alone (it removes the owner's budget file)")
+    now = time.time() if now is None else now
+    if args.budget_default:
+        clear_budget(paths)
+    elif values:
+        try:
+            set_budget(paths, cfg, values, "cli", now)
+        except ValueError as exc:
+            raise SystemExit(f"operate budget: not changed: {exc}") from None
+    there = budget_file(paths).exists()
+    print(f"budget file {budget_file(paths)} on this machine" + ("" if there else " (none: the config's values apply)"))
+    print(budget_line(cfg, paths, Ledger(paths.spend, {}).spent_today(now)))
+    return 0

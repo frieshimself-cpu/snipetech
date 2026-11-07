@@ -597,3 +597,97 @@ def test_a_command_carries_the_time_the_owner_sent_it():
         [{"update_id": 5, "message": {"chat": {"id": 7}, "text": "/sell all", "date": 1_794_000_000}}], 7
     )
     assert cmds[0].date == 1_794_000_000
+
+
+# -- /budget: what the agents may spend, the owner's call without SSH ----------------------------------------------------
+
+
+def _budget(ctx, *args):
+    return asyncio.run(handle_command(_cmd("budget", *args), **ctx))
+
+
+def _owner_budget(ctx):
+    from snipetech.operator.budget_switch import effective_budget
+
+    return effective_budget(ctx["cfg"], ctx["paths"])
+
+
+def test_budget_alone_shows_what_applies_and_todays_spend(tmp_path):
+    from snipetech.operator.budget_switch import budget_file
+
+    ctx, sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    ctx["paths"].spend.write_text(json.dumps({"ts": NOW - 60, "mode": "operator", "usd": 1.92}) + "\n")
+    reply = _budget(ctx)
+    assert "15 $ a day (1.92 $ spent today)" in reply and "at most 2 $ and 20 tool calls a turn" in reply
+    assert "an analysis every 2 h" in reply and "06:00 UTC" in reply and "/budget 200" in reply
+    assert sent == [reply] and not budget_file(ctx["paths"]).exists() and not ctx["paths"].notes.exists()
+
+
+def test_budget_with_the_days_dollars_alone_is_the_work_harder_profile(tmp_path):
+    """The owner, 7 Nov: "the agents need to work harder, I can afford 200$ a day in api credits easily"."""
+    from snipetech.operator.budget_switch import budget_file
+
+    ctx, sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    reply = _budget(ctx, "200")
+    assert _owner_budget(ctx) == {"daily_usd": 200.0, "turn_usd": 6.0, "max_tool_calls": 40, "analyst_every_h": 2.0}
+    assert reply.startswith("budget set:") and "200 $ a day" in reply and "6 $ and 40 tool calls a turn" in reply
+    assert json.loads(budget_file(ctx["paths"]).read_text())["by"] == "telegram"
+    assert (
+        "[decision] owner set the agents' budget: budget set: Claude budget: 200 $ a day"
+        in ctx["paths"].notes.read_text()
+    )
+    assert "/budget default" in reply and sent == [reply]
+
+
+def test_budget_sets_each_value_named(tmp_path):
+    ctx, _ = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    _budget(ctx, "200", "turn", "4", "calls", "30", "every", "3")
+    assert _owner_budget(ctx) == {"daily_usd": 200.0, "turn_usd": 4.0, "max_tool_calls": 30, "analyst_every_h": 3.0}
+    _budget(ctx, "150$", "TURN", "$5", "calls", "25", "every", "1.5h")  # the way the owner writes dollars and hours
+    assert _owner_budget(ctx) == {"daily_usd": 150.0, "turn_usd": 5.0, "max_tool_calls": 25, "analyst_every_h": 1.5}
+    _budget(ctx, "turn", "3")  # no dollars a day: only what is named changes
+    assert _owner_budget(ctx) == {"daily_usd": 150.0, "turn_usd": 3.0, "max_tool_calls": 25, "analyst_every_h": 1.5}
+    reply = _budget(ctx, "100", "every", "0")  # the profile for what is not named; 0: the analysis once a day
+    assert _owner_budget(ctx) == {"daily_usd": 100.0, "turn_usd": 6.0, "max_tool_calls": 40, "analyst_every_h": 0.0}
+    assert "the analysis once a day after 06:00 UTC" in reply
+    _budget(ctx, "3")  # a small day: the profile's turn is cut to the day, never more than it
+    assert _owner_budget(ctx)["turn_usd"] == 3.0 and _owner_budget(ctx)["daily_usd"] == 3.0
+
+
+SECRET_LIKE = "4wBqpZM9xaUcE7sRk2VtYhLnD3fJ8gQe1oPiWuAz6mXbNvCyTr5KjHs9dLqEf2GaZ"
+
+
+def test_a_bad_budget_changes_nothing_and_says_why(tmp_path):
+    ctx, sent = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    _budget(ctx, "200")
+    before = _owner_budget(ctx)
+    for args, why in ((["900"], "500"), (["200", "turn", "30"], "25"), (["200", "calls", "3"], "5 to 80"),
+                      (["200", "every", "0.1"], "0.5 to 24"), (["200", "turn"], "needs a number"),
+                      (["200", "foo", "3"], "turn, calls and every"), (["0"], "more than 0"), (["5", "turn", "6"], "turn"),
+                      (["default", "now"], "default"), ([SECRET_LIKE], "turn, calls and every")):  # fmt: skip
+        reply = _budget(ctx, *args)
+        assert reply.startswith("budget not changed:") and why in reply, (args, reply)
+        assert _owner_budget(ctx) == before and "Claude budget: 200 $ a day" in reply  # what still applies
+    assert (
+        SECRET_LIKE not in "".join(sent) + ctx["paths"].notes.read_text()
+    )  # a key pasted by mistake is never repeated
+    assert ctx["paths"].notes.read_text().count("owner set the agents' budget") == 1
+
+
+def test_budget_default_goes_back_to_the_config(tmp_path):
+    from snipetech.operator.budget_switch import budget_file
+
+    ctx, _ = _ctx(tmp_path, FakeSvc(held=[], snipers=[]))
+    _budget(ctx, "200")
+    reply = _budget(ctx, "default")
+    assert not budget_file(ctx["paths"]).exists() and _owner_budget(ctx)["daily_usd"] == 15.0
+    assert "back to the config" in reply and "15 $ a day" in reply
+    assert "owner set the agents' budget: budget back to the config" in ctx["paths"].notes.read_text()
+
+
+def test_only_the_owner_sets_the_budget_and_help_lists_it():
+    from snipetech.operator.commands import HELP
+
+    cmds, _ = parse_updates([_msg(1, 9, "/budget 500"), _msg(2, 7, "/budget 200 turn 4")], owner_chat_id=7)
+    assert [(c.name, c.args) for c in cmds] == [("budget", ["200", "turn", "4"])]
+    assert "/budget" in HELP and "/budget (later phase)" not in HELP and "/why <wallet> (later phase)" in HELP
