@@ -15,8 +15,8 @@ from pathlib import Path
 
 from ..book.watch import watch_wallet
 from ..config import Config
-from ..ops import _pid_alive
-from . import learning
+from ..ops import _pid_alive, redact
+from . import learning, live_test
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -200,11 +200,22 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                 if "did not start" in m or "failed" in m:  # the gate raises it: the loop must not stop silently
                     snap.errors.append(m)
 
+            round_jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch)
             try:
-                start_standins(OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch),
-                               dict(snap.services or {}), t0, log=standin_log)  # fmt: skip
+                start_standins(round_jobs, dict(snap.services or {}), t0, log=standin_log)
             except Exception as exc:  # noqa: BLE001
                 standin_log(f"stand-in: failed: {type(exc).__name__}: {exc}")
+            # the owner's live test (/test <id> go in Telegram) starts here and only here: this unit's jobs outlive the
+            # round and deploys (KillMode=process); the one-minute pass would take its cycler down with it
+            try:
+                for line in await live_test.round_step(svc, cfg, paths, round_jobs, t0, snap=snap, notes=notes,
+                                                       notifier=notifier):  # fmt: skip
+                    _log(paths, t0, f"live test: {line}")
+            except Exception as exc:  # noqa: BLE001 - the next round looks again; the owner hears it once a day
+                _log(paths, t0, redact(f"live test: failed: {type(exc).__name__}: {exc}"))
+                if not notes.has_today("live test step failed", t0):
+                    notifier.send(notes.write(f"live test step failed: {type(exc).__name__}: {str(exc)[:160]}; the "
+                                              "next round looks again", "decision"))  # fmt: skip
         if paths.stop_flag.exists():
             _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.

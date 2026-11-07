@@ -91,6 +91,48 @@ pre-execution and the account filter. The sniper config already sent is then the
 2. Batches of 10 buys at 0.2 SOL, each audited against paper (trigger, landing position, exit, PnL).
 3. Raise size / remove the cap only while live per-trade results stay within ~half of paper.
 
+## How a live test starts (7 Nov)
+
+No SSH and no command line: the owner starts and ends a capped live test from Telegram (`operator/live_test.py`).
+
+1. **`/test`** lists the hunt strategies the forward paper test backs where a live hunt fill lands (100 forward trades
+   or more, a lower bound above zero; the lab alone never counts), best lower bound first, at most three, each with its
+   forward n, mean and lower bound. Then the plan for the best one, and last the exact line to send. `/test <id>` shows
+   another one's plan.
+2. **`/test <id> go`** is the owner's yes for exactly that plan (wallet, size, duration). It only writes
+   `operator/TEST.json` (state `requested`), and only when the strategy qualifies now, no test is requested, running or
+   closing, no OKTech cycler or guard runs, no sniper that is not the book's is active on OKTech (an earlier test's left
+   armed, one started by hand), the tape is at most 2 minutes behind (the book's rule: the cap counts our buys there),
+   `/stop` is not set, the wallet holds no coin, and the wallet holds at least the floor plus one buy and its fees. It
+   offers only strategies whose forward lower bound is above zero also with each gain capped at 2.5 times its buy (the
+   7 Nov create-slot bundle artifact made a losing rule look like +10.6 SOL). A message more
+   than 5 minutes old is refused, as for `/sell`.
+3. **The next operator round** (within 15 minutes) checks all of it again, writes `starting`, creates the strategy's own
+   hunt sniper on OKTech (one buy a start, an externalId of its own) and starts one job:
+   `oktech cycle --id <sniper> --address <wallet> --floor <F> --max-minutes 120 --max-fills 10 --json`. The round's jobs
+   survive the round and deploys; the one-minute pass would kill its children, so it never starts one. A request no
+   round acted on within 30 minutes expires; a round that died mid-start is never retried (a cycler it did start is
+   adopted), so a crash cannot leave a second sniper.
+4. **Caps:** the strategy's own size a buy, 0.5 SOL at most; at most 10 buys, one coin at a time (the cycler re-arms
+   only while the wallet holds nothing); 120 minutes; floor = 1 SOL below the balance the test starts from (the
+   owner's stop, 7 Nov 09:15), never under 1 SOL. Below the floor the
+   cycler stops re-arming. A sniper holding a coin is never stopped. The 10 buys are the larger of our buys on the tape
+   and the coins seen in the wallet (a probe with the recorder missing our buys made 118 under a cap of 10 when only the
+   tape counted), and the cycler does not re-arm while the tape is more than 2 minutes behind.
+5. **How it ends.** At every end (10 buys, 120 minutes, the floor, `/stop`) the cycler stops its sniper if the wallet
+   holds nothing: at the time limit the sniper has almost always just been re-armed, and left armed it would buy at the
+   next launch that qualifies, past the approved minutes, with nobody watching. The round then checks OKTech: the test
+   is done only once its sniper is stopped (the round stops it itself when the cycler could not, after a reboot or a
+   kill). While the wallet holds a coin the sniper keeps running to sell it and the test stays `closing`, its sniper
+   and its coin expected; the round that finds the wallet empty stops it. `/stop` cancels a test not started yet and
+   ends a running one (the cycler reads the flag every 5 seconds). The unsold-coin watch and `/sell` cover a coin
+   OKTech does not sell (2 of 11 hunt fills on 5 Nov, HOUSE and CAT).
+6. **Recorded:** `operator/TEST.json` (the plan, the sniper, the job, start and end, the cycler's report: fills, start
+   and end balance, why it ended, the coins held by the shared rule, and whether the round stopped the sniper), one
+   line per finished test in `operator/tests.jsonl`, a decision note and a Telegram line at the request, the start, the
+   end and the close, the cycler's log `jobs/<id>.log` (never pruned), and every fill on the tape and in `fills`. Each
+   test's result is written up here.
+
 ## Hunt live, 5 Nov 21:13–22:10 UTC (account approved for Hunt + local pre-execution)
 
 Facts measured on chain and on the tape, 0.02 SOL per buy on the SNIPER wallet:

@@ -405,6 +405,18 @@ the owner's Telegram commands (`/stop`, `/resume`, `/status`) and acts on them, 
 takes effect within a minute instead of at the next 15-minute round. The round and the minute pass share one file lock
 (`operator/commands.lock`) and one Telegram offset, so a command is handled exactly once.
 
+**A live test from Telegram (`/test`).** The owner starts and ends a capped live test without SSH. `/test` lists the
+hunt strategies the forward paper test backs where a live hunt fill lands (100 forward trades or more, lower bound above
+zero) and the plan for the best one, ending with the line to send: `/test <id> go`. That message is the owner's yes for
+exactly that plan and only writes `operator/TEST.json`; the next operator round checks everything again, creates the
+strategy's own hunt sniper and starts one `oktech cycle` job (the round's jobs survive deploys; the minute pass would
+kill it): the strategy's own size a buy (0.5 SOL at most), at most 10 buys one coin at a time, 120 minutes, and a floor
+1 SOL below the balance it starts from (the owner's stop); only strategies positive also with outliers capped. A test
+ends with nothing left armed: its sniper is stopped as soon
+as the wallet holds nothing (until then the test is "closing"). One test at a time, also counted on OKTech (any active
+sniper that is not the book's refuses one), and none starts while the tape is behind; `/stop` cancels one not started
+and ends a running one; no agent tool can write the file or start a test (`operator/live_test.py`, docs/live-recipe.md).
+
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live
 round trips since its last turn or applied change. Under 20, it notes why it waited and stops: no Claude call, no cost.
 From 20 on, one turn on the analyst model reads the week's numbers from the tables — fills and the bid model per arm,
