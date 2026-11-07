@@ -10,6 +10,7 @@ import math
 import pytest
 
 from snipetech.config import Config
+from snipetech.models import Trade
 from snipetech.operator import risk_guard as RG
 from snipetech.operator.notify import Notifier
 from snipetech.operator.paths import OperatorPaths
@@ -43,6 +44,21 @@ def _buy(store, sig, ts, mint, sol=0.2, tokens=1_000_000, fee_lamports=(1_000_00
 def _sell(store, sig, ts, mint, pnl, tokens=1_000_000, twin=0.0, buy_sig=None):
     store.put_fill({"sig": sig, "ts": ts, "wallet": W, "mint": mint, "side": "sell", "sol": 0.1, "tokens": tokens,
                     "pnl_sol": pnl, "twin_fee_sol": twin, "buy_sig": buy_sig})  # fmt: skip
+
+
+def _tape(store, sig, ts, mint, buy, sol, tokens=1_000_000, user=W, slot=None):
+    """One trade of ours on the tape (our own recorder, seconds behind the chain): `sol` paid on a buy (fee included) or
+    received on a sell (fee taken), as the measure stage would write it into `fills` at its next run."""
+    fee = 2_000_000
+    quote = round(sol * 1e9) - fee if buy else round(sol * 1e9) + fee
+    store.add_trades([Trade(sig=sig, ev=0, slot=slot or int(ts) - DAY0, pos=0, ts=int(ts), mint=mint, venue="curve",
+                            user=user, is_buy=buy, quote=quote, base=int(tokens), fee=fee, fee_bps=100, q_after=1,
+                            b_after=1)])  # fmt: skip
+
+
+def _measured(store, ts):
+    """The measure stage's last run (its cursor): the fills hold the tape's trades of ours up to about then."""
+    store.set_coverage("measure:last_ts", {"ts": int(ts)})
 
 
 def _coin(mint, value, raw=1_000_000, priced=True):
@@ -143,6 +159,50 @@ def test_a_coin_bought_before_the_measure_stage_saw_it_is_left_out_not_guessed(e
     assert day["open_sol"] == 0.0 and day["coins"] == 0 and day["unpriced"] == 1
 
 
+def test_a_coin_sold_before_the_measure_stage_read_the_sale_still_counts(env):
+    """The cycler re-arms seconds after a sale, the measure stage writes the sale up to 5 minutes later. The coin's loss
+    counted while it was held must not vanish in between: the sale is read from the tape (what came back, less a
+    transaction's fees) against what the buy cost."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 120)
+    _sell(store, "s0", NOW - 3000, M2, pnl=-0.85)
+    _buy(store, "b1", NOW - 600, M1)  # 0.2 SOL and 0.003005 of fees
+    held = RG.day_result(store, W, NOW, [_coin(M1, 0.02)], per_tx_sol=0.0035)
+    assert held["total_sol"] == pytest.approx(-0.85 + 0.02 - 0.203005, abs=1e-6)  # while held: marked down
+    _tape(store, "s1", NOW - 30, M1, buy=False, sol=0.02)  # sold; the measure stage has not run since
+    sold = RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)
+    assert sold["total_sol"] == pytest.approx(-0.85 + 0.02 - 0.0035 - 0.203005, abs=1e-6)
+    assert sold["realised_sol"] == pytest.approx(sold["total_sol"]) and sold["unread_sol"] < -0.18
+
+
+def test_a_coin_gone_from_the_wallet_with_no_sale_seen_counts_its_whole_cost(env):
+    """Bought today, no longer in the wallet, and no sale of it on the tape (sold where the recorder does not look, or
+    rugged to dust): its whole cost counts as lost until the measure stage says otherwise. One bought on an earlier day
+    is not today's result; one bought after the wallet was read may simply not be in that read yet."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 120)
+    _buy(store, "b1", NOW - 600, M1)
+    _buy(store, "b0", DAY0 - 3600, M2)  # yesterday's
+    day = RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)
+    assert day["total_sol"] == pytest.approx(-0.203005, abs=1e-6)
+    snap_at = NOW - 900  # the last round read the wallet before b1 was bought: b1 is not judged on that read
+    assert RG.day_result(store, W, NOW, [], per_tx_sol=0.0035, held_ts=snap_at)["total_sol"] == 0.0
+
+
+def test_a_round_trip_the_measure_stage_has_not_read_yet_counts_from_the_tape(env):
+    """A buy and its sale minutes ago, both on the tape and neither in the fills yet: what went out and what came back,
+    with a transaction's fees on each, as the measure stage will count it."""
+    _paths, store, _cfg = env
+    _measured(store, NOW - 300)
+    _tape(store, "b1", NOW - 200, M1, buy=True, sol=0.202)
+    _tape(store, "s1", NOW - 100, M1, buy=False, sol=0.05)
+    day = RG.day_result(store, W, NOW, [], per_tx_sol=0.0035)
+    assert day["total_sol"] == pytest.approx(0.05 - 0.202 - 2 * 0.0035, abs=1e-6)
+    _tape(store, "b2", NOW - 90, M2, buy=True, sol=0.202)  # still held, at the tape's price
+    day = RG.day_result(store, W, NOW, [_coin(M2, 0.15)], per_tx_sol=0.0035)
+    assert day["open_sol"] == pytest.approx(0.15 - 0.202 - 0.0035, abs=1e-6)
+
+
 def test_rows_the_measure_stage_left_half_written_are_skipped(env):
     """The book's own tests and old rows carry fills without tokens or a mint: they never break the guard."""
     _paths, store, _cfg = env
@@ -230,6 +290,37 @@ def test_what_the_guard_cannot_read_never_counts_as_clear(env):
 
     g = RG.evaluate(Broken(), cfg, paths, NOW, wallet=W, sol=11.0, held=[])
     assert not g.known and not g.tripped and "OSError" in g.reason
+
+
+def test_a_stalled_measure_stage_is_never_read_as_a_clear_day(env):
+    """The day stop rests on the measure stage's fills. When it has not run for 40 minutes (its timer runs it every 5,
+    the round's stand-in every 15) and the wallet traded today since, the guard cannot tell the day; a day the tape alone
+    shows past the stop still trips. A stalled stage with nothing traded since it last ran says nothing new."""
+    paths, store, cfg = env
+    _measured(store, NOW - 4 * 3600)
+    _sell(store, "s-old", NOW - 4 * 3600 - 60, M2, pnl=-0.3)  # measured before it stalled
+    g = RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[])
+    assert g.known and not g.tripped  # nothing traded since: the fills hold the whole day
+    _tape(store, "b1", NOW - 3600, M1, buy=True, sol=0.202)
+    _tape(store, "s1", NOW - 3500, M1, buy=False, sol=0.21)
+    g = RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[])
+    assert not g.known and not g.tripped and "measure stage" in g.reason and "06:00" in g.reason
+    for k in range(7):  # 7 losing round trips since: the tape alone shows the day past the stop
+        _tape(store, f"b{k + 2}", NOW - 3000 + 60 * k, f"M{k}", buy=True, sol=0.202)
+        _tape(store, f"s{k + 2}", NOW - 2970 + 60 * k, f"M{k}", buy=False, sol=0.0)
+    g = RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[])
+    assert g.tripped and g.known and g.kinds == ("day",)
+    _measured(store, NOW - 120)  # it runs again (here: without having written the fills yet)
+    assert RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[]).tripped
+
+
+def test_a_measure_stage_that_never_ran_cannot_vouch_for_a_wallet_that_traded(env):
+    paths, store, cfg = env
+    assert RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[]).known  # a fresh install that has traded nothing
+    _tape(store, "b1", NOW - 600, M1, buy=True, sol=0.202)
+    _tape(store, "s1", NOW - 500, M1, buy=False, sol=0.25)
+    g = RG.evaluate(store, cfg, paths, NOW, sol=11.0, held=[])
+    assert not g.known and "never" in g.reason
 
 
 def test_tripped_says_yes_or_no_and_reads_the_wallet_when_it_must(env):

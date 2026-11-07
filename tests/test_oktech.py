@@ -906,6 +906,51 @@ def test_the_cycler_reads_the_owners_guard_file_next_to_the_database(monkeypatch
     store.close()
 
 
+def test_a_sale_that_takes_the_day_past_the_stop_blocks_the_next_rearm(monkeypatch, tmp_path):
+    """The cycler re-arms seconds after a sale, and the measure stage writes the sale up to 5 minutes later: a guard
+    resting on the fills alone counted the coin's loss while it was held and lost it the moment it was sold, so the
+    re-arm after a sale that took the day past the owner's stop went ahead. The real guard reads that sale (and its buy)
+    from the tape, and the run re-arms nothing more."""
+    from snipetech.models import Trade
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.operator.risk_guard import set_risk
+
+    t0 = 1_794_045_600  # 7 Nov 10:00 UTC
+    clock, held, box = {"t": float(t0)}, {"now": False, "sold": False}, {}
+
+    def ours(sig, buy, sol):
+        """One trade of ours on the tape now, the measure stage not yet run since."""
+        fee = 2_000_000
+        box["store"].add_trades([Trade(sig=sig, ev=0, slot=int(clock["t"]) - t0 + 1000, pos=0, ts=int(clock["t"]), mint="M1",
+                                       venue="curve", user=W6, is_buy=buy, quote=round(sol * 1e9) + (-fee if buy else fee),
+                                       base=1_000_000, fee=fee, fee_bps=100, q_after=1, b_after=1)])  # fmt: skip
+
+    def on_start(n):
+        if n == 1:  # the hunt sniper fires at once: 0.2 SOL into a coin
+            ours("buy-1", True, 0.202)
+            held["now"] = True
+
+    def on_sleep(secs):
+        if held["now"] and not held["sold"] and clock["t"] >= t0 + 40:  # the coin falls 90 % and its exit sells
+            ours("sell-1", False, 0.02)
+            held.update(now=False, sold=True)
+
+    flag = {"stop": False}
+    client = _CycleClient(on_start=on_start)
+    svc, store = _cycle_svc(monkeypatch, client, flag, holds=lambda: held["now"], on_sleep=on_sleep, clock=clock,
+                            guard="real")  # fmt: skip
+    box["store"] = store
+    svc.cfg.storage.db_path = str(tmp_path / "snipetech.db")
+    set_risk(OperatorPaths(tmp_path), {"floor_sol": 4.0}, "telegram")  # these wallets hold 5 SOL
+    store.put_fill({"sig": "s0", "ts": t0 - 1800, "wallet": W6, "mint": "M0", "side": "sell", "sol": 0.1,
+                    "tokens": 1000.0, "pnl_sol": -0.85})  # fmt: skip  # the day so far, measured
+    store.set_coverage("measure:last_ts", {"ts": t0 - 60})  # the measure stage ran a minute before the start
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 10))
+    assert "wallet-wide guard holds" in rep["reason"] and "day stop" in rep["reason"] and rep["restarts"] == 0
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a")]  # armed once, disarmed after the sale
+    store.close()
+
+
 HUNT_STRATEGY = {"id": "a1b2c3d4e5", "label": "OKTech hunt: >= 2 SOL bought within 1 s of the launch",
                  "trigger": {"kind": "hunt", "sol": 2.0, "window": 1.0, "dev_max": 1.0},
                  "exit": {"stop_loss": 0.3, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip

@@ -58,6 +58,9 @@ def _env(tmp_path, **book):
     data = tmp_path / "data"
     OperatorPaths(data).ensure()
     st = Store(data / "snipetech.db")
+    # the measure stage ran a minute ago: the owner's wallet-wide guard reads the fills it writes, and a stage that has
+    # stopped while the wallet trades on the tape is a day the guard cannot tell (operator/risk_guard.py)
+    st.set_coverage("measure:last_ts", {"ts": int(NOW) - 60})
     cfg = Config()
     cfg.storage.db_path = str(data / "snipetech.db")
     cfg.operator.wallet = W

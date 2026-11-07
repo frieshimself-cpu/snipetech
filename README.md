@@ -423,7 +423,9 @@ wallet is under 10 SOL. It is on from the start, with no off. `/risk` shows it w
 and `/risk floor 9` change it (a day stop of 0.1 to 5 SOL, a floor of 0 to 1000 SOL), `/risk default` goes back to 1 and
 10. From the cloud session, with your OK in chat: `snipetech remote --wait run operate risk --day-stop 1.5 --floor 9`
 (`--default` to go back). The day's result is our own trading only: today's closed round trips from the measure
-stage's fills plus the coins our buys still hold at the tape's price, so a deposit or a withdrawal moves nothing. While
+stage's fills plus the coins our buys still hold at the tape's price, so a deposit or a withdrawal moves nothing; our
+trades the fills do not have yet are read from the tape, and a stalled measure stage (40 minutes, with trades since)
+is a day the guard cannot tell, which starts nothing. While
 it holds, nothing new starts: the book creates and starts nothing and stops its snipers that hold nothing, `/test go`
 and the round's start of a test refuse, and a running cycler stops re-arming (it reads the guard before each re-arm,
 like `/stop`). One Telegram line when it trips, and `/status` shows it. The values live in `operator/RISK`; the agents

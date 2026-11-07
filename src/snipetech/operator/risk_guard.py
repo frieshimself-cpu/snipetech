@@ -3,10 +3,13 @@ plan"): "no new live trade once the day is 1 SOL down or the wallet is under 10 
 
 The day's result is our own trading only: the round trips closed today (UTC) in the measure stage's fills, with their
 real fees and failed duplicate sells (book/state.py, the book's own day accounting), plus the coins our own buys still
-hold, marked at the tape's price against what those buys cost. Never the change of the wallet's balance: a deposit, a
-withdrawal or OKTech wrapping SOL is not a trading result (6 Nov 15:16 the owner moved 2.54 SOL out of the sniper wallet
-in the middle of a test, and OKTech wrapped 0.0996 SOL at its start). The floor is the wallet itself: SOL, wrapped SOL
-and the coins at the tape's price, the owner's ignored coins left out.
+hold, marked at the tape's price against what those buys cost. The fills lag the tape by up to 5 minutes and the cycler
+re-arms seconds after a sale, so the wallet's trades the fills do not have yet are counted from the tape, and a coin our
+buys of today hold by the fills that has left the wallet with no sale seen counts its whole cost as lost. A measure
+stage that has not run for 40 minutes while the wallet trades makes the day one the guard cannot tell. Never the change
+of the wallet's balance: a deposit, a withdrawal or OKTech wrapping SOL is not a trading result (6 Nov 15:16 the owner
+moved 2.54 SOL out of the sniper wallet in the middle of a test, and OKTech wrapped 0.0996 SOL at its start). The floor
+is the wallet itself: SOL, wrapped SOL and the coins at the tape's price, the owner's ignored coins left out.
 
 While it is tripped, no new live trade starts: the book creates and starts nothing and stops its own snipers that hold
 nothing (a sniper holding a coin is never stopped: a stopped sniper strands its coin, CLAUDE.md rule 1); /test go, the
@@ -44,6 +47,11 @@ RULES = {
 }
 FIELDS = tuple(RULES)
 SNAPSHOT_MAX_AGE_SECS = 40 * 60  # the last round's snapshot: older than two rounds, the wallet is read instead
+SETTLE_SECS = 60  # a buy this recent may not be in a wallet read yet (book/run.py TAPE_SETTLE_SECS)
+# the measure stage writes our trades into the fills every 5 minutes (every 15 as the round's stand-in): a last run older
+# than two rounds, with trades of ours on the tape today since, means the fills cannot vouch for the day
+MEASURE_KEY = "measure:last_ts"
+MEASURE_STALE_SECS = 40 * 60
 WALLET_READ_SECS = 20  # how long a wallet read may take before the guard says it cannot tell (live_test's rule)
 ANNOUNCED = "wallet-wide guard tripped"  # the decision note's words: one a day for each stop
 _WORDS = {"day": "day stop:", "floor": "floor:"}  # how each stop is named in that note
@@ -138,45 +146,87 @@ def _usable(rows: list[dict]) -> list[dict]:
     return out
 
 
-def _open_lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: float) -> dict[str, dict[str, float]]:
-    """The tokens our own buys still hold by the measure stage's fills, paired first in first out as measure pairs its
-    round trips: per coin, the tokens left and what they cost (the buy's SOL and its share of the buy's fees)."""
+def _lots(store, wallet: str, now: float, per_tx_sol: float, lookback_days: float) -> tuple[dict, list]:
+    """(the lots our own buys still hold by the measure stage's fills, per coin: [bought at, tokens left, what they
+    cost], paired first in first out as measure pairs its round trips (the buy's SOL and its share of the buy's fees);
+    the wallet's trades on the tape that the fills do not have yet, oldest first)."""
     from ..measure.classify import _fill_fee_sol, pair_round_trips
 
     since = int(now - lookback_days * 86400)
-    buys = _usable(store.fills(wallet=wallet, since_ts=since, side="buy", limit=100_000))
-    sells = _usable(store.fills(wallet=wallet, since_ts=since, side="sell", limit=100_000))
+    rows = store.fills(wallet=wallet, since_ts=since, limit=100_000)
+    measured = {str(r.get("sig")) for r in rows if r.get("sig")}
+    buys = _usable([r for r in rows if r.get("side") == "buy"])
+    sells = _usable([r for r in rows if r.get("side") == "sell"])
     by_sig = {b["sig"]: b for b in buys}
-    out: dict[str, dict[str, float]] = {}
+    lots: dict[str, list[list[float]]] = {}
     for lot in pair_round_trips(buys, sells, per_tx_sol)["open"]:
         b = by_sig[lot["sig"]]
         share = float(lot["tokens_left"]) / float(b["tokens"])
         fee = _fill_fee_sol(b)
-        o = out.setdefault(lot["mint"], {"tokens": 0.0, "cost_sol": 0.0})
-        o["tokens"] += float(lot["tokens_left"])
-        o["cost_sol"] += (float(b["sol"]) + (per_tx_sol if fee is None else fee)) * share
-    return out
+        cost = (float(b["sol"]) + (per_tx_sol if fee is None else fee)) * share
+        lots.setdefault(str(lot["mint"]), []).append([float(b["ts"]), float(lot["tokens_left"]), cost])
+    unread = sorted((t for t in store.trades_for_user(wallet, since) if t.sig not in measured and t.mint),
+                    key=lambda t: (t.ts, t.slot, t.pos))  # fmt: skip
+    return lots, unread
 
 
-def day_result(store, wallet: str, now: float, held: list[dict], *, per_tx_sol: float,
-               lookback_days: float = 7) -> dict[str, Any]:  # fmt: skip
-    """Today's trading result in SOL: `realised_sol`, the round trips closed since 00:00 UTC (each sell's result with
-    its failed duplicate sends: book/state.realised_today), `open_sol`, the coins in `held` (the wallet's coins by the
-    shared rule) that our own buys still hold, at the tape's price against what those buys cost, and `total_sol`.
+def day_result(store, wallet: str, now: float, held: list[dict], *, per_tx_sol: float, lookback_days: float = 7,
+               held_ts: float | None = None, ignore=()) -> dict[str, Any]:  # fmt: skip
+    """Today's trading result in SOL: `realised_sol`, the round trips closed since 00:00 UTC, `open_sol`, the coins in
+    `held` (the wallet's coins by the shared rule, read at `held_ts`, now by default) that our own buys still hold, at
+    the tape's price against what those buys cost, and `total_sol`.
 
-    Only what both the wallet and the fills see is counted: a coin no buy of ours explains (an airdrop) is no trading
-    result, one bought minutes ago that the measure stage has not read yet has no cost known, and one the tape has not
-    priced has no value known; each counts for nothing until it is known (`coins`: the coins counted, `unpriced`: the
-    held coins with a buy of ours and no price). A coin whose sale the wallet read has not caught up with counts only
-    the tokens the fills still hold. A deposit or a withdrawal is in none of these numbers."""
+    The measure stage's fills are the record (each sell's result with its failed duplicate sends: book/state.
+    realised_today), but they lag the tape by up to 5 minutes, and the cycler re-arms seconds after a sale: a coin's
+    loss counted while it was held must not vanish the moment it is sold. So the wallet's trades on the tape that the
+    fills do not have yet are counted from the tape too (what went out on a buy, what came back on a sale, a
+    transaction's fees on each), and a lot our buys still hold by the fills that the wallet no longer holds, with no
+    sale of it seen, counts its whole cost as lost if it was bought today (sold where the recorder does not look, or
+    rugged to dust) until the measure stage says otherwise (`unread_sol`: the part of the day that rests on those).
+
+    Only what is known is counted: a coin no buy of ours explains (an airdrop) is no trading result, one the tape has not
+    priced has no value known (`unpriced`), and a coin with a buy after the wallet was read (a minute of grace) is not
+    judged on that read; each counts for nothing until it is known (`coins`: the held coins counted). The owner's
+    ignored coins are left out. A deposit or a withdrawal is in none of these numbers. `pending`: today's trades of
+    ours on the tape that the fills do not have yet."""
     from ..book.state import realised_today
 
+    day_start = int(now // 86400) * 86400
+    seen_at = float(now if held_ts is None else held_ts) - SETTLE_SECS
+    skip = set(ignore or ())
     realised = realised_today(store, wallet, now)
-    lots = _open_lots(store, wallet, now, per_tx_sol, lookback_days)
+    lots, unread = _lots(store, wallet, now, per_tx_sol, lookback_days)
+    sells: dict[str, list] = {}
+    for t in unread:
+        if t.mint in skip:
+            continue
+        if t.is_buy:
+            cost = (int(t.quote) + int(t.fee)) / 1e9 + per_tx_sol
+            lots.setdefault(t.mint, []).append([float(t.ts), float(t.base), cost])
+        elif float(t.base) > 0:
+            sells.setdefault(t.mint, []).append(t)
+    for ls in lots.values():
+        ls.sort(key=lambda lot: lot[0])
+    unread_sol = 0.0
+    for m, ss in sells.items():  # the sales the fills do not have yet close the oldest lots first, as measure will
+        for t in ss:
+            left, got = float(t.base), (int(t.quote) - int(t.fee)) / 1e9 - per_tx_sol
+            for lot in lots.get(m, []):
+                if left <= 0:
+                    break
+                if lot[1] <= 0 or lot[0] > t.ts:
+                    continue
+                take = min(lot[1], left)
+                cost = lot[2] * take / lot[1]
+                if t.ts >= day_start:  # a sale before today is an earlier day's trip
+                    unread_sol += got * take / float(t.base) - cost
+                lot[1] -= take
+                lot[2] -= cost
+                left -= take
     coins: dict[str, dict[str, Any]] = {}
     for h in held or []:
         m = h.get("mint")
-        if not m or m not in lots:
+        if not m or m in skip:
             continue
         c = coins.setdefault(str(m), {"raw": 0, "value": 0.0, "priced": True})
         c["raw"] += int(h.get("raw") or 0)
@@ -185,19 +235,34 @@ def day_result(store, wallet: str, now: float, held: list[dict], *, per_tx_sol: 
         else:
             c["value"] += float(h["value_sol"])
     open_sol, counted, unpriced = 0.0, 0, 0
-    for m, c in coins.items():
-        if not c["priced"]:
+    for m, ls in lots.items():
+        if m in skip:
+            continue
+        ls = [lot for lot in ls if lot[1] > 1e-9]
+        left = sum(lot[1] for lot in ls)
+        if left <= 0 or any(lot[0] > seen_at for lot in ls):  # nothing left, or a buy the wallet read may not show yet
+            continue
+        cost = sum(lot[2] for lot in ls)
+        c = coins.get(m)
+        if c is not None and not c["priced"]:
             unpriced += 1
             continue
-        lot = lots[m]
-        held_raw, left = float(c["raw"]), float(lot["tokens"])
-        value_share = min(1.0, left / held_raw) if held_raw > 0 else 1.0  # the wallet holds more than our buys explain
-        cost_share = min(1.0, held_raw / left) if held_raw > 0 and left > 0 else 1.0  # a sale the fills have not seen
-        open_sol += c["value"] * value_share - lot["cost_sol"] * cost_share
-        counted += 1
+        held_raw = float(c["raw"]) if c is not None else 0.0
+        if c is not None and held_raw <= 0:  # a holding without its raw amount: it is our lot, all of it
+            held_raw = left
+        ours = min(held_raw, left)
+        if c is not None:  # the wallet holds more than our buys explain: only our tokens' value is ours
+            open_sol += c["value"] * (ours / held_raw if held_raw > 0 else 1.0) - cost * ours / left
+            counted += 1
+        gone = left - ours  # tokens our buys hold by the fills that the wallet does not, with no sale of them seen
+        if gone > 1e-9:
+            today = sum(lot[2] for lot in ls if lot[0] >= day_start) / cost if cost > 0 else 0.0
+            unread_sol -= cost * gone / left * today
     open_sol = round(open_sol, 6)
-    return {"realised_sol": realised, "open_sol": open_sol, "total_sol": round(realised + open_sol, 6),
-            "coins": counted, "unpriced": unpriced}  # fmt: skip
+    realised_all = round(realised + unread_sol, 6)
+    pending = sum(1 for t in unread if t.ts >= day_start and t.mint not in skip)
+    return {"realised_sol": realised_all, "open_sol": open_sol, "total_sol": round(realised_all + open_sol, 6),
+            "coins": counted, "unpriced": unpriced, "unread_sol": round(unread_sol, 6), "pending": pending}  # fmt: skip
 
 
 # -- tripped or not --------------------------------------------------------------------------------------------------
@@ -225,11 +290,34 @@ def _sol(x: float) -> str:
     return f"{x:+.2f}".replace("+0.00", "0.00").replace("-0.00", "0.00")
 
 
+def _hm(ts) -> str:
+    try:
+        return time.strftime("%H:%M UTC", time.gmtime(float(ts)))
+    except (TypeError, ValueError, OverflowError):
+        return "an unknown time"
+
+
+def _measure_lag(store, now: float, day: dict) -> str | None:
+    """Why the fills cannot vouch for today, or None: the measure stage has not run for MEASURE_STALE_SECS (or never),
+    and the tape holds trades of ours today that the fills do not have. What the tape shows is counted all the same
+    (day_result); this says that the stage that records it has stopped, so the guard cannot tell."""
+    if not day.get("pending"):
+        return None
+    last = (store.coverage(MEASURE_KEY) or {}).get("ts")
+    if last is not None and now - float(last) <= MEASURE_STALE_SECS:
+        return None
+    n = int(day["pending"])
+    since = "has never read the wallet's trades" if last is None else f"has not read the fills since {_hm(last)}"
+    return f"the measure stage {since}, and {n} of today's trades of the wallet are not in them"
+
+
 def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None = None, sol: float | None = None,
-             held: list[dict] | None = None) -> Guard:  # fmt: skip
+             held: list[dict] | None = None, held_ts: float | None = None) -> Guard:  # fmt: skip
     """The guard from what the caller has read: `sol`, the wallet's SOL and wrapped SOL (None: not known), and `held`,
-    its coins by the shared rule (positions.py; None: not known). The day stop holds once today is at least the day
-    stop down; the floor once the wallet is under it. Reads the store and the owner's file, nothing else."""
+    its coins by the shared rule (positions.py; None: not known), read at `held_ts` (now by default). The day stop holds
+    once today is at least the day stop down; the floor once the wallet is under it. A measure stage that has stopped
+    writing the fills while the wallet trades makes the day one the guard cannot tell. Reads the store and the owner's
+    file, nothing else."""
     lim = limits(paths)
     stop, floor = lim["day_stop_sol"], lim["floor_sol"]
     wallet = wallet if wallet is not None else (cfg.operator.wallet or "")
@@ -246,13 +334,18 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
     else:
         try:
             day = day_result(store, wallet, now, coins, per_tx_sol=cfg.costs.per_tx_sol(),
-                             lookback_days=cfg.measure.lookback_days)  # fmt: skip
+                             lookback_days=cfg.measure.lookback_days, held_ts=held_ts, ignore=ignore)  # fmt: skip
+            lag = _measure_lag(store, now, day)
+            if lag:
+                unknown.append(lag)
         except Exception as exc:  # noqa: BLE001 - the guard says it cannot tell; it never says clear
             unknown.append(f"the fills could not be read ({type(exc).__name__})")
     if day is not None and day["total_sol"] <= -stop + 1e-9:
         kinds.append("day")
-        said.append(f"today is {-day['total_sol']:.2f} SOL down ({_sol(day['realised_sol'])} in trades closed today, "
-                    f"{_sol(day['open_sol'])} in coins still held), at or past the {stop:g} SOL day stop")  # fmt: skip
+        unread = (f", {_sol(day['unread_sol'])} of it in trades the measure stage has not written yet"
+                  if abs(day.get("unread_sol") or 0) >= 0.005 else "")  # fmt: skip
+        said.append(f"today is {-day['total_sol']:.2f} SOL down ({_sol(day['realised_sol'])} in trades closed today"
+                    f"{unread}, {_sol(day['open_sol'])} in coins still held), at or past the {stop:g} SOL day stop")  # fmt: skip
     equity = None
     if sol is None:
         unknown.append("the wallet's balance is not known")
@@ -282,7 +375,7 @@ def from_snapshot(store, cfg, paths: OperatorPaths, now: float, snap) -> Guard:
              and not (wallet and snap.wallet and snap.wallet != wallet))  # fmt: skip
     sol = snap.native_sol + snap.wsol if fresh and snap.native_sol is not None and snap.wsol is not None else None
     held = list(snap.held or []) if fresh and sol is not None else None
-    return evaluate(store, cfg, paths, now, sol=sol, held=held)
+    return evaluate(store, cfg, paths, now, sol=sol, held=held, held_ts=float(snap.ts) if held is not None else None)
 
 
 async def read_wallet(svc, cfg, wallet: str) -> tuple[float, list[dict]]:

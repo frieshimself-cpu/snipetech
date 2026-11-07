@@ -35,8 +35,12 @@ starts by itself (the owner hears it once a day) and a sequence in progress ends
   `/risk default` change it (`operate risk --day-stop N --floor N --default` does the same). The day stop is 0.1 to 5 SOL
   and the floor 0 to 1000 SOL. There is no off.
 - The day's result is our own trading only: today's closed round trips in the measure stage's fills (real fees and
-  failed duplicate sells included), plus the coins our buys still hold, at the tape's price. A deposit or a withdrawal
-  moves nothing in it. The floor is the wallet itself: SOL, wrapped SOL and coins.
+  failed duplicate sells included), plus the coins our buys still hold, at the tape's price. The fills lag by up to 5
+  minutes and the cycler re-arms seconds after a sale, so our trades the fills do not have yet are read from the tape,
+  and a coin bought today that has left the wallet with no sale seen counts its whole cost as lost. A deposit or a
+  withdrawal moves nothing in it. The floor is the wallet itself: SOL, wrapped SOL and coins.
+- When the measure stage has not run for 40 minutes and the wallet has traded today since, the guard cannot tell the
+  day (it says so in `/risk` and `/status`), and nothing new starts until it runs again.
 - While it holds, nothing new starts. The book creates and starts nothing and stops its snipers that hold nothing (one
   holding a coin keeps running to sell it). `/test go` and the round's start of a test refuse. The cycler does not
   start, and it reads the guard before each re-arm (like `/stop`) and ends its run. The automatic test asks for nothing.
