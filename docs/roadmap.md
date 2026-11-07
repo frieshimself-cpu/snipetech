@@ -14,6 +14,14 @@ first on the server's recording and only then run live in capped batches.
   remote sql stops at 30 s, and every connection caps the WAL at 64 MiB once it restarts: the -wal file went from
   7.33 GB to 0.07 GB. The copy is now opened read-only and immutable and never written: its review found that a
   read-write open could leave a -wal beside it that the next renamed copy read as "malformed".
+- **Deployed 23:14 (66a88f1): /sell sells PumpSwap coins; the book copies only wallets that pass after their pick.**
+  `/sell`, the unsold-coin watch and `snipetech sweep` now sell a coin that left its curve on its PumpSwap pool, built
+  from OKTech's own landed sell from our wallet (6 Nov 05:15:55; the proceeds land as WSOL, cashback coins are
+  refused), and leave alone any holding worth less than the ~0.001 SOL fee to sell it. The qualify stage scores a copy
+  behind the 3rd buy after the leader's across slots (never cheaper than right behind the leader), drops wallets with
+  10 %+ of their first buys in create slots, and qualifies a wallet only if its copies after its latest pick also
+  pass (20+ copies over 6 h+). Wallets the book copies now (7aPo3n, AG89fn) keep their verdict and score; their
+  verdict says if they no longer qualify, and the owner decides.
 - **The creator-0 crowd hunt is in the forward paper test, twice.** The analyst's 48 h lab of `{"kind": "hunt", "sol": 15,
   "buyers": 15, "window": 1, "dev_max": 0}` (job 20261107-221611-769313, live landing and measured cost) made +0.045 a
   trade on its test part (n 11, 10 won, lower bound +0.037; 26 moments in 45 h). Frozen at 23:00 as `7d6b4302ff`
