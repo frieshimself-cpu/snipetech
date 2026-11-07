@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..models import AMM, Launch, Trade
+from ..models import AMM, CURVE, Launch, Trade
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
@@ -48,6 +48,11 @@ def slot_secs_from(slots, ts, min_span_secs: float = 600.0) -> float:
     return slope if 0.05 <= slope <= 2.0 else DEFAULT_SLOT_SECS
 
 
+# A pump.fun curve has completed once its virtual token reserve is down to this (1.073e15 virtual - 793.1e12 sold):
+# the tape's smallest curve b_after, the reserve every completing trade leaves (7 Nov: 59 completions in two hours)
+PUMP_CURVE_DONE_B = 279_900_000_000_000.0
+
+
 @dataclass
 class MarketPath:
     mint: str
@@ -67,6 +72,9 @@ class MarketPath:
     launch: Launch | None = None
     meta: dict = field(default_factory=dict)
     slot_secs: float = DEFAULT_SLOT_SECS  # seconds per slot on this path's chain (the lab measures it)
+    # True from the state at which the coin has left its pump.fun curve: the curve completed (its virtual token
+    # reserve is down to PUMP_CURVE_DONE_B) or the trade ran on PumpSwap. A launch sniper's buy there fails.
+    off_curve: np.ndarray | None = None
 
     # -- construction -----------------------------------------------------------
 
@@ -76,6 +84,7 @@ class MarketPath:
         trades = sorted(trades, key=lambda t: t.order)
         trades = _fix_slot_order(trades)
         rows: list[tuple] = []
+        off: list[bool] = []  # per row: off the pump.fun curve (see `off_curve`)
         genesis = False
         if launch is not None:
             genesis = True
@@ -83,12 +92,14 @@ class MarketPath:
                 (launch.slot, launch.ts, float(INITIAL_VIRTUAL_SOL_RESERVES), float(INITIAL_VIRTUAL_TOKEN_RESERVES),
                  0, False, 0.0, 0.0, False, "", launch.sig)
             )  # fmt: skip
+            off.append(False)
             trades = [t for t in trades if t.slot >= launch.slot]
         for t in trades:
             rows.append(
                 (t.slot, t.ts, float(t.q_after), float(t.b_after), t.fee_bps, t.is_buy, float(t.quote),
                  float(t.base), t.venue == AMM, t.user, t.sig)
             )  # fmt: skip
+            off.append(t.venue == AMM or (t.venue == CURVE and float(t.b_after) <= PUMP_CURVE_DONE_B))
         n = len(rows)
         cols = list(zip(*rows)) if rows else [[] for _ in range(11)]
         fee = np.array(cols[4], dtype=np.float64)
@@ -116,6 +127,7 @@ class MarketPath:
             genesis=genesis,
             launch=launch,
             slot_secs=float(slot_secs) if slot_secs else DEFAULT_SLOT_SECS,
+            off_curve=np.maximum.accumulate(np.array(off, dtype=bool)) if off else np.zeros(0, dtype=bool),
         )
 
     # -- landing model -----------------------------------------------------------
@@ -220,7 +232,9 @@ def _chain(group: list[Trade]) -> list[Trade]:
     chain = [starts[0]]
     used = {id(starts[0])}
     while len(chain) < len(group):
-        nxt = next((t for t in group if id(t) not in used and before(t) == (chain[-1].q_after, chain[-1].b_after)), None)
+        nxt = next(
+            (t for t in group if id(t) not in used and before(t) == (chain[-1].q_after, chain[-1].b_after)), None
+        )
         if nxt is None:
             return group
         chain.append(nxt)

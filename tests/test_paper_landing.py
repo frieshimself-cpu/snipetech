@@ -16,6 +16,9 @@ T0 = 1_793_923_200  # 6 Nov 2026 00:00 UTC
 NOW = T0 + 4 * 3600
 SLOT0 = 400_000_000
 EXIT = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10, sell_on_dev_sell=False)
+# a copy of a known wallet's buy lands in that buy's own slot; since 7 Nov a "non-dev buys 2 SOL" (whale) rule is a
+# launch-window rule that lands where OKTech hunt buys (tests/test_launch_landing.py), so the copy tests copy a KOL
+COPY = Trigger("kol", sol=2.0)
 
 
 def _copy_coin(store: Store, k: int, ts: int) -> str:
@@ -58,6 +61,8 @@ def _freeze(store: Store, trigger: Trigger, position: str, latency: int, from_ts
 
 def _world(store: Store) -> tuple[list[str], list[str]]:
     copies = [_copy_coin(store, k, T0 + 600 + k * 300) for k in range(3)]
+    for k in range(3):
+        store.set_label(addr(f"pl-leader-{k}"), f"leader-{k}", kind="kol")
     launches = [_bundle_coin(store, k, T0 + 3000 + k * 300) for k in range(3)]
     store.set_coverage("tape", {"spans": [[T0, NOW]]})
     return copies, launches
@@ -71,7 +76,7 @@ def _entry_index(store: Store, mint: str, mcap: float) -> int:
 def test_copy_triggers_are_scored_six_trades_behind_the_leader_in_its_slot():
     store = Store(":memory:")
     _world(store)
-    s = _freeze(store, Trigger("whale", sol=2.0), "+6", 0, T0)
+    s = _freeze(store, COPY, "+6", 0, T0)
     out = paper.run(store, Config(), now=NOW)
     assert out["new_trades"] == 3 and out["landing"]["copies"] == "+6"
     rows = store.paper_trades(s["id"])
@@ -101,7 +106,7 @@ def test_a_measured_landing_further_back_moves_the_copies_back():
     store = Store(":memory:")
     _world(store)
     store.set_coverage("measure:landing_pos", {"pos": "+9", "ts": NOW - 3600})
-    s = _freeze(store, Trigger("whale", sol=2.0), "+6", 0, T0)
+    s = _freeze(store, COPY, "+6", 0, T0)
     out = paper.run(store, Config(), now=NOW)
     assert out["landing"]["copies"] == "+9"
     live = paper.report(store, Config(), now=NOW)["strategies"]
@@ -115,7 +120,7 @@ def test_a_strategy_frozen_at_a_better_landing_starts_over_at_the_live_one():
     are scored at the live landing under a new id, from where the old scoring stopped; the +1 trades stay apart."""
     store = Store(":memory:")
     copies, _ = _world(store)
-    old = _freeze(store, Trigger("whale", sol=2.0), "+1", 0, T0)
+    old = _freeze(store, COPY, "+1", 0, T0)
     switch = T0 + 700  # the first copy coin (its leader bought at T0 + 601) was scored at +1 before the code changed
     store.put_paper_trade({"strategy": old["id"], "mint": copies[0], "trigger_ts": T0 + 600, "pnl": 0.05, "data": {}})
     store.set_coverage("paper", {"done_until": switch, "last_run": switch})
@@ -134,7 +139,7 @@ def test_a_strategy_frozen_at_a_better_landing_starts_over_at_the_live_one():
 def test_a_strategy_frozen_elsewhere_but_never_scored_keeps_its_start():
     store = Store(":memory:")
     copies, _ = _world(store)
-    _freeze(store, Trigger("whale", sol=2.0), "+1", 0, T0)
+    _freeze(store, COPY, "+1", 0, T0)
     paper.run(store, Config(), now=NOW)
     (live,) = store.coverage("paper_strategies")["strategies"]
     assert live["from_ts"] == T0 and {r["mint"] for r in store.paper_trades(live["id"])} == set(copies)
@@ -143,14 +148,14 @@ def test_a_strategy_frozen_elsewhere_but_never_scored_keeps_its_start():
 def test_the_report_says_which_landing_every_number_is_at():
     store = Store(":memory:")
     _world(store)
-    _freeze(store, Trigger("whale", sol=2.0), "+1", 0, T0)
+    _freeze(store, COPY, "+1", 0, T0)
     _freeze(store, Trigger("launch"), "start", 1, T0)
     paper.run(store, Config(), now=NOW)
     rep = paper.report(store, Config(), now=NOW)
     assert rep["landing"] == {"copies": "+6", "launch": "start@1", "hunt": "+3@1"}
     assert "+6" in rep["landing_note"] and "slot after the create" in rep["landing_note"]
     by_kind = {r["trigger_kind"]: r for r in rep["strategies"]}
-    assert by_kind["whale"]["landing"].startswith("+6") and "slot after the create" in by_kind["launch"]["landing"]
+    assert by_kind["kol"]["landing"].startswith("+6") and "slot after the create" in by_kind["launch"]["landing"]
     assert all(r["live_landing"] for r in rep["strategies"])
     assert [s["position"] for s in rep["superseded"]] == ["+1"]
     from snipetech import report as R
@@ -169,10 +174,15 @@ def test_freeze_stores_the_live_landing_and_can_keep_only_what_was_measured_ther
     rep = paper.freeze(store, cfg, top=10, position="+1", latency=0)
     assert rep["frozen"]
     for s in rep["frozen"]:
-        want = ("start", 1) if s["trigger"]["kind"] == "launch" else ("+6", 0)
-        assert (s["position"], s["latency"]) == want and s["lab"]["landing"] == "+1@0"
+        lat, pos = paper.live_landing(s["trigger"]["kind"], "+6")
+        assert (s["position"], s["latency"]) == (pos, lat)
+        # launch-type rules are scored at their own live landing in the same lab pass, the rest at the run's +1
+        launchy = s["trigger"]["kind"] in paper.LAUNCH_LANDINGS
+        assert s["lab"]["landing"] == (paper.landing_key(lat, pos) if launchy else "+1@0")
     only = paper.freeze(store, cfg, top=10, position="+6", latency=0, replace=True, only_live=True)
-    assert only["frozen"] and all(s["trigger"]["kind"] != "launch" for s in only["frozen"])
+    assert only["frozen"]
+    for s in only["frozen"]:  # every one was measured where it lands live
+        assert s["lab"]["landing"] == paper.landing_key(s["latency"], s["position"])
 
 
 def test_paper_simulates_like_the_lab(monkeypatch):
@@ -182,7 +192,7 @@ def test_paper_simulates_like_the_lab(monkeypatch):
 
     store = Store(":memory:")
     _world(store)
-    _freeze(store, Trigger("whale", sol=2.0), "+6", 0, T0)
+    _freeze(store, COPY, "+6", 0, T0)
     seen: dict[str, list] = {"build": [], "prepare": []}
     real_build, real_prepare = MarketPath.build, paper.prepare
     monkeypatch.setattr(paper, "span_slot_secs", lambda st, a, b: 0.214)
@@ -246,7 +256,7 @@ def test_a_strategy_keeps_its_id_after_the_exit_gained_the_watch_and_the_copy_ex
 
 def test_freezing_a_strategy_frozen_before_the_new_exit_fields_adds_no_copy():
     store = Store(":memory:")
-    trig, ex = Trigger("whale", sol=2.0), _trail10()
+    trig, ex = COPY, _trail10()
     old_exit = _without_new_fields(ex.to_dict())
     old = {"id": paper.strategy_id(trig.__dict__, old_exit, "+6", 0, 0.2), "label": "old", "trigger": trig.__dict__,
            "exit": old_exit, "position": "+6", "latency": 0, "buy_sol": 0.2, "per_tx_sol": 0.0035, "from_ts": T0,

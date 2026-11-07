@@ -308,9 +308,9 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
     with _lab_lock(data_dir, wait=True):
-        # OKTech hunt triggers are scored in the same pass where a hunt buy lands (a slot after its trigger)
+        # launch-window rules (hunt, whale, burst) are scored in the same pass where a hunt buy lands
         data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, 0.0035,
-                         landings={"hunt": paper.HUNT_LANDING})  # fmt: skip
+                         landings=paper.LAUNCH_LANDINGS)  # fmt: skip
     # a launch trigger at the copy landing would buy inside the create slot, where no launch snipe lands
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)

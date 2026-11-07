@@ -37,9 +37,11 @@ from .lab import (
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
+    LAUNCH_KINDS,
     Trigger,
     _fire,
     collect,
+    curve_done,
     label_groups,
     leader_sell_fractions,
     rank,
@@ -52,6 +54,10 @@ LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch s
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
 HUNT_LANDING = (1, "+3")
+# every launch-window rule runs live through OKTech hunt (`oktech strategy` maps whale and burst triggers to hunt):
+# each is scored where a hunt buy lands, never at the copy landing inside the trigger's own slot (7 Nov: at the copy
+# landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach)
+LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING}
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
@@ -75,10 +81,8 @@ def copy_landing(store: Store, cfg: Config, now: float) -> str:
 
 def live_landing(kind: str | None, copy_pos: str) -> tuple[int, str]:
     """(slots after the trigger, position in that slot) where a live entry on this kind of trigger lands."""
-    if kind == "launch":
-        return LAUNCH_LANDING
-    if kind == "hunt":
-        return HUNT_LANDING
+    if kind in LAUNCH_LANDINGS:
+        return LAUNCH_LANDINGS[kind]
     return (0, copy_pos)
 
 
@@ -158,7 +162,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         from .lab_lock import lab_lock
 
         with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
-            data = collect(store, cfg, buy_sol, latency, position, per_tx_sol)
+            data = collect(store, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS)
     copy_pos = copy_landing(store, cfg, now)
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
 
@@ -232,6 +236,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     continue
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger
                 e = int(path.landing_index(int(path.slot[i]) + s["latency"], s["position"], i))
+                if trig.kind in LAUNCH_KINDS and curve_done(path, e):
+                    continue  # a launch sniper's buy fails on a completed curve: no position
                 frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
                 prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
                 if prep is None:

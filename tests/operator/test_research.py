@@ -222,18 +222,17 @@ def test_the_search_ranks_at_the_live_copy_landing_and_paper_tests_what_pays_the
     cov = st.coverage(RS.SEARCH_KEY)
     assert cov["ts"] == NOW and cov["landing"] == "+6" and cov == json.loads(json.dumps(out))
     assert cov["strategies"] and all("at the launch" not in s["trigger"] for s in cov["strategies"])
-    # OKTech hunt triggers are scored in the same pass where a hunt buy lands: a slot after its trigger
+    # launch-window rules (hunt, whale, burst) are scored in the same pass where a hunt buy lands, copies at +6
     from snipetech.analysis import paper
 
     hunt_key = paper.landing_key(*paper.HUNT_LANDING)
-    assert all(
-        s["landing"] == (hunt_key if s["trigger"].startswith("OKTech hunt") else "+6@0") for s in cov["strategies"]
-    )
+    for s in cov["strategies"]:
+        launchy = s["trigger"].startswith(("OKTech hunt", "buy >=", "burst"))
+        assert s["landing"] == (hunt_key if launchy else "+6@0"), s["trigger"]
     frozen = st.coverage("paper_strategies")["strategies"]
     assert frozen
     for s in frozen:
-        want = paper.HUNT_LANDING if s["trigger"]["kind"] == "hunt" else (0, "+6")
-        assert (s["latency"], s["position"]) == want
+        assert (s["latency"], s["position"]) == paper.live_landing(s["trigger"]["kind"], "+6")
     assert [f["id"] for f in cov["frozen"]] == [s["id"] for s in frozen]
 
 

@@ -219,6 +219,20 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
     return None
 
 
+# triggers a live launch sniper runs (OKTech hunt on the pump.fun curve): no trade once the coin has left its curve
+LAUNCH_KINDS = frozenset({"launch", "hunt", "whale", "burst"})
+
+
+def curve_done(path: MarketPath, i: int) -> bool:
+    """The coin has left its pump.fun curve by state i (it completed, or traded on PumpSwap): a launch sniper's buy
+    landing there fails on-chain, so the lab and the paper test count no trade (7 Nov: BRUH completed its curve inside
+    its create slot; the old landing bought inside that slot and sold after the move to PumpSwap at 23x)."""
+    oc = getattr(path, "off_curve", None)
+    if oc is not None and len(oc) == path.n:
+        return bool(oc[i])
+    return bool(path.amm[i])
+
+
 def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
     """OKTech hunt as the live sniper runs it (docs/live-recipe.md, "Hunt live, 5 Nov"): from the create, every buy in
     the window counts toward the total, the creator's own included (Suncat fired on 1.6 SOL from others + 1.0 from the
@@ -513,6 +527,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                         continue
                     lat, pos = (landings or {}).get(trig.kind, (latency_slots, position))
                     e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
+                    if trig.kind in LAUNCH_KINDS and curve_done(path, e):
+                        continue  # a launch sniper's buy fails on a completed curve: no position
                     own, frac = None, None
                     if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                         by_user = _trades_by_user(path) if by_user is None else by_user
