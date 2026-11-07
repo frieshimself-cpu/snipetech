@@ -258,6 +258,23 @@ def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarra
     return pnl, (summarize(pnl, conf, samples) if len(pnl) else {})
 
 
+# 7 Nov: a rule showed +10.6 SOL over 1,200 forward trades; three trades made +11.0 SOL (create-slot bundles no live
+# buy can reach) and the other 1,212 lost -9.3. The report also counts each trade's gain at most OUTLIER_CAP_X times
+# its buy, and says how much of the total its five best trades made, so a few outliers cannot pass for an edge.
+OUTLIER_CAP_X = 2.5
+
+
+def _robust(pnl: np.ndarray, buy_sol: float, conf: float, samples: int) -> dict:
+    if not len(pnl):
+        return {"mean_capped": None, "ev_lower_capped": None, "total_capped": 0.0, "top5_share": None}
+    capped = np.minimum(pnl, OUTLIER_CAP_X * float(buy_sol))
+    st = summarize(capped, conf, samples)
+    total = float(pnl.sum())
+    top5 = float(np.sort(pnl)[-5:].sum())
+    return {"mean_capped": st.get("mean"), "ev_lower_capped": st.get("ev_lower"), "total_capped": float(capped.sum()),
+            "top5_share": (top5 / total) if total > 0 else None}  # fmt: skip
+
+
 def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any]:
     now = now or time.time()
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
@@ -269,13 +286,14 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         kind = (s.get("trigger") or {}).get("kind")
         lat, pos = int(s.get("latency", 0)), str(s.get("position"))
         pnl, st = _stats(store, s["id"], conf, samples)
+        robust = _robust(pnl, s["buy_sol"], conf, samples)
         hours = max(((done_until or now) - s["from_ts"]) / 3600, 0)
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
                     "landing": landing_text(lat, pos), "live_landing": (lat, pos) == live_landing(kind, copy_pos),
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": len(pnl), "mean": st.get("mean"),
                     "ev_lower": st.get("ev_lower"), "total": float(pnl.sum()), "win_rate": st.get("win_rate"),
                     "per_hour": len(pnl) / hours if hours else None, "lab_mean": s["lab"].get("mean"),
-                    "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing")})  # fmt: skip
+                    "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"), **robust})  # fmt: skip
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         pnl = np.array([r["pnl"] for r in store.paper_trades(s["id"])], dtype=np.float64)

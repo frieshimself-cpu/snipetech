@@ -267,3 +267,21 @@ def test_freezing_a_strategy_frozen_before_the_new_exit_fields_adds_no_copy():
     rep = paper.freeze(store, Config(), top=4, position="+6", latency=0, buy_sol=0.2, now=NOW, data=data)
     assert rep["frozen"] == [] and [s["id"] for s in rep["kept"]] == [old["id"]]
     assert [s["id"] for s in store.coverage("paper_strategies")["strategies"]] == [old["id"]]
+
+
+def test_the_report_says_when_a_few_trades_carry_the_whole_result():
+    # 7 Nov: a rule showed +10.6 SOL over 1,200 trades; three trades made +11 SOL (create-slot bundles no live buy
+    # reaches) and the other 1,212 lost -9.3. Each trade's gain is also counted capped at 2.5 times its buy.
+    store = Store(":memory:")
+    s = _freeze(store, COPY, "+6", 0, T0)
+    for k in range(100):
+        store.put_paper_trade({"strategy": s["id"], "mint": f"m{k}", "trigger_ts": T0 + k, "pnl": -0.01, "data": {}})
+    store.put_paper_trade({"strategy": s["id"], "mint": "big", "trigger_ts": T0 + 500, "pnl": 5.0, "data": {}})
+    (row,) = paper.report(store, Config(), now=NOW)["strategies"]
+    assert row["mean"] > 0 and row["total"] > 0  # the plain numbers look like a winner
+    assert row["mean_capped"] < 0 and row["ev_lower_capped"] < 0  # capped at 2.5 x 0.2 SOL it is a loser
+    assert abs(row["total_capped"] - (-1.0 + 0.5)) < 1e-9
+    assert row["top5_share"] > 1.0  # its five best trades made more than the whole total
+    from snipetech import report as R
+
+    assert "capped" in R.render_paper("report", paper.report(store, Config(), now=NOW))

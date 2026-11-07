@@ -778,11 +778,12 @@ def render_paper(action: str, r: dict) -> str:
     out = ["Forward paper-trading (only tape recorded after each strategy was frozen)", "=" * 72]
     out += [r["landing_note"]] if r.get("landing_note") else []
     out.append(table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]), f(s["total"], 3),
-                       pct(s["win_rate"]), f(s["lab_mean"])] for s in rows],
-                     ["id", "strategy", "hours", "trades", "mean", "bound", "total", "win", "lab said"]))  # fmt: skip
+                       f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"])] for s in rows],
+                     ["id", "strategy", "hours", "trades", "mean", "bound", "total", "capped bound", "win", "lab said"]))  # fmt: skip
     out.append("")
     out.append(
-        "mean / bound / total in SOL per trade at the frozen size; 'lab said' is what the lab predicted when it was frozen."
+        "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
+        " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
     )
     if r.get("superseded"):
         out.append(
