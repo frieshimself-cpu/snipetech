@@ -1048,6 +1048,7 @@ class LiveWatcher:
 
     async def _maintenance(self) -> None:
         last_prune = 0.0
+        pruning: asyncio.Task | None = None
         while True:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
             self._flush()
@@ -1060,11 +1061,27 @@ class LiveWatcher:
                 self.amm_wake.set()  # the PumpSwap side looks again (expired pools leave, a stalled stream restarts)
                 self._mark_amm_recent()
             now = time.time()
-            if now - last_prune > 3600:
-                self.store.prune(int(now - self.cfg.storage.retain_days * 86400))
+            if now - last_prune > 3600 and (pruning is None or pruning.done()):
+                # a task of its own: this tick (flush, tape coverage, rescore) goes on while it runs
+                pruning = asyncio.create_task(self._prune(now))
+                self.tasks.add(pruning)
+                pruning.add_done_callback(self.tasks.discard)
                 last_prune = now
             await self._rescore()
             log.info("live: %s", dict(self.stats))
+
+    async def _prune(self, now: float) -> None:
+        """The hourly prune of what retention no longer keeps, one short step at a time, the event loop going on
+        between them (the streams, the flushes). In one go it held the write lock and this loop for as long as the
+        deletes took (an hour of tape, 89k trades: 2.0 s on a 2.4M-trade copy, 7 Nov; the server's database is ten
+        times larger). A prune that fails is left for the next hour: each batch is committed, the next prune goes on
+        from there, and the recorder never stops for it (a failed prune used to end the maintenance task, and with it
+        the recorder)."""
+        try:
+            for _ in self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400)):
+                await asyncio.sleep(0)
+        except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
+            log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
 
     def _mark_tape(self) -> None:
         """Time ranges in which every trade of every token was recorded (no firehose gap)."""
