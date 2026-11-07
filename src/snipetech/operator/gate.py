@@ -11,7 +11,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
-from .budget_switch import effective_analyst_every_h, effective_daily_usd
+from .budget_switch import effective_analyst_every_h, effective_daily_usd, room_for_extra_analysis
 from .learning import last_postmortem_ts
 from .paths import OperatorPaths
 from .standin import loop_stage
@@ -122,23 +122,26 @@ POSTMORTEM_GAP_SECS = 3 * 3600  # never more than one post-mortem in three hours
 DAILY_SOON_SECS = 3600  # a post-mortem waits for an analysis due within the hour: that turn does it too
 
 
-def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> str | None:
+def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_today: float = 0.0) -> str | None:
     """Why an analyst turn is due now, or None. The daily one after analyst_after_utc until the day's report exists;
     and, while the cadence is on (the owner's /budget `every`, else [operator] analyst_every_h; 0 turns it off), one
     once that many hours have passed since the last analyst turn ran: the owner wants the agents working harder
     (7 Nov: 4.44 $ spent on 6 Nov of the 15 $ allowed, one analysis a day). A turn the daily analysis would follow
-    within the hour waits for it: two analyses a quarter of an hour apart would say the same."""
+    within the hour waits for it: two analyses a quarter of an hour apart would say the same. One by the cadence also
+    needs room in the day (`spent_today`, room_for_extra_analysis): the last turns of the day are the operator's."""
     if daily_analysis_due(paths, now, cfg):
         return "daily analysis due"
     every = effective_analyst_every_h(cfg, paths)
     last = last_analyst_ts(paths, now) if every > 0 else None
     if last is None or now - last < every * 3600 or daily_analysis_due(paths, now + DAILY_SOON_SECS, cfg):
         return None
+    if not room_for_extra_analysis(cfg, paths, spent_today):
+        return None
     return f"analysis due: every {every:g} h, the last one {(now - last) / 3600:.1f} h ago"
 
 
-def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> bool:
-    return analyst_reason(paths, now, cfg) is not None
+def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_today: float = 0.0) -> bool:
+    return analyst_reason(paths, now, cfg, spent_today) is not None
 
 
 def analyst_update_target(paths: OperatorPaths, now: float, cfg: OperatorConfig) -> str | None:
@@ -154,14 +157,19 @@ def analyst_update_target(paths: OperatorPaths, now: float, cfg: OperatorConfig)
     return yesterday if paths.report(yesterday).exists() else None
 
 
-def postmortem_due(paths: OperatorPaths, now: float, new_trips: int, cfg: OperatorConfig) -> bool:
-    """Enough new live round trips to ask why they won or lost, and the last post-mortem over three hours ago."""
+def postmortem_due(paths: OperatorPaths, now: float, new_trips: int, cfg: OperatorConfig,
+                   spent_today: float = 0.0) -> bool:  # fmt: skip
+    """Enough new live round trips to ask why they won or lost, the last post-mortem over three hours ago, and room in
+    the day for an analyst turn between the daily ones (the analysis by the cadence asks the same); it waits for an
+    analysis due within the hour, which reviews the same trades."""
     if int(new_trips or 0) < POSTMORTEM_MIN_TRIPS:
         return False
     last = last_postmortem_ts(paths)
     if last is not None and now - last <= POSTMORTEM_GAP_SECS:
         return False
-    return not _analyst_due(paths, now + DAILY_SOON_SECS, cfg)
+    if not room_for_extra_analysis(cfg, paths, spent_today):
+        return False
+    return not _analyst_due(paths, now + DAILY_SOON_SECS, cfg, spent_today)
 
 
 def _trips_line(n: int, since: float | None, now: float) -> str:
@@ -257,10 +265,10 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     fresh_states = [r for r, k in zip(states, state_keys) if now - prev_ts.get(k, -1e18) >= refire_secs(k)]
     reasons = events + fresh_states
     trips = _trips_line(new_trips, trips_since, now) if new_trips else None
-    why = analyst_reason(paths, now, cfg)
+    why = analyst_reason(paths, now, cfg, snap.spent_today)
     if why:
         return Decision(True, "analyst", reasons + [why] + ([f"post-mortem: {trips}"] if trips else []), state_keys)
-    if trips and postmortem_due(paths, now, new_trips, cfg):
+    if trips and postmortem_due(paths, now, new_trips, cfg, snap.spent_today):
         return Decision(True, "postmortem", reasons + [f"post-mortem due: {trips}"], state_keys)
     if reasons:
         return Decision(True, "operator", reasons, state_keys)

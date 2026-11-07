@@ -476,3 +476,54 @@ def test_the_budget_stops_an_analysis_due_by_the_cadence(paths):
     mark_analyst_ran(paths, AT_0630)
     d = _at(paths, AT_0630 + 3 * 3600, spent_today=15.0)
     assert not d.call and d.reasons == ["budget"]
+
+
+# -- the analyses between the daily ones leave part of the day for the operator's alert rounds (7 Nov review) ----------
+
+
+RUNNING = [{"id": "a", "name": "x", "status": "running"}]
+
+
+def test_an_analysis_between_the_daily_ones_leaves_two_turns_of_the_day_for_the_alerts(paths):
+    """Review, 7 Nov: at the server's pinned 15 $ a day and 2 $ a turn, an analysis every two hours used the day up by
+    about midday; from then on every round stopped at "budget" and the alerts (a sniper running, a coin held, the tape
+    stalled) went silent until 00:00 UTC. An analysis between the daily ones starts only while its own turn and two
+    more fit in the day: those two are the operator's."""
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    due = AT_0630 + 3 * 3600  # 09:30: the cadence is due
+    assert _at(paths, due, spent_today=9.0).mode == "analyst"  # 9 $ + its 2 $ + 4 $ kept = 15 $
+    assert _at(paths, due, spent_today=9.5).mode == "none"  # the rest of the day is the operator's
+    d = _at(paths, due, spent_today=13.0, snipers=RUNNING)
+    assert d.call and d.mode == "operator" and any("sniper(s) running" in r for r in d.reasons)
+    set_budget(paths, CFG, {"daily_usd": 200, "turn_usd": 6}, "telegram", due)  # the owner's budget: 18 $ kept
+    assert _at(paths, due, spent_today=182.0).mode == "analyst" and _at(paths, due, spent_today=183.0).mode == "none"
+
+
+def test_the_daily_analysis_keeps_its_rule_whatever_the_reserve(paths):
+    d = _at(paths, AT_0630, spent_today=14.0)
+    assert d.mode == "analyst" and d.reasons == ["daily analysis due"]
+
+
+def test_a_post_mortem_leaves_the_same_two_turns_for_the_alerts(paths):
+    """A post-mortem is an analyst turn between the daily ones too; held back, its round trips wait for the next
+    analysis, which reviews them."""
+    assert _pm(paths, 9, spent_today=9.0).mode == "postmortem"
+    d = _pm(paths, 9, spent_today=9.5)
+    assert not d.call and d.mode == "none"
+    d = _pm(paths, 9, spent_today=9.5, snipers=RUNNING)
+    assert d.mode == "operator" and not any(r.startswith("post-mortem") for r in d.reasons)
+
+
+def test_a_post_mortem_does_not_wait_for_an_analysis_the_day_has_no_room_for(paths):
+    """The post-mortem waits for an analysis due within the hour only when that analysis can run: both leave the same
+    two turns, so when one is held back the other is too, and neither waits on the other."""
+    from snipetech.operator.gate import _analyst_due, mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630 + 3600)  # 07:30
+    soon = AT_0630 + 3.5 * 3600  # 10:00, half an hour past the analysis due at 09:30
+    assert _analyst_due(paths, soon, CFG) and not _analyst_due(paths, soon, CFG, spent_today=9.5)
