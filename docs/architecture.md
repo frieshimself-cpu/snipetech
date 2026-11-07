@@ -107,3 +107,50 @@ into a `-wal` under the copy's name, and the next copy renamed over it was read 
 image is malformed" for every heavy reader until the copy after, and on disk too once they had closed). A copy taken
 before a deploy that added a table or a column is not read: the live file is, until the next copy.
 `tests/test_tape_store.py` and `tests/test_snapshot_db.py` guard it.
+
+## Why a live trip won or lost: the post-mortem's arithmetic is code's
+
+The owner, 7 Nov 22:05: "pnl matters but dont stop the bot" and "just make it understand why it lost and how to do
+better". The post-mortem already put each lost trip in one cause and wrote lessons and ideas, but the sums were the
+model's, and the tool it read them from added up `fills.pnl_sol`, which keeps a sell's failed duplicate sends apart in
+`twin_fee_sol`: over the 58 recorded sells of 5-7 Nov it said -1.0419 SOL and 7 winning trips, where the whole result
+was -1.2142 and 5 (9gBmZ4 and the control FqK7tC trip were losses).
+
+`measure/attribution.py` breaks every live round trip (a landed sell and the buys it closed, first in first out as
+measure pairs them) into parts that add up exactly to its whole result:
+`result = price move - venue fee - buy fees - sell fees - failed duplicate sells`. The price move is the sell's quote
+less the buy's on the tape, before any fee; the venue fee is pump.fun's 1.25 % a side (the pool's fee once a coin
+trades on PumpSwap), also from the tape; the buy and sell fees are the priority fee, tip and base fee of the two
+transactions that landed; the duplicates are measure's `twin_fee_sol`. The whole result has one definition,
+`trip_result_sol` (pnl_sol less twin_fee_sol), and every reader of live results uses it: the day stop, the automatic
+test's blocks, the post-mortem, `read_fills`, the fee-test report and the strategist's weekly evidence (the last four
+summed pnl_sol alone before). measure still stores the two apart. Each trip is marked `won`, `lost_to_costs` (it made
+money on the price and the costs took it) or `lost_on_price`; `flips` names the single costs whose removal would have
+made it a win; the exit that ran is set against the best exit on the menu in measure's replay, replay to replay.
+
+What each change would have saved on the same trips, and who can make it (`strategist/bounds.py strategist_may_set`:
+the strategist only when its overlay would apply the change):
+
+| change | what it saves on a trip | who |
+|---|---|---|
+| OKTech sends each exit once (one signed sell, not up to three) | every failed duplicate | OKTech, asked by the owner |
+| the sell fee back to 0.001 SOL (`[oktech] sell_fee_sol`) | the landed sell's tip above 0.001 and the same on each duplicate that fee priced | the owner |
+| OKTech's minimum bid (0.001 priority + 0.002 tip) | the buy's excess, and its priority again on the landed sell and on tipped duplicates | the strategist for a raised control tip, else the owner |
+| one exit on the menu for every copy | its replay against the replay of the exit that ran | the owner |
+
+pump.fun's fee and the price have no lever. The analyst's `read_round_trips` returns each trip's breakdown and the
+batch's causes ranked by SOL and changes ranked by what they would have saved; its instructions say to use those
+numbers as they are, rank the causes and name the change that would have saved the most. After every turn that
+reviewed new live trips, code sends the owner a short summary (`operator/postmortem.py`, called by the round once the
+trips are marked reviewed): the trips, the price move before any cost, what the fees and the duplicates cost, the net,
+the biggest cause and the change that would have saved the most with who can make it; when the price itself took the
+most, the analyst's top idea of the turn comes first. Telegram, and one line in `operator/notes.md`; no wallet balance,
+no key, nothing that changes a setting. For the copies of 7aPo3n of 7 Nov 19:18-19:22: price +0.0294 SOL, pump.fun
+0.0152, buys 0.0090, landed sells 0.0090, 4 failed duplicate sells 0.0080, net -0.0119; OKTech sending each exit once
+would have saved 0.0080, the sell fee at 0.001 0.0070 (`tests/test_measure_attribution.py`,
+`tests/operator/test_postmortem.py`).
+
+What no trip holds, because no fills row has it (the 7 Nov investigation): the seed-account sweeps of 5-6 Nov (0.0592
+SOL, gone since the seed account was turned off), two PumpSwap trips of 6 Nov morning that the tape did not record,
+failed buys outside any trip, and the token-account rent each buy parks (0.00151384 SOL) until the owner closes the
+accounts in Axiom, which returns 99 % of it.

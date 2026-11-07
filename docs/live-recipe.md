@@ -17,9 +17,11 @@ something rather than stop it, and the wallet's balance stays out of the reports
   about 3 SOL in the wallet a 5 SOL day stop cannot trip).
 - The learning: the post-mortem already names a cause for every lost trip and writes lessons and ideas; a build started
   22:10 (loss-learning) breaks every live trip into price move, fees and failed duplicate sends in code, puts those
-  numbers in the post-mortem, and sends the owner a short summary after each batch. Tonight's three copies moved
-  +0.0142 SOL before costs and ended -0.0039: the fees (0.001 priority + 0.002 tip on every buy and sell) and two
-  failed duplicate sells per sell at 0.002 each turned them into losses.
+  numbers in the post-mortem, and sends the owner a short summary after each batch (built on branch `loss-learning`,
+  not deployed yet; docs/architecture.md says what it computes). Tonight's three copies moved +0.0294 SOL before any
+  cost and ended -0.0119: pump.fun's 1.25 % a side took 0.0152, the fees (0.001 priority + 0.002 tip on every buy and
+  landed sell) 0.0180, and four failed duplicate sells at 0.002 each 0.0080. The +0.0142 and -0.0039 first written
+  here were after pump.fun's fee and without the duplicates.
 
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
@@ -27,16 +29,20 @@ The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy
 lower bound +0.0049, a seller at a median 19.5 s) made its first three round trips. Nothing is held; after each buy
 the book retired the sniper and armed a fresh one, so its spare buys are never needed.
 
-| buy (UTC) | coin | landing | sell | exit | result (fees in) |
-|---|---|---|---|---|---|
-| 19:18:49 | `8RJQ2bo2…pump` | 0 trades behind the leader, +0.5 % | 19:18:58, 0.1994 SOL | copy exit | −0.0066 SOL |
-| 19:20:44 | `9QUt8h52…pump` | 0 behind, +0.5 % | 19:20:47, 0.2189 SOL | copy exit | +0.0128 SOL |
-| 19:21:59 | `EZaNbQve…pump` | 1 behind, +0.8 % | 19:22:04, 0.1959 SOL | dead exit | −0.0101 SOL |
+| buy (UTC) | coin | landing | sell | exit | price before any cost | result (every cost in) |
+|---|---|---|---|---|---|---|
+| 19:18:49 | `8RJQ2bo2…pump` | 0 trades behind the leader, +0.5 % | 19:18:58, 0.1994 SOL | copy exit | +0.0044 SOL | −0.0106 SOL |
+| 19:20:44 | `9QUt8h52…pump` | 0 behind, +0.5 % | 19:20:47, 0.2189 SOL | copy exit | +0.0241 SOL | +0.0088 SOL |
+| 19:21:59 | `EZaNbQve…pump` | 1 behind, +0.8 % | 19:22:04, 0.1959 SOL | dead exit | +0.0008 SOL | −0.0101 SOL |
 
-Net −0.0039 SOL over 3 trades (−0.0013 a trade against the forecast +0.027; three trades say nothing yet). The
-landing is the news: 0–1 trades behind at +0.5–0.8 %, against 2–4 behind at +18–43 % for the earlier leaders' copies
-(the "+6 regime"). 7aPo3n buys late in the curve (79–93 %, research round 2), where fewer bots race the leader. The
-first two sells each carried two failed duplicate sends (Custom 6023), charged to their trips.
+Net −0.0119 SOL over 3 trades (−0.0040 a trade against the forecast +0.027; three trades say nothing yet). The price
+rose on all three, +0.0294 SOL before any cost (+5.0 % a trip); pump.fun's 1.25 % a side took 0.0152, the buys and the
+landed sells 0.0090 each (0.001 priority + 0.002 tip + the base fee every time), and the first two sells each carried
+two failed duplicate sends (Custom 6023, 0.002005 SOL each), 0.0080 in all. The −0.0039 first written here was the
+landed trades alone: `fills.pnl_sol` keeps the duplicates apart in `twin_fee_sol`, and the post-mortem's sum left them
+out (the loss-learning build counts them in every live result). The landing is the news: 0–1 trades behind at
++0.5–0.8 %, against 2–4 behind at +18–43 % for the earlier leaders' copies (the "+6 regime"). 7aPo3n buys late in the
+curve (79–93 %, research round 2), where fewer bots race the leader.
 
 ## The owner's yes widened: live trading never stops (7 Nov 2026, about 12:10 UTC)
 
