@@ -210,3 +210,14 @@ def test_the_search_scores_what_oktech_runs_for_the_best_paper_strategy():
     as_sent = Trigger("hunt", sol=float(th["minTotalSol"]), window=sent["timeWindowMs"] / 1000,
                       max_buyers=int(th.get("maxUniqueBuyers", 0)), dev_max=float(th["maxDevBuySol"]))  # fmt: skip
     assert as_sent in TRIGGERS
+
+
+@pytest.mark.parametrize(
+    "quote", ["", "11111111111111111111111111111111", "So11111111111111111111111111111111111111112"]
+)
+def test_hunt_fills_every_sol_quoted_coin_however_the_create_names_sol(quote):
+    # the tape stores pump.fun's create_v2 SOL coins with quote mint 1111...1111 (5 Nov RLT, Bricks, Suncat ...)
+    store = Store(":memory:")
+    m = _coin(store, f"hunt-sol-{quote[:4] or 'none'}", 0.5, quote_mint=quote)
+    m.buy(addr(f"hunt-sol-whale-{quote[:4]}"), 3.0, 1)
+    assert _who(store, m, Trigger("hunt", sol=2.0, window=1.0)) == addr(f"hunt-sol-whale-{quote[:4]}")

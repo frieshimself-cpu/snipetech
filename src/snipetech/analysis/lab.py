@@ -30,6 +30,7 @@ from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..oktech import EXITS
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
+from ..solana.programs import SOL_QUOTES
 from ..store import Store
 from .stats import summarize
 
@@ -225,8 +226,8 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
     `max_buyers` distinct wallets bought before the thresholds held. Fires at the buy that meets every threshold
     (triggerMode "all"). A non-SOL-quoted coin never fills: OKTech counts its quote units as SOL and fires, and the SOL
     buy fails on-chain (pump error 6010)."""
-    if launch is None or launch.quote_mint:
-        return None
+    if launch is None or (launch.quote_mint and launch.quote_mint not in SOL_QUOTES):
+        return None  # pump.fun's create_v2 names SOL as 1111...1111: that is a SOL coin, not a non-SOL one
     if trig.dev_max is not None:
         created = sum(path.quote[i] for i in range(path.n)
                       if path.sigs[i] == launch.sig and path.is_buy[i] and path.users[i] in dev)  # fmt: skip
