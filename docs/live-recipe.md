@@ -22,6 +22,14 @@ about 11:30 and 11:45; no trades). Wallet and size are unchanged: `6VFrZ15Vi3cfZ
 4. What still ends a sniper is an execution fault (OKTech errors, a coin OKTech fails to sell), never a trading result;
    a sniper holding a coin is never stopped (CLAUDE.md rule 1).
 
+At about 13:30 UTC the owner added, word for word: "bro it doesnt matter how much sol is in the wallet, however
+much I put is how much im willing to lose just be smart about it yk?" So the wallet itself is the loss budget: no
+floor and no day stop are the owner's settings, whatever the balance. Being smart about it, as run: only strategies
+that pass on paper at the real landing and real costs, 0.2 SOL a buy (a round trip costs about 0.009 SOL whatever the
+size, so smaller only loses), one coin at a time, a strategy dropped below half of its paper result or 1 SOL down, a
+sniper holding a coin never stopped. A bigger size only after a strategy has proven itself live, and the owner hears
+it before the first raise.
+
 ### What runs now (7 Nov 2026, 12:55 UTC)
 
 - The guard and the automatic test of the 09:15 plan are deployed (c265fb7). At the owner's word above, the guard was
