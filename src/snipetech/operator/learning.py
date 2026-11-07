@@ -300,6 +300,12 @@ def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | N
     return out[: max(0, int(limit))] if limit is not None else out
 
 
+def ideas_since(paths: OperatorPaths, since_ts: float) -> list[dict[str, Any]]:
+    """The open ideas added or changed at or after `since_ts`, best first: what a turn that started then came up with
+    (the owner's post-mortem summary names the top one)."""
+    return [i for i in list_ideas(paths, "open") if _epoch(i.get("updated")) >= float(since_ts)]
+
+
 # -- what a turn and the digest are shown ---------------------------------------------------------------------------
 
 

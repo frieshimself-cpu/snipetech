@@ -165,6 +165,18 @@ def test_a_broken_ideas_file_is_kept_aside_not_lost(paths):
     assert [i["id"] for i in L.list_ideas(paths)] == ["I1"]
 
 
+def test_the_ideas_a_turn_added_or_moved_are_read_back_best_first(paths):
+    """The owner's post-mortem summary names the analyst's top idea of that turn: the open ideas updated since it
+    started, best first; older ones and closed ones are not this turn's."""
+    old = L.upsert_idea(paths, IDEA | {"title": "Older idea", "priority": 5}, source="analyst", now=NOW - 3600)
+    low = L.upsert_idea(paths, IDEA | {"title": "Low idea", "priority": 2}, source="postmortem", now=NOW + 10)
+    top = L.upsert_idea(paths, IDEA | {"title": "Top idea", "priority": 4}, source="postmortem", now=NOW + 20)
+    L.upsert_idea(paths, IDEA | {"title": "Closed idea", "status": "rejected"}, source="postmortem", now=NOW + 30)
+    assert [i["id"] for i in L.ideas_since(paths, NOW)] == [top["id"], low["id"]]
+    L.upsert_idea(paths, {"id": old["id"], "status": "testing"}, source="postmortem", now=NOW + 40)  # moved this turn
+    assert [i["id"] for i in L.ideas_since(paths, NOW)] == [old["id"], top["id"], low["id"]]
+
+
 def test_an_idea_edited_by_hand_never_breaks_a_turn(paths):
     """Every turn's message is built from ideas.json: an idea someone edited by hand (a field missing, a priority in
     words) still lists, ranks and shows, so a bad edit can never stop the rounds."""

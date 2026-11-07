@@ -342,8 +342,8 @@ def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
     sol, n = saved("single_send")
     if sol:
         out.append({"lever": "single_send", "sol": _sol(sol), "trips": n, "who": "oktech",
-                    "words": "OKTech sending each exit once: it signs up to three copies of every sell, and the "
-                             "copies that lose the race fail and still pay"})  # fmt: skip
+                    "words": "OKTech sending each exit once (it signs up to three copies of every sell, and the "
+                             "copies that lose the race fail and still pay)"})  # fmt: skip
     sol, n = saved("sell_fee")
     now = float(cfg.oktech.sell_fee_sol)
     target = LOW_SELL_FEE_LAMPORTS / 1e9
