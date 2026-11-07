@@ -8,6 +8,16 @@ first on the server's recording and only then run live in capped batches.
 
 ## The evening of 7 Nov: the lock fix is live; snipetech was using 2 of the server's 6 cores (19:45 UTC)
 
+- **Short reads deployed 21:28 (4ff28dc), and the database shrank from 19.7 to 13.0 GB.** The heavy readers of the
+  live file now read the hourly copy (discover's tape sources, a whole-table GROUP BY every hour that ran tens of
+  minutes; the events scan; paper freeze; the Birdeye and coin-first sources), the paper run reads in 10-minute pieces,
+  remote sql stops at 30 s, and every connection caps the WAL at 64 MiB once it restarts: the -wal file went from
+  7.33 GB to 0.07 GB. The copy is now opened read-only and immutable and never written: its review found that a
+  read-write open could leave a -wal beside it that the next renamed copy read as "malformed".
+- **Slow writes name themselves (21:34, 25a3891).** Every write takes the lock up front (BEGIN IMMEDIATE), and one
+  that holds it 5 s or more logs the code that asked for it in that job's log. After the slice change the recorder
+  still waited 23.5 s for one write at 20:52 (as the events scan ended) and 12.6 s at 20:56 (during a qualify run).
+
 - **Deployed d0b480e at 19:39,** between two labs: no writer holds the database's write lock for long (the
   recorder's hourly prune goes in short steps beside its writes, every failed write rolls back, batch inserts commit
   every 500 rows); MIG scored where its buys land, only on complete PumpSwap tape; every lab charged the live cost
