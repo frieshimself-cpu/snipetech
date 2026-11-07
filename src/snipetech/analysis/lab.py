@@ -19,7 +19,15 @@ again picked on older and judged on newer moments. Only test numbers count.
 from __future__ import annotations
 
 import math
+import multiprocessing
+import os
+import sqlite3
+import sys
+import threading
+import time
 from collections.abc import Mapping, Sequence
+from concurrent.futures import Future, ProcessPoolExecutor
+from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,7 +39,7 @@ from ..oktech import EXITS
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
-from ..store import Store
+from ..store import Store, file_identity
 from .stats import summarize
 
 LAMPORTS = 1e9
@@ -457,11 +465,217 @@ def span_slot_secs(store: Store, a: int, b: int, step: int = 60) -> float:
     return slot_secs_from([s for s, _ in pairs], [ts for _, ts in pairs])
 
 
+# -- one lab on several cores ------------------------------------------------------------------------------------------
+# 7 Nov: the server was resized to more CPUs, while a full search on 24 h of tape ran 1.5-2 h on one core and only one
+# lab may run at a time (CLAUDE.md rule 3). A lab spreads its coins over worker processes in chunks; each worker reads
+# the same database file through its own read-only connection and scores its coins with the very function the serial
+# lab runs (`_coin_rows`); the chunks come back in the serial lab's order, so the rows are its rows, float for float.
+# Measured 7 Nov on a 4-CPU box, 400 synthetic coins, the search's triggers and exits: 31-34 s on one core, 17-19 s on
+# two workers, 10-16 s on four (the box shared with other jobs), the same rows every time.
+MAX_AUTO_WORKERS = 12
+LAB_CHUNK_COINS = 200  # coins a worker takes at a time; fewer when that would leave a worker without several chunks
+MIN_PARALLEL_COINS = 50  # under this many coins a lab stays in one process: seconds of work (~80 ms a synthetic coin)
+WATCH_LAB_SECS = 1.0  # how often a worker checks that the lab which started it still runs
+
+
+def lab_workers(setting: int = 0, cpus: int | None = None) -> int:
+    """Worker processes for one lab: `setting` ([lab] workers) when it is 1 or more; 0, the default, is every CPU but
+    two (the tape recorder and the services keep theirs), at least one and at most MAX_AUTO_WORKERS. `cpus`: this
+    machine's count when None."""
+    if int(setting) >= 1:
+        return int(setting)
+    cpus = os.cpu_count() if cpus is None else cpus
+    return max(1, min(int(cpus or 1) - 2, MAX_AUTO_WORKERS))
+
+
+@dataclass(frozen=True)
+class _Run:
+    """Everything scoring one coin needs besides its own tape: the same for every coin of a lab, so a worker gets it
+    once, when it starts."""
+
+    triggers: list[tuple[int, Trigger]]
+    kols: Any  # {label group: wallets}, or a bare set (the KOL group)
+    events_by_mint: dict[str, list[tuple]]
+    groups: tuple[str, ...] | None
+    landings: dict[str, tuple[int, str]]
+    latency_slots: int
+    position: str
+    buy_sol: float
+    costs: Costs
+    exits: list[ExitParams]
+    min_trades: int
+
+
+def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
+    """The lab's work, span by span: (start, end, the span's measured seconds per slot, its coins in the store's order).
+    A span under ten minutes is skipped; with a wallet group, so is every coin none of its wallets bought."""
+    plan = []
+    for a, b in spans:
+        if b - a < 600:
+            continue
+        wanted = _mints_with_buys_by(store, group_wallets, int(a), int(b)) if group_wallets is not None else None
+        if wanted is not None and not wanted:
+            continue
+        slot_secs = span_slot_secs(store, int(a), int(b))
+        mints = [mint for mint, _count in store.active_mints(a, b, min_trades) if wanted is None or mint in wanted]
+        plan.append((a, b, slot_secs, mints))
+    return plan
+
+
+def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> list[dict]:
+    """One coin's moments in the tape span [a, b]: every trigger that fires on it, entered at the trigger's landing and
+    sold by every exit. The serial lab and each worker of a parallel one run this same code."""
+    trades = [t for t in store.trades_for_mint(mint, a, b)]
+    if len(trades) < run.min_trades:
+        return []
+    launch = store.launch(mint)
+    path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
+    if path.n < run.min_trades:
+        return []
+    rows: list[dict] = []
+    by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
+    for ti, trig in run.triggers:
+        if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
+            continue
+        in_span = launch if (launch and a <= launch.ts) else None
+        if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
+            fired = _first_buys(trig, path, in_span, run.kols)
+        else:  # once per coin, the way one sniper takes one position per coin
+            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint))
+            fired = [] if i is None else [i]
+        for i in fired:
+            if path.ts[i] > b - 60:
+                continue
+            lat, pos = run.landings.get(trig.kind, (run.latency_slots, run.position))
+            e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
+            if trig.kind in LAUNCH_KINDS and curve_done(path, e):
+                continue  # a launch sniper's buy fails on a completed curve: no position
+            own, frac = None, None
+            if trig.kind == "kol":  # the copy exit follows this wallet's own sales
+                by_user = _trades_by_user(path) if by_user is None else by_user
+                own = by_user[path.users[i]]
+                frac = leader_sell_fractions(path, path.users[i], own)
+            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
+            if prep is None:
+                continue
+            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in run.exits]
+            row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
+                   "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
+                   "landing": f"{pos}@{int(lat)}"}  # fmt: skip
+            if frac is not None:
+                row |= _leader_profile(path, i, frac, own)
+            rows.append(row)
+    return rows
+
+
+def _chunk_rows(store: Store, run: _Run, items) -> list[dict]:
+    """The rows of (start, end, seconds per slot, coin) items, in their order."""
+    return [row for a, b, slot_secs, mint in items for row in _coin_rows(store, run, a, b, slot_secs, mint)]
+
+
+class LabWorkerUnfit(RuntimeError):
+    """A worker that cannot read the file its lab planned on: the chunks it is handed are scored in the lab's own
+    process instead."""
+
+
+_WORKER: dict[str, Any] = {}  # in a worker process: its read-only store and the lab's run (set by _worker_start)
+
+
+def _watch_lab(lab_pid: int) -> None:
+    """End this worker once the lab that started it is gone. A job's time limit stops a lab with SIGTERM (coreutils
+    timeout, ops.py), which never shuts its pool down, and a worker waiting for work would then wait forever (7 Nov
+    probe: both workers and the forkserver were still there after their lab died)."""
+
+    def watch() -> None:
+        while True:
+            time.sleep(WATCH_LAB_SECS)
+            try:
+                os.kill(lab_pid, 0)
+            except OSError:  # no such process, or the number now belongs to another user's process
+                os._exit(1)
+
+    threading.Thread(target=watch, name="lab-watch", daemon=True).start()
+
+
+def _worker_start(path: str, fid, run: _Run, lab_pid: int) -> None:
+    """A worker's start: its own read-only connection to `path`, kept only when it opened the very file the lab planned
+    on (`fid`); `snapshot-db` renames a new copy over snipetech.ro.db every hour."""
+    _watch_lab(lab_pid)
+    try:
+        store = Store(path, readonly=True)
+    except sqlite3.Error as exc:
+        _WORKER.update(unfit=f"a worker cannot open {path}: {exc}")
+        return
+    if store.file_id != fid:
+        store.close()
+        _WORKER.update(unfit=f"another file was renamed over {path} after the lab opened it")
+        return
+    _WORKER.update(store=store, run=run, unfit=None)
+
+
+def _worker_rows(chunk) -> list[dict]:
+    if _WORKER.get("unfit"):
+        raise LabWorkerUnfit(_WORKER["unfit"])
+    return _chunk_rows(_WORKER["store"], _WORKER["run"], chunk)
+
+
+def _lab_pool(path: str, fid, run: _Run | None, n: int) -> ProcessPoolExecutor:
+    """`n` workers reading `path` (`_worker_start`). Started by forkserver (spawn where there is none), never by fork:
+    the lab may run beside other threads (the CLI runs it under asyncio), and a forked child can inherit a held lock."""
+    method = "forkserver" if "forkserver" in multiprocessing.get_all_start_methods() else "spawn"
+    return ProcessPoolExecutor(max_workers=n, mp_context=multiprocessing.get_context(method),
+                               initializer=_worker_start, initargs=(path, fid, run, os.getpid()))  # fmt: skip
+
+
+def _shared_file(store: Store) -> tuple[str, tuple[int, int]] | None:
+    """The database file workers can open beside `store`, as (absolute path, identity); None when there is none
+    (":memory:", a store without a path) or another file has been renamed over the path since the store opened it. A
+    wrapper such as `recent_tape`'s window passes `path` and `file_id` through to the store it wraps."""
+    path, fid = getattr(store, "path", None), getattr(store, "file_id", None)
+    if not path or fid is None or file_identity(path) != fid:
+        return None
+    return os.path.abspath(path), fid
+
+
+def _submit(pool: ProcessPoolExecutor, chunk) -> Future:
+    try:
+        return pool.submit(_worker_rows, chunk)
+    except BrokenProcessPool as exc:  # the pool broke while the work went out: the lab's own process takes this chunk
+        failed: Future = Future()
+        failed.set_exception(exc)
+        return failed
+
+
+def _parallel_rows(store: Store, run: _Run, items, n: int, path: str, fid) -> tuple[list[dict], int]:
+    """The rows of `items` scored by up to `n` workers, in the items' order, and how many workers ran. A chunk a worker
+    refused (it found another file at the path) or lost (the pool broke: a worker killed for memory) is scored in the
+    lab's own process in its place, so the lab ends with the serial rows whatever happens to its workers."""
+    size = max(1, min(LAB_CHUNK_COINS, math.ceil(len(items) / (n * 4))))
+    chunks = [items[k : k + size] for k in range(0, len(items), size)]
+    used = min(n, len(chunks))
+    pool = _lab_pool(path, fid, run, used)
+    rows: list[dict] = []
+    here, why = 0, None
+    try:
+        futures = [_submit(pool, chunk) for chunk in chunks]
+        for chunk, fut in zip(chunks, futures):
+            try:
+                rows += fut.result()
+            except (LabWorkerUnfit, BrokenProcessPool) as exc:
+                here, why = here + 1, why or exc
+                rows += _chunk_rows(store, run, chunk)
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
+    if here:
+        print(f"lab: {here} of {len(chunks)} chunks ran in the lab's own process ({why})", file=sys.stderr, flush=True)
+    return rows, used
+
+
 def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, position: str = "start",
             per_tx_sol: float = 0.0035, min_trades: int = 5, groups: tuple[str, ...] | None = None,
             event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None,
-            kols: dict[str, set[str]] | None = None,
-            landings: Mapping[str, tuple[int, str]] | None = None) -> dict[str, Any]:  # fmt: skip
+            kols: dict[str, set[str]] | None = None, landings: Mapping[str, tuple[int, str]] | None = None,
+            workers: int | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
@@ -472,7 +686,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
     (latency, position) per trigger kind that lands elsewhere live (OKTech hunt buys a slot after its trigger); every
-    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at."""
+    other trigger lands at `latency_slots` / `position`. Each row records the landing it was scored at.
+    `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
+    read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
+    process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
+    MIN_PARALLEL_COINS coins, or a file another copy has been renamed over since the store opened it."""
     spans = store.tape_spans()
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
     exits = list(exits) if exits else exit_set()
@@ -492,63 +710,24 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         ):
             events_by_mint.setdefault(mint, []).append((kind, ts, slot))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
-    rows: list[dict] = []  # one per (token, trigger), with `groups` per (token, trigger, wallet): pnl per exit
-    measured: list[float] = []  # seconds per slot of each span simulated
-    for a, b in spans:
-        if b - a < 600:
-            continue
-        wanted = _mints_with_buys_by(store, group_wallets, int(a), int(b)) if group_wallets is not None else None
-        if wanted is not None and not wanted:
-            continue
-        slot_secs = span_slot_secs(store, int(a), int(b))
-        measured.append(slot_secs)
-        for mint, _count in store.active_mints(a, b, min_trades):
-            if wanted is not None and mint not in wanted:
-                continue
-            trades = [t for t in store.trades_for_mint(mint, a, b)]
-            if len(trades) < min_trades:
-                continue
-            launch = store.launch(mint)
-            path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
-            if path.n < min_trades:
-                continue
-            by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
-            for ti, trig in triggers:
-                if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
-                    continue
-                in_span = launch if (launch and a <= launch.ts) else None
-                if groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
-                    fired = _first_buys(trig, path, in_span, kols)
-                else:  # once per coin, the way one sniper takes one position per coin
-                    i = _fire(trig, path, in_span, kols, events_by_mint.get(mint))
-                    fired = [] if i is None else [i]
-                for i in fired:
-                    if path.ts[i] > b - 60:
-                        continue
-                    lat, pos = (landings or {}).get(trig.kind, (latency_slots, position))
-                    e = int(path.landing_index(int(path.slot[i]) + lat, pos, i))
-                    if trig.kind in LAUNCH_KINDS and curve_done(path, e):
-                        continue  # a launch sniper's buy fails on a completed curve: no position
-                    own, frac = None, None
-                    if trig.kind == "kol":  # the copy exit follows this wallet's own sales
-                        by_user = _trades_by_user(path) if by_user is None else by_user
-                        own = by_user[path.users[i]]
-                        frac = leader_sell_fractions(path, path.users[i], own)
-                    prep = prepare(path, e, buy_sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac)
-                    if prep is None:
-                        continue
-                    pnl = [run_exit(prep, ex, costs, end_ts=float(b)).pnl_sol for ex in exits]
-                    row = {"mint": mint, "trigger": ti, "ts": int(path.ts[i]), "order": (int(path.slot[i]), int(i)), "pnl": pnl,
-                           "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
-                           "landing": f"{pos}@{int(lat)}"}  # fmt: skip
-                    if frac is not None:
-                        row |= _leader_profile(path, i, frac, own)
-                    rows.append(row)
+    run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
+               landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
+               costs=costs, exits=exits, min_trades=min_trades)  # fmt: skip
+    plan = _plan(store, spans, group_wallets, min_trades)
+    items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
+    n = lab_workers(cfg.lab.workers if workers is None else workers)
+    shared = _shared_file(store) if n > 1 and len(items) >= MIN_PARALLEL_COINS else None
+    # one row per (token, trigger), with `groups` per (token, trigger, wallet): pnl per exit
+    if shared is None:
+        n, rows = 1, _chunk_rows(store, run, items)
+    else:
+        rows, n = _parallel_rows(store, run, items, n, *shared)
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
     return {"rows": rows, "exits": exits, "tape_hours": sum(b - a for a, b in spans) / 3600, "triggers": all_triggers,
-            "slot_secs": measured, "landing_of": landing_of}  # fmt: skip
+            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
+            "workers": n}  # fmt: skip
 
 
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:

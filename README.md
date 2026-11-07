@@ -275,8 +275,9 @@ are banned, a failing source is reported and skipped, and each source has its ow
 crowding and relationship gates all passed; reviewed daily), `candidate` (not enough evidence yet; 72 h) or
 `retired` (loses, trades elsewhere, bot pace, or tied to dev teams; a week). A lab runs at most once per
 `lab_interval_h` and never beside another lab: every lab on the box takes the same `lab.lock`, so the daily job,
-an ops job and the qualify timer queue instead of colliding. The operator reads the result with `read_verdicts`
-and the dashboard shows the counts and the qualified wallets.
+an ops job and the qualify timer queue instead of colliding. That one lab uses `[lab] workers` cores (auto: all but
+two, at most 12), each worker reading the database read-only, with exactly the results of one core. The operator
+reads the result with `read_verdicts` and the dashboard shows the counts and the qualified wallets.
 
 ```bash
 snipetech discover run --sources tape,owner,coinfirst   # one run, local sources only; --json prints the summary

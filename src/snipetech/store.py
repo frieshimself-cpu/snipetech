@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -205,13 +206,34 @@ def _launch(row: tuple) -> Launch:
     )  # fmt: skip
 
 
+def file_identity(path: str | Path) -> tuple[int, int] | None:
+    """(device, inode) of the database file at `path`; None for ":memory:" or when there is no file. A copy renamed over
+    the path (`snapshot-db` does that to snipetech.ro.db every hour) is another file, while a connection keeps reading
+    the one it opened."""
+    if str(path) in ("", ":memory:"):
+        return None
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return (st.st_dev, st.st_ino)
+
+
 class Store:
-    def __init__(self, path: str | Path = "snipetech.db"):
+    def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False):
+        """`readonly`: a reader of an existing database file beside its writers (a lab worker; WAL lets it read while
+        the tape recorder writes): no schema, no migration, never a write, and a missing file is an error."""
         self.path = str(path)
+        self.lock = threading.RLock()
+        if readonly:
+            uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+            self.conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
+            self.file_id = file_identity(self.path)
+            return
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
-        self.lock = threading.RLock()
+        self.file_id = file_identity(self.path)  # the file this connection reads, even after another is renamed over it
         with self.lock:
             self.conn.executescript(SCHEMA)
             for table, col, typ in _ADDED_COLUMNS:
