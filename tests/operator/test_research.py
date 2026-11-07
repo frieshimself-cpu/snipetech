@@ -73,7 +73,7 @@ def test_waiting_wallets_come_first_once_the_qualify_lab_may_run_again(env):
     first = RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)[0]
     assert first["unit"] == "qualify" and first["argv"] == ["qualify", "run", "--max", "300"]
     assert first["limit"] <= 3 * H and "3 waiting" in first["why"]
-    st.set_coverage("qualify:last_lab", {"ts": NOW - 30 * 60, "wallets": 300})  # its own 2 h interval: it would defer
+    st.set_coverage("qualify:last_lab", {"ts": NOW - 20 * 60, "wallets": 300})  # its own 2 h interval: it would defer
     assert "qualify" not in [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)]
 
 
@@ -85,16 +85,43 @@ def test_a_long_queue_gets_a_bigger_batch_but_never_more_than_the_cap(env):
     assert first["argv"] == ["qualify", "run", "--max", str(RS.MAX_QUALIFY_BATCH)]
 
 
-def test_the_strategy_search_runs_every_six_hours(env):
-    # 7 Nov: the owner wants profit as fast as possible and the server has the cores; new launch rules (OKTech hunt)
-    # need fresh numbers several times a day, not once
+def test_the_strategy_search_runs_every_two_hours(env):
+    # 7 Nov: the owner wants profit as fast as possible; a search on the newest day of tape took 41 min, and new rule
+    # families (OKTech hunt, MIG, the agents' own hypotheses) need fresh numbers many times a day
     st, cfg, _ = env
     units = lambda: [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)]
     assert "search" in units()  # never ran
-    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 3 * H})
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 1 * H})
     assert "search" not in units()
-    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 7 * H})
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 2.5 * H})
     assert "search" in units()
+    assert RS.UNITS["search"]["gap"] <= RS.SEARCH_EVERY_H * 3600  # its own start gap never holds it back longer
+
+
+def test_an_idle_lab_checks_waiting_wallets_before_their_interval(env):
+    # 7 Nov 09:00: 15,283 wallets waited for the wallet checks while the lab sat idle (a 41 min search every 6 h, the
+    # qualify lab at most every 2 h). Once no lab has run for IDLE_LAB_SECS, the waiting wallets are checked early.
+    st, cfg, _ = env
+    _pipeline(st)
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 30 * 60})  # the search is not due
+    st.set_coverage("qualify:last_lab", {"ts": NOW - 50 * 60, "wallets": 300})
+    units = lambda metas: [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), metas, cfg, NOW)]
+    assert "qualify" in units([])  # no lab for 50 min
+    ended_lately = [_meta(["research", "search"], NOW - 40 * 60, ended=NOW - 10 * 60)]
+    assert "qualify" not in units(ended_lately)  # a lab ended 10 min ago: the interval holds
+    running = [_meta(["lab", "--json"], NOW - 5 * 60, running=True)]
+    assert "qualify" not in units(running)
+
+
+def test_a_due_search_comes_before_an_early_wallet_check(env):
+    st, cfg, _ = env
+    _pipeline(st)
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 3 * H})  # due
+    st.set_coverage("qualify:last_lab", {"ts": NOW - 50 * 60, "wallets": 300})  # early only
+    order = [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)]
+    assert order.index("search") < order.index("qualify")
+    st.set_coverage("qualify:last_lab", {"ts": NOW - 3 * H, "wallets": 300})  # past its own interval: first again
+    assert RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)[0]["unit"] == "qualify"
 
 
 def test_discovery_runs_only_when_the_pipeline_has_run_dry_and_where_it_paid(env):
@@ -163,12 +190,14 @@ def test_a_dry_run_says_what_it_would_start_and_starts_nothing(env):
 def test_when_nothing_can_start_it_says_what_waits_and_until_when(env):
     st, cfg, _ = env
     _pipeline(st)
-    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 3 * H})
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 1 * H})
     st.set_coverage("qualify:last_lab", {"ts": NOW - 80 * 60, "wallets": 300})  # the qualify lab may run in 40 min
-    out = RS.run_next(st, cfg, NOW, metas=[], services={}, lab_held=False, start=lambda *a: pytest.fail("started"))
+    recent_lab = [_meta(["research", "search"], NOW - 50 * 60, ended=NOW - 10 * 60)]  # and the lab is not idle
+    out = RS.run_next(st, cfg, NOW, metas=recent_lab, services={}, lab_held=False,
+                      start=lambda *a: pytest.fail("started"))  # fmt: skip
     assert out["started"] is None
     assert "3 wallets wait for the qualify lab, allowed again in 40 min" in out["idle"]
-    assert "strategy search ran 3 h ago, next in 3 h" in out["idle"]
+    assert "strategy search ran 1 h ago, next in 1 h" in out["idle"]
 
 
 def test_nothing_pending_means_nothing_started(env):

@@ -49,11 +49,16 @@ BUSY_STATES = ("active", "activating", "deactivating", "reloading")
 # run, and how soon the same unit may start again after its last start
 UNITS: dict[str, dict[str, Any]] = {
     "qualify": {"argv": ("qualify", "run"), "limit": 3 * 3600, "gap": 30 * 60, "name": "wallet checks"},
-    "search": {"argv": ("research", "search"), "limit": 2 * 3600, "gap": 6 * 3600, "name": "strategy search"},
+    "search": {"argv": ("research", "search"), "limit": 2 * 3600, "gap": 2 * 3600, "name": "strategy search"},
     "discover": {"argv": ("discover", "run"), "limit": 3600, "gap": 3 * 3600, "name": "wallet discovery"},
 }
 MAX_QUALIFY_BATCH = 900  # three times [qualify] max_wallets: one qualify lab covers every labelled wallet anyway
-SEARCH_EVERY_H = 6.0  # 7 Nov: four searches a day (the owner: "profitable as fast as possible")
+SEARCH_EVERY_H = 2.0  # 7 Nov: a search on the newest day took 41 min; new rule families need fresh numbers often
+# 7 Nov 09:00: 15,283 wallets waited for the wallet checks while the lab sat idle more than half the day. Once no lab
+# has run for this long and wallets wait, the wallet checks run before their own interval (below a due search)
+IDLE_LAB_SECS = 30 * 60
+# the jobs that run a lab (one at a time): their ends and starts tell how long the lab has been idle
+LAB_JOBS = (("qualify", "run"), ("research", "search"), ("events", "edge"), ("lab",), ("paper", "freeze"))
 # the search reads the newest day of tape: over 72 h it held the lab lock (and the wallet checks behind it) for hours
 SEARCH_TAPE_H = 24.0
 DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pipeline has run dry
@@ -201,6 +206,17 @@ def _waits(unit: str, metas: list[dict], now: float) -> str | None:
     return None
 
 
+def _lab_quiet_secs(metas: list[dict], backlog: dict, now: float) -> float:
+    """Seconds since a lab last ran (0 while one runs): its jobs' ends and starts, and the last wallet-check lab, which
+    the qualify unit may also run outside the job list."""
+    labs = [m for m in metas if any(tuple(str(x) for x in (m.get("argv") or [])[: len(p)]) == p for p in LAB_JOBS)]
+    if any(m.get("running") for m in labs):
+        return 0.0
+    last = [float(m.get("ended") or m.get("started") or 0) for m in labs]
+    last.append(float(backlog["last"].get("qualify_lab") or 0))
+    return max(0.0, now - max(last))
+
+
 def _option(unit: str, argv: list[str], value: float, why: str) -> dict[str, Any]:
     return {"unit": unit, "name": UNITS[unit]["name"], "argv": argv, "limit": int(UNITS[unit]["limit"]),
             "value": round(float(value), 2), "why": why}  # fmt: skip
@@ -212,11 +228,16 @@ def plan(backlog: dict, metas: Iterable[dict], cfg: Config, now: float) -> list[
     w = backlog["waiting"]
     due = int(w["new"]) + int(w["due"])
     out = []
-    if due and now >= backlog["qualify_lab_due_at"]:
+    early = due and now < backlog["qualify_lab_due_at"] and _lab_quiet_secs(metas, backlog, now) >= IDLE_LAB_SECS
+    if due and (now >= backlog["qualify_lab_due_at"] or early):
         wait_h = max(w["new_oldest_h"] or 0.0, w["due_oldest_h"] or 0.0)
         n = min(max(due, int(cfg.qualify.max_wallets)), MAX_QUALIFY_BATCH)
-        out.append(_option("qualify", ["qualify", "run", "--max", str(n)], 100 + min(wait_h, 100.0),
-                           f"check the {due} waiting wallets; the oldest has waited {_age(wait_h)}"))  # fmt: skip
+        # early (the lab idle, its own interval not over): worth less than a due strategy search
+        value = 50.0 if early else 100 + min(wait_h, 100.0)
+        why = f"check the {due} waiting wallets; the oldest has waited {_age(wait_h)}" + (
+            f"; early: no lab has run for {_age(_lab_quiet_secs(metas, backlog, now) / 3600)}" if early else ""
+        )
+        out.append(_option("qualify", ["qualify", "run", "--max", str(n)], value, why))
     age = _hours(now, backlog["last"]["search"])
     if age is None or age >= SEARCH_EVERY_H:
         value = 80.0 if age is None else 60 + min(age - SEARCH_EVERY_H, 48.0) / 48.0 * 20
