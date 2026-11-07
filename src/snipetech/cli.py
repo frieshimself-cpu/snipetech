@@ -1485,8 +1485,29 @@ def _remote(args) -> int:
     return 0
 
 
+# Research jobs give the processor to the tape recorder first (7 Nov 16:58-17:21: with an events scan and a qualify run
+# on four cores going, the recorder fell 25-44 s behind the chain and its coverage mark up to 5 minutes behind; the
+# PumpSwap stream dropped for falling behind at 16:41). Lab workers inherit the priority of the job that starts them.
+BATCH_COMMANDS = frozenset(
+    {"lab", "qualify", "events", "research", "paper", "discover", "study", "copy-rank", "follow"}
+)
+BATCH_NICE = 10
+
+
+def _yield_cpu(cmd: str) -> None:
+    """Lower this process's priority when `cmd` is a heavy research job; the recorder, the operator, the book, the
+    measure stage and OKTech actions keep theirs. A refused change never stops the job."""
+    if cmd not in BATCH_COMMANDS:
+        return
+    try:
+        os.nice(BATCH_NICE)
+    except OSError:
+        pass
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    _yield_cpu(args.cmd)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
