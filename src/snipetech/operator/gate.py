@@ -120,6 +120,10 @@ def last_analyst_ts(paths: OperatorPaths, now: float) -> float | None:
 POSTMORTEM_MIN_TRIPS = 5  # new live round trips (sells in fills) that make a post-mortem worth an analyst turn
 POSTMORTEM_GAP_SECS = 3 * 3600  # never more than one post-mortem in three hours (the daily analysis counts as one)
 DAILY_SOON_SECS = 3600  # a post-mortem waits for an analysis due within the hour: that turn does it too
+# 7 Nov 10:45: the turn of 09:45:35 left the 10:45:20 round 15 s short of the hour and the analysis waited a whole round
+# (rounds every 15 min, timer jitter up to a minute, the turn starts seconds into its round): within this much of the
+# cadence a round counts as on time, never a whole round early
+CADENCE_SLACK_SECS = 5 * 60
 
 
 def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_today: float = 0.0) -> str | None:
@@ -133,7 +137,11 @@ def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_
         return "daily analysis due"
     every = effective_analyst_every_h(cfg, paths)
     last = last_analyst_ts(paths, now) if every > 0 else None
-    if last is None or now - last < every * 3600 or daily_analysis_due(paths, now + DAILY_SOON_SECS, cfg):
+    if (
+        last is None
+        or now - last < every * 3600 - CADENCE_SLACK_SECS
+        or daily_analysis_due(paths, now + DAILY_SOON_SECS, cfg)
+    ):
         return None
     if not room_for_extra_analysis(cfg, paths, spent_today):
         return None

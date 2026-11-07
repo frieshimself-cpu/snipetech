@@ -393,7 +393,7 @@ def test_an_analysis_every_two_hours_after_the_last_one(paths):
 
     paths.report("analyst-2026-11-06").write_text("x")  # the day's analysis is done
     mark_analyst_ran(paths, AT_0630)
-    assert _at(paths, AT_0630 + 2 * 3600 - 60).mode == "none"  # 1 h 59 min on: not yet
+    assert _at(paths, AT_0630 + 2 * 3600 - 10 * 60).mode == "none"  # 1 h 50 min on: not yet
     d = _at(paths, AT_0630 + 2 * 3600)
     assert d.call and d.mode == "analyst" and d.reasons == ["analysis due: every 2 h, the last one 2.0 h ago"]
     mark_analyst_ran(paths, AT_0630 + 2 * 3600)
@@ -527,3 +527,15 @@ def test_a_post_mortem_does_not_wait_for_an_analysis_the_day_has_no_room_for(pat
     mark_analyst_ran(paths, AT_0630 + 3600)  # 07:30
     soon = AT_0630 + 3.5 * 3600  # 10:00, half an hour past the analysis due at 09:30
     assert _analyst_due(paths, soon, CFG) and not _analyst_due(paths, soon, CFG, spent_today=9.5)
+
+
+def test_the_cadence_allows_for_the_rounds_own_timing(paths):
+    """7 Nov 10:45: the turn of 09:45:35 left the 10:45:20 round 15 s short of the hour, and the analysis waited for the
+    next round: 75 min apart instead of 60. A round within CADENCE_SLACK_SECS of the hour counts as on time."""
+    from snipetech.operator.gate import CADENCE_SLACK_SECS, mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    assert _at(paths, AT_0630 + 2 * 3600 - 15).mode == "analyst"
+    assert _at(paths, AT_0630 + 2 * 3600 - CADENCE_SLACK_SECS - 60).mode == "none"
+    assert 60 <= CADENCE_SLACK_SECS < 15 * 60  # never a whole round early
