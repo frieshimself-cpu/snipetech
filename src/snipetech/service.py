@@ -783,6 +783,12 @@ class Service:
                     total += float(info["tokenAmount"].get("uiAmount") or 0)
         return total
 
+    async def wallet_sol(self, address: str) -> float:
+        """SOL plus wrapped SOL: the part of the wallet that is not a coin. The wallet-wide guard's floor counts both
+        (OKTech wraps SOL at a start: 6 Nov 15:08 the SOL balance fell by 0.0996 and the wallet did not)."""
+        b = (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
+        return b + await self.wsol_balance(address)
+
     async def equity(self, address: str, ignore: list[str] | None = None) -> tuple[float, float, list[dict]]:
         """(equity in SOL = SOL + wrapped SOL + the tape value of the priced positions, the SOL balance, the positions).
         An unpriced position (`priced` False) counts for nothing here; callers must not call an emergency on it."""
