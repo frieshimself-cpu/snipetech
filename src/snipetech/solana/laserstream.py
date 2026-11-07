@@ -15,6 +15,9 @@ import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from typing import Any
 
+from solders.pubkey import Pubkey
+from solders.signature import Signature
+
 from .base58 import b58encode
 
 log = logging.getLogger(__name__)
@@ -34,6 +37,17 @@ def available() -> bool:
     return True
 
 
+def _key(raw: bytes) -> str:
+    """An account key in base58: solders for its 32 bytes (0.31 us against 4.63 us for the pure-Python b58encode, dev
+    box, 7 Nov), b58encode for any other length."""
+    return str(Pubkey.from_bytes(raw)) if len(raw) == 32 else b58encode(raw)
+
+
+def _sig(raw: bytes) -> str:
+    """A signature in base58: solders for its 64 bytes, b58encode for any other length."""
+    return str(Signature.from_bytes(raw)) if len(raw) == 64 else b58encode(raw)
+
+
 def _ix(ix) -> dict[str, Any]:
     return {"programIdIndex": ix.program_id_index, "accounts": list(ix.accounts), "data": b58encode(ix.data)}
 
@@ -46,16 +60,16 @@ def to_rpc_json(info, slot: int, block_time: int | None) -> dict[str, Any]:
         "slot": int(slot),
         "blockTime": block_time,
         "transaction": {
-            "signatures": [b58encode(s) for s in tx.signatures],
-            "message": {"accountKeys": [b58encode(k) for k in msg.account_keys], "instructions": [_ix(i) for i in msg.instructions]},
+            "signatures": [_sig(s) for s in tx.signatures],
+            "message": {"accountKeys": [_key(k) for k in msg.account_keys], "instructions": [_ix(i) for i in msg.instructions]},
         },
         "meta": {
             "err": {"raw": bytes(meta.err.err).hex()} if meta.HasField("err") else None,
             "fee": meta.fee,
             "innerInstructions": [{"index": g.index, "instructions": [_ix(i) for i in g.instructions]} for g in meta.inner_instructions],
             "logMessages": list(meta.log_messages),
-            "loadedAddresses": {"writable": [b58encode(k) for k in meta.loaded_writable_addresses],
-                                "readonly": [b58encode(k) for k in meta.loaded_readonly_addresses]},
+            "loadedAddresses": {"writable": [_key(k) for k in meta.loaded_writable_addresses],
+                                "readonly": [_key(k) for k in meta.loaded_readonly_addresses]},
         },
     }  # fmt: skip
 
@@ -74,7 +88,8 @@ Route = Callable[[Any, int], Handler | None]
 def dispatch(update, on_tx: Handler, route: Route | None = None, on_slot: Callable[[int], None] | None = None):
     """One stream update: its transaction goes to `on_tx(tx_json, index_in_block)`. A `route`, when given, sees the raw
     transaction info and its slot first and returns the handler to use, or None to drop the transaction unconverted
-    (the conversion, base58 for every key, is two thirds of the decoding: a1.bin 614 of 917 us, 7 Nov). A slot update
+    (the conversion is most of the decoding: a1.bin 614 of 917 us with the pure-Python base58 for every value, 7 Nov;
+    with solders for the keys and signatures its instruction data is nearly all of the ~430 us left). A slot update
     goes to `on_slot(slot)`, when given, if it is the commitment's (processed, confirmed or finalized)."""
     if on_slot is not None and update.HasField("slot"):
         if update.slot.status <= SLOT_FINALIZED:

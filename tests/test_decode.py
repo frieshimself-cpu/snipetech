@@ -1,6 +1,7 @@
 """Decoder and normalization tests against real mainnet transactions (tests/fixtures/tx)."""
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -8,9 +9,11 @@ import pytest
 from snipetech.solana.base58 import b58decode, b58encode, is_pubkey
 from snipetech.solana.normalize import normalize
 from snipetech.solana.programs import PUMP_PROGRAM, WSOL_MINT, decode_event, pump_idl
-from snipetech.solana.tx import _account_keys, extract_from_logs, extract_from_transaction
+from snipetech.solana.tx import RawEvent, TxEvents, _account_keys, extract_from_logs, extract_from_transaction
+from tests.synth import addr
 
 FIX = Path(__file__).parent / "fixtures" / "tx"
+MIGRATE_TX = Path(__file__).parent / "fixtures" / "graduating_bundle_7nov_migrate_tx.json"
 TXS = {p.stem: json.loads(p.read_text()) for p in sorted(FIX.glob("*.json"))}
 
 
@@ -123,6 +126,57 @@ def test_amm_pools_quoted_in_another_token_are_not_sol_trades():
     # a stale cache entry claiming SOL quotes does not override the instruction accounts
     stale = {p: (base, WSOL_MINT) for p, (base, _) in ev.pool_mints.items()}
     assert normalize(ev, known_pools=stale).trades == []
+
+
+class LookupOnly(Mapping):
+    """A pool map that answers lookups and records them; iterating it, which copying it takes, fails the test."""
+
+    def __init__(self, pools: dict):
+        self.pools, self.asked = pools, []
+
+    def __getitem__(self, pool):
+        self.asked.append(pool)
+        return self.pools[pool]
+
+    def __iter__(self):
+        raise AssertionError("normalize iterated the caller's pool map (copied it)")
+
+    def __len__(self):
+        return len(self.pools)
+
+
+def test_normalize_looks_pools_up_without_copying_or_changing_the_callers_map():
+    """The recorder hands normalize every pool it has learned (`LiveWatcher.pools`: the whole pools table, growing).
+    Copying that map for every transaction cost more than the rest of its decode (p2.bin, 7 Nov: 3 us with no pools,
+    95 us with 10,000, 1,950 us with 100,000). normalize looks up only the pools of the transaction's events, the
+    transaction's own word first (its instruction accounts, a pool it created or migrated), and never writes to the map."""
+    # decoded from logs alone (logsSubscribe): no instruction accounts, so only the caller's map knows these pools
+    for prefix, mint in (("3kz7PFEU", "VkxmuwDZhqD8HNMhUvkvvGi5jWEfXt82MJn5f5tpump"),  # a PumpSwap buy
+                         ("5dGuy1Eg", "9CU8Mp1iwX37dvLQKKzXkXZ7TCXKkVjHVSWMjmrx9PqN")):  # a LaunchLab buy  # fmt: skip
+        sig, tx = by_prefix(prefix)
+        ev = TxEvents(sig, tx["slot"], tx["blockTime"], "", extract_from_logs(tx["meta"]["logMessages"]))
+        (pool,) = {e.fields.get("pool") or e.fields["pool_state"] for e in ev.events}
+        others = {addr(f"pool {i}"): (addr(f"mint {i}"), WSOL_MINT) for i in range(1000)}
+        pools = LookupOnly({**others, pool: (mint, WSOL_MINT)})
+        norm = normalize(ev, 0, pools, foreign=True)
+        (t,) = norm.trades
+        assert t.mint == mint and set(pools.asked) == {pool}
+        assert norm.pools == {}  # what the map already knew is not news
+
+    # the migrate transaction names its new pool (CreatePoolEvent, CompletePumpAmmMigrationEvent); a PumpSwap buy on
+    # that pool later in the same transaction trades the migrated coin, whatever stale entry the map holds for it
+    ev = extract_from_transaction(json.loads(MIGRATE_TX.read_text()))
+    pool, coin = "3UuCJ6PuXgqwq8P8M3Q5Q7qasXkFtobYMAEynTotd8uJ", "kxQofyaYD6dv8x7zELCkJAcCUYErjE5njVA2rUdpump"
+    buy = next(e for e in extract_from_logs(by_prefix("3kz7PFEU")[1]["meta"]["logMessages"]) if e.name == "BuyEvent")
+    i = len(ev.events)
+    ev.events.append(RawEvent(buy.program, buy.name, {**buy.fields, "pool": pool}, i, buy.ix_name))
+    known = {pool: (addr("stale mint"), WSOL_MINT), addr("another pool"): (addr("another mint"), WSOL_MINT)}
+    before = dict(known)
+    norm = normalize(ev, 0, known, foreign=True)
+    (t,) = [t for t in norm.trades if t.ev == i]
+    assert t.mint == coin and t.venue == "amm"
+    assert norm.pools == {pool: (coin, WSOL_MINT)} and norm.pools is not known
+    assert known == before
 
 
 def test_borsh_tolerates_older_shorter_events():

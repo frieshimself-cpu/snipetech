@@ -12,6 +12,8 @@ Semantics verified against mainnet transactions (see tests/test_decode.py):
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 from ..models import AMM, CURVE, LAUNCHLAB, Completion, Launch, Migration, Normalized, Trade
 from .programs import SOL_QUOTES, WSOL_MINT
 from .tx import RawEvent, TxEvents
@@ -24,16 +26,24 @@ def _ceil_div(a: int, b: int) -> int:
 def normalize(
     tx: TxEvents,
     pos: int = 0,
-    known_pools: dict[str, tuple[str, str]] | None = None,
+    known_pools: Mapping[str, tuple[str, str]] | None = None,
     foreign: bool = False,
 ) -> Normalized:
     """`foreign`: also return trades quoted in another token (DJT, wXRP, PUMP...) in `.foreign`,
-    in that token's units. They never appear in `.trades`, which stays SOL-denominated."""
-    # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL)
-    ll = {p: (b, q) for p, (b, q, _) in tx.ll_pools.items()}
-    known_pools = {**(known_pools or {}), **tx.pool_mints, **ll}
-    out = Normalized([], [], [], [], {}, set())
-    out.pools.update({p: known_pools[p] for p in (*tx.pool_mints, *ll)})
+    in that token's units. They never appear in `.trades`, which stays SOL-denominated.
+
+    `known_pools` (pool -> base and quote mint) is only read, one lookup for each pool an event needs that the
+    transaction itself does not map: the recorder passes every pool it has learned, and copying that map for each
+    transaction cost more than the rest of the decode (p2.bin, 7 Nov: 95 us at 10,000 pools, 1,950 us at 100,000)."""
+    # The transaction's own word comes first: its instruction accounts are authoritative (some pools are quoted in
+    # another token, not SOL), LaunchLab's over PumpSwap's, and a pool its events create or migrate as they come.
+    # `.pools` returns exactly these; the caller's map answers only for the pools they leave out.
+    out = Normalized([], [], [], [], {**tx.pool_mints, **{p: (b, q) for p, (b, q, _) in tx.ll_pools.items()}}, set())
+    own, cache = out.pools, known_pools if known_pools is not None else {}
+
+    def lookup(pool: str) -> tuple[str, str] | None:
+        mapping = own.get(pool)
+        return cache.get(pool) if mapping is None else mapping
 
     for ev in tx.events:
         name, f = ev.name, ev.fields
@@ -57,19 +67,17 @@ def normalize(
                 out.migrations.append(
                     Migration(f["mint"], f["pool"], tx.slot, f.get("timestamp") or tx.block_time or 0, tx.signature)
                 )
-                known_pools[f["pool"]] = (f["mint"], WSOL_MINT)
-                out.pools[f["pool"]] = (f["mint"], WSOL_MINT)
+                own[f["pool"]] = (f["mint"], WSOL_MINT)
         elif name == "CreatePoolEvent":
-            out.pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
-            known_pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
+            own[f["pool"]] = (f["base_mint"], f["quote_mint"])
         elif name == "LaunchLabPoolCreateEvent":
-            mapping = known_pools.get(f["pool_state"])
+            mapping = lookup(f["pool_state"])
             if mapping is None:
                 out.unresolved_pools.add(f["pool_state"])
             else:
                 out.launches.append(_launchlab_launch(tx, f, *mapping))
         elif name == "LaunchLabTradeEvent":
-            mapping = known_pools.get(f["pool_state"])
+            mapping = lookup(f["pool_state"])
             if mapping is None:
                 out.unresolved_pools.add(f["pool_state"])
                 continue
@@ -85,7 +93,7 @@ def normalize(
     for ev in tx.events:
         if ev.name in ("BuyEvent", "SellEvent"):
             pool = ev.fields["pool"]
-            mapping = known_pools.get(pool)
+            mapping = lookup(pool)
             if mapping is None:
                 out.unresolved_pools.add(pool)
                 continue
