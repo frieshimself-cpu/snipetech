@@ -219,6 +219,12 @@ def file_identity(path: str | Path) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def _tables(conn: sqlite3.Connection) -> dict[str, set[str]]:
+    """Every table of the database on `conn`, with its columns."""
+    names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+    return {name: {r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')} for name in names}
+
+
 class Store:
     # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
     # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
@@ -228,13 +234,19 @@ class Store:
     # restart, on whichever connection makes it: every connection carries the limit.
     JOURNAL_SIZE_LIMIT = 64 << 20
 
-    def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False):
+    def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False, immutable: bool = False):
         """`readonly`: a reader of an existing database file beside its writers (a lab worker; WAL lets it read while
-        the tape recorder writes): no schema, no migration, never a write, and a missing file is an error."""
+        the tape recorder writes): no schema, no migration, never a write, and a missing file is an error. `immutable`
+        (read-only too): the hourly copy, written whole and renamed into place by `snapshot-db` and never written
+        again. SQLite then reads the file alone, without locks, and never opens a -wal or -shm beside it: a job on the
+        code before 7 Nov evening opened the copy read-write, in WAL mode, and until snapshot-db clears it its -wal lies
+        under the path's name when the next copy is renamed over it; a read-only connection to the new copy takes that
+        -wal for its own and reads "database disk image is malformed"."""
         self.path = str(path)
-        self.readonly = readonly
+        self.immutable = immutable
+        self.readonly = readonly or immutable
         self.lock = threading.RLock()
-        if readonly:
+        if self.readonly:
             self.conn = self._connect()
             self.file_id = file_identity(self.path)
             return
@@ -257,10 +269,26 @@ class Store:
                     if "duplicate column name" not in str(e):
                         raise
 
+    def schema_gaps(self) -> list[str]:
+        """What this code's schema has and the file lacks: tables, and columns as `table.column`; none when the file is
+        up to date. A read-only store never migrates its file, and the hourly copy taken before a deploy that added a
+        table or a column lacks it until the next copy."""
+        fresh = Store(":memory:")
+        try:
+            want = _tables(fresh.conn)
+        finally:
+            fresh.close()
+        with self.lock:
+            have = _tables(self.conn)
+        return sorted(t for t in want if t not in have) + sorted(
+            f"{t}.{c}" for t, cols in want.items() if t in have for c in cols - have[t]
+        )
+
     def _connect(self) -> sqlite3.Connection:
-        """A connection to this store's file (read-only, by URI, for a `readonly` store) with the WAL size limit set."""
+        """A connection to this store's file (read-only, by URI, for a `readonly` store, immutable too for the hourly
+        copy) with the WAL size limit set."""
         if self.readonly:
-            uri = Path(self.path).resolve().as_uri() + "?mode=ro"
+            uri = Path(self.path).resolve().as_uri() + ("?mode=ro&immutable=1" if self.immutable else "?mode=ro")
             conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
         else:
             conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)

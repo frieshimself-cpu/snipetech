@@ -190,6 +190,40 @@ def test_a_tape_copy_renamed_over_the_labs_file_is_never_read(tmp_path):
     assert after["rows"] == before["rows"]
 
 
+def test_workers_open_the_hourly_copy_the_way_the_lab_does(tmp_path):
+    """The lab reads the hourly copy immutable (`Service.tape_store`): the file alone, whatever lies beside it under
+    the path's name, such as the -wal of a job on the code before 7 Nov evening (it opened the copy read-write, in WAL
+    mode) when the next copy was renamed over it. Its workers open the copy the same way: read-only, they took that
+    -wal for the new copy's and their chunks failed ("database disk image is malformed")."""
+    from snipetech.infra.snapshot_db import snapshot_db
+
+    from .test_short_reads import _trades
+
+    live = Store(tmp_path / "snipetech.db")
+    _world(live)
+    copy = Path(snapshot_db(live.path, disk_free=lambda _d: 1e15)["path"])
+    older = sqlite3.connect(copy)  # a job on the older code: the copy in WAL mode, a deploy's table in its -wal
+    older.execute("PRAGMA journal_mode=WAL")
+    older.execute("CREATE TABLE added_by_deploy (x INTEGER)")
+    older.commit()
+    live.add_trades(_trades(0, 20_000, t0=NOW - 400_000))  # older than the lab's spans: only the file's pages move
+    con = sqlite3.connect(live.path)  # the next copy, renamed over the one the older job holds, its -wal left in place
+    con.execute("VACUUM INTO ?", (str(tmp_path / "next.db"),))
+    con.close()
+    os.replace(tmp_path / "next.db", copy)
+    assert (tmp_path / "snipetech.ro.db-wal").exists()
+    lab = Store(copy, immutable=True)
+    try:
+        cfg = _cfg()
+        serial = _events(lab, cfg, 1)
+        parallel = _events(lab, cfg, 2)
+    finally:
+        lab.close()
+        older.close()
+        live.close()
+    assert parallel["workers"] == 2 and serial["rows"] and parallel["rows"] == serial["rows"]
+
+
 def test_chunks_a_worker_refuses_are_scored_in_the_labs_own_process(world_db, monkeypatch, capfd):
     """A worker that finds another file at the path than the one the lab planned on scores nothing; its chunks are
     scored in the lab's own process, in their place."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import sqlite3
 import threading
 import time
 from collections.abc import Callable
@@ -106,17 +107,24 @@ class Service:
     @property
     def tape_store(self) -> Store:
         """The store the heavy tape readers (labs, discovery, the events scan) should read: the hourly read-only copy
-        next to the database (`snipetech.ro.db`, written by `snapshot-db`) when it exists and is under two hours old,
-        else the live store. Writes (verdicts, coverage, fills) always go to `self.store`. A long read of the live file
-        keeps its WAL from being checkpointed or starting over (7 Nov: 2 GB of WAL an hour while they ran). Chosen
-        once, under a lock: discover's sources ask from their own threads at the same moment, and a thread that came
-        while the first one was still opening the copy was handed the live store."""
+        next to the database (`snipetech.ro.db`, written by `snapshot-db`) when it exists, is under two hours old and
+        holds this code's whole schema, else the live store. Writes (verdicts, coverage, fills) always go to
+        `self.store`. A long read of the live file keeps its WAL from being checkpointed or starting over (7 Nov: 2 GB
+        of WAL an hour while they ran). Chosen once, under a lock: discover's sources ask from their own threads at the
+        same moment, and a thread that came while the first one was still opening the copy was handed the live store."""
         with self._tape_lock:
             if self._tape_store is None:
                 self._tape_store = self._open_tape_store()
             return self._tape_store
 
     def _open_tape_store(self) -> Store:
+        """The copy, opened immutable (`Store`), when it is fresh and holds this code's whole schema; else the live
+        store. No reader writes the copy: opened read-write, its schema step put it in WAL mode and, after a deploy that
+        added a table, wrote that table into a -wal under the copy's name, and the next copy renamed over it was read
+        on top of that -wal ("database disk image is malformed" for every heavy reader until the copy after; review,
+        7 Nov evening). So a copy taken before such a deploy lacks what the deploy added until the next copy
+        (snapshot-db hands each over with its code's whole schema), and the live store is read meanwhile, as when there
+        is no copy or it cannot be read."""
         try:
             from .infra.snapshot_db import RO_SUFFIX
 
@@ -127,8 +135,14 @@ class Service:
                 and ro.exists()
                 and time.time() - ro.stat().st_mtime < self.TAPE_COPY_MAX_AGE_SECS
             ):
-                return Store(ro)
-        except OSError:
+                copy = Store(ro, immutable=True)
+                try:
+                    if not copy.schema_gaps():
+                        return copy
+                except sqlite3.Error:
+                    pass
+                copy.close()
+        except (OSError, sqlite3.Error):
             pass
         return self.store
 

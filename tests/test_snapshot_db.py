@@ -1,5 +1,6 @@
 """Hourly read-only copy of the database: VACUUM INTO a temp file, then an atomic rename; readers never see a half copy."""
 
+import sqlite3
 from pathlib import Path
 
 from snipetech import ops as O
@@ -34,6 +35,82 @@ def test_snapshot_is_a_complete_readable_copy(tmp_path):
         copy = Store(ro)
         try:
             assert copy.labels("kol") == {"W1": "one", "W2": "two"} and out2["path"] == out["path"]
+        finally:
+            copy.close()
+    finally:
+        st.close()
+
+
+def test_the_copy_is_handed_over_with_the_codes_whole_schema_in_rollback_mode(tmp_path, monkeypatch):
+    """Its readers open the copy read-only and immutable, and never migrate it: snapshot-db hands it over with this
+    code's whole schema (a table or a column a deploy added before the live file's first writer opened it is there,
+    empty) and in rollback mode, so a reader writes nothing and finds no -wal, -shm or -journal beside it (review,
+    7 Nov: a copy a reader switched to WAL left its -wal under the path's name, and the next copy was read on top of
+    it)."""
+    from snipetech import store as S
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        st.set_label("W1", "one", "kol")
+        monkeypatch.setattr(S, "SCHEMA", S.SCHEMA + "\nCREATE TABLE IF NOT EXISTS added_by_deploy (x INTEGER);\n")
+        monkeypatch.setattr(S, "_ADDED_COLUMNS", S._ADDED_COLUMNS + (("labels", "added_by_deploy", "TEXT"),))
+        ro = Path(snapshot_db(db)["path"])
+        assert ro.read_bytes()[18:20] == b"\x01\x01"  # the file format's write and read versions: 1 rollback, 2 WAL
+        assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("snipetech.ro")) == ["snipetech.ro.db"]
+        con = sqlite3.connect(f"file:{ro}?mode=ro", uri=True)
+        try:
+            assert con.execute("SELECT count(*) FROM added_by_deploy").fetchone() == (0,)
+            assert "added_by_deploy" in {r[1] for r in con.execute("PRAGMA table_info(labels)")}
+        finally:
+            con.close()
+        copy = Store(ro, immutable=True)
+        try:
+            assert copy.schema_gaps() == [] and copy.labels("kol") == {"W1": "one"}
+            assert copy.conn.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+        finally:
+            copy.close()
+        assert sorted(p.name for p in tmp_path.iterdir() if p.name.startswith("snipetech.ro")) == ["snipetech.ro.db"]
+    finally:
+        st.close()
+
+
+def test_what_an_older_job_left_beside_the_last_copy_is_cleared_when_the_next_one_takes_the_path(tmp_path):
+    """A job on the code before 7 Nov evening opened the copy read-write, in WAL mode, and wrote a deploy's table into
+    the -wal under the path's name (jobs keep their old code until they end, after a deploy too). The next connection
+    to open the path took that -wal for the new copy's, and the last to close wrote the old copy's pages into the new
+    file (review, 7 Nov evening: malformed until the copy after). snapshot-db clears what lies beside the path once the
+    new copy holds it: any connection, read-write too, reads the new copy whole and leaves it whole, and the older job
+    goes on reading the copy it opened."""
+    from tests.test_short_reads import _trades
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        st.add_trades(_trades(0, 20_000))
+        ro = Path(snapshot_db(db)["path"])
+        older = sqlite3.connect(ro)
+        older.execute("PRAGMA journal_mode=WAL")
+        older.execute("CREATE TABLE added_by_deploy (x INTEGER)")
+        older.commit()
+        assert (tmp_path / "snipetech.ro.db-wal").exists()
+        st.add_trades(_trades(20_000, 20_000))
+        snapshot_db(db)
+        try:
+            assert not list(tmp_path.glob("snipetech.ro.db-*"))
+            con = sqlite3.connect(ro)  # read-write, as the older code opened it
+            try:
+                assert con.execute("PRAGMA integrity_check").fetchall() == [("ok",)]
+                assert con.execute("SELECT count(*) FROM trades").fetchone() == (40_000,)
+            finally:
+                con.close()
+            assert older.execute("SELECT count(*) FROM trades").fetchone() == (20_000,)
+        finally:
+            older.close()
+        copy = Store(ro, immutable=True)
+        try:
+            assert copy._q("PRAGMA integrity_check") == [("ok",)]
+            assert copy._q("SELECT count(*) FROM trades") == [(40_000,)]
         finally:
             copy.close()
     finally:
