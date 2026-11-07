@@ -1,9 +1,11 @@
-"""Owner commands over Telegram: /status /stop /resume /book /sell. Polled once per round and every minute (`operate
---commands`); only the owner's chat is obeyed.
+"""Owner commands over Telegram: /status /stop /resume /book /sell /test. Polled once per round and every minute
+(`operate --commands`); only the owner's chat is obeyed.
 /stop never strands a coin: a running sniper is left alone while the wallet holds anything (it is the only thing that sells).
 /sell is the owner's own exit for a coin OKTech abandoned (6 Nov 20:33: a copy bought 0.2 SOL of 5m5h…, the price fell
 65 % within a second and no exit fired; DTAU and 4siK the same): it sells from the sniper wallet with SNIPER_SECRET
-(solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task."""
+(solana/sell.py, pump.fun curve coins only), never buys, and never touches an OKTech task.
+/test is the owner's own capped live test (live_test.py): it shows the plan, and "/test <id> go" only writes the request
+the next operator round starts; nothing here creates or starts a sniper."""
 
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
+from . import live_test
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
 from .snapshot import Snapshot
@@ -29,7 +32,8 @@ HELP = (
     "commands: /status (wallet, snipers, spend, resources)  /stop (stop snipers that hold nothing; expect none)  /resume  "
     "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
-    "/why <wallet> and /budget (later phase)"
+    "/test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts it at the next "
+    "round, /stop ends it)  /why <wallet> and /budget (later phase)"
 )
 
 
@@ -133,6 +137,19 @@ def _status(cfg: Config, snap: Snapshot | None, paths: OperatorPaths, now: float
 async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: float) -> str:
     paths.ensure()
     paths.stop_flag.write_text(str(int(now)))
+    # after the flag: a live test not started yet is cancelled now (a /resume before the next round must not bring it
+    # back), and a round in the middle of starting one reads the flag after its create and starts nothing
+    try:
+        test = live_test.on_stop(paths, notes, now)
+    except Exception as exc:  # noqa: BLE001 - the kill switch never fails on the test's file; the round reads the flag
+        test = (
+            f"(the live test's record could not be updated: {type(exc).__name__}; the /stop flag stops it all the same)"
+        )
+    reply = await _stop_snipers(svc, cfg, notes)
+    return f"{reply}\n{test}" if test else reply
+
+
+async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:
     try:
         held = await svc.open_positions(cfg.operator.wallet)
     except Exception as exc:  # noqa: BLE001
@@ -425,6 +442,17 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = f"Nothing sold: this /sell is {mins} min old (it waited while the bot was not reading). Send it again if you still mean it."
     elif cmd.name == "sell":
         reply = await _sell(cmd.args, svc=svc, cfg=cfg, notes=notes, sweep=sweep)
+    elif cmd.name == "test" and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
+        # the same rule as /sell: a yes that waited in Telegram's queue may not fit the wallet or the strategies now.
+        # Its words are not repeated: a secret key pasted by mistake must not reach the notes
+        mins = int((now - cmd.date) // 60)
+        if cmd.args[-1:] == ["go"]:
+            notes.write(f"owner's /test go from Telegram was {mins} min old when read: nothing started", "decision")
+        reply = (f"Nothing started: this /test is {mins} min old (it waited while the bot was not reading). Send it "
+                 "again if you still mean it.")  # fmt: skip
+    elif cmd.name == "test":
+        reply = await live_test.command(cmd.args, svc=svc, cfg=cfg, paths=paths, snap=snap, notes=notes, now=now,
+                                        date=cmd.date)  # fmt: skip
     elif cmd.name in ("why", "budget"):
         reply = f"/{cmd.name} is available in a later phase."
     else:
