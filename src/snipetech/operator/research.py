@@ -59,6 +59,7 @@ SEARCH_TAPE_H = 24.0
 DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pipeline has run dry
 STALE_VERDICT_DAYS = 3.0
 FAILED_BACKOFF_SECS = 6 * 3600  # a unit whose last job failed waits this long before it is tried again
+LOST_RETRY_SECS = 30 * 60  # a unit whose job vanished without an exit code (a deploy) runs again after this
 DISCOVER_SOURCES = ("tape", "owner", "solanatracker", "solanatracker30", "birdeye", "coinfirst", "vybe")
 
 SEARCH_KEY = "research:search"
@@ -174,14 +175,26 @@ def _jobs_of(unit: str, metas: Iterable[dict]) -> list[dict]:
     return [m for m in metas if tuple(str(x) for x in (m.get("argv") or [])[: len(prefix)]) == prefix]
 
 
+def _lost(m: dict) -> bool:
+    """Ended with no exit code: the process vanished (7 Nov 07:44, a deploy restarted the service that ran it)."""
+    return not m.get("running") and m.get("ended") is not None and m.get("exit_code") is None
+
+
 def _waits(unit: str, metas: list[dict], now: float) -> str | None:
-    """Why `unit` must not start now, judging by its own jobs: still running, started too recently, failed lately."""
+    """Why `unit` must not start now, judging by its own jobs: still running, started too recently, failed lately.
+    A job lost to a deploy produced nothing, so it does not hold the unit's gap: the unit runs again LOST_RETRY_SECS
+    later, unless it was lost twice within the failure back-off (then something kills it: it waits like a failure)."""
     same = _jobs_of(unit, metas)
     if any(m.get("running") for m in same):
         return "already running"
-    last = max((float(m.get("started") or 0) for m in same), default=0.0)
+    lost = [float(m.get("ended") or m.get("started") or 0) for m in same if _lost(m)]
+    last = max((float(m.get("started") or 0) for m in same if not _lost(m)), default=0.0)
     if now - last < UNITS[unit]["gap"]:
         return f"started {_age(_hours(now, last))} ago"
+    if lost and now - max(lost) < LOST_RETRY_SECS:
+        return f"lost {_age(_hours(now, max(lost)))} ago (a deploy or a restart); runs again {LOST_RETRY_SECS // 60} min after"
+    if sum(1 for t in lost if now - t < FAILED_BACKOFF_SECS) >= 2:
+        return f"lost twice in {FAILED_BACKOFF_SECS // 3600} h: waits like a failure"
     fails = [float(m.get("ended") or m.get("started") or 0) for m in same if m.get("exit_code") not in (0, None)]
     if fails and now - max(fails) < FAILED_BACKOFF_SECS:
         return f"failed {_age(_hours(now, max(fails)))} ago"

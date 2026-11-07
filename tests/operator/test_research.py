@@ -415,3 +415,16 @@ def test_the_strategy_search_never_holds_the_lab_for_hours():
     """On 6 Nov the first search over 72 h of tape held the lab lock for over 77 minutes while the wallet checks the
     book waits for queued behind it. The search reads the newest 24 h and is stopped after 2 hours at most."""
     assert RS.SEARCH_TAPE_H == 24.0 and RS.UNITS["search"]["limit"] <= 2 * 3600
+
+
+def test_a_job_lost_to_a_deploy_is_retried_soon_but_not_in_a_loop(env):
+    # 7 Nov 07:44: a `research search` started at 07:35 died with a deploy ("process gone", no exit code); the 6 h
+    # gap between starts would have kept the next search away until 13:35 with nothing to show for the lost one
+    st, cfg, _ = env
+    units = lambda metas: [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), metas, cfg, NOW)]
+    lost = lambda started, ended: _meta(["research", "search"], started, ended=ended, exit_code=None)
+    assert "search" not in units([lost(NOW - 40 * 60, NOW - 20 * 60)])  # lost 20 min ago: a short pause first
+    assert "search" in units([lost(NOW - 50 * 60, NOW - 40 * 60)])  # lost 40 min ago: run it again
+    # lost twice within the back-off: something kills it, not a deploy; wait like a failure
+    assert "search" not in units([lost(NOW - 3 * H, NOW - 2 * H), lost(NOW - 50 * 60, NOW - 40 * 60)])
+    assert "search" not in units([_meta(["research", "search"], NOW - 50 * 60)])  # a finished one keeps the full gap
