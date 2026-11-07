@@ -593,6 +593,40 @@ def test_stop_ends_the_sequence(env):
     assert _seq(env)["state"] == "ended" and len(env.svc.created) == 1 and AT.read_autotest(env.paths)["on"] is False
 
 
+def test_stop_between_blocks_ends_the_sequence_even_after_a_resume(env):
+    """Block 1 reached its cap (its round trips waiting to be judged); the owner sends /stop, then /resume a few minutes
+    later so the book can trade again, both before the next round. /stop ends the sequence: a /resume before the next
+    round must not bring it back (live_test's own rule for a request), so no block 2 starts."""
+    _start(env)
+    _play(env, [0.02] * 10)  # live at paper: block 2 would start
+    reply = LTT._send(env, name="stop", at=NOW + 60 + 2 * HOUR - 300)
+    assert "automatic live test" in reply and "no further block" in reply
+    assert "Nothing changed" in LTT._send(env, "auto", "on", at=NOW + 60 + 2 * HOUR - 240)  # it has not ended yet
+    LTT._send(env, name="resume", at=NOW + 60 + 2 * HOUR - 120)
+    _round(env, NOW + 60 + 2 * HOUR)
+    assert len(env.svc.created) == 1 and _seq(env)["state"] == "ended" and "/stop" in _seq(env)["why"]
+    assert AT.read_autotest(env.paths)["on"] is False and "/stop" in AT.read_autotest(env.paths)["used"]["result"]
+    (line,) = _said(env, "Automatic live test ended")
+    assert "ended: your /stop at" in line and "block 2" not in line  # its trades are in the record, never judged
+    _round(env, NOW + 60 + 2 * HOUR + 900)
+    assert len(env.svc.created) == 1
+    assert "Automatic live test on" in LTT._send(env, "auto", "on", at=NOW + 60 + 2 * HOUR + 960)  # a new yes
+
+
+def test_stop_with_no_sequence_running_holds_the_standing_yes_until_resume(env):
+    """With no sequence in progress /stop changes nothing in the owner's switch: nothing starts while the flag is set,
+    the reply says so, and after /resume the standing yes starts a test as before."""
+    LTT._freeze(env.store, BEST, pnl=0.02)
+    _on(env)
+    reply = LTT._send(env, name="stop", at=NOW + 30)
+    assert "automatic live test starts nothing" in reply and "/test auto off" in reply
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and AT.read_autotest(env.paths)["on"]
+    LTT._send(env, name="resume", at=NOW + 120)
+    _round(env, NOW + 960)
+    assert LT.load(env.paths)["state"] == "running" and LT.load(env.paths)["by"] == "autotest"
+
+
 def test_test_shows_the_automatic_block_and_the_switch(env):
     _start(env)
     assert "automatic test, block 1" in LTT._send(env, at=NOW + 600)

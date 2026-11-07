@@ -65,8 +65,11 @@ sequence's record in `operator/autotest.json`).
 - Below half: the sequence stops, and a decision note says "the analyst works out why" for the post-mortem to pick up.
 
 **What ends it.** A block that ends early (its 120 minutes, the floor, `/stop`, the guard) or does not start. Live
-below half of paper. All 4 blocks done. No room above the floor for another block. The switch turned off: a block
-running then runs to its end (`/stop` ends it now), and a request not started yet never starts. At the end the switch
+below half of paper. All 4 blocks done. No room above the floor for another block. The config naming another wallet
+than the yes. The switch turned off: a block running then runs to its end (`/stop` ends it now), and a request not
+started yet never starts. `/stop` between blocks ends the sequence too: it is written into `operator/AUTOTEST` at once,
+so a `/resume` before the next round does not bring it back. With no sequence in progress `/stop` leaves the switch as
+it is: nothing starts while the flag is set, and after `/resume` the standing yes may start a test again. At the end the switch
 turns itself off (marked used, with the result) and the owner gets one summary. A new sequence needs the owner's yes
 again; `/test auto on` is refused while a sequence still runs.
 

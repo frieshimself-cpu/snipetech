@@ -437,8 +437,8 @@ of the paper mean; the whole sequence never goes more than 1 SOL below the first
 the analyst works out why. `/test auto on` is the yes, for the sniper wallet `/test auto` names (`snipetech remote
 --wait run operate autotest --on --approved "<your words>" --wallet <the wallet you named>` from the cloud session);
 nothing starts by itself on another wallet. `/test auto` shows it; `/test auto off` starts no more (a running block
-runs to its end, `/stop` ends it now). At the end of a sequence it turns itself off, and a new one needs your yes
-again. Its files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can
+runs to its end, `/stop` ends it now, and a `/stop` between blocks ends the sequence even if `/resume` follows). At the
+end of a sequence it turns itself off, and a new one needs your yes again. Its files are `operator/AUTOTEST` (yours) and `operator/autotest.json` (the sequence's record); the agents can
 write neither (`operator/autotest.py`, docs/live-recipe.md).
 
 **The strategist (learning loop, stage 6).** Every day at 05:10 UTC (`snipetech-strategist.timer`) it counts the live

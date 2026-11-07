@@ -151,8 +151,17 @@ async def _stop(svc, cfg: Config, paths: OperatorPaths, notes: NoteSink, now: fl
         test = (
             f"(the live test's record could not be updated: {type(exc).__name__}; the /stop flag stops it all the same)"
         )
+    # the owner's automatic test: a sequence in progress ends with this /stop, recorded at once so that a /resume before
+    # the next round does not bring it back (the round would otherwise see no flag and start the next block)
+    try:
+        from . import autotest
+
+        auto = autotest.on_stop(paths, notes, now)
+    except Exception as exc:  # noqa: BLE001 - the flag still holds every start until /resume
+        auto = (f"(the automatic test's record could not be updated: {type(exc).__name__}; nothing starts while the "
+                "/stop flag is set, and /test auto off turns it off)")  # fmt: skip
     reply = await _stop_snipers(svc, cfg, notes)
-    return f"{reply}\n{test}" if test else reply
+    return "\n".join(x for x in (reply, test, auto) if x)
 
 
 async def _stop_snipers(svc, cfg: Config, notes: NoteSink) -> str:

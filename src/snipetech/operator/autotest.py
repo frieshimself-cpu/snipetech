@@ -17,8 +17,10 @@ would: 6 Nov 15:16 the owner moved 2.54 SOL out mid-test). The live mean per tra
 is compared with the strategy's forward paper mean: at least `continue_at` times it, and above zero, requests the next
 block of the same strategy with the same caps and the first block's floor (the whole sequence can lose at most
 `loss_sol`); else the sequence stops and the analyst works out why. At most `more_blocks` more blocks. A block that ends
-early (its time limit, its floor, /stop, the guard) or does not start ends the sequence. At its end AUTOTEST turns itself
-off (used, with the result), the owner gets one summary, and a new sequence needs the owner's yes again.
+early (its time limit, its floor, /stop, the guard) or does not start ends the sequence, and so does the owner's /stop
+between blocks: it is recorded in AUTOTEST at once, so a /resume before the next round does not bring the sequence back.
+At its end AUTOTEST turns itself off (used, with the result), the owner gets one summary, and a new sequence needs the
+owner's yes again.
 
 The yes is for one sniper wallet (rule 1: a yes is for a wallet, a size, a duration): AUTOTEST records the wallet and the
 OKTech wallet it names, and nothing starts by itself, and no sequence goes on, while the config names another.
@@ -175,9 +177,10 @@ def read_autotest(paths: OperatorPaths) -> dict[str, Any]:
     approved = _approval(data)
     wallets = _wallets(data)
     used = data.get("used") if isinstance(data.get("used"), dict) else None
+    stopped = data.get("stopped") if isinstance(data.get("stopped"), dict) else None
     return out | {"on": data.get("on") is True and approved is not None and wallets is not None, "approved": approved,
                   "wallet": wallets[0] if wallets else None, "oktech_wallet": wallets[1] if wallets else None,
-                  "ts": data.get("ts"), "by": data.get("by"), "used": used}  # fmt: skip
+                  "ts": data.get("ts"), "by": data.get("by"), "used": used, "stopped": stopped}  # fmt: skip
 
 
 def _write(paths: OperatorPaths, rec: dict) -> None:
@@ -216,6 +219,9 @@ def set_autotest(paths: OperatorPaths, on: bool, *, values: dict | None = None, 
                 raise ValueError("turning it on needs the sniper wallet and the OKTech wallet the owner's yes is for")
             seq = load_seq(paths)
             if seq and seq.get("state") == "running":  # one sequence per yes: a second would have a floor of its own
+                if _stop_words(_raw(paths), seq):
+                    raise ValueError(f"your /stop ends the sequence on your earlier yes ({seq.get('label')}) at the next "
+                                     "round; turn it on again after that")  # fmt: skip
                 raise ValueError(f"a sequence is still running on your earlier yes ({seq.get('label')}, block "
                                  f"{seq['blocks'][-1]['n']}); it ends by itself (or with /stop), then turn it on "
                                  "again")  # fmt: skip
@@ -225,7 +231,8 @@ def set_autotest(paths: OperatorPaths, on: bool, *, values: dict | None = None, 
             if values:
                 raise ValueError("the caps go with turning it on")
             cur = _raw(paths)
-            rec = {k: cur[k] for k in (*FIELDS, "approved", "used", "wallet", "oktech_wallet") if k in cur} | {
+            keep = (*FIELDS, "approved", "used", "wallet", "oktech_wallet", "stopped")
+            rec = {k: cur[k] for k in keep if k in cur} | {
                 "on": False,
                 "ts": int(now),
                 "by": by,
@@ -245,6 +252,38 @@ def _turn_off_used(paths: OperatorPaths, seq: dict, result: str, now: float) -> 
         _write(paths, rec | {"on": False, "ts": int(now), "by": BY,
                              "used": {"sequence": seq["id"], "ended_at": int(now), "result": result[:600]}})  # fmt: skip
     return True
+
+
+def _stop_words(at: dict, seq: dict) -> str | None:
+    """The owner's /stop that ends `seq`, in words ("your /stop at HH:MM UTC"), or None when none came for it."""
+    st = at.get("stopped")
+    if isinstance(st, dict) and seq.get("id") and st.get("sequence") == seq.get("id"):
+        return f"your /stop at {_when(st.get('at'))}"
+    return None
+
+
+def on_stop(paths: OperatorPaths, notes: NoteSink, now: float) -> str | None:
+    """The owner's /stop, after its flag is written (commands._stop): a sequence in progress ends with it. The stop is
+    written into AUTOTEST at once (switched off, under its lock: the round writes autotest.json and must not lose it),
+    so a /resume before the next round never brings the sequence back; that round ends it with the owner's summary. With
+    no sequence in progress the owner's switch is left as it is: nothing starts while the flag is set. A line for the
+    reply, or None when there is no automatic test to speak of."""
+    seq = load_seq(paths)
+    if not seq or seq.get("state") != "running":
+        if read_autotest(paths)["on"]:
+            return ("The automatic live test starts nothing while /stop holds; after /resume it may start one (/test "
+                    "auto off turns it off).")  # fmt: skip
+        return None
+    with _locked(paths):
+        cur = _raw(paths)
+        rec = {k: cur[k] for k in (*FIELDS, "approved", "used", "wallet", "oktech_wallet") if k in cur}
+        _write(paths, rec | {"on": False, "ts": int(now), "by": "stop",
+                             "stopped": {"sequence": seq["id"], "at": int(now)}})  # fmt: skip
+    n = seq["blocks"][-1]["n"]
+    notes.write(f"owner's /stop ends the automatic live test's sequence {seq['id']} ({seq.get('label')}, block {n}): no "
+                "further block starts", "decision")  # fmt: skip
+    return (f"The automatic live test ({seq.get('label')}, block {n}) ends with this /stop: no further block starts, and "
+            "/resume does not bring it back. /test auto on is a new yes.")  # fmt: skip
 
 
 def is_on(paths: OperatorPaths) -> bool:
@@ -592,14 +631,19 @@ async def _advance(r: _Round, seq: dict) -> dict:
     or end the sequence."""
     cur = seq["blocks"][-1]
     t = live_test.find(r.paths, seq["strategy"], cur["requested_at"])
+    stop = _stop_words(read_autotest(r.paths), seq)  # the owner's /stop, whatever the flag says now
     if t is None:
         if len(seq["blocks"]) == 1:  # its request was never written (a round cut short): nothing was bought
             save_seq(r.paths, seq | {"state": "dropped", "ended_at": int(r.now)})
             r.info("automatic test: the first block's request was never written; the sequence is dropped")
             return seq
-        return await _end(r, seq, f"block {cur['n']}'s record is missing")
+        return await _end(r, seq, stop or f"block {cur['n']}'s record is missing")
     if live_test._active(t, r.now):
-        return seq
+        return seq  # a block that runs ends by itself (its cycler reads the /stop flag every few seconds)
+    if stop:
+        if t.get("started") and not isinstance(cur.get("live"), dict):  # its numbers for the record, never judged
+            _record_live(r, cur, t, counted=False)
+        return await _end(r, seq, stop)
     if cur.get("decision") != "continue":
         verdict = await _judge(r, seq, cur, t)
         if verdict is not None:
@@ -619,8 +663,7 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     paper = float((t.get("forward") or {}).get("mean") or 0)
     seq["paper"] = paper
     if kind == "early":
-        cur["live"] = {"n": len(live["trades"]), "sum": round(sum(live["trades"]), 6),
-                       "unmeasured": len(live["unmeasured"]), "counted": False, "copies": live["copies"]}  # fmt: skip
+        _record_live(r, cur, t, counted=False, live=live)
         return await _end(r, seq, f"block {n} ended early: {why}")
     if live["unmeasured"] and r.now - float(t.get("ended_at") or r.now) < MEASURE_WAIT_SECS:
         r.info(f"automatic test: block {n} waits for the measure stage ({len(live['unmeasured'])} of its buys have no "
@@ -652,9 +695,20 @@ async def _judge(r: _Round, seq: dict, cur: dict, t: dict) -> dict | None:
     return None
 
 
+def _record_live(r: _Round, cur: dict, t: dict, *, counted: bool, live: dict | None = None) -> None:
+    """A block's live numbers kept in its record without judging it (it ended early, or with the owner's /stop)."""
+    live = live if live is not None else block_live(r.svc.store, str(t.get("wallet") or ""), t, r.now)
+    cur["live"] = {"n": len(live["trades"]), "sum": round(sum(live["trades"]), 6),
+                   "unmeasured": len(live["unmeasured"]), "counted": counted, "copies": live["copies"]}  # fmt: skip
+
+
 def _hard_stop(r: _Round, seq: dict) -> str | None:
-    """What ends a sequence between blocks whatever else holds: the owner's switch off or changed, /stop, the guard."""
+    """What ends a sequence between blocks whatever else holds: the owner's /stop (even after a /resume), the owner's
+    switch off or changed, the wallet changed, the guard."""
     at = read_autotest(r.paths)
+    stop = _stop_words(at, seq)
+    if stop:
+        return stop
     if not at["on"]:
         return "you turned the automatic test off"
     if at["approved"] != seq.get("approved"):
