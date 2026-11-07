@@ -56,7 +56,10 @@ sequence's record in `operator/autotest.json`).
 
 - Each round checks the conditions: the switch on, no test in progress, no `/stop`, the guard clear. When all hold, the
   round writes the `/test go` request itself for the best strategy `/test` would offer (100+ forward trades where a hunt
-  fill lands, a lower bound above zero, also with gains capped).
+  fill lands, a lower bound above zero, also with gains capped, scored at no less than the measured cost of a trade).
+- "At real costs": a strategy frozen below the cost of a transaction the measure stage measures (half the low bid's
+  round trip, 0.0094 SOL on 6 Nov) is not eligible, for `/test go` either. `paper freeze` now scores at that measured
+  cost unless `--per-tx` says otherwise (it used to take 0.0035, and accepted 0).
 - It runs at the strategy's own size, never another. A strategy scored above the yes's 0.2 SOL is refused, and the owner
   is told once a day: a test at another size says nothing about it.
 - The yes's caps apply: 10 buys, 120 minutes, the floor 1 SOL below the wallet's balance. The same round starts it, as

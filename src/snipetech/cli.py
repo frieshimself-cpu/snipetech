@@ -596,7 +596,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--latency", type=int, default=0, help="freeze: slots after the trigger")
     sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
-    sp.add_argument("--per-tx", type=float, default=0.0035, help="freeze: SOL per transaction")
+    sp.add_argument("--per-tx", type=float, default=None,
+                    help="freeze: SOL per transaction (default: the measured cost, half the low bid's measured round "
+                         "trip, 0.0035 until it is measured; a strategy scored below it never goes live)")  # fmt: skip
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
@@ -1104,8 +1106,12 @@ async def _run(args, cfg: Config) -> int:
             from .analysis import paper
 
             if args.action == "freeze":
+                from .qualify.run import lab_tx_cost
+
+                # the measured cost of a transaction unless told: live_test.eligible refuses a strategy scored below it
+                per_tx = args.per_tx if args.per_tx is not None else lab_tx_cost(svc.store, cfg)
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              args.per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
+                                              per_tx, args.replace, only_live=args.only_live, triggers=args.trigger,
                                               hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)

@@ -412,11 +412,12 @@ zero) and the plan for the best one, ending with the line to send: `/test <id> g
 exactly that plan and only writes `operator/TEST.json`; the next operator round checks everything again, creates the
 strategy's own hunt sniper and starts one `oktech cycle` job (the round's jobs survive deploys; the minute pass would
 kill it): the strategy's own size a buy (0.5 SOL at most), at most 10 buys one coin at a time, 120 minutes, and a floor
-1 SOL below the balance it starts from (the owner's stop); only strategies positive also with outliers capped. A test
-ends with nothing left armed: its sniper is stopped as soon
-as the wallet holds nothing (until then the test is "closing"). One test at a time, also counted on OKTech (any active
-sniper that is not the book's refuses one), and none starts while the tape is behind; `/stop` cancels one not started
-and ends a running one; no agent tool can write the file or start a test (`operator/live_test.py`, docs/live-recipe.md).
+1 SOL below the balance it starts from (the owner's stop); only strategies positive also with outliers capped, and
+scored at no less than the measured cost of a trade (`paper freeze` scores at it unless `--per-tx` says otherwise). A
+test ends with nothing left armed: its sniper is stopped as soon as the wallet holds nothing (until then the test is
+"closing"). One test at a time, also counted on OKTech (any active sniper that is not the book's refuses one), and none
+starts while the tape is behind; `/stop` cancels one not started and ends a running one; no agent tool can write the
+file or start a test (`operator/live_test.py`, docs/live-recipe.md).
 
 **The wallet-wide guard (`/risk`).** The owner's rule of 7 Nov: no new live trade once the day is 1 SOL down or the
 wallet is under 10 SOL. It is on from the start, with no off. `/risk` shows it with today's result; `/risk stop 1.5`
