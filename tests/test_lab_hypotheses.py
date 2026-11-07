@@ -24,17 +24,20 @@ HUNT_JSON, WHALE_JSON = '{"kind": "hunt", "sol": 2, "window": 2, "dev_max": 1}',
     "spec,want",
     [
         ('{"kind": "launch", "plain": true}', Trigger("launch", plain=True)),
-        ({"kind": "burst", "buyers": 5, "sol": 1, "window": 2}, Trigger("burst", buyers=5, sol=1.0, window=2.0)),
+        ({"kind": "burst", "buyers": 5, "sol": 1, "window": 2, "max_age": 30, "plain": True},
+         Trigger("burst", buyers=5, sol=1.0, window=2.0, max_age=30.0, plain=True)),
         ({"kind": "whale", "sol": 1.5, "max_age": 2, "plain": True, "solo": True},
          Trigger("whale", sol=1.5, max_age=2.0, plain=True, solo=True)),
-        ({"kind": "kol", "sol": 0.5, "group": "cand"}, Trigger("kol", sol=0.5, group="cand")),
-        ({"kind": "momentum", "buyers": 30, "sol": 4, "progress": 0.4, "holders": 20, "ret": 0.3},
-         Trigger("momentum", buyers=30, sol=4.0, progress=0.4, holders=20, ret=0.3)),
-        ('{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}',
-         Trigger("hunt", sol=4.0, window=1.5, max_buyers=4, dev_max=1.0)),
+        ({"kind": "kol", "sol": 0.5, "group": "cand", "max_age": 60, "plain": True},
+         Trigger("kol", sol=0.5, group="cand", max_age=60.0, plain=True)),
+        ({"kind": "momentum", "buyers": 30, "sol": 4, "progress": 0.4, "holders": 20, "ret": 0.3, "plain": True},
+         Trigger("momentum", buyers=30, sol=4.0, progress=0.4, holders=20, ret=0.3, plain=True)),
+        ('{"kind": "hunt", "sol": 4, "buyers": 2, "window": 1.5, "max_buyers": 4, "dev_max": 1}',
+         Trigger("hunt", sol=4.0, buyers=2, window=1.5, max_buyers=4, dev_max=1.0)),
     ],
 )  # fmt: skip
 def test_an_agents_trigger_of_every_kind_is_read_as_written(spec, want):
+    """Each case sets every field its kind reads (TRIGGER_KNOBS), so none of them is refused as not applying."""
     assert parse_trigger(spec) == want
 
 
@@ -203,20 +206,33 @@ def test_the_lab_command_refuses_a_hypothesis_oktech_could_not_run_before_any_la
     assert exc.value.code == 2 and "whole numbers" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("hours", ["0", "-1", "nan", "inf"])
+def test_the_lab_command_refuses_hours_that_are_no_window_of_tape(hours, capsys):
+    """An infinite window would crash the job after it took the lab lock; any other non-positive one reads no tape."""
+    from snipetech import cli
+
+    for cmd in (["lab"], ["paper", "freeze"]):
+        with pytest.raises(SystemExit) as exc:
+            cli.build_parser().parse_args([*cmd, "--hours", hours])
+        assert exc.value.code == 2 and "hours above 0" in capsys.readouterr().err
+
+
 def test_paper_freeze_from_the_command_line_freezes_only_the_hypotheses_at_their_live_landing(tmp_path, capsys):
+    """At --position +1 the whale is scored 1 trade behind its trigger, where no live copy lands: --only-live keeps it
+    out. The hunt is scored where a hunt buy lands whatever --position says, and is frozen there."""
     from snipetech import cli
 
     db = _tape_db(tmp_path)
     argv = ["--db", str(db), "paper", "freeze", "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--hours", "1",
-            "--only-live", "--json"]  # fmt: skip
+            "--position", "+1", "--only-live", "--json"]  # fmt: skip
     assert cli.main(argv) == 0
     rep = json.loads(capsys.readouterr().out)
-    got = sorted((s["trigger"]["kind"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"])
-    assert got == [("hunt", 1, "+3", "+3@1"), ("whale", 0, "+6", "+6@0")]
+    got = [(s["trigger"]["kind"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"]]
+    assert got == [("hunt", 1, "+3", "+3@1")]
     assert rep["tape_hours"] == pytest.approx(1.0)
     st = Store(db)
     try:
-        assert sorted(s["trigger"]["kind"] for s in st.coverage("paper_strategies")["strategies"]) == ["hunt", "whale"]
+        assert [s["trigger"] for s in st.coverage("paper_strategies")["strategies"]] == [HUNT.__dict__]
     finally:
         st.close()
     # without the new flags `paper freeze` is what it was: the grid, the whole tape, every landing kept
