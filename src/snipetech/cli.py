@@ -260,6 +260,7 @@ def _trigger(v: str):
 
 
 def _hours(v: str) -> float:
+    """--hours: a window of the newest tape; an infinite one would crash the job after it took the lab lock."""
     h = float(v)
     if not 0 < h < float("inf"):
         raise argparse.ArgumentTypeError("a number of hours above 0")

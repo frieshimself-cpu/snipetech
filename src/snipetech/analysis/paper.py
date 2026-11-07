@@ -163,11 +163,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
            hours: float | None = None) -> dict[str, Any]:  # fmt: skip
-    """Run the lab now (at `latency`/`position`) and freeze its `top` strategies with a positive lower bound for forward
-    testing, each stored at the live landing for its trigger (that is where `run` scores it). `data`: a lab already
-    collected at that landing (no second lab). `only_live`: keep only strategies the lab measured at their live
-    landing. `lock_dir`: hold the one-lab-at-a-time lock there while the lab runs. `triggers`: the lab runs only these
-    (an agent's own hypotheses, `lab.parse_trigger`) instead of the grid; `hours`: only the newest N hours of tape."""
+    """Run the lab now (at `latency`/`position`; an OKTech hunt trigger where a hunt buy lands, HUNT_LANDING) and freeze
+    its `top` strategies with a positive lower bound for forward testing, each stored at the live landing for its
+    trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no second lab).
+    `only_live`: keep only strategies the lab measured at their live landing. `lock_dir`: hold the one-lab-at-a-time
+    lock there while the lab runs. `triggers`: the lab runs only these (an agent's own hypotheses, `lab.parse_trigger`)
+    instead of the grid; `hours`: only the newest N hours of tape."""
     now = now or time.time()
     if data is None:
         from .lab_lock import lab_lock
