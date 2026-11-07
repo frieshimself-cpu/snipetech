@@ -171,6 +171,8 @@ _ADDED_COLUMNS = (
     ("fills", "twin_fee_sol", "REAL"),  # what the sell's failed twins cost (priority + base fee each)
     # JSON: how many of the wallet's first buys sat in a coin's create slot (qualify/gates.py create_slot_share)
     ("verdicts", "create_slot", "TEXT"),
+    # JSON: the wallet's copies on the tape after it was first picked, and the bar they met (qualify/gates.forward_gate)
+    ("verdicts", "forward", "TEXT"),
 )
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
@@ -181,8 +183,8 @@ _SHADOW_COLS = ("buy_sig", "exit_name", "menu_version", "sim_pnl_sol", "sim_reas
 # (candidates() reads `v.*` by position, so a fresh and a migrated database must agree)
 _VERDICT_COLS = ("wallet", "computed_at", "landing_pos", "n_tape", "mean_sol", "lower_sol", "hist_days", "hist_realized_usd",
                  "hist_win_rate", "hist_trades", "crowding", "venue_share", "score", "status", "next_review", "reasons",
-                 "copy_plan", "gap3_pct", "create_slot")  # fmt: skip
-_VERDICT_JSON = ("copy_plan", "create_slot")  # verdict columns that hold a JSON object (None when there is none)
+                 "copy_plan", "gap3_pct", "create_slot", "forward")  # fmt: skip
+_VERDICT_JSON = ("copy_plan", "create_slot", "forward")  # verdict columns that hold a JSON object (or None)
 _LATEST_VERDICT = "SELECT * FROM verdicts v WHERE v.id = (SELECT id FROM verdicts WHERE wallet = v.wallet ORDER BY computed_at DESC, id DESC LIMIT 1)"
 
 LIST_NAMES = ("allow", "block", "watch_deployer", "copy_target")

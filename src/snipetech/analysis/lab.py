@@ -1358,7 +1358,8 @@ def choose_wallet_exit(pnl, gate: int, group_train=None, shrink_k: float = EXIT_
 
 def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | None = None, top: int = 40,
                  min_n: int = 4, floor: float | None = None, wallets=None, gate: ExitParams | None = None,
-                 shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST) -> list[dict]:  # fmt: skip
+                 shrink_k: float = EXIT_SHRINK_K, min_test: int = EXIT_MIN_TEST,
+                 with_moments: bool = False) -> list[dict]:  # fmt: skip
     """Per wallet: is its first buy a signal worth our exit? For every KOL trigger, the exit is picked on the older
     60% of the trigger's moments (as `rank` does); each triggering wallet is then scored with that exit on the moments
     its sniper would copy: first buys at or above its own floor (`choose_min_leader_sol` from its buy sizes, at least
@@ -1372,7 +1373,10 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     (`choose_wallet_exit`, shrunk toward every wallet's older moments): `exit_name`, `exit_params` and `exit_source`
     ("wallet" or "lab") say what its sniper should run, with `exit_menu`, `exit_candidate`, `exit_test_n`,
     `exit_gain_sol` and `exit_gain_lower`. The gating numbers (`n`, `mean`, `ev_lower`, `win_rate`, `total`, `exit`)
-    stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies."""
+    stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies.
+
+    `with_moments`: each row also carries the copies behind its numbers, `moments` = [[the leader's buy ts, SOL the
+    gating exit made], ...] oldest first, for the qualify stage's check on the tape after the wallet was picked."""
     rows, exits = data["rows"], list(data["exits"])
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
@@ -1429,6 +1433,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                    "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
                    "moments_all": len(by[w]), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
                    "lab_version": LAB_VERSION} | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
+            if with_moments:
+                row["moments"] = [[int(rs[i]["ts"]), float(m[i, k])] for i in kept]
             if g is not None:
                 own = cols if choose else [g]
                 group = group_before(kept) if choose else None

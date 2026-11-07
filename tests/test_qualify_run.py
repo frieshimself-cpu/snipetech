@@ -123,24 +123,30 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
         assert seen["wallets"] == ["BAD", "GOOD", "WEAK"] and seen["pos"] == "+3x"  # banned never measured
         assert out == {
             "evaluated": 3,
-            "qualified": 1,
-            "candidate": 1,
+            "qualified": 0,
+            "candidate": 2,
             "retired": 1,
+            "forward_pending": 1,
+            "forward_failed": 0,
             "deferred": False,
             "no_tape": 0,
             "labelled": 2,
             "lab_wallets": 3,
         }
         by = {v["wallet"]: v for v in st.latest_verdicts()}
+        # GOOD passed every gate on the tape so far: picked now, it waits for its copies on the tape after now
         assert (
-            by["GOOD"]["status"] == "qualified"
+            by["GOOD"]["status"] == "candidate"
+            and by["GOOD"]["forward"]["status"] == "pending"
             and by["WEAK"]["status"] == "candidate"
+            and by["WEAK"]["forward"] is None
             and by["BAD"]["status"] == "retired"
         )
         assert (
             by["GOOD"]["next_review"] == NOW + 24 * 3600
             and by["GOOD"]["hist_win_rate"] == 64.0
             and by["GOOD"]["venue_share"] == 1.0
+            and by["GOOD"]["n_tape"] == 12
         )
         labels = st._q("SELECT address, kind, label FROM labels ORDER BY address")
         assert (
@@ -148,7 +154,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             and ("WEAK", "cand", "cand:WEAK") in labels
             and ("BAD", "cand", "cand:BAD") in labels
         )
-        assert st.verdict_counts() == {"banned": 1, "candidate": 1, "qualified": 1, "retired": 1}
+        assert st.verdict_counts() == {"banned": 1, "candidate": 2, "retired": 1}
         assert st.coverage("qualify:last_lab") == {"ts": NOW, "wallets": 3}
         # a second run right away: nothing due (reviews are in the future) → no lab, nothing evaluated
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW + 60, lab_runner=runner)
@@ -479,5 +485,101 @@ def test_a_wallet_that_buys_in_create_slots_is_retired_whatever_the_lab_says(tmp
                                                                              "create slot")  # fmt: skip
         assert by["LATER"]["status"] != "retired" and by["LATER"]["create_slot"]["in_create"] == 0
         assert not any("create slot" in r for r in by["LATER"]["reasons"])
+    finally:
+        st.close()
+
+
+def test_the_forward_window_starts_at_the_first_pick_even_one_made_before_these_rules(tmp_path):
+    """The 27 wallets of research round 2 were picked by the 04:15 and 14:30 verdicts (7 Nov): their forward window
+    starts at their first qualified verdict, whatever the rules were then, and is never moved by a later one. Both
+    wallets win as much in the window they were picked on; one keeps paying after its pick, one loses."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["KEEPS", "STOPS"])
+        st.set_coverage("tape", {"spans": [[NOW - 40 * 3600, NOW]]})
+        picked = NOW - 30 * 3600
+        for w in ("KEEPS", "STOPS"):
+            st.upsert_candidate(w, "solanatracker", STRONG, picked - 3600)
+            st.put_verdict({"wallet": w, "computed_at": picked, "landing_pos": "+6", "n_tape": 30, "mean_sol": 0.02,
+                            "lower_sol": 0.006, "score": 0.006, "status": "qualified", "next_review": picked + 86400,
+                            "copy_plan": {"min_leader_sol": 0.3, "exit_name": "lab", "lab_version": 2}})  # fmt: skip
+        before = [[picked - 3600 + 60 * k, 0.03] for k in range(30)]
+        after = {"KEEPS": [[picked + 3600 + 600 * k, 0.03 if k % 3 else -0.01] for k in range(24)],
+                 "STOPS": [[picked + 3600 + 600 * k, -0.01 if k % 3 else 0.005] for k in range(24)]}  # fmt: skip
+
+        def runner(wallets, pos):
+            return [{"wallet": w, "n": 54, "mean": 0.02, "ev_lower": 0.008, "win_rate": 0.7, "total": 1.08, "exit": "x",
+                     "min_leader_sol": 0.3, "moments": before + after[w]} for w in wallets]  # fmt: skip
+
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert by["KEEPS"]["status"] == "qualified" and by["STOPS"]["status"] == "retired"
+        assert by["KEEPS"]["forward"]["picked_at"] == picked == by["STOPS"]["forward"]["picked_at"]
+        assert by["KEEPS"]["forward"]["n"] == 24 and by["KEEPS"]["forward"]["tape_hours"] == 30.0
+        assert by["STOPS"]["forward"]["status"] == "failed" and by["STOPS"]["forward"]["mean"] < 0
+        assert any(r.startswith("loses after it was picked") for r in by["STOPS"]["reasons"])
+        assert out["qualified"] == 1 and out["forward_failed"] == 1
+        assert "moments" not in st.get_score("qualify", "KEEPS")["lab"]  # the copies were for the check, not to keep
+    finally:
+        st.close()
+
+
+def _streak(st, w, coins, t0, s0, wins, tag):
+    """W buys alone in its slot and three wallets buy 0.3 SOL in the next three slots; the copy lands behind them. A
+    winning coin: six 1 SOL buys follow, then a pause, and the dead exit sells at the top. A losing coin: the three
+    buyers and the creator sell into the copy, then a pause. W sells it all a while later. Coins 100 s apart at 0.4 s
+    a slot (a slot is SLOT + 2.5 a second of the tape: `s0` must agree with `t0`)."""
+    D = addr("dev")
+    for k in range(coins):
+        m = Market(st, addr(f"{w}:{tag}{k}"), D, t0 + k * 100, s0 + k * 250)
+        m.buy(D, 1.0, 0, sig=m.create_sig)
+        m.buy(w, 0.5, 5)
+        ahead = [addr(f"{w}:{tag}{k}:a{j}") for j in range(3)]
+        for j, a in enumerate(ahead):
+            m.buy(a, 0.3, 6 + j)
+        if wins:
+            for j in range(6):
+                m.buy(addr(f"{w}:{tag}{k}:r{j}"), 1.0, 9 + j)
+        else:
+            for j, a in enumerate(ahead):
+                m.sell(a, 1.0, 9 + j)
+            m.sell(D, 1.0, 12)
+        m.sell(w, 1.0, 60)
+        m.commit()
+
+
+def test_a_hot_streak_wallet_that_wins_in_its_window_and_loses_after_it_is_not_qualified(tmp_path):
+    """Research round 2 (7 Nov), with the real lab: HOT and STEADY win on every copy in the window they are picked on;
+    with no tape after that both wait ("forward pending", nothing else of their verdicts changes). A day later HOT has
+    lost on 20 copies since its pick, STEADY won on 20: HOT is retired although all its copies together still pay,
+    STEADY qualifies."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        svc.cfg.verdict.bootstrap_samples = 200
+        svc.cfg.lab.workers = 1
+        t0 = NOW - 6000
+        for i, w in enumerate(("HOT", "STEADY")):
+            _streak(st, w, 25, t0 + 50 * i, SLOT + 125 * i, True, "pick")
+            st.upsert_candidate(w, "solanatracker", STRONG, NOW - 3600)
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+        run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        first = {v["wallet"]: v for v in st.latest_verdicts()}
+        for w in ("HOT", "STEADY"):
+            assert first[w]["status"] == "candidate" and first[w]["n_tape"] == 25 and first[w]["lower_sol"] > 0
+            assert first[w]["forward"]["status"] == "pending" and first[w]["forward"]["n"] == 0
+            assert first[w]["reasons"][-1].startswith("forward pending")
+        later = NOW + 3600  # the tape recorded after the pick: a slot is still 2.5 a second of it
+        for i, w in enumerate(("HOT", "STEADY")):
+            ts = later + 50 * i
+            _streak(st, w, 20, ts, SLOT + int((ts - t0) * 2.5), w == "STEADY", "after")
+        st.set_coverage("tape", {"spans": [[NOW - 7200, NOW + 25 * 3600]]})
+        run_qualify(svc, svc.cfg, data / "jobs", NOW + 25 * 3600)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        hot, steady = by["HOT"], by["STEADY"]
+        assert hot["n_tape"] == 45 and hot["mean_sol"] > 0 and hot["lower_sol"] > 0  # all its copies still pay
+        assert hot["status"] == "retired" and hot["forward"]["status"] == "failed" and hot["forward"]["n"] == 20
+        assert hot["forward"]["picked_at"] == NOW and hot["forward"]["mean"] < 0
+        assert steady["status"] == "qualified" and steady["forward"]["status"] == "passed"
+        assert steady["forward"]["n"] == 20 and steady["forward"]["lower"] > 0
     finally:
         st.close()

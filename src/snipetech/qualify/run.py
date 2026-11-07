@@ -13,7 +13,15 @@ from typing import Any
 from ..analysis.lab_lock import LabBusy, lab_lock
 from ..config import Config
 from ..operator.snapshot import running_jobs
-from .gates import create_slot_share, crowding, normalise_history, relationship_gate, venue_share, verdict_for
+from .gates import (
+    create_slot_share,
+    crowding,
+    forward_gate,
+    normalise_history,
+    relationship_gate,
+    venue_share,
+    verdict_for,
+)
 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
@@ -92,9 +100,19 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                          groups=("cand",), exits=list(menu.values()), kols=kols)  # fmt: skip
         return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
-                              gate=menu["lab"])  # fmt: skip
+                              gate=menu["lab"], with_moments=True)  # fmt: skip
 
     return run
+
+
+def first_pick(store, wallet: str) -> int | None:
+    """When the wallet was first picked: the earliest of its verdicts every in-sample gate passed (status qualified,
+    as every such verdict was until 7 Nov, or one that carries a forward check), or None. Its forward window starts
+    there and never moves: a wallet that dips and recovers in-sample keeps every copy since its first pick as forward.
+    Research round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts the same way."""
+    rows = store._q("SELECT min(computed_at) FROM verdicts WHERE wallet=? AND (status='qualified' OR forward IS NOT NULL)",
+                    (wallet,))  # fmt: skip
+    return int(rows[0][0]) if rows and rows[0][0] is not None else None
 
 
 def _measured_landing(store, now: float | None, max_age_secs: float) -> dict:
@@ -169,8 +187,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     store = svc.store
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
-    out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "deferred": False, "no_tape": 0,
-                           "labelled": 0, "lab_wallets": 0}  # fmt: skip
+    out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
+                           "forward_failed": 0, "deferred": False, "no_tape": 0, "labelled": 0, "lab_wallets": 0}  # fmt: skip
     due = [c for c in store.candidates(due_before=int(now), limit=max_wallets * 4) if c["status"] != "banned"][
         :max_wallets
     ]
@@ -221,6 +239,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
     out["lab_wallets"] = len(wallets)
     q_eff = replace(q, landing_pos=landing)
+    spans = getattr(svc, "tape_store", store).tape_spans()  # the tape the lab read: the forward window's hours
     for c in measurable:
         w = c["wallet"]
         hist = normalise_history(c["stats"])
@@ -228,15 +247,20 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         crowd = crowding(store, w, since)
         rel_ok, rel_reasons = relationship_gate(store, w)
         create = create_slot_share(store, w, since)
-        v = verdict_for(w, hist, rows.get(w), venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
+        row = rows.get(w)
+        moments = row.pop("moments", None) if row else None  # its copies, for the forward check only
+        v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
+        v = forward_gate(v, moments, first_pick(store, w), spans, q_eff, now, conf=cfg.verdict.confidence,
+                         samples=cfg.verdict.bootstrap_samples)  # fmt: skip
         store.put_verdict(v)
         store.put_score(
-            "qualify",
-            w,
-            {"verdict": v, "lab": rows.get(w), "crowding": crowd, "history": hist, "computed_at": int(now)},
+            "qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist, "computed_at": int(now)}
         )
         out["evaluated"] += 1
         out[v["status"]] += 1
+        fwd = (v.get("forward") or {}).get("status")
+        out["forward_pending"] += fwd == "pending"
+        out["forward_failed"] += fwd == "failed"
     return out
 
 

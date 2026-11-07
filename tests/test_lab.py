@@ -505,6 +505,24 @@ def test_a_wallet_exit_is_chosen_without_looking_at_its_held_out_period():
     assert picks[0] == picks[1] == ("lab", "lab")
 
 
+def test_rank_wallets_hands_over_each_copy_with_its_time_and_result_for_the_forward_check():
+    """The qualify stage checks a wallet on the tape after it was picked (qualify/gates.forward_gate). It needs each
+    copy the wallet's sniper would make (its first buys at or above its floor), when the leader bought and what the gate
+    exit made of it, oldest first. Only when asked: other rankings print their rows."""
+    from snipetech.analysis.lab import menu_exits, rank_wallets
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    menu = menu_exits(cfg)
+    rows = _menu_rows("W", 12, lambda k: 0.01 * k, 0.0)
+    rows[3]["lead_sol"] = 0.05  # under its floor (the book's 0.3 SOL): its sniper never copies this buy
+    data = {"rows": rows, "exits": list(menu.values()), "triggers": [Trigger("kol", sol=0.1, group="cand")],
+            "tape_hours": 10}  # fmt: skip
+    (row,) = rank_wallets(data, cfg, top=5, min_n=4, gate=menu["lab"], with_moments=True)
+    assert row["n"] == 11 and row["moments"] == [[1000 + k, 0.01 * k] for k in range(12) if k != 3]
+    assert "moments" not in rank_wallets(data, cfg, top=5, min_n=4, gate=menu["lab"])[0]
+
+
 def test_a_copy_lands_behind_the_third_buy_after_its_leader_counted_across_slots():
     """Research round 2 (7 Nov): live copies of early-curve leaders landed 2-4 buys behind the leader (the measure
     stage's trades_behind) at +18-43 %, often in later slots. The lab's in-slot "+6" never passes the leader's slot, so

@@ -6,6 +6,7 @@ from snipetech.config import Config, QualifyConfig
 from snipetech.qualify.gates import (
     create_slot_share,
     crowding,
+    forward_gate,
     history_gate,
     normalise_history,
     relationship_gate,
@@ -315,3 +316,92 @@ def test_a_wallet_with_a_tenth_of_its_first_buys_in_create_slots_is_not_qualifie
     # without fingerprints every create-slot buyer is a bundle member: both vetoes are said, the relationship first
     assert v["status"] == "retired" and v["reasons"][0] == "bundle member in 2 launches"
     assert any("3 of 30 first buys" in r for r in v["reasons"][1:])
+
+
+def _in_sample_pass(cfg):
+    """A verdict every in-sample gate passed: what the qualify stage wrote as qualified until 7 Nov."""
+    lab = {"n": 30, "mean": 0.02, "ev_lower": 0.006, "win_rate": 0.6, "total": 0.6, "exit": "STALE1s SL-30% hold300s",
+           "min_leader_sol": 0.3, "exit_name": "lab", "lab_version": 2}  # fmt: skip
+    quiet = {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 30}
+    v = verdict_for("W", {"trades": None}, lab, 1.0, quiet, True, [], cfg, NOW,
+                    create={"in_create": 0, "first_buys": 30, "share": 0.0})  # fmt: skip
+    assert v["status"] == "qualified"
+    return v
+
+
+PICK = NOW - 10 * 3600  # picked ten hours ago
+
+
+def _copies(n, pnl, start):
+    """`n` copies a minute apart from `start`, each making `pnl` SOL (a number, or a function of its index)."""
+    return [[start + 60 * k, float(pnl(k)) if callable(pnl) else float(pnl)] for k in range(n)]
+
+
+def test_a_wallet_with_no_later_tape_is_forward_pending_and_nothing_else_changes(cfg):
+    """Research round 2 (7 Nov): 16 of 24 verdict wallets never bought again within 9-13 h. Picked now, with no tape
+    after its pick, a wallet is "forward pending": not qualified, so the book does not arm it, and re-checked as often
+    as a qualified wallet; every number of its verdict stays what the lab said."""
+    v = _in_sample_pass(cfg)
+    out = forward_gate(v, _copies(30, 0.02, NOW - 7200), None, [[NOW - 7200, NOW]], cfg, NOW)
+    same = [k for k in v if k not in ("status", "next_review", "reasons", "forward")]
+    assert {k: out[k] for k in same} == {k: v[k] for k in same}
+    assert out["status"] == "candidate" and out["next_review"] == NOW + 24 * 3600
+    assert out["forward"] == {"picked_at": NOW, "tape_hours": 0.0, "n": 0, "mean": None, "lower": None,
+                              "win_rate": None, "status": "pending", "min_n": 20, "min_hours": 6.0}  # fmt: skip
+    assert out["reasons"][:-1] == v["reasons"] and out["reasons"][-1].startswith("forward pending: 0 later copies")
+    assert v["status"] == "qualified" and "forward" not in v  # the verdict handed in is left as it was
+
+
+def test_a_hot_streak_that_stops_after_the_pick_is_not_qualified(cfg):
+    """Research round 2: the method made +0.063 a copy (37) in the 6 h before the 14:30 verdicts and -0.0147 (257) on the
+    tape after them: the verdicts catch hot streaks that then stop. 20 later copies at a loss: retired, and it says so."""
+    v = _in_sample_pass(cfg)
+    hot = _copies(30, 0.05, PICK - 6 * 3600) + _copies(20, -0.01, PICK + 3600)
+    out = forward_gate(v, hot, PICK, [[PICK - 7 * 3600, NOW]], cfg, NOW)
+    assert out["status"] == "retired" and out["next_review"] == NOW + 168 * 3600
+    fwd = out["forward"]
+    assert (fwd["status"], fwd["n"], fwd["picked_at"], fwd["tape_hours"]) == ("failed", 20, PICK, 10.0)
+    assert fwd["mean"] == pytest.approx(-0.01) and fwd["win_rate"] == 0.0
+    assert out["reasons"][-1].startswith("loses after it was picked: mean -0.0100 SOL over 20 later copies")
+
+
+def test_a_wallet_that_holds_up_on_its_later_copies_stays_qualified(cfg):
+    v = _in_sample_pass(cfg)
+    steady = _copies(30, 0.02, PICK - 6 * 3600) + _copies(25, lambda k: 0.03 if k % 2 else -0.01, PICK + 3600)
+    out = forward_gate(v, steady, PICK, [[PICK - 7 * 3600, NOW]], cfg, NOW)
+    assert out["status"] == "qualified" and out["next_review"] == v["next_review"]
+    assert out["forward"]["status"] == "passed" and out["forward"]["n"] == 25
+    assert out["forward"]["mean"] == pytest.approx((12 * 0.03 - 13 * 0.01) / 25)
+    assert out["reasons"][-1].startswith("holds after it was picked: mean +0.0092 SOL over 25 later copies")
+
+
+def test_the_forward_bar_is_the_in_sample_rule_on_twenty_later_copies_over_six_hours_of_later_tape(cfg):
+    """The bar: at least 20 of its own copies after the pick (the in-sample gate's count for a wallet without a strong
+    history) on at least 6 h of tape after it, then the in-sample gate's own rule on them: a lower bound above 0
+    passes, a mean below 0 retires, anything between waits. Research round 2's later copies spread about 0.15 SOL a
+    copy (257 at -0.0147, lower bound -0.0225): on a mean above 0 alone such a loser would pass 20 copies one time in
+    three, on the lower bound about one in ten."""
+    v = _in_sample_pass(cfg)
+    few = forward_gate(v, _copies(19, 0.02, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW)
+    assert few["status"] == "candidate" and few["forward"]["status"] == "pending" and few["forward"]["n"] == 19
+    assert few["reasons"][-1].startswith("forward pending: 19 later copies (needs 20) over 10.0 h")
+    short = forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, [[PICK, PICK + 5 * 3600]], cfg, NOW)
+    assert short["status"] == "candidate" and short["forward"]["tape_hours"] == 5.0
+    holes = [[PICK - 3600, PICK + 3 * 3600], [PICK + 5 * 3600, PICK + 8 * 3600]]  # 6 h of tape in two runs
+    assert forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, holes, cfg, NOW)["status"] == "qualified"
+    noisy = forward_gate(v, _copies(20, lambda k: 0.05 if k % 2 else -0.04, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW)
+    assert noisy["forward"]["mean"] == pytest.approx(0.005) and noisy["forward"]["lower"] <= 0
+    assert noisy["status"] == "candidate" and noisy["forward"]["status"] == "pending"
+    assert noisy["reasons"][-1].startswith("forward pending: mean +0.0050 SOL over 20 later copies")
+    even = forward_gate(v, _copies(20, lambda k: 0.01 if k % 2 else -0.01, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW)
+    assert even["status"] == "candidate" and even["forward"]["mean"] == pytest.approx(0.0)  # not above 0, not below
+    on_pick = forward_gate(v, _copies(25, 0.02, PICK), PICK, [[PICK, NOW]], cfg, NOW)  # the first one at the pick
+    assert on_pick["forward"]["n"] == 24  # a copy at the very second of the pick was in the window it was picked on
+
+
+def test_the_forward_check_leaves_a_wallet_the_in_sample_gates_stopped_alone(cfg):
+    v = verdict_for("W", {"trades": None}, {"n": 5, "mean": 0.02, "ev_lower": 0.001, "win_rate": 0.6, "total": 0.1,
+                                            "exit": "x"}, 1.0, {"followers_1s": 0.0, "gap3_pct": 2.0, "n": 5}, True,
+                    [], cfg, NOW)  # fmt: skip
+    assert v["status"] == "candidate"
+    assert forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW) == v
