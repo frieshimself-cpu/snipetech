@@ -41,10 +41,10 @@ crowding, relationship and create-slot gates all passed, and so did its own copi
 (`forward`: 20+ of them over 6+ h, lower bound above 0; picked again after it failed a gate, its copies since its first
 pick must not lose either); "forward pending" is a wallet waiting for those copies, not copied meanwhile. `kept_armed`
 marks a wallet the book copied before these rules (7 Nov): kept qualified while a book sniper still buys for it, at
-least at the score it was armed on, its reason saying whether it still qualifies; whether it goes is the owner's call. The snapshot's `verdicts`
-counts change when a run wrote something. Build set_candidates from read_verdicts, not from raw lab logs, and treat a
-newly qualified wallet as the decision-level event it is. The book copies qualified wallets whose verdict scores at
-least the owner's bar, one sniper per wallet.
+least at the score it was armed on, its reason saying whether it still qualifies; whether it goes is the owner's
+call. The snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from read_verdicts, not
+from raw lab logs, and treat a newly qualified wallet as the decision-level event it is. The book copies qualified
+wallets whose verdict scores at least the owner's bar, one sniper per wallet.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
 wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper

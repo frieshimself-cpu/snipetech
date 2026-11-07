@@ -110,13 +110,13 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
 def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
     """When the wallet was picked: (its first pick, its latest), each None when there is none. A pick is a verdict
     every in-sample gate passed: one qualified before 7 Nov, as every such verdict was, or one that carries a forward
-    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick starts
-    its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a wallet that
-    lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as forward
-    copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research round 2
-    scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
-    rows = store._q("SELECT computed_at, status, forward IS NOT NULL, kept_armed IS NOT NULL FROM verdicts WHERE wallet=? "
-                    "ORDER BY computed_at, id", (wallet,))  # fmt: skip
+    check (a verdict keep_armed kept at the one it was armed on counts only when it carries one). Its latest pick
+    starts its latest run of such verdicts; a verdict that failed an in-sample gate ends the run (review of 7 Nov: a
+    wallet that lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as
+    forward copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research
+    round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
+    rows = store._q("SELECT computed_at, status, forward IS NOT NULL, kept_armed IS NOT NULL FROM verdicts "
+                    "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
     first = latest = None
     for at, status, checked, kept in rows:
         if checked or (status == "qualified" and not kept):
@@ -129,10 +129,10 @@ def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
 
 def with_recorded(recorded: list | None, moments: list | None, spans) -> list[list[float]]:
     """The wallet's copies to judge, oldest first: the lab's, on the tape it read, and older than that tape the ones
-    earlier runs recorded (`recorded`, from the stage's working data). The tape keeps 3 to 30 days (SNIPETECH_RETAIN_DAYS,
-    deploy/bootstrap.sh), so without the record the losses after a pick older than the tape would drop out and the
-    forward check would judge only what the lab scored in-sample too (review of 7 Nov). A recorded copy is a score from
-    the lab of its own run (its exit, its cost); on the tape the lab's own score wins."""
+    earlier runs recorded (`recorded`, from the stage's working data). The tape keeps 3 to 30 days
+    (SNIPETECH_RETAIN_DAYS, deploy/bootstrap.sh), so without the record the losses after a pick older than the tape
+    would drop out and the forward check would judge only what the lab scored in-sample too (review of 7 Nov). A
+    recorded copy is a score from the lab of its own run (its exit, its cost); on the tape the lab's own score wins."""
     tape_from = min((float(a) for a, _ in spans or []), default=None)
     old = [[float(ts), float(p)] for ts, p in (recorded or []) if tape_from is not None and float(ts) < tape_from]
     return sorted(old + [[float(ts), float(p)] for ts, p in (moments or [])], key=lambda c: c[0])

@@ -571,8 +571,8 @@ def test_a_copy_lands_behind_the_third_buy_after_its_leader_counted_across_slots
 
 
 def test_a_copy_counted_across_slots_never_lands_cheaper_than_right_behind_its_leader():
-    """Review of 7 Nov: "+3x" waits up to COPY_LAND_SLOTS for the 3rd buy, so where earlier holders sell right after
-    the leader's buy the copy entered after the dump, 13.9 % under the leader's own fill. No live copy waits for that: 6 of
+    """Review of 7 Nov: "+3x" waits up to COPY_LAND_SLOTS for the 3rd buy, so where earlier holders sell right after the
+    leader's buy the copy entered after the dump, 13.9 % under the leader's own fill. No live copy waits for that: 6 of
     7 landed in the leader's own slot (6 Nov), 7aPo3n's three 0-1 trades behind (7 Nov 19:18-19:22). Its entry is the
     worse of the two: behind the 3rd buy, or right behind the leader (the closest a live copy lands)."""
     from snipetech.analysis.lab import copy_entry
@@ -598,9 +598,9 @@ def test_a_copy_counted_across_slots_never_lands_cheaper_than_right_behind_its_l
 
 
 def test_a_copy_counted_across_slots_never_lands_in_the_coins_create_slot():
-    """Research round 2 (7 Nov): no copy lands in the create slot (the block the coin was made in, the creator's bundle);
-    OKTech sees a buy there only once the block is out, so the copy lands in a later slot at best. Behind the 3rd buy after
-    the leader's, or behind the whole create slot, whichever comes later."""
+    """Research round 2 (7 Nov): no copy lands in the create slot (the block the coin was made in, the creator's
+    bundle); OKTech sees a buy there only once the block is out, so the copy lands in a later slot at best. Behind the
+    3rd buy after the leader's, or behind the whole create slot, whichever comes later."""
     from snipetech.analysis.lab import copy_entry
 
     st = Store(":memory:")

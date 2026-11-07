@@ -642,10 +642,10 @@ def test_a_hot_streak_wallet_that_wins_in_its_window_and_loses_after_it_is_not_q
 
 def test_a_copy_that_would_dodge_a_dump_by_waiting_for_three_buys_is_scored_where_live_copies_land(tmp_path):
     """Review of 7 Nov: holders sell in the three slots after the leader's buy, then three small buys come before the
-    leader's slot + 10, then a small recovery. Copied right behind the leader (where a live copy lands: 6 of 7 in its own
-    slot on 6 Nov, 7aPo3n's three 0-1 trades behind), every copy loses; behind the 3rd buy it entered after the dump,
-    13.9 % under the leader's fill, and won every time. The lab now enters at the worse of the two: the wallet loses at
-    +3x as it does right behind the leader, and is retired."""
+    leader's slot + 10, then a small recovery. Copied right behind the leader (where a live copy lands: 6 of 7 in its
+    own slot on 6 Nov, 7aPo3n's three 0-1 trades behind), every copy loses; behind the 3rd buy it entered after the
+    dump, 13.9 % under the leader's fill, and won every time. The lab now enters at the worse of the two: the wallet
+    loses at +3x as it does right behind the leader, and is retired."""
     from snipetech.qualify.run import default_lab_runner
 
     svc, st, data = _svc(tmp_path)
@@ -691,6 +691,12 @@ def _old_rules_pick(st, w, at, score=0.01, lower=0.0049):
                     "copy_plan": {"min_leader_sol": 0.5, "exit_name": "lab", "lab_version": 2}})  # fmt: skip
 
 
+def _row(w, n, mean, lower, moments, win_rate=0.6):
+    """The lab's row for `w` with its copies, as the qualify lab hands it over."""
+    return {"wallet": w, "n": n, "mean": mean, "ev_lower": lower, "win_rate": win_rate, "total": n * mean, "exit": "x",
+            "min_leader_sol": 0.5, "moments": list(moments)}  # fmt: skip
+
+
 def _book_plan(svc, st, snipers):
     """The book's own plan, unchanged, on the verdicts the qualify stage wrote."""
     from snipetech.book.policy import BookInputs, plan_book
@@ -713,13 +719,13 @@ def test_a_wallet_whose_book_sniper_was_stopped_gets_the_verdict_of_these_rules(
         armed_on = NOW - 25 * 3600
         _old_rules_pick(st, "STOPPED", armed_on)
         name = "snipetech copy book STOPPE arm:control"
+        payload = {"mode": "ctbot", "ctbotWallets": [{"address": "STOPPED"}]}
         st.add_oktech_sniper({"id": "s1", "external_id": "e-s1", "kind": "copy", "source": "STOPPED", "name": name,
-                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "STOPPED"}]},
-                              "created_at": NOW - 20 * 3600})  # fmt: skip  # stopped 10 h ago, its row still there
+                              "config_hash": "h", "payload": payload, "created_at": NOW - 20 * 3600})  # fmt: skip
+        # the book stopped it 10 h ago: its row is still there, and OKTech reads it idle
         record_copying(st, buying_book_wallets([{"id": "s1", "name": name, "status": "idle"}]), NOW - 120)
         before = [[armed_on - 7200 + 60 * k, 0.03] for k in range(35)]
-        runner = lambda ws, pos: [{"wallet": w, "n": 35, "mean": 0.03, "ev_lower": 0.03, "win_rate": 1.0, "total": 1.05,
-                                   "exit": "x", "min_leader_sol": 0.5, "moments": list(before)} for w in ws]  # fmt: skip
+        runner = lambda ws, pos: [_row(w, 35, 0.03, 0.03, before, win_rate=1.0) for w in ws]
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         v = st.latest_verdicts()[0]
         assert v["status"] == "candidate" and v["forward"]["status"] == "pending" and v["landing_pos"] == "+3x"
@@ -742,14 +748,14 @@ def test_a_sniper_the_owner_made_by_hand_never_keeps_a_wallet_at_its_old_verdict
         picked = NOW - 25 * 3600
         _old_rules_pick(st, "HANDW", picked, lower=0.012)
         hand = {"id": "h1", "name": "snipetech vcopy HANDW test", "status": "running"}
-        st.add_oktech_sniper({"id": "h1", "external_id": "e-h1", "kind": "vcopy", "source": "HANDW", "name": hand["name"],
-                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "HANDW"}]},
+        payload = {"mode": "ctbot", "ctbotWallets": [{"address": "HANDW"}]}
+        st.add_oktech_sniper({"id": "h1", "external_id": "e-h1", "kind": "vcopy", "source": "HANDW",
+                              "name": hand["name"], "config_hash": "h", "payload": payload,
                               "created_at": NOW - 24 * 3600})  # fmt: skip
         record_copying(st, buying_book_wallets([hand]), NOW - 120)
         before = [[picked - 7200 + 60 * k, 0.03] for k in range(35)]
         after = [[picked + 3600 + 900 * k, -0.01] for k in range(24)]
-        runner = lambda ws, pos: [{"wallet": w, "n": 59, "mean": 0.014, "ev_lower": 0.008, "win_rate": 0.6, "total": 0.8,
-                                   "exit": "x", "min_leader_sol": 0.5, "moments": before + after} for w in ws]  # fmt: skip
+        runner = lambda ws, pos: [_row(w, 59, 0.014, 0.008, before + after) for w in ws]
         run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         v = st.latest_verdicts()[0]
         assert v["status"] == "retired" and v["forward"]["status"] == "failed" and v["kept_armed"] is None
@@ -760,10 +766,10 @@ def test_a_sniper_the_owner_made_by_hand_never_keeps_a_wallet_at_its_old_verdict
 
 
 def test_while_the_books_reading_of_oktech_is_unknown_a_wallet_it_may_copy_waits_for_the_next_run(tmp_path):
-    """With no reading of OKTech by the book in the last hour (it has not run since an update, or OKTech did not answer),
-    whether the book copies a wallet it armed before the 7 Nov rules is unknown: keeping a wallet nobody copies would
-    let the book arm it, dropping one it copies would stop it. Such a wallet's verdict is left as it is and stays due;
-    every other wallet is judged as usual, and the run says how many waited."""
+    """With no reading of OKTech by the book in the last hour (it has not run since an update, or OKTech did not
+    answer), whether the book copies a wallet it armed before the 7 Nov rules is unknown: keeping a wallet nobody copies
+    would let the book arm it, dropping one it copies would stop it. Such a wallet's verdict is left as it is and stays
+    due; every other wallet is judged as usual, and the run says how many waited."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["OLDQ", "FRESH"])
@@ -790,9 +796,9 @@ def test_while_the_books_reading_of_oktech_is_unknown_a_wallet_it_may_copy_waits
 
 def test_a_copied_wallet_these_rules_score_under_the_books_bar_keeps_its_sniper(tmp_path):
     """Review of 7 Nov: ARMED, copied by a running book sniper on an old-rules verdict scoring 0.01, meets these rules
-    with a lower bound of 0.003 at +3x and 24 small wins since its pick: its own score, 0.0018, is under the book's 0.005
-    bar, and the book's unchanged ranking stopped its sniper ("dropped out of the ranking"). It keeps the score it was
-    armed on while the book copies it, and the book keeps its sniper."""
+    with a lower bound of 0.003 at +3x and 24 small wins since its pick: its own score, 0.0018, is under the book's
+    0.005 bar, and the book's unchanged ranking stopped its sniper ("dropped out of the ranking"). It keeps the score it
+    was armed on while the book copies it, and the book keeps its sniper."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["ARMED"])
@@ -803,8 +809,7 @@ def test_a_copied_wallet_these_rules_score_under_the_books_bar_keeps_its_sniper(
         record_copying(st, buying_book_wallets([sniper]), NOW - 120)
         before = [[armed_on - 7200 + 60 * k, 0.004] for k in range(30)]
         after = [[armed_on + 3600 + 900 * k, 0.004 if k % 4 else 0.002] for k in range(24)]
-        runner = lambda ws, pos: [{"wallet": w, "n": 54, "mean": 0.0037, "ev_lower": 0.003, "win_rate": 1.0, "total": 0.2,
-                                   "exit": "x", "min_leader_sol": 0.5, "moments": before + after} for w in ws]  # fmt: skip
+        runner = lambda ws, pos: [_row(w, 54, 0.0037, 0.003, before + after, win_rate=1.0) for w in ws]
         run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         v = st.latest_verdicts()[0]
         assert v["status"] == "qualified" and v["forward"]["status"] == "passed" and v["landing_pos"] == "+3x"
@@ -819,9 +824,9 @@ def test_a_copied_wallet_these_rules_score_under_the_books_bar_keeps_its_sniper(
 def test_a_wallet_picked_once_before_waits_for_copies_after_its_new_pick_like_one_never_picked(tmp_path):
     """Review of 7 Nov: the forward window started at a wallet's first pick and never moved. OLDPICK was picked 4 days
     ago (the old rules) and retired a day later; the tape keeps 3 days. On the same fresh streak as NEWBIE, never
-    picked, its 25 streak copies counted as forward (forward n 25 = in-sample n 25) and it qualified while NEWBIE waited.
-    Passing the in-sample gates again after a verdict that failed them is a new pick: both now wait for copies after it.
-    LOSTPICK lost 24 copies after its first pick 30 h ago; its streak does not undo that: retired."""
+    picked, its 25 streak copies counted as forward (forward n 25 = in-sample n 25) and it qualified while NEWBIE
+    waited. Passing the in-sample gates again after a verdict that failed them is a new pick: both now wait for copies
+    after it. LOSTPICK lost 24 copies after its first pick 30 h ago; its streak does not undo that: retired."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["OLDPICK", "NEWBIE", "LOSTPICK"])
@@ -838,9 +843,7 @@ def test_a_wallet_picked_once_before_waits_for_copies_after_its_new_pick_like_on
         lost = [[NOW - 29 * 3600 + 600 * k, -0.03] for k in range(24)]
 
         def runner(wallets, pos):
-            return [{"wallet": w, "n": 25, "mean": 0.0224, "ev_lower": 0.017, "win_rate": 0.8, "total": 0.56, "exit": "x",
-                     "min_leader_sol": 0.3, "moments": (lost if w == "LOSTPICK" else []) + list(streak)}
-                    for w in wallets]  # fmt: skip
+            return [_row(w, 25, 0.0224, 0.017, (lost if w == "LOSTPICK" else []) + streak, 0.8) for w in wallets]
 
         run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         by = {v["wallet"]: v for v in st.latest_verdicts()}

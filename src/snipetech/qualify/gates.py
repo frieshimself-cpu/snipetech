@@ -253,8 +253,9 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     whatever its latest window says. Otherwise, with fewer than 20 forward copies or under 6 h of tape after the pick,
     "pending": the verdict is a candidate the book does not arm, every number of it the lab's, re-checked as often as a
     qualified wallet (review_qualified_h). With both, the in-sample gate's rule on the forward copies: their lower bound
-    above 0 keeps it qualified ("passed"); their mean below 0 retires it ("failed": it lost after it was picked); between
-    the two it stays pending. Means and bounds count to the lamport. The reason says which, with its numbers."""
+    above 0 keeps it qualified ("passed"); their mean below 0 retires it ("failed": it lost after it was picked);
+    between the two it stays pending. Means and bounds count to the lamport. The reason says which, with its
+    numbers."""
     if v.get("status") != "qualified":
         return v
     since = int(now if picked_at is None else picked_at)
@@ -275,12 +276,14 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     when = time.strftime("%d %b %H:%M UTC", time.gmtime(since))
     waits = {"status": "candidate", "gate": "forward", "next_review": int(now) + cfg.review_qualified_h * 3600}
     retires = {"status": "retired", "gate": "forward", "next_review": int(now) + cfg.review_retired_h * 3600}
-    if (first < since and len(since_first) >= FORWARD_MIN_N and tape_hours_after(spans or [], first, now) >= FORWARD_MIN_HOURS
-            and round(float(first_mean), 9) < 0):  # fmt: skip
+    lost_since_first = (first < since and len(since_first) >= FORWARD_MIN_N and round(float(first_mean or 0), 9) < 0
+                        and tape_hours_after(spans or [], first, now) >= FORWARD_MIN_HOURS)  # fmt: skip
+    if lost_since_first:
         fwd["status"] = "failed"
         out |= retires
-        out["reasons"].append(f"loses since it was first picked on {time.strftime('%d %b %H:%M UTC', time.gmtime(first))}: "
-                              f"mean {first_mean:+.4f} SOL over {len(since_first)} copies since (picked again on {when})")  # fmt: skip
+        then = time.strftime("%d %b %H:%M UTC", time.gmtime(first))
+        out["reasons"].append(f"loses since it was first picked on {then}: mean {first_mean:+.4f} SOL over "
+                              f"{len(since_first)} copies since (picked again on {when})")  # fmt: skip
     elif len(later) < FORWARD_MIN_N or hours < FORWARD_MIN_HOURS:
         out |= waits
         out["reasons"].append(f"forward pending: {len(later)} later copies (needs {FORWARD_MIN_N}) over {hours:.1f} h of "
@@ -387,8 +390,9 @@ def armed_before_rules(prev: dict[str, Any] | None) -> bool:
 def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg: QualifyConfig,
                now: float) -> dict[str, Any]:  # fmt: skip
     """The verdict to write for a wallet the book copies now (`armed`: one of its own snipers still buys for it at its
-    last reading of OKTech, book/state.copying_now), given its latest verdict before this run (`prev`). The book arms only qualified wallets and drops any other; a wallet it copied before these rules (its last
-    verdict qualified under the old ones, with a copy plan, or already kept) is not stopped by them: the owner decides
+    last reading of OKTech, book/state.copying_now), given its latest verdict before this run (`prev`). The book arms
+    only qualified wallets and drops any other; a wallet it copied before these rules (its last verdict qualified under
+    the old ones, with a copy plan, or already kept: armed_before_rules) is not stopped by them: the owner decides
     (research round 2, 7 Nov: keep 7aPo3n armed as a live measurement, judge it at 30 copies).
 
     When one of NEW_RULE_GATES stops such a wallet, the verdict written is the one the book armed it on (status,
@@ -410,8 +414,8 @@ def keep_armed(v: dict[str, Any], prev: dict[str, Any] | None, armed: bool, cfg:
         out = dict(v, kept_armed={"armed_on": armed_on, "armed_score": armed_score, "kept": False})
         own = float(v.get("score") or 0.0)
         if own < armed_score:
-            said = (f"ranked at the score it was armed on ({armed_score:.4f}) while the book copies it: these rules score "
-                    f"it {own:.4f}; whether to keep copying it, the owner decides")  # fmt: skip
+            said = (f"ranked at the score it was armed on ({armed_score:.4f}) while the book copies it: these rules "
+                    f"score it {own:.4f}; whether to keep copying it, the owner decides")  # fmt: skip
             out["score"], out["reasons"] = armed_score, [*list(v.get("reasons") or []), said]
             out["kept_armed"]["new_score"] = own
         return out
