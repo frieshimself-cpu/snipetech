@@ -13,6 +13,8 @@ import sqlite3
 import threading
 from pathlib import Path
 
+import pytest
+
 from snipetech.models import Trade
 from snipetech.store import Store
 
@@ -454,6 +456,45 @@ def test_the_qualify_lab_on_the_live_file_reads_its_wallets_a_few_at_a_time(tmp_
     finally:
         wal.close()
         st.close()
+
+
+@pytest.mark.parametrize("asked", [3600, float("nan"), float("inf")])
+def test_remote_sql_holds_its_read_thirty_seconds_at_most_whatever_it_asks(tmp_path, monkeypatch, asked):
+    """`remote sql` reads the live file, cut at 30 s by a progress handler; a signed request could ask for any number
+    of seconds (or none: NaN never passes a deadline) and hold the WAL back that long. Thirty seconds at most."""
+    import sys
+
+    from snipetech import ops as O
+
+    key = tmp_path / "k"
+    keys = tmp_path / "authorized"
+    keys.write_text(O.keygen(key) + "\n")
+    data = tmp_path / "data"
+    data.mkdir()
+    Store(data / "snipetech.db").close()
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=keys, branch="main",
+                command=[sys.executable], use_sudo=False)  # fmt: skip
+    import time
+
+    class Clock:  # a second passes every time the query looks at the clock; past 100 the test stops it itself
+        now = 0.0
+
+        def monotonic(self) -> float:
+            self.now += 1.0
+            if self.now > 100:
+                raise RuntimeError("the query was never cut")
+            return self.now
+
+        def __getattr__(self, name):
+            return getattr(time, name)
+
+    clock = Clock()
+    forever = "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n) SELECT count(*) FROM n"
+    body, headers = O.sign(key, "sql", {"query": forever, "seconds": asked})
+    monkeypatch.setattr(O, "time", clock)
+    with pytest.raises(O.OpsError, match="interrupted"):
+        ops.handle(body, headers["X-Ops-Signature"])
+    assert clock.now <= 32
 
 
 def _paper_run_world(st: Store) -> None:
