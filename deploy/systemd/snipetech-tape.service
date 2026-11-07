@@ -5,9 +5,12 @@ Wants=network-online.target
 
 [Service]
 Slice=snipetech.slice
-Nice=10
+# First inside the slice: every service is its own cgroup and cgroups share the CPU by weight, not by nice
+# (7 Nov the recorder fell 25-45 s behind while labs ran at its own weight). The slice still yields to the machine.
+CPUWeight=1000
+IOWeight=1000
 IOSchedulingClass=best-effort
-IOSchedulingPriority=7
+IOSchedulingPriority=0
 User=@USER@
 EnvironmentFile=/etc/snipetech/env
 ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db watch --tape --signals none

@@ -13,7 +13,9 @@ WorkingDirectory=@DATA@
 ExecStart=@REPO@/.venv/bin/snipetech --db @DATA@/snipetech.db ops-serve --host 127.0.0.1 --port 8788 --data @DATA@
 Restart=always
 RestartSec=3
-KillMode=mixed
+# A deploy restarts this service: its jobs go on to their end, as the operator's do (they keep the old code),
+# and `remote kill` still reaches them by id. Under KillMode=mixed a deploy killed them (7 Nov 07:44).
+KillMode=process
 
 [Install]
 WantedBy=multi-user.target

@@ -136,6 +136,16 @@ def sign(key_path: str | Path, op: str, args: dict | None = None) -> tuple[bytes
 ENV_FILE = Path("/etc/snipetech/env")
 
 
+def _is_job(pid: int, exit_file: Path) -> bool:
+    """Whether `pid` is the wrapper of the job whose exit file is `exit_file`: _start puts SNIPETECH_JOB_EXIT in its
+    environment (Linux /proc; False wherever it cannot be read)."""
+    try:
+        env = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return False
+    return f"SNIPETECH_JOB_EXIT={exit_file}".encode() in env
+
+
 def _signal_group(proc: subprocess.Popen, sig: int) -> None:
     """Signal the job's whole process group (start_new_session=True made it a session leader)."""
     try:
@@ -345,10 +355,21 @@ class Ops:
     def op_kill(self, id: str) -> dict[str, Any]:
         _check_id(id)
         job = self.jobs.get(id)
-        if job is None or job.proc is None or job.code is not None:
-            raise OpsError(404, f"no running job {id}")
-        _signal_group(job.proc, signal.SIGTERM)  # the job is a session leader: the wrapper AND the command
-        return {"id": id, "signal": "TERM"}
+        if job is not None and job.proc is not None and job.code is None:
+            _signal_group(job.proc, signal.SIGTERM)  # the job is a session leader: the wrapper AND the command
+            return {"id": id, "signal": "TERM"}
+        # started by another process: an ops service before a restart (KillMode=process keeps its jobs going), or an
+        # operator round. Its record keeps the pid; the job's own environment names its exit file, so a pid the
+        # system has since given to another process is never signalled.
+        meta = self._meta(id) if job is None else None
+        pid = meta.get("pid") if meta and meta.get("running") else None
+        if isinstance(pid, int) and _is_job(pid, self.data / "jobs" / f"{id}.exit"):
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                return {"id": id, "signal": "TERM"}
+            except (ProcessLookupError, PermissionError):
+                pass
+        raise OpsError(404, f"no running job {id}")
 
     def op_ls(self, path: str = "") -> dict[str, Any]:
         d = self._inside(path)

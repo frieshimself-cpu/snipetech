@@ -210,6 +210,42 @@ def test_kill_stops_the_job_itself_not_only_the_wrapper(tmp_path):
     assert not O._pid_alive(child)
 
 
+def test_kill_reaches_a_job_another_ops_process_started(tmp_path):
+    """A deploy restarts the ops service. With KillMode=process (deploy/systemd/snipetech-ops.service) its jobs go on,
+    and the new process, which never started them, can still stop one by its id: the job's record keeps its pid, and
+    the job's own environment names its exit file, so a pid the system gave to another process is never signalled."""
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    make = lambda: O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                         command=[sys.executable, "-c", "import time; time.sleep(30)"])  # fmt: skip
+    st = make().op_run(["lab"])
+    after_restart = make()
+    assert after_restart._meta(st["id"])["running"]
+    assert after_restart.op_kill(st["id"]) == {"id": st["id"], "signal": "TERM"}
+    for _ in range(200):
+        if not after_restart._meta(st["id"])["running"]:
+            break
+        time.sleep(0.05)
+    assert not after_restart._meta(st["id"])["running"]
+
+
+def test_kill_never_signals_a_pid_that_is_not_the_job(tmp_path):
+    import json
+
+    data = tmp_path / "d"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                command=[sys.executable, "-c", "pass"])  # fmt: skip
+    import os
+
+    (data / "jobs" / "20261107-120000-abcdef.json").write_text(json.dumps(
+        {"id": "20261107-120000-abcdef", "argv": ["lab"], "started": 1, "ended": None, "exit_code": None,
+         "running": True, "pid": os.getpid()}))  # fmt: skip  # alive, but this test's own process
+    with pytest.raises(O.OpsError) as e:
+        ops.op_kill("20261107-120000-abcdef")
+    assert e.value.code == 404
+
+
 def test_redact_hides_every_secret_env_value(monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:ABCDEFGHIJK")
     monkeypatch.setenv("HELIUS_API_KEY", "helius-secret-key")

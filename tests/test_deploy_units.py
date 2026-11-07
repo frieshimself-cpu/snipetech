@@ -102,3 +102,45 @@ def test_commands_unit_and_timer():
     assert "OnCalendar=minutely" in timer
     assert {"snipetech-commands", "snipetech-commands.timer"} <= set(O.UNITS)
     assert "snipetech-commands.timer" in (UNITS.parent / "setup.sh").read_text()
+
+
+# -- priorities inside the slice, and deploys that leave jobs running ----------------------------------------------
+# Every snipetech unit runs in snipetech.slice, which yields to everything else on the machine (4 Nov). Inside it the
+# tape recorder comes first: each service is its own cgroup, and cgroups share the CPU by CPUWeight, not by nice (7 Nov:
+# the recorder ran 25-45 s behind while labs ran, at the same weight as every batch job). A deploy restarts
+# snipetech-ops: its jobs go on (KillMode=process; 7 Nov 07:44 a deploy killed a `research search`), and `remote kill`
+# still reaches them by id (ops.op_kill).
+
+
+def _unit(name: str) -> dict[tuple[str, str], str]:
+    out, section = {}, ""
+    for raw in (UNITS / name).read_text().splitlines():
+        line = raw.strip()
+        if line.startswith("[") and line.endswith("]"):
+            section = line[1:-1]
+        elif "=" in line and not line.startswith(("#", ";")):
+            k, v = line.split("=", 1)
+            out[(section, k.strip())] = v.strip()
+    return out
+
+
+def test_every_service_runs_in_the_slice():
+    for p in sorted(UNITS.glob("*.service")):
+        assert _unit(p.name).get(("Service", "Slice")) == "snipetech.slice", p.name
+
+
+def test_the_tape_recorder_outweighs_every_other_service_in_the_slice():
+    tape = _unit("snipetech-tape.service")
+    weight = int(tape[("Service", "CPUWeight")])
+    for p in sorted(UNITS.glob("*.service")):
+        if p.name != "snipetech-tape.service":
+            assert weight >= 5 * int(_unit(p.name).get(("Service", "CPUWeight"), "100")), p.name
+    assert int(tape.get(("Service", "Nice"), "0")) <= 0
+
+
+def test_a_deploy_leaves_the_jobs_of_the_ops_service_running():
+    assert _unit("snipetech-ops.service")[("Service", "KillMode")] == "process"
+
+
+def test_the_slice_still_yields_to_everything_else_on_the_machine():
+    assert int(_unit("snipetech.slice")[("Slice", "CPUWeight")]) < 100
