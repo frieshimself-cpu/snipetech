@@ -6,6 +6,39 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## A launch rule holds on new tape; making it something OKTech can run (7 Nov, 07:40 UTC)
+
+- **The forward paper test, 9 h of tape recorded after the freeze, at our real landing, 0.2 SOL fills:** "a non-dev
+  buys 1 SOL or more in the first second of a normal coin, not inside the create bundle", lab exit (dead exit 1 s,
+  stop-loss 30 %, 300 s): 1,200 trades, +0.0089 SOL a trade, lower bound +0.0035, +10.6 SOL in total (the lab had said
+  +0.0124). The 5 s variant: 1,244 trades, +0.0079, lower bound +0.0028, +9.9 SOL. The other two frozen with them:
+  +0.0012 (lower bound −0.0017) and −0.046. Every strategy the old lab froze keeps losing (for example "at the
+  launch" −0.0099 a trade over 11,375). This is the first rule since the lab fix that stays positive on new tape.
+- **Why it is not live yet:** OKTech cannot run that rule as scored. Its launch gate (Hunt) adds up every buy in its
+  window, the creator's own included, takes whole numbers only, cannot see whether a buy sat in the create
+  transaction, and cannot skip mayhem / holder-reward coins. `oktech strategy` sends an approximation (2 SOL in total
+  within 1 s, the creator's buy at most 1 SOL, at most 2 wallets) that was never scored. Since 07:32 the lab has a
+  `hunt` trigger that replays Hunt itself and scores it a slot after its trigger, 3 trades in (5 Nov hunt fills
+  landed 1–2 slots after the create with 2–7 buys ahead); `oktech strategy` sends a hunt strategy exactly as scored.
+  A strategy search started at 07:35 scores 24 Hunt settings, the approximation among them, on the newest 24 h.
+  The live test waits for a Hunt setting with a positive lower bound there, and the owner's yes.
+- **Paper is not live:** paper charges 0.007 SOL a round trip, live costs about 0.009 (failed duplicate sends);
+  a Hunt sniper fires once per start and has to be re-armed (`oktech cycle`), so live takes far fewer than paper's
+  ~130 trades an hour; and OKTech has left the sniper's cap-using buy without a sell three times (4siK, DTAU, 5m5h),
+  so a live test runs with the unsold-coin watch and `/sell`.
+- **The night:** the fixed lab qualified its first wallet, `2Tp9scbr…XUB8D65` (n 25, +0.0066 SOL a trade, lower bound
+  +0.0024, crowding 11.5), below the book's bar (score 0.0004 against 0.005), so not copied. 5m5h, the coin OKTech
+  abandoned, was sold at 05:38 for 0.076 SOL (0.1975 paid: −0.121). Free disk fell to 23.7 GB (a 12.9 GB database;
+  long labs kept old read-only copies open), so `snapshot-db` now skips a copy that would leave less than 10 GB.
+- **The server, resized 7 Nov ~07:10 by the owner:** down 07:12–07:26 UTC; back with 322 GB of disk (276 GB free),
+  every service and timer restarted on its own, the tape recording again (the gap is a hole in the tape, not bad
+  data). The owner topped the wallet up: 11.9 SOL at the 07:30 snapshot, nothing held, no sniper running.
+- **The agents work harder (owner, 07:30: "I can afford 200$ a day in api credits"):** measured spend was 4.44 $ on
+  6 Nov and 1.92 $ by 07:30 on 7 Nov, far under the 15 $ cap: the agents were idle by design, not by budget. Being
+  built now: an owner budget (`/budget` in Telegram, no SSH), the analyst every 2 hours instead of once a day,
+  hypothesis labs the agents run on their own trigger ideas and freeze into the paper test, and one lab on all CPU
+  cores (one lab at a time still).
+
 ## The OKTech audit, built (6 Nov, evening UTC) — the leaks are closed; no wallet has proven itself live yet
 
 What the audit found on today's live trades (docs/oktech-audit-2026-11-06.md, the plan in the audit workflow):
