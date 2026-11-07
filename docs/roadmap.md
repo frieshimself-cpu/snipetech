@@ -25,9 +25,11 @@ first on the server's recording and only then run live in capped batches.
   for 2.44 SOL, and moves SOL between their wallets (`H4SJzJ…`, `CsLVhf…`, `GXcAHhvu…`). At 15:45 the wallet held 0 SOL.
   Look-alike addresses keep sending it dust to be copied from its history: `95o22tih…` (for `95o2L9Jm…`), `GXcANzWb…`
   (for `GXcAHhvu…`), `CsLVZuXJ…` (for `CsLVhfV6…`), `H4SJmUSq…` (for `H4SJzJbp…`).
-- **The server's agents** have been refused by the API since 11:16 (an Anthropic verification of the organization that
-  owns the server's key, `b8b652c0-…`; the owner verified, the refusals go on). The research runs from the cloud session
-  instead (docs/research/).
+- **The server's agents** were refused by the API from 11:16 to 18:12 (an Anthropic verification of the organization
+  that owned the server's key, `b8b652c0-…`). The owner made a new key on a new Anthropic account and put it in
+  `/etc/snipetech/env` at about 18:05; the analyst's 18:12 turn ran (25 tool calls, 0.94 $) and the 18:15 round too. A
+  key changed in the file now reaches remote jobs without a restart (6bd539a). The research also runs from the cloud
+  session (docs/research/): round 1 found no rule that pays at our landing (MIG is the open idea); round 2 is running.
 
 ## The wallet was emptied at 10:59; no rule has an edge where our buys land yet (7 Nov, 11:15 UTC)
 
