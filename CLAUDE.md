@@ -22,8 +22,9 @@ top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md`. Read bo
 One Ubuntu box runs the tape recorder, a daily research job, the operator timer and `snipetech-ops`, a signed
 remote-operations endpoint. From a checkout with an authorized key:
 `snipetech remote status | jobs | --wait run <command> | read jobs/<id>.log | sql "<select>" | update`.
-`remote update` restarts `snipetech-ops`; a running research job survives it but keeps the old code until it ends
-(6 Nov: a `research search` ran on through an update), so check `remote jobs` first.
+`remote update` restarts `snipetech-ops`. A job the bot started itself (an operator round, a timer) survives it but keeps
+the old code until it ends (6 Nov); a job started with `remote run` dies with it (7 Nov 07:44: a `research search` was
+lost). Check `remote jobs` first and never update while a job you started runs.
 Secrets live only in `/etc/snipetech/env` on the server (Helius, OKTech, Anthropic, Telegram, TypeSafe keys). They
 are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 

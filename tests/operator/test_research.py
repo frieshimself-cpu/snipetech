@@ -85,13 +85,15 @@ def test_a_long_queue_gets_a_bigger_batch_but_never_more_than_the_cap(env):
     assert first["argv"] == ["qualify", "run", "--max", str(RS.MAX_QUALIFY_BATCH)]
 
 
-def test_the_strategy_search_runs_once_a_day(env):
+def test_the_strategy_search_runs_every_six_hours(env):
+    # 7 Nov: the owner wants profit as fast as possible and the server has the cores; new launch rules (OKTech hunt)
+    # need fresh numbers several times a day, not once
     st, cfg, _ = env
     units = lambda: [o["unit"] for o in RS.plan(RS.measure_backlog(st, cfg, NOW), [], cfg, NOW)]
     assert "search" in units()  # never ran
     st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 3 * H})
     assert "search" not in units()
-    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 30 * H})
+    st.set_coverage(RS.SEARCH_KEY, {"ts": NOW - 7 * H})
     assert "search" in units()
 
 
@@ -166,7 +168,7 @@ def test_when_nothing_can_start_it_says_what_waits_and_until_when(env):
     out = RS.run_next(st, cfg, NOW, metas=[], services={}, lab_held=False, start=lambda *a: pytest.fail("started"))
     assert out["started"] is None
     assert "3 wallets wait for the qualify lab, allowed again in 40 min" in out["idle"]
-    assert "strategy search ran 3 h ago, next in 21 h" in out["idle"]
+    assert "strategy search ran 3 h ago, next in 3 h" in out["idle"]
 
 
 def test_nothing_pending_means_nothing_started(env):

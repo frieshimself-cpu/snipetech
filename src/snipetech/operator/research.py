@@ -53,7 +53,7 @@ UNITS: dict[str, dict[str, Any]] = {
     "discover": {"argv": ("discover", "run"), "limit": 3600, "gap": 3 * 3600, "name": "wallet discovery"},
 }
 MAX_QUALIFY_BATCH = 900  # three times [qualify] max_wallets: one qualify lab covers every labelled wallet anyway
-SEARCH_EVERY_H = 24.0
+SEARCH_EVERY_H = 6.0  # 7 Nov: four searches a day (the owner: "profitable as fast as possible")
 # the search reads the newest day of tape: over 72 h it held the lab lock (and the wallet checks behind it) for hours
 SEARCH_TAPE_H = 24.0
 DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pipeline has run dry
