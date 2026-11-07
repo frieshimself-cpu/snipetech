@@ -444,7 +444,7 @@ def test_the_daily_rule_is_kept_and_wins_over_the_cadence(paths):
 
 
 def test_an_analysis_between_the_daily_ones_waits_for_a_daily_one_due_within_the_hour(paths):
-    """Two Opus turns a quarter of an hour apart would say the same: at 05:15 the 06:00 analysis is near, so it does
+    """Two analyst turns a quarter of an hour apart would say the same: at 05:15 the 06:00 analysis is near, so it does
     the work; at 04:30 it is not, so the cadence runs (and the night's analyses go on)."""
     from snipetech.operator.gate import mark_analyst_ran
 

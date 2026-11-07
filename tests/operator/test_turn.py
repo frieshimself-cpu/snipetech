@@ -144,7 +144,7 @@ def test_the_owners_budget_sets_the_turns_dollar_cap(env):
     from snipetech.operator.budget_switch import set_budget
 
     set_budget(env["paths"], env["cfg"], {"turn_usd": 0.5}, "telegram", NOW)
-    mid = {"input_tokens": 300_000, "output_tokens": 0}  # 0.9 $ at Sonnet rates
+    mid = {"input_tokens": 300_000, "output_tokens": 0}  # 0.9 $ at the operator's 3 $ per million input tokens
     tool = lambda i: (
         [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
         "tool_use",
