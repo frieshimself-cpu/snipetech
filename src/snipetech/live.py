@@ -1071,7 +1071,7 @@ class LiveWatcher:
             log.info("live: %s", dict(self.stats))
 
     async def _prune(self, now: float) -> None:
-        """The hourly prune of what retention no longer keeps, one short transaction at a time, the event loop going on
+        """The hourly prune of what retention no longer keeps, one short step at a time, the event loop going on
         between them (the streams, the flushes). In one go it held the write lock and this loop for as long as the
         deletes took (an hour of tape, 89k trades: 2.0 s on a 2.4M-trade copy, 7 Nov; the server's database is ten
         times larger). A prune that fails is left for the next hour: each batch is committed, the next prune goes on

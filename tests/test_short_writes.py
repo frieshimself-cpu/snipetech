@@ -9,7 +9,7 @@ writer changes more than the store's batch of rows."""
 
 import asyncio
 import json
-import shutil
+import random
 import sqlite3
 import threading
 import time
@@ -236,6 +236,60 @@ def test_new_events_are_counted_exactly_while_another_writer_adds_events(tmp_pat
 
 # -- prune: the recorder's hourly delete ------------------------------------------------------------------------------
 
+# what prune did until 7 Nov, in one transaction: each table walked once, the write lock held all along
+_ONE_TRANSACTION = (
+    "DELETE FROM trades WHERE ts<? AND user NOT IN (SELECT address FROM lists)",
+    (
+        "DELETE FROM launches WHERE ts<? AND user NOT IN (SELECT address FROM lists) "
+        "AND creator NOT IN (SELECT address FROM lists)"
+    ),
+    "DELETE FROM seen_sigs WHERE ts<?",
+    "DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)",
+)
+
+
+class Work:
+    """Counts the virtual-machine instructions a connection runs, in hundreds (sqlite's progress handler): a measure of
+    the rows its statements read and wrote, whatever the speed of the machine the test runs on."""
+
+    def __init__(self, con: sqlite3.Connection):
+        self.con, self.n = con, 0
+
+    def _tick(self) -> int:
+        self.n += 1
+        return 0  # go on
+
+    def __enter__(self) -> Self:
+        self.con.set_progress_handler(self._tick, 100)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.con.set_progress_handler(None, 100)
+
+
+def _in_one_transaction(st: Store, path, cut: int) -> int:
+    """A copy of the store's database at `path`, pruned the way prune did until 7 Nov; returns the work it took."""
+    con = sqlite3.connect(path)
+    st.conn.backup(con)
+    with Work(con) as w:
+        for sql in _ONE_TRANSACTION:
+            con.execute(sql, (cut,))
+        con.commit()
+    con.close()
+    return w.n
+
+
+def _work_per_step(st: Store, cut: int) -> list[int]:
+    """The work of each step of the store's prune: what the recorder's event loop does in one go, between two awaits."""
+    steps: list[int] = []
+    with Work(st.conn) as w:
+        done = 0
+        for _ in st.prune_steps(cut):
+            steps.append(w.n - done)
+            done = w.n
+        steps.append(w.n - done)  # the last yield to the end
+    return steps
+
 
 def test_prune_deletes_in_short_transactions_another_writer_gets_in_between(tmp_path):
     """Measured 7 Nov on a 2.4M-trade copy: another writer waited 2.0 s while one transaction deleted the oldest hour
@@ -256,19 +310,9 @@ def test_prune_leaves_exactly_what_one_transaction_left(tmp_path):
     db, ref = tmp_path / "t.db", tmp_path / "ref.db"
     st = Store(db)
     _old_tape(st)
-    st.close()
-    shutil.copyfile(db, ref)
     cut = T0 + 2 * 3600
-    con = sqlite3.connect(ref)  # what prune did until 7 Nov, in one transaction
-    con.execute("DELETE FROM trades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (cut,))
-    con.execute("DELETE FROM launches WHERE ts<? AND user NOT IN (SELECT address FROM lists) "
-                "AND creator NOT IN (SELECT address FROM lists)", (cut,))  # fmt: skip
-    con.execute("DELETE FROM seen_sigs WHERE ts<?", (cut,))
-    con.execute("DELETE FROM ftrades WHERE ts<? AND user NOT IN (SELECT address FROM lists)", (cut,))
-    con.commit()
-    con.close()
-    st = Store(db)
-    st.WRITE_BATCH = 64
+    _in_one_transaction(st, ref, cut)
+    st.WRITE_BATCH, st.PRUNE_SCAN = 64, 150
     st.prune(cut)
     assert st.tape_spans() == [(cut, T0 + 3 * 3600)]
     st.close()
@@ -299,6 +343,74 @@ def test_an_interrupted_prune_never_leaves_the_tape_claiming_deleted_trades(tmp_
     assert st.tape_spans() == [(cut, T0 + 3 * 3600)]
     assert 0 < _old_trades(st, cut) < old and not st.conn.in_transaction
     st.prune(cut)
+    assert _old_trades(st, cut) == 0
+    st.close()
+
+
+@pytest.mark.parametrize("pile_ts", ["their own times", "one time"])
+def test_a_pile_of_protected_trades_is_walked_once_a_prune_not_once_a_batch(tmp_path, pile_ts):
+    """A list keeps a wallet's trades from the prune, so they pile up below the cutoff every day it stays listed (on a
+    copy shaped like the server, 10 listed wallets made a tenth of the trades: some 250k rows a day). Each batch searched
+    again from the oldest row, across the whole pile: measured 7 Nov on a 2.4M-trade copy, an hour's prune beside 73k
+    protected trades took 29 s of the recorder's loop and beside 199k 43 s, where the single DELETE took 4-5 s. Each
+    step now starts where the last one stopped and reads at most PRUNE_SCAN rows: the pile is walked once, as the
+    DELETE walked it (18 and 17 s, most of it the WAL checkpoints the commits run). Trades without a block time are
+    stored at ts 0, so a pile can share one time: a step starts after the last row read, not at the first row of its
+    time."""
+    st = Store(tmp_path / "t.db")
+    st.WRITE_BATCH, st.PRUNE_SCAN = 50, 500
+    cut = T0 + 3600
+    pile = [replace(_trade(n), ts=T0 - 20_000 + n if pile_ts == "their own times" else 0, user="KEEP")
+            for n in range(10_000)]  # fmt: skip
+    hour = [replace(_trade(10_000 + n), ts=T0 + n * 3600 // 2000, user="KEEP" if n % 10 == 0 else f"U{n % 50}")
+            for n in range(2000)]  # fmt: skip
+    st.add_trades(pile + hour)
+    st.list_add("KEEP", "copy_target")
+    single = _in_one_transaction(st, tmp_path / "ref.db", cut)
+    steps = _work_per_step(st, cut)
+    # all the steps: the single DELETE's one walk (a select reading a row runs about three times the instructions of
+    # the DELETE's search), not that walk once a batch (36 batches here: 22 times the work); and no step walks the pile
+    assert sum(steps) <= 4 * single
+    assert max(steps) <= single / 4
+    assert _tables(tmp_path / "t.db") == _tables(tmp_path / "ref.db")
+    st.close()
+
+
+def test_scattered_seen_signatures_are_read_once_a_prune_and_never_all_in_one_step(tmp_path):
+    """seen_sigs has no index on ts, and a backfill stores old signatures all through it. Each batch read the table from
+    its first row until it found its 500: about the table times the batches over two in all, most of the table in each
+    late step (measured 7 Nov on a copy with 3M signatures over 10 days, 12.4k in the pruned hour: 5.0 s where the
+    single DELETE took 2.1 s). Each step now reads the PRUNE_SCAN rowids after the last: the table is read once a prune
+    (2.3 s)."""
+    st = Store(tmp_path / "t.db")
+    st.WRITE_BATCH, st.PRUNE_SCAN = 50, 500
+    cut = T0
+    rows = [(f"s{n}", n, T0 - 1 - n % 3600 if n % 10 == 0 else T0 + n) for n in range(40_000)]
+    random.Random(7).shuffle(rows)  # the old ones all through the table
+    st.mark_seen(rows)
+    single = _in_one_transaction(st, tmp_path / "ref.db", cut)
+    steps = _work_per_step(st, cut)
+    assert sum(steps) <= 4 * single
+    assert max(steps) <= single / 4
+    assert _tables(tmp_path / "t.db") == _tables(tmp_path / "ref.db")
+    st.close()
+
+
+def test_a_wallet_listed_while_the_prune_runs_keeps_its_trades(tmp_path):
+    """A batch fills over several reads, so a step deletes rows read steps earlier, the recorder's loop going on in
+    between: the delete asks the lists again."""
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)
+    st.WRITE_BATCH, st.PRUNE_SCAN = 100, 50
+    cut = T0 + 2 * 3600
+    u7 = st._q("SELECT COUNT(*) FROM trades WHERE user='U7' AND ts<?", (cut,))[0][0]
+    steps = st.prune_steps(cut)
+    next(steps)  # the coverage
+    next(steps)  # the first read: the oldest 50 trades, U7's first among them; nothing deleted yet
+    st.list_add("U7", "watch_deployer")
+    for _ in steps:
+        pass
+    assert u7 > 0 and st._q("SELECT COUNT(*) FROM trades WHERE user='U7' AND ts<?", (cut,))[0][0] == u7
     assert _old_trades(st, cut) == 0
     st.close()
 

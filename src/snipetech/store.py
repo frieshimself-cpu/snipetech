@@ -961,13 +961,27 @@ class Store:
 
     # -- maintenance -----------------------------------------------------------
 
-    # what prune drops, table by table: rows older than the cutoff that no list references
+    # what prune drops, table by table: rows older than the cutoff that no list references, and the order the prune
+    # walks the table in: by its ts index, or by rowid for seen_sigs, which has none (an index built on a big table holds
+    # the write lock for the whole build: a one-off at a quiet hour, never a line in SCHEMA)
     _PRUNED = (
-        ("trades", "ts<? AND user NOT IN (SELECT address FROM lists)"),
-        ("launches", "ts<? AND user NOT IN (SELECT address FROM lists) AND creator NOT IN (SELECT address FROM lists)"),
-        ("seen_sigs", "ts<?"),
-        ("ftrades", "ts<? AND user NOT IN (SELECT address FROM lists)"),
+        ("trades", "ts", "ts<? AND user NOT IN (SELECT address FROM lists)"),
+        (
+            "launches",
+            "ts",
+            "ts<? AND user NOT IN (SELECT address FROM lists) AND creator NOT IN (SELECT address FROM lists)",
+        ),
+        ("seen_sigs", "rowid", "ts<?"),
+        ("ftrades", "ts", "ts<? AND user NOT IN (SELECT address FROM lists)"),
     )
+    # The rows one step of the prune reads, after the last row the step before it read. The first batched prune (7 Nov)
+    # searched again from the oldest row for every batch: across every old row a list protects, a pile that grows every
+    # day a wallet stays listed (10 listed wallets made a tenth of the trades: ~250k rows a day), and through most of
+    # seen_sigs, whose old rows a backfill scatters. Measured 7 Nov on a 2.4M-trade copy, an hour's prune took 43 s of
+    # the recorder's loop beside 199k protected trades and 19 min beside 4M, 6 s a step; walking on, 17 and 27 s, 0.1 s
+    # a step (p99), most of it the WAL checkpoints its commits run; the single DELETE took 4 and 10 s, holding the lock.
+    # 5,000 rows are read there in 7-11 ms.
+    PRUNE_SCAN = 5000
 
     def prune(self, before_ts: int) -> dict[str, int]:
         """Drop trades/launches older than `before_ts` that no list references (all of `prune_steps`)."""
@@ -977,16 +991,17 @@ class Store:
         return counts
 
     def prune_steps(self, before_ts: int) -> Iterator[dict[str, int]]:
-        """`prune` one short transaction at a time, yielding the counts so far after each: the tape recorder runs its
+        """`prune` one short step at a time, yielding the counts so far after each: the tape recorder runs its
         hourly prune between its own writes. In one transaction it held the write lock for as long as the deletes took
         and its event loop waited with it: on a 2.4M-trade copy (7 Nov) another writer waited 2.0 s while the oldest
         hour went (89k trades), 12.4 s for six hours; in batches of 500, 0.05 and 0.08 s at most.
 
         The tape coverage is clipped first, so a span never claims trades already deleted: a reader mid-prune, or
         after a prune that died, sees the tape start at the cutoff and some older rows still there, outside every span
-        (the labs and the paper test read the tape inside its spans). Then each table's old rows go in batches of
-        WRITE_BATCH: their rowids are read outside any transaction (seen_sigs has no index on ts), then deleted by rowid
-        with the same condition, so a row a list protects in the meantime stays. The next prune finishes the rest."""
+        (the labs and the paper test read the tape inside its spans). Then each table is walked once, as the single
+        DELETE walked it: a step reads at most PRUNE_SCAN rows, after the last row the step before it read and outside
+        any transaction, and deletes at most WRITE_BATCH of the rows that may go, by rowid and with the same condition,
+        so a row a list protects in the meantime stays. The next prune finishes the rest."""
         protected = len({r[0] for r in self._q("SELECT address FROM lists")})
 
         def clip():  # the tape only covers what is still stored: drop / clip recorded spans before the cutoff
@@ -1000,24 +1015,60 @@ class Store:
         self._write(clip)
         counts = {"trades": 0, "launches": 0, "protected_addresses": protected}
         yield counts
-        for table, where in self._PRUNED:
-            while True:
-                rows = self._q(f"SELECT rowid FROM {table} WHERE {where} LIMIT ?", (before_ts, self.WRITE_BATCH))
-                ids = [r[0] for r in rows]
-                if not ids:
-                    break
-                out: dict[str, int] = {}
-
-                def delete(ids=ids, out=out, table=table, where=where):
-                    sql = f"DELETE FROM {table} WHERE rowid IN ({','.join('?' * len(ids))}) AND {where}"
-                    out["n"] = self.conn.execute(sql, (*ids, before_ts)).rowcount
-
-                self._write(delete)
-                if table in counts:
-                    counts[table] += out["n"]
+        for table, by, where in self._PRUNED:
+            found = self._prune_scan(table, by, where, before_ts)
+            doomed: list[int] = []
+            more = True
+            while more or doomed:  # a step: one read, one delete, at most
+                if more and len(doomed) < self.WRITE_BATCH:
+                    ids = next(found, None)
+                    more = ids is not None
+                    doomed += ids or []
+                if doomed and (len(doomed) >= self.WRITE_BATCH or not more):
+                    batch, doomed = doomed[: self.WRITE_BATCH], doomed[self.WRITE_BATCH :]
+                    deleted = self._prune_delete(table, where, before_ts, batch)
+                    if table in counts:
+                        counts[table] += deleted
                 yield counts
-                if not out["n"]:  # nothing of the batch could go (a list protects it now): the next prune looks again
-                    break
+
+    def _prune_scan(self, table: str, by: str, where: str, before_ts: int) -> Iterator[list[int]]:
+        """The rowids of `table`'s rows that `where` lets go, one read of at most PRUNE_SCAN rows at a time, each read
+        after the last row the one before it read, so a prune reads each old row once. `by` "ts": the rows older than
+        `before_ts`, by the table's ts index, in (ts, rowid) order; "rowid": the whole table, PRUNE_SCAN rowids a read
+        (no index on ts). Every read is its own statement, no transaction held between them."""
+        n = max(self.PRUNE_SCAN, 1)
+        if by == "rowid":
+            lo = self._q(f"SELECT min(rowid) FROM {table}")[0][0]
+            while lo is not None:
+                hi = min(lo + n - 1, (1 << 63) - 1)  # n rowids, never past sqlite's largest
+                rows = self._q(
+                    f"SELECT rowid FROM {table} WHERE rowid BETWEEN ? AND ? AND {where}", (lo, hi, before_ts)
+                )
+                yield [r[0] for r in rows]
+                lo = self._q(f"SELECT min(rowid) FROM {table} WHERE rowid>?", (hi,))[0][0]  # a gap skipped at once
+            return
+        select = f"SELECT ts, rowid, {where} FROM {table} WHERE"
+        rows = self._q(f"{select} ts<? ORDER BY ts, rowid LIMIT ?", (before_ts, before_ts, n))
+        while rows:
+            yield [rowid for _ts, rowid, may_go in rows if may_go]
+            ts, rowid = rows[-1][:2]
+            # the rest of the last row's second first: sqlite seeks a (ts, rowid) > (?, ?) on ts alone and would read
+            # every row of that second again each step (checked 7 Nov; trades without a block time all have ts 0)
+            rows = self._q(f"{select} ts=? AND rowid>? ORDER BY rowid LIMIT ?", (before_ts, ts, rowid, n))
+            if len(rows) < n:
+                rows += self._q(f"{select} ts>? AND ts<? ORDER BY ts, rowid LIMIT ?",
+                                (before_ts, ts, before_ts, n - len(rows)))  # fmt: skip
+
+    def _prune_delete(self, table: str, where: str, before_ts: int, ids: list[int]) -> int:
+        """Deletes the rows `ids` of `table` that `where` still lets go, as one transaction; returns how many went."""
+        out: dict[str, int] = {}
+
+        def delete():
+            sql = f"DELETE FROM {table} WHERE rowid IN ({','.join('?' * len(ids))}) AND {where}"
+            out["n"] = self.conn.execute(sql, (*ids, before_ts)).rowcount
+
+        self._write(delete)
+        return out["n"]
 
 
 # -- phase 5: events and edges (appended so earlier line numbers stay put) --------------------------
