@@ -1,13 +1,18 @@
-"""Every lab scores a rule at what it costs live (research round 1, 7 Nov: "P1: score every lab at live cost and with
-OKTech's watch delay", docs/research/2026-11-07-round-1.md).
+"""Every lab scores a rule at what it costs live and sells it the way OKTech sells (research round 1, 7 Nov: "P1: score
+every lab at live cost and with OKTech's watch delay", docs/research/2026-11-07-round-1.md).
 
-Every lab of round 1 charged the lab's flat default of 0.0035 SOL a transaction, 0.007 a round trip, against about
-0.009 live (six job records read; none set --per-tx, and the research round's lab step never sets one), so every mean
-was 0.002 SOL a trade too kind, 0.003 with a partial take profit. The never-stops loop trades whatever passes paper
+Cost: every lab of round 1 charged the lab's flat default of 0.0035 SOL a transaction, 0.007 a round trip, against
+about 0.009 live (six job records read; none set --per-tx, and the research round's lab step never sets one), so every
+mean was 0.002 SOL a trade too kind, 0.003 with a partial take profit. The never-stops loop trades whatever passes paper
 without asking again, so a lab that flatters a rule is a live risk. `snipetech lab`, the command the agents' hypothesis
 labs and the research rounds run, now charges what `paper freeze`, the qualify lab and the strategy search charge: the
 measured cost of a transaction (qualify.run.lab_tx_cost: half the low bid's measured round trip, the flat 0.0035
 until it is measured). --per-tx still overrides it, and the output says which cost it charged and where it came from.
+
+Watch: OKTech starts watching a coin about 1.3 s after its buy lands (the 6 Nov copy fills replay right with 1.25-1.4 s,
+tests/test_lab_replay.py), but the grid's exits on launch-type rules acted from the buy: the chosen exit of round 1's
+10/10/1 hunt showed watch_secs 0, and replaying hunt buys with a 2 s delay cost 0 to 0.003 SOL a trade. Every exit on a
+launch, hunt, whale or burst rule now waits the watch delay; copies keep the exits they are given.
 """
 
 import json
@@ -15,8 +20,13 @@ import json
 import pytest
 
 from snipetech import cli
+from snipetech.analysis import paper
+from snipetech.analysis.lab import WATCH_SECS, Trigger, collect, rank
+from snipetech.config import Config
+from snipetech.sim.exits import ExitParams
 from snipetech.store import Store
 
+from .synth import Market, addr
 from .test_lab import NOW
 from .test_lab_hypotheses import HUNT_JSON, _protocol_command, _tape_db
 
@@ -83,3 +93,112 @@ def test_the_lab_text_says_what_a_transaction_cost(tmp_path, capsys):
     assert "0.004 SOL a transaction (0.008 a round trip), measured" in text
     assert cli.main(["--db", str(db), "lab", "--trigger", HUNT_JSON, "--hours", "1", "--per-tx", "0.0045"]) == 0
     assert "0.0045 SOL a transaction (0.009 a round trip), as --per-tx says" in capsys.readouterr().out
+
+
+# -- OKTech's watch delay on launch-type rules ----------------------------------------------------------------------
+
+HUNT = Trigger("hunt", sol=2.0, window=2.0, dev_max=1.0)  # fires on the 2.5 SOL buy of every pause-world coin
+KOL = Trigger("kol", sol=2.0)  # a copy of that same buy: the buyer is a labeled KOL
+LAUNCH_TYPE = [Trigger("launch"), HUNT, Trigger("whale", sol=2.0), Trigger("burst", 3, 1.0, 2.0)]
+# the exit every book sniper runs, one of the grid's too (exit_set): sells after 1 quiet second, at -30 %, at 300 s
+LAB_EXIT = ExitParams(take_profit=0, stop_loss=0.3, max_hold_secs=300, sell_on_dev_sell=False, stale_secs=1.0)
+
+
+def _pause_world(store: Store, n: int = 24) -> None:
+    """A coin a minute, 150 slots apart, so the lab measures the tape's 0.4 s a slot: the creator's 0.5 SOL, a labeled
+    KOL's 2.5 SOL a slot later (a 2 SOL hunt fires on it), three buys of 0.3 SOL in the next slot (a hunt buy lands
+    behind them, +3@1), then nothing for 1.2 s, six buys of 0.4 SOL 0.4 s apart, and a long quiet before they sell."""
+    for i in range(n):
+        m = Market(store, addr(f"pw-{i}"), addr(f"pw-dev-{i}"), NOW - 3000 + i * 60, 70_000_000 + i * 150)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        m.buy(addr(f"pw-kol-{i}"), 2.5, 1)
+        for k in range(3):
+            m.buy(addr(f"pw-early-{i}-{k}"), 0.3, 2)
+        for k in range(6):
+            m.buy(addr(f"pw-late-{i}-{k}"), 0.4, 5 + k)
+        for k in range(6):
+            m.sell(addr(f"pw-late-{i}-{k}"), 1.0, 100 + k)
+        m.commit()
+        store.set_label(addr(f"pw-kol-{i}"), f"pw-kol-{i}", "kol")
+    store.set_coverage("tape", {"spans": [[NOW - 3100, NOW]]})
+
+
+def _cfg() -> Config:
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    return cfg
+
+
+def test_every_exit_on_a_launch_type_rule_waits_oktechs_watch_delay_and_a_copys_does_not():
+    store = Store(":memory:")
+    _pause_world(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[*LAUNCH_TYPE, KOL],
+                   exits=[LAB_EXIT])  # fmt: skip
+    assert data["slot_secs"] == [pytest.approx(0.4, abs=0.01)]  # the world runs at the tape's slot time
+    assert set(data["kind_exits"]) == {"launch", "hunt", "whale", "burst"}  # never a copy, momentum or event rule
+    ranked = {r["trigger_spec"]["kind"]: r for r in rank(data, _cfg(), top=10, min_train=5)}
+    assert set(ranked) == {"launch", "hunt", "whale", "burst", "kol"}
+    for kind in ("launch", "hunt", "whale", "burst"):  # all four run live through an OKTech launch sniper
+        assert ranked[kind]["exit_params"] == LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}, kind
+        assert ranked[kind]["exit"] == f"{LAB_EXIT.label()} watch{WATCH_SECS:g}s", kind
+    assert ranked["kol"]["exit_params"] == LAB_EXIT.to_dict()  # a copy: the exit as it was given
+    assert WATCH_SECS == 1.3  # OKTech's measured watch delay (6 Nov copy fills: 1.25-1.4 s)
+
+
+def test_an_exit_that_would_fire_inside_the_watch_delay_does_not():
+    """The same buy, the same landing and the same exit. A copy (no watch here) sells at once: the coin is quiet for
+    1.2 s right after the buy, and the 1 s dead exit fires at the buy's own price, for the fees. The hunt's exit waits
+    OKTech's 1.3 s, so that pause never counts; it rides the six buys that follow and sells when they stop."""
+    store = Store(":memory:")
+    _pause_world(store)
+    data = collect(store, _cfg(), 0.2, 1, "+3", landings={"hunt": paper.HUNT_LANDING}, triggers=[HUNT, KOL],
+                   exits=[LAB_EXIT])  # fmt: skip
+    by = {ti: [r for r in data["rows"] if r["trigger"] == ti] for ti in (0, 1)}
+    assert len(by[0]) == len(by[1]) == 24 and {r["landing"] for r in data["rows"]} == {"+3@1"}
+    for hunt, copy in zip(by[0], by[1]):
+        assert hunt["mint"] == copy["mint"]
+        assert copy["pnl"][0] == pytest.approx(-0.012, abs=0.002)  # sold at once: 2.5 % in fees, 2 x 0.0035
+        assert hunt["pnl"][0] > 0.01  # held through the buying that followed
+
+
+def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_now_is_new():
+    """A strategy frozen before the watch delay keeps its id, its exit and its trades: paper strategy ids leave a field
+    at its default out (paper.strategy_id), and the paper test scores every strategy with the exit it was frozen with.
+    The same hunt rule frozen now carries the watch delay, which is a different exit, so it is a strategy of its own,
+    scored with the delay from its own freeze; the old one is never re-keyed or replaced. A copy's exit is unchanged,
+    so a copy frozen now gets the id it had before and is not frozen twice."""
+    store = Store(":memory:")
+    _pause_world(store)
+    old_id = paper.strategy_id(HUNT.__dict__, LAB_EXIT.to_dict(), "+3", 1, 0.2)
+    assert old_id == "0dd52c0607"  # the id this strategy had before the watch delay existed
+    old = {"id": old_id, "label": "frozen before", "trigger": HUNT.__dict__, "exit": LAB_EXIT.to_dict(),
+           "position": "+3", "latency": 1, "buy_sol": 0.2, "per_tx_sol": 0.0035, "from_ts": NOW - 3100,
+           "lab": {"mean": 0.01, "ev_lower": 0.005}}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": [old]})
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[HUNT, KOL],
+                   exits=[LAB_EXIT])  # fmt: skip
+    rep = paper.freeze(store, _cfg(), top=4, position="+6", latency=0, buy_sol=0.2, now=NOW, data=data, only_live=True)
+    (new,) = rep["frozen"]  # the hunt pays here with the delay; the copy, sold at once, does not
+    assert new["exit"]["watch_secs"] == WATCH_SECS and new["id"] == "4f7915097e" != old_id
+    assert [s["id"] for s in rep["kept"]] == [old_id]
+    paper.run(store, _cfg(), now=NOW)
+    strategies = {s["id"]: s for s in store.coverage("paper_strategies")["strategies"]}
+    assert set(strategies) == {old_id, new["id"]}
+    assert strategies[old_id]["exit"] == LAB_EXIT.to_dict()  # its exit as frozen, never rewritten
+    assert len(store.paper_trades(old_id)) == 24  # still scored under its own id
+    (copy,) = [r for r in rank(data, _cfg(), top=10) if r["trigger_spec"]["kind"] == "kol"]
+    assert paper.strategy_id(KOL.__dict__, copy["exit_params"], "+6", 0, 0.2) == "0035d424be"  # its id before
+
+
+def test_the_watch_delay_is_how_oktech_sells_not_a_setting_it_is_sent():
+    """Research tooling only: a hunt strategy frozen with the watch delay gets exactly the OKTech sniper the same
+    strategy got without it, the one the live test would arm (oktech.strategy_sniper reads no watch_secs)."""
+    from snipetech.analysis.lab import watched
+    from snipetech.oktech import strategy_sniper
+
+    def sniper(exit_params: dict):
+        return strategy_sniper({"id": "s", "label": "t", "buy_sol": 0.2, "trigger": HUNT.__dict__, "exit": exit_params},
+                               1, "hunt")  # fmt: skip
+
+    before, now = sniper(LAB_EXIT.to_dict()), sniper(watched(LAB_EXIT).to_dict())
+    assert now.config == before.config and now.summary == before.summary

@@ -63,7 +63,12 @@ LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
     """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
-    so a strategy frozen before it existed keeps its id and is not frozen a second time."""
+    so a strategy frozen before it existed keeps its id and is not frozen a second time.
+
+    Since 7 Nov evening the lab scores every exit of a launch, hunt, whale or burst rule with OKTech's watch delay
+    (lab.kind_exits), so such a rule frozen from then on stores watch_secs 1.3, a field that is set: it is a new
+    strategy with its own id. One frozen before keeps its id, its stored exit (no delay) and its forward trades, and is
+    scored as it was frozen; nothing re-keys or replaces it. A copy's exit did not change, nor did its id."""
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
     later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
