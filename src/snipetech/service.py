@@ -742,7 +742,8 @@ class Service:
         out = []
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             r = await self.rpc.call(
-                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}]
+                "getTokenAccountsByOwner",
+                [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
             )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
@@ -773,7 +774,8 @@ class Service:
         total = 0.0
         for prog in (TOKEN_PROGRAM, TOKEN_2022_PROGRAM):
             r = await self.rpc.call(
-                "getTokenAccountsByOwner", [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}]
+                "getTokenAccountsByOwner",
+                [address, {"programId": prog}, {"encoding": "jsonParsed", "commitment": "confirmed"}],
             )
             for a in r["value"]:
                 info = a["account"]["data"]["parsed"]["info"]
@@ -818,7 +820,9 @@ class Service:
         async def balance() -> float:
             return (await self.rpc.call("getBalance", [address, {"commitment": "processed"}]))["value"] / 1e9
 
-        reason = "time limit: still running (capped; its exits run, but a last buy can be left unsold: check the wallet)"
+        reason = (
+            "time limit: still running (capped; its exits run, but a last buy can be left unsold: check the wallet)"
+        )
         stopped, stop_failed = False, []
         try:
             b0 = await balance()
@@ -912,7 +916,9 @@ class Service:
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
         sniper has been armed for `rearm_after` seconds without a fill (a failed send also spends the shot). Stops
         re-arming once `max_fills` buys have been seen since the cycler started, on the emergency floor, or at the time
-        limit; in every case the snipers are left running so they finish selling."""
+        limit, and the snipers are left running so they finish selling. The owner's /stop flag is read every tick: it
+        ends the run too, and then the snipers this run armed are stopped if the wallet holds nothing (a re-arm one
+        minute later would otherwise undo the /stop that found them idle); a coin held keeps them running to sell it."""
         address = self._check(address)
         if self.stop_flag_set():
             raise SystemExit("the owner's /stop flag is set: /resume first; nothing cycled")
@@ -940,9 +946,37 @@ class Service:
             # ignore_mints: positions no sniper manages (to be sold by hand)
             return await self.open_positions(address, ignore=ignore_mints)
 
+        async def owner_stop() -> str:
+            # nothing held: the snipers this run armed are stopped (a stopped sniper with nothing held strands nothing,
+            # and one left armed can still buy once); a coin held or an unreadable wallet: they keep running to sell
+            try:
+                held = await open_positions()
+            except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
+                log(f"holdings check after /stop failed ({exc})")
+                held = None
+            why = "stopped by the owner's /stop: no more re-arms"
+            if held:
+                return (
+                    f"{why}; a coin is held, so the snipers keep running to sell it (a stopped sniper strands its coin)"
+                )
+            if held is None:
+                return f"{why}; the wallet could not be read, so the snipers are left running (one may hold a coin)"
+            failed = []
+            for i in [i for i in ids if i in armed]:
+                try:
+                    await client.stop(i)
+                    armed.discard(i)
+                except Exception as exc:  # noqa: BLE001 - said in the reason: the owner stops it by hand
+                    failed.append(i)
+                    log(f"stop of {i[:8]} after /stop failed: {exc}")
+            return f"{why}; the wallet holds nothing, so the snipers it armed are stopped" + (
+                f" except {', '.join(failed)} (stop them with /stop again)" if failed else ""
+            )
+
         t0 = time.time()
         reason, restarts = "time limit", 0
         armed_at: dict[str, float] = {}
+        armed: set[str] = set()  # the snipers this run started and has not stopped since
         try:
             b0 = await balance()
             held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
@@ -961,10 +995,14 @@ class Service:
                     await asyncio.sleep(1.0)
                 ans = await client.start(i)
                 armed_at[i] = time.time()
+                armed.add(i)
                 log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
             low = b0
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
+                if self.stop_flag_set():
+                    reason = await owner_stop()
+                    break
                 try:
                     b = await balance()
                     held = await open_positions()
@@ -991,9 +1029,14 @@ class Service:
                     if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after:
                         try:
                             await client.stop(i)
+                            armed.discard(i)
                             await asyncio.sleep(1.5)
+                            if self.stop_flag_set():  # the owner's /stop came in the pause: it wins, the next tick ends
+                                log(f"/stop came while {i[:8]} was being re-armed: left stopped")
+                                break
                             ans = await client.start(i)
                             armed_at[i] = time.time()
+                            armed.add(i)
                             restarts += 1
                             log(f"re-armed {i[:8]} after {since:.0f}s (fills so far {fills}): "
                                 f"{ans.get('task', {}).get('status', ans)}")  # fmt: skip
@@ -1100,8 +1143,11 @@ class Service:
         return {"snipers": out}
 
     async def oktech_strategy(self, strategy_id: str | None, wallet: str, create: bool = False, buy_sol: float | None = None,
-                              max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60) -> dict:  # fmt: skip
-        """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech."""
+                              max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60,
+                              salt: str = "") -> dict:  # fmt: skip
+        """The OKTech sniper for frozen paper strategies (all of them, or one); with `create`, made idle on OKTech.
+        `salt` gives the sniper an externalId of its own (each live test's own sniper: OKTech refuses a second task
+        with the same externalId, and without a salt that id comes from the strategy's settings alone)."""
         from .oktech import strategy_sniper
 
         frozen = self.store.coverage("paper_strategies").get("strategies", [])
@@ -1119,6 +1165,7 @@ class Service:
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue
+                p.salt = salt
                 row = {
                     "id": s["id"],
                     "label": s["label"],

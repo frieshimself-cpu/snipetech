@@ -636,6 +636,145 @@ def test_cycle_reads_holdings_before_touching_any_sniper(monkeypatch):
     store.close()
 
 
+class _CycleClient:
+    """OKTech as the cycler sees it: every start and stop in order; `on_start(n)` runs after the n-th start."""
+
+    def __init__(self, on_start=None):
+        self.calls: list[tuple[str, str]] = []
+        self.on_start = on_start or (lambda n: None)
+
+    async def start(self, i):
+        self.calls.append(("start", i))
+        self.on_start(sum(1 for c in self.calls if c[0] == "start"))
+        return {"task": {"status": "running"}}
+
+    async def stop(self, i):
+        self.calls.append(("stop", i))
+        return {}
+
+    async def tasks(self):
+        return []
+
+    async def close(self):
+        pass
+
+
+def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda secs: None):
+    """The cycler on a fake clock (each sleep moves it, so its one-minute re-arm really comes round), one capped sniper
+    "a", a wallet with 5 SOL that holds a coin while `holds()` says so, and the owner's /stop flag in `flag`."""
+    from snipetech.service import Service
+
+    clock = {"t": 1_794_045_600.0}
+
+    async def sleep(secs):
+        clock["t"] += secs
+        on_sleep(secs)
+
+    class Rpc:
+        async def call(self, method, params):
+            return {"value": 5_000_000_000} if method == "getBalance" else {"value": []}
+
+    store = Store(":memory:")
+    store.add_oktech_sniper(
+        {"id": "a", "kind": "strategy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 1}}
+    )
+    svc = Service(Config(), store=store)
+    svc._rpc = Rpc()
+
+    async def positions(address, ignore=None, unknown=None):
+        return [{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []
+
+    monkeypatch.setattr(svc, "_oktech", lambda: client)
+    monkeypatch.setattr(svc, "stop_flag_set", lambda: flag["stop"])
+    monkeypatch.setattr(svc, "open_positions", positions)
+    monkeypatch.setattr("snipetech.service.asyncio.sleep", sleep)
+    monkeypatch.setattr("snipetech.service.time.time", lambda: clock["t"])
+    return svc, store
+
+
+def test_the_owners_stop_ends_a_cycle_and_disarms_its_sniper(monkeypatch):
+    """/stop must end a live test. The cycler re-arms a spent hunt sniper every minute, so before this a /stop that
+    stopped the sniper was undone by the next re-arm. Now it looks for the flag every tick, never re-arms once it is
+    set, and stops the sniper it armed, since the wallet holds nothing (a stopped sniper with nothing held strands
+    nothing)."""
+    flag = {"stop": False}
+    client = _CycleClient(on_start=lambda n: flag.update(stop=n >= 2))  # /stop comes just after the first re-arm
+    svc, store = _cycle_svc(monkeypatch, client, flag)
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a"), ("start", "a"), ("stop", "a")]
+    assert "/stop" in rep["reason"] and rep["restarts"] == 1
+    store.close()
+
+
+def test_the_owners_stop_leaves_a_sniper_that_holds_a_coin_running(monkeypatch):
+    """Rule 1: a stopped sniper strands its coin. On /stop with a coin held, the cycler stops re-arming and leaves the
+    sniper running to sell it."""
+    flag = {"stop": False}
+    bought = {"yes": False}
+
+    def second_start(n):
+        flag["stop"] = bought["yes"] = n >= 2  # the re-armed sniper buys, then the owner sends /stop
+
+    client = _CycleClient(on_start=second_start)
+    svc, store = _cycle_svc(monkeypatch, client, flag, holds=lambda: bought["yes"])
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a"), ("start", "a")]
+    assert "/stop" in rep["reason"] and "sell" in rep["reason"]
+    store.close()
+
+
+def test_a_stop_during_a_rearm_is_never_undone_by_its_start(monkeypatch):
+    """The re-arm stops the sniper, waits 1.5 s and starts it: a /stop inside that pause must win, or the sniper the
+    owner's /stop just found idle would be armed again behind it."""
+    flag = {"stop": False}
+    client = _CycleClient()
+    svc, store = _cycle_svc(
+        monkeypatch, client, flag, on_sleep=lambda secs: flag.update(stop=secs == 1.5 or flag["stop"])
+    )
+    rep = asyncio.run(svc.oktech_cycle(["a"], W6, 1.0, 120))
+    assert client.calls == [("stop", "a"), ("start", "a"), ("stop", "a")]
+    assert "/stop" in rep["reason"] and rep["restarts"] == 0
+    store.close()
+
+
+HUNT_STRATEGY = {"id": "a1b2c3d4e5", "label": "OKTech hunt: >= 2 SOL bought within 1 s of the launch",
+                 "trigger": {"kind": "hunt", "sol": 2.0, "window": 1.0, "dev_max": 1.0},
+                 "exit": {"stop_loss": 0.3, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
+
+
+def test_a_salt_gives_each_live_test_its_own_strategy_sniper(monkeypatch):
+    """OKTech refuses a second task with the same externalId (409, and the body carries no task), and a strategy
+    sniper's externalId comes from its settings: without a salt a second live test of one strategy could never create
+    its sniper. Without one the id stays what the command line has always sent."""
+    from snipetech.service import Service
+
+    seen: list[str] = []
+
+    class Client:
+        async def create(self, name, config, wallet=None, external_id=None, start=False):
+            seen.append(external_id)
+            return {"task": {"id": f"task{len(seen)}", "status": "idle"}}
+
+        async def close(self):
+            pass
+
+    store = Store(":memory:")
+    store.set_coverage("paper_strategies", {"strategies": [HUNT_STRATEGY]})
+    svc = Service(Config(), store=store)
+    monkeypatch.setattr(svc, "_oktech", lambda: Client())
+
+    def create(**kw):
+        return asyncio.run(svc.oktech_strategy("a1b2c3d4e5", "SNIPER", create=True, buy_sol=0.2, max_buys=1, **kw))
+
+    first, second = create(salt="t1"), create(salt="t2")
+    create()  # no salt: the id the command line has always sent
+    assert seen[0].endswith(":t1") and seen[1].endswith(":t2") and seen[0].rsplit(":", 1)[0] == seen[2]
+    assert [r["snipers"][0]["oktech_id"] for r in (first, second)] == ["task1", "task2"]
+    assert first["snipers"][0]["config"]["totalSnipes"] == 1 and first["snipers"][0]["config"]["mode"] == "hunt"
+    assert {r["external_id"] for r in store.oktech_snipers()} == set(seen)
+    store.close()
+
+
 def test_task_actions_continue_past_a_failing_id_and_delete_retires_a_missing_row(monkeypatch):
     import asyncio
 
@@ -972,7 +1111,9 @@ def test_guard_watch_only_restarts_the_watch_without_starting_anything(tmp_path,
 
 def test_docs_answers_that_are_not_a_json_object_do_not_crash():
     async def go(resp):
-        client = OktechClient("https://oktech.test/api/sniper-api/v1", key="oks_k", transport=httpx.MockTransport(lambda r: resp))
+        client = OktechClient(
+            "https://oktech.test/api/sniper-api/v1", key="oks_k", transport=httpx.MockTransport(lambda r: resp)
+        )
         try:
             return await client.docs()
         finally:
