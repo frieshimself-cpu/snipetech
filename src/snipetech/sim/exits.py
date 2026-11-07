@@ -34,6 +34,10 @@ class ExitParams:
     watch_secs: float = 0.0
     # sell when the copied wallet sells at least this share of its holdings in one go (ctbotCopyExit); 0 = off
     copy_exit_pct: float = 0.0
+    # OKTech's migration sell (autoSell.migrationSell): sell this share of what is held once the coin leaves its pump.fun
+    # curve, `migration_sell_delay` s after that (the app takes 100 ms - 1 min); 0 = off. It has never fired live.
+    migration_sell_frac: float = 0.0
+    migration_sell_delay: float = 0.0
 
     @classmethod
     def from_config(cls, ec) -> "ExitParams":
@@ -58,6 +62,9 @@ class ExitParams:
             act = f">{self.trailing_activation:.0%}" if self.trailing_activation > 0 else ""
             parts.append(f"TRAIL{self.trailing_stop:.0%}{act}")
         parts.append(f"hold{self.max_hold_secs:g}s")
+        if self.migration_sell_frac > 0:
+            delay = f"+{self.migration_sell_delay:g}s" if self.migration_sell_delay > 0 else ""
+            parts.append(f"MIGSELL{self.migration_sell_frac:.0%}{delay}")
         if self.sell_on_dev_sell:
             parts.append("devexit")
         if self.copy_exit_pct > 0:
@@ -124,6 +131,7 @@ class Prepared:
     leader_frac: np.ndarray | None = None  # share of its holdings the copied wallet sold at each state (0 = no sale)
     rt: np.ndarray | None = None  # seconds after the entry of each state, from the slots at the path's slot time
     latency: int = 1  # slots between an exit firing and its sell landing
+    off_curve: np.ndarray | None = None  # states e..n-1: True once off the pump.fun curve (None = unknown)
 
     @property
     def entry_ts(self) -> float:
@@ -159,6 +167,7 @@ def prepare(
     if exit_latency_slots == 0:
         exec_idx = np.arange(e, path.n)
     fixed = spent * costs.platform_fee_bps / 10_000.0 + costs.per_tx_lamports
+    oc = getattr(path, "off_curve", None)  # paths built by hand carry none
     return Prepared(
         path=path,
         e=e,
@@ -174,6 +183,7 @@ def prepare(
         leader_frac=None if leader_frac is None else np.asarray(leader_frac, dtype=np.float64)[e:],
         rt=(path.slot[e:] - path.slot[e]) * float(getattr(path, "slot_secs", DEFAULT_SLOT_SECS) or DEFAULT_SLOT_SECS),
         latency=int(exit_latency_slots),
+        off_curve=oc[e:] if oc is not None and len(oc) == path.n else None,
     )
 
 
@@ -205,12 +215,39 @@ def _first(mask: np.ndarray, lo: int, hi: int) -> int | None:
     return lo + int(np.argmax(seg))
 
 
+def _migration_sale(
+    p: Prepared, ex: ExitParams, rt: np.ndarray, watch: float, last_rel: int
+) -> tuple[float, int] | None:
+    """OKTech's migration sell on this position: (seconds after the entry it fires at, the state it sells at), or None.
+
+    It fires `ex.migration_sell_delay` s after the state at which the coin left its pump.fun curve, never inside the
+    watch delay (like a price exit, it then fires as the watch starts), and sells where a sell fired at that moment
+    lands: the `exec_idx` of the state then in effect. None when it is off, when the path does not say where the coin
+    left its curve, when the coin was already off it at the entry (bought on PumpSwap: it does not migrate while held),
+    or when the timer has sold everything first. No migration sell has fired on a live trade yet (playbook fact 8):
+    that OKTech sees the migration at the state the curve completed in, and that its sell lands like the other exits'
+    sells (a slot after it fires, before that slot's trades), are assumptions."""
+    oc = p.off_curve
+    if ex.migration_sell_frac <= 0 or oc is None or not len(oc) or oc[0]:
+        return None
+    j = _first(oc, 1, last_rel)
+    if j is None:
+        return None
+    at = max(float(rt[j]) + max(float(ex.migration_sell_delay), 0.0), watch)
+    k = int(np.searchsorted(rt, at, side="right")) - 1  # the state in effect when it fires
+    return (at, int(p.exec_idx[k])) if k <= last_rel else None
+
+
 def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = None) -> SimResult:
     """Simulate holding the prepared position under exit rules `ex`.
 
     With `ex.watch_secs` the seller starts watching that long after the entry: price and copy exits are checked from
     the state then in effect, and a pause counts only when its dead exit would fire after the watch starts (OKTech on
-    6 Nov ignored a 1.7 s pause that began 0.2 s after a buy, and sold 1.5-2.4 s after its buys on later pauses)."""
+    6 Nov ignored a 1.7 s pause that began 0.2 s after a buy, and sold 1.5-2.4 s after its buys on later pauses).
+
+    With `ex.migration_sell_frac` it also sells that share of what it holds `ex.migration_sell_delay` s after the coin
+    leaves its pump.fun curve while held (OKTech's migration sell, `_migration_sale`); the rest stays with the other
+    exits."""
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
@@ -256,13 +293,8 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         if t is not None:
             triggers["stale"] = t
 
-    proceeds = 0.0
-    sells = 0
-    held = p.held
-    reason = "time"
-    exit_abs = p.e + last_rel
-    tx_costs = p.fixed_cost
     entry_slot = int(path.slot[p.e])
+    end_rel = deadline - p.entry_ts  # when the timer fires, in seconds after the entry
 
     def lands(fires_at: float) -> int:
         """The slot a sell lands in when its exit fires `fires_at` s after the entry."""
@@ -271,23 +303,21 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     def fires_at(why: str, t_rel: int) -> float:
         return float(rt[t_rel]) + ex.stale_secs if why == "stale" else max(float(rt[t_rel]), watch)
 
-    exit_slot = lands(deadline - p.entry_ts)
-
     def sell(abs_idx: int, amount: float, held_now: float) -> float:
         gross = float(path.sell_gross(abs_idx, amount, held_now))
         net = gross * (1 - path.fee_bps[abs_idx] / 10_000.0)
         return net - net * costs.platform_fee_bps / 10_000.0
 
+    # The sells in the order they fire: (exit, seconds after the entry it fires at, the state it sells at, the slot it
+    # lands in, the share of what is held then). The last one sells all that is left.
+    sales: list[tuple[str, float, int, int, float]] = []
     if triggers:
         reason, t_rel = min(triggers.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
         exec_abs = p.e + t_rel if reason == "stale" else int(p.exec_idx[t_rel])
-        exit_slot = lands(fires_at(reason, t_rel))
+        at = fires_at(reason, t_rel)
         if reason == "take_profit" and ex.tp_sell_fraction < 1.0:
-            part = held * ex.tp_sell_fraction
-            proceeds += sell(exec_abs, part, held)
-            tx_costs += costs.per_tx_lamports
-            sells += 1
-            held -= part
+            sales.append(("take_profit", at, exec_abs, lands(at), ex.tp_sell_fraction))
+            held = p.held - p.held * ex.tp_sell_fraction
             # The remainder rides: trailing / stop / dev-exit / time, valued on what is left.
             rest_basis = basis * (held / p.held)
             start_rel = exec_abs - p.e
@@ -317,18 +347,34 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
                     more["stale"] = t
             if more:
                 reason2, t2 = min(more.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
-                exit_abs = p.e + t2 if reason2 == "stale" else int(p.exec_idx[t2])
-                reason = f"take_profit+{reason2}"
-                exit_slot = lands(fires_at(reason2, t2))
+                at2 = fires_at(reason2, t2)
+                sales.append((reason2, at2, p.e + t2 if reason2 == "stale" else int(p.exec_idx[t2]), lands(at2), 1.0))
             else:
-                exit_abs = max(p.e + last_rel, exec_abs)
-                reason = "take_profit+time"
-                exit_slot = max(exit_slot, lands(deadline - p.entry_ts))
+                sales.append(("time", max(at, end_rel), max(p.e + last_rel, exec_abs), max(lands(at), lands(end_rel)),
+                              1.0))  # fmt: skip
         else:
-            exit_abs = exec_abs
-    proceeds += sell(exit_abs, held, held)
-    tx_costs += costs.per_tx_lamports
-    sells += 1
+            sales.append((reason, at, exec_abs, lands(at), 1.0))
+    else:
+        sales.append(("time", end_rel, p.e + last_rel, lands(end_rel), 1.0))
+    mig = _migration_sale(p, ex, rt, watch, last_rel)
+    if mig is not None:
+        # it goes in before the first sell that fires after it (one firing at the same moment goes first). A share
+        # sold changes no other exit's trigger: each compares value with cost, and both shrink together. Selling it
+        # all, it is the last sell.
+        i = next((k for k, s in enumerate(sales) if s[1] > mig[0]), None)
+        if i is not None:
+            sale = ("migration_sell", mig[0], mig[1], lands(mig[0]), ex.migration_sell_frac)
+            sales[i:] = [sale] + (sales[i:] if ex.migration_sell_frac < 1.0 else [])
+
+    proceeds, held, tx_costs = 0.0, p.held, p.fixed_cost
+    for _why, _at, at_abs, _slot, share in sales:
+        amount = held if share >= 1.0 else held * share
+        proceeds += sell(at_abs, amount, held)
+        tx_costs += costs.per_tx_lamports
+        held -= amount
+    sells = len(sales)
+    reason = "+".join(s[0] for s in sales)
+    exit_abs, exit_slot = sales[-1][2], sales[-1][3]
 
     cost = p.spent + tx_costs
     pnl = proceeds - cost

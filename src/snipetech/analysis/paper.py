@@ -63,7 +63,9 @@ LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
     """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
     so a strategy frozen before it existed keeps its id and is not frozen a second time."""
-    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0}  # exit fields added on 6 Nov evening, at their defaults
+    # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
+    # sell (7 Nov)
+    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
     later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
