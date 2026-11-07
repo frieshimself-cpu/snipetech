@@ -24,7 +24,7 @@ flowchart LR
   T --> D
   D --> C[(candidates)]
 
-  C --> Q[qualify<br/>gates at the measured landing<br/>one lab at a time]
+  C --> Q[qualify<br/>gates where copies land<br/>and on the tape after the pick<br/>one lab at a time]
   T --> Q
   E --> Q
   Q --> V[(verdicts)]
@@ -48,6 +48,26 @@ flowchart LR
 Documents: [[roadmap]] (where we stand), [[live-recipe]] (every live test), the design in
 `superpowers/specs/2026-11-06-learning-loop-design.md`, the plans under `superpowers/plans/`, [[birdeye]], [[jev]],
 [[oktech-features]], [[oktech-settings]]. Live state: the dashboard at `/dash` on the server (phase 1, task 6).
+
+## Which wallets the book may copy: verdicts scored where copies land, and checked after the pick (7 Nov)
+
+Research round 2 found that copy verdicts did not carry forward: the 27 wallets the verdicts and the 14:00 search rated
+positive lost 0.0147 SOL a copy on the tape recorded after their verdicts (257 copies), after making +0.063 a copy in
+the 6 h before them. The verdicts caught hot streaks that then stopped. So the qualify stage now asks three more things
+of a wallet before the book may copy it. First, its copies are scored where live copies land: behind the 3rd buy after
+the leader's, whatever slot that buy is in ("+3x"), not up to six trades behind it inside the leader's own slot ("+6"),
+which put a leader alone in its slot right behind its own buy. Only a worse landing measured live moves it, never a
+closer one. The exit is the one OKTech runs: sell after 1 s without a trade, at -30 %, after 300 s, or when the leader
+sells half its bag. Second, a wallet with 10 % or more of its first buys in a coin's create slot is not copied: two of
+the search's best rows were such artifacts. Third, the forward check: a wallet must also pass on its own copies after it
+was first picked, at least 20 of them over at least 6 h of later tape, with a lower bound above 0. Copies that lose
+there retire it. Until then it is "forward pending" and not copied; 16 of 24 verdict wallets never bought again within
+9-13 h. Each verdict carries these numbers (`forward`, `create_slot`). Nothing in the book changed: it still copies only
+qualified wallets. A wallet it copied before these rules is not stopped by them: its verdict stays the one the book
+armed it on and says it no longer qualifies (`kept_armed`); whether it goes is the owner's decision. The measure stage
+now records, for each live copy, where on its curve the leader bought (`fills.leader_progress`), next to the trades
+behind and the price gap, so live landings can be read by curve progress (7aPo3n, buying at 79-93 %, was copied 0-1
+trades behind).
 
 ## One database, many writers: every write is a short transaction
 

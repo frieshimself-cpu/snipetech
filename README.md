@@ -290,10 +290,15 @@ coin held, the tape stalled). At the config's 15 $ a day and 2 $ a turn, the ext
 winners, your tracked list, SolanaTracker's 90- and 30-day boards, Birdeye's gainers and hot-coin top traders,
 Vybe's 30-day board, and the first buyers of coins that ran 5× within ten minutes. Platform wallets and flagged bots
 are banned, a failing source is reported and skipped, and each source has its own budget. `snipetech qualify run`
-(every 30 min) takes the candidates whose review is due, labels them `cand`, runs **one** by-wallet lab at the
-`[qualify] landing_pos` (+6) and writes a verdict per wallet: `qualified` (history, venue, tape n and lower bound,
-crowding and relationship gates all passed; reviewed daily), `candidate` (not enough evidence yet; 72 h) or
-`retired` (loses, trades elsewhere, bot pace, or tied to dev teams; a week). A lab runs at most once per
+(every 30 min) takes the candidates whose review is due, labels them `cand`, runs **one** by-wallet lab where live
+copies land (`+3x`: behind the 3rd buy after the leader's, counted across slots; further back only when the measured
+landing or `[qualify] landing_pos` says so) and writes a verdict per wallet: `qualified` (history, venue, tape n and
+lower bound, crowding, relationship and create-slot gates all passed, and its own copies after it was first picked
+too: 20+ over 6+ h, lower bound above 0; reviewed daily), `candidate` (not enough evidence yet, 72 h; "forward
+pending" while it waits for those later copies, reviewed daily) or `retired` (loses, loses after its pick, buys in
+create slots, trades elsewhere, bot pace, or tied to dev teams; a week). A wallet the book copied before these rules
+(7 Nov) keeps the verdict it was armed on while it is copied, and its verdict says it no longer qualifies
+(`kept_armed`): the owner decides. docs/architecture.md has why. A lab runs at most once per
 `lab_interval_h` and never beside another lab: every lab on the box takes the same `lab.lock`, so the daily job,
 an ops job and the qualify timer queue instead of colliding. That one lab uses `[lab] workers` cores (auto: all but
 two, at most 12), each worker reading the database read-only, with exactly the results of one core. When `remote
@@ -310,9 +315,11 @@ sudo systemctl enable --now snipetech-discover.timer snipetech-qualify.timer sni
 **Measure (phase 3).** `snipetech measure run` (every 5 min) turns every buy and sell of the book wallet into a
 `fills` row audited from the chain and the tape: position in the slot, the copied wallet's buy and how many trades
 and what price gap we landed behind it, priority fee, tip and compute units from the transaction, PnL per round trip
-(FIFO, partial sells), and failed sends as rows of pure cost. From those it keeps `bid_model` (what each bid arm
-buys: position, gap, fee, failures) and `wallet_live` (live expectancy per copied wallet, 7-day half-life); once an
-arm has 30 fills its p75 position becomes the landing the qualify lab measures at, so paper and live agree. `measure
+(FIFO, partial sells), and failed sends as rows of pure cost. Each copy buy also records where on its curve the copied
+wallet bought (`leader_progress`), and every run reports the landings by that. From those it keeps `bid_model` (what
+each bid arm buys: position, gap, fee, failures) and `wallet_live` (live expectancy per copied wallet, 7-day
+half-life); once an arm has 30 fills, the 75th percentile of the buys we landed behind becomes the landing the labs
+measure at when it is further back, so paper and live agree. `measure
 backfill --since <unix> --until <unix>` replays a past window (the 6 Nov copy test). The operator reads it all
 with `read_fills`.
 
