@@ -249,6 +249,91 @@ def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
         assert words in ANALYST_SYSTEM, words
 
 
+def test_an_analyst_turn_records_when_it_ran_for_the_cadence(env):
+    """operator/analyst.last is written once an analyst turn ran; a post-mortem, an operator round or an analyst turn
+    the API refused never moves it (the next round tries again)."""
+    from snipetech.operator.gate import last_analyst_ts
+
+    def ok():
+        return _scripted(([{"type": "text", "text": "ok"}], "end_turn"))[0]
+
+    _run(env, Decision(True, "operator", ["job ended: j1"]), ok())
+    _run(env, Decision(True, "postmortem", ["post-mortem due: 5 new live round trips"]), ok())
+    assert not env["paths"].analyst_last.exists()
+
+    def refused(request):
+        return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+
+    _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), refused)
+    assert not env["paths"].analyst_last.exists()
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), ok())
+    assert last_analyst_ts(env["paths"], NOW) == NOW
+
+
+def ADD_UPDATE(name):  # the model's call that appends this turn's update to `name`
+    return [{"type": "tool_use", "id": "u1", "name": "write_report",
+             "input": {"name": name, "text": "## Update 01:00 UTC\nNothing new since the morning.", "append": True}}]  # fmt: skip
+
+
+def test_an_analysis_after_the_days_report_appends_a_dated_update_to_it(env):
+    """The day's report holds the morning's analysis: a later analyst turn is told to read it and append its update,
+    and the report keeps the morning's text."""
+    report = env["paths"].report("analyst-2026-11-06")
+    report.write_text("# analyst 2026-11-06\n\nThe morning's shortlist.\n")
+    handler, requests = _scripted(
+        (ADD_UPDATE("analyst-2026-11-06"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
+    )
+    out = _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert out["stopped"] == "end_turn" and "read_file operator/analyst-2026-11-06.md" in content
+    assert "append=true" in content and "Write the day's report" not in content
+    assert (
+        report.read_text()
+        == "# analyst 2026-11-06\n\nThe morning's shortlist.\n\n## Update 01:00 UTC\nNothing new since the morning.\n"
+    )
+
+
+def test_before_the_days_analysis_the_update_goes_to_yesterdays_report(env):
+    """01:00, the cadence is due, today's report does not exist yet: the update goes to yesterday's report, so the
+    analysis after 06:00 (after the overnight research) still writes the day's report; no stub takes its place."""
+    env["paths"].report("analyst-2026-11-05").write_text("# analyst 2026-11-05\n")
+    handler, requests = _scripted(
+        (ADD_UPDATE("analyst-2026-11-05"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
+    )
+    _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
+    assert "read_file operator/analyst-2026-11-05.md" in requests[0]["messages"][0]["content"]
+    assert env["paths"].report("analyst-2026-11-05").read_text().endswith("Nothing new since the morning.\n")
+    assert not env["paths"].report("analyst-2026-11-06").exists() and env["paths"].analyst_last.exists()
+
+
+def test_the_daily_analysis_still_writes_the_days_report(env):
+    handler, requests = _scripted(([{"type": "text", "text": "no report"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert "Write the day's report" in content and "append=true" not in content
+    assert "no report was written by the model" in env["paths"].report("analyst-2026-11-06").read_text()
+
+
+def test_the_turn_is_told_its_ceiling(env):
+    """With the owner's /budget the turn has more room; the model is told where the round stops so that it keeps the
+    last calls for the report and the note instead of being cut off before them."""
+    from snipetech.operator.budget_switch import set_budget
+
+    set_budget(env["paths"], env["cfg"], {"daily_usd": 200, "turn_usd": 6, "max_tool_calls": 40}, "telegram", NOW)
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    assert (
+        "This turn stops at 40 tool calls or 6 $ (0.00 $ of the day's 200 $ spent)"
+        in requests[0]["messages"][0]["content"]
+    )
+
+
+def test_the_analyst_is_told_to_append_its_update_when_the_days_report_exists():
+    for words in ("today's report", "append=true", "never replace", "what changed since the last analysis",
+                  "the hypothesis", "the next test", "## Update"):  # fmt: skip
+        assert words in ANALYST_SYSTEM, words
+
+
 def test_runner_is_closed_after_the_turn(env, monkeypatch):
     """Ending the turn without closing the SDK runner left an async generator for the GC: every round logged
     'generator didn't stop after athrow()' on the server. The turn closes it itself."""

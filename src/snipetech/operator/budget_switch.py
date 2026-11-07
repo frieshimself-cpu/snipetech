@@ -169,7 +169,7 @@ def _number(word: str) -> float:
 def parse_budget(words: list[str]) -> dict[str, float]:
     """`200`, `200 turn 4 calls 30 every 3`, `turn 4`: the values named. Dollars a day given (first, or after "daily")
     bring the work-harder profile for every value not named, the turn cut to the day when the day is smaller. A word
-    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log again."""
+    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log."""
     rest, values = [w.lower() for w in words], {}
     try:
         values["daily_usd"] = _number(rest[0])

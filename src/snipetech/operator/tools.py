@@ -340,13 +340,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))
 
+    written: set[str] = set()  # the reports this turn wrote: it may redo its own, never an earlier turn's analysis
+
     @beta_async_tool
-    async def write_report(name: str, text: str) -> str:
-        """Write a markdown report into operator/ (the analyst's daily output, e.g. name "analyst-2026-11-06").
+    async def write_report(name: str, text: str, append: bool = False) -> str:
+        """Write a markdown report into operator/ (the analyst's daily output, e.g. name "analyst-2026-11-06"), or
+        with append add the text at the end of it. An analyst report an earlier turn wrote is never replaced: an
+        analysis between the daily ones reads it and appends its dated update.
 
         Args:
             name: A plain file name without extension or path.
             text: Markdown.
+            append: Add the text at the end of the report (created when missing) instead of replacing it.
         """
         try:
             p = paths.report(name)
@@ -357,7 +362,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if source == "postmortem" and str(name).startswith("analyst-"):  # that file marks the day's analysis done
             return "error: a post-mortem writes postmortem-<YYYY-MM-DD-HHMM>, never the day's analyst report"
         paths.ensure()
-        p.write_text(text)
+        text = str(text)
+        if append and p.exists():
+            old = p.read_text(errors="replace")
+            with p.open("a") as f:
+                f.write(("\n" if old.endswith("\n") else "\n\n") + text + ("" if text.endswith("\n") else "\n"))
+            written.add(p.name)
+            return f"appended to {p.name}"
+        if p.name.startswith("analyst-") and p.exists() and p.name not in written:
+            return (f"error: operator/{p.name} holds an earlier analysis and is never replaced: read it (read_file "
+                    f"operator/{p.name}) and add this turn's dated update with append=true")  # fmt: skip
+        p.write_text(text + ("\n" if append and not text.endswith("\n") else ""))
+        written.add(p.name)
         return f"wrote {p.name}"
 
     return [

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 
@@ -10,8 +11,8 @@ from anthropic import AsyncAnthropic
 
 from ..config import Config
 from .budget import Ledger
-from .budget_switch import effective_max_tool_calls, effective_turn_usd
-from .gate import Decision
+from .budget_switch import effective_daily_usd, effective_max_tool_calls, effective_turn_usd
+from .gate import Decision, analyst_update_target, mark_analyst_ran
 from .jobs import OperatorJobs
 from .learning import context as learning_context
 from .notify import Notifier
@@ -34,23 +35,25 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                    notifier: Notifier, notes: NoteSink, *, jobs: OperatorJobs, client: AsyncAnthropic | None = None,
                    now: Callable[[], float] = time.time) -> dict:  # fmt: skip
     op = cfg.operator
+    started = now()
     turn_usd, max_calls = effective_turn_usd(cfg, paths), effective_max_tool_calls(cfg, paths)  # the owner's /budget
     analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
     mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
+    # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
+    update_of = analyst_update_target(paths, started, op) if decision.mode == "analyst" else None
+    ceiling = {"tool_calls": max_calls, "turn_usd": turn_usd, "spent_usd": ledger.spent_today(started),
+               "daily_usd": effective_daily_usd(cfg, paths)}  # fmt: skip
     inbox = _read_inbox(paths)
     tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
     client = client or AsyncAnthropic()
+    content = user_message(snap, decision, inbox, learned=learning_context(paths, book=cfg.book), update_of=update_of,
+                           ceiling=ceiling)  # fmt: skip
     runner = client.beta.messages.tool_runner(
         model=op.analyst_model if analyst else op.model,
         max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,
         system=ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM,
         tools=tools,
-        messages=[
-            {
-                "role": "user",
-                "content": user_message(snap, decision, inbox, learned=learning_context(paths, book=cfg.book)),
-            }
-        ],
+        messages=[{"role": "user", "content": content}],
         thinking={"type": "adaptive"},
         output_config={"effort": op.effort},
         cache_control={"type": "ephemeral"},
@@ -102,8 +105,10 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     if notes.count == notes_before and ran:
         notes.write(f"turn ended without a note (stopped: {stopped}, reasons: {'; '.join(decision.reasons)})", "info")
     if decision.mode == "analyst" and ran:  # a post-mortem never stands in for the day's analysis
+        with contextlib.suppress(OSError):  # without it the cadence counts from the day's report (gate.py)
+            mark_analyst_ran(paths, started)
         marker = paths.report(f"analyst-{time.strftime('%Y-%m-%d', time.gmtime(now()))}")
-        if not marker.exists():  # the model did not write the report: mark the day done anyway, with what happened
+        if update_of is None and not marker.exists():  # no report: mark the day done anyway, with what happened
             marker.write_text(
                 f"# analyst {time.strftime('%Y-%m-%d', time.gmtime(now()))}\n\nTurn ended with stopped={stopped} after "
                 f"{calls} tool calls and {notes.count - notes_before} notes; no report was written by the model.\n"

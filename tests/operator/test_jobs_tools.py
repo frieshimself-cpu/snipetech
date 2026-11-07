@@ -161,6 +161,28 @@ def test_write_report_and_candidates(toolbox):
     assert json.loads(paths.candidates.read_text())[0]["wallet"] == "W"
 
 
+def test_write_report_appends_and_never_replaces_an_earlier_turns_analysis(toolbox):
+    """An analysis every two hours must not wipe the morning's report: a later turn appends its dated update, and a
+    plain write over an analyst report another turn wrote is refused. A turn may still redo what it wrote itself."""
+    tools, paths, _ = toolbox
+    morning = "# analyst 2026-11-06\n\nThe morning's shortlist."
+    paths.report("analyst-2026-11-06").write_text(morning)
+    out = _call(tools["write_report"], name="analyst-2026-11-06", text="## Update 10:30 UTC\nW1 lost twice.")
+    assert (
+        out.startswith("error") and "append=true" in out and paths.report("analyst-2026-11-06").read_text() == morning
+    )
+    out = _call(
+        tools["write_report"], name="analyst-2026-11-06", text="## Update 10:30 UTC\nW1 lost twice.", append=True
+    )
+    assert out == "appended to analyst-2026-11-06.md"
+    assert paths.report("analyst-2026-11-06").read_text() == morning + "\n\n## Update 10:30 UTC\nW1 lost twice.\n"
+    _call(tools["write_report"], name="analyst-2026-11-07", text="draft")
+    assert _call(tools["write_report"], name="analyst-2026-11-07", text="final") == "wrote analyst-2026-11-07.md"
+    assert paths.report("analyst-2026-11-07").read_text() == "final"
+    _call(tools["write_report"], name="study-notes", text="new", append=True)  # appending to nothing creates it
+    assert paths.report("study-notes").read_text() == "new\n"
+
+
 def test_read_job_log_tail(toolbox):
     tools, paths, _ = toolbox
     (paths.jobs / "abc.log").write_text("\n".join(f"line {i}" for i in range(300)))

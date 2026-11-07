@@ -55,6 +55,11 @@ class OperatorPaths:
         return self.root / "telegram.json"
 
     @property
+    def analyst_last(self) -> Path:
+        """When the last analyst turn ran (unix seconds): the analyst's cadence counts from it."""
+        return self.root / "analyst.last"
+
+    @property
     def stop_flag(self) -> Path:
         """Written by the owner's /stop: while it exists, no running sniper is expected."""
         return self.root / "STOP"
