@@ -304,18 +304,23 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     from ..analysis import lab as L
     from ..analysis import paper
 
+    from ..qualify import run as Q
+
     store = svc.store
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
+    # what a trade really costs: the qualify lab's measured cost of a transaction (the low bid's fees and its failed
+    # duplicate sends, 0.009 SOL a round trip on 6 Nov), the flat 0.0035 until enough fills are measured
+    per_tx = Q.lab_tx_cost(store, cfg)
     with _lab_lock(data_dir, wait=True):
         # launch-window rules (hunt, whale, burst) are scored in the same pass where a hunt buy lands
-        data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, 0.0035,
+        data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, per_tx,
                          landings=paper.LAUNCH_LANDINGS)  # fmt: skip
     # a launch trigger at the copy landing would buy inside the create slot, where no launch snipe lands
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)
-    frozen = paper.freeze(store, cfg, top=top, position=copy_pos, latency=0, buy_sol=buy, now=now, data=data,
-                          only_live=True)  # fmt: skip
+    frozen = paper.freeze(store, cfg, top=top, position=copy_pos, latency=0, buy_sol=buy, per_tx_sol=per_tx, now=now,
+                          data=data, only_live=True)  # fmt: skip
     out = {"ts": int(now), "landing": copy_pos, "buy_sol": buy, "tape_hours": round(float(data["tape_hours"]), 1),
            "moments": len(data["rows"]),
            "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],

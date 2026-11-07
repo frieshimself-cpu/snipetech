@@ -427,3 +427,35 @@ def test_a_job_lost_to_a_deploy_is_retried_soon_but_not_in_a_loop(env):
     # lost twice within the back-off: something kills it, not a deploy; wait like a failure
     assert "search" not in units([lost(NOW - 3 * H, NOW - 2 * H), lost(NOW - 50 * 60, NOW - 40 * 60)])
     assert "search" not in units([_meta(["research", "search"], NOW - 50 * 60)])  # a finished one keeps the full gap
+
+
+def test_the_search_charges_the_measured_cost_of_a_trade(env, monkeypatch):
+    # 7 Nov analyst: "the lab mean assumes the old 0.007 SOL round trip; at the measured 0.009 the edge is about zero".
+    # The search, and the strategies it freezes into the paper test, charge what the qualify lab charges: the low-bid
+    # arm's measured cost of a transaction once enough fills exist.
+    from snipetech.analysis import lab as L
+    from snipetech.analysis import paper
+    from snipetech.qualify import run as Q
+    from snipetech.service import Service
+    from tests.test_lab import whale_world
+
+    st, cfg, data = env
+    whale_world(st)
+    monkeypatch.setattr(Q, "lab_tx_cost", lambda store, cfg, arm="control": 0.0047)
+    seen = {}
+    real_collect, real_freeze = L.collect, paper.freeze
+
+    def collect(*a, **k):
+        seen["collect"] = a[5] if len(a) > 5 else k.get("per_tx_sol")
+        return real_collect(*a, **k)
+
+    def freeze(*a, **k):
+        seen["freeze"] = k.get("per_tx_sol")
+        return real_freeze(*a, **k)
+
+    monkeypatch.setattr(L, "collect", collect)
+    monkeypatch.setattr(paper, "freeze", freeze)
+    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    assert seen == {"collect": 0.0047, "freeze": 0.0047}
+    frozen = st.coverage("paper_strategies")["strategies"]
+    assert frozen and all(s["per_tx_sol"] == 0.0047 for s in frozen)

@@ -95,8 +95,12 @@ def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = No
     reads it, the strategist may propose a sniper for a kind with a positive lower bound over enough moments."""
     from ..analysis import lab as L
 
+    from ..qualify.run import lab_tx_cost
+
     kinds = tuple(kinds or DEFAULT_EDGE_KINDS)
-    data = L.collect(tape or store, cfg, cfg.book.fill_min_sol, 0, landing, 0.0035, groups=(), event_kinds=kinds)
+    # the measured cost of a transaction, as the qualify lab and the strategy search charge it
+    data = L.collect(tape or store, cfg, cfg.book.fill_min_sol, 0, landing, lab_tx_cost(store, cfg), groups=(),
+                     event_kinds=kinds)  # fmt: skip
     ranked = L.rank(data, cfg, top=200, min_train=min_train)
     rows = []
     for r in ranked:
