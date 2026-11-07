@@ -69,8 +69,9 @@ def scan_tape(store: Store, now: float, hours: float = 6.0, tape: Store | None =
     """Curve crossings of the last `hours`, read from `tape` (the hourly read-only copy when fresh) and written to
     `store`. The scan walks the whole trades table through one index in one read (3.9 s cold on a 2.4M-trade copy, 7
     Nov), then each coin's curve; on the live file that read held the WAL back for as long as it took (7 Nov
-    16:46-17:18 one scan, dev transfers included, took 32 minutes). A copy up to two hours old loses nothing: six hours
-    are read every three, and a crossing found twice is written once."""
+    16:46-17:18 one scan, dev transfers included, took 32 minutes). A copy up to two hours old loses nothing while the
+    scans keep their three hours: a crossing the copy does not hold yet lies in the next scan's six hours, and a
+    crossing found twice is written once."""
     events = curve_crossings(tape or store, int(now - hours * 3600))
     added = store.add_events(events)
     store.set_coverage(LAST_SCAN_KEY, {"ts": int(now), "curve_cross": added})
