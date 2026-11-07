@@ -22,6 +22,18 @@ about 11:30 and 11:45; no trades). Wallet and size are unchanged: `6VFrZ15Vi3cfZ
 4. What still ends a sniper is an execution fault (OKTech errors, a coin OKTech fails to sell), never a trading result;
    a sniper holding a coin is never stopped (CLAUDE.md rule 1).
 
+### What runs now (7 Nov 2026, 12:55 UTC)
+
+- The guard and the automatic test of the 09:15 plan are deployed (c265fb7). At the owner's word above, the guard was
+  set at 12:55 to a 5 SOL day stop (the most its bounds allow) and no floor (0 SOL): `operate risk --floor 0
+  --day-stop 5`. The real off switch, the book following it, and an automatic test with no block limit are being
+  built (branch never-stops).
+- The automatic test is off until the owner sends `/test auto on` in Telegram: the cloud session's safety layer
+  refused to switch it on from here, so the switch that lets the bot start live trading by itself stays the owner's.
+- The sniper wallet held 0 SOL and 0.22 wSOL at 12:45 (the owner moved 2.80, 3.57 and 3.29 SOL to their wallet
+  `GXcAHhvu…HRtQ` at 11:25, 11:31 and 12:45). A look-alike `GXcANzWb…HRtQ` sent it zero-SOL transfers at 11:27 and
+  11:33 (address poisoning; the owner was warned).
+
 ## The owner's yes for the first launch-rule test (7 Nov 2026, 09:15 UTC)
 
 Asked "What's the most efficient way to do this without rinsing the 10 sol?", the owner answered the plan below with
