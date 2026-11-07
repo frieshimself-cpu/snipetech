@@ -20,7 +20,12 @@ first on the server's recording and only then run live in capped batches.
   its time, the WAL file alone was 7.33 GB of the 19.71 GB, and nothing else on the machine held 100 MB. It showed:
   `discover` hit its 50-minute limit at 17:57 and 18:57 (4 minutes on 6 Nov), and the recorder fell 125 s behind at
   19:32 and lost its stream at 19:33.
-- **The fix needs the owner's one command** (root, over SSH): `sudo bash /opt/snipetech/deploy/setup.sh && sudo
+- **Done 20:49: the owner ran the one command.** At 20:50 the slice had no CPU quota and a 12.88 GB memory limit
+  (8.56 GB already in use, the database's pages cached at last), CPU throttling had stopped, and the recorder waited
+  0 % of the minute for CPU or memory. The stall meter's first hour (19:39-20:49, before it) showed what held the
+  recorder: its loop sat 30-54 s of every minute in database calls (the hot path's small writes 20-34 s, the trade
+  flush 8-15 s, the prune once 25 s, one flush 43.8 s) on 0.3-0.66 of a core: waiting on the disk, not on the CPU.
+- **The command was** (root, over SSH): `sudo bash /opt/snipetech/deploy/setup.sh && sudo
   systemctl set-property snipetech.slice CPUQuota= MemoryHigh=12G MemoryMax=14G && sudo systemctl restart
   snipetech-tape snipetech-strategist.timer`. It installs the recorder's first call on the CPU (CPUWeight 1000), an
   ops service whose restart no longer kills the jobs it started (KillMode=process), the strategist's daily timer, and
