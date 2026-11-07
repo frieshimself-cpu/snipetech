@@ -8,6 +8,15 @@ first on the server's recording and only then run live in capped batches.
 
 ## The evening of 7 Nov: the lock fix is live; snipetech was using 2 of the server's 6 cores (19:45 UTC)
 
+- **Correction, 8 Nov 00:05 (research round 3): do not /test the creator-0 hunts.** On 20.8 h of 4-5 Nov tape that no
+  screen or lab had used, both rules frozen on 7 Nov evening lose with their frozen exit: f94add343f's rule -0.0099 a
+  trade on 19 firings, 7d6b4302ff's -0.0553 on 8. Their good labs came from one bundle operator's launches (a ~41 SOL
+  first-slot bundle from 15-21 wallets, no creator buy, +35 % in 20 s, then one dump), which are also all of
+  7aPo3n's early buys. They stay on paper; a build (dev0-gate) keeps every maxDevBuySol 0 hunt out of live trading until
+  OKTech confirms that 0 means "no creator buy allowed" (if it means "no limit", the plain crowd hunt runs: -0.0147 a
+  trade on 1,285 unseen firings). For the owner: ask OKTech that question; and say yes or no to a stop rule for the copy
+  book (retire a copied wallet after 15 live round trips at a mean of 0 or less, fees and failed sends included).
+
 - **Short reads deployed 21:28 (4ff28dc), and the database shrank from 19.7 to 13.0 GB.** The heavy readers of the
   live file now read the hourly copy (discover's tape sources, a whole-table GROUP BY every hour that ran tens of
   minutes; the events scan; paper freeze; the Birdeye and coin-first sources), the paper run reads in 10-minute pieces,
@@ -27,7 +36,7 @@ first on the server's recording and only then run live in capped batches.
   trade on its test part (n 11, 10 won, lower bound +0.037; 26 moments in 45 h). Frozen at 23:00 as `7d6b4302ff`
   (its freeze lab chose SL-15 % / trail 10 % / 60 s: +0.0179 a trade, bound +0.0106); the looser ">= 10 SOL from >= 10
   wallets" version has been `f94add343f` since 21:31. Both fire about once every two hours, so the paper test needs
-  days; the owner can test it live sooner with `/test`, their call.
+  days. (Round 3 refuted both on unseen tape: see the correction above.)
 - **Slow writes name themselves (21:34, 25a3891).** Every write takes the lock up front (BEGIN IMMEDIATE), and one
   that holds it 5 s or more logs the code that asked for it in that job's log. After the slice change the recorder
   still waited 23.5 s for one write at 20:52 (as the events scan ended) and 12.6 s at 20:56 (during a qualify run).
