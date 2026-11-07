@@ -261,7 +261,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     except Exception:  # noqa: BLE001 - the tape cannot be read: count it as holding (nothing is stopped or retired)
         tape_holding = True
     # the owner's wallet-wide guard, from what this run read: SOL and wrapped SOL, and the coins (None when unread). A
-    # guard that cannot tell adds no kill of its own: an unknown balance is the book's own "equity unknown" kill
+    # guard that cannot tell is never clear: coins that could not be read leave the book's own floor a SOL balance to
+    # pass on, so the guard halts the run (its holders are all kept: unknown coins count as held)
     sol = native + wsol if native is not None and wsol is not None else None
     try:
         guard = risk_guard.evaluate(store, cfg, paths, now, wallet=wallet, sol=sol,
@@ -275,7 +276,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
                      tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}),
-                     guard=bool(guard is not None and guard.tripped))  # fmt: skip
+                     guard=guard is None or guard.tripped or not guard.known)  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.

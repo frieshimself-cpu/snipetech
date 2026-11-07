@@ -922,6 +922,25 @@ def test_a_coin_marked_down_trips_the_guard_before_the_books_own_day_stop(tmp_pa
         st.close()
 
 
+def test_a_guard_that_cannot_tell_starts_nothing_in_the_book_either(tmp_path):
+    """The wallet's coins could not be read: the guard cannot tell the day's result, and cannot tell is never clear.
+    The book creates and starts nothing that run (its own floor alone would have let it, on the SOL balance)."""
+
+    class Blind(FakeSvc):
+        async def open_positions(self, address, ignore=()):
+            raise RuntimeError("rpc down")
+
+    st, cfg = _env(tmp_path, enabled=True)
+    _fresh_tape(st)
+    svc = Blind(st)
+    try:
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                                   balances=lambda w: (12.0, 0.0, [])))  # fmt: skip
+        assert out["kill_reason"] == "wallet-wide guard" and not any(c[0] in ("create", "start") for c in svc.calls)
+    finally:
+        st.close()
+
+
 def test_the_owners_risk_values_are_the_ones_the_book_obeys(tmp_path):
     """/risk floor 8: at 9 SOL the guard is clear and the book trades as before."""
     from snipetech.operator.risk_guard import set_risk

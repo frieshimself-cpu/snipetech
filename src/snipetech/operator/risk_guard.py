@@ -218,6 +218,7 @@ class Guard:
     day_stop_sol: float
     floor_sol: float
     owner_set: bool
+    reasons: tuple[str, ...] = ()  # each stop's own words, in the order of `kinds`
 
 
 def _sol(x: float) -> str:
@@ -269,7 +270,8 @@ def evaluate(store, cfg, paths: OperatorPaths, now: float, *, wallet: str | None
     tripped = bool(kinds)
     reason = "; ".join(said) if tripped else ("the guard cannot tell: " + "; ".join(unknown) if unknown else "")
     return Guard(tripped=tripped, known=tripped or not unknown, reason=reason, kinds=tuple(kinds), day=day,
-                 equity_sol=equity, day_stop_sol=stop, floor_sol=floor, owner_set=bool(read_risk(paths)))  # fmt: skip
+                 equity_sol=equity, day_stop_sol=stop, floor_sol=floor, owner_set=bool(read_risk(paths)),
+                 reasons=tuple(said))  # fmt: skip
 
 
 def from_snapshot(store, cfg, paths: OperatorPaths, now: float, snap) -> Guard:
@@ -361,7 +363,7 @@ def announce(g: Guard, notes, notifier, now: float, *, page: bool = True) -> boo
     new = tuple(k for k in g.kinds if not told(k))
     if not g.tripped or not new:
         return False
-    said = "; ".join(f"{_WORDS[k]} {r}" for k, r in zip(g.kinds, g.reason.split("; "), strict=False) if k in new)
+    said = "; ".join(f"{_WORDS[k]} {r}" for k, r in zip(g.kinds, g.reasons, strict=True) if k in new)
     line = notes.write(f"{ANNOUNCED}: {said}. No new live trade: the book creates and starts nothing and stops its "
                        "snipers that hold nothing (one holding a coin keeps running to sell it), and no live test "
                        f"starts or re-arms; {_until(new, g)}. /risk shows it; /risk stop <SOL> or /risk floor <SOL> "

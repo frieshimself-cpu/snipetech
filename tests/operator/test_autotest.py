@@ -497,6 +497,17 @@ def test_a_request_the_owner_turned_off_before_it_started_is_never_started(env):
     assert t["state"] == "done" and not t["started"] and "turned off" in t["error"] and env.svc.created == []
 
 
+def test_the_round_never_starts_an_automatic_request_beyond_its_blocks_or_its_floor(env):
+    """The round's own check of every automatic request (autotest.holds), whatever wrote it: its sequence's newest
+    block, at most 1 + more_blocks of them, at the sequence's floor."""
+    _start(env)
+    t, seq = LT.load(env.paths), _seq(env)
+    assert AT.holds(env.paths, t) is None
+    assert "floor" in AT.holds(env.paths, t | {"floor": t["floor"] - 1})
+    assert "blocks" in AT.holds(env.paths, t | {"sequence": seq and {"id": seq["id"], "block": 5}})
+    assert "own" in AT.holds(env.paths, t | {"requested_at": t["requested_at"] + 1})
+
+
 def test_stop_ends_the_sequence(env):
     _start(env)
     LTT._send(env, name="stop", at=NOW + 600)

@@ -254,6 +254,15 @@ def holds(paths: OperatorPaths, t: dict) -> str | None:
     if (not seq or seq.get("state") != "running" or seq.get("id") != own.get("id") or not blocks
             or blocks[-1].get("requested_at") != t.get("requested_at")):  # fmt: skip
         return "the request is not the automatic sequence's own"
+    try:
+        beyond = int(own.get("block") or 0) > 1 + int((seq.get("caps") or at)["more_blocks"])
+        moved = abs(float(t["floor"]) - float(seq["floor"])) > 1e-9  # the whole sequence keeps the first block's floor
+    except (KeyError, TypeError, ValueError):
+        beyond = moved = True
+    if beyond:
+        return "the request is beyond the automatic test's blocks"
+    if moved:
+        return "the request's floor is not the sequence's"
     return None
 
 
@@ -453,9 +462,9 @@ async def _begin(r: _Round, at: dict) -> dict | None:
         return wait("your /stop is in force")
     if live_test.in_progress(paths, now):
         return wait("a live test is in progress")
-    g = risk_guard.from_snapshot(store, r.cfg, paths, now, r.snap)
-    if g.tripped or not g.known:
-        return wait(f"the wallet-wide guard: {g.reason}")
+    held_back, why = await risk_guard.tripped(r.svc, r.cfg, paths, now, snap=r.snap)  # cannot tell is never clear
+    if held_back:
+        return wait(f"the wallet-wide guard: {why}")
     if not wallet:
         return wait("the sniper wallet is not set")
     try:
@@ -607,8 +616,11 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     eq = live_test.equity_now(r.snap, r.now, wallet)
     if eq is None:
         return await _wait_next(r, seq, "the wallet's balance is not known this round")
-    p = live_test.plan(row, eq, wallet, fills=int(caps["fills"]), minutes=int(caps["minutes"]),
-                       loss_sol=float(caps["loss_sol"]), floor=float(seq["floor"]))  # fmt: skip
+    try:
+        p = live_test.plan(row, eq, wallet, fills=int(caps["fills"]), minutes=int(caps["minutes"]),
+                           loss_sol=float(caps["loss_sol"]), floor=float(seq["floor"]))  # fmt: skip
+    except ValueError as exc:
+        return await _end(r, seq, f"{sid} cannot be tested live any more: {exc}")
     need = live_test._need(p)
     if eq + 1e-9 < need:
         return await _end(r, seq, f"the wallet holds {eq:.2f} SOL: no room for another block above the sequence's "
