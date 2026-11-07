@@ -4,6 +4,22 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The owner's yes for the first launch-rule test (7 Nov 2026, 09:15 UTC)
+
+Asked "What's the most efficient way to do this without rinsing the 10 sol?", the owner answered the plan below with
+"Yes, use this plan" (09:15 UTC, in chat). The plan, as it was put to the owner:
+
+1. A wallet-wide guard: no new live trade once the day is 1 SOL down or the wallet is under 10 SOL, changeable from
+   Telegram.
+2. When a strategy passes on paper (100+ new trades at the real landing, positive with outliers capped, at real
+   costs), one live test starts straight away: sniper wallet `6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at`, 0.2 SOL a
+   buy, one coin at a time, at most 10 buys, at most 2 hours, stopping on its own 1 SOL below the starting balance.
+3. After 10 trades it continues only if live is at least half of paper (then 30 more trades, the same size, the same
+   1 SOL stop counted from the first test's start); otherwise it stops and the analyst works out why.
+
+Wallet at the time: 11.88 SOL, nothing held, no sniper running. Why 0.2 SOL and not less: a round trip costs about
+0.009 SOL whatever the size, so a 0.02 SOL test can only lose. Results go in this file as they come.
+
 ## The strategy
 
 | | |
