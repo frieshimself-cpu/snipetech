@@ -796,6 +796,12 @@ def strategy_sniper(
             # one would most likely run as the 10 s rule, which the lab scores as a rule of its own
             raise ValueError("an any-time MIG rule cannot be sent as scored: OKTech's Migration Window defaults to 10 s, "
                              "and how to send no window is not known (ask OKTech first)")  # fmt: skip
+        if trig.get("dev_paid") is not None:
+            # the lab's paid-creator split (lab.dev_paid_earlier): OKTech MIG has no filter for it. Each coin's creator
+            # is a fresh wallet, so blockedCreators cannot do it; web.tracking on the paying creators is untested (7 Nov)
+            raise ValueError("a MIG rule split on whether an earlier coin's creator paid the coin's creator cannot be "
+                             "sent as scored: OKTech MIG has no such filter, and sent without it the rule would run "
+                             "as plain MIG")  # fmt: skip
         config["migrationExpirySec"] = window
         summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
                        "Window, as the lab scored it)")  # fmt: skip

@@ -268,3 +268,89 @@ def test_the_paper_test_gates_only_the_strategies_that_sell_into_the_migration()
     assert {r["mint"] for r in store.paper_trades(ids["sells"]["id"])} == {mints["covered"]}
     assert {r["mint"] for r in store.paper_trades(ids["holds"]["id"])} == set(mints.values())
     assert out["skipped"] == {ids["sells"]["id"]: {"hole": 1, "no_migration": 1}}
+
+
+# -- the creator paid by an earlier coin's creator (paid_by_dev edges) ------------------------------------------------
+
+PAID = Trigger("mig", window=10.0, dev_paid=True)
+UNPAID = Trigger("mig", window=10.0, dev_paid=False)
+
+
+def _paid_world(store: Store) -> dict[str, str]:
+    """Three MIG-10 coins under the PumpSwap tape. `paid`: an earlier coin's creator sent its creator SOL before the
+    create (a paid_by_dev edge, as `events dev` writes them); `paid_late`: the payment came after the create; `payer`:
+    the paying wallet created no earlier coin."""
+    early = _graduate(store, "mig7-paid-early", hm(12, 40), SLOT7 + int((hm(12, 40) - hm(0, 0)) / 0.4), at=5)
+    coins = {}
+    for name, ts in (("paid", hm(13, 0)), ("paid_late", hm(13, 10)), ("payer", hm(13, 20)), ("plain", hm(13, 30))):
+        coins[name] = _graduate(store, f"mig7-{name}", ts, SLOT7 + int((ts - hm(0, 0)) / 0.4), at=5)
+    store.upsert_edge(early.deployer, coins["paid"].deployer, "paid_by_dev", hm(12, 50), 1_500_000_000)
+    store.upsert_edge(early.deployer, coins["paid_late"].deployer, "paid_by_dev", hm(13, 15), 1_500_000_000)
+    store.upsert_edge(addr("never-launched"), coins["payer"].deployer, "paid_by_dev", hm(13, 15), 1_500_000_000)
+    store.set_coverage("tape", {"spans": [[hm(12, 30), hm(13, 50)]]})
+    store.set_coverage(AMM_RECENT_KEY, outage_7nov())
+    return {k: m.mint for k, m in coins.items()} | {"early": early.mint}
+
+
+def test_the_lab_splits_mig_on_whether_an_earlier_coins_creator_paid_the_creator():
+    store = Store(":memory:")
+    mints = _paid_world(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG10, PAID, UNPAID],
+                   exits=[EXIT])  # fmt: skip
+    by = {data["triggers"][ti].label(): {r["mint"] for r in data["rows"] if r["trigger"] == ti} for ti in range(3)}
+    assert by[MIG10.label()] == set(mints.values())  # off by default: every coin
+    assert by[PAID.label()] == {mints["paid"]}
+    # paid only after its create, or by a wallet that created no earlier coin: not what the knob asks for
+    assert by[UNPAID.label()] == {mints["paid_late"], mints["payer"], mints["plain"], mints["early"]}
+    assert "paid by an earlier coin's creator" in PAID.label() and "not paid" in UNPAID.label()
+
+
+def test_the_search_splits_mig_10_on_the_paid_creators_and_oktech_cannot_send_the_split():
+    from snipetech.analysis.lab import TRIGGERS, parse_trigger
+    from snipetech.oktech import strategy_sniper
+
+    assert {PAID, UNPAID} <= set(TRIGGERS) and Trigger("mig", window=10.0) in TRIGGERS
+    assert Trigger("mig").dev_paid is None  # off by default
+    for t in (PAID, UNPAID, MIG10):
+        assert parse_trigger(dict(t.__dict__)) == t
+    # OKTech MIG cannot tell who paid a coin's creator (each coin uses a fresh wallet; blockedCreators cannot do it),
+    # so a split rule is research: sent as it stands it would run as plain MIG-10
+    for t in (PAID, UNPAID):
+        strat = {"id": "m", "label": "t", "buy_sol": 0.2, "exit": EXIT.to_dict(), "trigger": t.__dict__}
+        try:
+            strategy_sniper(strat, 1)
+        except ValueError as exc:
+            assert "paid" in str(exc)
+        else:
+            raise AssertionError("a dev_paid MIG rule was sent")
+
+
+def test_the_paid_knob_is_a_mig_knob_of_true_false_or_none_and_keeps_old_ids():
+    from snipetech.analysis.lab import parse_trigger
+
+    for bad, why in (({"kind": "mig", "window": 10, "dev_paid": "yes"}, "dev_paid"),
+                     ({"kind": "hunt", "sol": 2, "window": 1, "dev_paid": True}, "dev_paid")):  # fmt: skip
+        try:
+            parse_trigger(bad)
+        except ValueError as exc:
+            assert why in str(exc)
+        else:
+            raise AssertionError(bad)
+    assert parse_trigger({"kind": "mig", "window": 10, "dev_paid": None}) == MIG10
+    # a strategy frozen before the knob keeps its id: unset, it is no part of the id
+    hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
+    lab_exit = {"stop_loss": 0.3, "max_hold_secs": 300, "stale_secs": 1.0}
+    assert paper.strategy_id(hunt, lab_exit, "+3", 1, 0.2) == "17cdc5b5b8"
+    assert paper.strategy_id(PAID.__dict__, lab_exit, "+3", 1, 0.2) != paper.strategy_id(MIG10.__dict__, lab_exit,
+                                                                                          "+3", 1, 0.2)  # fmt: skip
+
+
+def test_the_paper_test_reads_the_paid_knob_like_the_lab():
+    store = Store(":memory:")
+    mints = _paid_world(store)
+    s = {"id": paper.strategy_id(PAID.__dict__, EXIT.to_dict(), "+3", 1, 0.2), "label": PAID.label(),
+         "trigger": PAID.__dict__, "exit": EXIT.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2,
+         "per_tx_sol": 0.0045, "from_ts": hm(12, 0), "lab": {"mean": 0.0, "ev_lower": 0.0}}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": [s]})
+    paper.run(store, _cfg(), now=hm(14, 10))
+    assert {r["mint"] for r in store.paper_trades(s["id"])} == {mints["paid"]}

@@ -119,6 +119,9 @@ class Trigger:
     # `window` = timeWindowMs / 1000, and these two (unset at their defaults)
     max_buyers: int = 0  # maxUniqueBuyers: skip the launch once more distinct wallets bought (0 = no limit)
     dev_max: float | None = None  # maxDevBuySol: skip the launch when its creator bought more with it (None = no limit)
+    # mig: True = only coins whose creator an earlier coin's creator paid before the create (paid_by_dev edges), False =
+    # only the others, None = no filter (the default). OKTech cannot filter on it: a lab knob, to decide buy or block
+    dev_paid: bool | None = None
 
     def label(self) -> str:
         base = self._label()
@@ -144,7 +147,9 @@ class Trigger:
             return f"buy >= {self.sol:g} SOL by a non-dev"
         if self.kind == "mig":
             when = f"within {self.window:g} s of the create" if self.window else "any time after the create"
-            return f"OKTech MIG: buy at the migration, {when}"
+            paid = {True: ", creator paid by an earlier coin's creator",
+                    False: ", creator not paid by an earlier coin's creator"}.get(self.dev_paid, "")  # fmt: skip
+            return f"OKTech MIG: buy at the migration, {when}{paid}"
         if self.kind == "event":
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
@@ -189,6 +194,9 @@ TRIGGERS = (
     # day whose launch bundle fills the curve at once, none mayhem); 60 s only to compare it with (wider windows bought
     # mostly mayhem coins, 17 of 18 down 80 % within 15 minutes). Never any time: OKTech cannot be sent no window.
     + [Trigger("mig", window=w) for w in (10.0, 60.0)]
+    # MIG-10 split on its coins' creators: paid by an earlier coin's creator before the create, or not (7 Nov: 30 of 31
+    # such coins finished their curve in the create second, so they feed this window; whether to buy or block them)
+    + [Trigger("mig", window=10.0, dev_paid=p) for p in (True, False)]
 )
 
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
@@ -200,8 +208,8 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "kol": ("sol", "group", "max_age", "plain"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max"),
-    # OKTech MIG: its Migration Window (migrationExpirySec) is the one setting the lab scores
-    "mig": ("window",),
+    # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
+    "mig": ("window", "dev_paid"),
 }
 HUNT_CANNOT = ("OKTech hunt cannot skip mayhem or holder-reward coins (plain), see the create transaction (solo) or "
                "limit the coin's age beyond its own window (max_age)")  # fmt: skip
@@ -226,8 +234,12 @@ def _trigger_value(name: str, value: Any) -> Any:
         if not isinstance(value, bool):
             raise ValueError(f"{name} must be true or false, not {value!r}")
         return value
-    if name == "dev_max" and value is None:
+    if name in ("dev_max", "dev_paid") and value is None:
         return None
+    if name == "dev_paid":
+        if not isinstance(value, bool):
+            raise ValueError(f"dev_paid must be true, false or null, not {value!r}")
+        return value
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ValueError(f"{name} must be a number, not {value!r}")  # noqa: TRY004 - every refusal is a ValueError
     lo, hi = TRIGGER_BOUNDS[name]
@@ -399,7 +411,22 @@ def curve_done(path: MarketPath, i: int) -> bool:
     return bool(path.amm[i])
 
 
-def _mig(trig: Trigger, path: MarketPath, launch, mig) -> int | None:
+def dev_paid_earlier(store: Store, launch) -> bool | None:
+    """Whether an earlier coin's creator paid this coin's creator before its create: a `paid_by_dev` edge (written by the
+    dev-transfer scan, events/dev.py) into the coin's signer or creator, first paid at or before the create, from a
+    wallet that created a coin before this one. None when the create is off the tape. The edges are what the scan had
+    found when the lab ran, which can be later than the migration a live sniper decides at."""
+    if launch is None:
+        return None
+    rows = store._q(
+        "SELECT 1 FROM edges e WHERE e.dst IN (?, ?) AND e.kind = 'paid_by_dev' AND e.first_ts <= ? AND EXISTS "
+        "(SELECT 1 FROM launches l WHERE (l.creator = e.src OR l.user = e.src) AND l.ts < ? AND l.mint != ?) LIMIT 1",
+        (launch.creator or launch.user, launch.user, int(launch.ts), int(launch.ts), launch.mint),
+    )
+    return bool(rows)
+
+
+def _mig(trig: Trigger, path: MarketPath, launch, mig, paid: bool | None = None) -> int | None:
     """OKTech MIG as its settings read (no live MIG fill yet): it fires on the coin's migration to PumpSwap as the tape
     records it (`mig`, from the `migrations` table: pump.fun's CompletePumpAmmMigrationEvent, the transaction that
     creates the pool), once per coin. A completed curve is not a migration: OKTech can buy only once the pool exists,
@@ -408,10 +435,13 @@ def _mig(trig: Trigger, path: MarketPath, launch, mig) -> int | None:
     someone opened for a coin still on its curve is no migration). With `window` (OKTech's Migration Window: at most
     that many seconds from the create to the migration) only a migration that soon after a create on the tape; 0 = any
     time. Returns the last state at or before the migration's slot (the buy lands a slot after the migration:
-    `fired_at`), or None when the tape has nothing of the coin before its migration."""
+    `fired_at`), or None when the tape has nothing of the coin before its migration. With `dev_paid` set, only a coin
+    whose `paid` (`dev_paid_earlier`) matches it."""
     if mig is None:
         return None
     if trig.window and (launch is None or mig.ts - launch.ts > trig.window):
+        return None
+    if trig.dev_paid is not None and (paid is None or bool(paid) != trig.dev_paid):
         return None
     i = int(np.searchsorted(path.slot, int(mig.slot), side="right")) - 1
     return i if i >= 0 else None
@@ -506,7 +536,8 @@ def exit_set() -> list[ExitParams]:
     return out
 
 
-def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None) -> int | None:
+def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
+          paid: bool | None = None) -> int | None:  # fmt: skip
     if trig.kind == "event":
         # events: [(kind, ts, slot)] for this coin; fire on the first trade at or after the earliest event of the kind
         hits = sorted((ts, slot or 0) for kind, ts, slot in (events or []) if kind == trig.event)
@@ -519,7 +550,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return None
     """Index of the trade at which `trig` fires on this token (first time only).
     `kols`: the labeled wallets, a set (the KOL group) or {label kind: set of addresses}. `mig`: the coin's migration
-    to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else)."""
+    to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else); `paid`: whether an earlier coin's creator
+    paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set)."""
     dev = launch.deployers() if launch is not None else set()
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
@@ -530,7 +562,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     if trig.kind == "hunt":
         return _hunt(trig, path, launch, dev)
     if trig.kind == "mig":
-        return _mig(trig, path, launch, mig)
+        return _mig(trig, path, launch, mig, paid)
     if trig.kind == "launch":
         if launch is None:
             return None
@@ -761,6 +793,9 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         return []
     wants_mig = run.mig_sell or any(t.kind in AMM_KINDS for _, t in run.triggers)
     mig = _span_migration(store, mint, a, b) if wants_mig else None
+    in_span_launch = launch if (launch and a <= launch.ts) else None
+    wants_paid = mig is not None and any(t.kind in AMM_KINDS and t.dev_paid is not None for _, t in run.triggers)
+    paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
     rows: list[dict] = []
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
     for ti, trig in run.triggers:
@@ -770,7 +805,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
-            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig)
+            i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
             fired = [] if i is None else [i]
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)

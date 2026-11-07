@@ -175,9 +175,10 @@ def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
     ms = [_late_migration(store, f"mig-lag{k}", T0 + 600 + 60 * k, SLOT0 + 1000 * k) for k in range(3)]
     _tape(store)
     rows = _mig_rows(collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS))
-    # both windows of the grid fire (the migration comes 2 s after the create), each timed from the migration: its slot,
-    # and the last state at or before it (the pool's fourth buy), not the completed curve two slots earlier
-    assert len(rows) == 3 * 2
+    # both windows of the grid fire (the migration comes 2 s after the create), and MIG-10 on coins whose creator no
+    # earlier creator paid (no paid_by_dev edge here), each timed from the migration: its slot, and the last state at or
+    # before it (the pool's fourth buy), not the completed curve two slots earlier
+    assert len(rows) == 3 * 3
     assert {r["order"] for r in rows} == {(m.migration.slot, 7) for m in ms}
     assert {r["ts"] for r in rows} == {m.migration.ts for m in ms}
 
@@ -340,7 +341,8 @@ def test_the_lab_scores_mig_at_the_mig_landing_on_pumpswap():
     cfg = _cfg()
     data = collect(store, cfg, 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
     kinds = {ti: t.kind for ti, t in enumerate(data["triggers"])}
-    migs = [ti for ti, k in kinds.items() if k == "mig"]
+    # every MIG trigger of the grid but the paid-creator half of the split (no paid_by_dev edge in this world)
+    migs = [ti for ti, k in kinds.items() if k == "mig" and data["triggers"][ti].dev_paid is not True]
     assert migs
     for ti in migs:  # one buy per coin, each on a completed curve, all kept
         rows = [r for r in data["rows"] if r["trigger"] == ti]
@@ -392,8 +394,9 @@ def test_mig_is_not_scored_on_a_tape_without_pumpswap_trades():
     store.set_coverage(AMM_RECENT_KEY, {})
     data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS)
     assert not _mig_rows(data)
+    # (no creator here was paid by an earlier one: the paid half of the split fires on none, so it skips none)
     assert {k: v["skipped"] for k, v in data["amm_tape"]["triggers"].items()} == {
-        t.label(): {"no_tape": 40} for t in TRIGGERS if t.kind == "mig"
+        t.label(): {} if t.dev_paid else {"no_tape": 40} for t in TRIGGERS if t.kind == "mig"
     }
     s = _frozen(store, MIG, paper.MIG_LANDING, T0)
     out = paper.run(store, _cfg(), now=T0 + 3 * H)
@@ -451,6 +454,10 @@ def test_the_search_ranks_only_mig_windows_oktech_runs_as_scored():
     assert {t.window for t in migs} == {10.0, 60.0}
     for t in migs:
         strat = {"id": "m", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}
+        if t.dev_paid is not None:  # the paid-creator split is research: OKTech has no filter for it
+            with pytest.raises(ValueError, match="paid"):
+                strategy_sniper(strat, 1)
+            continue
         p = strategy_sniper(strat, 1)
         assert p.config["mode"] == "mig" and p.config["migrationExpirySec"] == t.window
 

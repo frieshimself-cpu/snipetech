@@ -46,6 +46,7 @@ from .lab import (
     _fire,
     collect,
     curve_done,
+    dev_paid_earlier,
     fired_at,
     label_groups,
     leader_sell_fractions,
@@ -83,7 +84,8 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # sell (7 Nov)
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
-    later_trig = {"max_buyers": 0, "dev_max": None}  # trigger fields added on 7 Nov (OKTech hunt), at their defaults
+    # trigger fields added on 7 Nov, at their defaults: OKTech hunt's two, then MIG's paid-creator split
+    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None}
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
@@ -249,6 +251,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
     mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
+    paid_runs = any(trig.kind == "mig" and trig.dev_paid is not None for _, trig, _, _ in parsed)
     # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
     sell_runs = any(ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS for _, trig, ex, _ in parsed)
     amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
@@ -273,10 +276,11 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             path = MarketPath.build(trades, in_span, slot_secs=slot_secs)
             if path.n < min_trades:
                 continue
+            paid = dev_paid_earlier(store, in_span) if paid_runs and mint in migs else None
             for s, trig, ex, costs in parsed:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                i = _fire(trig, path, in_span, kols, mig=migs.get(mint))
+                i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue
                 t_slot, t_ts = fired_at(trig, path, i, migs.get(mint))
