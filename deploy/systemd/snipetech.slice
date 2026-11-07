@@ -2,8 +2,12 @@
 Description=snipetech: every snipetech service shares these limits and yields to everything else on the machine
 
 [Slice]
-CPUQuota=200%
+# Low weight: under contention everything outside the slice (sshd, Caddy) comes first, so no CPU quota is needed.
+# 7 Nov 19:39 the 4 Nov quota (2 cores, set to share the box with a trading server) still held on the 6-core machine:
+# it throttled 15 % of periods while nothing else ran there. Set on the server with systemctl set-property as well.
 CPUWeight=20
-MemoryHigh=2600M
-MemoryMax=3G
 IOWeight=20
+# Memory, page cache included (the 19 GB database is read from it): the 16 GB machine keeps about 2 GB for itself.
+# 7 Nov the 2600M/3G limits were hit 4 million times and the recorder waited on the disk 9 % of its time.
+MemoryHigh=12G
+MemoryMax=14G

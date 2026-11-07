@@ -144,3 +144,21 @@ def test_a_deploy_leaves_the_jobs_of_the_ops_service_running():
 
 def test_the_slice_still_yields_to_everything_else_on_the_machine():
     assert int(_unit("snipetech.slice")[("Slice", "CPUWeight")]) < 100
+
+
+def _bytes(value: str) -> int:
+    units = {"K": 1 << 10, "M": 1 << 20, "G": 1 << 30, "T": 1 << 40}
+    return int(float(value[:-1]) * units[value[-1]]) if value[-1] in units else int(value)
+
+
+def test_the_slice_lets_snipetech_use_the_machine():
+    """7 Nov 19:39, the first reading of the slice (remote status): the 4 Nov caps, set to share the box with a trading
+    server (2 cores, MemoryHigh 2600M, MemoryMax 3G), still held on the 6-core, 16 GB machine after the resize. The CPU
+    quota had throttled 65,589 of 440,259 periods (12,888 s of CPU denied), memory.high had been hit 4,027,792 times
+    with 2.72 GB in use, the recorder spent 9 % of its time waiting on the disk, and no other service on the machine
+    held 100 MB. The slice keeps its low weight against everything else (sshd, Caddy come first under contention), so it
+    needs no CPU quota, and its memory limits leave the machine about 2 GB."""
+    sl = _unit("snipetech.slice")
+    assert ("Slice", "CPUQuota") not in sl
+    high, top = _bytes(sl[("Slice", "MemoryHigh")]), _bytes(sl[("Slice", "MemoryMax")])
+    assert 8 << 30 <= high < top <= 14 << 30
