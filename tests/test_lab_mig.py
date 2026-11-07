@@ -2,7 +2,8 @@
 only when the migration came within its Migration Window of the create (10 s by default; docs/oktech-features.md: "max
 seconds from CREATE to MIGRATE"). The lab fires on the migration as the tape records it (`migrations`: pump.fun's
 CompletePumpAmmMigrationEvent, the transaction that creates the pool), once per coin, and scores the buy where a MIG buy
-is assumed to land: a slot after the migration, 3 trades in (no live MIG fill exists yet). A completed curve is not a
+is assumed to land (no live MIG fill exists yet): behind the first 3 PumpSwap trades after the migration's slot,
+counted across slots, within 10 slots of the migration, never on the curve. A completed curve is not a
 migration: the pool exists only from the migration, an instruction of its own that anyone may send, in the completing
 transaction (BRUH did) or slots later. A completed curve is the point of a MIG buy, never a reason to skip it, unlike
 the launch-type rules."""
@@ -14,7 +15,7 @@ import pytest
 
 from snipetech.amm_tape import AMM_RECENT_KEY
 from snipetech.analysis import paper
-from snipetech.analysis.lab import TRIGGERS, Trigger, _fire, collect, rank
+from snipetech.analysis.lab import MIG_LAND_SLOTS, TRIGGERS, Trigger, _fire, collect, mig_entry, rank
 from snipetech.config import Config
 from snipetech.models import Migration, Trade
 from snipetech.oktech import strategy_sniper
@@ -74,6 +75,28 @@ def _late_migration(store: Store, name: str, ts: int, slot: int, done_at: int = 
         m.buy(addr(f"{name}-next-{k}"), 1.0, mig_at + 1)
     for k in range(4):
         m.sell(addr(f"{name}-first-{k}"), 1.0, mig_at + 150 + 5 * k)
+    m.commit()
+    return m
+
+
+def _rush_after_migration(store: Store, name: str, ts: int, slot: int, mig_at: int = 10, rush_from: int = 12,
+                          ride: float = 0.0) -> Market:  # fmt: skip
+    """A curve that completes 2 slots after its create; pump.fun migrates it `mig_at` slots after the create in a
+    transaction of its own with no trade in it, or (`ride` SOL) in the completing transaction with a PumpSwap buy of that
+    size after it (BRUH's post_complete_buy); then six 3 SOL PumpSwap buys, one a slot from `rush_from`, and their
+    sellers out 150 slots on."""
+    m = Market(store, addr(name), addr(f"{name}-dev"), ts, slot)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    done = m.complete(addr(f"{name}-whale"), 2)
+    if ride:
+        m.migrate(2, sig=done.sig)
+        m.buy(addr(f"{name}-ride"), ride, 2, sig=done.sig)
+    else:
+        m.migrate(mig_at)
+    for k in range(6):
+        m.buy(addr(f"{name}-rush-{k}"), 3.0, rush_from + k)
+    for k in range(6):
+        m.sell(addr(f"{name}-rush-{k}"), 1.0, rush_from + 150 + k)
     m.commit()
     return m
 
@@ -159,15 +182,15 @@ def test_mig_fires_on_the_recorded_migration():
 
 def test_mig_fires_on_the_migration_not_on_the_completed_curve():
     # the curve completes at +5 and pump.fun migrates it at +7: the pool's first four buys (8 SOL) come in the
-    # migration's slot, and a MIG buy, which needs the pool, lands a slot after it, behind them
+    # migration's slot, and a MIG buy, which needs the pool, lands a slot after it at the earliest, behind them
     store = Store(":memory:")
     m = _late_migration(store, "mig-gap", T0, SLOT0)
     path, launch = _path(store, m)
     i = _fire(MIG, path, launch, set(), mig=m.migration)
     assert path.slot[i] == m.migration.slot == SLOT0 + 7 and path.users[i] == addr("mig-gap-first-3")
-    lat, pos = paper.MIG_LANDING
-    e = int(path.landing_index(m.migration.slot + lat, pos, i))
-    assert e == i + 2 and path.slot[e] == SLOT0 + 8 and path.amm[e]  # and behind the next slot's two buys
+    e = mig_entry(path, i, m.migration, *paper.MIG_LANDING)
+    # and behind the next slot's two buys: the only PumpSwap trades in the 10 slots after the migration's slot
+    assert e == i + 2 and path.slot[e] == SLOT0 + 8 and path.amm[e]
 
 
 def test_the_lab_times_a_mig_buy_from_the_recorded_migration():
@@ -280,7 +303,7 @@ def test_bruh_migrated_in_the_transaction_that_completed_its_curve():
     assert post.sig == mig.sig and (pool["pool_quote_amount"], pool["pool_base_amount"]) == (post.q_after, post.b_after)
 
 
-def test_mig_buys_bruh_behind_the_pumpswap_buy_that_rode_in_its_migration():
+def test_mig_fires_on_bruh_in_its_create_slot_and_finds_no_landing_on_the_tape_of_then():
     store, launch = _bruh()
     mig = _bruh_migration()
     path = MarketPath.build(store.trades_for_mint(BRUH), launch)
@@ -289,19 +312,17 @@ def test_mig_buys_bruh_behind_the_pumpswap_buy_that_rode_in_its_migration():
         assert i is not None and path.slot[i] == mig.slot == launch.slot, w  # migrated inside the create slot
     # the last state of the migration's slot: the 64 SOL PumpSwap buy that rode in the migrating transaction
     assert path.amm[i] and path.sigs[i] == mig.sig and round(path.quote[i] / 1e9, 3) == 64.197
-    lat, pos = paper.MIG_LANDING
-    e = int(path.landing_index(mig.slot + lat, pos, i))
-    assert e == i  # a MIG buy lands behind it: the next trade on the tape is 366 s later
+    # a MIG buy lands behind PumpSwap trades after the migration's slot, and this tape (from before the PumpSwap side
+    # recorded recent coins) has the next one 366 s later: no landing
+    assert mig_entry(path, i, mig, *paper.MIG_LANDING) is None
 
 
 def test_a_pumpswap_entry_is_priced_on_the_pool_reserves():
     store, launch = _bruh()
     mig = _bruh_migration()
     path = MarketPath.build(store.trades_for_mint(BRUH), launch)
-    i = _fire(MIG, path, launch, set(), mig=mig)
-    lat, pos = paper.MIG_LANDING
-    e = int(path.landing_index(mig.slot + lat, pos, i))
-    # the entry state is the pool's own: its reserves after the 64 SOL buy, and the fee that buy paid
+    e = _fire(MIG, path, launch, set(), mig=mig)
+    # a buy at the pool's state after the 64 SOL buy: its reserves, and the fee that buy paid
     assert path.amm[e] and (path.q[e], path.b[e]) == (149_187_262_120, 117_868_677_552_549)
     assert path.fee_bps[e] == 125
     costs = Costs(per_tx_lamports=0.0035e9)
@@ -333,6 +354,97 @@ def test_a_mig_buy_lands_a_slot_after_the_migration_three_trades_in():
     # genesis 0, the create 1, a small buy 2, the whale's completing buy 3 (it migrated the coin: the trigger); the
     # next slot's PumpSwap buys are 4-7, and the buy lands behind the first three of them
     assert row["data"]["landing"] == paper.landing_key(*paper.MIG_LANDING) and row["data"]["behind"] == 3
+
+
+def _lab_and_paper(store: Store, m: Market) -> tuple[dict, dict | None]:
+    """The coin's MIG-10 moment as the lab scores it (its row, or what it skipped) and as the paper test does."""
+    _tape(store)
+    data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[MIG], exits=[EXIT])
+    s = _frozen(store, MIG, paper.MIG_LANDING, T0)
+    out = paper.run(store, _cfg(), now=T0 + 3 * H)
+    trades = store.paper_trades(s["id"])
+    return data, (trades[0] if trades else {"skipped": out["skipped"].get(s["id"])})
+
+
+def test_a_mig_buy_lands_behind_the_rush_when_the_slot_after_the_migration_is_empty():
+    """Review finding (7 Nov): the landing counted only the slot after the migration ("+3" stops at that slot's last
+    trade). Here pump.fun migrates the curve at +10 in a transaction of its own, nothing trades at +11 and six 3 SOL
+    PumpSwap buys come from +12: the buy landed on the completed curve's state at +2, priced on the curve's reserves,
+    its timers counted from before the pool existed, ahead of the whole rush. It lands behind the first 3 PumpSwap
+    trades after the migration's slot, counted across slots, in the lab and in the paper test alike."""
+    store = Store(":memory:")
+    m = _rush_after_migration(store, "mig-empty-next", T0 + 600, SLOT0)
+    path, launch = _path(store, m)
+    i = _fire(MIG, path, launch, set(), mig=m.migration)
+    assert not path.amm[i] and path.slot[i] == SLOT0 + 2  # the trigger's state: the completed curve
+    e = mig_entry(path, i, m.migration, *paper.MIG_LANDING)
+    assert path.amm[e] and path.slot[e] == SLOT0 + 14 and path.users[e] == addr("mig-empty-next-rush-2")
+    data, trade = _lab_and_paper(store, m)
+    (row,) = data["rows"]
+    in_slot, ahead, slots, vs_first = row["mig_landing"]
+    assert (in_slot, ahead, slots) == (0, 3, 4) and vs_first > 0.05  # behind three 3 SOL buys, above the first one
+    assert trade["data"]["behind"] == 3 and trade["data"]["entry_mcap_sol"] == pytest.approx(path.mcap_sol(e))
+    # and the paper report says so, not the hunt's "3 trades into the slot after the trigger"
+    words = "behind the first 3 PumpSwap trades after the migration's slot"
+    assert words in paper.landing_text(*paper.MIG_LANDING, "mig") and words in paper.landing_note("+6")
+    (strat,) = paper.report(store, _cfg(), now=T0 + 3 * H)["strategies"]
+    assert words in strat["landing"]
+    assert "slot after the trigger" in paper.landing_text(*paper.HUNT_LANDING, "hunt")
+
+
+def test_a_mig_buy_after_a_migration_that_rode_in_the_completing_buy_lands_behind_the_rush_too():
+    """The same with the migration in the completing transaction and a PumpSwap buy after it there (BRUH's shape), the
+    slot after it empty: the buy landed behind that buy, ahead of the rush from two slots on."""
+    store = Store(":memory:")
+    m = _rush_after_migration(store, "mig-ride", T0 + 600, SLOT0, ride=2.0, rush_from=4)
+    path, launch = _path(store, m)
+    i = _fire(MIG, path, launch, set(), mig=m.migration)
+    assert path.amm[i] and path.users[i] == addr("mig-ride-ride")  # the PumpSwap buy that rode in the migration
+    e = mig_entry(path, i, m.migration, *paper.MIG_LANDING)
+    assert e == i + 3 and path.slot[e] == SLOT0 + 6
+    data, trade = _lab_and_paper(store, m)
+    (row,) = data["rows"]
+    assert row["mig_landing"][:3] == (1, 3, 4) and trade["data"]["behind"] == 3
+
+
+def test_a_migration_with_no_pumpswap_trade_soon_after_it_is_skipped_and_said_why():
+    """No PumpSwap trade within MIG_LAND_SLOTS after the migration's slot: nothing for the buy to land behind, and the
+    tape holds the pool's state only through its trades, so the moment is skipped with its own reason, never priced
+    on the curve."""
+    store = Store(":memory:")
+    m = _rush_after_migration(store, "mig-no-landing", T0 + 600, SLOT0, rush_from=10 + MIG_LAND_SLOTS + 5)
+    path, launch = _path(store, m)
+    i = _fire(MIG, path, launch, set(), mig=m.migration)
+    assert mig_entry(path, i, m.migration, *paper.MIG_LANDING) is None
+    data, trade = _lab_and_paper(store, m)
+    assert not data["rows"]
+    (one,) = data["amm_tape"]["triggers"].values()
+    assert one == {"scored": 0, "skipped": {"no_landing": 1}}
+    assert trade == {"skipped": {"no_landing": 1}}
+    from snipetech import report as R
+
+    text = R.render_lab({"moments": 0, "tape_hours": data["tape_hours"], "buy_sol": 0.2, "latency_slots": 0,
+                         "position": "+6", "strategies": [], "amm_tape": data["amm_tape"]})  # fmt: skip
+    assert "skipped: 1 with no PumpSwap trade in the 10 slots (about 2 s) after the migration's slot" in text
+
+
+def test_a_mig_buy_lands_by_the_end_of_its_window_behind_fewer_when_fewer_came():
+    """OKTech sends its buy the moment it sees the migration, so it lands within MIG_LAND_SLOTS of it: in a coin with one
+    PumpSwap buy in that window and a rush 15 slots after the migration, behind that one buy, ahead of the rush it does
+    not wait for."""
+    store = Store(":memory:")
+    m = Market(store, addr("mig-slow"), addr("mig-slow-dev"), T0 + 600, SLOT0)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.complete(addr("mig-slow-whale"), 2)
+    m.migrate(10)
+    m.buy(addr("mig-slow-first"), 1.0, 11)
+    for k in range(4):
+        m.buy(addr(f"mig-slow-rush-{k}"), 3.0, 10 + MIG_LAND_SLOTS + 5 + k)
+    m.commit()
+    path, launch = _path(store, m)
+    i = _fire(MIG, path, launch, set(), mig=m.migration)
+    e = mig_entry(path, i, m.migration, *paper.MIG_LANDING)
+    assert e == i + 1 and path.users[e] == addr("mig-slow-first")
 
 
 def test_the_lab_scores_mig_at_the_mig_landing_on_pumpswap():

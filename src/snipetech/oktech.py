@@ -821,8 +821,9 @@ def strategy_sniper(
         summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
                        "Window, as the lab scored it)")  # fmt: skip
         notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
-                     "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy a slot or so after "
-                     "the migration, where the lab assumes it lands) and that its exits fire")  # fmt: skip
+                     "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy behind the first 3 "
+                     "PumpSwap trades after the migration's slot, a slot or so after it, where the lab assumes it "
+                     "lands) and that its exits fire")  # fmt: skip
         # still missing live (7 Nov, research round 1, P2), out of scope of the MIG lab: solana/sell.py skips a coin
         # whose curve has completed, and operator/live_test.py accepts hunt strategies only
         notes.append("/sell cannot sell these coins, nor the unsold-coin watch's /sell line: every MIG position is on "

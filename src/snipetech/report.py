@@ -750,10 +750,12 @@ def _amm_tape_lines(t: dict) -> list[str]:
     if t.get("holes"):
         out.append("  PumpSwap tape missing: " + ", ".join(stretch(a, b) for a, b in t["holes"]))
     land = t.get("landing") or {}
-    if land.get("n") and land.get("vs_first") is not None:  # what the landing a slot after the migration cost
+    if land.get("n") and land.get("vs_first") is not None:  # what landing behind the PumpSwap trades after it cost
+        slots = f"{land['slots']:g} slot{'' if land['slots'] == 1 else 's'}"
         out.append(f"  Where the {land['n']} MIG buys landed: behind a median {land['slot_trades']:g} PumpSwap trades in the "
-                   f"migration's slot and {land['ahead']:g} of the next slot, at {land['vs_first']:+.1%} against the "
-                   f"first trade after the migration's slot (90th percentile {land['vs_first_p90']:+.1%})")  # fmt: skip
+                   f"migration's slot and {land['ahead']:g} after it, {slots} after the migration (90th percentile "
+                   f"{land['slots_p90']:g}), at {land['vs_first']:+.1%} against the first trade after the migration's "
+                   f"slot (90th percentile {land['vs_first_p90']:+.1%})")  # fmt: skip
     return out
 
 
