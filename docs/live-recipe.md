@@ -13,6 +13,8 @@ something rather than stop it, and the wallet's balance stays out of the reports
 - The one stop of the whole bot left is the guard's 5 SOL day stop (operator/RISK; the floor has been off since 12:55).
   The cloud session's safety layer refused to switch it off from here (`remote run operate risk --day-stop off`,
   22:06), so it stays the owner's switch: `/risk stop off` in Telegram.
+  The owner, about 22:12: "Ok we can leave it at that. The bot has like 3 sol in it": the day stop stays as it is (with
+  about 3 SOL in the wallet a 5 SOL day stop cannot trip).
 - The learning: the post-mortem already names a cause for every lost trip and writes lessons and ideas; a build started
   22:10 (loss-learning) breaks every live trip into price move, fees and failed duplicate sends in code, puts those
   numbers in the post-mortem, and sends the owner a short summary after each batch. Tonight's three copies moved
