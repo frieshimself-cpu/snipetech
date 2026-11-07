@@ -120,6 +120,15 @@ def test_an_out_of_range_value_in_the_file_falls_back_alone(paths):
     assert _effective(op, paths) == (15.0, 6.0, 20, 2.0) and read_budget(paths) == {"turn_usd": 6.0}
 
 
+def test_a_number_too_big_for_a_float_falls_back_too(paths):
+    """JSON keeps a 400-digit integer as an int; turning it into a float overflows. The reader still never raises,
+    and setting one says why instead of crashing."""
+    budget_file(paths).write_text(json.dumps({"daily_usd": 10**400, "max_tool_calls": 10**400}))
+    assert _effective(OperatorConfig(), paths) == (15.0, 2.0, 20, 2.0)
+    with pytest.raises(ValueError, match="5 to 80"):
+        set_budget(paths, OperatorConfig(), {"max_tool_calls": 10**400}, "cli", NOW)
+
+
 def test_an_unreadable_file_means_the_configs_values(paths):
     budget_file(paths).mkdir()  # reading a directory raises OSError
     assert _effective(OperatorConfig(), paths) == (15.0, 2.0, 20, 2.0)

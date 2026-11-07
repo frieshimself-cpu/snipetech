@@ -4,8 +4,8 @@ operator/BUDGET next to the database. The server's config file was written by `i
 default, so each [operator] value in it is pinned and changing one needs SSH, which the owner does not do; this file
 wins over it, value by value. Only the owner writes it: the agents' start_job refuses `operate` (operator/jobs.py), no
 agent tool writes a file without an extension in operator/, and the strategist's overlay covers [book] and [qualify]
-only. Why it exists: 4.44 $ spent on 6 Nov and 1.92 $ by the afternoon of 7 Nov against a 15 $ cap, while the owner
-said he can afford 200 $ a day and wants the bot profitable as fast as possible."""
+only. Why it exists: 4.44 $ spent on 6 Nov and 1.92 $ so far on 7 Nov against a 15 $ cap, while the owner said he
+can afford 200 $ a day and wants the bot profitable as fast as possible."""
 
 from __future__ import annotations
 
@@ -41,12 +41,17 @@ def budget_file(paths: OperatorPaths) -> Path:
 
 
 def _sane(name: str, value: Any) -> float | int | None:
-    """`value` as the field's number when it is a number inside its bounds, else None. Never raises."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+    """`value` as the field's number when it is a number inside its bounds, else None. Never raises (a 400-digit
+    integer, which JSON keeps as an int, overflows a float)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if not RULES[name][0](float(value)):
+    try:
+        v = float(value)
+    except OverflowError:
         return None
-    return int(value) if name == "max_tool_calls" else float(value)
+    if not math.isfinite(v) or not RULES[name][0](v):
+        return None
+    return int(v) if name == "max_tool_calls" else v
 
 
 def read_budget(paths: OperatorPaths) -> dict[str, float | int]:
@@ -106,8 +111,11 @@ def set_budget(
     for name, value in values.items():
         v = _sane(name, value)
         if v is None:
-            shown = f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else repr(value)
-            raise ValueError(f"{RULES[name][1]}, not {shown}")
+            try:
+                shown = f"{value:g}" if isinstance(value, (int, float)) and not isinstance(value, bool) else repr(value)
+            except OverflowError:
+                shown = "that number"
+            raise ValueError(f"{RULES[name][1]}, not {shown[:40]}")
         new[name] = v
     day = {**effective_budget(cfg, None), **new}
     if day["turn_usd"] > day["daily_usd"]:  # the gate checks the day before a turn, so a turn would overrun it
