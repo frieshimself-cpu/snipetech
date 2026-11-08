@@ -80,6 +80,32 @@ measure stage now records, for each live copy, where on its curve the leader bou
 to the trades behind and the price gap, so live landings can be read by curve progress (7aPo3n, buying at 79-93 %, was
 copied 0-1 trades behind).
 
+## The lab and the paper test: a launch rule fires only on its own launchpad (8 Nov)
+
+The lab (`analysis/lab.py`: `_coin_rows` builds each coin's `MarketPath`, `_fire` decides whether a rule fires) and the
+forward paper test (`analysis/paper.py`, the same `_fire`) score every rule on the tape. Until 8 Nov a launch, hunt,
+whale or burst rule fired on every SOL-quoted launch, Raydium LaunchLab included, while every sniper `oktech.py` builds
+sends OKTech `platforms: ["pumpfun"]`. Research round 4 found the damage: LaunchLab was 30-60 % of creator-0 firings on
+7-8 Nov, all of paper rule bbe92cca81's profit was LaunchLab coins (+0.095 SOL on 3; its pump.fun coins lost 0.048 on
+4), and 6 of f94add343f's 14 trades were.
+
+Now each of those rules has a venue (`Trigger.venue`). `pumpfun`, the default, is what OKTech runs; `launchlab` is a
+research option (`--trigger '{"kind": "hunt", ..., "venue": "launchlab"}'`). A coin's venue comes from its trades
+(`MarketPath.venue`: LaunchLab if any of its trades is on a LaunchLab curve), and `_fire` returns nothing for a
+launch-type rule on a coin of another venue. Copy, momentum and MIG rules have no venue knob. The venue is part of a
+rule's id only when it is not the default, so every trigger and frozen strategy keeps its id.
+
+Nothing is deleted. Each new paper trade records its coin's venue (`data.venue`). The first paper run after the deploy
+tags the older rows from the tape, once (`paper.tag_venues`, coverage `paper:venues`), so the tags hold after retention
+prunes those coins. A frozen rule's record (`paper.record`) counts only its own venue's trades: the paper report, the
+digest line, `/test` and the automatic test's 100-trade bar all read it, and the report says how many it left out
+(`other_venue`). A row that was never tagged and whose coin the tape no longer holds still counts.
+
+`/test` and the automatic test refuse a rule whose venue its sniper cannot buy (`oktech.venue_refusal`: no OKTech
+platform is mapped to LaunchLab), in plain words; `oktech strategy` refuses to build one. Not done yet: MarketPath does
+not mark a LaunchLab coin that leaves its curve, and our landing on LaunchLab has never been measured (round 4,
+priority 4), so a `launchlab` lab number is research, not evidence.
+
 ## One database, many writers: every write is a short transaction
 
 Every process on the server writes the same SQLite file (`snipetech.db`, WAL mode): the tape recorder about 100,000

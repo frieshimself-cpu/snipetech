@@ -32,6 +32,7 @@ import numpy as np
 
 from ..amm_tape import AMM_RECENT_KEY
 from ..config import Config
+from ..models import PUMPFUN
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
@@ -96,8 +97,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # sell (7 Nov)
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
-    # trigger fields added on 7 Nov, at their defaults: OKTech hunt's two, then MIG's paid-creator split
-    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None}
+    # trigger fields added later, at their defaults: OKTech hunt's two, then MIG's paid-creator split (7 Nov), the
+    # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
+    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN}
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
@@ -157,6 +159,45 @@ def landing_note(copy_pos: str) -> str:
             f"slot: the regime live copies measured), launch snipes at the slot after the create, OKTech hunt snipes "
             f"{HUNT_LANDING[1][1:]} trades into the slot after their trigger, OKTech MIG buys "
             f"{landing_text(*MIG_LANDING, 'mig')}.")  # fmt: skip
+
+
+def strategy_venue(strategy: dict) -> str | None:
+    """The launchpad a frozen strategy's record is made of: its trigger's venue for a launch, hunt, whale or burst rule
+    (pump.fun when it names none: every rule frozen before 8 Nov), None for a rule with no venue knob (a copy,
+    momentum, MIG), whose every trade counts."""
+    trig = strategy.get("trigger") or {}
+    if trig.get("kind") not in LAUNCH_KINDS:
+        return None
+    return str(trig.get("venue") or PUMPFUN)
+
+
+def record(store: Store, strategy: dict, rows: list[dict] | None = None) -> tuple[list[dict], int]:
+    """(the strategy's paper trades that count in its record, how many others it has): until 8 Nov the paper test fired
+    launch-type rules on Raydium LaunchLab launches too, which no OKTech sniper of ours buys (research round 4: all of
+    bbe92cca81's profit, 6 of f94add343f's 14 trades). Those rows stay in paper_trades; they never count. A row's venue
+    is the one `run` tagged it with, else the one the tape says (`tag_venues` has not reached it yet); a row whose coin
+    the tape no longer holds and that was never tagged counts (nothing says it was not the strategy's venue)."""
+    rows = store.paper_trades(strategy["id"]) if rows is None else rows
+    want = strategy_venue(strategy)
+    if want is None:
+        return rows, 0
+    untagged = [r["mint"] for r in rows if not (r.get("data") or {}).get("venue")]
+    seen = store.mint_venues(untagged) if untagged else {}
+    kept = [r for r in rows if ((r.get("data") or {}).get("venue") or seen.get(r["mint"]) or want) == want]
+    return kept, len(rows) - len(kept)
+
+
+def tag_venues(store: Store) -> int:
+    """Write each untagged paper trade's launchpad (`data.venue`) from the tape, while the tape still holds its coin:
+    rows scored before 8 Nov carry none, and retention prunes the tape (`record` then reads the tag). Returns the rows
+    tagged; once every row the tape can tell is tagged, the coverage `paper:venues` says so and it reads nothing more."""
+    if store.coverage("paper:venues").get("done"):
+        return 0
+    rows = store._q("SELECT strategy, mint FROM paper_trades WHERE json_extract(data, '$.venue') IS NULL")
+    seen = store.mint_venues(m for _s, m in rows)
+    n = store.set_paper_venues((sid, m, seen[m]) for sid, m in rows if m in seen)
+    store.set_coverage("paper:venues", {"done": True, "tagged": n, "untold": len(rows) - n})
+    return n
 
 
 def _scored(store: Store, sid: str) -> bool:
@@ -285,6 +326,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     copy_pos = copy_landing(store, cfg, now)
     state = store.coverage("paper")
     strategies = to_live_landing(store, strategies, copy_pos, state.get("done_until"), now)
+    tag_venues(store)  # the rows scored before the venue knob, once: each new row is tagged as it is written
     since = max(int(state.get("done_until", 0)), min(s["from_ts"] for s in strategies))
     until = int(now - SETTLE_SECS)
     if until <= since:
@@ -362,7 +404,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": res.entry_ts, "exit_ts": res.exit_ts,
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
-                             "landing": landing_key(s["latency"], s["position"]), "behind": e - i},
+                             "landing": landing_key(s["latency"], s["position"]), "behind": e - i,
+                             "venue": path.venue},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
     codes = sorted({c for why in skipped.values() for c in why})
@@ -370,9 +413,11 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
 
 
-def _stats(store: Store, sid: str, conf: float, samples: int) -> tuple[np.ndarray, dict]:
-    pnl = np.array([r["pnl"] for r in store.paper_trades(sid)], dtype=np.float64)
-    return pnl, (summarize(pnl, conf, samples) if len(pnl) else {})
+def _stats(store: Store, strategy: dict, conf: float, samples: int) -> tuple[np.ndarray, dict, int]:
+    """(the pnl of the trades in the strategy's record, their summary, the trades of another venue left out)."""
+    rows, other = record(store, strategy)
+    pnl = np.array([r["pnl"] for r in rows], dtype=np.float64)
+    return pnl, (summarize(pnl, conf, samples) if len(pnl) else {}), other
 
 
 # 7 Nov: a rule showed +10.6 SOL over 1,200 forward trades; three trades made +11.0 SOL (create-slot bundles no live
@@ -402,7 +447,7 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
     for s in cov.get("strategies", []):
         kind = (s.get("trigger") or {}).get("kind")
         lat, pos = int(s.get("latency", 0)), str(s.get("position"))
-        pnl, st = _stats(store, s["id"], conf, samples)
+        pnl, st, other = _stats(store, s, conf, samples)
         robust = _robust(pnl, s["buy_sol"], conf, samples)
         hours = max(((done_until or now) - s["from_ts"]) / 3600, 0)
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
@@ -410,10 +455,11 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": len(pnl), "mean": st.get("mean"),
                     "ev_lower": st.get("ev_lower"), "total": float(pnl.sum()), "win_rate": st.get("win_rate"),
                     "per_hour": len(pnl) / hours if hours else None, "lab_mean": s["lab"].get("mean"),
-                    "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"), **robust})  # fmt: skip
+                    "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"),
+                    "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
-        pnl = np.array([r["pnl"] for r in store.paper_trades(s["id"])], dtype=np.float64)
+        pnl = np.array([r["pnl"] for r in record(store, s)[0]], dtype=np.float64)
         superseded.append({"id": s["id"], "label": s["label"], "position": s.get("position"), "latency": s.get("latency"),
                            "landing": landing_text(int(s.get("latency", 0)), str(s.get("position"))),
                            "superseded_at": s.get("superseded_at"), "n": len(pnl),

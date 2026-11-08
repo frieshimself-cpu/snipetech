@@ -40,6 +40,7 @@ from .. import CODE_ID, code_identity
 from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_holes
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
+from ..models import LAUNCHLAB, PUMPFUN
 from ..oktech import EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
@@ -130,6 +131,10 @@ class Trigger:
     # mig: True = only coins whose creator an earlier coin's creator paid before the create (paid_by_dev edges), False =
     # only the others, None = no filter (the default). OKTech cannot filter on it: a lab knob, to decide buy or block
     dev_paid: bool | None = None
+    # launch, hunt, whale, burst: the launchpad whose launches the rule fires on (research round 4, priority 1).
+    # "pumpfun", the default, is what every OKTech sniper we build buys (platforms ["pumpfun"]); "launchlab" (Raydium
+    # LaunchLab) is research only, refused live (oktech.venue_refusal). A copy, momentum or MIG rule has no venue knob
+    venue: str = PUMPFUN
 
     def label(self) -> str:
         base = self._label()
@@ -137,6 +142,7 @@ class Trigger:
             ([f"within {self.max_age:g}s of launch"] if self.max_age else [])
             + (["normal coins"] if self.plain else [])
             + (["not a create bundle"] if self.solo else [])
+            + ([f"on {VENUE_WORDS.get(self.venue, self.venue)} launches"] if self.venue != PUMPFUN else [])
         )
         return base + (f" ({', '.join(extra)})" if extra else "")
 
@@ -210,12 +216,12 @@ TRIGGERS = (
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
-    "launch": ("plain",),
-    "burst": ("buyers", "sol", "window", "max_age", "plain"),
-    "whale": ("sol", "max_age", "plain", "solo"),
+    "launch": ("plain", "venue"),
+    "burst": ("buyers", "sol", "window", "max_age", "plain", "venue"),
+    "whale": ("sol", "max_age", "plain", "solo", "venue"),
     "kol": ("sol", "group", "max_age", "plain"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
-    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max"),
+    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
     "mig": ("window", "dev_paid"),
 }
@@ -227,7 +233,9 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers")
 FLAG_FIELDS = ("plain", "solo")
-TEXT_FIELDS = ("kind", "group", "event")
+TEXT_FIELDS = ("kind", "group", "event", "venue")
+TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
+VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
 TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
 
@@ -289,6 +297,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         if name != "kind" and name not in TRIGGER_KNOBS[kind] and getattr(trig, name) != getattr(default, name):
             raise ValueError(f"{name} does not apply to a {kind} trigger (it takes {', '.join(TRIGGER_KNOBS[kind])})"
                              + (f": {HUNT_CANNOT}" if kind == "hunt" else ""))  # fmt: skip
+    if trig.venue not in TRIGGER_VENUES:
+        raise ValueError(f"venue must be one of {', '.join(TRIGGER_VENUES)}, not {trig.venue!r}")
     if kind == "kol" and trig.group not in TRIGGER_GROUPS:
         raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
     if kind == "hunt":
@@ -706,6 +716,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else); `paid`: whether an earlier coin's creator
     paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set)."""
     dev = launch.deployers() if launch is not None else set()
+    if trig.kind in LAUNCH_KINDS and getattr(path, "venue", PUMPFUN) != trig.venue:
+        return None  # a launch-type rule buys only its own launchpad's coins (OKTech's snipers: pump.fun only)
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
     if trig.max_age and launch is None:

@@ -26,6 +26,12 @@ Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on cho
 
 - [Round 4](2026-11-08-round-4.md), 8 Nov 00:05-09:10: nothing frozen; the lab, paper test and autotest count LaunchLab coins our pump.fun-only snipers cannot buy (30-60 % of creator-0 firings; all of bbe92cca81's paper profit); the 41 SOL bundle operator is 15 fixed wallets (+0.0214 a trade on 27 coins, but silent since 7 Nov 16:55 and real wallets in our spot made about 0); the LaunchLab wave has ended.
 
+**Launch-type labs before the venue knob mix launchpads.** Until round 4's priority-1 build (8 Nov, on the server once
+deployed) the lab and the paper test fired launch, hunt, whale and burst rules on Raydium LaunchLab launches too, which
+no sniper of ours buys; a lab job from before the deploy holds such rows. Since then those rules fire on pump.fun
+launches only unless the trigger says `"venue": "launchlab"`, and frozen rules' LaunchLab paper trades are kept but not
+counted (docs/architecture.md, "The lab and the paper test").
+
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
 from the moment of the buy (it starts about 1.3 s later), so its numbers are 0.002 to 0.006 SOL a trade too kind. Since
