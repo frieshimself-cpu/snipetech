@@ -743,6 +743,9 @@ def build_parser() -> argparse.ArgumentParser:
         "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst",
         json_flag=False,
     )
+    sp = cmd("db", "check the live database (quick_check) or rebuild one table's indexes (reindex)", json_flag=False)
+    sp.add_argument("action", choices=["check", "reindex"])
+    sp.add_argument("--table", default="trades")
     sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
     sp.add_argument("signature")
     sp = cmd(
@@ -1617,6 +1620,12 @@ def main(argv: list[str] | None = None) -> int:
 
         print(asyncio.run(go()))
         return 0
+    if args.cmd == "db":
+        from .infra.db_repair import check, reindex
+
+        out = check(cfg.storage.db_path) if args.action == "check" else reindex(cfg.storage.db_path, args.table)
+        print(json.dumps(out))
+        return 0 if out.get("ok", (out.get("after") or {}).get("ok")) else 1
     if args.cmd == "snapshot-db":
         from .infra.snapshot_db import snapshot_db
 

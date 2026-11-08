@@ -47,7 +47,7 @@ SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "SNIPETECH_RPC_U
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
-    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "tx", "strategist",
+    "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "db", "tx", "strategist",
     "research",
 })  # fmt: skip
 UNITS = (
