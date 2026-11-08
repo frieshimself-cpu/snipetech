@@ -23,6 +23,19 @@ something rather than stop it, and the wallet's balance stays out of the reports
   landed sell) 0.0180, and four failed duplicate sells at 0.002 each 0.0080. The +0.0142 and -0.0039 first written
   here were after pump.fun's fee and without the duplicates.
 
+## The duplicate sells explained and made free (8 Nov 2026, 12:50 UTC, 93e7177)
+
+Each OKTech exit is two sends, not one send copied: a relay-sent sell carrying `sellTipAmount` as its tip and the
+buy's priority (the one that lands, 47 of 49 on record), and a plain send with no tip at `sellPriorityFeeSol`, which
+fails with pump error 6023 and keeps that priority fee (a failed send gives its tip back). We set both fields to
+0.002, so every exit paid 0.002 for nothing: 0.008 of the 0.119 gross on the 12:10-12:20 trips, 0.172 SOL over the
+5-7 Nov record. OKTech's owner told the owner the twins follow our settings; they do. Since 93e7177 every sniper's
+`sellPriorityFeeSol` is 0 and the bid lives in the tip. The two running copy snipers keep their old settings until
+the book replaces them (after their next buy, as always). To verify on the first sells after that: the failed twin's
+`priority_lamports` in `fills` reads 0 and `twin_fee_sol` about 0.000005; a sell that never lands would show as an
+unsold coin (the watch and `/sell` cover it). The owner, 12:35: "the agents should decide on the fees depending on
+what the specific task is" (a fee policy per sniper kind is building).
+
 ## Live copies of 7aPo3n, 8 Nov 2026 11:30–12:20 UTC (the book, control arm, 0.2 SOL)
 
 Six copies in 50 minutes. The first three (11:30 2WY37w, 11:32 6EtVCH, 11:44 CiPBTK) fell in the hours the tape
