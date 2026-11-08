@@ -57,11 +57,16 @@ def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[fl
     return [0.5 ** (max(0.0, now - t) / (half_life_days * 86400.0)) for t in ts_list]
 
 
-def wallet_live_rows(trips: list[dict], now: float, half_life_days: float) -> list[dict[str, Any]]:
-    """Per copied wallet: unweighted n, decay-weighted mean, a one-sided lower bound, live once n >= 10."""
+def wallet_live_rows(trips: list[dict], now: float, half_life_days: float,
+                     starts: dict[str, float] | None = None) -> list[dict[str, Any]]:  # fmt: skip
+    """Per copied wallet: unweighted n, decay-weighted mean, a one-sided lower bound, live once n >= 10. `starts`: the
+    owner's fresh start per wallet (`book fresh`): only the trips sold after it count for that wallet."""
     by: dict[str, list[dict]] = {}
+    starts = starts or {}
     for t in trips:
         w = t.get("wallet_copied")
+        if w and float(t.get("sell_ts") or 0) < float(starts.get(w, 0)):
+            continue
         if w:
             by.setdefault(w, []).append(t)
     out = []
@@ -536,7 +541,14 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.put_bid_model(row)
     store.prune_bid_model([row["arm"] for row in arms])
     keep_tx_cost(store, cfg, arms, now)
-    live = wallet_live_rows(trips, now, m.half_life_days)
+    from ..book.switch import book_fresh_starts
+    from ..operator.paths import OperatorPaths
+
+    try:
+        fresh = book_fresh_starts(OperatorPaths(Path(cfg.storage.db_path).resolve().parent))
+    except Exception:  # noqa: BLE001 - no fresh start read: every trip counts, as before
+        fresh = {}
+    live = wallet_live_rows(trips, now, m.half_life_days, starts=fresh)
     for row in live:
         store.put_wallet_live(row)
     store.prune_wallet_live([row["wallet"] for row in live])

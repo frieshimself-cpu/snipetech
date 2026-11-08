@@ -1206,3 +1206,28 @@ def test_cli_book_mcap_sets_shows_and_clears_a_wallets_cap(tmp_path, capsys):
     assert book_mcaps(OperatorPaths(tmp_path / "data")) == {}
     with pytest.raises(SystemExit, match="not changed"):
         cli.main(["--db", db, "book", "mcap", L1, "lots"])
+
+
+def test_a_fresh_start_lifts_a_live_pause_and_the_book_copies_the_wallet_again(tmp_path, capsys):
+    """`snipetech book fresh <wallet>` (the owner's yes, 8 Nov 21:05: trade now, the balance does not matter): the
+    wallet's live pause is lifted and the book copies it again; the measure stage judges it only on its trips after the
+    fresh start, so the pause rule still applies to those."""
+    from snipetech import cli
+    from snipetech.book.switch import book_fresh_starts
+
+    st, cfg = _env(tmp_path, enabled=True)
+    st.set_coverage("book:paused", {L1: {"reason": "live paused", "ts": int(NOW) - 3600, "lab_version": None}})
+    _fresh_tape(st)
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    try:
+        svc = FakeSvc(st)
+        asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert not any(c[0] == "create" and c[1][0].startswith(L1) for c in svc.calls)  # still paused
+        assert cli.main(["--db", str(tmp_path / "data" / "snipetech.db"), "book", "fresh", L1]) == 0
+        assert L1 in book_fresh_starts(OperatorPaths(tmp_path / "data"))
+        svc2 = FakeSvc(st)
+        asyncio.run(run_book(svc2, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))  # tape still fresh
+        assert any(c[0] == "create" and c[1][0].startswith(L1) for c in svc2.calls)
+        assert L1 not in (st.coverage("book:paused") or {})
+    finally:
+        st.close()

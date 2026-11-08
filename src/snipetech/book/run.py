@@ -302,12 +302,24 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     except Exception as exc:  # noqa: BLE001 - the guard never breaks the book's own stops
         guard = None
         notes.write(f"book: the wallet-wide guard could not be read ({type(exc).__name__})", "info")
+    from .switch import book_fresh_starts
+
+    fresh = book_fresh_starts(paths)
+    paused_rec = dict(store.coverage(PAUSED_KEY) or {})
+    lifted = [w for w, rec in paused_rec.items() if w in fresh and fresh[w] >= float((rec or {}).get("ts") or 0)]
+    if lifted:  # the owner's fresh start lifts a live pause from before it
+        for w in lifted:
+            paused_rec.pop(w, None)
+        store.set_coverage(PAUSED_KEY, paused_rec)
+    # a live row computed before a wallet's fresh start still holds its old trips: not read until measure recomputes it
+    live_rows = {r["wallet"]: r for r in store.wallet_live()
+                 if not (r["wallet"] in fresh and float(r.get("updated_at") or 0) < fresh[r["wallet"]])}  # fmt: skip
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
-                     qualified=_bookable(store), live={r["wallet"]: r for r in store.wallet_live()},
+                     qualified=_bookable(store), live=live_rows,
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
-                     tape_holding=tape_holding, paused=dict(store.coverage(PAUSED_KEY) or {}),
+                     tape_holding=tape_holding, paused=paused_rec,
                      guard=guard is None or guard.tripped or not guard.known,
                      stops=book_stops(cfg, paths))  # fmt: skip  # the owner's /risk values where set, else [book]'s
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader

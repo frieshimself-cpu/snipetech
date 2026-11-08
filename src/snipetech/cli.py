@@ -772,10 +772,11 @@ def build_parser() -> argparse.ArgumentParser:
         "book",
         "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
     )
-    sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap"],
+    sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap", "fresh"],
                     help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status; "
                          "bar [SOL a trade|default]: the score a wallet needs to be copied; mcap [WALLET SOL|off]: copy "
-                         "that wallet's buys only below this market cap in SOL (OKTech maxMcapUsd)")  # fmt: skip
+                         "that wallet's buys only below this market cap in SOL (OKTech maxMcapUsd); fresh WALLET: lift its live pause "
+                         "and judge it only on trips after now")  # fmt: skip
     sp.add_argument("value", nargs="?", help="bar: SOL a trade (e.g. 0.001) or 'default'; mcap: the wallet")
     sp.add_argument("cap", nargs="?", help="mcap: the cap in SOL, or off")
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
@@ -1662,6 +1663,15 @@ def main(argv: list[str] | None = None) -> int:
 
             print(f"bar file {book_bar_file(bpaths)} on this machine")
             print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
+            return 0
+        if args.action == "fresh":
+            from .book.switch import book_fresh, book_fresh_file
+
+            if not args.value:
+                raise SystemExit("book fresh: give the wallet")
+            book_fresh(bpaths, args.value.strip(), "cli", time.time())
+            print(f"fresh-start file {book_fresh_file(bpaths)} on this machine")
+            print(f"{args.value.strip()[:6]}…: live pause lifted; judged only on its trips from now")
             return 0
         if args.action == "mcap":
             from .book.switch import book_mcap, book_mcap_file, book_mcaps

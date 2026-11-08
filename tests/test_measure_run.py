@@ -965,3 +965,17 @@ def test_run_measure_reports_twins_per_sell_and_sells_per_buy(tmp_path):
         assert set(out["sells_per_buy"]) >= {"before", "after", "alert", "watch"}
     finally:
         st.close()
+
+
+def test_a_fresh_start_counts_only_a_wallets_trips_after_it():
+    """`book fresh <wallet>` (8 Nov: AG89 copied again under a market-cap cap after six late re-buys lost): its live
+    row counts only the trips sold after the fresh start; other wallets keep every trip."""
+    trips = [
+        {"wallet_copied": "W", "pnl_sol": -0.07, "sell_ts": NOW - 3600},
+        {"wallet_copied": "W", "pnl_sol": 0.03, "sell_ts": NOW - 60},
+        {"wallet_copied": "V", "pnl_sol": -0.05, "sell_ts": NOW - 3600},
+    ]
+    rows = {r["wallet"]: r for r in wallet_live_rows(trips, NOW, 7.0, starts={"W": NOW - 600})}
+    assert rows["W"]["n"] == 1 and rows["W"]["mean_sol"] == 0.03
+    assert rows["V"]["n"] == 1 and rows["V"]["mean_sol"] == -0.05
+    assert "W" not in {r["wallet"] for r in wallet_live_rows(trips[:1], NOW, 7.0, starts={"W": NOW - 600})}

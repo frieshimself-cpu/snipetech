@@ -87,6 +87,33 @@ def book_mcap(paths: OperatorPaths, wallet: str, value: float | None, by: str, n
     return caps
 
 
+def book_fresh_file(paths: OperatorPaths):
+    return paths.root / "BOOK_FRESH.json"
+
+
+def book_fresh_starts(paths: OperatorPaths) -> dict[str, float]:
+    """The owner's fresh start per wallet (unix seconds); {} without a file or with one that cannot be read."""
+    try:
+        data = json.loads(book_fresh_file(paths).read_text()).get("starts") or {}
+        return {str(w): float(v) for w, v in data.items()}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
+def book_fresh(paths: OperatorPaths, wallet: str, by: str, now: float | None = None) -> dict[str, float]:
+    """The owner's fresh start for one wallet (`snipetech book fresh <wallet>`): its live pause is lifted and from now
+    on the measure stage judges it only on the trips sold after this moment, so the pause rule applies to those. For a
+    wallet copied again under a new filter (8 Nov: AG89 under a market-cap cap after six late re-buys lost)."""
+    paths.ensure()
+    starts = book_fresh_starts(paths)
+    starts[wallet] = float(int(time.time() if now is None else now))
+    f = book_fresh_file(paths)
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps({"starts": starts, "by": by}))
+    tmp.replace(f)
+    return starts
+
+
 def effective_min_score(cfg: Config, paths: OperatorPaths) -> float:
     """The owner's bar when set (and sane), else the config's [book] min_score."""
     try:
