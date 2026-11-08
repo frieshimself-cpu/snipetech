@@ -1652,3 +1652,16 @@ def test_a_launch_strategy_limited_to_one_dev_wallet_is_a_dev_wallet_sniper_and_
     assert dev[:8] in " ".join(s.summary)
     with pytest.raises(ValueError, match="creators"):
         strategy_sniper(strat | {"trigger": {"kind": "launch", "creators": "dev"}}, 10)
+
+
+def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_it():
+    """I15/I21 (8 Nov): 7aPo and AG89's buys in the first ~20 slots of a coin pay at our landing, their late re-buys
+    lose; OKTech's copy filter for that is the wallet's maxMcapUsd. Without a cap nothing is sent."""
+    from snipetech.oktech import list_copy_sniper
+
+    lead = "7aPo3npvVtdpkqE7jjY2TAubbYtp2ZpZDaaBLxkKbGXN"
+    capped = list_copy_sniper(lead, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
+    assert capped.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000
+    assert "below $12,000 market cap" in " ".join(capped.summary)
+    plain = list_copy_sniper(lead, "book", 0.3, 0.2, 3)
+    assert "maxMcapUsd" not in plain.config["ctbotWallets"][0]

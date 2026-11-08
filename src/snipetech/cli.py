@@ -772,10 +772,12 @@ def build_parser() -> argparse.ArgumentParser:
         "book",
         "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
     )
-    sp.add_argument("action", choices=["run", "on", "off", "status", "bar"],
+    sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap"],
                     help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status; "
-                         "bar [SOL a trade|default]: the score a wallet needs to be copied")  # fmt: skip
-    sp.add_argument("value", nargs="?", help="bar: SOL a trade (e.g. 0.001) or 'default'")
+                         "bar [SOL a trade|default]: the score a wallet needs to be copied; mcap [WALLET SOL|off]: copy "
+                         "that wallet's buys only below this market cap in SOL (OKTech maxMcapUsd)")  # fmt: skip
+    sp.add_argument("value", nargs="?", help="bar: SOL a trade (e.g. 0.001) or 'default'; mcap: the wallet")
+    sp.add_argument("cap", nargs="?", help="mcap: the cap in SOL, or off")
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
     sp = cmd(
         "strategist",
@@ -1660,6 +1662,21 @@ def main(argv: list[str] | None = None) -> int:
 
             print(f"bar file {book_bar_file(bpaths)} on this machine")
             print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
+            return 0
+        if args.action == "mcap":
+            from .book.switch import book_mcap, book_mcap_file, book_mcaps
+
+            print(f"cap file {book_mcap_file(bpaths)} on this machine")
+            if args.value:
+                if not args.cap:
+                    raise SystemExit("book mcap: not changed: give the wallet and a cap in SOL, or off")
+                try:
+                    value = None if args.cap.strip().lower() == "off" else float(args.cap)
+                    book_mcap(bpaths, args.value.strip(), value, "cli", time.time())
+                except ValueError as exc:
+                    raise SystemExit(f"book mcap: not changed: {exc}") from None
+            caps = book_mcaps(bpaths)
+            print("market-cap caps: " + (", ".join(f"{w[:6]}… below {v:g} SOL" for w, v in caps.items()) or "none"))
             return 0
         if args.action == "status":
             from .book.state import last_run_line

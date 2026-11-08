@@ -55,6 +55,38 @@ def book_bar(paths: OperatorPaths, value: float | None, by: str, now: float | No
     return value
 
 
+def book_mcap_file(paths: OperatorPaths):
+    return paths.root / "BOOK_MCAP.json"
+
+
+def book_mcaps(paths: OperatorPaths) -> dict[str, float]:
+    """The owner's market-cap caps per copied wallet, in SOL ({} without a file or with one that cannot be read)."""
+    try:
+        data = json.loads(book_mcap_file(paths).read_text()).get("caps") or {}
+        return {str(w): float(v) for w, v in data.items() if float(v) > 0}
+    except (OSError, ValueError, AttributeError, TypeError):
+        return {}
+
+
+def book_mcap(paths: OperatorPaths, wallet: str, value: float | None, by: str, now: float | None = None) -> dict:
+    """Set (or with None clear) the owner's cap for one wallet: the book's copy sniper on it copies only its buys below
+    this market cap in SOL (OKTech maxMcapUsd). 8 Nov I15/I21: a leader's early buys pay at our landing, its late
+    re-buys lose. Only the owner sets it (`snipetech book mcap <wallet> <SOL>|off`)."""
+    if value is not None and not 1 <= float(value) <= 100_000:
+        raise ValueError("the market-cap cap is SOL, between 1 and 100000")
+    paths.ensure()
+    caps = book_mcaps(paths)
+    if value is None:
+        caps.pop(wallet, None)
+    else:
+        caps[wallet] = float(value)
+    f = book_mcap_file(paths)
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(json.dumps({"caps": caps, "ts": int(time.time() if now is None else now), "by": by}))
+    tmp.replace(f)
+    return caps
+
+
 def effective_min_score(cfg: Config, paths: OperatorPaths) -> float:
     """The owner's bar when set (and sane), else the config's [book] min_score."""
     try:

@@ -1226,15 +1226,26 @@ class Service:
                               max_buys: int = 5, exit_name: str = "lab", priority_fee: float | None = None,
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
-                              exit_params: dict | None = None, fee_floor: dict | None = None) -> dict:  # fmt: skip
+                              exit_params: dict | None = None, fee_floor: dict | None = None,
+                              max_mcap_sol: float | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
         is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
         (the book's per-wallet exit, book/policy.exit_for), for every spec. Each sniper's fees are the fee policy's for
         a copy of its leader over the measure stage's fills (fees.choose), `fee_floor` (the book's arm) as the floor;
-        `priority_fee` / `tip` given by hand win over the policy's buy bid."""
+        `priority_fee` / `tip` given by hand win over the policy's buy bid. `max_mcap_sol`: copy only the leaders' buys
+        below this market cap, sent as OKTech's maxMcapUsd at the tape's SOL price (refused without a price, so a cap
+        the owner set is never silently dropped)."""
         from . import fees as fee_policy
-        from .oktech import list_copy_sniper
+        from .meta import WSOL
+        from .oktech import _bucket_usd, list_copy_sniper
+
+        max_mcap_usd = None
+        if max_mcap_sol:
+            sol_usd = (self.store.asset(WSOL) or {}).get("price_usd")
+            if not sol_usd:
+                raise ValueError("a market-cap cap needs the SOL price, and the tape has none: no sniper was made")
+            max_mcap_usd = _bucket_usd(float(max_mcap_sol) * float(sol_usd))
 
         evidence = fee_policy.evidence_fills(self.store, self.cfg.operator.wallet, time.time())
         out = []
@@ -1259,7 +1270,8 @@ class Service:
                 choice = fee_policy.choose(self.cfg, "copy", leader=address, fills=evidence, floor=fee_floor)
                 p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name,
                                      priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
-                                     compute_units=compute_units, salt=salt, exit_params=exit_params, fees=choice)  # fmt: skip
+                                     compute_units=compute_units, salt=salt, exit_params=exit_params, fees=choice,
+                                     max_mcap_usd=max_mcap_usd)  # fmt: skip
                 row = {
                     "id": address,
                     "label": label,

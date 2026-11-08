@@ -1168,3 +1168,41 @@ def test_an_unpriced_coin_no_buy_of_ours_explains_counts_as_zero_and_the_book_ke
         assert out2["kill_reason"] == "equity unknown"
     finally:
         st.close()
+
+
+def test_the_book_sends_the_owners_market_cap_cap_for_a_wallet(tmp_path):
+    """`snipetech book mcap <wallet> <SOL>` (operator/BOOK_MCAP.json): the book's copy sniper on that wallet copies only
+    its buys below that market cap (OKTech maxMcapUsd, from SOL at the tape's SOL price); other wallets get none."""
+    from snipetech.book.switch import book_mcap, book_mcaps
+
+    st, cfg = _env(tmp_path, enabled=True)
+    paths = OperatorPaths(tmp_path / "data")
+    assert book_mcap(paths, L1, 60.0, "test", NOW) == {L1: 60.0}
+    assert book_mcaps(paths) == {L1: 60.0}
+    with pytest.raises(ValueError):
+        book_mcap(paths, L2, -1.0, "test", NOW)
+    svc = FakeSvc(st)
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        sent = {c[1][0].split(":")[0]: kw.get("max_mcap_sol") for c, (_, kw) in zip(
+            [c for c in svc.calls if c[0] == "create"], svc.exits)}  # fmt: skip
+        assert sent == {L1: 60.0, L2: None}
+        assert book_mcap(paths, L1, None, "test", NOW) == {}
+    finally:
+        st.close()
+
+
+def test_cli_book_mcap_sets_shows_and_clears_a_wallets_cap(tmp_path, capsys):
+    from snipetech import cli
+    from snipetech.book.switch import book_mcaps
+
+    db = str(tmp_path / "data" / "snipetech.db")
+    assert cli.main(["--db", db, "book", "mcap", L1, "60"]) == 0
+    assert book_mcaps(OperatorPaths(tmp_path / "data")) == {L1: 60.0}
+    assert "60 SOL" in capsys.readouterr().out
+    assert cli.main(["--db", db, "book", "mcap"]) == 0 and L1[:6] in capsys.readouterr().out
+    assert cli.main(["--db", db, "book", "mcap", L1, "off"]) == 0
+    assert book_mcaps(OperatorPaths(tmp_path / "data")) == {}
+    with pytest.raises(SystemExit, match="not changed"):
+        cli.main(["--db", db, "book", "mcap", L1, "lots"])

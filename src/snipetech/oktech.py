@@ -488,14 +488,16 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                      exit_params: dict | None = None, cfg: Config | None = None, exit_name: str = "lab",
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
                      tag: str = "", compute_units: int | None = None, salt: str = "",
-                     fees: FeeChoice | None = None) -> PlannedSniper:  # fmt: skip
+                     fees: FeeChoice | None = None, max_mcap_usd: int | None = None) -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
     the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). The four fees come from the fee policy
     (`fees`, fees.choose for a copy of this leader; without one, the policy with no evidence: the minimums, sells at
     `[oktech] sell_tip_sol` + `sell_priority_sol`). `priority_fee` / `tip` (SOL) asked for by hand (the fee test's
     flags) win over the policy's buy bid and are said so. `send_count` / `compute_units` go to extraParams (see
-    execution_params); `salt` makes a fresh externalId for a replacement with the same settings."""
+    execution_params); `salt` makes a fresh externalId for a replacement with the same settings. `max_mcap_usd`: copy only
+    the leader's buys below this market cap (OKTech's per-wallet maxMcapUsd; 8 Nov I15: a leader's early buys pay, its
+    late re-buys lose)."""
     cfg = cfg or Config()
     notes: list[str] = []
     choice = fees or fee_policy.choose(cfg, "copy", leader=address)
@@ -520,6 +522,8 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         "buyAmount": _round(max(0.001, buy_sol)), "priorityFee": prio, "tipAmount": tip,
         "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))), "speedMode": cfg.oktech.jetstream,
     }  # fmt: skip
+    if max_mcap_usd:
+        config["ctbotWallets"][0]["maxMcapUsd"] = int(max_mcap_usd)
     cu = compute_units if compute_units is not None else cfg.oktech.compute_units
     config["extraParams"] = execution_params(send_count, cu)
     if cfg.oktech.preconf:
@@ -527,8 +531,9 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     sell = autosell(ex | {"copy_exit": True}, notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
-    summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL, {buy_sol:g} SOL per copy, stops after "
-               f"{config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
+    cap = f" below ${int(max_mcap_usd):,} market cap" if max_mcap_usd else ""
+    summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL{cap}, {buy_sol:g} SOL per copy, "
+               f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "
                f"send count {config['extraParams']['globalSendCount']}, no seed account"
                + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else ""),

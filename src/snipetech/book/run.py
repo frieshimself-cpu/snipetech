@@ -399,6 +399,9 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         if a.kind == "retire" and a.sniper_id and not await _retire(svc, wallet, notifier, notes, a, store, now):
             not_replaced.add(a.wallet or "")
     new_ids: list[tuple[str, Any]] = []
+    from .switch import book_mcaps
+
+    caps = book_mcaps(OperatorPaths(Path(cfg.storage.db_path).resolve().parent))
     for a in plan.actions:
         if a.kind == "create" and a.wallet and a.arm:
             if a.wallet in not_replaced:
@@ -409,6 +412,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
             # lab goes by name, exactly the call the book always made; only a wallet's own exit is sent as exit_params
             own = ex is not None and ex.source == "wallet"
             name, extra = (ex.name, {"exit_params": dict(ex.params)}) if own else ("lab", {})
+            if caps.get(a.wallet):
+                extra["max_mcap_sol"] = caps[a.wallet]  # the owner's cap: only the leader's buys below it
             try:
                 # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own. The arm
                 # is the floor of the buy bid: the fee policy (fees.py) may raise the tip for this leader on evidence
