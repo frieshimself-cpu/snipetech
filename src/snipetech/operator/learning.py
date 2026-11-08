@@ -13,7 +13,7 @@ import json
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -342,7 +342,8 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
             max_chars: int = CONTEXT_MAX_CHARS, book: Any = None, research: Path | None = None) -> str:  # fmt: skip
     """The block every turn's message carries: the book's current settings (when given), the last lessons (newest
     last) and the best open ideas, each line cut short and the whole capped, so a long memory never crowds out the
-    round; then, when `research` names docs/research (paths.research_dir), the research record on its own cap."""
+    round; then, when `research` names docs/research (research_dir in operator/paths.py), the research record on its
+    own cap."""
     lines = [book_line(book)] if book is not None else []
     lines.append("What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):")
     rows = read_lessons(paths, lessons)
@@ -445,7 +446,7 @@ def _size(lines: list[str]) -> int:
     return sum(len(x) + 1 for x in lines)
 
 
-def _part(head: str, rows: list[str], more, room: float) -> list[str]:
+def _part(head: str, rows: list[str], more: Callable[[int], str], room: float) -> list[str]:
     """`head` and as many of `rows` as fit in `room` characters, with a last line `more(n)` counting the n left out;
     nothing when not even the head and one row fit."""
     for k in range(len(rows), 0, -1):
@@ -476,10 +477,12 @@ def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS)
     older = [_record_line(f"- {x}") for x in _older_rounds(Path(directory), n)]
     if not (outcome or lessons or older):
         return ""
-    top = [f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} ({name}):"]
+    top = [_record_line(f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} "
+                        f"({name}):")]  # fmt: skip
     top += [_record_line(outcome)] if outcome else []
     room = max_chars - _size(top)
-    lesson_part = (f"Round {n}'s lessons:", lessons, lambda k: f"- … {k} more lessons in docs/research/{name}")
+    lesson_part = (f"Round {n}'s lessons:", lessons,
+                   lambda k: _record_line(f"- … {k} more lessons in docs/research/{name}"))  # fmt: skip
     older_part = ("Older rounds, newest first (docs/research/README.md):", older,
                   lambda k: f"- … {k} older rounds in docs/research/README.md")  # fmt: skip
     wanted = _size(_part(*lesson_part, room=float("inf")))

@@ -532,6 +532,17 @@ def test_the_research_record_stays_small_and_keeps_each_part(tmp_path):
     assert not any(x.startswith("- Round 1 (") for x in lines) and "README.md" in lines[-1]
 
 
+def test_every_line_is_cut_whatever_the_reports_file_name(tmp_path):
+    """The lines that carry the report's file name (the head, the count of lessons left out) are cut like the rest."""
+    d = tmp_path / "research"
+    _report(
+        d, f"2026-11-07-{'x' * 200}-round-3.md", "OUTCOME: three.", [f"L{i:02d} " + "word " * 120 for i in range(30)]
+    )
+    lines = L.research_record(d).splitlines()
+    assert lines[1].startswith("OUTCOME: three.") and any("more lessons" in x for x in lines)
+    assert all(len(x) <= L.CONTEXT_LINE for x in lines)
+
+
 def test_no_research_record_gives_no_block_and_never_an_error(tmp_path, paths):
     """A server without docs/research (an installed package, an old checkout), a directory without a round report yet,
     or a report without its sections: no block, and the turn goes on as before."""
