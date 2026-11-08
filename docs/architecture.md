@@ -181,6 +181,50 @@ image is malformed" for every heavy reader until the copy after, and on disk too
 before a deploy that added a table or a column is not read: the live file is, until the next copy.
 `tests/test_tape_store.py` and `tests/test_snapshot_db.py` guard it.
 
+## The lab: a coin that leaves its curve while held is scored on each exit that sold before (8 Nov)
+
+A position still held when its coin migrates sells on PumpSwap, and the tape holds a coin's PumpSwap trades only where
+the recorder's recent-migrations mode ran (coverage `tape:amm_recent`: from 7 Nov 12:13 UTC, with about 23 holes in the
+48 h to 7 Nov 23:30). Until 8 Nov a lab with a migration sell among its exits (every lab on the search grid, every hunt
+lab) left such a moment out whole, for every exit, wherever the PumpSwap tape lacked the migration. Research round 3
+measured the cost: lab 20261107-233005-63076f skipped 7 of its 29 firings, and 5 of them were coins that completed 28-130 s
+after the launch, every one a winner at 20 s (+0.055 to +0.100 SOL); round 2's 10/6/1 lab dropped 29 of 838. Short-exit
+hunt labs read 0.6-3.7 points of gross too low, about 0.001-0.007 SOL a trade.
+
+Now each exit counts on its own (`lab.exit_pnls`):
+
+- An exit whose every sale landed before the coin left its curve is scored on the curve tape. A 20 s timer on a coin
+  that migrates at 60 s is scored. "Landed before" means priced on a trade before the completing buy and landed in its
+  slot at the latest; a timer prices on the block clock and lands by the slot clock, so both are checked.
+- An exit still holding when the coin left its curve is scored only where the PumpSwap tape holds the migration through
+  its own timer. A 300 s hold on the same coin is left out on that moment, and the lab says why.
+- A timer due after the curve completed but before the migration (the two are 1-10 slots apart) is priced on a curve
+  that takes no sale. It is scored only where the PumpSwap tape holds the stretch from the completion to its sale
+  (`lab.exit_gap`; review, 8 Nov: a 59 s timer on a coin completing at 58 s and migrating at 62 s read +2.1 SOL on a
+  0.2 SOL buy, about 10x, where a 57 s timer made +0.06).
+- A moment no exit can be scored on is left out whole, as before.
+- Only launch-type firings (launch, hunt, whale, burst) are scored exit by exit. A copy or a momentum entry whose coin
+  migrates without PumpSwap tape is still left out whole: riding into the migration is no known winner for them, so
+  exits read on different moments would be compared on samples the coins chose.
+
+The paper test applies the same rule to a frozen exit with a migration sell. Nothing changes where the PumpSwap tape
+holds the migration, where nothing migrates while held, for MIG, or in a lab without a migration sell among its exits
+(the qualify lab's menu). The lab's report says, per trigger, how many firings were left out whole, how many were scored
+on some exits only and how many exit scores were left out, and why.
+
+`rank` reads each exit on the moments it was scored on and says on how many of the trigger's moments the chosen exit
+was scored (`exit_moments`, which `paper freeze` keeps). An exit competes only when it was scored on at least 12 of the
+trigger's older moments (the fewest a trigger is ranked on, by default) and on half of them. The older moments alone
+pick the exit, and they compare the competing exits on the older moments every one of them was scored on: a long hold
+read only on the coins that did not migrate would otherwise beat a short timer read on all of them (review, 8 Nov: the
+hold won at +0.012 a trade over the timer's +0.0003, though on the same moments the timer made +0.013). The pick's test
+numbers are those of all its newer moments that were scored. If the pick was scored on fewer than 8 of the newer moments, or on fewer than half of them, the trigger
+is not ranked; no other exit takes its place. Otherwise the newer moments would choose which exit they judge.
+
+One caution: the moments an exit misses are the coins it rode into their migration, so they were chosen by how each
+coin went. Where many are missing, its numbers lean on its quick sales; `exit_moments` shows how many. On the grid's
+hunt labs the 300 s exits miss 3-24 % of moments. `tests/test_lab_mig_skip.py` guards all of this.
+
 ## Our own exit: /sell sells on the curve and, since 7 Nov, on PumpSwap
 
 `/sell` in Telegram, the unsold-coin watch's `/sell` line and `snipetech sweep` sell a coin from the sniper wallet with

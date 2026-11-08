@@ -108,6 +108,10 @@ class SimResult:
     trough_multiple: float = 0.0
     sells: int = 0
     notes: list[str] = field(default_factory=list)
+    # Every sale was priced on the pump.fun curve and landed before the coin left it (`run_exit`): what a lab without the
+    # PumpSwap tape of a coin's migration can still score, on the curve tape alone (research round 3, 8 Nov). None when
+    # the path does not say where the coin left its curve (paths built by hand).
+    sold_on_curve: bool | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -390,6 +394,23 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     sells = len(sales)
     reason = "+".join(s[0] for s in sales)
     exit_abs, exit_slot = sales[-1][2], sales[-1][3]
+    # Where the sales landed against the curve. On it only when every one is priced on a state before the coin completed
+    # its curve or traded on PumpSwap (off_curve never turns back) and lands by that state's slot at the latest (a sell
+    # lands before the trades of its slot): a timer prices on the block clock (whole seconds) and lands by the slot clock,
+    # so where the two disagree its price state can come before a completion that beat its sale (review, 8 Nov). Where
+    # the position knows the coin's recorded migration, no sale lands after the migration's slot either, so a sale counts
+    # as off the curve even where the tape lost the completing buy. A completed curve takes no trade: a sale after it is
+    # a PumpSwap sale.
+    sold_on_curve = None
+    oc = p.off_curve
+    if oc is not None and len(oc):
+        priced = max(s[2] for s in sales) - p.e  # the latest state a sale is priced on, from the entry
+        landed = max(s[3] for s in sales)  # the latest slot a sale lands in
+        # every state of the slots before that one is ahead of the sale: off the curve if the last of them is
+        ahead = priced if p.slot is None else int(np.searchsorted(p.slot, landed, side="left")) - 1
+        sold_on_curve = not bool(oc[priced]) and not (ahead >= 0 and bool(oc[ahead]))
+        if sold_on_curve and p.migration_slot is not None:
+            sold_on_curve = landed <= p.migration_slot
 
     cost = p.spent + tx_costs
     pnl = proceeds - cost
@@ -414,6 +435,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         peak_multiple=float(p.v[window].max() / basis),
         trough_multiple=float(p.v[window].min() / basis),
         sells=sells,
+        sold_on_curve=sold_on_curve,
     )
 
 

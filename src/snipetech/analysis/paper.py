@@ -49,6 +49,7 @@ from .lab import (
     collect,
     curve_done,
     dev_paid_earlier,
+    exit_gap,
     fired_at,
     label_groups,
     leader_sell_fractions,
@@ -263,10 +264,14 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         if sid in have:
             continue
         have.add(sid)
+        # the lab's record, with on how many of the trigger's moments its exit was scored (an exit still holding a coin
+        # that left its curve where the PumpSwap tape lacks the migration is left out there, lab.exit_pnls)
+        counts = {key: r[key] for key in ("moments", "exit_moments") if key in r}
         new.append({"id": sid, "label": f"{r['trigger']} | {r['exit']}", "trigger": r["trigger_spec"], "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
                     "per_tx_source": per_tx_source, "from_ts": int(now),
-                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **r["test"]}})  # fmt: skip
+                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **counts,
+                            **r["test"]}})  # fmt: skip
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     return {"frozen": new, "kept": old, "tape_hours": data["tape_hours"], "landing": landings(copy_pos)}
 
@@ -276,8 +281,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     freeze). A strategy that buys on PumpSwap (MIG) lands behind PumpSwap trades after the migration and gets a trade
     only where the PumpSwap tape (coverage `tape:amm_recent`) holds the coin from its migration to the end of its exit's
     timer, as in the lab (`lab.mig_moment`), and so does a curve strategy whose exit sells into the migration when its
-    coin migrates while held (`lab.migration_sell_gap`); `skipped` counts, per strategy, the trades left out, `why`
-    says why in words; a MIG strategy whose exit holds past 300 s is not scored at all (`unscored`)."""
+    coin migrates while held (`lab.migration_sell_gap`), unless every sale of it landed before the coin left its curve
+    (since 8 Nov, as the lab scores each exit, `lab.exit_pnls`); `skipped` counts, per strategy, the trades left out,
+    `why` says why in words; a MIG strategy whose exit holds past 300 s is not scored at all (`unscored`)."""
     strategies = store.coverage("paper_strategies").get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -345,19 +351,27 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     e = int(path.landing_index(t_slot + s["latency"], s["position"], i))
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
-                if ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS:
-                    why = migration_sell_gap(amm_cov, path, e, migs.get(mint), ex.max_hold_secs)
-                    if why is not None:
-                        skipped.setdefault(s["id"], {})
-                        skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
-                        continue
-                frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
                 mig = migs.get(mint)
-                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
-                               migration_slot=None if mig is None else mig.slot)  # fmt: skip
-                if prep is None:
+                # an exit that sells into the migration needs the PumpSwap tape of it. On a launch-type rule it is
+                # scored where every sale landed before the coin left its curve, priced on the curve tape, as the lab
+                # scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is left out, as in the lab
+                gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
+                gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs) if gated else None
+                res = None
+                if gap is None or trig.kind in LAUNCH_KINDS:
+                    frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
+                    prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                                   migration_slot=None if mig is None else mig.slot)  # fmt: skip
+                    if prep is not None:
+                        res = run_exit(prep, ex, costs, end_ts=float(end))
+                        if gated and trig.kind in LAUNCH_KINDS:
+                            gap = exit_gap(amm_cov, path, prep, res, ex, mig)
+                if gap is not None:
+                    skipped.setdefault(s["id"], {})
+                    skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
                     continue
-                res = run_exit(prep, ex, costs, end_ts=float(end))
+                if res is None:
+                    continue
                 added += store.put_paper_trade({
                     "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": res.entry_ts, "exit_ts": res.exit_ts,
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
