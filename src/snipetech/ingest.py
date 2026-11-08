@@ -103,33 +103,21 @@ class Ingestor:
             if missing_pools:
                 resolved = await self.resolve_pools(missing_pools)
                 known_pools.update(resolved)
-            # the chunk's rows, one write of each kind (short batches): each transaction's launches, trades, foreign
-            # trades, completions, migrations and pools went one transaction each, back to back, some 6 a transaction
-            # and 64 transactions a chunk, the pattern that keeps a waiting writer (the tape recorder) from the lock
             seen_rows = []
-            launches, trades, foreign, completions, migrations = [], [], [], [], []
-            pools: dict[str, tuple[str, str]] = {}
             for events, pos in pending:
                 norm = normalize(events, pos, known_pools, foreign=True)
-                launches += norm.launches
-                trades += norm.trades
-                foreign += norm.foreign
-                completions += norm.completions
-                migrations += norm.migrations
+                self.store.add_launches(norm.launches)
+                self.store.add_trades(norm.trades)
+                self.store.add_ftrades(norm.foreign)
+                self.store.add_completions(norm.completions)
+                self.store.add_migrations(norm.migrations)
                 if norm.pools:
-                    pools.update(norm.pools)
+                    self.store.add_pools(norm.pools)
                     known_pools.update(norm.pools)
                 result.launches += len(norm.launches)
                 result.trades += len(norm.trades)
                 result.unresolved_pools |= norm.unresolved_pools
                 seen_rows.append((events.signature, events.slot, events.block_time or 0))
-            self.store.add_launches(launches)
-            self.store.add_trades(trades)
-            self.store.add_ftrades(foreign)
-            self.store.add_completions(completions)
-            self.store.add_migrations(migrations)
-            if pools:
-                self.store.add_pools(pools)
             self.store.mark_seen(seen_rows)
             result.fetched += len(chunk)
             self.progress(f"fetched {result.fetched}/{len(todo)} transactions")
@@ -233,10 +221,14 @@ class Ingestor:
 
     def _cursor_after(self, ts: int, slack_secs: int = 600) -> str | None:
         """Any already-seen signature shortly after `ts` (usable as a `before` cursor)."""
-        rows = self.store._q("SELECT sig FROM seen_sigs WHERE ts>? AND ts<? ORDER BY ts LIMIT 1", (ts, ts + slack_secs))
+        rows = self.store._q(
+            "SELECT sig FROM seen_sigs WHERE ts>? AND ts<? ORDER BY ts LIMIT 1", (ts, ts + slack_secs)
+        )
         return rows[0][0] if rows else None
 
-    async def backfill_mint_window(self, mint: str, start_ts: int, end_ts: int, max_sigs: int = 20_000) -> IngestResult:
+    async def backfill_mint_window(
+        self, mint: str, start_ts: int, end_ts: int, max_sigs: int = 20_000
+    ) -> IngestResult:
         """Ingest every transaction touching `mint` between `start_ts` and `end_ts`."""
         key = f"mint:{mint}"
         cov = self.store.coverage(key)
@@ -264,9 +256,7 @@ class Ingestor:
         self, address: str, start_ts: int, end_ts: int, cursor: str | None, max_sigs: int
     ) -> list[dict[str, Any]]:
         listing: list[dict[str, Any]] = []
-        async for page in self.rpc.iter_signatures(
-            address, before=cursor, max_sigs=max_sigs, stop_before_ts=start_ts - 1
-        ):
+        async for page in self.rpc.iter_signatures(address, before=cursor, max_sigs=max_sigs, stop_before_ts=start_ts - 1):
             listing.extend(s for s in page if (s.get("blockTime") or 0) <= end_ts + 1)
         return listing
 

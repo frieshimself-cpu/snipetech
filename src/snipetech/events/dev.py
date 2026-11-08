@@ -33,10 +33,7 @@ async def dev_transfers(
         (start, int(now), threshold, int(max_launches)),
     )
     events: list[dict] = []
-    # (creator, paid wallet, kind, ts, lamports): written once the scan is done, in short batches with a pause between
-    # (Store.upsert_edges). One transaction a transfer, back to back, kept the tape recorder waiting for the lock: the
-    # scan of 7 Nov 23:15-23:35 wrote 190,905 of them before its 185,251 events.
-    edge_rows: list[tuple[str, str, str, int, int]] = []
+    edges = 0
     last_ts = None
     for mint, creator, lts in launches:
         last_ts = int(lts)
@@ -71,9 +68,9 @@ async def dev_transfers(
                 lamports = int(tr.get("lamports") or 0)
                 events.append({"ts": ts, "slot": int(m.slot), "kind": "dev_transfer", "mint": mint, "wallet": tr["dst"],
                                "data": {"lamports": lamports, "sig": sig, "creator": creator}, "source": "rpc"})  # fmt: skip
-                edge_rows.append((creator, tr["dst"], "paid_by_dev", ts, lamports))
-    store.upsert_edges(edge_rows)
+                store.upsert_edge(creator, tr["dst"], "paid_by_dev", ts, lamports)
+                edges += 1
     added = store.add_events(events) if events else 0
     if last_ts is not None:
         store.set_coverage(CURSOR_KEY, {"ts": last_ts, "scanned_at": int(now)})
-    return {"launches": len(launches), "events": added, "edges": len(edge_rows)}
+    return {"launches": len(launches), "events": added, "edges": edges}
