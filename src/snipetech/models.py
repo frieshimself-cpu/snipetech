@@ -7,6 +7,14 @@ from dataclasses import asdict, dataclass, field
 CURVE = "curve"  # pump.fun bonding curve
 AMM = "amm"  # PumpSwap pool (post-migration), incl. the synthetic-migration pool part
 LAUNCHLAB = "launchlab"  # Raydium LaunchLab bonding curve (bonk.fun and others)
+# the launchpad a coin was launched on, as a launch-type lab trigger names it (`Trigger.venue`): a pump.fun coin trades
+# on its curve, then PumpSwap; a LaunchLab coin on its LaunchLab curve
+PUMPFUN = "pumpfun"
+
+
+def coin_venue(trade_venues) -> str:
+    """The launchpad of a coin from its trades' venues: LaunchLab if any of them is, pump.fun otherwise."""
+    return LAUNCHLAB if LAUNCHLAB in set(trade_venues) else PUMPFUN
 
 
 @dataclass(slots=True)

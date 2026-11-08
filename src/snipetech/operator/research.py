@@ -500,8 +500,16 @@ def _paper_line(store: Store, since: float, now: float) -> str:
     active = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", [])}
     if not active:
         return "Paper test: no rule is being paper-tested yet"
-    rows = [r for r in store._q("SELECT strategy, count(*), sum(pnl) FROM paper_trades WHERE entry_ts > ? AND "
-                                "entry_ts <= ? GROUP BY strategy", (int(since), int(now))) if r[0] in active]  # fmt: skip
+    from ..analysis.paper import record
+
+    found: dict[str, list[dict]] = {}
+    for sid, mint, pnl, data in store._q("SELECT strategy, mint, pnl, data FROM paper_trades WHERE entry_ts > ? AND "
+                                         "entry_ts <= ?", (int(since), int(now))):  # fmt: skip
+        if sid in active:
+            found.setdefault(sid, []).append({"mint": mint, "pnl": pnl, "data": json.loads(data or "{}")})
+    # only the trades in each rule's record: a launch-type rule's LaunchLab trades never count (paper.record)
+    kept = {sid: record(store, active[sid], rs)[0] for sid, rs in found.items()}
+    rows = [(sid, len(rs), sum(float(r["pnl"] or 0) for r in rs)) for sid, rs in kept.items() if rs]
     if not rows:
         return f"Paper test at our landing: no new trades ({_n(len(active), 'rule')} waiting for their signal)"
     n, total = sum(int(r[1]) for r in rows), sum(float(r[2] or 0) for r in rows)

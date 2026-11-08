@@ -226,6 +226,22 @@ def test_only_hunt_strategies_the_forward_test_backs_at_the_real_landing_are_eli
     assert rows[0]["n"] == 150 and rows[0]["ev_lower"] == pytest.approx(0.02) and rows[0]["buy_sol"] == 0.2
 
 
+def test_a_rule_scored_on_launches_its_sniper_cannot_buy_never_goes_live(env):
+    """Research round 4 (priority 1): every sniper oktech.py builds sends platforms ["pumpfun"]. A hunt scored on Raydium
+    LaunchLab launches (the lab's research option) never goes live, whatever its record; and a pump.fun rule's
+    LaunchLab rows (scored before the venue knob) are not in its record, so they never carry it over the 100-trade bar."""
+    ll = {**HUNT, "sol": _rule_sol(THIRD), "venue": "launchlab"}
+    _freeze(env.store, THIRD, pnl=0.03, trigger=ll)
+    _freeze(env.store, SECOND, pnl=0.01)
+    for k in range(60):  # 150 rows, 60 of them LaunchLab coins: 90 count
+        env.store._exec("UPDATE paper_trades SET data=? WHERE strategy=? AND mint=?",
+                        (json.dumps({"venue": "launchlab"}), SECOND, f"{SECOND}-{k}"))  # fmt: skip
+    assert LT.eligible(env.store, env.cfg, NOW) == []
+    reply = _refused(env, THIRD, "go")
+    assert "Raydium LaunchLab" in reply and "pump.fun" in reply
+    assert "90 forward trades of the 100" in _refused(env, SECOND, "go")
+
+
 def measured_cost(store, per_round_trip=0.0094):
     """The measure stage's bid model for the low bid ("control"): enough fills that the lab's cost is the measured one,
     `per_round_trip` SOL a round trip (6 Nov: 0.0094, the buy's fees, the sale's and the failed duplicate sends)."""

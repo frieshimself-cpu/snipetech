@@ -132,7 +132,10 @@ picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search,
 in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
 "--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
 hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
-refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. The lab
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. Launch,
+hunt, whale and burst triggers fire on pump.fun launches only; "venue": "launchlab" scores one on Raydium LaunchLab
+launches instead, research only (no sniper of ours buys LaunchLab, so it never goes live), and a paper trade's
+data.venue says which launchpad it was on (a rule's record counts only its own). The lab
 scores every hypothesis where it trades live, so it needs no --latency or --position: launch, hunt, whale and burst
 triggers run live through OKTech hunt and are always scored where a hunt buy lands, kol and momentum at copy_landing
 (where our copies land, as measured). One lab at a time: while a lab runs, read the last lab's result instead of

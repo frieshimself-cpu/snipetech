@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..models import AMM, CURVE, Launch, Trade
+from ..models import AMM, CURVE, PUMPFUN, Launch, Trade, coin_venue
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
@@ -75,6 +75,8 @@ class MarketPath:
     # True from the state at which the coin has left its pump.fun curve: the curve completed (its virtual token
     # reserve is down to PUMP_CURVE_DONE_B) or the trade ran on PumpSwap. A launch sniper's buy there fails.
     off_curve: np.ndarray | None = None
+    # the launchpad the coin trades on (models.coin_venue): a launch-type lab rule fires only on its own venue's coins
+    venue: str = PUMPFUN
 
     # -- construction -----------------------------------------------------------
 
@@ -128,6 +130,7 @@ class MarketPath:
             launch=launch,
             slot_secs=float(slot_secs) if slot_secs else DEFAULT_SLOT_SECS,
             off_curve=np.maximum.accumulate(np.array(off, dtype=bool)) if off else np.zeros(0, dtype=bool),
+            venue=coin_venue(t.venue for t in trades),
         )
 
     # -- landing model -----------------------------------------------------------

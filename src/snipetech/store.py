@@ -1135,6 +1135,38 @@ class Store:
         keys = ("strategy", "mint", "trigger_ts", "entry_ts", "exit_ts", "pnl", "roi", "reason", "data")
         return [dict(zip(keys, r[:-1])) | {"data": json.loads(r[-1] or "{}")} for r in rows]
 
+    def mint_venues(self, mints: Iterable[str]) -> dict[str, str]:
+        """The launchpad of each coin the tape still holds a trade of (models.coin_venue: a coin's trades are all on
+        one launchpad, so its first one says which), one short indexed read per coin; a coin with no trade left (pruned,
+        or never on the tape) is not in the result."""
+        from .models import coin_venue
+
+        out: dict[str, str] = {}
+        for mint in dict.fromkeys(mints):
+            row = self._q("SELECT venue FROM trades WHERE mint=? LIMIT 1", (mint,))
+            if row:
+                out[mint] = coin_venue([row[0][0]])
+        return out
+
+    def set_paper_venues(self, tags: Iterable[tuple[str, str, str]]) -> int:
+        """Record each (strategy, mint, venue) paper trade's launchpad in its data (`venue`), in short write batches;
+        nothing else of a row changes. Returns the rows tagged."""
+        rows = [(venue, strategy, mint) for strategy, mint, venue in tags]
+        done = 0
+        for k in range(0, len(rows), self.WRITE_BATCH):
+            batch = rows[k : k + self.WRITE_BATCH]
+            out: dict[str, int] = {}
+
+            def do(batch=batch, out=out):
+                out["n"] = self.conn.executemany(
+                    "UPDATE paper_trades SET data=json_set(coalesce(data, '{}'), '$.venue', ?) WHERE strategy=? AND mint=?",
+                    batch,
+                ).rowcount
+
+            self._write(do)
+            done += out["n"]
+        return done
+
     def funder(self, wallet: str) -> dict[str, Any] | None:
         rows = self._q("SELECT funder, amount, ts, sig, checked_at FROM funders WHERE wallet=?", (wallet,))
         if not rows:

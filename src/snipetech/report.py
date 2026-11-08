@@ -870,6 +870,11 @@ def render_paper(action: str, r: dict) -> str:
         "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
         " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
     )
+    other = sum(int(s.get("other_venue") or 0) for s in rows)
+    if other:
+        out.append(f"{other} trades on another launchpad's coins than their rule's are kept but not counted (until 8 Nov "
+                   "launch-type rules also fired on Raydium LaunchLab, which no sniper of ours buys; 'other_venue' in "
+                   "--json).")  # fmt: skip
     if r.get("superseded"):
         out.append(
             f"{len(r['superseded'])} earlier run(s) scored at a landing no live trade gets are kept apart (--json)."

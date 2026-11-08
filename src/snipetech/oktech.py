@@ -715,6 +715,25 @@ def _whole_secs(value: Any, name: str) -> int:
     return round(v)
 
 
+# What every strategy sniper sends OKTech as its platforms, and the platform a lab trigger's venue (lab.Trigger.venue)
+# needs: OKTech's snipers buy pump.fun launches; no OKTech platform is mapped to Raydium LaunchLab (research round 4,
+# priority 4: whether Hunt runs there is not known), so a rule scored on LaunchLab launches is never sent
+STRATEGY_PLATFORMS = ("pumpfun",)
+VENUE_PLATFORMS = {"pumpfun": "pumpfun"}
+_VENUE_WORDS = {"pumpfun": "pump.fun", "launchlab": "Raydium LaunchLab"}
+
+
+def venue_refusal(venue: str | None, platforms=STRATEGY_PLATFORMS) -> str | None:
+    """Why a rule scored on `venue`'s launches (None: pump.fun, the default) cannot run on a sniper sending `platforms`,
+    in plain words; None when it can. Research round 4: the lab fired on LaunchLab launches no sniper of ours can buy."""
+    venue = venue or "pumpfun"
+    if VENUE_PLATFORMS.get(venue) in set(platforms):
+        return None
+    names = " and ".join(_VENUE_WORDS.get(p, p) for p in platforms) or "nothing"
+    return (f"was scored on {_VENUE_WORDS.get(venue, venue)} launches, and its OKTech sniper buys {names} launches only "
+            f"(platforms {', '.join(platforms)}): it could never buy the coins its record is made of")  # fmt: skip
+
+
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60, *,
     dev_max_zero_confirmed: str = "",
@@ -731,7 +750,10 @@ def strategy_sniper(
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
     kind = trig.get("kind")
-    config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy),
+    why = venue_refusal(trig.get("venue"))
+    if why:
+        raise ValueError(f"the rule {why}")
+    config: dict[str, Any] = {"mode": "normal", "platforms": list(STRATEGY_PLATFORMS), "monitorProgram": True, "buyAmount": _round(buy),
                               "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
                               "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
     if not preexec:

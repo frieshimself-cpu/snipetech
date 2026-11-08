@@ -196,6 +196,12 @@ def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None, de
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
         return "is not a hunt strategy (OKTech runs only its hunt launch gate exactly as the lab scored it)"
+    from ..oktech import STRATEGY_PLATFORMS, venue_refusal
+
+    # research round 4: the lab can score a rule on Raydium LaunchLab launches, which no sniper of ours can buy
+    venue = venue_refusal((frozen.get("trigger") or {}).get("venue"), STRATEGY_PLATFORMS)
+    if venue is not None:
+        return venue
     if not row.get("live_landing"):
         return "was not scored where a live hunt fill lands"
     try:
