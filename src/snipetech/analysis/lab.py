@@ -144,11 +144,15 @@ class Trigger:
     # "pumpfun", the default, is what every OKTech sniper we build buys (platforms ["pumpfun"]); "launchlab" (Raydium
     # LaunchLab) is research only, refused live (oktech.venue_refusal). A copy, momentum or MIG rule has no venue knob
     venue: str = PUMPFUN
+    # launch: only coins created by a wallet in this label group ("dev": `snipetech label --kind dev`), the lab's form
+    # of OKTech's dev sniping (`devWallets`, oktech.dev_sniper); "" = every launch
+    creators: str = ""
 
     def label(self) -> str:
         base = self._label()
         extra = (
-            ([f"within {self.max_age:g}s of launch"] if self.max_age else [])
+            ([f"by a labeled dev ({self.creators})"] if self.creators else [])
+            + ([f"within {self.max_age:g}s of launch"] if self.max_age else [])
             + (["normal coins"] if self.plain else [])
             + (["not a create bundle"] if self.solo else [])
             + ([f"on {VENUE_WORDS.get(self.venue, self.venue)} launches"] if self.venue != PUMPFUN else [])
@@ -225,7 +229,7 @@ TRIGGERS = (
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
-    "launch": ("plain", "venue"),
+    "launch": ("plain", "venue", "creators"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue"),
     "whale": ("sol", "max_age", "plain", "solo", "venue"),
     "kol": ("sol", "group", "max_age", "plain"),
@@ -242,11 +246,20 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers")
 FLAG_FIELDS = ("plain", "solo")
-TEXT_FIELDS = ("kind", "group", "event", "venue")
+TEXT_FIELDS = ("kind", "group", "event", "venue", "creators")
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
 TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
+CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` can name (`label --kind dev`)
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
+
+
+def _is_address(text: str) -> bool:
+    """A base58 Solana address (32-44 characters), as `creators` may name one deployer instead of a label group."""
+    return 32 <= len(text) <= 44 and all(c in BASE58 for c in text)
+
+
+BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 def _trigger_value(name: str, value: Any) -> Any:
@@ -310,6 +323,9 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"venue must be one of {', '.join(TRIGGER_VENUES)}, not {trig.venue!r}")
     if kind == "kol" and trig.group not in TRIGGER_GROUPS:
         raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
+    if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
+        raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
+                         f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
     if kind == "hunt":
         _whole_hunt(trig.sol, "sol (minTotalSol)")
         if trig.dev_max is not None:
@@ -801,6 +817,13 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     if trig.kind == "launch":
         if launch is None:
             return None
+        if trig.creators:  # a dev-wallet snipe: only coins a labeled deployer (or the one named) created
+            if _is_address(trig.creators):
+                devs = {trig.creators}
+            else:
+                devs = (kols.get(trig.creators) or set()) if isinstance(kols, dict) else set()
+            if not dev & devs:
+                return None
         idx = [i for i in range(path.n) if path.sigs[i] == launch.sig]
         return max(idx) if idx else None
     group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
@@ -869,9 +892,11 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
 
 def label_groups(store: Store) -> dict[str, set[str]]:
     """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list,
-    `cand` = the qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor)."""
+    `cand` = the qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor); `dev` = the deployers
+    a launch trigger with `creators` fires on (dev-wallet snipes)."""
     wallet = set(store.labels("wallet"))
-    return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet}
+    return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet,
+            "dev": set(store.labels("dev"))}  # fmt: skip
 
 
 # Wallets one read of `_mints_with_buys_by` asks about. The read walks every trade each wallet ever made (the wallet

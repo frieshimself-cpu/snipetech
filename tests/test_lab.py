@@ -1,5 +1,6 @@
 """Strategy lab: triggers fire once per token, entries respect latency, results are out of sample."""
 
+import json
 import time
 
 import pytest
@@ -629,3 +630,30 @@ def test_a_copy_counted_across_slots_never_lands_in_the_coins_create_slot():
     later = MarketPath.build(st.trades_for_mint(n.mint), st.launch(n.mint))
     assert copy_entry(later, 2, 3) == 5
     st.close()
+
+
+def test_a_launch_trigger_can_be_limited_to_labeled_dev_wallets():
+    """`creators` names a label group of deployers: the launch rule fires only on coins one of them created, so a
+    dev-wallet snipe (OKTech `devWallets`) is scored at the launch landing like any other launch rule."""
+    from snipetech.analysis.lab import label_groups, parse_trigger
+
+    store = Store(":memory:")
+    whale_world(store, n=2)
+    launch = store.launch(addr("lab-0"))
+    path = MarketPath.build(store.trades_for_mint(addr("lab-0")), launch)
+    devs = Trigger("launch", creators="dev")
+    assert _fire(devs, path, launch, {"dev": {addr("lab-dev-0")}}) is not None
+    assert _fire(devs, path, launch, {"dev": {addr("lab-dev-1")}}) is None  # another dev's coin
+    assert _fire(devs, path, launch, {}) is None  # no labeled devs: never fires
+    assert _fire(Trigger("launch"), path, launch, {}) is not None  # the plain launch rule is unchanged
+    assert "labeled dev" in devs.label()
+    assert parse_trigger('{"kind": "launch", "creators": "dev"}') == devs
+    with pytest.raises(ValueError, match="creators"):
+        parse_trigger('{"kind": "launch", "creators": "nobody"}')
+    one = parse_trigger(json.dumps({"kind": "launch", "creators": addr("lab-dev-0")}))  # one deployer by address
+    assert _fire(one, path, launch, {}) is not None
+    assert _fire(Trigger("launch", creators=addr("lab-dev-1")), path, launch, {}) is None
+    with pytest.raises(ValueError, match="creators"):
+        parse_trigger('{"kind": "whale", "sol": 2, "creators": "dev"}')
+    store.set_label(addr("lab-dev-0"), "a dev", "dev")
+    assert label_groups(store)["dev"] == {addr("lab-dev-0")}
