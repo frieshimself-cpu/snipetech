@@ -323,12 +323,46 @@ def test_a_bid_above_the_minimum_is_a_lever_and_a_raised_tip_is_the_strategists_
                           twin_fee_sol=0.0, buy_sig="B2"))  # fmt: skip
         tip_only = A.break_down(st, W, [st.fill("S")])["S"]
         assert tip_only["levers"]["buy_bid"] == pytest.approx(0.002)
-        (lever,) = [x for x in A.levers([tip_only]) if x["lever"] == "buy_bid"]
+        (lever,) = [x for x in A.levers([tip_only], cfg=_bids(control_tip=0.004)) if x["lever"] == "buy_bid"]
         assert lever["who"] == "strategist" and lever["key"] == "book.bid_arms.control.tip"
         paid = A.break_down(st, W, [st.fill("S2")])["S2"]
         # 0.019 priority and 0.018 tip over the minimum on the buy, the 0.019 priority again on the landed sell
         assert paid["levers"]["buy_bid"] == pytest.approx(0.019 + 0.018 + 0.019)
-        both = {x["lever"]: x for x in A.levers([tip_only, paid])}
+        both = {x["lever"]: x for x in A.levers([tip_only, paid], cfg=_bids(control_tip=0.004, paid_live=True))}
         assert both["buy_bid"]["who"] == "owner" and both["buy_bid"]["trips"] == 2
+    finally:
+        st.close()
+
+
+def _bids(control_tip: float = 0.002, paid_live: bool = False):
+    """A config whose control arm bids `control_tip`, with the paid arm retired (as since 7 Nov 20:49) or still given
+    to a share of the wallets (`paid_live`)."""
+    from snipetech.config import Config
+
+    cfg = Config()
+    cfg.book.bid_arms = {"control": {"priority": 0.001, "tip": control_tip},
+                         "paid": {"priority": 0.02, "tip": 0.02, **({} if paid_live else {"retired": True})}}  # fmt: skip
+    cfg.book.explore_share = 0.2 if paid_live else 0.0
+    return cfg
+
+
+def test_a_bid_already_back_at_the_minimum_is_no_lever():
+    """The 7 Nov review (scen4): a batch whose buys paid a tip the strategist had raised, read once the control arm is
+    back at OKTech's minimum, told the owner the strategist "may make this change", a change already made. As the sell
+    fee lever skips itself at 0.001, the bid lever goes once every arm a new copy can get bids the minimum."""
+    st = Store(":memory:")
+    try:
+        st.put_fill(_fill("B", T0, "M", "buy", 0.2, 1000.0, tip=4_000_000))
+        st.put_fill(_fill("S", T0 + 9, "M", "sell", 0.21, 1000.0, pnl_sol=0.0, twin_fee_sol=0.0, buy_sig="B"))
+        st.put_fill(_fill("B2", T0 + 60, "M2", "buy", 0.2, 1000.0, prio=20_000_000, tip=20_000_000, bid_arm="paid"))
+        st.put_fill(_fill("S2", T0 + 70, "M2", "sell", 0.21, 1000.0, prio=20_000_000, tip=2_000_000, pnl_sol=-0.05,
+                          twin_fee_sol=0.0, buy_sig="B2"))  # fmt: skip
+        parts = A.break_down(st, W, [st.fill("S"), st.fill("S2")])
+        at_min = _bids(control_tip=0.002)
+        assert not [x for x in A.levers([parts["S"]], cfg=at_min) if x["lever"] == "buy_bid"]
+        assert not [x for x in A.levers([parts["S"], parts["S2"]], cfg=at_min) if x["lever"] == "buy_bid"]
+        # the paid arm still handed out: buying at the minimum only is still a change to make, the owner's
+        (lever,) = [x for x in A.levers([parts["S2"]], cfg=_bids(paid_live=True)) if x["lever"] == "buy_bid"]
+        assert lever["who"] == "owner"
     finally:
         st.close()

@@ -6,6 +6,30 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## The night of 8 Nov: what the live trades really cost; the recorder off the database's waits
+
+- **The live book's real result is worse than its records said (merged 8 Nov 00:50, not yet deployed).** Every live
+  round trip of 5-7 Nov broken down in code (`measure/attribution.py`) and checked on chain: the 58 recorded sells made
+  -1.2142 SOL, not the recorded -1.0419, because `fills.pnl_sol` leaves each sell's failed duplicate sends apart
+  (`twin_fee_sol`); with the two PumpSwap trips the tape never saw and the seed-account sweeps of 5-6 Nov, the 59 trips
+  made -1.2822 (-0.0217 a trip, 4 won). Where it went: the price fell 0.92 SOL on 33 trips and rose 0.67 on 26 (CAT
+  alone +0.52), the buys' fees took 0.43, the landed sells' 0.21, failed duplicate sells 0.18 (65 sends), pump.fun's
+  1.25 % a side 0.16, seed sweeps 0.06. 7aPo3n's three copies of 7 Nov rose +5 % a trip before any cost (+0.0294 in
+  all) and ended -0.0119 after 0.0412 of costs. Every reader of live results (the day stop, the automatic test's
+  blocks, the post-mortem, read_fills, the fee-test report, the strategist's evidence) now counts each cost once, and
+  after each post-mortem the owner gets the numbers, the biggest cause and the change that would have saved most in
+  Telegram. The cheapest levers: OKTech sending each exit once (0.002-0.004 a trip; OKTech's to change) and the sell
+  fee back to 0.001 SOL (about 0.002 a trip; the owner's yes); at 0.2 SOL a trip needs a price rise of 6.6 % to break
+  even (5.6 % after the sell fee).
+- **The recorder paused twice after the 23:14 deploy (14.2 s at 23:35, 6.9 s at 23:37), and never fell behind.** The
+  first: the events scan's last step wrote 185,251 events in 371 back-to-back batches, and SQLite's busy wait (a poll
+  every 100 ms) never got the recorder in between. The second: the recorder's own small write, most likely SQLite's
+  automatic checkpoint inside its commit. A reviewed build (recorder-writer) moves the recorder's writes to one writer
+  thread on its own connection, makes bulk writers pause between batches and writes dev-transfer edges in batches.
+- **The server's agents will read the research record (research-memory, building).** On 7 Nov evening the analyst
+  froze two creator-0 hunts and labbed a third while round 3 refuted them: the agents never saw docs/research. Every
+  agent turn will carry the newest round's outcome and lessons, and a round's refutation settles an idea.
+
 ## The evening of 7 Nov: the lock fix is live; snipetech was using 2 of the server's 6 cores (19:45 UTC)
 
 - **Correction, 8 Nov 00:05 (research round 3): do not /test the creator-0 hunts.** On 20.8 h of 4-5 Nov tape that no

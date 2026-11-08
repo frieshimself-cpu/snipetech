@@ -389,6 +389,22 @@ def exit_record(store, wallet: str, limit: int = 5000) -> list[dict[str, Any]]:
     return _copy_exits(trips)
 
 
+def _bid_at_minimum(cfg, tip_only: bool) -> bool:
+    """Whether the bid a new copy gets is already OKTech's minimum (0.001 SOL priority + 0.002 tip), so a batch's excess
+    came from an earlier setting and there is no change left to make, as the sell-fee lever skips itself at 0.001 (the
+    7 Nov review: a batch bought at a raised tip, read once the tip was back at 0.002, told the owner the strategist
+    "may make this change"). A tip-only excess looks at the control arm; any other at every arm still handed out (a
+    retired arm never is, and the other arms only while [book] explore_share is above 0)."""
+    arms = cfg.book.bid_arms or {}
+    if tip_only:
+        given = [arms.get("control") or {}]
+    else:
+        given = [a for name, a in arms.items()
+                 if not a.get("retired") and (name == "control" or float(cfg.book.explore_share) > 0)]  # fmt: skip
+    return all(round(float(a.get("priority") or 0) * 1e9) <= MIN_BUY_PRIORITY_LAMPORTS
+               and round(float(a.get("tip") or 0) * 1e9) <= MIN_BUY_TIP_LAMPORTS for a in given)  # fmt: skip
+
+
 def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
     """What each change would have saved on these trips, best first, with who can make it: "strategist" (inside its
     [autotune] bounds, strategist/bounds.py), "owner" (needs the owner's yes) or "oktech" (OKTech's to change, asked
@@ -426,10 +442,8 @@ def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
                     "words": f"the sell fee from {now:g} back to {target:g} SOL ([oktech] sell_fee_sol: the landed "
                              "sell's tip and each failed copy's priority fee)"})  # fmt: skip
     sol, n = saved("buy_bid")
-    if sol:
-        tip_only = all(
-            t.get("bid_over_minimum") in (None, "tip") for t in trips if (t.get("levers") or {}).get("buy_bid")
-        )
+    tip_only = all(t.get("bid_over_minimum") in (None, "tip") for t in trips if (t.get("levers") or {}).get("buy_bid"))
+    if sol and not _bid_at_minimum(cfg, tip_only):
         key = "book.bid_arms.control.tip" if tip_only else "book.bid_arms"
         who = "strategist" if tip_only and strategist_may_set(key, MIN_BUY_TIP_LAMPORTS / 1e9, cfg) else "owner"
         out.append({"lever": "buy_bid", "sol": _sol(sol), "trips": n, "key": key, "who": who,

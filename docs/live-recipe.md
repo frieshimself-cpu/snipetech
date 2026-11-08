@@ -689,8 +689,12 @@ From `measure report --since 1793977728` (15:08 to 18:08; the window also holds 
 
 | arm | round trips | buys behind the copied wallet | price above its buy | fees, SOL | result, SOL |
 |---|---|---|---|---|---|
-| low fee (0.001 + 0.002) | 9 | 0.22 | +2.3 % | 0.082 (≈0.009 a trip) | −0.282 |
-| paid (0.02 + 0.02) | 4 | 0.5 | +1.6 % | 0.222 (≈0.055 a trip) | −0.325 |
+| low fee (0.001 + 0.002) | 9 | 0.22 | +2.3 % | 0.082 (≈0.009 a trip) | −0.282 (whole: −0.339) |
+| paid (0.02 + 0.02) | 4 | 0.5 | +1.6 % | 0.222 (≈0.055 a trip) | −0.325 (whole: −0.387) |
+
+Correction, 8 Nov (the loss breakdown): the result column is the landed trades only, as `measure report` printed it
+on 6 Nov. The whole result, with each sell's failed duplicate sends (`twin_fee_sol`), is in brackets: −0.3386 and
+−0.3865 SOL over the same window, which is what `measure report` prints since 8 Nov.
 
 - **Landing:** both arms landed right behind the wallet they copied (under one trade behind, 2 % above its price),
   against 2.5 behind and +26 % in the 5–6 Nov baseline. The baseline copied crowded wallets (Gfree) with the seed
