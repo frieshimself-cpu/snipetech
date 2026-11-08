@@ -352,3 +352,57 @@ def test_freeze_keeps_on_how_many_moments_the_lab_scored_the_exit(monkeypatch):
     (s,) = out["frozen"]
     assert s["lab"]["moments"] == 30 and s["lab"]["exit_moments"] == 24
     assert "its exit scored on 24 of 30 moments" in R.render_paper("freeze", out)
+
+
+# -- review, 8 Nov: a sale off a completed curve, and exits read on comparable moments --------------------------------
+
+T59 = ExitParams(
+    take_profit=0, stop_loss=0, max_hold_secs=59, sell_on_dev_sell=False
+)  # due between completion and pool
+
+
+def test_a_timer_due_after_the_curve_completed_and_before_the_migration_is_left_out_where_the_pumpswap_tape_lacks_it():
+    # The curve completes 58 s after the create and pump.fun migrates it at 62 s, before the PumpSwap tape began. A 59 s
+    # timer is due in between: it is priced on the completing buy, the curve's highest price, on a curve that takes no
+    # sale. Its own hold ends before the migration, so "nothing migrates while held" must not score it (review, 8 Nov:
+    # it read +2.1 SOL on a 0.2 SOL buy, about 10x, where a 57 s timer made +0.06).
+    store = Store(":memory:")
+    _completer(store, "early", hm(12, 0), done_at=145, mig_at=155)
+    _tape(store)
+    (row,) = _lab(store, exits=[T20, T59, HOLD300, MIGSELL])["rows"]
+    assert isinstance(row["pnl"][0], float)
+    assert row["pnl"][1:] == [None, None, None] and row["gaps"] == {1: "before", 2: "before", 3: "before"}
+
+
+def test_the_paper_test_leaves_out_a_timer_due_after_the_curve_completed_and_before_the_migration():
+    store = Store(":memory:")
+    _completer(store, "paper-early", hm(12, 0), done_at=145, mig_at=155)
+    _tape(store)
+    s = _frozen("t59", replace(T59, migration_sell_frac=1.0, migration_sell_delay=0.1))
+    store.set_coverage("paper_strategies", {"strategies": [s]})
+    out = paper.run(store, _cfg(), now=hm(16, 50))
+    assert store.paper_trades(s["id"]) == [] and out["skipped"] == {s["id"]: {"before": 1}}
+
+
+def test_a_copy_whose_coin_migrates_without_pumpswap_tape_is_still_left_out_whole():
+    # Only launch-type firings are scored exit by exit. A copy (or a momentum entry) rides into a migration that is no
+    # known winner, so scoring its short exits there and its long ones only where the coin did not migrate would pick
+    # among exits on samples the coins chose (review, 8 Nov): such a moment is left out whole, as before 8 Nov.
+    store = Store(":memory:")
+    _completer(store, "early", hm(12, 0))
+    _tape(store)
+    kol = Trigger("kol", sol=1.0, group="cand")
+    data = _lab(store, triggers=[kol], kols={"cand": {addr("early-whale")}})
+    assert data["rows"] == []
+    assert data["amm_tape"]["triggers"][kol.label()] == {"scored": 0, "skipped": {"before": 1}}
+
+
+def test_rank_compares_exits_on_the_older_moments_every_competing_exit_was_scored_on():
+    # 40 firings; every 5th of them (8 of the older 24) rides into a migration the PumpSwap tape lacks. The timer sold on
+    # the curve and lost 0.05 on those, made 0.013 on the rest; the hold was left out on them and made 0.012 on the rest.
+    # Read on its own moments the hold wins (0.012 against the timer's 0.0003 average); on the moments both were scored
+    # the timer does (0.013 against 0.012), and it is the timer that trades every one of them (review, 8 Nov).
+    pnls = [(-0.05, None) if k % 5 == 0 else (0.013, 0.012) for k in range(40)]
+    (r,) = _ranked(pnls)
+    assert r["exit"] == T20.label() and r["train_mean"] == pytest.approx(0.013)
+    assert r["exit_moments"] == 40 and r["test"]["n"] == 16

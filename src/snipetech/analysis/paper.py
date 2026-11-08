@@ -49,6 +49,7 @@ from .lab import (
     collect,
     curve_done,
     dev_paid_earlier,
+    exit_gap,
     fired_at,
     label_groups,
     leader_sell_fractions,
@@ -351,16 +352,21 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 mig = migs.get(mint)
-                # an exit that sells into the migration needs the PumpSwap tape of it, unless it sold before the coin
-                # left its curve: then the curve tape prices every sale (as the lab scores it, `lab.exit_pnls`)
-                gap = None
-                if ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS:
-                    gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs)
-                frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-                prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
-                               migration_slot=None if mig is None else mig.slot)  # fmt: skip
-                res = None if prep is None else run_exit(prep, ex, costs, end_ts=float(end))
-                if gap is not None and (res is None or not res.sold_on_curve):
+                # an exit that sells into the migration needs the PumpSwap tape of it. On a launch-type rule it is
+                # scored where every sale landed before the coin left its curve, priced on the curve tape, as the lab
+                # scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is left out, as in the lab
+                gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
+                gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs) if gated else None
+                res = None
+                if gap is None or trig.kind in LAUNCH_KINDS:
+                    frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
+                    prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                                   migration_slot=None if mig is None else mig.slot)  # fmt: skip
+                    if prep is not None:
+                        res = run_exit(prep, ex, costs, end_ts=float(end))
+                        if gated and trig.kind in LAUNCH_KINDS:
+                            gap = exit_gap(amm_cov, path, prep, res, ex, mig)
+                if gap is not None:
                     skipped.setdefault(s["id"], {})
                     skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
                     continue

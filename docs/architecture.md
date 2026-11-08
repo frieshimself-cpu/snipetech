@@ -155,7 +155,14 @@ Now each exit counts on its own (`lab.exit_pnls`):
   slot at the latest; a timer prices on the block clock and lands by the slot clock, so both are checked.
 - An exit still holding when the coin left its curve is scored only where the PumpSwap tape holds the migration through
   its own timer. A 300 s hold on the same coin is left out on that moment, and the lab says why.
+- A timer due after the curve completed but before the migration (the two are 1-10 slots apart) is priced on a curve
+  that takes no sale. It is scored only where the PumpSwap tape holds the stretch from the completion to its sale
+  (`lab.exit_gap`; review, 8 Nov: a 59 s timer on a coin completing at 58 s and migrating at 62 s read +2.1 SOL on a
+  0.2 SOL buy, about 10x, where a 57 s timer made +0.06).
 - A moment no exit can be scored on is left out whole, as before.
+- Only launch-type firings (launch, hunt, whale, burst) are scored exit by exit. A copy or a momentum entry whose coin
+  migrates without PumpSwap tape is still left out whole: riding into the migration is no known winner for them, so
+  exits read on different moments would be compared on samples the coins chose.
 
 The paper test applies the same rule to a frozen exit with a migration sell. Nothing changes where the PumpSwap tape
 holds the migration, where nothing migrates while held, for MIG, or in a lab without a migration sell among its exits
@@ -165,7 +172,10 @@ on some exits only and how many exit scores were left out, and why.
 `rank` reads each exit on the moments it was scored on and says on how many of the trigger's moments the chosen exit
 was scored (`exit_moments`, which `paper freeze` keeps). An exit competes only when it was scored on at least 12 of the
 trigger's older moments (the fewest a trigger is ranked on, by default) and on half of them. The older moments alone
-pick the exit. If the pick was scored on fewer than 8 of the newer moments, or on fewer than half of them, the trigger
+pick the exit, and they compare the competing exits on the older moments every one of them was scored on: a long hold
+read only on the coins that did not migrate would otherwise beat a short timer read on all of them (review, 8 Nov: the
+hold won at +0.012 a trade over the timer's +0.0003, though on the same moments the timer made +0.013). The pick's test
+numbers are those of all its newer moments that were scored. If the pick was scored on fewer than 8 of the newer moments, or on fewer than half of them, the trigger
 is not ranked; no other exit takes its place. Otherwise the newer moments would choose which exit they judge.
 
 One caution: the moments an exit misses are the coins it rode into their migration, so they were chosen by how each

@@ -21,8 +21,9 @@ trades only inside the recorder's recent-migrations runs (`amm_tape`: from 7 Nov
 a migration sell among its exits and the PumpSwap tape lacks such a migration, each exit counts on its own (since 8 Nov,
 research round 3): one whose every sale landed before the coin left its curve is scored on the curve tape, and one
 still holding then is left out on that moment only, None in the row's pnl list and its reason in the row's `gaps`
-(`exit_pnls`). `rank` reads each exit on the moments it was scored on, picks only among exits scored on enough of the
-older moments (`pick_exit`), and says on how many moments the pick was scored (`exit_moments`).
+(`exit_pnls`, `exit_gap`). Only launch-type firings are scored so; any other curve rule's moment is left out whole, as
+before. `rank` picks only among exits scored on enough of the older moments, compares them on the older moments all of
+them were scored on (`pick_exit`), and says on how many moments the pick was scored (`exit_moments`).
 """
 
 from __future__ import annotations
@@ -525,6 +526,34 @@ def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, ho
     return "no_migration" if len(left) and float(path.ts[e + 1 + int(left[0])]) <= end else None
 
 
+def exit_gap(cov: Mapping[str, Any], path: MarketPath, prep, res, ex: ExitParams, mig) -> str | None:
+    """Why one exit of a launch-type position (`prep`, its result `res`) whose sale did not land on the curve cannot be
+    scored, or None when it can: where its own hold needs the PumpSwap tape of the migration and the tape lacks it
+    (`migration_sell_gap` over its own timer), and where its timer ends before the recorded migration yet its sale is
+    off the curve. Then it was priced on a completed curve, which takes no sale, and only the PumpSwap tape from where
+    the coin left its curve to the sale says what it sold for; with no migration on the tape nothing does.
+
+    Review, 8 Nov: a coin completing 58 s after the create and migrating at 62 s, before the PumpSwap tape began. A 59 s
+    timer was priced on the completing buy, the curve's highest price: +2.1 SOL on a 0.2 SOL buy, where a 57 s timer
+    made +0.06, because its own hold ends before the migration and so "nothing migrates while held" scored it."""
+    if res.sold_on_curve:
+        return None
+    own = migration_sell_gap(cov, path, prep.e, mig, float(ex.max_hold_secs))
+    if own is not None or res.sold_on_curve is None:
+        return own  # None for a path that does not say where the coin left its curve (built by hand): as before
+    if mig is not None and (
+        int(mig.slot) < int(path.slot[prep.e]) or float(mig.ts) <= prep.entry_ts + ex.max_hold_secs
+    ):
+        return None  # bought after the migration, or the tape holds the migration through this exit's timer
+    if mig is None:
+        return "no_migration"
+    start = float(mig.ts)
+    left = np.flatnonzero(prep.off_curve) if prep.off_curve is not None else []
+    if len(left):
+        start = min(start, float(path.ts[prep.e + int(left[0])]))
+    return amm_recent_gap(cov, start, max(float(res.exit_ts), start) + SELL_SLOT_SECS)
+
+
 def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[ExitParams], costs: Costs,
               end_ts: float, mig, gap: str | None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
     """Each exit's pnl on a position bought on the curve (`prep`, at state prep.e), None for an exit left out, and the
@@ -532,8 +561,10 @@ def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[Ex
     None where the PumpSwap tape holds the coin's migration or nothing migrates while held, and then every exit is
     scored, exactly as before 8 Nov. Otherwise an exit whose every sale landed before the coin left its curve is scored
     on the curve tape the lab has (`SimResult.sold_on_curve`), and so is one whose own hold the PumpSwap tape can score
-    (`migration_sell_gap` over its own timer, as the paper test reads a frozen exit); any other exit was still holding
-    when the coin left its curve, and nothing on the tape prices its sale.
+    (`exit_gap`: the PumpSwap tape holds the migration through its own timer, as the paper test reads a frozen exit, or
+    holds a sale off a completed curve before the migration from the completion on); any other exit was still holding
+    when the coin left its curve, and nothing on the tape prices its sale. `_coin_rows` calls it for launch-type rules
+    only: any other rule's moment is left out whole there.
 
     Until 8 Nov such a moment was left out whole, for every exit (research round 3): lab 20261107-233005-63076f skipped
     7 of its 29 firings, and 5 of them were coins that completed 28-130 s after the launch and were winners at 20 s
@@ -545,7 +576,7 @@ def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[Ex
     for j, ex in enumerate(exits):
         res = run_exit(prep, ex, costs, end_ts=end_ts)
         if gap is not None and not res.sold_on_curve:
-            why = migration_sell_gap(cov, path, prep.e, mig, float(ex.max_hold_secs))
+            why = exit_gap(cov, path, prep, res, ex, mig)
             if why is not None:
                 pnl.append(None)
                 gaps[j] = why
@@ -1034,6 +1065,11 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             gap = None
             if run.mig_sell and trig.kind not in AMM_KINDS:
                 gap = migration_sell_gap(run.amm_cov, path, e, mig, run.horizon)
+            if gap is not None and trig.kind not in LAUNCH_KINDS:
+                # a copy or a momentum entry is left out whole, as before 8 Nov: its riders into a migration are no
+                # known winners, so exits scored only where they sold before it would be read on moments the coins chose
+                rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
+                continue
             own, frac = None, None
             if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                 by_user = _trades_by_user(path) if by_user is None else by_user
@@ -1204,8 +1240,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     PumpSwap tape (coverage `tape:amm_recent`) holds the coin from its migration to the end of the exits' horizon
     (`mig_moment`), whatever [live] index_amm says; MIG exits that hold past 300 s leave MIG unscored (`unscored` says
     why). With a migration sell among the exits, a curve moment whose coin migrates while held is scored as before
-    where the PumpSwap tape holds the migration (`migration_sell_gap`); where it does not, each exit that sold before
-    the coin left its curve is still scored, and only an exit still holding then is left out on that moment (None in
+    where the PumpSwap tape holds the migration (`migration_sell_gap`); where it does not, on a launch-type rule each
+    exit that sold before the coin left its curve is still scored (any other rule's moment is left out whole), and only an exit still holding then is left out on that moment (None in
     the row's `pnl`, its reason in `gaps`; the moment is left out whole when no exit is left: `exit_pnls`). `amm_tape`
     reports, per MIG trigger (and per other trigger that lost a moment or an exit), how many moments were scored and
     how many were skipped and why, how many were scored on some exits only (`partly`) and the exit scores left out
@@ -1339,21 +1375,33 @@ def pnl_matrix(rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
 
 def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarray]:
     """The exit (column of `m`, moments x exits, oldest first) the older moments (rows before `cut`) pick, and each
-    exit's mean on the older moments it was scored on (-inf for one that does not compete). An exit competes when it
-    was scored on at least the older moments `need` moments give (TRAIN_SHARE of them) and on EXIT_MIN_SCORED of the
-    trigger's older moments; the best mean among those wins. The newer moments only judge the pick: None when none
-    competes, and when the winner was scored on fewer newer moments than `need` gives (the rest) or than
-    EXIT_MIN_SCORED of them, so that how many newer moments an exit was scored on never hands the pick to another exit
-    (the newer moments would choose the exit they then judge). With every exit scored on every moment this is the plain
-    best mean of the older moments, the same numbers as before 8 Nov."""
+    exit's mean on the older moments the pick was made on (-inf for one that does not compete). An exit competes when
+    it was scored on at least the older moments `need` moments give (TRAIN_SHARE of them) and on EXIT_MIN_SCORED of the
+    trigger's older moments. The competitors are compared on the older moments every one of them was scored on: an exit
+    misses a moment because it still held the coin into a migration the PumpSwap tape lacks, which the coin's run
+    chose, so each exit's mean on its own moments would compare a long hold on the coins that did not migrate with a
+    short timer on all of them (review, 8 Nov: the hold won at +0.012 a trade over the timer's +0.0003, which on the
+    same moments made +0.013, and then lost 0.03 a trade on its true newer moments). Where that common set is thinner
+    than `need` gives, the competitor scored on the fewest older moments drops out, until it is not.
+
+    The newer moments only judge the pick: None when none competes, and when the winner was scored on fewer newer
+    moments than `need` gives (the rest) or than EXIT_MIN_SCORED of them, so that how many newer moments an exit was
+    scored on never hands the pick to another exit (the newer moments would choose the exit they then judge). With every
+    exit scored on every moment this is the plain best mean of the older moments, the same numbers as before 8 Nov."""
     ok = ~np.isnan(m)
     train_n, test_n = ok[:cut].sum(axis=0), ok[cut:].sum(axis=0)
     need_train = max(int(need * TRAIN_SHARE), 1)
     need_test = max(need - int(need * TRAIN_SHARE), 1)
     fit = (train_n >= need_train) & (train_n >= EXIT_MIN_SCORED * cut)
-    means = np.where(fit, np.nansum(m[:cut], axis=0) / np.maximum(train_n, 1), -np.inf)
+    while True:
+        common = ok[:cut][:, fit].all(axis=1) if fit.any() else np.zeros(cut, dtype=bool)
+        if not fit.any() or common.sum() >= need_train:
+            break
+        fit[int(np.argmin(np.where(fit, train_n, np.iinfo(np.int64).max)))] = False
     if not fit.any():
-        return None, means
+        return None, np.full(m.shape[1], -np.inf)
+    means = np.full(m.shape[1], -np.inf)
+    means[fit] = m[:cut][common][:, fit].mean(axis=0)  # every competitor was scored on each of these moments
     k = int(np.argmax(means))
     if test_n[k] < need_test or test_n[k] < EXIT_MIN_SCORED * (len(m) - cut):
         return None, means
@@ -1369,7 +1417,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     An exit left out on some moments (None in a row's pnl list: it still held a coin that left its curve where the
     PumpSwap tape lacks the migration, `exit_pnls`) is read on the moments it was scored on. It competes only when it
     was scored on as many older moments as a trigger needs at the least (60 % of `min_train` + 5) and on half of the
-    trigger's older moments; the older moments alone pick the exit, and a trigger whose pick was scored on fewer of the
+    trigger's older moments; the older moments alone pick the exit, comparing the competitors on the older moments all
+    of them were scored on (`train_mean` is the pick's mean there), and a trigger whose pick was scored on fewer of the
     newer moments than that (the other 40 %, or half of them) is not ranked: another exit never takes its place
     (`pick_exit`). `exit_moments` says on how many of the trigger's `moments` the chosen exit was scored, and its test
     numbers are those of its newer moments that were scored. The split stays the trigger's: no moment newer than the
