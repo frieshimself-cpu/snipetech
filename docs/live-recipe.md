@@ -23,6 +23,28 @@ something rather than stop it, and the wallet's balance stays out of the reports
   landed sell) 0.0180, and four failed duplicate sells at 0.002 each 0.0080. The +0.0142 and -0.0039 first written
   here were after pump.fun's fee and without the duplicates.
 
+## Trade small now, research 24/7 on the API credits (8 Nov 2026, 21:05-21:35 UTC)
+
+Owner's yes in chat, 21:05: "just get them to study and trade with low amounts and do max reasearch ... You can still
+trade now and rinse the balance doesnt matter, just make sure they are doing everything they possibly can". Earlier,
+"the agents should be done using the claude api credits I bought, not here", and the 17:00-19:00 withdrawal was the
+owner's own ("I took the sol out"; equity about 1.4 SOL). The owner plans to add about 30 SOL on 9 Nov.
+
+- **Book bar** 0.001 -> 0.0001 SOL a trade (`book bar 0.0001`): every qualified wallet is copied at 0.2 SOL. Armed at
+  21:05: 2Tp9sc and 4TLbdt beside 7aPo3n.
+- **AG89fn copied again, early buys only:** the server analyst (I21) found a 75 SOL market cap keeps 24 of its 27
+  buys within 20 slots of a create (+7 to +12 % net over 30 s) and drops 79 later buys that lost 18-26 %. New build
+  `book mcap` sends it as OKTech maxMcapUsd ($6,700 at 88.96 $/SOL); `book fresh` lifted its live pause and judges it
+  only on copies from 21:28. Its capped sniper started 21:30 (6af0e9df). For 7aPo3n a cap does not separate its buys
+  (early ones are at 163-178 SOL, above its late ones), so it is copied as before.
+- **Automatic live test on** (`operate autotest --on`, 0.2 SOL a buy, blocks of 10 buys or 120 min, a strategy
+  dropped after 1 SOL of its own losses): a hunt strategy that passes the 100-trade paper test goes live by itself.
+- **Agents' budget at its maximum:** 500 $ a day, 25 $ and 80 tool calls a turn, an analysis every 30 minutes. Their
+  research queue: I21 (cap, done), I22 (more wallets like 7aPo: early buys that pay), I23 (EU vs NA hours), I24 (best
+  exit for early-buy copies), I6 and I9 (paper hunts at n 7 and 9).
+- **Two blockers fixed:** an unpriced coin no buy of ours explains counts as 0 SOL (the book had halted 17:30-20:45 on
+  "equity unknown"), and a stray coin held 10 minutes or more no longer keeps a spent sniper from being replaced.
+
 ## AG89fn's first live copies lost −0.418 SOL in 10 minutes; the book paused it (8 Nov 2026, 13:06–13:20 UTC)
 
 AG89fn, booked since 7 Nov 13:50 without a buy, made six copies at 0.2 SOL from 13:06 (landing 0-1 trades behind
