@@ -23,6 +23,23 @@ something rather than stop it, and the wallet's balance stays out of the reports
   landed sell) 0.0180, and four failed duplicate sells at 0.002 each 0.0080. The +0.0142 and -0.0039 first written
   here were after pump.fun's fee and without the duplicates.
 
+## Live copies of 7aPo3n, 8 Nov 2026 11:30–12:20 UTC (the book, control arm, 0.2 SOL)
+
+Six copies in 50 minutes. The first three (11:30 2WY37w, 11:32 6EtVCH, 11:44 CiPBTK) fell in the hours the tape
+was down (the database damage of 09:51–11:49): only their failed duplicate sells are on record (6 sends, about
+0.012 SOL); their buys and landed sells are to be read from the chain. The next three landed on a recording tape,
+every buy 0 trades behind the leader at +0.5 %, and all three won:
+
+| time (UTC) | coin | held | exit | price result | failed duplicates | whole result |
+|---|---|---|---|---|---|---|
+| 12:10:40 | 8LjhQY | 11 s | dead exit | +0.0124 | 1 (0.0020) | +0.0104 |
+| 12:14:29 | 7Avk6P | 13 s | copy exit | +0.0380 | 1 (0.0020) | +0.0360 |
+| 12:20:01 | EnzACy | 9 s | copy exit | +0.0690 | 2 (0.0040) | +0.0650 |
+
+Whole result +0.1114 SOL on 0.6 SOL deployed, in 10 minutes; the duplicates took 0.008 of a 0.119 gross. Three
+trades say little about the wallet's expectancy (its forecast was +0.027 a copy); 7aPo3n's live record is now 9
+copies, 4 won, about +0.10 net including the 7 Nov trips, before the three unread trips.
+
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
 The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy landing: n 35, +0.0271 SOL a trade,
