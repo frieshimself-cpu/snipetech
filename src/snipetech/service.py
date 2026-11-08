@@ -1282,7 +1282,12 @@ class Service:
         `salt` gives the sniper an externalId of its own (each live test's own sniper: OKTech refuses a second task
         with the same externalId, and without a salt that id comes from the strategy's settings alone)."""
         from .oktech import strategy_sniper
+        from .operator import oktech_answers
+        from .operator.paths import OperatorPaths
 
+        # OKTech's answer on maxDevBuySol 0 as the owner recorded it next to the database: a creator-0 plan's notes name
+        # it, or say that the live test and the automatic test wait for it (research round 3)
+        answer = oktech_answers.dev_max_zero(OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent)) or {}
         frozen = self.store.coverage("paper_strategies").get("strategies", [])
         picked = [s for s in frozen if strategy_id in (None, s["id"])]
         if not picked:
@@ -1294,7 +1299,8 @@ class Service:
                 if buy_sol:
                     s = s | {"buy_sol": buy_sol}
                 try:
-                    p = strategy_sniper(s, max_buys, via, preexec, stale)
+                    p = strategy_sniper(s, max_buys, via, preexec, stale,
+                                        dev_max_zero_confirmed=str(answer.get("words") or ""))  # fmt: skip
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue

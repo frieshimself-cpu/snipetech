@@ -70,7 +70,7 @@ from .. import CODE_ID
 from ..config import Config
 from ..ops import redact
 from ..solana.base58 import is_pubkey
-from . import live_test, risk_guard
+from . import live_test, oktech_answers, risk_guard
 from .paths import OperatorPaths
 from .tools import NoteSink
 
@@ -904,14 +904,18 @@ async def _begin(r: _Round, at: dict) -> dict | None:
     held_back, why = await risk_guard.tripped(r.svc, r.cfg, paths, now, snap=r.snap)  # cannot tell is never clear
     if held_back:
         return wait(f"the wallet-wide guard: {why}")
-    try:
-        ok = live_test.eligible(store, r.cfg, now)
+    try:  # live_test.eligible, with why each other strategy is not
+        ok, why_not, rows = live_test._survey(store, r.cfg, now)
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
         return wait(f"the paper test could not be read ({type(exc).__name__})")
     live = live_ids(store)
     gone = gone_ids(paths, live)
-    # a dropped strategy is never started again, nor its sniper under another id (the same rule with another watch delay)
-    ok = [x for x in ok if not {x["id"], live.get(x["id"], x["id"])} & gone]
+
+    def kept(x: dict) -> bool:  # a dropped strategy never starts again, nor its sniper under another id (watch delay)
+        return not {x["id"], live.get(x["id"], x["id"])} & gone
+
+    ok = [x for x in ok if kept(x)]
+    _waits_for_oktech(r, [x for x in rows if why_not.get(x["id"]) == oktech_answers.DEV0_WHY and kept(x)])
     if not ok:
         return wait("no hunt strategy passes on paper" + (" that was not dropped" if gone else " yet"))
     size = float(ok[0].get("buy_sol") or 0)
@@ -984,6 +988,22 @@ async def _begin(r: _Round, at: dict) -> dict | None:
           f"{_share(at['continue_at'])}, and is dropped for good below that or at its floor. /stop holds it; /test "
           "auto off ends it.")  # fmt: skip
     return seq
+
+
+def _waits_for_oktech(r: _Round, rows: list[dict]) -> None:
+    """Strategies that pass every check on paper but wait for OKTech's answer on maxDevBuySol 0 (research round 3,
+    priority 1): the owner hears it once a day, since only they can put the question to OKTech and nothing else would
+    tell them why their standing yes starts nothing."""
+    sig = f"Automatic live test {oktech_answers.WAIT}"
+    if not rows or r.notes.has_today(sig, r.now):
+        return
+    one = len(rows) == 1
+    names = ", ".join(f"{x.get('label') or x['id']} ({x['id']})" for x in rows[: live_test.SHOWN])
+    r.say(f"{sig}: {names} {'passes' if one else 'pass'} on paper and never {'starts' if one else 'start'} live until "
+          "OKTech confirms that 0 skips every launch whose creator bought anything. Read as no limit, the sniper would "
+          "buy the plain crowd hunt, which lost 0.0147 SOL a trade over 1,285 trades on tape the research had not used "
+          f"(research round 3). Ask OKTech: \"{oktech_answers.QUESTION}\" If they confirm it, send "
+          f"{oktech_answers.CONFIRM}. Said once a day.")  # fmt: skip
 
 
 async def _advance(r: _Round, seq: dict) -> dict:
@@ -1290,8 +1310,9 @@ async def _next_block(r: _Round, seq: dict) -> dict:
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
         return _wait(r, seq, f"the paper test could not be read ({type(exc).__name__})")
     row = next((x for x in ok if x["id"] == sid), None)
+    # its paper, its cost, or OKTech's answer on maxDevBuySol 0 taken back: each reason starts with its verb
     if row is None:
-        return await _end(r, seq, f"{sid} no longer passes on paper: it {why_not.get(sid, 'is not frozen any more')}")
+        return await _end(r, seq, f"{sid} no longer qualifies: it {why_not.get(sid, 'is not frozen any more')}")
     size = float(row.get("buy_sol") or 0)
     if abs(size - float(seq["buy_sol"])) > 1e-9:
         return await _end(r, seq, f"{sid}'s size changed since its first block ({float(seq['buy_sol']):g} to {size:g} "

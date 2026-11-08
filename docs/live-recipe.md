@@ -385,6 +385,24 @@ No SSH and no command line: the owner starts and ends a capped live test from Te
    end and the close, the cycler's log `jobs/<id>.log` (never pruned), and every fill on the tape and in `fills`. Each
    test's result is written up here.
 
+**A creator-0 rule waits for OKTech's answer (research round 3's priority 1; built 8 Nov on branch `dev0-gate`, it
+applies once deployed).** A hunt whose trigger has a creator limit of 0 (dev_max 0, sent to OKTech as maxDevBuySol 0)
+was scored skipping every launch whose creator bought anything. Nobody knows yet whether OKTech's Hunt reads 0 that way
+or as "no limit". Read as no limit, its sniper would run the plain crowd hunt, which lost 0.0147 SOL a trade over 1,285
+trades on 4-5 Nov tape the research had not used, and OKTech has ignored thresholds before without saying so (5 Nov
+22:11). So such a rule never starts live until OKTech's answer is recorded: `/test` names the wait as its reason,
+`/test <id> go` and the round's start refuse it, the automatic test starts the best strategy that does not wait and
+tells the owner once a day, and `oktech strategy` says so in the plan's notes. The rule is still sent as scored
+(maxDevBuySol 0); nothing else changes. Only the owner records the answer, in `operator/OKTECH`: `/oktech dev0
+confirmed` in Telegram, or from the cloud session with the owner's word in chat, `snipetech remote --wait run operate
+oktech --dev-max-zero confirmed --words "<when and how OKTech confirmed it>"`; if OKTech says 0 means no limit, record
+nothing (any answer but `confirmed` changes nothing), and the owner gets a Telegram line and a decision note whenever the
+cloud session records or takes it back. `/oktech` shows what is recorded and the question to put to OKTech; `/oktech
+dev0 unconfirmed`, or `--dev-max-zero unconfirmed`, takes it back (a block running then runs to its end,
+and no next block of the rule starts). Nothing in the code writes the file, and the agents cannot. Rules with a creator
+limit above 0, copies and everything live now are untouched. The two creator-0 hunts in the paper test since 7 Nov
+evening (f94add343f, 7d6b4302ff) are the ones this holds back if their paper passes.
+
 ## Hunt live, 5 Nov 21:13–22:10 UTC (account approved for Hunt + local pre-execution)
 
 Facts measured on chain and on the tape, 0.02 SOL per buy on the SNIPER wallet:
