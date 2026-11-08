@@ -32,3 +32,44 @@ def test_reindex_refuses_a_name_that_is_not_a_table(tmp_path):
     out = reindex(db, "trades; DROP TABLE trades")
     assert out["error"].startswith("no table")
     assert check(db)["ok"] is True
+
+
+def _damage_a_leaf_page(path):
+    """Zero one page in the middle of the trades table, as 8 Nov's damaged pages read (btreeInitPage error 11)."""
+    c = sqlite3.connect(path)
+    page_size = c.execute("PRAGMA page_size").fetchone()[0]
+    pages = c.execute("PRAGMA page_count").fetchone()[0]
+    c.close()
+    with open(path, "r+b") as f:
+        for pgno in range(pages // 2, pages // 2 + 2):
+            f.seek((pgno - 1) * page_size)
+            f.write(b"\xff" * page_size)
+
+
+def _big_db(tmp_path):
+    p = tmp_path / "big.db"
+    c = sqlite3.connect(p)
+    c.execute(
+        "CREATE TABLE trades (sig TEXT NOT NULL, ev INTEGER NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (sig, ev))"
+    )
+    c.execute("CREATE INDEX trades_ts ON trades(ts)")
+    c.executemany("INSERT INTO trades VALUES (?, ?, ?)", [(f"s{i:07d}" + "x" * 60, 0, i) for i in range(20000)])
+    c.commit()
+    c.close()
+    return str(p)
+
+
+def test_salvage_copies_every_readable_row_and_puts_the_copy_in_place(tmp_path):
+    from snipetech.infra.db_repair import salvage
+
+    db = _big_db(tmp_path)
+    _damage_a_leaf_page(db)
+    out = salvage(db, "trades", chunk=1000)
+    assert out["copied"] > 15000 and out["copied"] < 20000 and out["skipped_ranges"]
+    c = sqlite3.connect(db)
+    n = c.execute("SELECT count(*) FROM trades WHERE ts >= 0").fetchone()[0]  # through the rebuilt index
+    names = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE tbl_name='trades'")}
+    c.execute("INSERT INTO trades VALUES ('new', 0, 99999)")  # the recorder can write again
+    c.commit()
+    assert n == out["copied"] and "trades_ts" in names
+    assert out["kept_as"] in {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}

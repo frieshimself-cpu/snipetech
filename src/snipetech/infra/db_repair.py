@@ -49,3 +49,61 @@ def reindex(path: str, table: str) -> dict[str, Any]:
     finally:
         conn.close()
     return {"table": table, "secs": secs, "after": check(path)}
+
+
+def _copy_range(conn: sqlite3.Connection, src: str, dst: str, lo: int, hi: int, skipped: list) -> int:
+    """Copy rows lo..hi (rowids), halving a range that hits a damaged page until the damaged rowids are isolated."""
+    try:
+        cur = conn.execute(f'INSERT INTO "{dst}" SELECT * FROM "{src}" WHERE rowid BETWEEN ? AND ?', (lo, hi))
+        conn.commit()
+        return cur.rowcount
+    except sqlite3.DatabaseError:
+        conn.rollback()
+        if hi - lo < 64:
+            skipped.append([lo, hi])
+            return 0
+        mid = (lo + hi) // 2
+        return _copy_range(conn, src, dst, lo, mid, skipped) + _copy_range(conn, src, dst, mid + 1, hi, skipped)
+
+
+def salvage(path: str, table: str, chunk: int = 200_000) -> dict[str, Any]:
+    """Rebuild a table whose own pages are damaged (8 Nov 09:51: "Tree 7 page 39867xx: btreeInitPage() returns error
+    code 11" in trades): copy every readable row into a fresh table in rowid chunks, skipping only the rowid ranges
+    on damaged pages, then rename the damaged table to <table>_damaged_<time> (nothing is dropped: dropping walks the
+    damaged pages), drop its indexes, put the copy in its place and build the same indexes on it. Each chunk commits
+    on its own; the swap is one transaction."""
+    t0 = time.monotonic()
+    conn = _connect(path)
+    try:
+        row = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+        if not row:
+            return {"error": f"no table named {table!r}"}
+        create = row[0]
+        indexes = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", (table,)
+        ).fetchall()
+        new = f"{table}_salvage"
+        conn.execute(f'DROP TABLE IF EXISTS "{new}"')
+        conn.execute(create.replace(f"CREATE TABLE {table}", f'CREATE TABLE "{new}"', 1))
+        conn.commit()
+        try:
+            top = conn.execute(f'SELECT max(rowid) FROM "{table}"').fetchone()[0] or 0
+        except sqlite3.DatabaseError:  # the table's last pages are the damaged ones: an index still knows every rowid
+            top = max(conn.execute(f'SELECT max(rowid) FROM "{table}" INDEXED BY "{n}"').fetchone()[0] or 0
+                      for n, _sql in indexes)  # fmt: skip
+        copied, skipped = 0, []
+        for lo in range(1, top + 1, chunk):
+            copied += _copy_range(conn, table, new, lo, min(lo + chunk - 1, top), skipped)
+        kept = f"{table}_damaged_{int(time.time())}"
+        conn.execute("BEGIN IMMEDIATE")
+        for name, _sql in indexes:
+            conn.execute(f'DROP INDEX "{name}"')
+        conn.execute(f'ALTER TABLE "{table}" RENAME TO "{kept}"')
+        conn.execute(f'ALTER TABLE "{new}" RENAME TO "{table}"')
+        for _name, sql in indexes:
+            conn.execute(sql)
+        conn.commit()
+    finally:
+        conn.close()
+    return {"table": table, "copied": copied, "skipped_ranges": skipped, "kept_as": kept,
+            "secs": round(time.monotonic() - t0, 1)}  # fmt: skip

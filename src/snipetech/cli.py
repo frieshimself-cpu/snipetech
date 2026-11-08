@@ -744,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
         json_flag=False,
     )
     sp = cmd("db", "check the live database (quick_check) or rebuild one table's indexes (reindex)", json_flag=False)
-    sp.add_argument("action", choices=["check", "reindex"])
+    sp.add_argument("action", choices=["check", "reindex", "salvage"])
     sp.add_argument("--table", default="trades")
     sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
     sp.add_argument("signature")
@@ -1621,9 +1621,13 @@ def main(argv: list[str] | None = None) -> int:
         print(asyncio.run(go()))
         return 0
     if args.cmd == "db":
-        from .infra.db_repair import check, reindex
+        from .infra.db_repair import check, reindex, salvage
 
-        out = check(cfg.storage.db_path) if args.action == "check" else reindex(cfg.storage.db_path, args.table)
+        act = {"check": lambda p, t: check(p), "reindex": reindex, "salvage": salvage}[args.action]
+        out = act(cfg.storage.db_path, args.table)
+        if args.action == "salvage":
+            print(json.dumps(out))
+            return 0 if "error" not in out else 1
         print(json.dumps(out))
         return 0 if out.get("ok", (out.get("after") or {}).get("ok")) else 1
     if args.cmd == "snapshot-db":
