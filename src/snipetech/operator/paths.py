@@ -1,9 +1,25 @@
-"""Where the operator keeps its files: everything under <data>/operator/, plus read-only views of jobs and reports."""
+"""Where the operator keeps its files: everything under <data>/operator/, plus read-only views of jobs, reports and the
+checkout's research record (docs/research)."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
+
+def research_dir(repo: Path | str | None = None) -> Path | None:
+    """docs/research, the cloud session's research rounds, which the agents read and never write: in `repo` when the
+    caller knows its checkout (the operator's --repo), else in the repository above this package when it runs from a
+    checkout. The server does: deploy/setup.sh installs the package editable from /opt/snipetech, the units run
+    /opt/snipetech/.venv/bin/snipetech, and `remote update` (ops.py op_update) resets that checkout to the branch, docs
+    included. None when there is no such directory: an installed package carries no docs."""
+    if repo is None:
+        package = Path(__file__).resolve().parents[1]  # <checkout>/src/snipetech when run from a checkout
+        if package.parent.name != "src":
+            return None
+        repo = package.parent.parent
+    path = Path(repo) / "docs" / "research"
+    return path if path.is_dir() else None
 
 
 @dataclass(frozen=True)

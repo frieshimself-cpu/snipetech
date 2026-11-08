@@ -1,8 +1,9 @@
 """What the agents learned and what they want to try next: the memory the operator, the analyst and the strategist
 share between turns. Code only, no Claude. Lessons are an append-only markdown file (operator/lessons.md: one dated
-line each, with its evidence and n); ideas are a small JSON file written atomically (operator/ideas.json). Nothing in
-here trades, starts a sniper or changes a setting: an idea that needs money or a change outside the strategist's
-bounds is marked as needing the owner's yes."""
+line each, with its evidence and n); ideas are a small JSON file written atomically (operator/ideas.json). Every turn
+also reads the research record: what the cloud session's research rounds found (docs/research/ in the checkout, read
+here and never written). Nothing in here trades, starts a sniper or changes a setting: an idea that needs money or a
+change outside the strategist's bounds is marked as needing the owner's yes."""
 
 from __future__ import annotations
 
@@ -12,7 +13,7 @@ import json
 import os
 import re
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,10 @@ CONTEXT_LESSONS = 10
 CONTEXT_IDEAS = 5
 CONTEXT_LINE = 240  # each lesson or idea line is cut to this many characters
 CONTEXT_MAX_CHARS = 4000
+# the research record every turn sees after the lessons and ideas, on its own cap so neither crowds out the other: the
+# newest round's outcome and lessons, then a line for each older round (research_record)
+RESEARCH_MAX_CHARS = 2500
+RESEARCH_INDEX = "README.md"
 DIGEST_LESSONS = 3
 DIGEST_IDEAS = 3
 DIGEST_LINE = 150
@@ -58,6 +63,10 @@ _SECRET_RES = (
     re.compile(r"[1-9A-HJ-NP-Za-km-z]{80,}"),  # a 64-byte key in base58 (a whole signature looks the same)
     re.compile(r"\[(?:\s*\d{1,3}\s*,){31,}\s*\d{1,3}\s*\]"),  # a keypair as a JSON byte array
 )
+_ROUND_RE = re.compile(r"-round-(\d+)\.md$")  # docs/research/<date>-round-<N>.md
+_LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)\s]+)\)")  # a markdown link: [text](target)
+_ITEM_RE = re.compile(r"(?:[-*+]|\d+[.)])\s+")  # where a markdown list item starts
+_HEADING_RE = re.compile(r"#{1,2}\s")  # a heading that ends a "## ..." section
 
 
 def _iso(ts: float) -> str:
@@ -339,10 +348,11 @@ def book_line(book: Any) -> str:
 
 
 def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,
-            max_chars: int = CONTEXT_MAX_CHARS, book: Any = None) -> str:  # fmt: skip
+            max_chars: int = CONTEXT_MAX_CHARS, book: Any = None, research: Path | None = None) -> str:  # fmt: skip
     """The block every turn's message carries: the book's current settings (when given), the last lessons (newest
     last) and the best open ideas, each line cut short and the whole capped, so a long memory never crowds out the
-    round."""
+    round; then, when `research` names docs/research (research_dir in operator/paths.py), the research record on its
+    own cap."""
     lines = [book_line(book)] if book is not None else []
     lines.append("What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):")
     rows = read_lessons(paths, lessons)
@@ -352,11 +362,143 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
     lines += [_cut(f"- {i.get('id')} [{i.get('kind', '?')}, {i.get('status')}, priority {_priority(i)}"
                    f"{', needs the owner' if i.get('owner_needed') else ''}] {_title(i)}. Why: {i.get('why', '?')} "
                    f"Test: {i.get('test', '?')}", CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
-    return _cut("\n".join(lines), max_chars)
+    memory = _cut("\n".join(lines), max_chars)
+    record = research_record(research)
+    return f"{memory}\n{record}" if record else memory
 
 
 def _title(idea: dict[str, Any]) -> str:
     return str(idea.get("title") or idea.get("id"))
+
+
+# -- the research record: the cloud session's research rounds (docs/research/), read and never written ---------------
+
+
+def _scrub(text: str) -> str:
+    """A line of a file these agents' checked tools did not write: the same checks as a lesson's, but what looks like a
+    secret is blanked instead of refused, so one bad line never hides the record."""
+    text = redact(text)
+    for pattern in _SECRET_RES:
+        text = pattern.sub("<redacted>", text)
+    return text
+
+
+def _record_line(text: str) -> str:
+    return _cut(_scrub(text), CONTEXT_LINE)  # scrubbed whole first: a key cut in half no longer looks like one
+
+
+def _section(text: str, title: str) -> list[str]:
+    """The lines under the heading "## <title>", up to the next heading of level 1 or 2; none when it is missing."""
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == f"## {title}":
+            rest = lines[i + 1 :]
+            return rest[: next((j for j, x in enumerate(rest) if _HEADING_RE.match(x)), len(rest))]
+    return []
+
+
+def _first_paragraph(lines: list[str]) -> str:
+    """The first paragraph of a section as one line: its lines up to the first blank line."""
+    para: list[str] = []
+    for line in lines:
+        if line.strip():
+            para.append(line)
+        elif para:
+            break
+    return " ".join(" ".join(para).split())
+
+
+def _items(lines: list[str]) -> list[tuple[bool, str]]:
+    """Each list item of a section with the lines it wraps onto, or each paragraph, as one line; True for a list
+    item."""
+    items: list[tuple[bool, list[str]]] = []
+    current: list[str] | None = None
+    for line in lines:
+        text = line.strip()
+        if not text:
+            current = None
+            continue
+        start = _ITEM_RE.match(text)
+        if start or current is None:
+            current = [text[start.end() :] if start else text]
+            items.append((bool(start), current))
+        else:
+            current.append(text)
+    return [(bullet, " ".join(" ".join(parts).split())) for bullet, parts in items]
+
+
+def _rounds(directory: Path) -> list[tuple[int, str, Path]]:
+    """The round reports (<date>-round-<N>.md) as (N, file name, path)."""
+    try:
+        files = [p for p in directory.iterdir() if p.is_file()]
+    except OSError:
+        return []
+    return [(int(m.group(1)), p.name, p) for p in files if (m := _ROUND_RE.search(p.name))]
+
+
+def _older_rounds(directory: Path, newest: int) -> list[str]:
+    """The index lines (README.md) of the rounds before `newest`, newest first, their links as plain text."""
+    try:
+        text = (directory / RESEARCH_INDEX).read_text(errors="replace")
+    except OSError:
+        return []
+    found: dict[int, str] = {}
+    for bullet, item in _items(text.splitlines()):
+        link = _LINK_RE.search(item) if bullet else None
+        n = _ROUND_RE.search(link.group(2)) if link else None
+        if n and int(n.group(1)) < newest:
+            found.setdefault(int(n.group(1)), _LINK_RE.sub(r"\1 (\2)", item))
+    return [found[k] for k in sorted(found, reverse=True)]
+
+
+def _size(lines: list[str]) -> int:
+    return sum(len(x) + 1 for x in lines)
+
+
+def _part(head: str, rows: list[str], more: Callable[[int], str], room: float) -> list[str]:
+    """`head` and as many of `rows` as fit in `room` characters, with a last line `more(n)` counting the n left out;
+    nothing when not even the head and one row fit."""
+    for k in range(len(rows), 0, -1):
+        lines = [head, *rows[:k], *([more(len(rows) - k)] if k < len(rows) else [])]
+        if _size(lines) <= room:
+            return lines
+    return []
+
+
+def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS) -> str:
+    """The research record each turn's message carries after the lessons and ideas: the newest round's OUTCOME
+    paragraph (the first paragraph under its "## Report") and the lines of its "## Lessons", then the index line
+    (README.md) of each older round, newest first. The newest round has the highest N in docs/research/*-round-<N>.md,
+    compared as a number (round 10 is newer than round 9). Each line is scrubbed of secrets and cut like a lesson's.
+    The older rounds keep up to a third of the block, more when the lessons need less, and the lessons fill the rest;
+    whatever does not fit is counted with the file that holds it, so the agent knows to read it. Empty, never an error,
+    when there is no directory or no round report, or none of the parts is there."""
+    rounds = _rounds(Path(directory)) if directory is not None else []
+    if not rounds:
+        return ""
+    n, name, path = max(rounds)
+    try:
+        text = path.read_text(errors="replace")
+    except OSError:
+        text = ""
+    outcome = _first_paragraph(_section(text, "Report"))
+    lessons = [_record_line(f"- {x}") for _, x in _items(_section(text, "Lessons"))]
+    older = [_record_line(f"- {x}") for x in _older_rounds(Path(directory), n)]
+    if not (outcome or lessons or older):
+        return ""
+    top = [_record_line(f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} "
+                        f"({name}):")]  # fmt: skip
+    top += [_record_line(outcome)] if outcome else []
+    room = max_chars - _size(top)
+    lesson_part = (f"Round {n}'s lessons:", lessons,
+                   lambda k: _record_line(f"- … {k} more lessons in docs/research/{name}"))  # fmt: skip
+    older_part = ("Older rounds, newest first (docs/research/README.md):", older,
+                  lambda k: f"- … {k} older rounds in docs/research/README.md")  # fmt: skip
+    wanted = _size(_part(*lesson_part, room=float("inf")))
+    older_room = min(room, max(min(_size(_part(*older_part, room=float("inf"))), max_chars // 3), room - wanted))
+    older_lines = _part(*older_part, room=older_room)
+    lesson_lines = _part(*lesson_part, room=room - _size(older_lines))
+    return _cut("\n".join(top + lesson_lines + older_lines), max_chars)
 
 
 def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:

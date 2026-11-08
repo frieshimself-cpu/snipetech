@@ -264,3 +264,32 @@ def test_a_turn_that_must_not_learn_gets_no_add_lesson(tmp_path):
     asyncio.run(run_strategist_turn(cfg, {}, ledger, notes, client=_client(handler), now=lambda: NOW, learn=False))
     names = {t["name"] for t in requests[0]["tools"]}
     assert "add_lesson" not in names and "read_lessons" in names
+
+
+def test_the_strategist_sees_the_research_record_too(tmp_path):
+    """The strategist's message carries the research record after the lessons and ideas, from the checkout it runs
+    from (the server's units run it from /opt/snipetech, the repository above the package)."""
+    cfg, ledger, notes, _ = _env(tmp_path)
+    research = tmp_path / "checkout" / "docs" / "research"
+    research.mkdir(parents=True)
+    (research / "2026-11-07-round-3.md").write_text("# Research round 3\n\n## Report\n\nOUTCOME: no edge at our "
+                                                    "landing.\n\n## Lessons\n\n- A close landing is still not an edge\n")  # fmt: skip
+    handler, requests = _scripted(([{"type": "text", "text": "no change"}], "end_turn"))
+    asyncio.run(run_strategist_turn(cfg, {"window_days": 7}, ledger, notes, client=_client(handler), now=lambda: NOW,
+                                    repo=tmp_path / "checkout"))  # fmt: skip
+    content = requests[0]["messages"][0]["content"]
+    assert "OUTCOME: no edge at our landing." in content and "- A close landing is still not an edge" in content
+    assert content.index("Open ideas") < content.index("Research record")
+
+
+def test_the_strategist_never_turns_a_rounds_build_into_a_patch(tmp_path):
+    """The one agent that can change the config by itself is told: what a round refuted is never proposed, and a
+    round's builds and owner questions are the cloud session's and the owner's, never a patch."""
+    cfg, ledger, notes, _ = _env(tmp_path)
+    handler, requests = _scripted(([{"type": "text", "text": "no change"}], "end_turn"))
+    asyncio.run(run_strategist_turn(cfg, {}, ledger, notes, client=_client(handler), now=lambda: NOW))
+    sysm = requests[0]["system"]
+    system = " ".join((sysm if isinstance(sysm, str) else sysm[0]["text"]).split())
+    for words in ("research record", "never propose what a round refuted", "builds and its questions for the owner",
+                  "belong to the cloud session and the owner", "never turn a proposed build into a patch"):  # fmt: skip
+        assert words in system, words

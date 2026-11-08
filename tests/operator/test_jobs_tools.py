@@ -136,6 +136,46 @@ def test_read_file_outside_roots_refused(toolbox):
     assert _call(tools["read_file"], path="reports/x/lab.txt") == "hello"
 
 
+def _checkout(repo):
+    """A checkout as the server has one: the research rounds, their index and script, other docs, other repo files."""
+    research = repo / "docs" / "research"
+    (research / "drafts").mkdir(parents=True)
+    (research / "2026-11-07-round-3.md").write_text("# Research round 3\n\nOUTCOME: no edge at our landing.\n")
+    (research / "README.md").write_text("# Strategy research rounds\n")
+    (research / "research-loop.workflow.js").write_text("export const meta = {}\n")
+    (research / "drafts" / "round-4.md").write_text("a draft\n")
+    (repo / "docs" / "roadmap.md").write_text("the roadmap\n")
+    (repo / "notes.md").write_text("not for the agents\n")
+    (research / "elsewhere.md").symlink_to(repo / "notes.md")
+    return research
+
+
+def test_read_file_reads_a_whole_research_round_and_nothing_else_of_the_checkout(toolbox, tmp_path):
+    """The agents read the cloud session's round reports (docs/research/<name>.md in the checkout their jobs run from),
+    and only those: no way through that directory to another document, another repo file or a link out of it."""
+    tools, _, _ = toolbox
+    research = _checkout(tmp_path)  # the toolbox's jobs run from tmp_path; its data directory is tmp_path/data
+    assert _call(tools["read_file"], path="docs/research/2026-11-07-round-3.md") == ("# Research round 3\n\nOUTCOME: no "
+                                                                                     "edge at our landing.\n")  # fmt: skip
+    assert _call(tools["read_file"], path="docs/research/README.md") == "# Strategy research rounds\n"
+    for bad in ("docs/research/../roadmap.md", "docs/research/../../notes.md", "../docs/research/2026-11-07-round-3.md",
+                str(research / "2026-11-07-round-3.md"), "docs/roadmap.md", "docs/research/research-loop.workflow.js",
+                "docs/research/drafts/round-4.md", "docs/research/elsewhere.md", "docs/research/", "notes.md",
+                "docs/research/2026-11-08-round-4.md"):  # fmt: skip
+        assert _call(tools["read_file"], path=bad).startswith("error"), bad
+
+
+def test_a_checkout_without_research_rounds_reads_none_and_no_tool_writes_there(toolbox, tmp_path):
+    tools, _, _ = toolbox
+    assert _call(tools["read_file"], path="docs/research/2026-11-07-round-3.md").startswith("error")
+    research = _checkout(tmp_path)
+    before = sorted(p.name for p in research.iterdir())
+    for name in ("../../docs/research/2026-11-08-round-9", "docs/research/2026-11-08-round-9", "README"):
+        _call(tools["write_report"], name=name, text="# planted")
+    assert sorted(p.name for p in research.iterdir()) == before
+    assert (research / "README.md").read_text() == "# Strategy research rounds\n"
+
+
 def test_sql_refuses_writes_and_returns_rows(toolbox):
     tools, _, _ = toolbox
     assert _call(tools["sql"], query="delete from trades").startswith("error")

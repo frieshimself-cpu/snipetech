@@ -40,6 +40,9 @@ next 20 live round trips will show whether it worked.
 Memory: the analyst's lessons and open ideas are in the message (read_lessons and list_ideas for more). Weigh a config
 idea against the evidence before you propose it; never re-propose what a lesson says failed. When the numbers teach
 something new (what your last change did, a key that does not move the result), add_lesson with its evidence and n.
+The research record in the message (what the cloud session's research rounds found) weighs the same: never propose
+what a round refuted. A round's builds and its questions for the owner belong to the cloud session and the owner:
+never turn a proposed build into a patch.
 """
     + "\n"
     + OKTECH_PLAYBOOK

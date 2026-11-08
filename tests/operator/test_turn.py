@@ -258,6 +258,41 @@ def test_every_turn_sees_the_lessons_and_the_open_ideas(env):
     assert {"read_lessons", "add_lesson", "list_ideas", "upsert_idea", "read_round_trips"} <= names
 
 
+def test_every_turn_carries_the_research_record_of_the_checkout_it_runs_from(env, tmp_path):
+    """The operator's and the analyst's message carry the research record next to the lessons and ideas, read from
+    docs/research in the checkout the round runs from (the jobs' repo: the operator's --repo)."""
+    research = tmp_path / "docs" / "research"  # the env's jobs run from tmp_path
+    research.mkdir(parents=True)
+    (research / "2026-11-07-round-3.md").write_text(
+        "# Research round 3\n\n## Report\n\nOUTCOME: the creator-0 hunts lose on unseen tape.\n\n## Lessons\n\n"
+        "- Unused old tape settles a lead faster (19 firings, -0.0099 a trade)\n"
+    )
+    for mode in ("operator", "analyst"):
+        handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+        _run(env, Decision(True, mode, ["job ended: j1"]), handler)
+        content = requests[0]["messages"][0]["content"]
+        assert "OUTCOME: the creator-0 hunts lose on unseen tape." in content, mode
+        assert "- Unused old tape settles a lead faster (19 firings, -0.0099 a trade)" in content, mode
+        assert content.index("Open ideas") < content.index("Research record") < content.index("This turn stops"), mode
+
+
+def test_the_operator_and_the_analyst_are_told_the_research_record_settles_ideas(env):
+    """7 Nov 23:16 ideas I6, I8 and I9 were still "testing" after round 3 had refuted the first two on unseen tape. The
+    rules each turn is sent: the record settles ideas, a refuted angle is not tested again (no lab, no freeze), a
+    refuted open idea is marked rejected with the round and its numbers, and a round's builds and owner questions stay
+    with the cloud session and the owner."""
+    for mode in ("operator", "analyst", "postmortem"):
+        handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+        _run(env, Decision(True, mode, ["job ended: j1"]), handler)
+        system = " ".join(_system(requests[0]).split())
+        for words in ("research record", "settles ideas too", "Do not re-test an angle a round refuted",
+                      "no freeze into the paper test", "mark it rejected with upsert_idea",
+                      "citing the round and its numbers", "builds and its questions for the owner",
+                      "belong to the cloud session and the owner", "no agent turns a proposed build into a config change",
+                      "read_file docs/research/"):  # fmt: skip
+            assert words in system, (mode, words)
+
+
 def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
     """The post-mortem is the analyst's job by its instructions: each loss in one named cause, the causes counted,
     live against the verdict, then a lesson (or why none) and ideas with a concrete test."""

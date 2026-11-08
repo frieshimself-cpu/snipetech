@@ -18,7 +18,7 @@ from .gate import Decision, analyst_update_target, mark_analyst_ran
 from .jobs import OperatorJobs
 from .learning import context as learning_context
 from .notify import Notifier
-from .paths import OperatorPaths
+from .paths import OperatorPaths, research_dir
 from .prompts import ANALYST_SYSTEM, OPERATOR_SYSTEM, user_message
 from .snapshot import Snapshot
 from .tools import NoteSink, make_operator_tools
@@ -90,8 +90,11 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     inbox = _read_inbox(paths)
     tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
     client = client or AsyncAnthropic()
-    content = user_message(snap, decision, inbox, learned=learning_context(paths, book=cfg.book), update_of=update_of,
-                           ceiling=ceiling)  # fmt: skip
+    # the research record comes from the checkout the round runs from, where every deploy brings the research rounds'
+    # reports. No agent read them before 8 Nov: 7 Nov 21:16-23:16 the analyst froze two creator-0 hunts that round 3
+    # (8 Nov 00:00) showed lose on unseen tape
+    learned = learning_context(paths, book=cfg.book, research=research_dir(jobs.repo))
+    content = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
     runner = client.beta.messages.tool_runner(
         model=op.analyst_model if analyst else op.model,
         max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,

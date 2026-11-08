@@ -15,12 +15,13 @@ from ..measure.attribution import trip_result_sol
 from ..ops import _read_only_authorizer, redact
 from . import learning
 from .jobs import OperatorJobs
-from .paths import OperatorPaths
+from .paths import OperatorPaths, research_dir
 
 LEVELS = ("info", "decision")
 
 
 SHARED_FILES = frozenset({"lessons.md", "notes.md", "inbox.md"})  # never overwritten by write_report
+RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the research rounds, in the checkout
 
 
 def _iso(ts: float) -> str:
@@ -65,6 +66,21 @@ def _inside(path: Path, roots: list[Path]) -> bool:
     except OSError:
         return False
     return any(r == root.resolve() or r.is_relative_to(root.resolve()) for root in roots)
+
+
+def _research_file(research: Path | None, path: str) -> Path | None:
+    """docs/research/<name>.md in the checkout: a plain .md file name right in that directory, read-only. Never a path
+    through it (no ../, no subdirectory, no link that leads out of it), never another document or repo file."""
+    if research is None or not path.startswith(RESEARCH_PREFIX):
+        return None
+    name = path[len(RESEARCH_PREFIX) :]
+    if not name.endswith(".md") or "/" in name or "\\" in name or name.startswith("."):
+        return None
+    p = research / name
+    try:
+        return p if p.resolve().parent == research.resolve() else None
+    except OSError:
+        return None
 
 
 def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str, *, ideas: bool = True,
@@ -209,14 +225,26 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def read_file(path: str) -> str:
-        """Read a file under reports/, operator/ or jobs/ (paths relative to the data directory).
+        """Read a file under reports/, operator/ or jobs/ (paths relative to the data directory), or a whole report of
+        the cloud session's research rounds: docs/research/<name>.md in the checkout (docs/research/README.md is their
+        index).
 
         Args:
-            path: e.g. reports/2026-11-06/lab-0-start.txt or operator/candidates.json.
+            path: e.g. reports/2026-11-06/lab-0-start.txt, operator/candidates.json or
+                docs/research/2026-11-07-round-3.md.
         """
-        p = (paths.data / path) if not Path(path).is_absolute() else Path(path)
-        if not _inside(p, roots):
-            return "error: path outside reports/, operator/ and jobs/"
+        if str(path).startswith("docs/"):  # the checkout's research rounds: read here, no tool writes there
+            research = research_dir(jobs.repo)  # looked up at each call: a deploy may bring it in mid-turn
+            if research is None:
+                return "error: this server's checkout has no docs/research"
+            p = _research_file(research, str(path))
+            if p is None:
+                return ("error: of the checkout only the research rounds can be read: docs/research/<name>.md, e.g. "
+                        "docs/research/2026-11-07-round-3.md, or their index docs/research/README.md")  # fmt: skip
+        else:
+            p = (paths.data / path) if not Path(path).is_absolute() else Path(path)
+            if not _inside(p, roots):
+                return "error: path outside reports/, operator/, jobs/ and docs/research/"
         if not p.is_file():
             return f"error: no such file {path}"
         text = p.read_text(errors="replace")

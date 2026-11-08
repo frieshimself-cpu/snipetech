@@ -40,6 +40,7 @@ flowchart LR
   F --> O[operator every 15 min<br/>analyst daily, strategist weekly]
   V --> O
   E --> O
+  RR[docs/research<br/>the cloud session's research rounds] --> O
   O --> N[notes.md + reports]
   O --> TGB[Telegram: decisions, alerts, digest<br/>commands /status /stop /resume]
   O --> R[resources: credits, CU, requests, SOL, disk]
@@ -236,3 +237,22 @@ What no trip holds, because no fills row has it (the 7 Nov investigation): the s
 SOL, gone since the seed account was turned off), two PumpSwap trips of 6 Nov morning that the tape did not record,
 failed buys outside any trip, and the token-account rent each buy parks (0.00151384 SOL) until the owner closes the
 accounts in Axiom, which returns 99 % of it.
+
+## What the agents remember: lessons, ideas and, since 8 Nov, the research record
+
+The operator, the analyst and the strategist share one memory, and every turn's message carries it: the book's
+current settings, the last ten lessons (`operator/lessons.md`, one dated line each with its evidence and n), the five
+best open ideas (`operator/ideas.json`) and the research record: the newest research round's OUTCOME paragraph and
+its lessons, then one line for each older round from `docs/research/README.md` (`operator/learning.py`,
+`research_record`: about 2,500 characters on a cap of its own, each line cut like a lesson's). The research loop
+already read the agents' lessons, ideas and reports; the agents never read its rounds, and that cost a night: from
+7 Nov 21:16 to 23:16 the analyst froze two creator-0 hunts into the paper test (idea I8 as f94add343f, I6 as
+7d6b4302ff) and started a lab for a third (I9), while round 3 (8 Nov 00:00) showed both frozen hunts lose on unseen
+4-5 Nov tape (-0.0099 a trade on 19 firings, -0.0553 on 8). The record comes from the checkout the server runs:
+`deploy/setup.sh` installs the package editable from `/opt/snipetech`, the operator's unit passes it as `--repo`, and
+`remote update` resets that checkout to the branch, docs included; a checkout without `docs/research` gives no block,
+never an error. The operator and the analyst can read a whole report with `read_file docs/research/<name>.md`: only a
+plain `.md` name in that directory, never another document or repo file, and no tool writes there. Their rules say
+the record settles ideas too: an angle a round refuted is not tested again (no lab, no freeze into the paper test), an
+open idea a round refutes is marked rejected with the round and its numbers, and a round's builds and questions for
+the owner stay with the cloud session and the owner; the strategist never turns a proposed build into a patch.

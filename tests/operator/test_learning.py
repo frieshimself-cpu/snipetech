@@ -509,3 +509,156 @@ def test_every_turn_sees_what_the_book_already_does(paths):
     book.exit_mode = "per_wallet"
     assert "exits: each wallet's own" in L.context(paths, book=book).splitlines()[0]
     assert not L.context(paths).startswith("What the book does now")  # without the config: as before
+
+
+# -- the research record: the cloud session's research rounds (docs/research/), shown to every turn ------------------
+
+
+def _report(d, name, outcome, lessons=None):
+    """A round report laid out as the cloud session writes them (docs/research/2026-11-07-round-3.md): the OUTCOME
+    paragraph first under ## Report, the owner's part after it, the lab table, one lesson a line, the next angles."""
+    d.mkdir(parents=True, exist_ok=True)
+    text = (f"# Research round: {name}\n\nThe angles, the screens and the labs of the round.\n\n## Report\n\n"
+            f"{outcome}\nIts second line, in the same paragraph.\n\nWHAT THE OWNER CAN DO NOW\n1. Ask OKTech one "
+            "question.\n\n## Lab results\n\n| lab | n | mean |\n|---|---|---|\n")  # fmt: skip
+    if lessons is not None:
+        text += "\n## Lessons\n\n" + "".join(f"- {x}\n" for x in lessons)
+    (d / name).write_text(text + "\n## Next angles\n\n- an angle for the next round\n")
+
+
+INDEX = """# Strategy research rounds
+
+The record of the continuous strategy research the cloud session runs.
+
+Round 1 is the edge hunt of 7 Nov 12:20 UTC (seven fixed angles); round 2 on choose their own.
+
+- [Round 1](2026-11-07-round-1.md), 7 Nov 12:20-16:25: 8 labs, none positive; MIG the one open idea.
+- [Round 2](2026-11-07-round-2.md), 7 Nov 16:27-20:48: 5 labs, none past the skeptics' bar; copy verdicts do not
+  carry forward (-0.0147 a copy on later tape).
+- [Round 3](2026-11-07-round-3.md), 7 Nov 20:50 - 8 Nov 00:00: the creator-0 hunts lose on unseen 4-5 Nov tape.
+
+**Lab numbers from round 1 and from later labs are not comparable.**
+"""
+
+
+def test_every_turn_sees_the_newest_rounds_outcome_and_lessons_and_a_line_for_each_older_round(tmp_path):
+    """7 Nov 21:16-23:16 the analyst froze two creator-0 hunts into the paper test and started a lab for a third, while
+    round 3 (8 Nov 00:00) showed both lose on unseen tape: no agent read the rounds. A turn now sees the newest round's
+    OUTCOME paragraph and lessons, and the index line of each older round (never their own outcome or lessons)."""
+    d = tmp_path / "docs" / "research"
+    _report(d, "2026-11-07-round-2.md", "OUTCOME: round two found two thin leads.", ["Round two's own lesson"])
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: round three refuted the creator-0 hunts on unseen tape.",
+            ["Unused old tape settles a lead faster (19 firings, -0.0099 a trade)",
+             "A bundle operator's coins need a short exit"])  # fmt: skip
+    (d / "README.md").write_text(INDEX)
+    text = L.research_record(d)
+    lines = text.splitlines()
+    assert lines[0].startswith("Research record") and "2026-11-07-round-3.md" in lines[0]
+    assert ("OUTCOME: round three refuted the creator-0 hunts on unseen tape. Its second line, in the same "
+            "paragraph.") in lines  # fmt: skip
+    assert "- Unused old tape settles a lead faster (19 firings, -0.0099 a trade)" in lines
+    assert "- A bundle operator's coins need a short exit" in lines
+    assert ("- Round 2 (2026-11-07-round-2.md), 7 Nov 16:27-20:48: 5 labs, none past the skeptics' bar; copy verdicts "
+            "do not carry forward (-0.0147 a copy on later tape).") in lines  # fmt: skip
+    assert (
+        "- Round 1 (2026-11-07-round-1.md), 7 Nov 12:20-16:25: 8 labs, none positive; MIG the one open idea." in lines
+    )
+    assert "round two found two thin leads" not in text and "Round two's own lesson" not in text
+    assert "the creator-0 hunts lose on unseen" not in text  # the newest round's own index line: its outcome is there
+    for elsewhere in ("Ask OKTech", "an angle for the next round", "edge hunt of", "not comparable", "| lab |"):
+        assert elsewhere not in text, elsewhere
+    assert text.index("OUTCOME: round three") < text.index("Unused old tape") < text.index("- Round 2 (")
+    assert text.index("- Round 2 (") < text.index("- Round 1 (")  # older rounds newest first
+
+
+def test_round_ten_is_newer_than_round_nine(tmp_path):
+    """The newest round is the highest round number compared as a number: by name, round 9 sorts after round 10."""
+    d = tmp_path / "research"
+    _report(d, "2026-11-09-round-10.md", "OUTCOME: ten.", ["ten's lesson"])
+    _report(d, "2026-11-09-round-9.md", "OUTCOME: nine.", ["nine's lesson"])  # written last: the newest file on disk
+    text = L.research_record(d)
+    assert "OUTCOME: ten." in text and "- ten's lesson" in text.splitlines()
+    assert "OUTCOME: nine." not in text and "nine's lesson" not in text
+
+
+def test_the_research_record_stays_small_and_keeps_each_part(tmp_path):
+    """The block is capped and every line is cut like a lesson's; a long round never pushes out the older rounds'
+    lines, and what is left out is counted with the file that holds it."""
+    d = tmp_path / "research"
+    words = "word " * 120  # words, not one long run of letters (that reads as a key to the secret check)
+    _report(d, "2026-11-12-round-12.md", "OUTCOME: twelve " + words, [f"L{i:02d} {words}" for i in range(30)])
+    (d / "README.md").write_text("# Strategy research rounds\n\n" + "".join(
+        f"- [Round {i}](2026-11-{i:02d}-round-{i}.md), {words}\n" for i in range(1, 12)))  # fmt: skip
+    text = L.research_record(d)
+    lines = text.splitlines()
+    assert len(text) <= L.RESEARCH_MAX_CHARS and all(len(x) <= L.CONTEXT_LINE for x in lines)
+    assert any(x.startswith("OUTCOME: twelve") for x in lines) and "- L00 word word" in text
+    shown = sum(x.startswith("- L") for x in lines)
+    assert 0 < shown < 30 and any(f"{30 - shown} more" in x and "2026-11-12-round-12.md" in x for x in lines)
+    assert any(x.startswith("- Round 11 (") for x in lines)  # the newest older round keeps its line
+    assert not any(x.startswith("- Round 1 (") for x in lines) and "README.md" in lines[-1]
+
+
+def test_every_line_is_cut_whatever_the_reports_file_name(tmp_path):
+    """The lines that carry the report's file name (the head, the count of lessons left out) are cut like the rest."""
+    d = tmp_path / "research"
+    _report(
+        d, f"2026-11-07-{'x' * 200}-round-3.md", "OUTCOME: three.", [f"L{i:02d} " + "word " * 120 for i in range(30)]
+    )
+    lines = L.research_record(d).splitlines()
+    assert lines[1].startswith("OUTCOME: three.") and any("more lessons" in x for x in lines)
+    assert all(len(x) <= L.CONTEXT_LINE for x in lines)
+
+
+def test_no_research_record_gives_no_block_and_never_an_error(tmp_path, paths):
+    """A server without docs/research (an installed package, an old checkout), a directory without a round report yet,
+    or a report without its sections: no block, and the turn goes on as before."""
+    assert L.research_record(None) == "" and L.research_record(tmp_path / "nowhere") == ""
+    d = tmp_path / "research"
+    d.mkdir()
+    (d / "README.md").write_text(INDEX)  # an index without any report
+    assert L.research_record(d) == ""
+    (d / "README.md").unlink()
+    (d / "2026-11-08-round-4.md").write_text("# Research round 4\n\nStill running.\n")
+    assert L.research_record(d) == ""
+    assert L.context(paths, research=d) == L.context(paths) == L.context(paths, research=tmp_path / "nowhere")
+
+
+def test_a_missing_section_leaves_out_only_its_part(tmp_path):
+    d = tmp_path / "research"
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: three.")  # no ## Lessons, no README.md
+    assert L.research_record(d).splitlines()[1:] == ["OUTCOME: three. Its second line, in the same paragraph."]
+    (d / "2026-11-08-round-4.md").write_text("# Research round 4\n\n## Lessons\n\n- four's lesson\n")  # no ## Report
+    text = L.research_record(d)
+    assert "- four's lesson" in text.splitlines() and "OUTCOME" not in text
+
+
+def test_the_research_record_never_carries_a_secret(tmp_path, monkeypatch):
+    """The reports are not written through these agents' checked tools: each line goes through the same checks as a
+    lesson, and what looks like a secret is blanked, the rest of the line kept."""
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:telegram-secret-value")
+    d = tmp_path / "research"
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: the key sk-ant-api03-abcdefghijkl leaked here.",
+            ["token 123456:telegram-secret-value in a lesson", f"a keypair {'4' * 88} in another",
+             "api_key=abcdefgh12345678 and more"])  # fmt: skip
+    text = L.research_record(d)
+    for secret in ("sk-ant-api03", "telegram-secret-value", "4" * 80, "abcdefgh12345678"):
+        assert secret not in text, secret
+    assert "leaked here." in text and "in a lesson" in text and "in another" in text and "and more" in text
+
+
+def test_the_research_record_follows_the_lessons_and_ideas_on_its_own_cap(paths, tmp_path):
+    """The lessons and ideas keep their 4,000 characters and the record its own: a long memory never cuts the record
+    off, and a long record never pushes out the newest lesson."""
+    for i in range(12):
+        L.add_lesson(paths, f"{i:02d} " + "tx " * 96, "ev " * 133, 3, source="analyst", now=NOW + i)
+    for i in range(6):
+        L.upsert_idea(paths, IDEA | {"title": f"{i} " + "xy " * 36, "why": "wh " * 199, "test": "te " * 133},
+                      source="analyst", now=NOW)  # fmt: skip
+    d = tmp_path / "research"
+    words = "word " * 120
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: three " + words, [f"L{i:02d} {words}" for i in range(30)])
+    text = L.context(paths, research=d)
+    memory, record = text.split("\nResearch record", 1)
+    assert memory == L.context(paths) and len(memory) <= L.CONTEXT_MAX_CHARS and "11 tx tx" in memory
+    assert len("Research record" + record) <= L.RESEARCH_MAX_CHARS and "OUTCOME: three" in record
