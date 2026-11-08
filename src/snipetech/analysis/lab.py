@@ -50,6 +50,7 @@ from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_hol
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
+from ..models import is_address as _is_address
 from ..oktech import EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
@@ -252,14 +253,6 @@ VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
 TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
 CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` can name (`label --kind dev`)
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
-
-
-def _is_address(text: str) -> bool:
-    """A base58 Solana address (32-44 characters), as `creators` may name one deployer instead of a label group."""
-    return 32 <= len(text) <= 44 and all(c in BASE58 for c in text)
-
-
-BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 
 
 def _trigger_value(name: str, value: Any) -> Any:

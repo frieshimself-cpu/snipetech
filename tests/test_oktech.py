@@ -1635,3 +1635,20 @@ def test_builders_take_the_fee_policys_numbers_and_say_why():
     assert (
         any("fees (hunt)" in n for n in s.notes) and s.config["priorityFee"] == 0.001 and s.config["tipAmount"] == 0.002
     )
+
+
+def test_a_launch_strategy_limited_to_one_dev_wallet_is_a_dev_wallet_sniper_and_a_group_cannot_be_sent():
+    """A frozen launch rule with `creators` set to one deployer's address runs as OKTech's dev sniping (devWallets on
+    that address, not monitorProgram on every launch); one naming a label group has no addresses to send and is
+    refused, so no dev-limited rule can ever be started as an every-launch sniper."""
+    from snipetech.oktech import strategy_sniper
+
+    dev = "7qS94nqG8TXifQ7ptKrFWs9aU34uh6RssdJ5QBYAQDk5"
+    strat = {"id": "x", "label": "dev launch", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+             "trigger": {"kind": "launch", "creators": dev}}  # fmt: skip
+    s = strategy_sniper(strat, 10)
+    assert s.config["devWallets"] == [dev]
+    assert s.config["mode"] == "normal" and "monitorProgram" not in s.config
+    assert dev[:8] in " ".join(s.summary)
+    with pytest.raises(ValueError, match="creators"):
+        strategy_sniper(strat | {"trigger": {"kind": "launch", "creators": "dev"}}, 10)

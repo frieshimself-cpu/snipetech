@@ -31,6 +31,7 @@ from . import fees as fee_policy
 from .config import Config
 from .exits_menu import MENU
 from .fees import FeeChoice
+from .models import is_address as _is_address
 from .store import Store
 
 KINDS = ("copy", "dev")  # what `oktech plan --only` names; verdict copies are recorded as kind "vcopy"
@@ -947,6 +948,20 @@ def strategy_sniper(
                      "stage and the unsold-coin watch read, and it is the only tape a MIG rule is scored on")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
+    elif kind == "launch" and trig.get("creators"):
+        # the lab's dev-wallet filter (analysis/lab.py `creators`): OKTech's dev sniping buys launches signed by the
+        # wallets in `devWallets`, so one deployer's address is sent as it was scored. A label group ("dev") names no
+        # addresses here, and sent without them the rule would buy every launch: refused, freeze one rule per deployer
+        who = str(trig["creators"])
+        if not _is_address(who):
+            raise ValueError(f"a launch rule limited to the label group {who!r} (creators) cannot be sent as scored: a "
+                             "sniper needs the deployers' addresses, and without them it would buy every launch. Freeze "
+                             "one rule per deployer with creators set to its address")  # fmt: skip
+        del config["monitorProgram"]  # every launch; dev sniping watches these wallets instead
+        config["devWallets"] = [who]
+        summary[0] = summary[0].replace(
+            "every new pump.fun launch", f"only pump.fun launches by {who[:8]}… (OKTech dev sniping, devWallets)"
+        )
     if trig.get("plain"):
         summary.append("normal coins only: skip mayhem and holder-reward coins (they lose on paper)")
         notes.append("OKTech documents no switch that skips mayhem / holder-reward coins: find it on the Sniper form, "

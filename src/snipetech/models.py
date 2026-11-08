@@ -113,3 +113,11 @@ class Normalized:
     pools: dict[str, tuple[str, str]]  # pool -> (base_mint, quote_mint)
     unresolved_pools: set[str]
     foreign: list[Trade] = field(default_factory=list)  # trades quoted in another token (normalize(foreign=True))
+
+
+BASE58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def is_address(text: str) -> bool:
+    """A base58 Solana address (32-44 characters), the shape a wallet or mint field must have."""
+    return isinstance(text, str) and 32 <= len(text) <= 44 and all(c in BASE58 for c in text)
