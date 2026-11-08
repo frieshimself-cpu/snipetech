@@ -34,7 +34,8 @@ def test_owner_bounds_default_to_todays_values_with_the_tip_cap_the_autotune_bou
         b = cfg.fees.bounds[kind]
         assert b["buy_priority"] == {"min": 0.001, "max": 0.001}  # charged again on every exit: never raised
         assert b["buy_tip"] == {"min": 0.002, "max": 0.005}
-        assert b["sell_tip"] == {"min": 0.002, "max": 0.005}
+        # the sell tip at what each kind paid before the split: copies 0.002, every other builder 0.001
+        assert b["sell_tip"] == {"min": 0.002 if kind == "copy" else 0.001, "max": 0.005}
         assert b["sell_priority"] == {"min": 0.0001, "max": 0.002}  # what each failed twin pays
     assert cfg.fees.tune == cfg.fees.bounds and cfg.fees.tune is not cfg.fees.bounds
 
@@ -46,7 +47,7 @@ def test_no_evidence_gives_the_minimums():
     assert "no fills" in c.why["buy_tip"] and "minimum" in c.why["buy_tip"]
     for kind in ("hunt", "launch", "mig", "probe"):
         k = F.choose(Config(), kind)
-        assert (k.buy_priority, k.buy_tip, k.sell_tip, k.sell_priority) == (0.001, 0.002, 0.002, 0.0001)
+        assert (k.buy_priority, k.buy_tip, k.sell_tip, k.sell_priority) == (0.001, 0.002, 0.001, 0.0001)
 
 
 def test_a_higher_tip_is_chosen_only_on_ten_plus_fills_that_landed_measurably_earlier():
@@ -108,20 +109,31 @@ def test_the_floor_raises_a_number_and_says_when_it_is_above_the_owners_max():
     assert c.buy_tip == 0.003 and "floor" in c.why["buy_tip"]
     high = F.choose(Config(), "copy", leader=LEADER, floor={"buy_tip": 0.02})
     assert high.buy_tip == 0.02 and "above the owner's max" in high.why["buy_tip"]
-    # the owner's [oktech] sell numbers are the base every sell starts from
+    # the owner's [oktech] sell priority is the base every sell starts from; the [oktech] sell tip is the copy kind's
+    # base only (it priced the live copies' sells), so it never raises a hunt / launch / MIG / probe sell tip
     cfg = Config()
     cfg.oktech.sell_tip_sol, cfg.oktech.sell_priority_sol = 0.0025, 0.0002
-    c = F.choose(cfg, "hunt")
+    c = F.choose(cfg, "copy", leader=LEADER)
     assert (c.sell_tip, c.sell_priority) == (0.0025, 0.0002)
+    for kind in ("hunt", "launch", "mig", "probe"):
+        k = F.choose(cfg, kind)
+        assert (k.sell_tip, k.sell_priority) == (0.001, 0.0002), kind
 
 
-def test_the_strategists_per_kind_bounds_narrow_the_owners_and_never_widen_them():
+def test_the_strategists_per_kind_bounds_only_cap_the_owners_and_never_raise_a_minimum():
+    """A raised minimum would be a raised bid with no fills behind it (the 6 Nov fee test is what the rule forbids), so
+    the strategist's tune moves a kind's max only; its min is ignored and the policy's minimum stays the owner's."""
     cfg = Config()
     cfg.fees.tune["copy"]["buy_tip"] = {"min": 0.003, "max": 0.004}
-    assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.003, 0.004)
-    assert F.choose(cfg, "copy", leader=LEADER).buy_tip == 0.003  # the narrowed minimum
+    assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.004)
+    assert F.choose(cfg, "copy", leader=LEADER).buy_tip == 0.002  # the owner's minimum, whatever the tune's min says
     cfg.fees.tune["copy"]["buy_tip"] = {"min": 0.0, "max": 0.05}  # a hand-edited overlay cannot widen
     assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.005)
+    # a capped max still caps a tip the evidence would raise
+    low = _band(0.002, [3, 4, 3, 2, 4, 3, 3, 4, 2, 3, 4, 3])
+    high = _band(0.004, [1, 1, 0, 1, 2, 1, 0, 1, 1, 2, 1, 1])
+    cfg.fees.tune["copy"]["buy_tip"] = {"min": 0.002, "max": 0.003}
+    assert F.choose(cfg, "copy", leader=LEADER, fills=low + high).buy_tip == 0.003
 
 
 def test_the_strategist_cannot_move_a_per_kind_bound_past_the_owners_outer_bounds():
@@ -135,6 +147,10 @@ def test_the_strategist_cannot_move_a_per_kind_bound_past_the_owners_outer_bound
     assert accepted == {} and refusals and "0.005" in refusals[0]
     accepted, refusals = check_patch({"fees.tune.copy.sell_priority.min": 0.00005}, cfg, cfg.autotune)
     assert accepted == {} and refusals
+    # a minimum is never the strategist's, inside the owner's bounds or not: it would raise a bid with no evidence
+    accepted, refusals = check_patch({"fees.tune.launch.buy_tip.min": 0.005}, cfg, cfg.autotune)
+    assert accepted == {} and refusals and "not in [autotune] bounds" in refusals[0]
+    assert not strategist_may_set("fees.tune.launch.buy_tip.min", 0.003, cfg)
     assert strategist_may_set("fees.tune.copy.sell_tip.max", 0.003, cfg)
     assert not strategist_may_set("fees.bounds.copy.sell_tip.max", 0.003, cfg)  # the owner's outer bounds
     assert never_tunable("fees.bounds.copy.buy_tip.max")
@@ -145,12 +161,13 @@ def test_the_overlay_moves_a_per_kind_bound_inside_the_owners_and_ignores_one_ou
     p = tmp_path / "snipetech.toml"
     Config().save(p)
     overlay = tmp_path / "autotune.toml"
-    overlay.write_text("[fees.tune.copy.buy_tip]\nmax = 0.004\n\n[fees.tune.copy.sell_tip]\nmax = 0.02\n")
+    overlay.write_text("[fees.tune.copy.buy_tip]\nmin = 0.004\nmax = 0.004\n\n[fees.tune.copy.sell_tip]\nmax = 0.02\n")
     cfg = Config.load(p, overlay=False)
     cfg.autotune.overlay = str(overlay)
     cfg.save(p)
     cfg = Config.load(p)
     assert cfg.fees.tune["copy"]["buy_tip"]["max"] == 0.004
+    assert cfg.fees.tune["copy"]["buy_tip"]["min"] == 0.002  # a minimum in the overlay is never applied
     assert cfg.fees.tune["copy"]["sell_tip"]["max"] == 0.005  # outside the owner's bounds: not applied
 
 
@@ -182,7 +199,10 @@ def test_the_choice_words_name_the_fee_and_the_reason():
     assert "copy of 7aPo3n" in words and "minimum" in words
 
 
-def test_sell_fee_sol_is_a_deprecated_alias_that_sets_both_and_logs(tmp_path, caplog):
+def test_sell_fee_sol_is_a_deprecated_alias_for_the_sell_tip_only_and_logs(tmp_path, caplog):
+    """The server's file may still carry `sell_fee_sol = 0.002` from the 6 Nov audit fix. The alias is the bid (the
+    tip) and nothing else: it never puts the sell priority back to what each failed twin paid, so the fix deploys
+    whether or not the owner's file was edited. Whichever order the keys come in."""
     cfg = Config()
     assert cfg.oktech.sell_tip_sol == 0.002 and cfg.oktech.sell_priority_sol == 0.0001
     assert cfg.oktech.sell_fee_sol == 0.002  # readable: the bid
@@ -190,14 +210,18 @@ def test_sell_fee_sol_is_a_deprecated_alias_that_sets_both_and_logs(tmp_path, ca
     p.write_text("[oktech]\nsell_fee_sol = 0.001\n")
     with caplog.at_level(logging.WARNING, logger="snipetech.config"):
         loaded = Config.load(p)
-    assert loaded.oktech.sell_tip_sol == 0.001 and loaded.oktech.sell_priority_sol == 0.001
+    assert loaded.oktech.sell_tip_sol == 0.001 and loaded.oktech.sell_priority_sol == 0.0001
     assert any("sell_fee_sol" in r.message and "deprecated" in r.message for r in caplog.records)
     loaded.save(p)  # written back under the new names
     text = p.read_text()
-    assert "sell_tip_sol = 0.001" in text and "sell_priority_sol = 0.001" in text and "sell_fee_sol" not in text
-    assert Config.load(p).oktech.sell_priority_sol == 0.001
+    assert "sell_tip_sol = 0.001" in text and "sell_priority_sol = 0.0001" in text and "sell_fee_sol" not in text
+    assert Config.load(p).oktech.sell_priority_sol == 0.0001
     cfg.set("oktech.sell_fee_sol", "0.003")
-    assert cfg.oktech.sell_tip_sol == 0.003 and cfg.oktech.sell_priority_sol == 0.003
+    assert cfg.oktech.sell_tip_sol == 0.003 and cfg.oktech.sell_priority_sol == 0.0001
+    # the alias before or after the new keys: the priority the file set stays
+    p.write_text("[oktech]\nsell_priority_sol = 0.0002\nsell_fee_sol = 0.002\nsell_tip_sol = 0.0025\n")
+    both = Config.load(p)
+    assert both.oktech.sell_priority_sol == 0.0002 and both.oktech.sell_tip_sol == 0.0025
 
 
 def test_fee_kinds_of_oktech_payloads():

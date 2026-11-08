@@ -20,9 +20,10 @@ class Tape(Market):
 
 
 def _sniper(exit_name="lab", exit_params=None, prio=0.001, tip=0.002, sell_fee=0.002) -> dict:
-    """The OKTech config a copy sniper on LEAD was created with (what the local table keeps as its payload)."""
+    """The OKTech config a copy sniper on LEAD was created with (what the local table keeps as its payload). These
+    are 6 Nov snipers, from before the sell-fee split: one `sell_fee` priced the sell tip and the sell priority alike."""
     cfg = Config()
-    cfg.oktech.sell_fee_sol = sell_fee
+    cfg.oktech.sell_tip_sol = cfg.oktech.sell_priority_sol = sell_fee
     return list_copy_sniper(LEAD, "book", 0.3, 0.2, cfg=cfg, exit_name=exit_name, exit_params=exit_params,
                             priority_fee=prio, tip=tip, tag="arm:control").config  # fmt: skip
 

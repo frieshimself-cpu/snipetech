@@ -176,7 +176,9 @@ class OktechConfig:
     # refunded. So the sell bid is carried by the tip (sell_tip_sol, autoSell.sellTipAmount) and the priority
     # (sell_priority_sol, autoSell.sellPriorityFeeSol) is near zero: it is what each failed twin pays. 8 Nov, before the
     # split: 0.008 SOL of twins on 0.119 SOL gross. Never the buy bid on either. The fee policy (fees.py) may raise the
-    # tip per kind of sniper inside [fees] bounds; these two are the base every builder falls back to.
+    # tip per kind of sniper inside [fees] bounds. sell_priority_sol is the base every builder falls back to;
+    # sell_tip_sol is the copy kind's base (it priced the live copies' sells) and the verdict dev sniper's: the other
+    # kinds (hunt, launch, MIG, probe) bid their [fees] minimum, 0.001, what they bid before the split.
     sell_tip_sol: float = 0.002
     sell_priority_sol: float = 0.0001
     # Compute-unit limit per buy (extraParams.computeUnits). OKTech's default is 150,000; our buys used 54-79k. The leader
@@ -187,19 +189,21 @@ class OktechConfig:
     @property
     def sell_fee_sol(self) -> float:
         """Deprecated (8 Nov): the one sell fee that priced both the landed sell's tip and each failed twin's priority.
-        Readable as the sell bid (sell_tip_sol); a file or a `config set` that sets it sets both the old way."""
+        Readable as the sell bid (sell_tip_sol). A file or a `config set` that still sets it sets the bid only: the
+        server's file may carry `sell_fee_sol = 0.002` from the 6 Nov audit fix, and the near-zero priority is the fix,
+        so the alias never puts sell_priority_sol back to what each twin paid, whichever order the keys come in."""
         return self.sell_tip_sol
 
     @sell_fee_sol.setter
     def sell_fee_sol(self, value: float) -> None:
-        both = float(value)
+        tip = float(value)
         logging.getLogger("snipetech.config").warning(
-            "[oktech] sell_fee_sol is deprecated: it sets sell_tip_sol and sell_priority_sol both to %g "
-            "(set the two apart: the tip is the bid, the priority is what each failed twin pays)",
-            both,
+            "[oktech] sell_fee_sol is deprecated: it sets sell_tip_sol (the bid) to %g and leaves sell_priority_sol "
+            "(what each failed twin pays) at %g; rename it to sell_tip_sol",
+            tip,
+            self.sell_priority_sol,
         )
-        self.sell_tip_sol = both
-        self.sell_priority_sol = both
+        self.sell_tip_sol = tip
 
 
 # The kinds of sniper the fee policy (fees.py) prices apart: a copy of a leader (ctbot), a hunt (OKTech hunt mode), a
@@ -208,28 +212,30 @@ FEE_KINDS = ("copy", "hunt", "launch", "mig", "probe")
 FEE_NUMBERS = ("buy_priority", "buy_tip", "sell_tip", "sell_priority")
 
 
-def _fee_bounds_today() -> dict[str, dict[str, float]]:
-    """The owner's outer bounds per number, at today's values: the minimum is what every sniper pays now, the tips may
-    go to 0.005 (the [autotune] bound on the control arm's tip), the buy priority never moves (OKTech charges it again
-    on every exit), the sell priority may go back to 0.002 (what it was before the 8 Nov split) if sells stop landing."""
+def _fee_bounds_today(kind: str) -> dict[str, dict[str, float]]:
+    """The owner's outer bounds per number, at today's values: the minimum is what each kind's sniper paid before the
+    8 Nov split (the sell tip: copies 0.002, every other builder 0.001), the tips may go to 0.005 (the [autotune] bound
+    on the control arm's tip), the buy priority never moves (OKTech charges it again on every exit), the sell priority
+    may go back to 0.002 (what it was before the split) if sells stop landing."""
     return {
         "buy_priority": {"min": 0.001, "max": 0.001},
         "buy_tip": {"min": 0.002, "max": 0.005},
-        "sell_tip": {"min": 0.002, "max": 0.005},
+        "sell_tip": {"min": 0.002 if kind == "copy" else 0.001, "max": 0.005},
         "sell_priority": {"min": 0.0001, "max": 0.002},
     }
 
 
 def _default_fee_bounds() -> dict[str, dict[str, dict[str, float]]]:
-    return {kind: _fee_bounds_today() for kind in FEE_KINDS}
+    return {kind: _fee_bounds_today(kind) for kind in FEE_KINDS}
 
 
 @dataclass
 class FeesConfig:
     """Fees per task (fees.py). `bounds`: the owner's outer bounds per kind and number, never tunable. `tune`: the
-    strategist's per-kind bounds, which may move only inside the owner's (its overlay writes `fees.tune.<kind>.<number>.
-    min|max`, each checked against `bounds`); they start equal to the owner's. The policy picks each number inside
-    the two: the minimum unless 10+ fills at a higher tip landed measurably earlier than 10+ at the lower one."""
+    strategist's per-kind caps, which may move only inside the owner's (its overlay writes `fees.tune.<kind>.<number>.
+    max`, each checked against `bounds`; a `.min` is never the strategist's, since a raised minimum is a raised bid
+    with no evidence); they start equal to the owner's. The policy picks each number inside the two: the owner's
+    minimum unless 10+ fills at a higher tip landed measurably earlier than 10+ at the lower one."""
 
     bounds: dict[str, dict] = field(default_factory=_default_fee_bounds)
     tune: dict[str, dict] = field(default_factory=_default_fee_bounds)
@@ -528,7 +534,7 @@ class Config:
         return p
 
 
-OVERLAY_SECTIONS = ("book", "qualify", "fees")  # in [fees] only the strategist's `tune` leaves (fee_tune_rule)
+OVERLAY_SECTIONS = ("book", "qualify", "fees")  # in [fees] only the strategist's `tune` max leaves (fee_tune_rule)
 OVERLAY_FORBIDDEN_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
 # the owner's limits: never changed by the strategist or its overlay, whatever [autotune] bounds lists
 NEVER_TUNABLE_KEYS = frozenset({
@@ -554,12 +560,13 @@ def never_tunable(key: str) -> str | None:
 
 
 def fee_tune_rule(fees: FeesConfig, key: str) -> dict | None:
-    """The rule a strategist's fee key (`fees.tune.<kind>.<number>.min|max`) is checked against: the owner's outer
-    bounds for that kind and number, as {"min", "max"}. None for any other key, an unknown kind or number, or a leaf
-    other than min / max. So the per-kind bounds move inside the owner's and never past them, without an [autotune]
-    entry per key."""
+    """The rule a strategist's fee key (`fees.tune.<kind>.<number>.max`) is checked against: the owner's outer bounds
+    for that kind and number, as {"min", "max"}. None for any other key, an unknown kind or number, or a leaf other
+    than max: a `.min` is never the strategist's, because a raised minimum is a bid raised on no fills, the thing the
+    policy's rule of evidence forbids (the 6 Nov fee test). So the per-kind caps move inside the owner's bounds and
+    never past them, without an [autotune] entry per key."""
     parts = key.split(".")
-    if len(parts) != 5 or parts[:2] != ["fees", "tune"] or parts[4] not in ("min", "max"):
+    if len(parts) != 5 or parts[:2] != ["fees", "tune"] or parts[4] != "max":
         return None
     kind, number = parts[2], parts[3]
     outer = (fees.bounds.get(kind) or {}).get(number)

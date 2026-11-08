@@ -224,11 +224,26 @@ def sell_priority_of(payload: dict | None) -> float | None:
         return None
 
 
+def twin_priority(twins: list[dict]) -> float | None:
+    """The sell priority setting (SOL) a landed sell's failed twins were sent with: the priority of the untipped twins
+    (the shape OKTech's extra copies have; the tipped variant that lost paid the buy's priority instead), else the
+    lowest priority among them. None without a priced twin. Never a median: with one twin of each shape a median
+    reads between the two settings and lands in no group."""
+    priced = [t for t in twins if t.get("priority_lamports") is not None]
+    if not priced:
+        return None
+    untipped = [t for t in priced if not (t.get("tip_lamports") or 0)]
+    pool = untipped or priced
+    return round(min(int(t["priority_lamports"]) for t in pool) / 1e9, 6)
+
+
 def twins_per_sell(sells: list[dict], failed_rows: list[dict], prio_by_sell: dict[str, float | None],
                    window_s: float = TWIN_WINDOW_SECS) -> dict[str, dict[str, Any]]:  # fmt: skip
-    """What the failed twins cost per landed sell, grouped by the sell priority the twins paid (the setting that priced
-    them: 0.002 before the 8 Nov split, 0.0001 after), so measure tells whether the split worked. A sell with no twins
-    is grouped by the sell priority its sniper was created with (`prio_by_sell`); one with neither is 'unknown'."""
+    """What the failed twins cost per landed sell, grouped by the sell priority setting that priced the twins (0.002
+    before the 8 Nov split, 0.0001 after), so measure tells whether the split worked. The group is the sell priority
+    the sell's sniper was created with (`prio_by_sell`) when known, else what the sell's twins say (`twin_priority`):
+    twins come in two shapes, untipped sends at the sell priority and the tipped variant that lost, at the buy's
+    priority, so the untipped ones decide and a median is never taken. A sell with neither is 'unknown'."""
     twins = twin_sells(failed_rows, sells, window_s)
     rows = {f["sig"]: f for f in failed_rows}
     per_sell: dict[str, list[dict]] = {s["sig"]: [] for s in sells}
@@ -237,10 +252,9 @@ def twins_per_sell(sells: list[dict], failed_rows: list[dict], prio_by_sell: dic
     out: dict[str, dict[str, Any]] = {}
     for s in sells:
         tw = per_sell.get(s["sig"]) or []
-        if tw:
-            prio: float | None = statistics.median(int(t["priority_lamports"]) for t in tw) / 1e9
-        else:
-            prio = prio_by_sell.get(s["sig"])
+        prio = prio_by_sell.get(s["sig"])
+        if prio is None:
+            prio = twin_priority(tw)
         key = f"{round(prio, 6):g}" if prio is not None else "unknown"
         slot = out.setdefault(key, {"sells": 0, "twins": 0, "cost_sol": 0.0})
         slot["sells"] += 1

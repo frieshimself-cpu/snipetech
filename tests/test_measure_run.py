@@ -880,6 +880,35 @@ def test_twins_per_sell_is_split_by_the_sell_priority_the_twins_paid():
     assert out["unknown"] == {"sells": 1, "twins": 0, "cost_sol": 0.0, "per_sell_sol": 0.0}
 
 
+def test_twins_are_grouped_by_the_snipers_sell_priority_then_by_the_untipped_twins_priority():
+    """Twins come in two shapes (server fills, 8 Nov 11:00-13:10): untipped sends at the sell priority and the tipped
+    variant that lost, at the buy's priority (1,000,000). A median of the two reads 0.0015 and the before / after table
+    never appears. The sniper's own setting decides first; without it, the untipped twins' priority; never a median."""
+    from snipetech.measure.run import twins_per_sell
+
+    sells = [{"sig": "S1", "ts": NOW, "slot": SLOT, "mint": "M1"}, {"sig": "S2", "ts": NOW + 60, "slot": SLOT + 300, "mint": "M2"},
+             {"sig": "S3", "ts": NOW + 120, "slot": SLOT + 600, "mint": "M3"}]  # fmt: skip
+    failed = [{"sig": "F1", "ts": NOW, "slot": SLOT, "mint": "M1", "priority_lamports": 1_000_000, "tip_lamports": 2_000_000, "is_sell": True},
+              {"sig": "F2", "ts": NOW + 1, "slot": SLOT + 2, "mint": "M1", "priority_lamports": 2_000_000, "tip_lamports": 0, "is_sell": True},
+              {"sig": "F3", "ts": NOW + 60, "slot": SLOT + 300, "mint": "M2", "priority_lamports": 2_000_000, "tip_lamports": 0, "is_sell": True},
+              {"sig": "F4", "ts": NOW + 120, "slot": SLOT + 600, "mint": "M3", "priority_lamports": 1_000_000, "tip_lamports": 2_000_000, "is_sell": True}]  # fmt: skip
+    out = twins_per_sell(sells, failed, {"S2": 0.0001})
+    assert set(out) == {"0.002", "0.0001", "0.001"}
+    assert out["0.002"] == {
+        "sells": 1,
+        "twins": 2,
+        "cost_sol": pytest.approx(0.00301),
+        "per_sell_sol": pytest.approx(0.00301),
+    }
+    assert out["0.0001"]["sells"] == 1 and out["0.0001"]["twins"] == 1  # the sniper's setting wins over the twins
+    assert out["0.001"] == {
+        "sells": 1,
+        "twins": 1,
+        "cost_sol": pytest.approx(0.001005),
+        "per_sell_sol": pytest.approx(0.001005),
+    }
+
+
 def test_sells_landed_per_buy_is_watched_before_and_after_the_split():
     """The risk of a near-zero sell priority: if OKTech's untipped copies were what landed when the tipped one lost, a
     coin could stay unsold. Measure counts landed sells per buy for buys made by snipers at the old and the new sell

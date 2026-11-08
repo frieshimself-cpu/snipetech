@@ -237,6 +237,27 @@ def test_a_sell_that_closes_two_buys_shares_each_buys_fees_by_the_tokens_it_clos
         st.close()
 
 
+def test_a_trips_twin_priority_is_the_untipped_duplicates_never_a_median():
+    """After the split: one tipped duplicate at the buy's priority (1,000,000, its tip refunded) and one untipped at
+    the sell priority (100,000): the trip's `twin_priority_sol` is 0.0001, the setting that priced the twins, not a
+    median of the two (which would read 0.001 and file the trip under 'before')."""
+    st = Store(":memory:")
+    try:
+        st.add_trades([_trade("B", T0, "M", True, 197_530_864, 2_469_136, 1000),
+                       _trade("S", T0 + 12, "M", False, 209_417_722, 2_617_722, 1000)])  # fmt: skip
+        st.put_fill(_fill("B", T0, "M", "buy", 0.2, 1000.0))
+        st.put_fill(_fill("S", T0 + 12, "M", "sell", 0.2068, 1000.0, tip=2_000_000, pnl_sol=0.00179,
+                          twin_fee_sol=0.00111, buy_sig="B"))  # fmt: skip
+        _duplicate(st, "D1", T0 + 12, "M", 1_000_000)
+        st.put_fill(st.fill("D1") | {"tip_lamports": 2_000_000})  # the tipped variant that lost
+        _duplicate(st, "D2", T0 + 13, "M", 100_000)
+        b = A.break_down(st, W, [st.fill("S")])["S"]
+        assert b["dups"] == 2 and b["twin_priority_sol"] == 0.0001
+        assert A.twins_per_trip([b])["0.0001"]["dups"] == 2
+    finally:
+        st.close()
+
+
 def test_duplicates_that_flip_a_win_into_a_loss_are_named(tmp_path):
     """9gBmZ4 on 5 Nov: the landed trip made +0.0018 and its two failed duplicate sells took it below zero. Removing
     any one cost would have made it a win: each is named."""

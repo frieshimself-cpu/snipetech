@@ -429,9 +429,9 @@ def test_copy_sniper_sells_bid_the_configured_fee_not_the_arm():
     assert cfg.oktech.sell_tip_sol == 0.002 and cfg.oktech.sell_priority_sol == 0.0001
     paid = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, priority_fee=0.02, tip=0.02).config["autoSell"]
     assert paid["sellPriorityFeeSol"] == 0.0001 and paid["sellTipAmount"] == 0.002
-    cfg.oktech.sell_fee_sol = 0.005  # the deprecated alias: both the old way
+    cfg.oktech.sell_fee_sol = 0.005  # the deprecated alias: the bid only, never the twins' priority
     cheap = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
-    assert cheap["sellPriorityFeeSol"] == 0.005 and cheap["sellTipAmount"] == 0.005
+    assert cheap["sellPriorityFeeSol"] == 0.0001 and cheap["sellTipAmount"] == 0.005
 
 
 def test_compute_units_are_sent_only_when_set():
@@ -1570,17 +1570,30 @@ def test_autosell_sends_the_sell_tip_and_a_near_zero_sell_priority_by_default():
     assert s["sellTipAmount"] == 0.002 and s["sellPriorityFeeSol"] == 0.0001
     s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [], sell_tip_sol=0.003, sell_priority_sol=0.0005)
     assert s["sellTipAmount"] == 0.003 and s["sellPriorityFeeSol"] == 0.0005
-    # the deprecated alias still sets both the old way
+    # the deprecated alias is the bid (the tip) only: it never puts the twins' priority back
     s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [], sell_fee_sol=0.001)
-    assert s["sellTipAmount"] == 0.001 and s["sellPriorityFeeSol"] == 0.001
+    assert s["sellTipAmount"] == 0.001 and s["sellPriorityFeeSol"] == 0.0001
 
 
-def test_every_builder_sells_at_the_split_fee():
+def test_every_builder_sells_at_the_split_fee_and_keeps_its_old_sell_tip():
+    """The split changes one number: what each failed twin pays. Each builder's sell tip stays what it bid before the
+    split: the copy builders and the verdict's dev sniper 0.002 ([oktech] sell_tip_sol), the strategy, replica and
+    speed-test snipers 0.001 (their kinds' [fees] minimum); nothing was raised on no evidence."""
     for name, p in _every_builder().items():
         a = p.config.get("autoSell")
         if a is None:
             continue
-        assert a["sellTipAmount"] == 0.002 and a["sellPriorityFeeSol"] == 0.0001, name
+        want = 0.002 if name in ("list_copy", "copy", "dev") else 0.001
+        assert a["sellTipAmount"] == want and a["sellPriorityFeeSol"] == 0.0001, name
+
+
+def test_the_speed_tests_largest_spend_is_priced_from_its_own_fees():
+    """The probe's spend ceiling counts the fees it is actually sent with (the fee policy's probe numbers), not a
+    formula from before the split: 2 snipers x 3 buys x (0.01 + 0.001 + 0.002 + 0.001 + 0.0001)."""
+    from snipetech.oktech import speedtest_max_spend_sol, speedtest_snipers
+
+    planned = speedtest_snipers(0.01, 3, "W" * 32)
+    assert speedtest_max_spend_sol(planned, 3, 0.01) == pytest.approx(2 * 3 * 0.0141)
 
 
 def test_the_oktech_sell_settings_reach_every_builder():
@@ -1590,11 +1603,13 @@ def test_the_oktech_sell_settings_reach_every_builder():
     cfg.oktech.sell_tip_sol, cfg.oktech.sell_priority_sol = 0.0025, 0.0002
     a = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
     assert a["sellTipAmount"] == 0.0025 and a["sellPriorityFeeSol"] == 0.0002
+    # the sell priority reaches every kind; the [oktech] sell tip is the copy kind's bid, so a hunt or a probe keeps
+    # its own kind's minimum (0.001) rather than the copies' 0.0025
     s = strategy_sniper({"id": "x", "label": "t", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
                          "exit": {"stop_loss": 0.15, "max_hold_secs": 300}}, 5, cfg=cfg)  # fmt: skip
-    assert s.config["autoSell"]["sellTipAmount"] == 0.0025 and s.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
+    assert s.config["autoSell"]["sellTipAmount"] == 0.001 and s.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
     for p in speedtest_snipers(0.01, 3, None, cfg=cfg):
-        assert p.config["autoSell"]["sellTipAmount"] == 0.0025 and p.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
+        assert p.config["autoSell"]["sellTipAmount"] == 0.001 and p.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
 
 
 def test_builders_take_the_fee_policys_numbers_and_say_why():

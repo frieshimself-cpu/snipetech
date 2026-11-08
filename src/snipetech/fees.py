@@ -3,7 +3,8 @@
 Every OKTech sniper pays four numbers: the buy priority fee, the buy tip, the sell tip and the sell priority fee. This
 module gives each planned sniper its four from its kind (a copy of a given leader, a hunt, a launch sniper, a MIG
 sniper, a probe) and the evidence on `fills`, inside the owner's bounds (`[fees] bounds`, config.FeesConfig: per kind,
-per number, a min and a max; the strategist may narrow them with `[fees] tune`, never widen them).
+per number, a min and a max; the strategist may cap them with `[fees] tune`, never widen them and never raise a
+minimum, since a raised minimum would be a raised bid with no fills behind it).
 
 The rule of evidence
 --------------------
@@ -18,7 +19,11 @@ The two priority fees are never raised on evidence: OKTech charges the buy prior
 every exit (7 of 7 fee-test sells), and the sell priority fee is what each of a sell's failed twins pays (OKTech signs
 every exit on up to three nonce accounts; one lands, the others fail with pump error 6023 and pay priority + base fee,
 while a failed send's tip is refunded). So the priorities stay at the kind's minimum and the bids are carried by the
-tips. The `floor` a caller passes (the book's arm) raises a number's lower end inside the bounds, never past the max.
+tips. The `floor` a caller passes (the book's arm, a verdict's bribe) raises a number's lower end inside the bounds,
+never past the max. The owner's `[oktech] sell_priority_sol` is the floor of every kind's sell priority (the split's
+number); `[oktech] sell_tip_sol` is the floor of the copy kind's sell tip only, because it priced the live copies'
+sells and nothing else: a hunt, launch, MIG or probe sniper bids its own kind's minimum (0.001, what it bid before
+the split) unless its builder asks for more.
 
 Evidence is per kind, and for copies per leader: a leader's fills never price another leader's sniper; a copy fill is
 never evidence for a launch kind. Hunt, launch and MIG fills are told apart by the snipers alive at the fill
@@ -89,8 +94,9 @@ def kind_of_payload(payload: dict | None) -> str | None:
 
 
 def effective_bounds(cfg: Config, kind: str) -> dict[str, tuple[float, float]]:
-    """(min, max) per number for `kind`: the owner's outer bounds narrowed by the strategist's tune, never widened. An
-    unknown kind takes the launch bounds."""
+    """(min, max) per number for `kind`: the owner's outer bounds, capped by the strategist's tune max, never widened.
+    The minimum is always the owner's: a tune's min is ignored, since a raised minimum would raise a bid on no
+    evidence. An unknown kind takes the launch bounds."""
     kind = kind if kind in FEE_KINDS else "launch"
     outer = cfg.fees.bounds.get(kind) or {}
     tune = cfg.fees.tune.get(kind) or {}
@@ -98,11 +104,10 @@ def effective_bounds(cfg: Config, kind: str) -> dict[str, tuple[float, float]]:
     for n in FEE_NUMBERS:
         o, t = outer.get(n) or {}, tune.get(n) or {}
         lo, hi = float(o.get("min", 0.0)), float(o.get("max", 0.0))
-        lo2 = max(lo, float(t.get("min", lo))) if "min" in t else lo
         hi2 = min(hi, float(t.get("max", hi))) if "max" in t else hi
-        if lo2 > hi2 + 1e-12:  # a tune that crosses itself is ignored
-            lo2, hi2 = lo, hi
-        out[n] = (lo2, hi2)
+        if hi2 < lo - 1e-12:  # a cap under the owner's minimum is ignored
+            hi2 = hi
+        out[n] = (lo, hi2)
     return out
 
 
@@ -210,10 +215,15 @@ def choose(cfg: Config, kind: str, leader: str | None = None, fills: list[dict] 
     no fills, the minimums. `floor` raises a number's lower end (the book's arm), never past the max."""
     kind = kind if kind in FEE_KINDS else "launch"
     bounds = effective_bounds(cfg, kind)
-    # the owner's [oktech] sell numbers are the base every sell starts from, and a caller's floor (the book's arm, a
-    # verdict's recommended bribe) the base of its buy bid: an explicit ask, sent as given, said so in the words when
-    # it is outside the owner's bounds; evidence may still raise a tip above it, up to the owner's max
-    floor = {"sell_tip": cfg.oktech.sell_tip_sol, "sell_priority": cfg.oktech.sell_priority_sol} | dict(floor or {})
+    # the owner's [oktech] sell priority is the base every sell starts from and the [oktech] sell tip the base of a
+    # copy's (the live copies' sell bid; the other kinds keep their own minimum, 0.001, what they bid before the
+    # split); a caller's floor (the book's arm, a verdict's recommended bribe) is the base of its buy bid: an explicit
+    # ask, sent as given, said so in the words when it is outside the owner's bounds; evidence may still raise a tip
+    # above it, up to the owner's max
+    base = {"sell_priority": cfg.oktech.sell_priority_sol}
+    if kind == "copy":
+        base["sell_tip"] = cfg.oktech.sell_tip_sol
+    floor = base | dict(floor or {})
     lo_of: dict[str, float] = {}
     hi_of: dict[str, float] = {}
     floored: dict[str, str] = {}

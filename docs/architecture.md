@@ -320,8 +320,11 @@ Until 8 Nov one setting, `[oktech] sell_fee_sol` (0.002), priced both the landed
 the three winning copies of 7aPo3n at 12:10–12:20 left four failed twins at 2,000,000 lamports priority each, 0.008
 SOL of a 0.119 SOL gross. The fix splits the two: `[oktech] sell_tip_sol` (0.002) is the bid, carried by the tip and
 refunded when a send fails; `[oktech] sell_priority_sol` (0.0001) is what each failed twin pays. `sell_fee_sol` stays
-readable as a deprecated alias; a file that still sets it sets both the old way and logs a warning, so the server's
-config must not carry it once this is deployed. No running sniper is touched: the split reaches a sniper when the book
+readable as a deprecated alias for the bid only: a file that still sets it (the server's may, from the 6 Nov audit
+fix) sets `sell_tip_sol` and logs a warning, and never puts the priority back, so the fix deploys whether or not the
+owner's file was edited. The split changes one number and nothing else: each builder keeps the sell tip it bid before
+(the copy builders and the verdict's dev sniper 0.002, from `sell_tip_sol`; the strategy, replica and speed-test
+snipers 0.001, their kinds' `[fees]` minimum). No running sniper is touched: the split reaches a sniper when the book
 replaces it (every builder in `oktech.py` sends it from then on). The risk, said plainly: if OKTech's untipped copies
 are sometimes what lands when the tipped one loses, a near-zero priority could leave a coin unsold. The unsold-coin
 watch and `/sell` cover that; the measure stage counts it (below).
@@ -338,14 +341,18 @@ copies, per leader: a leader's fills never price another leader's sniper. The bo
 bid (the policy may raise the tip above it on evidence, never lower it); a verdict's recommended bribe is the floor of
 a dev sniper's; a bid asked for by hand (`oktech copylist --priority --tip`, the fee test) wins over the policy and is
 said so in the sniper's notes. Every planned sniper's notes carry one line: which fee it gets and why. The strategist
-may narrow a kind's bounds (`fees.tune.<kind>.<number>.min|max`, checked against the owner's outer bounds and never
-past them; `config.NEVER_TUNABLE_KEYS` unchanged, `fees.bounds` owner-only). The operator and the analyst read the
+may lower a kind's cap (`fees.tune.<kind>.<number>.max`, checked against the owner's outer bounds and never past
+them) and never a minimum: a raised minimum would be a raised bid with no fills behind it, the thing the rule
+forbids, so a `.min` in its patch or its overlay is refused and ignored (`config.NEVER_TUNABLE_KEYS` unchanged,
+`fees.bounds` owner-only). The operator and the analyst read the
 policy's current choice per kind and per leader with `read_fee_policy`; the strategist's weekly evidence carries it as
 `fee_policy`.
 
 **Measuring whether it worked.** Every fill already records its priority and tip. Measure's run summary now has
-`twins_per_sell`: the failed twins' cost per landed sell, grouped by the sell priority the twins paid (0.002 before the
-split, 0.0001 after), and `sells_per_buy`: landed sells per buy for buys made by snipers at the old and the new sell
+`twins_per_sell`: the failed twins' cost per landed sell, grouped by the sell priority setting that priced the twins
+(0.002 before the split, 0.0001 after: the sniper's own `sellPriorityFeeSol` when known, else the untipped twins'
+priority, since the tipped variant that lost pays the buy's priority and a median of the two lands in no group), and
+`sells_per_buy`: landed sells per buy for buys made by snipers at the old and the new sell
 priority, a buy counted only once its longest hold (600 s) is over. For the first 20 sells after the split measure
 writes one line per new sell to `operator/notes.md`; when the ratio after falls more than 0.15 under the ratio before
 (four buys due on each side at least) it writes an ALERT line naming `/sell` and `[oktech] sell_priority_sol`. The

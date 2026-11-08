@@ -266,9 +266,10 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
 
     The sell bid is the tip (`sell_tip_sol`, refunded when a send fails); the priority (`sell_priority_sol`) is what
     each of OKTech's failed twin sends pays, so it is near zero by default (8 Nov: 0.008 SOL of twins on a 0.119 SOL
-    gross at 0.002). `sell_fee_sol` is the deprecated one-number form: it sets both the old way."""
+    gross at 0.002). `sell_fee_sol` is the deprecated one-number form: it sets the bid (the tip) only, never the
+    twins' priority."""
     if sell_fee_sol is not None:
-        sell_tip_sol = sell_priority_sol = float(sell_fee_sol)
+        sell_tip_sol = float(sell_fee_sol)
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = (
@@ -340,9 +341,11 @@ def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
     if score.get("verdict") != "SNIPE" or not rec.get("buy_sol"):
         return None
     notes: list[str] = []
-    # the sweep's recommended bribe is the floor of this launch sniper's buy bid; the policy prices the rest
+    # the sweep's recommended bribe is the floor of this launch sniper's buy bid, and [oktech] sell_tip_sol of its sell
+    # bid (what it sold at before the split, like the copies); the policy prices the rest
     bribe_prio, bribe_tip = fees(rec.get("bribe_sol"), cfg.oktech.tip_share, notes)
-    choice = fee_policy.choose(cfg, "launch", floor={"buy_priority": bribe_prio, "buy_tip": bribe_tip})
+    choice = fee_policy.choose(cfg, "launch", floor={"buy_priority": bribe_prio, "buy_tip": bribe_tip,
+                                                     "sell_tip": cfg.oktech.sell_tip_sol})  # fmt: skip
     prio, tip = choice.buy_priority, choice.buy_tip
     notes.append(choice.note())
     config: dict[str, Any] = {
@@ -686,6 +689,18 @@ def speedtest_snipers(
                      "sells when it sells, after 10 s at the latest (or at -40%)", "measures: slots and position after its buy"],
             notes=[choice.note()]))  # fmt: skip
     return out
+
+
+def speedtest_max_spend_sol(planned: list[PlannedSniper], snipes: int, buy_sol: float) -> float:
+    """The most the speed test can spend: every buy plus the four fees each sniper is actually sent with (the fee
+    policy's probe numbers), not a formula from before the split."""
+    total = 0.0
+    for p in planned:
+        c, a = p.config, p.config.get("autoSell") or {}
+        per_buy = (buy_sol + float(c.get("priorityFee") or 0) + float(c.get("tipAmount") or 0)
+                   + float(a.get("sellTipAmount") or 0) + float(a.get("sellPriorityFeeSol") or 0))  # fmt: skip
+        total += int(snipes) * per_buy
+    return round(total, 4)
 
 
 # Execution settings learned from the first live batch (5 Nov 19:46 UTC, sniper 6aecdcd5):

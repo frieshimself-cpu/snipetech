@@ -127,7 +127,7 @@ def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[
         "current": {"book": dataclasses.asdict(cfg.book), "qualify": dataclasses.asdict(cfg.qualify)},
         "bounds": cfg.autotune.bounds,
         # the fee policy's choice per kind and per copied leader, with why, and the bounds in force (fees.py): the
-        # strategist may move a kind's bounds with fees.tune.<kind>.<number>.min|max, inside the owner's outer ones
+        # strategist may lower a kind's cap with fees.tune.<kind>.<number>.max, inside the owner's outer ones (never a min)
         "fee_policy": _fee_policy(store, cfg, fills, now),
     }
 

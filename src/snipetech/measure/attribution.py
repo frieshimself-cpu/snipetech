@@ -218,9 +218,11 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
     first_buy = buys.get(sell.get("buy_sig") or "") or shares[0][0]
     ran = sell.get("exit_name") or first_buy.get("exit_name")
     n_dups = (len(dups) or None) if dup_l else 0  # a cost on record but no send tied to it here: count unknown
-    # the sell priority the duplicates paid: the setting that priced them (0.002 before the 8 Nov split, 0.0001 after)
-    dup_prios = sorted(int(d["priority_lamports"]) for d in dups if d.get("priority_lamports") is not None)
-    twin_prio = round(dup_prios[len(dup_prios) // 2] / 1e9, 6) if dup_prios else None
+    # the sell priority setting that priced the duplicates (0.002 before the 8 Nov split, 0.0001 after): the untipped
+    # ones' priority, since the tipped variant that lost paid the buy's priority instead (run.twin_priority)
+    from .run import twin_priority
+
+    twin_prio = twin_priority(dups)
     return {"sell_sig": sell["sig"], "buy_sig": first_buy["sig"], "mint": sell.get("mint"),
             "leader": first_buy.get("wallet_copied"), "buy_ts": first_buy.get("ts"), "sell_ts": sell.get("ts"),
             "venue": sell_leg["venue"] if sell_leg else None, "price_sol": _sol(price_l),
@@ -424,8 +426,9 @@ def _bid_at_minimum(cfg, tip_only: bool) -> bool:
 
 
 def twins_per_trip(trips: list[dict]) -> dict[str, dict[str, Any]]:
-    """The duplicates' cost per trip, by the sell priority the duplicates paid (`twin_priority_sol`: 0.002 before the
-    8 Nov split, 0.0001 after), over the trips that had any: what the split saves per landed sell, before and after."""
+    """The duplicates' cost per trip, by the sell priority setting that priced the duplicates (`twin_priority_sol`, the
+    untipped ones' priority: 0.002 before the 8 Nov split, 0.0001 after), over the trips that had any: what the split
+    saves per landed sell, before and after."""
     out: dict[str, dict[str, Any]] = {}
     for t in trips:
         if not t or t.get("twin_priority_sol") is None:

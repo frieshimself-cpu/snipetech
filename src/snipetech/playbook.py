@@ -18,9 +18,9 @@ OKTech playbook (measured on our own live trades, 5-6 Nov 2026; a slot is about 
    priority fee plus the base fee while its tip is refunded; one send requested does not stop them. A round trip at
    the low bid cost about 0.009 SOL, not the lab's old 0.007. Since 8 Nov the sell bid is the tip ([oktech]
    sell_tip_sol, 0.002) and the sell priority is near zero ([oktech] sell_priority_sol, 0.0001: what each twin
-   pays), on every sniper made from then on; a running sniper keeps its old sells until the book replaces it. On the
-   first live sells after it, verify in fills that the landed sell paid tip 0.002 and its twins 100,000 lamports
-   priority, and in measure's sells_per_buy line that sells still land once per buy: if OKTech's untipped copies were
+   pays), on every sniper made from then on, each kind keeping the sell tip it bid before (copies 0.002, the rest
+   0.001); a running sniper keeps its old sells until the book replaces it. On the first live sells after it, verify
+   in fills that the landed sell paid its tip (0.002 on a copy) and its twins 100,000 lamports priority, and in measure's sells_per_buy line that sells still land once per buy: if OKTech's untipped copies were
    what landed, a coin could stay unsold (the unsold-coin watch and /sell cover it; the owner can set the priority
    back). What each kind of sniper bids is the fee policy's (read_fee_policy): the minimum unless 10+ fills at a
    higher tip landed measurably earlier.

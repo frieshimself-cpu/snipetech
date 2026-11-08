@@ -1,5 +1,6 @@
 """Pure: what a proposed patch may change. Only keys listed in [autotune] bounds, each inside its rule, and the fee
-policy's per-kind bounds (`fees.tune.<kind>.<number>.min|max`, each inside the owner's outer [fees] bounds); one key
+policy's per-kind caps (`fees.tune.<kind>.<number>.max`, each inside the owner's outer [fees] bounds; a `.min` is never
+the strategist's: a raised minimum is a bid raised with no evidence); one key
 outside and the whole patch is refused (it becomes a question for the owner). A few things are never tunable whatever
 the table says (`config.never_tunable`): the owner's daily caps and buys per sniper, the buy priority fee, the owner's
 outer fee bounds, and anything that switches the book on, names a wallet or a key, or points at a URL."""
@@ -37,7 +38,7 @@ def check_patch(
     accepted: dict[str, Any] = {}
     refusals: list[str] = []
     for key, value in (patch or {}).items():
-        # a fee key (fees.tune.<kind>.<number>.min|max) is checked against the owner's outer [fees] bounds
+        # a fee key (fees.tune.<kind>.<number>.max) is checked against the owner's outer [fees] bounds
         rule = auto.bounds.get(key) or fee_tune_rule(current.fees, key)
         if rule is None:
             refusals.append(f"{key}: not in [autotune] bounds")

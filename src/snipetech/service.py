@@ -756,13 +756,13 @@ class Service:
         self, buy_sol: float, snipes: int, copy_wallet: str | None, wallet: str, create: bool
     ) -> dict:
         """The speed-test snipers; with `create`, made on OKTech idle (start them with `oktech start`)."""
-        from .oktech import speedtest_snipers
+        from .oktech import speedtest_max_spend_sol, speedtest_snipers
 
         if copy_wallet:
             copy_wallet = self._check(copy_wallet)
         planned = speedtest_snipers(buy_sol, snipes, copy_wallet, cfg=self.cfg)
         out = {"wallet": wallet, "snipers": [{"name": p.name, "summary": p.summary, "config": p.config} for p in planned],
-               "max_spend_sol": round(len(planned) * snipes * (buy_sol + 0.003 + 0.002), 4)}  # fmt: skip
+               "max_spend_sol": speedtest_max_spend_sol(planned, snipes, buy_sol)}  # fmt: skip
         if create:
             client = self._oktech()
             try:
