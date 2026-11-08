@@ -36,6 +36,7 @@ counted (docs/architecture.md, "The lab and the paper test").
 
 - [Round 6](2026-11-08-round-6.md), 8 Nov 14:10, interrupted by the usage limit after 3 of 6 lenses: a serial rug crew ("forg", one whale plus dust wallets) is all of the loose creator-0 paper rules' loss today; counting only 0.2 SOL+ buyers avoids it but makes no edge; only the 41 SOL operator's cluster is positive at the landing.
 - [Round 7](2026-11-08-round-7.md), 8 Nov 15:30-16:10, inline (agents blocked by the usage limit): the owner's three asks. KOL copies refuted at our landing (7 scored, none qualifies); crowd-following ("FOMO") leaders were refuted in round 1 (-0.016 to -0.019 on 1,906 copies); dev-wallet snipes of the five serial launchers on the leaderboard refuted at the launch landing (1,306 trades, all lower bounds below zero) with the new `creators` lab knob; MIG-10 at 0.5 SOL refuted (-0.022, n 72).
+- [Round 8](2026-11-08-round-8-fees.md), 8 Nov 20:57, by the server analyst on the owner's API credits: paying more to land ahead of other copy traders does not pay at 0.2 SOL (1st instead of 3rd behind the leader is worth 0.004-0.007 SOL on early buys; the bots ahead bid 0.01-0.3 SOL).
 
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
