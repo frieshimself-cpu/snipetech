@@ -798,3 +798,56 @@ def test_a_sell_whose_buy_the_tape_missed_still_carries_its_failed_duplicates(tm
         assert trip_result_sol(sell) == pytest.approx(sell["pnl_sol"] - 0.00401)
     finally:
         st.close()
+
+
+def test_a_copy_bought_on_the_curve_and_sold_on_pumpswap_gets_its_whole_result(tmp_path):
+    """The live book copies 7aPo3n, who buys at 79-93 % of the curve; such a coin can complete its curve within 18-86 s
+    and OKTech's auto-sell then sells on PumpSwap (sell_v2, proceeds as WSOL). With the sale on the tape (the recorder
+    keeps recent migrations' PumpSwap trades since 7 Nov 12:13), measure pairs it with the curve buy, prices it at
+    the WSOL it paid out (PumpSwap's fees taken), ties the failed sell_v2 duplicate to it, and the breakdown reads the
+    venue's fee on both legs with the price checked against the tape. Gap 3 of the 8 Nov review: what holds as the
+    code stands; a sale the tape does not hold is in no fill (docs/architecture.md)."""
+    from snipetech.measure import attribution as A
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _copy_row(st, created=NOW - 7200)
+        m = Market(st, addr("mig"), D, NOW - 3600, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 20.0, 2)
+        tb = m.buy(ME, 0.2, 4)
+        m.complete(addr("whale"), 40)
+        m.migrate(41)
+        m.buy(addr("amm-buyer"), 5.0, 60)
+        ts = m.sell(ME, 1.0, 80)
+        m.commit(completed=True)
+        assert ts.venue == "amm"
+        dup = _meta("DUP", priority=1_000_000, tip=0)
+        dup.pump_ixs = [PumpIx("pumpswap", "sell_v2", ME, {}, None, addr("mig"))]
+        metas = {tb.sig: _meta(tb.sig), ts.sig: _meta(ts.sig, priority=1_000_000, tip=2_000_000), "DUP": dup}
+
+        async def failed(wallet, since):
+            return [
+                {
+                    "signature": "DUP",
+                    "blockTime": ts.ts,
+                    "slot": ts.slot,
+                    "err": {"InstructionError": [3, {"Custom": 1}]},
+                }
+            ]
+
+        out = asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed)
+        )
+        sell = st.fill(ts.sig)
+        assert out["trips"] == 1 and sell["buy_sig"] == tb.sig
+        assert sell["sol"] == round((ts.quote - ts.fee) / 1e9, 6)  # the WSOL the pool paid out, its fees taken
+        assert sell["twin_fee_sol"] == pytest.approx(0.001005)
+        b = A.break_down(st, ME, [sell], per_tx_sol=cfg.costs.per_tx_sol())[ts.sig]
+        assert b["venue"] == "amm" and b["dup_fee_sol"] == pytest.approx(0.001005)
+        assert b["venue_fee_sol"] == pytest.approx((tb.fee + ts.fee) / 1e9, abs=2e-9)
+        assert abs(b["tape_check_sol"]) <= 2e-6
+        assert b["result_sol"] == pytest.approx(A.trip_result_sol(sell), abs=1e-9)
+    finally:
+        st.close()
