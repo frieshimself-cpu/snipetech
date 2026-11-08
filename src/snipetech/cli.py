@@ -811,6 +811,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--label", type=int, default=0, help="label the N best with a positive lower bound as cand for qualify"
     )
+    sp = cmd(
+        "fomo-wallets",
+        "FOMO app traders on our tape (FOMO pays their gas from one wallet), busiest first; --label N "
+        "labels the N busiest cand so qualify scores them at the live copy landing (a research job the agents may start)",
+    )
+    sp.add_argument("--days", type=float, default=3.0)
+    sp.add_argument("--min-buys", type=int, default=10)
+    sp.add_argument("--label", type=int, default=0)
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill", "report"])
     sp.add_argument(
@@ -1555,7 +1563,19 @@ def _remote(args) -> int:
 # on four cores going, the recorder fell 25-44 s behind the chain and its coverage mark up to 5 minutes behind; the
 # PumpSwap stream dropped for falling behind at 16:41). Lab workers inherit the priority of the job that starts them.
 BATCH_COMMANDS = frozenset(
-    {"lab", "qualify", "events", "research", "paper", "discover", "study", "copy-rank", "follow", "early-leaders"}
+    {
+        "lab",
+        "qualify",
+        "events",
+        "research",
+        "paper",
+        "discover",
+        "study",
+        "copy-rank",
+        "follow",
+        "early-leaders",
+        "fomo-wallets",
+    }
 )
 BATCH_NICE = 10
 
@@ -1746,6 +1766,23 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "measure":
         return _measure(args, cfg)
+    if args.cmd == "fomo-wallets":
+        from .analysis.fomo_wallets import fomo_wallets
+
+        svc = Service(cfg)
+        try:
+            rows = fomo_wallets(svc.tape_store, time.time(), days=args.days, min_buys=args.min_buys)
+            labelled = []
+            for r in rows[: max(0, args.label)]:
+                svc.store.set_label(r["wallet"], f"fomo {r['buys']} buys {r['buy_sol']:g} SOL", "cand", "fomo")
+                labelled.append(r["wallet"])
+        finally:
+            svc.store.close()
+        out = {"days": args.days, "wallets": len(rows), "top": rows[:50], "labelled": labelled}
+        print(json.dumps(out, indent=1) if args.json else "\n".join(
+            f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
+            or "no FOMO wallet with enough buys")  # fmt: skip
+        return 0
     if args.cmd == "early-leaders":
         from .analysis.early_leaders import early_leaders
 
