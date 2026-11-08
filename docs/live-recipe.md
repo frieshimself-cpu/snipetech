@@ -23,6 +23,17 @@ something rather than stop it, and the wallet's balance stays out of the reports
   landed sell) 0.0180, and four failed duplicate sells at 0.002 each 0.0080. The +0.0142 and -0.0039 first written
   here were after pump.fun's fee and without the duplicates.
 
+## AG89fn's first live copies lost −0.418 SOL in 10 minutes; the book paused it (8 Nov 2026, 13:06–13:20 UTC)
+
+AG89fn, booked since 7 Nov 13:50 without a buy, made six copies at 0.2 SOL from 13:06 (landing 0-1 trades behind
+at +0.4 to +0.9 %): 8t8x2s −0.1289, AJNiDe +0.0129 then −0.1776 (the leader bought it twice), CWojKR −0.005 and
+−0.0092, 5pTLJV −0.1097: **−0.4175 SOL whole**, 1 won. Three of the six were copy exits at −55 to −85 %: the leader's
+sell was the dump itself and our sell landed behind it. At 13:20 the book stopped AG89fn's sniper under its own
+rule (6 live copies, mean −0.070, upper bound −0.032: `live_kill_n` 5), the wallet holding nothing. 7aPo3n's ninth
+copy of the day (13:03, 5Wco3R −0.0461) brings it to +0.129 on 9 today. **The day's whole result at 13:30: −0.288 SOL
+on 15 copies, 5 won.** Seven more exits fired for coins never bought (2WY37w, 6EtVCH, CiPBTK, 42rDoo): 0.013 SOL.
+The 44 idle and finished OKTech tasks were deleted 13:06-13:38 (6 tasks left, 1 running).
+
 ## The duplicate sells explained and made free (8 Nov 2026, 12:50 UTC, 93e7177)
 
 Each OKTech exit is two sends, not one send copied: a relay-sent sell carrying `sellTipAmount` as its tip and the
