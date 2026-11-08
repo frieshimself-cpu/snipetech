@@ -301,6 +301,45 @@ def test_a_trip_the_tape_did_not_record_still_has_its_result_and_its_fees():
         st.close()
 
 
+def test_an_unknown_fee_is_charged_once_for_every_lot_the_fill_touches_as_measure_charges_it():
+    """measure's pair_round_trips charges a fill whose fingerprint is unknown the flat cost of a transaction ([costs]
+    per_tx_sol) in full on every lot the fill touches. The breakdown scaled it by the share closed instead (review of
+    8 Nov), so the parts still added up but the price part took the difference and a trip near zero could change kind.
+    Two buys of unknown fee; S1 (fee unknown) sells 1,500 tokens and closes B1 and half of B2; S2 (fee known) sells the
+    last 500. The price part stays the tape's own price on both."""
+    from snipetech.measure.classify import pair_round_trips
+
+    per_tx = 0.0012
+    st = Store(":memory:")
+    try:
+        st.add_trades([_trade("B1", T0, "M", True, 98_765_432, 1_234_568, 1000),
+                       _trade("B2", T0 + 5, "M", True, 98_765_432, 1_234_568, 1000),
+                       _trade("S1", T0 + 20, "M", False, 180_000_000, 2_250_000, 1500),
+                       _trade("S2", T0 + 30, "M", False, 70_000_000, 875_000, 500)])  # fmt: skip
+        buys = [_fill("B1", T0, "M", "buy", 0.1, 1000.0, prio=None, tip=None),
+                _fill("B2", T0 + 5, "M", "buy", 0.1, 1000.0, prio=None, tip=None)]  # fmt: skip
+        sells = [_fill("S1", T0 + 20, "M", "sell", 0.17775, 1500.0, prio=None, tip=None),
+                 _fill("S2", T0 + 30, "M", "sell", 0.069125, 500.0)]  # fmt: skip
+        pnl = pair_round_trips(buys, sells, per_tx)["pnl_by_sell"]  # what measure writes on each sell
+        for row in buys:
+            st.put_fill(row)
+        st.put_fill(sells[0] | {"pnl_sol": round(pnl["S1"], 6), "twin_fee_sol": 0.0, "buy_sig": "B1"})
+        st.put_fill(sells[1] | {"pnl_sol": round(pnl["S2"], 6), "twin_fee_sol": 0.0, "buy_sig": "B2"})
+        out = A.break_down(st, W, [st.fill("S1"), st.fill("S2")], per_tx_sol=per_tx)
+        s1, s2 = out["S1"], out["S2"]
+        # S1 touches two lots: B1's and B2's unknown fee once each, and its own unknown fee once per lot
+        assert s1["buy_fee_sol"] == pytest.approx(2 * per_tx) and s1["sell_fee_sol"] == pytest.approx(2 * per_tx)
+        # S2 touches B2 again: B2's unknown fee in full once more, as measure charged it; S2's own fee is known
+        assert s2["buy_fee_sol"] == pytest.approx(per_tx) and s2["sell_fee_sol"] == pytest.approx(0.003005)
+        for b, quote in ((s1, 180_000_000 - 98_765_432 * 1.5), (s2, 70_000_000 - 98_765_432 * 0.5)):
+            assert abs(b["tape_check_sol"]) <= 2e-6  # the price part is the tape's price, to the record's rounding
+            assert b["price_sol"] == pytest.approx(quote / 1e9, abs=2e-6)
+            parts = b["price_sol"] - b["venue_fee_sol"] - b["buy_fee_sol"] - b["sell_fee_sol"] - b["dup_fee_sol"]
+            assert round(parts, 9) == b["result_sol"] and b["fees_known"] is False
+    finally:
+        st.close()
+
+
 def test_a_sell_measure_has_not_paired_yet_has_no_breakdown():
     st = Store(":memory:")
     try:

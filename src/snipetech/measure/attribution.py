@@ -70,7 +70,8 @@ def _same(a: Any, b: Any) -> bool:
 
 def _fee(row: dict, per_tx_lamports: int) -> tuple[int, bool]:
     """What a landed fill paid to land (priority + tip + base fee) and whether it is known; measure's flat cost per
-    transaction when its fingerprint is unknown, as measure charged it."""
+    transaction when its fingerprint is unknown. A known fee is shared by the tokens each lot takes; the flat cost is
+    charged whole on every lot the fill touches, as measure's pair_round_trips charges it (`_trip`)."""
     if row.get("priority_lamports") is None:
         return per_tx_lamports, False
     return int(row["priority_lamports"]) + int(row.get("tip_lamports") or 0) + BASE_FEE_LAMPORTS, True
@@ -161,6 +162,7 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
           replays: dict[str, dict[str, float]], per_tx_l: int) -> dict[str, Any]:  # fmt: skip
     sell_tokens = float(sell["tokens"])
     sell_fee_l, fees_known = _fee(sell, per_tx_l)
+    sell_known = fees_known
     sell_leg = legs.get(sell["sig"])
     split = sell_leg is not None
     buy_fee = venue = tape_price = closed = 0.0
@@ -172,7 +174,9 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
         shares.append((b, bs, ss))
         bf, known = _fee(b, per_tx_l)
         fees_known = fees_known and known
-        buy_fee += bf * bs
+        # an unknown fee is measure's flat cost, whole on every lot it touches (pair_round_trips); review of 8 Nov:
+        # scaled by the share closed here, the price part took the difference and a trip near zero could change kind
+        buy_fee += bf * bs if known else bf
         closed += take
         leg = legs.get(b["sig"])
         if leg is None or sell_leg is None:
@@ -181,7 +185,7 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
             venue += leg["fee"] * bs + sell_leg["fee"] * ss
             tape_price += sell_leg["quote"] * ss - leg["quote"] * bs
     sold_share = closed / sell_tokens if sell_tokens > 0 else 0.0
-    buy_l, sell_l = round(buy_fee), round(sell_fee_l * sold_share)
+    buy_l, sell_l = round(buy_fee), round(sell_fee_l * sold_share if sell_known else sell_fee_l * len(lots))
     dup_l = _lamports(sell.get("twin_fee_sol"))
     # the duplicates' cost is measure's (twin_fee_sol, what every reader subtracts); the sends found here only count
     # them and price the levers, so a record measure has not brought up to date shows no duplicates of its own
