@@ -914,6 +914,32 @@ def test_a_failed_sell_twin_is_charged_once(env):
     assert LT.load(env.paths)["sequence"]["block"] == 2  # +0.01 a trade: exactly half of paper, the twin not charged
 
 
+def test_the_failed_duplicates_of_a_sale_with_no_buy_on_record_are_charged_to_its_block(env):
+    """Review of 8 Nov: the tape missed our buy (a recorder stall), so the measure stage could not pair the sale and it
+    has no result; its two failed duplicate sends were still paid for. They were skipped as twins of a sale whose
+    result holds them, and so counted nowhere: the block now pays them, once (a paired sale's twin is still in its
+    sale's result only: test_a_failed_sell_twin_is_charged_once)."""
+    from snipetech.solana.txmeta import PumpIx, TxMeta
+
+    start = NOW - HOUR
+    t = {"started_at": start, "ended_at": NOW, "report": {"held": [], "job_ended": NOW - 60, "reason": TIME}}
+    rows = [{"sig": "lost-sell", "ts": start + 120, "slot": 7_000, "wallet": W, "mint": "Lost", "side": "sell",
+             "sol": 0.19, "tokens": 1000.0, "pnl_sol": None, "twin_fee_sol": 0.00401}]  # fmt: skip
+    for k in range(2):
+        rows.append({"sig": f"dup-{k}", "ts": start + 120 + k, "slot": 7_000 + k, "wallet": W, "side": "failed",
+                     "sol": 0.0, "tokens": 0.0, "mint": "Lost", "priority_lamports": 2_000_000, "tip_lamports": 0})  # fmt: skip
+    for r in rows:
+        env.store.put_fill(r)
+    env.store.add_tx_meta([TxMeta(sig=f"dup-{k}", slot=7_000 + k, block_time=start + 120 + k, version=0, fee_payer=W,
+                                  signers=[W], n_signatures=1, fee=5000, priority_lamports=2_000_000, cu_limit=None,
+                                  cu_price=None, cu_consumed=None, pump_ixs=[PumpIx("pump", "sell", W, {}, None, "Lost")])
+                           for k in range(2)])  # fmt: skip
+    live = AT.block_live(env.store, W, t, NOW, per_tx_sol=0.0035, failed_fee_sol=0.001)
+    assert sorted(f["sig"] for f in live["failed"]) == ["dup-0", "dup-1"]
+    assert sum(f["fee"] for f in live["failed"]) == pytest.approx(0.00401)
+    assert AT._reading(live, own=False, final=True)["sum"] == pytest.approx(-0.00401)
+
+
 def test_the_decision_waits_for_the_measure_stage(env):
     _start(env)
     trades = _play(env, [0.02] * 10, measured=False)

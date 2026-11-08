@@ -6,7 +6,7 @@ import time
 from collections.abc import Iterable
 from typing import Any
 
-from ..measure.attribution import trip_result_sol
+from ..measure.attribution import known_result_sol
 from ..store import Store
 
 DAY_KEY = "book:day"
@@ -41,15 +41,16 @@ def copying_now(store: Store, now: float, max_age: float = COPYING_MAX_AGE_SECS)
 
 
 def _realised(fills: list[dict]) -> float:
-    # each sell's whole result: its failed duplicate sends (twin_fee_sol, measure) are part of what it cost, once
-    results = [trip_result_sol(f) for f in fills if f.get("side") == "sell"]
-    return round(sum(r for r in results if r is not None), 6)
+    # each sell's whole result: its failed duplicate sends (twin_fee_sol, measure) are part of what it cost, once; a sell
+    # measure could not pair (its buy not on the tape) still costs its duplicates (review of 8 Nov)
+    return round(sum(known_result_sol(f) for f in fills if f.get("side") == "sell"), 6)
 
 
 def realised_today(store: Store, wallet: str, now: float) -> float:
     """The round trips closed since 00:00 UTC, in SOL: each sell's result from `fills` (the measure stage pairs it with
-    the buys it closed, whenever they were made, real fees included) less its failed duplicate sends. Only our own
-    trades are in it, so a deposit or a withdrawal never moves it (the wallet-wide guard's day stop rests on it)."""
+    the buys it closed, whenever they were made, real fees included) less its failed duplicate sends; a sell with no
+    buy on record counts its failed duplicate sends alone. Only our own trades are in it, so a deposit or a withdrawal
+    never moves it (the wallet-wide guard's day stop rests on it)."""
     return _realised(store.fills(wallet=wallet, since_ts=int(now // 86400) * 86400, side="sell", limit=100_000))
 
 

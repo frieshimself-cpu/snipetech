@@ -364,6 +364,7 @@ def test_read_fills_tool(toolbox):
         "sells": 1,
         "failed": 0,
         "pnl_sol": 0.045,
+        "unpriced": 0,
     }
     assert len(json.loads(_call(tools["read_fills"], hours=24 * 7))["fills"]) == 3
 
@@ -379,11 +380,13 @@ def test_read_fills_counts_a_sells_failed_duplicates_once(toolbox):
                      "pnl_sol": -0.006567, "twin_fee_sol": 0.00401})  # fmt: skip
         st.put_fill({"sig": "S2", "ts": now - 200, "wallet": "ME", "mint": "M2", "side": "sell", "sol": 0.218855,
                      "pnl_sol": 0.012845, "twin_fee_sol": None})  # fmt: skip
+        # review of 8 Nov: a sell whose buy the tape missed has no pnl_sol, and its failed duplicates still cost
+        st.put_fill({"sig": "S3", "ts": now - 100, "wallet": "ME", "mint": "M3", "side": "sell", "sol": 0.2,
+                     "pnl_sol": None, "twin_fee_sol": 0.002005})  # fmt: skip
     finally:
         st.close()
-    assert json.loads(_call(tools["read_fills"], hours=24))["summary"]["pnl_sol"] == round(
-        -0.006567 - 0.00401 + 0.012845, 6
-    )
+    summary = json.loads(_call(tools["read_fills"], hours=24))["summary"]
+    assert summary["pnl_sol"] == round(-0.006567 - 0.00401 + 0.012845 - 0.002005, 6) and summary["unpriced"] == 1
 
 
 def test_read_events_tool(toolbox):

@@ -11,7 +11,7 @@ from pathlib import Path
 from anthropic import beta_async_tool
 
 from ..config import OperatorConfig
-from ..measure.attribution import trip_result_sol
+from ..measure.attribution import known_result_sol, trip_result_sol
 from ..ops import _read_only_authorizer, redact
 from . import learning
 from .jobs import OperatorJobs
@@ -353,7 +353,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """The measure stage's live fills (buys, sells with PnL, failed sends) of the last `hours`, plus the bid model per
         arm and the live expectancy per copied wallet. These are the truth for the live landing; paper numbers are
         provisional once a wallet's live n reaches 10. A sell's pnl_sol is its landed trip; its failed duplicate
-        sends are beside it in twin_fee_sol; the summary's pnl_sol is the sells' whole result, each cost once.
+        sends are beside it in twin_fee_sol; the summary's pnl_sol is the sells' whole result, each cost once (a sell
+        measure could not pair, counted in `unpriced`, pays its failed duplicate sends alone).
 
         Args:
             hours: Look back this many hours (default 24).
@@ -362,10 +363,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         try:
             since = int(now_fn() - max(1, int(hours)) * 3600)
             rows = svc.store.fills(since_ts=since, limit=max(1, int(limit)))
-            results = [trip_result_sol(r) for r in rows if r["side"] == "sell"]
-            summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": sum(r["side"] == "sell" for r in rows),
+            sold = [r for r in rows if r["side"] == "sell"]
+            # a sell with no buy on record (`unpriced`: the tape missed it) still costs its failed duplicates (8 Nov)
+            summary = {"buys": sum(r["side"] == "buy" for r in rows), "sells": len(sold),
                        "failed": sum(r["side"] == "failed" for r in rows),
-                       "pnl_sol": round(sum(p for p in results if p is not None), 6)}  # fmt: skip
+                       "pnl_sol": round(sum(known_result_sol(r) for r in sold), 6),
+                       "unpriced": sum(trip_result_sol(r) is None for r in sold)}  # fmt: skip
             out = {
                 "summary": summary,
                 "fills": rows,

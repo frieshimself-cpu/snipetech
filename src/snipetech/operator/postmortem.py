@@ -15,7 +15,15 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..measure.attribution import break_down, exit_clears_bar, exit_gain, exit_record, levers, totals
+from ..measure.attribution import (
+    break_down,
+    exit_clears_bar,
+    exit_gain,
+    exit_record,
+    levers,
+    totals,
+    trip_result_sol,
+)
 from ..ops import redact
 from . import learning
 from .paths import OperatorPaths
@@ -134,15 +142,48 @@ def _idea_label(idea: dict[str, Any]) -> str:
     return "needs your yes"
 
 
+def unpriced(sells: list[dict]) -> dict[str, Any] | None:
+    """The sells of a batch measure could not pair (their buy not on the tape: a recorder stall), which have no
+    breakdown: how many, what their failed duplicate sends cost (measure's twin_fee_sol) and when they were; None when
+    every sell was paired."""
+    rows = [s for s in sells if trip_result_sol(s) is None]
+    if not rows:
+        return None
+    ts = [int(s["ts"]) for s in rows if s.get("ts") is not None]
+    return {"sells": len(rows), "dup_fee_sol": round(sum(float(s.get("twin_fee_sol") or 0.0) for s in rows), 9),
+            "first_ts": min(ts, default=None), "last_ts": max(ts, default=None)}  # fmt: skip
+
+
+def _unpriced_lines(u: dict[str, Any]) -> list[str]:
+    """The owner's lines for a batch whose only sells could not be priced."""
+    n = u["sells"]
+    when = _when([{"buy_ts": u["first_ts"], "sell_ts": u["last_ts"]}])
+    its = "Its" if n == 1 else "Their"
+    whose = (
+        "whose buy is not on record (the tape missed it)"
+        if n == 1
+        else "whose buys are not on record (the tape missed them)"
+    )
+    lines = [f"Post-mortem: {n} live {_plural(n, 'sell')}, {when}, {whose}."]
+    dup = float(u["dup_fee_sol"] or 0.0)
+    lines.append(
+        f"{its} price is unknown" + (f"; {its.lower()} failed duplicate sells cost {dup:.4f} SOL." if dup else ".")
+    )
+    lines.append(f"Net: {-dup:+.4f} SOL.")
+    return lines
+
+
 def summary_text(trips: list[dict], cfg: Any = None, idea: dict[str, Any] | None = None,
-                 record: list[dict] | None = None) -> str | None:  # fmt: skip
+                 record: list[dict] | None = None, unpriced: dict[str, Any] | None = None) -> str | None:  # fmt: skip
     """The owner's lines for a batch of breakdowns (measure/attribution.py break_down), or None for none. `idea`: the
     analyst's top idea of the turn (learning.ideas_since), named first when the price itself took the most. `record`:
     every copy measure replayed (attribution.exit_record), which an exit must also clear before it is named; the
-    exit is only ever a test, after the changes that would have saved SOL."""
+    exit is only ever a test, after the changes that would have saved SOL. `unpriced`: the batch's sells with no
+    breakdown (see `unpriced`): their price is unknown, their failed duplicate sends were paid for, so the net charges
+    them (review of 8 Nov: they were counted nowhere)."""
     trips = [t for t in trips if t]
     if not trips:
-        return None
+        return redact("\n".join(_unpriced_lines(unpriced))) if unpriced else None
     s = totals(trips)
     every = levers(trips, cfg=cfg)
     ranked = [x for x in every if not x.get("test_only")]  # what would have saved SOL; an exit is hindsight
@@ -154,9 +195,19 @@ def summary_text(trips: list[dict], cfg: Any = None, idea: dict[str, Any] | None
         f"Post-mortem: {n} live round {_plural(n, 'trip')}, {_when(trips)}: {s['wins']} won, {s['losses']} lost.",
         f"Price: {price:+.4f} SOL before any cost ({s['rose']} rose, {s['fell']} fell){unsplit}.",
         _costs(s),
-        f"Net: {s['result_sol']:+.4f} SOL." + _losses(s),
-        _cause(s),
     ]
+    dup = float(unpriced["dup_fee_sol"] or 0.0) if unpriced else 0.0
+    if unpriced:
+        k = unpriced["sells"]
+        its = "its" if k == 1 else "their"
+        whose = (
+            "whose buy is not on record (the tape missed it)"
+            if k == 1
+            else "whose buys are not on record (the tape missed them)"
+        )
+        lines.append(f"Also {k} {_plural(k, 'sell')} {whose}: {its} price is unknown"
+                     + (f"; {its} failed duplicate sells cost {dup:.4f} SOL, counted in the net." if dup else "."))  # fmt: skip
+    lines += [f"Net: {s['result_sol'] - dup:+.4f} SOL." + _losses(s), _cause(s)]
     ours = next((x for x in ranked if x["who"] in ("strategist", "owner")), None)
     idea_line = f"Change it suggests: {idea.get('title') or idea.get('id')} ({_idea_label(idea)})." if idea else None
     change: list[str] = []
@@ -191,7 +242,7 @@ def send_summary(svc, cfg, paths: OperatorPaths, trips: dict[str, Any], notes, n
     ideas = learning.ideas_since(paths, started)
     exit_lv = next((x for x in levers(batch, cfg=cfg) if x["lever"] == "exit"), None)
     record = exit_record(svc.store, wallet) if exit_lv and exit_lv["clears_bar"] else None  # read only when needed
-    text = summary_text(batch, cfg=cfg, idea=ideas[0] if ideas else None, record=record)
+    text = summary_text(batch, cfg=cfg, idea=ideas[0] if ideas else None, record=record, unpriced=unpriced(sells))
     if text is None:
         return None
     notes.write(text, "info")

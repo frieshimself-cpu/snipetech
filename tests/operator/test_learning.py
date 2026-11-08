@@ -317,6 +317,25 @@ def test_a_round_trip_reads_as_its_landing_its_exit_its_money_and_the_verdicts_p
     st.close()
 
 
+def test_the_post_mortem_charges_the_duplicates_of_a_sell_with_no_buy_on_record(paths):
+    """Review of 8 Nov: a landed sell whose buy the tape missed has no result (its price is unknown) but paid for its
+    failed duplicate sends: the summary's whole result charges them once and says how many sells it could not price."""
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    st.put_fill({"sig": "B1", "ts": NOW - 400, "wallet": "W", "mint": "MS1", "side": "buy", "sol": 0.2, "tokens": 1.0})
+    _sell(st, "S1", NOW - 300, buy_sig="B1", pnl_sol=-0.01, twin_fee_sol=0.002)
+    _sell(st, "S2", NOW - 100, pnl_sol=None, twin_fee_sol=0.00401)  # its buy is not on the tape
+    out = L.round_trips(st, "W", NOW - 6 * H)
+    s = out["summary"]
+    assert (s["trips"], s["wins"], s["losses"]) == (2, 0, 1)  # the unpriced sell is neither a win nor a loss
+    assert s["pnl_sol"] == pytest.approx(-0.01 - 0.002 - 0.00401) and s["recorded_sol"] == -0.01
+    assert s["unpriced"] == 1 and s["unpriced_dup_sol"] == pytest.approx(0.00401)
+    trip = next(t for t in out["trips"] if t["sig"] == "S2")
+    assert trip["result_sol"] is None and trip["price_unknown"] is True and trip["twin_fee_sol"] == 0.00401
+    st.close()
+
+
 def test_the_post_mortem_reads_each_trip_broken_into_its_parts_each_cost_once(paths):
     """7 Nov 19:18-19:22, three copies of 7aPo3n: the landed records say -0.0038 SOL; with the four failed duplicate
     sells beside them it is -0.0119, and the post-mortem must see that, the parts behind it, the causes ranked by SOL

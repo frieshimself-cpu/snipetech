@@ -383,6 +383,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     for s in all_sells:
         pnl = paired["pnl_by_sell"].get(s["sig"])
         if pnl is None:
+            # a landed sell with no buy to pair (the tape missed it: a recorder stall) still paid for its failed
+            # duplicate sends; they go on its row so that every reader charges them once (review of 8 Nov: they were
+            # in the run's totals only). A row paired earlier keeps what that pairing wrote.
+            dup = round(twins.get(s["sig"], 0.0), 9)
+            if s.get("pnl_sol") is None and s.get("twin_fee_sol") != dup:
+                store.put_fill(s | {"twin_fee_sol": dup})
             continue
         buy = buy_by_sig.get(first_buy_for_sell.get(s["sig"]) or "")
         arm = (buy or {}).get("bid_arm") or s.get("bid_arm")  # a sell belongs to the arm of the buy it closes

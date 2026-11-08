@@ -342,3 +342,39 @@ plain `.md` name in that directory, never another document or repo file, and no 
 the record settles ideas too: an angle a round refuted is not tested again (no lab, no freeze into the paper test), an
 open idea a round refutes is marked rejected with the round and its numbers, and a round's builds and questions for
 the owner stay with the cloud session and the owner; the strategist never turns a proposed build into a patch.
+
+What changed on 8 Nov (the review of the breakdown):
+
+- **A sell measure cannot pair still costs its duplicates.** When the tape misses our buy (a recorder stall), the sell
+  lands with no buy to pair: its `pnl_sol` stays empty, because its price is unknown. Its failed duplicate sends were
+  still paid for, and until 8 Nov they were in the measure run's totals only. Now measure writes `twin_fee_sol` on such a
+  sell too, and `known_result_sol` (the whole result once paired, else minus the duplicates alone) is what the day
+  stop, `read_fills` and the post-mortem's whole result sum. The automatic test's block pays the twins of a sale that
+  has no result as the failed sends they are; a paired sale's twins stay in its own result. The owner's summary says
+  "Also 1 sell whose buy is not on record (the tape missed it): its price is unknown; its failed duplicate sells cost
+  … SOL, counted in the net." Once the buy reaches the tape, measure pairs the sell and keeps the same duplicates:
+  each counted once.
+- **An unknown fee is charged as measure charges it.** A fill whose fingerprint is unknown costs measure's flat
+  `[costs] per_tx_sol` in full on every lot it touches (`pair_round_trips`). The breakdown had scaled it by the share
+  closed, so the price part took the difference and a trip near zero could change kind; now it charges the same, and
+  the price part is the tape's price again. No 5-7 Nov fill has an unknown fee, so no record changed.
+- **A copy bought on the curve and sold by OKTech on PumpSwap.** When the tape holds the sale, it gets its whole
+  result as the code stands: the PumpSwap trade is ours on the tape (the event's `user`), measure pairs it first in
+  first out with the curve buy by coin, prices it at the WSOL the pool paid out (`quote_amount_out` less the LP,
+  protocol and creator fees), ties the failed `sell_v2` duplicates to it (they decode as PumpSwap sells, with the coin
+  as `base_mint`), and the breakdown reads each leg's venue fee from the tape
+  (`tests/test_measure_run.py::test_a_copy_bought_on_the_curve_and_sold_on_pumpswap_gets_its_whole_result`). When the
+  tape does not hold the sale, the trip is in no fill: measure reads our trades from the tape only. The buy then stays
+  open, the day stop and the post-mortem never see the trip, the automatic test counts the buy at its whole cost
+  after its wait (the proceeds are missed), and the duplicates count as failed sends tied to no sale. That is the
+  6 Nov trip of 2NgdUj: its buy (05:15:46) is the one buy in `fills` with no sale, and its PumpSwap sale
+  (`4msjkqRb…`, 0.0549 WSOL) is not on the tape; its two failed duplicates (Custom 1) are failed rows. Our wallet has
+  no PumpSwap trade on the tape at all (read 8 Nov), and no other buy is open, so no PumpSwap sale has been missed
+  since. The tape keeps recent migrations' PumpSwap trades only inside its runs (`tape:amm_recent`): from 7 Nov 12:13
+  to 8 Nov 08:47 they covered 84 % of the time, with holes on 7 Nov 14:03-15:49, 19:28-20:49 (several restarts and a
+  36-minute skipped stretch) and none since; a coin is kept 30 minutes after its migration. Not built, because it
+  needs a source measure does not read: our own landed transactions decoded into trades when the tape has none.
+  measure already lists the wallet's signatures (`getSignaturesForAddress`, for the failed sends) and drops the landed
+  ones; fetching those the tape lacks and decoding them (as `Ingestor.ingest` does) would close it, but it writes to
+  the tape from measure, and `Ingestor.ingest` skips only signatures in `seen_sigs`, which the recorder never marks,
+  so it would fetch every landed transaction of ours again each run.

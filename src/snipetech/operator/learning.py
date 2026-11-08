@@ -615,12 +615,15 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40, cfg
     is six minutes old and replayed).
 
     Each trip's money is broken down in code (measure/attribution.py): `result_sol`, its whole result with each cost
-    once (pnl_sol, the landed trades, less twin_fee_sol, its failed duplicate sells), and `breakdown`, the parts that
+    once (pnl_sol, the landed trades, less twin_fee_sol, its failed duplicate sells; None with `price_unknown` for a
+    sell measure could not pair, its buy not on the tape), and `breakdown`, the parts that
     add up to it (the price move before any cost, the venue's fee, the buy's and the landed sell's fees, the
     duplicates), whether it made money on the price and lost it to the costs or lost on the price itself, and what
     each change would have saved. The summary adds them up: wins and losses by the whole result, the causes ranked by
-    SOL, the levers ranked by what they would have saved and who can make each (`cfg` for the bounds and costs)."""
-    from ..measure.attribution import break_down, levers, totals, trip_result_sol
+    SOL, the levers ranked by what they would have saved and who can make each (`cfg` for the bounds and costs); its
+    whole result also charges the failed duplicate sends of the sells it could not price (`unpriced`,
+    `unpriced_dup_sol`)."""
+    from ..measure.attribution import break_down, known_result_sol, levers, totals, trip_result_sol
 
     sells = store.fills(wallet=wallet or None, since_ts=int(since_ts), side="sell", limit=max(1, int(limit)))
     verdicts: dict[str, dict[str, Any] | None] = {}
@@ -644,7 +647,7 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40, cfg
         result = trip_result_sol(s)
         trips.append({"sig": str(s["sig"])[:12], "ts": s.get("ts"), "mint": s.get("mint"), "leader": leader,
                       "held_secs": held, "buy_sol": buy.get("sol"), "sell_sol": s.get("sol"), "pnl_sol": s.get("pnl_sol"),
-                      "result_sol": None if result is None else round(result, 9),
+                      "result_sol": None if result is None else round(result, 9), "price_unknown": result is None,
                       "trades_behind": buy.get("trades_behind"), "price_gap_pct": buy.get("price_gap_pct"),
                       "leader_progress": buy.get("leader_progress"),
                       "pos_in_slot": buy.get("pos_in_slot"), "bid_arm": buy.get("bid_arm") or s.get("bid_arm"),
@@ -653,8 +656,13 @@ def round_trips(store: Store, wallet: str, since_ts: float, limit: int = 40, cfg
                       "shadow": shadow, "shadow_best": best, "breakdown": _breakdown_view(parts.get(s["sig"]))})  # fmt: skip
     results = [float(t["result_sol"]) for t in trips if t["result_sol"] is not None]
     recorded = [float(t["pnl_sol"]) for t in trips if t["pnl_sol"] is not None]
+    # a sell measure could not pair (its buy not on the tape) has no price, but its failed duplicate sends were paid
+    # for: the whole result charges them once (review of 8 Nov)
+    unpriced = [s for s in sells if trip_result_sol(s) is None]
     summary = {"trips": len(trips), "wins": sum(p > 0 for p in results), "losses": sum(p <= 0 for p in results),
-               "pnl_sol": round(sum(results), 6), "recorded_sol": round(sum(recorded), 6)}  # fmt: skip
+               "pnl_sol": round(sum(known_result_sol(s) for s in sells), 6), "recorded_sol": round(sum(recorded), 6),
+               "unpriced": len(unpriced),
+               "unpriced_dup_sol": round(sum(float(s.get("twin_fee_sol") or 0.0) for s in unpriced), 9)}  # fmt: skip
     broken = [b for b in parts.values() if b]
     if broken:
         tot = totals(broken)
