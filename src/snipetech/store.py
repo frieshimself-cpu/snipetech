@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import sqlite3
 import sys
 import threading
@@ -372,15 +373,31 @@ class Store:
     # scan. The tape recorder turns it off (live.LiveWatcher): it is the writer the others yield to, and its writes run on
     # its event loop, where a sleep would stop its streams too.
     BATCH_YIELD_SECS = 0.15
+    # The pause is at least twice the last batch's hold plus a random jitter of up to BATCH_JITTER_SECS (_yield_secs). A
+    # review on 8 Nov reproduced two bulk writers whose batches held the lock about as long as a fixed pause falling
+    # into step, each one's pause covering the other's batch, so a third writer asking once waited 1.4-8.6 s (about
+    # both runs together): a writer that has just started waiting polls every few milliseconds and beats one that has
+    # waited long and polls every 100 ms. Twice the hold leaves a gap of at least one hold once the other writer's
+    # batch is done, and the jitter keeps two writers from staying in step. The price: a batch that holds 0.3 s (the
+    # 2.4M-trade copy's 20-40 ms batches on a database ten times larger, mostly uncached) pauses 0.6-0.7 s.
+    BATCH_JITTER_SECS = 0.1
 
-    def _write(self, fn, immediate: bool = True) -> None:
+    def _yield_secs(self, hold: float) -> float:
+        """How long a bulk write pauses after a batch that held the write lock `hold` seconds (none when the store's
+        BATCH_YIELD_SECS is 0: the tape recorder's)."""
+        if self.BATCH_YIELD_SECS <= 0:
+            return 0.0
+        return max(self.BATCH_YIELD_SECS, 2 * hold) + random.uniform(0.0, self.BATCH_JITTER_SECS)
+
+    def _write(self, fn, immediate: bool = True) -> float:
         """Run `fn` (its statements on self.conn) as one transaction and commit it. Whatever goes wrong inside rolls it
         back before the error goes on: a transaction left open keeps the write lock until this connection's next
         commit, and its snapshot pins the WAL. A refused lock ("locked", "busy") is waited out for LOCK_PATIENCE.
 
         `immediate` (every write but the schema step at open): BEGIN IMMEDIATE takes the write lock first, so any wait
         for it happens there and the hold that follows is timed alone; a hold of SLOW_WRITE_SECS or more is logged
-        with the code that asked for it. The schema step stays deferred: an up-to-date schema takes no lock at all."""
+        with the code that asked for it. The schema step stays deferred: an up-to-date schema takes no lock at all.
+        Returns that hold in seconds (a bulk write sizes its pause by it)."""
         deadline = time.monotonic() + self.LOCK_PATIENCE
         delay = 0.5
         while True:
@@ -403,7 +420,7 @@ class Store:
                         raise
                 if immediate and held >= self.SLOW_WRITE_SECS:
                     log.warning("store: a write held the database's write lock for %.1f s (%s)", held, _caller())
-                return
+                return held
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) and "busy" not in str(e):
                     raise
@@ -430,12 +447,15 @@ class Store:
 
     def _batched(self, rows: list, write) -> int:
         """`write(batch)` (statements on self.conn, returning the rows changed) for each batch of WRITE_BATCH rows, each
-        batch its own transaction, with BATCH_YIELD_SECS between two batches so a waiting writer gets in. A private
-        in-memory database has no other connection, so nobody to yield to."""
+        batch its own transaction, with a pause between two batches (_yield_secs: at least BATCH_YIELD_SECS, longer
+        after a long batch) so a waiting writer gets in. A private in-memory database has no other connection, so nobody
+        to yield to."""
         changed = 0
-        pause = self.BATCH_YIELD_SECS if self.path != ":memory:" else 0.0
+        private = self.path == ":memory:"
+        hold = 0.0
         for i in range(0, len(rows), self.WRITE_BATCH):
-            if i and pause > 0:
+            pause = 0.0 if private or not i else self._yield_secs(hold)
+            if pause > 0:
                 time.sleep(pause)
             batch = rows[i : i + self.WRITE_BATCH]
             out: dict[str, int] = {}
@@ -443,7 +463,7 @@ class Store:
             def do(batch=batch, out=out):
                 out["n"] = write(batch)
 
-            self._write(do)
+            hold = self._write(do)
             changed += out["n"]
         return changed
 

@@ -179,6 +179,71 @@ def test_a_failing_checkpoint_does_not_end_the_thread_and_counts_against_its_hea
     st.close()
 
 
+def test_a_checkpointer_that_copies_back_but_never_lets_the_wal_start_over_is_not_healthy(tmp_path):
+    """Review, 8 Nov: a PASSIVE checkpoint that copies every frame back still leaves the WAL growing when the next
+    commit lands before SQLite can start it over, so "it copied back lately" alone is no health. One whose WAL holds
+    more than `max_wal_frames` (by default what journal_size_limit trims it to) is not healthy."""
+    st = Store(tmp_path / "t.db")
+    cp = L.Checkpointer(st.path, every_secs=3600, poll_secs=0.01, max_wal_frames=4000)
+    assert L.Checkpointer(st.path).max_wal_frames == Store.JOURNAL_SIZE_LIMIT // 4096
+    cp._pragma = lambda conn: (0, 5000, 5000)  # everything copied back, but 5,000 frames in the WAL
+    cp.start()
+    try:
+        assert _wait(lambda: cp.done >= 1)
+        assert not cp.healthy() and "5000 frames" in cp.trouble()
+        cp._pragma = lambda conn: (0, 120, 120)  # the WAL started over
+        conn = cp._open()
+        cp.checkpoint_once(conn)
+        conn.close()
+        assert cp.healthy() and cp.trouble() is None
+    finally:
+        cp.stop()
+    st.close()
+
+
+def _wal_frames(path: str) -> int:
+    """The WAL's last valid frame (mxFrame, byte 16 of the wal-index header): how many frames it holds."""
+    import struct
+
+    with open(f"{path}-shm", "rb") as f:
+        return struct.unpack_from("=I", f.read(100), 16)[0]
+
+
+def test_commits_racing_the_checkpointer_cannot_grow_the_wal_without_bound(tmp_path, caplog):
+    """Review, 8 Nov, reproduced: with the recorder's wal_autocheckpoint=0, commits every 10 ms beside a live
+    Checkpointer grew the -wal to 85 MB in 31 s and on, every checkpoint copying back and the thread healthy, because
+    a commit landed inside each one and the WAL never started over (SQLite's default kept it at 3 MB). The recorder's
+    tick now sees the WAL past its bound and hands checkpoints back to its commits, which let it start over."""
+    st = Store(tmp_path / "t.db")
+    st.BATCH_YIELD_SECS = 0.0
+    st._exec("CREATE TABLE filler (b BLOB)")
+    w = watcher(store=st)
+    w.checkpointer = cp = L.Checkpointer(st.path, every_secs=0.2, poll_secs=0.005, min_gap_secs=0.01,
+                                         max_wal_frames=1000)  # fmt: skip
+    st.set_autocheckpoint(0)
+    cp.start()
+    peak, handed_back = 0, False
+    rows = [(b"x" * 4000,)] * 5
+    with caplog.at_level(logging.WARNING, logger="snipetech.live"):
+        try:
+            for i in range(1500):
+                st._write(lambda: st.conn.executemany("INSERT INTO filler VALUES (?)", rows))
+                if i % 10 == 0:  # the recorder's tick
+                    w._watch_checkpoints()
+                    handed_back = handed_back or _autocheckpoint(st) == 1000
+                peak = max(peak, _wal_frames(st.path))
+                time.sleep(0.003)
+        finally:
+            cp.stop()
+    assert handed_back, [r.getMessage() for r in caplog.records]
+    assert peak < 3000, peak  # 1,500 commits of 5 pages: about 7,500 frames if it never starts over
+    said = [
+        r.getMessage() for r in caplog.records if "frames" in r.getMessage() and "recorder's commits" in r.getMessage()
+    ]
+    assert said, [r.getMessage() for r in caplog.records]
+    st.close()
+
+
 # -- the recorder ------------------------------------------------------------------------------------------------------
 
 
@@ -186,8 +251,11 @@ class FakeCheckpointer:
     def __init__(self):
         self.ok, self.done, self.failed = True, 0, 0
 
+    def trouble(self, now=None) -> str | None:
+        return None if self.ok else "it has copied nothing back for 60 s (0 failed)"
+
     def healthy(self, now=None) -> bool:
-        return self.ok
+        return self.trouble(now) is None
 
 
 def test_the_recorder_goes_back_to_sqlites_checkpoints_while_its_own_have_stopped(tmp_path, caplog):

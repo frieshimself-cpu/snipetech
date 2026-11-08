@@ -103,7 +103,10 @@ AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay o
 # The recorder's WAL checkpoints (Checkpointer): one every CHECKPOINT_EVERY_SECS, or sooner once CHECKPOINT_PAGES wait to
 # be copied back (SQLite's own bound, 1,000 pages), never two within CHECKPOINT_MIN_GAP_SECS; one that takes
 # CHECKPOINT_SLOW_SECS or more is logged; after CHECKPOINT_STALE_SECS without one that copied back, the recorder's own
-# commits checkpoint again as SQLite's default does, so the WAL never grows without bound.
+# commits checkpoint again as SQLite's default does, so the WAL never grows without bound. The same happens while the WAL
+# holds more frames than journal_size_limit trims it to (Checkpointer.max_wal_frames): a review on 8 Nov reproduced
+# commits every 10 ms landing inside each PASSIVE checkpoint, so the WAL never started over and grew past 85 MB in 31 s
+# while every checkpoint copied back.
 CHECKPOINT_EVERY_SECS = 5.0
 CHECKPOINT_PAGES = 1000
 CHECKPOINT_MIN_GAP_SECS = 1.0
@@ -330,11 +333,11 @@ class StallMeter:
 _WAL_INDEX_VERSION = 3007000  # the wal-index header's version field (SQLite's file format: "the wal-index")
 
 
-def wal_pending_frames(path: str) -> int | None:
-    """How many frames of the database's WAL wait to be copied back into the file: the wal-index (the `-shm` file)
-    keeps the last valid frame (mxFrame, at byte 16 of its header) and how many of them a checkpoint has copied back
-    (nBackfill, at byte 96), in the machine's byte order. A gauge read without a lock: a torn read only moves one
-    checkpoint earlier. None when there is no wal-index to read (no WAL, an unknown layout)."""
+def _wal_index(path: str) -> tuple[int, int] | None:
+    """(mxFrame, nBackfill) from the database's wal-index (the `-shm` file): the WAL's last valid frame, at byte 16 of
+    its header, and how many of its frames a checkpoint has copied back, at byte 96, in the machine's byte order. Read
+    without a lock: a torn read only moves one checkpoint, or one hand-back, by a tick. None when there is no wal-index
+    to read (no WAL, an unknown layout)."""
     try:
         with open(f"{path}-shm", "rb") as f:
             head = f.read(100)
@@ -342,8 +345,19 @@ def wal_pending_frames(path: str) -> int | None:
         return None
     if len(head) < 100 or struct.unpack_from("=I", head, 0)[0] != _WAL_INDEX_VERSION or not head[12]:
         return None
-    frames, copied = struct.unpack_from("=I", head, 16)[0], struct.unpack_from("=I", head, 96)[0]
-    return max(0, frames - copied)
+    return struct.unpack_from("=I", head, 16)[0], struct.unpack_from("=I", head, 96)[0]
+
+
+def wal_pending_frames(path: str) -> int | None:
+    """How many frames of the database's WAL wait to be copied back into the file (None: no wal-index to read)."""
+    idx = _wal_index(path)
+    return None if idx is None else max(0, idx[0] - idx[1])
+
+
+def wal_frames(path: str) -> int | None:
+    """How many frames the database's WAL holds since it last started over (None: no wal-index to read)."""
+    idx = _wal_index(path)
+    return None if idx is None else idx[0]
 
 
 class Checkpointer:
@@ -355,17 +369,28 @@ class Checkpointer:
     (it waits for nobody: writers go on appending, readers keep their snapshot) every `every_secs`, or sooner once
     `max_pages` wait, and logs one that takes `slow_secs` or more as "tape: a checkpoint took N s": the log then tells a
     slow write from a slow checkpoint. It never takes the store's lock (the event loop's reads and writes share it).
-    `healthy()` says whether it has copied back lately; the recorder hands checkpoints back to its own commits while it
-    has not (LiveWatcher._watch_checkpoints), so a failing or starved checkpointer cannot let the WAL grow without
-    bound."""
+    `trouble()` says why it is not doing the job, if it is not: it stopped, it has copied nothing back lately, or the WAL
+    holds more than `max_wal_frames` because a commit lands inside each checkpoint and the WAL never starts over. The
+    recorder hands checkpoints back to its own commits meanwhile (LiveWatcher._watch_checkpoints); an in-commit
+    checkpoint runs while that connection appends nothing, so it lets the WAL start over, and a failing, starved or
+    outpaced checkpointer cannot let the WAL grow without bound."""
 
     def __init__(self, path: str, every_secs: float = CHECKPOINT_EVERY_SECS, max_pages: int = CHECKPOINT_PAGES,
                  poll_secs: float = CHECKPOINT_POLL_SECS, min_gap_secs: float = CHECKPOINT_MIN_GAP_SECS,
                  slow_secs: float = CHECKPOINT_SLOW_SECS, stale_secs: float = CHECKPOINT_STALE_SECS,
-                 clock: Callable[[], float] = time.monotonic):  # fmt: skip
+                 max_wal_frames: int | None = None, clock: Callable[[], float] = time.monotonic):  # fmt: skip
         self.path = str(path)
         self.every, self.max_pages, self.poll, self.min_gap = every_secs, max_pages, poll_secs, min_gap_secs
         self.slow, self.stale, self.clock = slow_secs, stale_secs, clock
+        # More frames than this in the WAL and it is not healthy, however much it copies back: SQLite starts the WAL
+        # over only when a write begins after a checkpoint copied every frame back, and a commit landing inside each
+        # PASSIVE checkpoint never lets that happen (review, 8 Nov). The default is the size journal_size_limit trims
+        # the -wal back to (64 MiB of 4 KiB pages, 16,384 frames): past it the file grows instead of being reused.
+        if max_wal_frames is None:
+            from .store import Store
+
+            max_wal_frames = int(Store.JOURNAL_SIZE_LIMIT) // 4096
+        self.max_wal_frames = max_wal_frames
         self.thread = threading.Thread(target=self._run, name="tape-checkpointer", daemon=True)
         self._stop = threading.Event()
         self.done = 0  # checkpoints that ran
@@ -388,13 +413,24 @@ class Checkpointer:
             self.thread.join(timeout)
         return not self.thread.is_alive()
 
-    def healthy(self, now: float | None = None) -> bool:
-        """Running, and a checkpoint ran within `stale_secs` (or it started that recently)."""
+    def trouble(self, now: float | None = None) -> str | None:
+        """Why the recorder's commits should checkpoint for themselves now, in words for the log; None while this thread
+        does the job: it runs, a checkpoint ran within `stale_secs` (or it started that recently), and the WAL holds no
+        more than `max_wal_frames` (the last checkpoint's count, or the wal-index's if it says more)."""
         if not self.thread.is_alive():
-            return False
+            return "the checkpointer has stopped"
         ref = self.last_ok if self.last_ok is not None else self.started_at
         now = self.clock() if now is None else now
-        return ref is not None and now - ref < self.stale
+        if ref is None or now - ref >= self.stale:
+            return f"the checkpointer has copied nothing back for {self.stale:.0f} s or more ({self.failed} failed)"
+        frames = max(self.last["frames"] if self.last else 0, wal_frames(self.path) or 0)
+        if frames > self.max_wal_frames:
+            return (f"the WAL holds {frames} frames and has not started over (a commit lands inside each checkpoint, "
+                    f"or a read pins it; the bound is {self.max_wal_frames})")  # fmt: skip
+        return None
+
+    def healthy(self, now: float | None = None) -> bool:
+        return self.trouble(now) is None
 
     def _open(self) -> sqlite3.Connection:
         from .store import Store
@@ -1257,20 +1293,20 @@ class LiveWatcher:
         self.store.set_autocheckpoint(0)
 
     def _watch_checkpoints(self) -> None:
-        """While the checkpointer has copied nothing back for CHECKPOINT_STALE_SECS (it fails, or it died), the
-        recorder's own commits checkpoint again (SQLite's default), so the WAL cannot grow without bound; once it copies
-        back again, they stop."""
+        """While the checkpointer is in trouble (it died, it has copied nothing back for CHECKPOINT_STALE_SECS, or the
+        WAL holds more than its max_wal_frames and never starts over), the recorder's own commits checkpoint again
+        (SQLite's default), so the WAL cannot grow without bound; once it is out of trouble, they stop."""
         cp = self.checkpointer
         if cp is None:
             return
         self.stats["checkpoints"], self.stats["checkpoint_fails"] = cp.done, cp.failed
         own = self.store.WAL_AUTOCHECKPOINT == 0
-        ok = cp.healthy()
+        why = cp.trouble()
+        ok = why is None
         try:
             if own and not ok:
                 self.store.set_autocheckpoint(None)
-                log.warning("tape: the checkpointer has copied nothing back for %.0f s or more (%d failed): the "
-                            "recorder's commits checkpoint again until it does", CHECKPOINT_STALE_SECS, cp.failed)  # fmt: skip
+                log.warning("tape: %s: the recorder's commits checkpoint again until it is back", why)
             elif ok and not own:
                 self.store.set_autocheckpoint(0)
                 log.warning(

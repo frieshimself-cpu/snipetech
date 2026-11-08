@@ -57,8 +57,9 @@ def test_a_bulk_write_of_three_batches_yields_the_lock_twice(tmp_path, monkeypat
     st.WRITE_BATCH = 2
     slept: list[float] = []
     monkeypatch.setattr("snipetech.store.time.sleep", slept.append)
+    monkeypatch.setattr("snipetech.store.random.uniform", lambda a, b: 0.0)
     st.add_trades([_trade(n) for n in range(5)])  # batches of 2, 2 and 1: a yield between, none after the last
-    assert slept == [st.BATCH_YIELD_SECS] * 2
+    assert slept == [st.BATCH_YIELD_SECS] * 2  # quick batches: the floor
     assert st.BATCH_YIELD_SECS > 0.1  # longer than SQLite's busy poll, so a waiting writer polls inside it
     assert st._q("SELECT COUNT(*) FROM trades")[0][0] == 5
     st.close()
@@ -134,6 +135,66 @@ def test_without_the_yield_the_waiting_writer_starves(tmp_path):
     """The control: the same run with the yield off is what the server did at 23:35."""
     waited, total = _waits_behind_a_bulk_write(tmp_path, 0.0)
     assert waited > (BATCHES - 3) * BATCH_SECS, (waited, total)
+
+
+def test_the_pause_grows_with_the_batchs_hold_and_is_never_the_same_twice(monkeypatch):
+    """Review, 8 Nov: a fixed pause as long as a batch lets two bulk writers fall into step, each one's pause covering
+    the other's batch. Twice the last batch's hold leaves a gap at least one hold long once the other writer's batch
+    is done, and a random jitter keeps two writers from staying in step."""
+    st = Store(":memory:")
+    monkeypatch.setattr("snipetech.store.random.uniform", lambda a, b: b)
+    assert st._yield_secs(0.01) == pytest.approx(st.BATCH_YIELD_SECS + st.BATCH_JITTER_SECS)
+    assert st._yield_secs(0.4) == pytest.approx(0.8 + st.BATCH_JITTER_SECS)
+    st.BATCH_YIELD_SECS = 0.0  # the recorder's own: no pause at all, however long its batch held
+    assert st._yield_secs(0.4) == 0.0
+
+
+def test_a_writer_waiting_behind_two_bulk_writes_gets_in(tmp_path):
+    """Review, 8 Nov, reproduced: two bulk writers whose batches hold the lock about as long as the fixed 0.15 s pause
+    took turns, and a third writer asking once waited 1.4-8.6 s, about both runs together. The events scan, ingest,
+    discover and the daily job can run beside the recorder at once, on a database whose batches take that long."""
+    db = tmp_path / "t.db"
+    stores = [Store(db), Store(db)]
+    stores[0]._exec("CREATE TABLE bulk (k TEXT)")
+    started = threading.Barrier(3)
+    calls: list[float] = []
+
+    def slow(x):
+        calls.append(time.monotonic())
+        time.sleep(BATCH_SECS)
+        return x
+
+    runs: dict[int, float] = {}
+
+    def bulk(n: int, st: Store):
+        st.WRITE_BATCH = 1
+        st.conn.create_function("slow", 1, slow)
+        started.wait(10)
+        t0 = time.monotonic()
+        st._many("INSERT INTO bulk VALUES (slow(?))", [(f"{n}-{i}",) for i in range(BATCHES)])
+        runs[n] = time.monotonic() - t0
+
+    threads = [threading.Thread(target=bulk, args=(n, st)) for n, st in enumerate(stores)]
+    for t in threads:
+        t.start()
+    other = sqlite3.connect(db, timeout=30, isolation_level=None, check_same_thread=False)
+    other.execute("CREATE TABLE IF NOT EXISTS probe (n INTEGER)")
+    started.wait(10)
+    end = time.monotonic() + 10
+    while len(calls) < 4 and time.monotonic() < end:  # both writers well under way
+        time.sleep(0.01)
+    t0 = time.monotonic()
+    other.execute("BEGIN IMMEDIATE")
+    other.execute("INSERT INTO probe VALUES (1)")
+    other.execute("COMMIT")
+    waited = time.monotonic() - t0
+    for t in threads:
+        t.join(60)
+    other.close()
+    assert stores[0]._q("SELECT COUNT(*) FROM bulk")[0][0] == 2 * BATCHES
+    for st in stores:
+        st.close()
+    assert waited < 4 * BATCH_SECS, (waited, runs)
 
 
 # -- the tight loops ---------------------------------------------------------------------------------------------------
