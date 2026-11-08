@@ -15,6 +15,14 @@ buy), a filter (which of those moments), and an exit:
 Every trigger x exit is picked on the older part of the tape and judged on the newer part; the
 winners are then filtered with the factor engine (what the market looked like at the trigger),
 again picked on older and judged on newer moments. Only test numbers count.
+
+A position still held when its coin leaves its pump.fun curve sells on PumpSwap, and the tape holds a coin's PumpSwap
+trades only inside the recorder's recent-migrations runs (`amm_tape`: from 7 Nov 12:13 UTC, with holes). Where a lab has
+a migration sell among its exits and the PumpSwap tape lacks such a migration, each exit counts on its own (since 8 Nov,
+research round 3): one whose every sale landed before the coin left its curve is scored on the curve tape, and one
+still holding then is left out on that moment only, None in the row's pnl list and its reason in the row's `gaps`
+(`exit_pnls`). `rank` reads each exit on the moments it was scored on, picks only among exits scored on enough of the
+older moments (`pick_exit`), and says on how many moments the pick was scored (`exit_moments`).
 """
 
 from __future__ import annotations
@@ -407,9 +415,9 @@ def exits_horizon(exits: Sequence[ExitParams]) -> float:
 # PumpSwap trade in its own slot priced the buy on the completed curve, its timers counted from before the pool existed.
 MIG_LAND_SLOTS = 10  # about 2 s at 0.214 s a slot: 2.5 times the slowest 3rd PumpSwap trade round 1 saw (4 slots)
 
-# why a moment was left out, in the words the lab reports: the PumpSwap tape's reasons, a curve position whose coin
-# left its curve while held when the tape has no migration for it to time a migration sell from, and a MIG buy with no
-# PumpSwap trade to land behind
+# why a moment or one exit of it was left out, in the words the lab reports: the PumpSwap tape's reasons, a curve
+# position whose coin left its curve while held when the tape has no migration for it to time a migration sell from,
+# and a MIG buy with no PumpSwap trade to land behind
 SKIP_WORDS = {**GAP_WORDS, "no_migration": "left its curve while held, and the tape has no migration for it",
               "no_landing": f"with no PumpSwap trade in the {MIG_LAND_SLOTS} slots (about 2 s) after the migration's slot "
                             "for a MIG buy to land behind"}  # fmt: skip
@@ -498,11 +506,13 @@ def mig_moment(cov: Mapping[str, Any], path: MarketPath, i: int, mig, latency: i
 
 
 def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
-    """Why a position bought on the curve at state e cannot be scored with a migration sell among its exits, or None
-    when it can. A migration sell trades on PumpSwap right after the migration, so when the coin migrates while held
-    (the recorded migration `mig` within `horizon` of the buy) the PumpSwap tape must hold it from the migration to the
-    end of the horizon, like a MIG buy (`mig_gap`); a coin that leaves its curve while held with no migration on the
-    tape gives its sale nothing to time from ("no_migration"). A coin that does not migrate while held needs nothing."""
+    """Why a position bought on the curve at state e and held up to `horizon` s cannot be scored after its coin's
+    migration, with a migration sell among the exits, or None when it can. A migration sell trades on PumpSwap right
+    after the migration, so when the coin migrates while held (the recorded migration `mig` within `horizon` of the buy)
+    the PumpSwap tape must hold it from the migration to the end of the horizon, like a MIG buy (`mig_gap`); a coin that
+    leaves its curve while held with no migration on the tape gives its sale nothing to time from ("no_migration"). A
+    coin that does not migrate while held needs nothing. A longer horizon never needs less (`exit_pnls` reads it for the
+    run's longest exit, then for each exit still holding)."""
     end = float(path.ts[e]) + float(horizon)
     if mig is not None:
         if int(mig.slot) < int(path.slot[e]) or float(mig.ts) > end:
@@ -513,6 +523,35 @@ def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, ho
         return None
     left = np.flatnonzero(oc[e + 1 :])
     return "no_migration" if len(left) and float(path.ts[e + 1 + int(left[0])]) <= end else None
+
+
+def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[ExitParams], costs: Costs,
+              end_ts: float, mig, gap: str | None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
+    """Each exit's pnl on a position bought on the curve (`prep`, at state prep.e), None for an exit left out, and the
+    exits left out with why (exit index: a key of SKIP_WORDS). `gap`: `migration_sell_gap` over the longest exit's hold,
+    None where the PumpSwap tape holds the coin's migration or nothing migrates while held, and then every exit is
+    scored, exactly as before 8 Nov. Otherwise an exit whose every sale landed before the coin left its curve is scored
+    on the curve tape the lab has (`SimResult.sold_on_curve`), and so is one whose own hold the PumpSwap tape can score
+    (`migration_sell_gap` over its own timer, as the paper test reads a frozen exit); any other exit was still holding
+    when the coin left its curve, and nothing on the tape prices its sale.
+
+    Until 8 Nov such a moment was left out whole, for every exit (research round 3): lab 20261107-233005-63076f skipped
+    7 of its 29 firings, and 5 of them were coins that completed 28-130 s after the launch and were winners at 20 s
+    (+0.055 to +0.100), so short-exit hunt labs read 0.6-3.7 points of gross too low. An exit scored only where it sold
+    on the curve leaves out the coins it rode into their migration: on those moments it is read on its quick sales
+    alone, and `rank` says on how many moments each exit was scored."""
+    pnl: list[float | None] = []
+    gaps: dict[int, str] = {}
+    for j, ex in enumerate(exits):
+        res = run_exit(prep, ex, costs, end_ts=end_ts)
+        if gap is not None and not res.sold_on_curve:
+            why = migration_sell_gap(cov, path, prep.e, mig, float(ex.max_hold_secs))
+            if why is not None:
+                pnl.append(None)
+                gaps[j] = why
+                continue
+        pnl.append(res.pnl_sol)
+    return pnl, gaps
 
 
 def curve_done(path: MarketPath, i: int) -> bool:
@@ -911,7 +950,8 @@ class _Run:
     kind_exits: dict[str, list[ExitParams]]  # the launch-type kinds' exits, watched (`kind_exits`); others use `exits`
     min_trades: int
     # the PumpSwap tape's coverage record (`tape:amm_recent`) and the exits' horizon: where a MIG moment counts, and
-    # (`mig_sell`: an exit of the run sells into the migration) where a curve position that migrates while held does
+    # (`mig_sell`: an exit of the run sells into the migration) which exits of a curve position that migrates while held
+    # count (`exit_pnls`)
     amm_cov: dict[str, Any] = field(default_factory=dict)
     horizon: float = 0.0
     mig_sell: bool = False
@@ -947,7 +987,9 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     sold by every exit. The serial lab and each worker of a parallel one run this same code. A MIG trigger fires on
     the coin's migration the tape recorded in the span, and its buy lands behind the PumpSwap trades after the
     migration's slot (`mig_entry`); a MIG moment with nothing to land behind, or that the PumpSwap tape does not hold
-    whole (`mig_moment`), comes back as {"mint", "trigger", "ts", "skipped": why} instead of a scored row."""
+    whole (`mig_moment`), comes back as {"mint", "trigger", "ts", "skipped": why} instead of a scored row, and so does
+    a curve moment none of whose exits can be scored where the PumpSwap tape lacks the coin's migration. A curve moment
+    scored on some exits only has None in `pnl` for the others and their reasons in `gaps` (`exit_pnls`)."""
     trades = [t for t in store.trades_for_mint(mint, a, b)]
     if len(trades) < run.min_trades:
         return []
@@ -987,11 +1029,11 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                 continue  # a launch sniper's buy fails on a completed curve: no position
-            if run.mig_sell and trig.kind not in AMM_KINDS:  # its migration sell trades on PumpSwap if it migrates
-                why = migration_sell_gap(run.amm_cov, path, e, mig, run.horizon)
-                if why is not None:  # the row scores every exit on the same moment: the moment is left out whole
-                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
-                    continue
+            # a migration sell among the exits trades on PumpSwap if the coin migrates while held: where the PumpSwap
+            # tape lacks that migration, an exit counts only if it sold before the coin left its curve (`exit_pnls`)
+            gap = None
+            if run.mig_sell and trig.kind not in AMM_KINDS:
+                gap = migration_sell_gap(run.amm_cov, path, e, mig, run.horizon)
             own, frac = None, None
             if trig.kind == "kol":  # the copy exit follows this wallet's own sales
                 by_user = _trades_by_user(path) if by_user is None else by_user
@@ -1000,13 +1042,20 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
+                if gap is not None:  # left out, and said why, as before 8 Nov: no exit scores it
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
                 continue
             # MIG: its own exits (watched, `mig_exits`); a launch-type rule: its exits watched (`kind_exits`)
             exits = run.mig_exits if trig.kind in AMM_KINDS else run.kind_exits.get(trig.kind, run.exits)
-            pnl = [run_exit(prep, ex, run.costs, end_ts=float(b)).pnl_sol for ex in exits]
+            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap)
+            if gaps and len(gaps) == len(exits):  # every exit still held when the coin left its curve: left out whole
+                rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
+                continue
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
                    "landing": f"{pos}@{int(lat)}"}  # fmt: skip
+            if gaps:  # the exits left out on this moment (None in `pnl`), and why
+                row["gaps"] = gaps
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
             if trig.kind in AMM_KINDS:
@@ -1154,11 +1203,14 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     slots, within MIG_LAND_SLOTS); a MIG moment counts only where it has a PumpSwap trade to land behind and the
     PumpSwap tape (coverage `tape:amm_recent`) holds the coin from its migration to the end of the exits' horizon
     (`mig_moment`), whatever [live] index_amm says; MIG exits that hold past 300 s leave MIG unscored (`unscored` says
-    why). With a migration sell among the exits, a curve moment whose coin migrates while held counts only where the
-    PumpSwap tape holds the migration (`migration_sell_gap`). `amm_tape` reports, per MIG trigger (and per other
-    trigger that lost a moment), how many moments were scored and how many were skipped and why, where the MIG buys
-    landed (`landing`), and lists the stretches of the scored tape the PumpSwap tape does not hold
-    (`amm_recent_holes`).
+    why). With a migration sell among the exits, a curve moment whose coin migrates while held is scored as before
+    where the PumpSwap tape holds the migration (`migration_sell_gap`); where it does not, each exit that sold before
+    the coin left its curve is still scored, and only an exit still holding then is left out on that moment (None in
+    the row's `pnl`, its reason in `gaps`; the moment is left out whole when no exit is left: `exit_pnls`). `amm_tape`
+    reports, per MIG trigger (and per other trigger that lost a moment or an exit), how many moments were scored and
+    how many were skipped and why, how many were scored on some exits only (`partly`) and the exit scores left out
+    (`exits_skipped`), where the MIG buys landed (`landing`), and lists the stretches of the scored tape the PumpSwap
+    tape does not hold (`amm_recent_holes`).
     `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
     read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
     process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
@@ -1230,7 +1282,9 @@ def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped:
     """What the PumpSwap tape let the lab score: the exits' horizon each moment needed, the stretches of the scored
     tape the PumpSwap tape does not hold (7 Nov 14:03-15:48 among them, though the tape recorded no migration in it),
     whether a migration sell among the exits gated the curve rules too (`migration_sell`), and per MIG trigger (and
-    per other trigger that lost a moment to it) the moments scored and the ones skipped, by reason (`why` in words)."""
+    per other trigger that lost a moment or an exit to it) the moments scored (`scored`) and the ones left out whole
+    (`skipped`), by reason (`why` in words). A curve rule's moment can also be scored on some exits only (`exit_pnls`):
+    then `partly` counts those moments and `exits_skipped` the exit scores left out on them, by reason."""
     lo = min((a for a, _b in spans), default=0)
     hi = max((b for _a, b in spans), default=0)
     scored = Counter(r["trigger"] for r in rows)
@@ -1238,9 +1292,15 @@ def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped:
     for r in skipped:
         why = whys.setdefault(r["trigger"], {})
         why[r["skipped"]] = why.get(r["skipped"], 0) + 1
+    partly = Counter(r["trigger"] for r in rows if r.get("gaps"))
+    cells: dict[int, Counter] = {}
+    for r in rows:
+        if r.get("gaps"):
+            cells.setdefault(r["trigger"], Counter()).update(r["gaps"].values())
     per = {t.label(): {"scored": scored.get(ti, 0), "skipped": whys.get(ti, {})}
-           for ti, t in triggers if t.kind in AMM_KINDS or ti in whys}  # fmt: skip
-    codes = sorted({r["skipped"] for r in skipped})
+                      | ({"partly": partly[ti], "exits_skipped": dict(sorted(cells[ti].items()))} if ti in cells else {})
+           for ti, t in triggers if t.kind in AMM_KINDS or ti in whys or ti in cells}  # fmt: skip
+    codes = sorted({r["skipped"] for r in skipped} | {c for cs in cells.values() for c in cs})
     return {"horizon_secs": float(horizon), "holes": amm_recent_holes(cov, lo, hi) if spans else [],
             "migration_sell": bool(mig_sell), "triggers": per, "why": {c: SKIP_WORDS.get(c, c) for c in codes},
             "landing": _landing_check([r["mig_landing"] for r in rows if "mig_landing" in r])}  # fmt: skip
@@ -1262,11 +1322,58 @@ def _landing_check(seen: list[tuple]) -> dict[str, Any]:
     return out
 
 
+TRAIN_SHARE = 0.6  # a trigger's exit is picked on its older 60 % of moments and judged on the newer 40 %
+# An exit left out on some of a trigger's moments (`exit_pnls`) is picked or judged only where it was scored on at least
+# this share of the trigger's moments in that part: the moments it misses are the ones whose coin it held into a
+# migration the PumpSwap tape lacks, chosen by how the coin went, so an exit that misses most of them is read on a
+# sample the coins picked, not on the trigger's (review, 8 Nov). On the grid's hunts the 300 s exits miss 3-24 % (round
+# 2's 10/6/1 lab: 29 of 838; lab 20261107-233005-63076f: 7 of 29), so the bar binds only where most coins migrated.
+EXIT_MIN_SCORED = 0.5
+
+
+def pnl_matrix(rows: Sequence[Mapping[str, Any]]) -> np.ndarray:
+    """The rows' pnl lists as moments x exits, NaN where a row holds None: an exit left out on that moment, because it
+    still held the coin when it left its curve and the PumpSwap tape does not hold the migration (`exit_pnls`)."""
+    return np.array([r["pnl"] for r in rows], dtype=np.float64)
+
+
+def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarray]:
+    """The exit (column of `m`, moments x exits, oldest first) the older moments (rows before `cut`) pick, and each
+    exit's mean on the older moments it was scored on (-inf for one that does not compete). An exit competes when it
+    was scored on at least the older moments `need` moments give (TRAIN_SHARE of them) and on EXIT_MIN_SCORED of the
+    trigger's older moments; the best mean among those wins. The newer moments only judge the pick: None when none
+    competes, and when the winner was scored on fewer newer moments than `need` gives (the rest) or than
+    EXIT_MIN_SCORED of them, so that how many newer moments an exit was scored on never hands the pick to another exit
+    (the newer moments would choose the exit they then judge). With every exit scored on every moment this is the plain
+    best mean of the older moments, the same numbers as before 8 Nov."""
+    ok = ~np.isnan(m)
+    train_n, test_n = ok[:cut].sum(axis=0), ok[cut:].sum(axis=0)
+    need_train = max(int(need * TRAIN_SHARE), 1)
+    need_test = max(need - int(need * TRAIN_SHARE), 1)
+    fit = (train_n >= need_train) & (train_n >= EXIT_MIN_SCORED * cut)
+    means = np.where(fit, np.nansum(m[:cut], axis=0) / np.maximum(train_n, 1), -np.inf)
+    if not fit.any():
+        return None, means
+    k = int(np.argmax(means))
+    if test_n[k] < need_test or test_n[k] < EXIT_MIN_SCORED * (len(m) - cut):
+        return None, means
+    return k, means
+
+
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
     """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. Each row
     names the exit its moments were scored with: on a launch-type trigger the watched one (`collect`'s `kind_exits`),
     which is what `paper freeze` stores and the paper test then scores; a MIG trigger is ranked on the exits its
-    moments were scored on (`mig_exits`)."""
+    moments were scored on (`mig_exits`).
+
+    An exit left out on some moments (None in a row's pnl list: it still held a coin that left its curve where the
+    PumpSwap tape lacks the migration, `exit_pnls`) is read on the moments it was scored on. It competes only when it
+    was scored on as many older moments as a trigger needs at the least (60 % of `min_train` + 5) and on half of the
+    trigger's older moments; the older moments alone pick the exit, and a trigger whose pick was scored on fewer of the
+    newer moments than that (the other 40 %, or half of them) is not ranked: another exit never takes its place
+    (`pick_exit`). `exit_moments` says on how many of the trigger's `moments` the chosen exit was scored, and its test
+    numbers are those of its newer moments that were scored. The split stays the trigger's: no moment newer than the
+    cut picks an exit. Rows that score every exit rank exactly as before 8 Nov."""
     rows, curve_exits = data["rows"], data["exits"]
     by_kind = data.get("kind_exits") or {}
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
@@ -1276,18 +1383,24 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
         if len(rs) < min_train + 5:
             continue
-        m = np.array([r["pnl"] for r in rs])  # moments x exits
+        m = pnl_matrix(rs)  # moments x exits, NaN where an exit was left out
         exits = (data.get("mig_exits") or curve_exits) if trig.kind in AMM_KINDS else curve_exits
-        cut = int(len(rs) * 0.6)
-        train_means = m[:cut].mean(axis=0)
-        k = int(np.argmax(train_means))
+        cut = int(len(rs) * TRAIN_SHARE)
+        k, train_means = pick_exit(m, cut, min_train + 5)
+        if k is None:  # no exit scored on enough of the trigger's moments, or a pick its newer moments cannot judge
+            continue
         test = m[cut:, k]
+        test = test[~np.isnan(test)]
         span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
         st = summarize(test, conf, samples)
         ex = by_kind.get(trig.kind, exits)[k]
+        # SOL a day: the mean of the newer moments the exit was scored on, over every newer firing, since the rule trades
+        # each one live. A firing it was left out on is a ride into a migration, for a hunt buy a big gain by then
+        # (research round 3: riders reached 3.6-9x at the migration), so the mean it stretches leans low for a hunt.
         out.append({
             "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": ex.label(), "exit_params": ex.to_dict(),
-            "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs), "per_hour": len(rs) / hours,
+            "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs),
+            "exit_moments": int((~np.isnan(m[:, k])).sum()), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
         })  # fmt: skip
@@ -1398,7 +1511,13 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     stay the gate's: a wallet's own exit changes how it is traded, never whether it qualifies.
 
     `with_moments`: each row also carries the copies behind its numbers, `moments` = [[the leader's buy ts, SOL the
-    gating exit made], ...] oldest first, for the qualify stage's check on the tape after the wallet was picked."""
+    gating exit made], ...] oldest first, for the qualify stage's check on the tape after the wallet was picked.
+
+    A copy whose gating exit was left out (None in its row: it still held a coin that left its curve where the PumpSwap
+    tape lacks the migration, `exit_pnls`; only a lab with a migration sell among its exits leaves one out, never the
+    qualify lab's menu) is no part of the wallet's numbers or `moments`; a trigger's exit is picked as `rank` picks it,
+    on the moments each exit was scored on (`pick_exit`), and a wallet's own exit is chosen on the copies every exit of
+    the menu was scored on."""
     rows, exits = data["rows"], list(data["exits"])
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
@@ -1416,8 +1535,12 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
         if len(rs) < 10:
             continue
-        m = np.array([r["pnl"] for r in rs])
-        k = g if g is not None else int(np.argmax(m[: int(len(rs) * 0.6)].mean(axis=0)))
+        m = pnl_matrix(rs)  # NaN where an exit was left out on a moment
+        k = g if g is not None else pick_exit(m, int(len(rs) * TRAIN_SHARE), 10)[0]
+        if k is None:  # no exit scored on enough of the trigger's moments
+            continue
+        scored = ~np.isnan(m[:, k])  # the moments the gating exit was scored on
+        whole = ~np.isnan(m[:, cols]).any(axis=1)  # the moments every exit a wallet may get was scored on
         by: dict[str, list[int]] = {}  # each wallet's moments (indices into rs), oldest first
         for i, r in enumerate(rs):
             by.setdefault(r["who"], []).append(i)
@@ -1433,8 +1556,8 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
         # the group a wallet's train means are shrunk toward: every wallet's moments older than this wallet's first
         # held-out moment, so results from its test period never pick the exit then tested on it
         pool_ts = csum = None
-        if choose and kept_by:
-            pool = np.array(sorted(i for _, kept in kept_by.values() for i in kept), dtype=int)  # rs is sorted by ts
+        if choose and kept_by:  # rs is sorted by ts
+            pool = np.array(sorted(i for _, kept in kept_by.values() for i in kept if whole[i]), dtype=int)
             pool_ts = np.array([rs[i]["ts"] for i in pool], dtype=float)
             csum = np.vstack([np.zeros(len(cols)), np.cumsum(m[pool][:, cols], axis=0)])
 
@@ -1448,19 +1571,21 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
         for w, (min_sol, kept) in kept_by.items():
             if want is not None and w not in want:
                 continue
-            if len(kept) < min_n or (w in best and best[w]["n"] >= len(kept)):
+            mine = [i for i in kept if scored[i]]  # the copies its gating exit was scored on
+            if len(mine) < min_n or (w in best and best[w]["n"] >= len(mine)):
                 continue
-            st = summarize(m[np.array(kept, dtype=int), k], conf, samples)
-            row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(kept),
+            st = summarize(m[np.array(mine, dtype=int), k], conf, samples)
+            row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(mine),
                    "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
                    "moments_all": len(by[w]), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
                    "lab_version": LAB_VERSION} | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
             if with_moments:
-                row["moments"] = [[int(rs[i]["ts"]), float(m[i, k])] for i in kept]
+                row["moments"] = [[int(rs[i]["ts"]), float(m[i, k])] for i in mine]
             if g is not None:
                 own = cols if choose else [g]
-                group = group_before(kept) if choose else None
-                c = choose_wallet_exit(m[np.array(kept, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
+                fit = [i for i in mine if whole[i]] if choose else mine
+                group = group_before(fit) if choose else None
+                c = choose_wallet_exit(m[np.array(fit, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
                                        conf, samples)  # fmt: skip
                 ex = exits[own[c["index"]]]
                 row |= {"exit_name": names.get(ex), "exit_params": ex.to_dict(), "exit_source": c["source"],

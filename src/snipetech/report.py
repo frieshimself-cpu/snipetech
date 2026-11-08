@@ -726,7 +726,8 @@ def render_follow(rows: list[dict]) -> str:
 
 def _amm_tape_lines(t: dict) -> list[str]:
     """The lab's moments against the PumpSwap tape: MIG moments, and with a migration sell among the exits the curve
-    rules' moments whose coin migrates while held: scored, skipped and why, and the holes in that tape (UTC)."""
+    rules' moments whose coin migrates while held: scored, skipped and why, the ones scored on some exits only and the
+    exit scores left out on them (lab.exit_pnls), and the holes in that tape (UTC)."""
     import time as _t
 
     def hm(ts: float) -> str:
@@ -742,11 +743,19 @@ def _amm_tape_lines(t: dict) -> list[str]:
             "after the buy (coverage tape:amm_recent):")  # fmt: skip
     out = [head]
     if t.get("migration_sell"):
-        out.append("  A migration sell is among the exits: a curve moment whose coin migrates while held counts only "
-                   "where the PumpSwap tape holds the migration (each such moment is left out for every exit).")  # fmt: skip
+        out.append("  A migration sell is among the exits: on a curve moment whose coin migrates while held, an exit that "
+                   "sold before the coin left its curve is scored on the curve tape, and an exit still holding then "
+                   "counts only where the PumpSwap tape holds the migration; a moment no exit can be scored on is left "
+                   "out whole.")  # fmt: skip
+    words = t.get("why", {})
     for label, c in (t.get("triggers") or {}).items():
-        skipped = ", ".join(f"{n} {t.get('why', {}).get(code, code)}" for code, n in sorted(c["skipped"].items()))
-        out.append(f"  {label}: {c['scored']} scored" + (f"; skipped: {skipped}" if skipped else ""))
+        skipped = ", ".join(f"{n} {words.get(code, code)}" for code, n in sorted(c["skipped"].items()))
+        line = f"  {label}: {c['scored']} scored" + (f"; skipped: {skipped}" if skipped else "")
+        if c.get("exits_skipped"):  # moments scored on the exits that sold before the coin left its curve
+            cells = c["exits_skipped"]
+            line += (f"; {c['partly']} of them scored on some exits only, {sum(cells.values())} exit scores left out: "
+                     + ", ".join(f"{n} {words.get(code, code)}" for code, n in sorted(cells.items())))  # fmt: skip
+        out.append(line)
     if t.get("holes"):
         out.append("  PumpSwap tape missing: " + ", ".join(stretch(a, b) for a, b in t["holes"]))
     land = t.get("landing") or {}
@@ -773,6 +782,12 @@ def render_lab(r: dict) -> str:
     if moved:  # launch-window rules land where an OKTech hunt buy lands, whatever landing the lab was asked for
         out.append("Scored where they trade live, not at the landing above: "
                    + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
+    fewer = [s for s in r["strategies"] if s.get("exit_moments") is not None and s["exit_moments"] < s["moments"]]
+    if fewer:  # an exit still holding a coin that left its curve where the PumpSwap tape lacks the migration
+        out.append("Scored on fewer moments than their trigger fired (the exit still held a coin that left its curve, "
+                   "where the PumpSwap tape lacks the migration): "
+                   + "; ".join(f"{s['trigger']} | {s['exit']}: {s['exit_moments']} of {s['moments']}" for s in fewer)
+                   + ".")  # fmt: skip
     out.append("")
     out.append(
         "Each trigger's exit is picked on the older 60% of its moments; mean / bound / win / SOL/day are on the newer 40%."
@@ -812,9 +827,15 @@ def render_paper(action: str, r: dict) -> str:
     import time as _t
 
     if action == "freeze":
+
+        def scored_on(lab: dict) -> str:  # the lab left its exit out on some moments (lab.exit_pnls)
+            n, of = lab.get("exit_moments"), lab.get("moments")
+            return f"; its exit scored on {n} of {of} moments" if n is not None and of is not None and n < of else ""
+
         out = [f"Frozen for forward testing ({r['tape_hours']:.1f} h of tape behind the pick):"]
         out += [
-            f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f})"
+            f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f}"
+            f"{scored_on(s['lab'])})"
             for s in r["frozen"]
         ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
