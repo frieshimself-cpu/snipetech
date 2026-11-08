@@ -38,10 +38,12 @@ what the specific task is" (a fee policy per sniper kind is building).
 
 ## Live copies of 7aPo3n, 8 Nov 2026 11:30–12:20 UTC (the book, control arm, 0.2 SOL)
 
-Six copies in 50 minutes. The first three (11:30 2WY37w, 11:32 6EtVCH, 11:44 CiPBTK) fell in the hours the tape
-was down (the database damage of 09:51–11:49): only their failed duplicate sells are on record (6 sends, about
-0.012 SOL); their buys and landed sells are to be read from the chain. The next three landed on a recording tape,
-every buy 0 trades behind the leader at +0.5 %, and all three won:
+The first three "sells" (11:30 2WY37w, 11:32 6EtVCH, 11:44 CiPBTK) were not trips at all. Read from the chain
+(12:55): the wallet held 0 of each coin ("NotEnoughTokensToSell, Left: 0"), no buy was ever sent, and OKTech still
+sent two sells per coin, each failing and paying 0.002005 SOL: 0.012 SOL for nothing. So OKTech fires an exit for a
+coin it never bought us (its buy was skipped or dropped while the leader's buy and sell were seen). Since 93e7177
+such a send costs about 0.000005. A question for OKTech: why does an exit fire when the buy was never sent? The
+next three copies landed on a recording tape, every buy 0 trades behind the leader at +0.5 %, and all three won:
 
 | time (UTC) | coin | held | exit | price result | failed duplicates | whole result |
 |---|---|---|---|---|---|---|
@@ -55,8 +57,8 @@ Five more by 12:43 (all 7aPo3n, 0.2 SOL, landing 0-1 trades behind at +0.4 to +4
 −0.0247; 12:37 DatepQ dead exit −0.0403; 12:39 Bh3vMa dead exit −0.0218; 12:41 Gwje9b copy exit **+0.1807**
 (0.2 → 0.389 in 24 s); 12:42 Gwje9b again (the leader bought it a second time) copy exit −0.0298. The eight copies
 of 12:10-12:43 made **+0.176 SOL net** (4 won), the losers held to −0.02…−0.04 each by the dead exit and the
-winners paid for them. 7aPo3n's live record (7 Nov and 8 Nov, the three unread 11:30-11:44 trips aside): 11 copies,
-5 won, about +0.164 net.
+winners paid for them. 7aPo3n's live record (7 Nov and 8 Nov): 11 copies, 5 won, about +0.164 net, less the 0.012 of the three
+phantom exits.
 
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
