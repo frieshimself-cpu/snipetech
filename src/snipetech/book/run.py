@@ -85,6 +85,26 @@ def _bought_by_us(store, wallet: str, mint: str) -> bool:
         return True
 
 
+STRAY_AFTER_SECS = 600  # a coin no buy of ours explains, seen this long: no tape lag can explain it either
+
+
+def _strays(store, wallet: str, holdings: list[dict] | None, paths: OperatorPaths, now: float) -> set[str]:
+    """Coins in the wallet that no buy of ours explains (an airdrop, the owner's own trade in another app) and that
+    the unsold-coin watch first saw STRAY_AFTER_SECS ago or more: no sniper of ours holds them, so they never keep a
+    spent sniper from being replaced (8 Nov: a dust airdrop held every replacement for hours). A coin seen just now may
+    be a buy the tape has not caught up with, and still counts as held."""
+    from .watch import _load
+
+    seen = (_load(paths).get("first_seen") or {}) if holdings else {}
+    out: set[str] = set()
+    for h in holdings or []:
+        m = str(h.get("mint") or "")
+        t = seen.get(m)
+        if m and t is not None and now - float(t) >= STRAY_AFTER_SECS and not _bought_by_us(store, wallet, m):
+            out.add(m)
+    return out
+
+
 CREATED_GRACE_SECS = 60  # our clock against block time: a buy just before the recorded creation can still be its own
 
 
@@ -304,6 +324,10 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         notes.write(f"book: the wallet-wide guard could not be read ({type(exc).__name__})", "info")
     from .switch import book_fresh_starts
 
+    try:
+        strays = _strays(store, wallet, holdings if holdings_known else None, paths, now)
+    except Exception:  # noqa: BLE001 - no stray is called while anything cannot be read
+        strays = set()
     fresh = book_fresh_starts(paths)
     paused_rec = dict(store.coverage(PAUSED_KEY) or {})
     lifted = [w for w, rec in paused_rec.items() if w in fresh and fresh[w] >= float((rec or {}).get("ts") or 0)]
@@ -316,7 +340,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                  if not (r["wallet"] in fresh and float(r.get("updated_at") or 0) < fresh[r["wallet"]])}  # fmt: skip
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
                      qualified=_bookable(store), live=live_rows,
-                     bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers, holdings=list(holdings or []), now=now,
+                     bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers,
+                     holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in strays], now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
                      tape_holding=tape_holding, paused=paused_rec,
@@ -408,7 +433,11 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
             await _do(svc, notifier, notes, "stop", a)
     not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
     for a in plan.actions:
-        if a.kind == "retire" and a.sniper_id and not await _retire(svc, wallet, notifier, notes, a, store, now):
+        if (
+            a.kind == "retire"
+            and a.sniper_id
+            and not await _retire(svc, wallet, notifier, notes, a, store, now, strays)
+        ):
             not_replaced.add(a.wallet or "")
     new_ids: list[tuple[str, Any]] = []
     from .switch import book_mcaps
@@ -486,7 +515,14 @@ def _ignored(svc) -> list[str]:
 
 
 async def _retire(
-    svc, wallet: str, notifier: Notifier, notes: NoteSink, a, store=None, now: float | None = None
+    svc,
+    wallet: str,
+    notifier: Notifier,
+    notes: NoteSink,
+    a,
+    store=None,
+    now: float | None = None,
+    strays: set[str] | frozenset = frozenset(),
 ) -> bool:
     """Stop and delete a sniper that made its relied-on buy, once the wallet holds nothing; True when it is gone. The
     holdings are read before the stop and again after it (with the tape): a coin bought in between gets its sniper
@@ -496,7 +532,7 @@ async def _retire(
 
     async def held() -> bool:
         try:
-            if await svc.open_positions(wallet, ignore=_ignored(svc)):
+            if [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]:
                 return True
         except Exception:  # noqa: BLE001 - unknown holdings: treat as held
             return True

@@ -1231,3 +1231,30 @@ def test_a_fresh_start_lifts_a_live_pause_and_the_book_copies_the_wallet_again(t
         assert L1 not in (st.coverage("book:paused") or {})
     finally:
         st.close()
+
+
+def test_a_stray_coin_seen_for_ten_minutes_does_not_keep_a_spent_sniper(tmp_path):
+    """8 Nov 21:20: a 1,000-token dust airdrop (8uUQ) sat in the wallet for hours, and while any coin is held the book
+    replaces no spent sniper, so AG89's stopped sniper (made before its market-cap cap) and every sniper that made its
+    buy stayed as they were. A coin no buy of ours explains, that the watch first saw 10 minutes ago or more, is no
+    holding for that decision; one seen just now may be a buy the tape has not caught up with, and still counts."""
+    import json as _json
+
+    stray = {"mint": "Stray" + "s" * 39, "amount": 1000.0, "value_sol": None, "priced": False}
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    st, cfg, svc = _made_its_buy(tmp_path / "a", held=[stray])
+    try:
+        watch = OperatorPaths(tmp_path / "a" / "data").ensure().root / "watch.json"
+        watch.write_text(_json.dumps({"first_seen": {stray["mint"]: NOW - 120}}))  # seen 2 minutes ago
+        asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert not any(c[0] in ("stop", "delete") for c in svc.calls)  # too new to call a stray: k1 is kept
+    finally:
+        st.close()
+    st, cfg, svc = _made_its_buy(tmp_path / "b", held=[stray])
+    try:
+        watch = OperatorPaths(tmp_path / "b" / "data").ensure().root / "watch.json"
+        watch.write_text(_json.dumps({"first_seen": {stray["mint"]: NOW - 3 * 3600}}))  # seen 3 hours ago
+        out = asyncio.run(run_book(svc, cfg, NOW, notifier=quiet, balances=lambda w: (10.0, 0.0, [])))
+        assert out["actions"]["retire"] == 1 and svc.calls[:2] == [("stop", "k1"), ("delete", "k1")]
+    finally:
+        st.close()
