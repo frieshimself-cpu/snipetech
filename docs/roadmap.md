@@ -8,6 +8,18 @@ first on the server's recording and only then run live in capped batches.
 
 ## The night of 8 Nov: what the live trades really cost; the recorder off the database's waits
 
+- **The live database's trades table was damaged at 09:51 UTC 8 Nov and is repaired (11:49).** Twenty minutes after the
+  recorder's new checkpointer thread (recorder-writer, deployed about 09:30) went live, every write and recent read of
+  `trades` failed with "database disk image is malformed" (quick_check: tree 7, the trades table's own pages near the
+  end of the file). The change was rolled back at 09:55 (1c1497c); its approach stays out until a deeper review.
+  New `snipetech db check | salvage | swap | backfill | forget` repair from the remote channel without SSH: the
+  readable rows went into a fresh table, the damaged one was renamed `trades_damaged_1794138625` and kept, the recorder
+  writes again since 11:49, and `db backfill` copies the rest of the old rows (about 4,000 a second, a few hours).
+  Lost: trades from 09:51 to 11:49 and the rows on the damaged pages. Once the backfill ends, `db forget` takes the
+  damaged table out of the schema so the hourly copy works again. Three 7aPo3n copy sells (11:30-11:44) left only
+  their failed duplicates on record; their result comes from the chain.
+- **The lab, the paper test and the automatic test count only coins of the launchpad their sniper buys** (b52c4ca,
+  9:50): LaunchLab coins no longer reach pump.fun rules' records.
 - **The live book's real result is worse than its records said (merged 8 Nov 00:50, not yet deployed).** Every live
   round trip of 5-7 Nov broken down in code (`measure/attribution.py`) and checked on chain: the 58 recorded sells made
   -1.2142 SOL, not the recorded -1.0419, because `fills.pnl_sol` leaves each sell's failed duplicate sends apart
