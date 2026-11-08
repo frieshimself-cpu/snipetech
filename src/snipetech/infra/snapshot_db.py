@@ -60,7 +60,16 @@ def snapshot_db(db_path: str | Path, disk_free: Callable[[Path], float] | None =
     # 7 Nov's 2 GB an hour), trimmed back to Store.JOURNAL_SIZE_LIMIT once the WAL starts over.
     con = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=60)
     try:
-        con.execute("VACUUM INTO ?", (str(tmp),))
+        damaged = [
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%\\_damaged\\_%' ESCAPE '\\'"
+            )
+        ]
+        if damaged:
+            _copy_without(con, tmp, set(damaged))
+        else:
+            con.execute("VACUUM INTO ?", (str(tmp),))
     finally:
         con.close()
     _hand_over(tmp)
@@ -77,4 +86,31 @@ def snapshot_db(db_path: str | Path, disk_free: Callable[[Path], float] | None =
             stale.unlink()
         except OSError:
             pass
-    return {"path": str(target), "bytes": target.stat().st_size, "secs": round(time.monotonic() - t0, 1)}
+    out = {"path": str(target), "bytes": target.stat().st_size, "secs": round(time.monotonic() - t0, 1)}
+    return out | ({"skipped_tables": damaged} if damaged else {})
+
+
+def _copy_without(con: sqlite3.Connection, tmp: Path, skip: set[str]) -> None:
+    """The copy, table by table in one read transaction, leaving out the damaged tables a repair kept in the live
+    file (8 Nov: `db salvage`/`swap` renamed the damaged trades table to trades_damaged_<time>, and VACUUM INTO, which
+    reads every table, failed on its pages; deleting it from the schema is not done from the cloud session)."""
+    con.execute("ATTACH DATABASE ? AS cp", (str(tmp),))
+    try:
+        con.execute("BEGIN")
+        objs = con.execute(
+            "SELECT type, name, tbl_name, sql FROM main.sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        tables = [(n, sql) for t, n, tb, sql in objs if t == "table" and n not in skip]
+        for name, sql in tables:
+            con.execute(sql.replace("CREATE TABLE ", "CREATE TABLE cp.", 1) if sql.startswith("CREATE TABLE ") else sql)
+            con.execute(f'INSERT INTO cp."{name}" SELECT * FROM main."{name}"')
+        for t, n, tb, sql in objs:
+            if t == "index" and tb not in skip:
+                con.execute(
+                    sql.replace("CREATE INDEX ", "CREATE INDEX cp.", 1).replace(
+                        "CREATE UNIQUE INDEX ", "CREATE UNIQUE INDEX cp.", 1
+                    )
+                )
+        con.execute("COMMIT")
+    finally:
+        con.execute("DETACH DATABASE cp")
