@@ -746,3 +746,55 @@ def test_a_hand_sale_is_judged_against_the_snipers_alive_at_the_sale(tmp_path):
         assert st.fill(ds)["exit_reason"] == "manual"
     finally:
         st.close()
+
+
+def test_a_sell_whose_buy_the_tape_missed_still_carries_its_failed_duplicates(tmp_path):
+    """Review of 8 Nov: measure wrote twin_fee_sol only on sells it could pair, so a landed sell whose buy the tape
+    missed (a recorder stall) had its failed duplicate sends counted nowhere but the run's totals. The sell lands with
+    two Custom 6023 duplicates at 0.002 priority: the row keeps pnl_sol None (its price is unknown) and twin_fee_sol
+    0.00401; a second run changes nothing, and once the buy is on the tape the sell is paired with the same duplicates,
+    counted once."""
+    from snipetech.measure.attribution import trip_result_sol
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _copy_row(st, created=NOW - 7200)
+        m = Market(st, addr("c0"), D, NOW - 3600, SLOT)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 2)
+        tb = m.buy(ME, 0.2, 4)
+        m.buy(addr("z0"), 2.0, 6)
+        ts = m.sell(ME, 1.0, 30)
+        m.trades.remove(tb)  # the recorder stalled through our buy
+        m.commit()
+        metas = {tb.sig: _meta(tb.sig), ts.sig: _meta(ts.sig)}
+        sends = []
+        for k, name in enumerate(("TWIN1", "TWIN2")):
+            meta = _meta(name, priority=2_000_000, tip=0)
+            meta.pump_ixs = [PumpIx("pump", "sell", ME, {}, None, addr("c0"))]
+            metas[name] = meta
+            sends.append({"signature": name, "blockTime": ts.ts + k, "slot": ts.slot + k,
+                          "err": {"InstructionError": [3, {"Custom": 6023}]}})  # fmt: skip
+
+        async def failed(wallet, since):
+            return sends
+
+        def run(at):
+            return asyncio.run(
+                run_measure(svc, cfg, at, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed)
+            )
+
+        out = run(NOW)
+        sell = st.fill(ts.sig)
+        assert out["twin_fee_sol"] == pytest.approx(0.00401) and out["trips"] == 0
+        assert sell["pnl_sol"] is None and sell["twin_fee_sol"] == pytest.approx(0.00401)
+        run(NOW + 60)
+        assert st.fill(ts.sig)["twin_fee_sol"] == pytest.approx(0.00401)  # once, however often measure runs
+        st.add_trades([tb])  # the buy reaches the tape later (a backfill)
+        out = run(NOW + 120)
+        sell = st.fill(ts.sig)
+        assert out["trips"] == 1 and sell["pnl_sol"] is not None and sell["twin_fee_sol"] == pytest.approx(0.00401)
+        assert trip_result_sol(sell) == pytest.approx(sell["pnl_sol"] - 0.00401)
+    finally:
+        st.close()

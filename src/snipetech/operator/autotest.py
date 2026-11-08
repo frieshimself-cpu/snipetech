@@ -487,8 +487,9 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     its failed duplicate sends included), shared out first in first out by tokens as the measure stage pairs them. A buy
     is `measured` once its sales cover its tokens (less 1 % of dust): with a scale-out exit the first sale closes only
     part of it. Each reading also pays the block's failed sends that are no sale's twin (OKTech's buys that fail on
-    chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result): every one
-    for `all`, all but those in the coins of the copies for `own`. Only our own trades are read: a deposit or a
+    chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result, unless the
+    sale has none because its buy is not on record): every one for `all`, all but those in the coins of the copies for
+    `own`. Only our own trades are read: a deposit or a
     withdrawal is in none of it."""
     from ..measure.attribution import trip_result_sol
     from ..measure.classify import _fill_fee_sol, pair_round_trips
@@ -539,9 +540,12 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
               or (f.get("mint") in own_mints and float(f.get("ts") or 0) <= settled)]  # fmt: skip
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     twins = twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], sells)
+    with_result = {x["sig"] for x in paired}
     charged = []
     for f in failed:
-        if f["sig"] in twins:
+        # a twin is in its sale's result; a sale with no result (its buy not on record: the tape missed it) holds
+        # nothing, so its twins are charged here as the failed sends they are (review of 8 Nov: counted nowhere)
+        if twins.get(f["sig"]) in with_result:
             continue
         prio = f.get("priority_lamports")
         fee = (int(prio) + BASE_FEE_LAMPORTS) / 1e9 if prio is not None else failed_fee_sol

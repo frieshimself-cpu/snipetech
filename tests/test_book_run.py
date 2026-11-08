@@ -734,6 +734,18 @@ def test_the_day_stop_counts_the_failed_twin_sells(tmp_path):
         st.close()
 
 
+def test_the_day_stop_counts_the_duplicates_of_a_sell_measure_could_not_pair(tmp_path):
+    """Review of 8 Nov: a landed sell whose buy the tape missed has no pnl_sol (its price is unknown), but its failed
+    duplicate sends were paid for: the day's realised result charges them, once."""
+    st, _ = _env(tmp_path)
+    try:
+        st.put_fill({"sig": "s", "ts": NOW - 30, "slot": 2, "wallet": W, "mint": "M", "side": "sell", "sol": 0.19, "tokens": 1.0,
+                     "pnl_sol": None, "twin_fee_sol": 0.00401})  # fmt: skip
+        assert day_accounting(st, W, NOW)["realised_sol"] == -0.00401
+    finally:
+        st.close()
+
+
 def test_tape_holding_sees_a_fresh_unsold_buy(tmp_path):
     """The wallet read lags our newest buy by seconds; the tape has it first. A buy of ours in the last 10 minutes
     that the tape has not seen sold, or any buy of ours in the last minute, counts as holding."""

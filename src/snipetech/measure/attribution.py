@@ -53,6 +53,15 @@ def trip_result_sol(sell: dict) -> float | None:
     return float(sell["pnl_sol"]) - float(sell.get("twin_fee_sol") or 0.0)
 
 
+def known_result_sol(sell: dict) -> float:
+    """What a landed sell is known to have made, in SOL: its whole result once measure paired it (trip_result_sol);
+    before that, or when its buy is not on record at all (the tape missed it: a recorder stall), only its failed
+    duplicate sends, a cost that is known while the price is not. What the day stop and the automatic test sum, so a
+    sell nobody could pair still costs its duplicates (review of 8 Nov: they were counted nowhere)."""
+    result = trip_result_sol(sell)
+    return result if result is not None else -float(sell.get("twin_fee_sol") or 0.0)
+
+
 def _lamports(sol: Any) -> int:
     return round(float(sol or 0.0) * 1e9)
 

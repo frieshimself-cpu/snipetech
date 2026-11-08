@@ -224,5 +224,21 @@ def test_the_summary_carries_no_key_no_signature_and_no_wallet_balance():
     assert len(text) < 1200
 
 
+def test_a_sell_with_no_buy_on_record_costs_its_duplicates_in_the_net_and_says_its_price_is_unknown():
+    """Review of 8 Nov: the tape missed the buy of one sell (a recorder stall), so it has no breakdown; its two failed
+    duplicate sells were still paid for. The owner reads that its price is unknown and its duplicates are in the net."""
+    unpriced = {"sells": 1, "dup_fee_sol": 0.00401, "first_ts": T0 + 50, "last_ts": T0 + 50}
+    lines = P.summary_text([_copy(0, 0.02, "LEADERxxxx")], unpriced=unpriced).splitlines()
+    result = _copy(0, 0.02, "LEADERxxxx")["result_sol"]
+    assert lines[3] == ("Also 1 sell whose buy is not on record (the tape missed it): its price is unknown; its failed "
+                        "duplicate sells cost 0.0040 SOL, counted in the net.")  # fmt: skip
+    assert lines[4].startswith(f"Net: {result - 0.00401:+.4f} SOL.")
+    alone = P.summary_text([], unpriced=unpriced).splitlines()
+    assert (
+        alone[0] == "Post-mortem: 1 live sell, 6 Nov 17:22-17:22 UTC, whose buy is not on record (the tape missed it)."
+    )
+    assert alone[1:] == ["Its price is unknown; its failed duplicate sells cost 0.0040 SOL.", "Net: -0.0040 SOL."]
+
+
 def test_no_trips_no_summary():
     assert P.summary_text([]) is None

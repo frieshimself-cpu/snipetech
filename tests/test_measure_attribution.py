@@ -179,6 +179,15 @@ def test_trip_result_counts_the_duplicates_once():
     assert A.trip_result_sol({"pnl_sol": None, "twin_fee_sol": 0.002}) is None  # not paired with a buy yet
 
 
+def test_a_sell_not_paired_still_costs_its_duplicates():
+    """What a sell is known to have made: its whole result once paired; before that only its failed duplicate sends, a
+    cost known while the price is not (review of 8 Nov)."""
+    assert A.known_result_sol({"pnl_sol": -0.006567, "twin_fee_sol": 0.00401}) == pytest.approx(-0.010577)
+    assert A.known_result_sol({"pnl_sol": None, "twin_fee_sol": 0.00401}) == pytest.approx(-0.00401)
+    assert A.known_result_sol({"pnl_sol": None, "twin_fee_sol": None}) == 0.0
+    assert A.known_result_sol({"pnl_sol": None}) == 0.0
+
+
 # -- synthetic trips: the cases the night did not have ----------------------------------------------------------------
 
 W = "WALLET111111111111111111111111111111111111111"
