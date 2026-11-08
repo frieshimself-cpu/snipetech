@@ -18,6 +18,14 @@ first on the server's recording and only then run live in capped batches.
   Lost: trades from 09:51 to 11:49 and the rows on the damaged pages. Once the backfill ends, `db forget` takes the
   damaged table out of the schema so the hourly copy works again. Three 7aPo3n copy sells (11:30-11:44) left only
   their failed duplicates on record; their result comes from the chain.
+- **Fees per task and the duplicate sells (12:50 93e7177, 14:20 d36a500).** Each OKTech exit is two sends: a
+  relay-sent sell with the tip (lands) and a plain send at `sellPriorityFeeSol` (fails with 6023, keeps that fee).
+  The bid now lives in `[oktech] sell_tip_sol` (0.002) and the plain send pays `sell_priority_sol` (0.0001): about
+  0.002 saved per exit. `src/snipetech/fees.py` chooses each sniper's four fees by kind (copy per leader, hunt,
+  launch, MIG, probe) from measured landing inside the owner's `[fees]` bounds; the strategist may only cap them.
+- **The live book, 8 Nov:** 7aPo3n +0.129 on 9 copies; AG89fn −0.418 on 6 (copy exits behind one-slot dumps), paused
+  by the book's own rule at 13:20. The day at 13:30: −0.288 SOL on 15 copies. Building: a dump-pattern check before
+  the book arms a wallet; our own sells for timer and stop exits; the operator's coins counted forward to 20.
 - **The lab, the paper test and the automatic test count only coins of the launchpad their sniper buys** (b52c4ca,
   9:50): LaunchLab coins no longer reach pump.fun rules' records.
 - **The live book's real result is worse than its records said (merged 8 Nov 00:50, not yet deployed).** Every live
