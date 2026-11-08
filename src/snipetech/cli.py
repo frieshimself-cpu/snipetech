@@ -661,7 +661,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--commands",
         action="store_true",
-        help="only poll Telegram and act on /stop /resume /status /book /sell /budget /test /risk (the one-minute timer)",
+        help="only poll Telegram and act on /stop /resume /status /book /sell /budget /test /risk /oktech (the one-minute "
+        "timer)",
     )
     sp.add_argument("--repo", help="checkout whose venv runs research jobs (default: this installation)")
     sp.add_argument("--branch", help="branch name recorded on jobs (default: the checkout's)")
@@ -670,11 +671,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="snipers=N,held=M",
         help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
     )
-    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest"],
+    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest", "oktech"],
                     help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed); "
                          "risk: show or set the wallet-wide guard (operator/RISK, the owner's); autotest: show, or turn "
                          "on or off, the owner's standing yes for a live test that starts by itself "
-                         "(operator/AUTOTEST)")  # fmt: skip
+                         "(operator/AUTOTEST); oktech: show or record what OKTech has confirmed (operator/OKTECH, the "
+                         "owner's)")  # fmt: skip
+    sp.add_argument("--dev-max-zero", dest="dev_max_zero",
+                    help="oktech: when and how OKTech confirmed that Hunt's maxDevBuySol 0 skips every launch whose "
+                         "creator bought anything, in words, with the owner's word in chat (until then no hunt with a "
+                         "creator limit of 0 starts live); an empty value takes it back")  # fmt: skip
     sp.add_argument(
         "--daily-usd", type=float, help="budget: dollars a day for all the agents (more than 0, at most 500)"
     )
@@ -1723,9 +1729,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "operate":
         import subprocess
 
-        from .operator import autotest, budget_switch, risk_guard
+        from .operator import autotest, budget_switch, oktech_answers, risk_guard
         from .operator.run import operate, telegram_setup_cli
 
+        if args.action == "oktech" or args.dev_max_zero is not None:  # first: it refuses another switch's values
+            return oktech_answers.oktech_cli(cfg, args)
         if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):
             return risk_guard.risk_cli(cfg, args)
         if (

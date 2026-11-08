@@ -9,7 +9,9 @@ touches an OKTech task.
 the next operator round starts; nothing here creates or starts a sniper. /test auto is the owner's standing yes
 (autotest.py): live trading that starts by itself and never stops; /stop holds it and /resume lets it go on.
 /risk is the owner's wallet-wide guard (risk_guard.py): it shows the guard and today's result, and /risk stop, /risk floor
-(each with SOL or off) and /risk default change the owner's operator/RISK; nothing the owner sent is repeated."""
+(each with SOL or off) and /risk default change the owner's operator/RISK; nothing the owner sent is repeated.
+/oktech is what OKTech has confirmed (oktech_answers.py): until the owner's /oktech dev0 confirmed records that Hunt's
+maxDevBuySol 0 skips every launch whose creator bought anything, no creator-0 rule starts live (research round 3)."""
 
 from __future__ import annotations
 
@@ -26,7 +28,7 @@ from ..config import Config
 from ..ops import redact
 from ..positions import is_active
 from ..solana.base58 import is_pubkey
-from . import live_test, risk_guard
+from . import live_test, oktech_answers, risk_guard
 from .budget_switch import budget_reply, effective_daily_usd
 from .notify import API, Notifier, get_updates
 from .paths import OperatorPaths
@@ -42,8 +44,9 @@ HELP = (
     "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
     "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk (the wallet-wide "
     "guard: no new live trade once the day is that far down or the wallet under its floor), one per message: "
-    "/risk stop <SOL a day>, /risk stop off, /risk floor <SOL>, /risk floor off, /risk default  /why <wallet> "
-    "(later phase)"
+    "/risk stop <SOL a day>, /risk stop off, /risk floor <SOL>, /risk floor off, /risk default  /oktech (what OKTech "
+    "has confirmed: a hunt with a creator limit of 0 starts live only after /oktech dev0 confirmed; /oktech dev0 "
+    "unconfirmed takes it back)  /why <wallet> (later phase)"
 )
 
 
@@ -519,6 +522,8 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
     elif cmd.name == "test":
         reply = await live_test.command(cmd.args, svc=svc, cfg=cfg, paths=paths, snap=snap, notes=notes, now=now,
                                         date=cmd.date)  # fmt: skip
+    elif cmd.name == "oktech":
+        reply = oktech_answers.command(cmd.args, paths=paths, notes=notes, now=now, date=cmd.date)
     elif cmd.name == "why":
         reply = f"/{cmd.name} is available in a later phase."
     else:

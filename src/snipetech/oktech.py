@@ -688,6 +688,24 @@ def _whole_hunt(value: Any, name: str) -> int:
 MIG_MAX_HOLD_SECS = 300.0
 
 
+# Hunt's maxDevBuySol 0 (research round 3, priority 1, docs/research/2026-11-07-round-3.md): the lab scores dev_max 0 as
+# "skip every launch whose creator bought anything", and whether OKTech reads 0 that way or as "no limit" is not known (5
+# Nov 22:11 it ignored thresholds without saying so). Read as no limit, the sniper runs the plain crowd hunt: -0.0147 SOL
+# a trade over 1,285 trades on 4-5 Nov tape no screen had used. Until the owner records OKTech's answer (operator/OKTECH,
+# operator/oktech_answers.py), the live test and the automatic test never start such a sniper, and its plan says so.
+DEV_ZERO_WAITS = ("this sniper waits for OKTech to confirm what maxDevBuySol 0 means: the lab scored 0 as \"skip every "
+                  "launch whose creator bought anything\", and if OKTech reads 0 as no limit it buys the plain crowd hunt "
+                  "instead, which lost 0.0147 SOL a trade over 1,285 trades on tape the research had not used (research "
+                  "round 3). Until their answer is recorded (/oktech in Telegram, or `operate oktech --dev-max-zero`), "
+                  "the live test and the automatic test never start it")  # fmt: skip
+
+
+def sends_dev_max_zero(config: dict) -> bool:
+    """Whether a sniper's settings send Hunt's maxDevBuySol 0, the threshold whose meaning OKTech has not confirmed."""
+    v = (((config or {}).get("hunt") or {}).get("thresholds") or {}).get("maxDevBuySol")
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == 0
+
+
 def _whole_secs(value: Any, name: str) -> int:
     """A time OKTech takes in whole seconds (MIG's Migration Window). A fraction would not be the window the lab
     scored, so it is refused here rather than sent."""
@@ -698,13 +716,17 @@ def _whole_secs(value: Any, name: str) -> int:
 
 
 def strategy_sniper(
-    strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60
-) -> PlannedSniper:
+    strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60, *,
+    dev_max_zero_confirmed: str = "",
+) -> PlannedSniper:  # fmt: skip
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun), a `hunt` sniper
     for the launch-window rules, or a `mig` sniper (OKTech's pump migration sniper) for a MIG rule.
 
     Most of the lab's big-buy triggers fire within 2 s of the launch (measured on the tape), so they map to
-    the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL."""
+    the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL.
+
+    `dev_max_zero_confirmed`: OKTech's answer on maxDevBuySol 0 as the owner recorded it (operator/OKTECH), empty while
+    it is not. A hunt sent with maxDevBuySol 0 is sent as scored either way; its notes say which it is."""
     trig, ex = strategy["trigger"], dict(strategy["exit"])
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
@@ -791,6 +813,10 @@ def strategy_sniper(
                        + " (OKTech hunt, exactly as the lab scored it)")  # fmt: skip
         notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
                      "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
+        if sends_dev_max_zero(config):
+            said = " ".join(str(dev_max_zero_confirmed or "").split())
+            notes.append(f"maxDevBuySol 0: OKTech confirmed that Hunt then skips every launch whose creator bought "
+                         f"anything (recorded: {said})" if said else DEV_ZERO_WAITS)  # fmt: skip
     elif kind == "mig":
         # the lab scored this rule (analysis/lab.py `_mig`): OKTech MIG buys the coin on PumpSwap once it has migrated,
         # only when the migration came within migrationExpirySec of the create

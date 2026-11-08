@@ -38,7 +38,7 @@ from pathlib import Path
 from ..config import Config
 from ..ops import redact
 from ..positions import is_active
-from . import risk_guard
+from . import oktech_answers, risk_guard
 from .paths import OperatorPaths
 from .snapshot import running_jobs
 from .tools import NoteSink
@@ -185,9 +185,11 @@ def _cost_words(cost: dict) -> str:
     return "measured live"
 
 
-def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None) -> str | None:
+def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None, dev0: dict | None = None) -> str | None:
     """Why a strategy may not go live now, in plain words; None when it may. `cost`: what a transaction costs live and
-    where that came from (qualify.run.lab_tx_cost_info: measured, last measured, or the estimate before anything is)."""
+    where that came from (qualify.run.lab_tx_cost_info: measured, last measured, or the estimate before anything is).
+    `dev0`: OKTech's answer on maxDevBuySol 0 as the owner recorded it (oktech_answers.dev_max_zero), None while it is
+    not; its check comes last, so its reason is shown only for a strategy that passes every other one."""
     from ..analysis.lab import WATCH_SECS, WATCHED_KINDS
 
     if row is None or frozen is None:
@@ -235,12 +237,17 @@ def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None) ->
             f"rests on a few big trades: with each gain capped at 2.5 times its buy its lower bound is "
             f"{float(capped or 0):+.4f} SOL a trade"
         )
-    from ..oktech import strategy_sniper
+    from ..oktech import sends_dev_max_zero, strategy_sniper
 
     try:  # the sniper it would get: OKTech ignores a hunt threshold that is not a whole number (5 Nov 22:11)
-        strategy_sniper(frozen | {"buy_sol": row.get("buy_sol")}, 1, "hunt")
+        sniper = strategy_sniper(frozen | {"buy_sol": row.get("buy_sol")}, 1, "hunt")
     except (ValueError, KeyError, TypeError) as exc:
         return f"cannot be sent to OKTech as it was scored ({exc})"
+    if sends_dev_max_zero(sniper.config) and not dev0:
+        # research round 3 (priority 1): the lab scored dev_max 0 as "skip every launch whose creator bought anything";
+        # if OKTech reads maxDevBuySol 0 as no limit, the sniper runs the plain crowd hunt (-0.0147 SOL a trade over
+        # 1,285 trades on unseen 4-5 Nov tape), and OKTech has ignored thresholds before without saying so (5 Nov 22:11)
+        return oktech_answers.DEV0_WHY
     return None
 
 
@@ -253,9 +260,11 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
     frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
     # the measured cost of a transaction, the last one measured after a week without enough fills, 0.0045 before any
     cost = lab_tx_cost_info(store, cfg)
+    # OKTech's answer on maxDevBuySol 0, as the owner recorded it next to the database (operator/OKTECH)
+    dev0 = oktech_answers.dev_max_zero(OperatorPaths(Path(cfg.storage.db_path).resolve().parent))
     ok, why = [], {}
     for r in rows:
-        w = _why_not(r, frozen.get(r["id"]), cost)
+        w = _why_not(r, frozen.get(r["id"]), cost, dev0)
         if w is None:
             ok.append(r)
         else:
@@ -838,8 +847,8 @@ async def _check(
     except Exception as exc:  # noqa: BLE001 - the next round reads it again
         return f"the paper test could not be read ({type(exc).__name__})", True, "request"
     row = next((r for r in ok if r["id"] == t["id"]), None)
-    if row is None:
-        return f"{t['id']} {why.get(t['id'], 'is not a frozen paper strategy')} any more", False, "paper"
+    if row is None:  # every reason starts with its verb ("has 60 forward trades", "waits for OKTech to confirm ...")
+        return f"{t['id']} no longer qualifies: it {why.get(t['id'], 'is not a frozen paper strategy')}", False, "paper"
     if abs(float(row.get("buy_sol") or 0) - float(t["buy_sol"])) > 1e-9:
         return "the strategy's size changed since the request", False, "size"
     busy = _drivers(paths)
