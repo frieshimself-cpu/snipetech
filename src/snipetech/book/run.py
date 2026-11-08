@@ -72,6 +72,19 @@ def _other_copies(store, tasks: list[dict]) -> set[str]:
     return out
 
 
+def _bought_by_us(store, wallet: str, mint: str) -> bool:
+    """Whether a buy of ours explains holding `mint`: a buy by the wallet on the tape, or a buy fill of the measure
+    stage. Any read that fails counts as ours (the coin then keeps equity unknown, as before)."""
+    if not mint or mint == "unknown":
+        return True
+    try:
+        if store._q("SELECT 1 FROM trades WHERE mint=? AND user=? AND is_buy=1 LIMIT 1", (mint, wallet)):
+            return True
+        return bool(store._q("SELECT 1 FROM fills WHERE mint=? AND side='buy' LIMIT 1", (mint,)))
+    except Exception:  # noqa: BLE001
+        return True
+
+
 CREATED_GRACE_SECS = 60  # our clock against block time: a buy just before the recorded creation can still be its own
 
 
@@ -243,9 +256,15 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     except Exception:  # noqa: BLE001 - unknown holdings count as holding: the policy then stops nothing
         holdings = held_from_balances or [{"mint": "unknown", "amount": 1}]
         holdings_known = False
-    # equity = SOL + wrapped SOL + the tape value of the coins held; a coin the tape has not priced makes it unknown
-    # (the kill path then creates nothing and stops nothing), never a false floor breach after the book's own buys
-    if native is None or wsol is None or any(not h.get("priced", True) for h in holdings or []):
+    # equity = SOL + wrapped SOL + the tape value of the coins held; a coin of ours the tape has not priced makes it
+    # unknown (the kill path then creates nothing and stops nothing), never a false floor breach after the book's own
+    # buys. An unpriced coin no buy of ours explains (the owner's own trade in another app, a dust airdrop: 8 Nov
+    # 17:30-20:40 the book halted three hours on one) counts as worth 0 SOL: that only lowers equity, so the floor
+    # still trips and never wrongly holds; it stays a holding, so no sniper is stopped over it
+    unpriced = [h for h in holdings or [] if not h.get("priced", True)]
+    if unpriced and holdings_known:
+        unpriced = [h for h in unpriced if _bought_by_us(store, wallet, str(h.get("mint") or ""))]
+    if native is None or wsol is None or unpriced:
         equity = None
     else:
         equity = native + wsol + sum(float(h.get("value_sol") or 0) for h in holdings or [])

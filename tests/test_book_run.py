@@ -3,6 +3,8 @@ Telegram line each; below the equity floor it is dry whatever the config says; t
 
 import asyncio
 
+import pytest
+
 from snipetech.book.run import run_book
 from snipetech.book.state import day_accounting, record_run
 from snipetech.cli import build_parser
@@ -252,6 +254,7 @@ def test_book_equity_counts_the_coins_held(tmp_path):
             )
         )
         assert out["kill_reason"] is None  # 1.0 + 2.5 = 3.5 SOL, above the 3.0 floor
+        st.put_fill({"sig": "BM", "ts": NOW - 600, "wallet": W, "side": "buy", "mint": "M", "sol": 0.2})  # ours
         unpriced = FakeSvc(st, held=[{"mint": "M", "amount": 1.0, "value_sol": None, "priced": False}])
         out2 = asyncio.run(
             run_book(
@@ -377,7 +380,6 @@ def test_a_book_that_is_off_does_not_page_the_owner_about_its_floor(tmp_path):
 
 
 def test_cli_book_run_live_is_refused_while_the_book_is_off(tmp_path):
-    import pytest
 
     from snipetech import cli
 
@@ -1139,5 +1141,30 @@ def test_each_book_run_records_the_wallets_its_own_snipers_still_buy_for(tmp_pat
         asyncio.run(run_book(Down(st), cfg, NOW + 1800, dry=True, balances=lambda w: (10.0, 0.0, [])))
         assert copying_now(st, NOW + 1800) == {"RUNNIN", "STARTS"}  # the last reading stands
         assert copying_now(st, NOW + 3601) is None
+    finally:
+        st.close()
+
+
+def test_an_unpriced_coin_no_buy_of_ours_explains_counts_as_zero_and_the_book_keeps_trading(tmp_path):
+    """8 Nov 17:30-20:40: a coin the owner bought by hand in Axiom (2u2x...BAGS, not a pump.fun coin, so never on the
+    tape) and then a 1,000-token dust airdrop (8uUQ) sat unpriced in the wallet, and the book halted for three hours on
+    "equity unknown". A coin no buy of ours explains (no buy by the wallet on the tape, no buy fill) is no position of
+    the book's: it counts as worth 0 SOL, which only ever lowers equity, so the floor can still trip and never wrongly
+    holds. A coin our own buy explains stays unknown while it is unpriced."""
+    from snipetech.operator.risk_guard import set_risk
+
+    st, cfg = _env(tmp_path)
+    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": 0.0}, "test", NOW)  # the server's /risk floor on 8 Nov
+    quiet = Notifier("T", 7, post=lambda u, d: None)
+    try:
+        stray = FakeSvc(st, held=[{"mint": "Stray" + "s" * 39, "amount": 1000.0, "value_sol": None, "priced": False}])
+        out = asyncio.run(run_book(stray, cfg, NOW, notifier=quiet, balances=lambda w: (1.0, 0.22, [])))
+        assert out["kill_reason"] is None
+        _coin(st, "ours", NOW - 600, 400_000_000, 0, 1)  # a buy of ours on the tape: the book's own position
+        from tests.synth import addr
+
+        ours = FakeSvc(st, held=[{"mint": addr("ours"), "amount": 5.0, "value_sol": None, "priced": False}])
+        out2 = asyncio.run(run_book(ours, cfg, NOW, notifier=quiet, balances=lambda w: (1.0, 0.22, [])))
+        assert out2["kill_reason"] == "equity unknown"
     finally:
         st.close()
