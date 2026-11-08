@@ -8,7 +8,8 @@
 | `oktech-features.md` | Every OKTech feature, gated or not, what it does and how it is built | Claude, from the client bundle |
 | `oktech-settings.md` | What each sniper setting means and the values we use | Claude |
 | `oktech-browser-handoff.md` | Brief for a local Claude session that can see oktech.me in Chrome | Claude |
-| `architecture.md` | The whole loop as one diagram (Obsidian renders it); the database's rules for writers and readers; how our own exit (/sell) sells on the curve and on PumpSwap | Claude |
+| `architecture.md` | The whole loop as one diagram (Obsidian renders it); the database's rules for writers and readers; how our own exit (/sell) sells on the curve and on PumpSwap; what the server's agents remember (lessons, ideas, the research record) | Claude |
+| `research/` | The cloud session's strategy research rounds: one report per round (outcome, labs, builds, lessons, next angles) and their index; the server's agents read the newest round at every turn | Claude, after every round |
 | `birdeye.md` | What the Birdeye plan gives us, CU costs, where it plugs in | Claude |
 | `jev.md` | TypeSafe's Jev: what it is, why it is not used yet, the measured-first plan | Claude |
 | `superpowers/specs/` | Designs approved before building (operator agent) | Claude, owner approves |
