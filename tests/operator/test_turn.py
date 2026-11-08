@@ -276,6 +276,23 @@ def test_every_turn_carries_the_research_record_of_the_checkout_it_runs_from(env
         assert content.index("Open ideas") < content.index("Research record") < content.index("This turn stops"), mode
 
 
+def test_the_operator_and_the_analyst_are_told_the_research_record_settles_ideas(env):
+    """7 Nov 23:16 ideas I6, I8 and I9 were still "testing" after round 3 had refuted the first two on unseen tape. The
+    rules each turn is sent: the record settles ideas, a refuted angle is not tested again (no lab, no freeze), a
+    refuted open idea is marked rejected with the round and its numbers, and a round's builds and owner questions stay
+    with the cloud session and the owner."""
+    for mode in ("operator", "analyst", "postmortem"):
+        handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+        _run(env, Decision(True, mode, ["job ended: j1"]), handler)
+        system = " ".join(_system(requests[0]).split())
+        for words in ("research record", "settles ideas too", "Do not re-test an angle a round refuted",
+                      "no freeze into the paper test", "mark it rejected with upsert_idea",
+                      "citing the round and its numbers", "builds and its questions for the owner",
+                      "belong to the cloud session and the owner", "no agent turns a proposed build into a config change",
+                      "read_file docs/research/"):  # fmt: skip
+            assert words in system, (mode, words)
+
+
 def test_the_analyst_must_explain_every_live_round_trip_and_learn_from_it():
     """The post-mortem is the analyst's job by its instructions: each loss in one named cause, the causes counted,
     live against the verdict, then a lesson (or why none) and ideas with a concrete test."""
