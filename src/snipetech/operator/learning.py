@@ -301,9 +301,12 @@ def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | N
 
 
 def ideas_since(paths: OperatorPaths, since_ts: float) -> list[dict[str, Any]]:
-    """The open ideas added or changed at or after `since_ts`, best first: what a turn that started then came up with
-    (the owner's post-mortem summary names the top one)."""
-    return [i for i in list_ideas(paths, "open") if _epoch(i.get("updated")) >= float(since_ts)]
+    """The open ideas added or changed at or after `since_ts`: what a turn that started then came up with (the owner's
+    post-mortem summary names the top one). The ideas it added come first, best first, then the older ones it only
+    moved or changed (review, 7 Nov: an older idea moved to testing outranked the idea the turn had just added)."""
+    since = float(since_ts)
+    touched = [i for i in list_ideas(paths, "open") if _epoch(i.get("updated")) >= since]
+    return sorted(touched, key=lambda i: _epoch(i.get("created")) < since)  # stable: best first within each
 
 
 # -- what a turn and the digest are shown ---------------------------------------------------------------------------

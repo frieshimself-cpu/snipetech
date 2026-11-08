@@ -6,6 +6,7 @@ investigation that night broke down by hand from the chain and the server's tabl
 
 import pytest
 
+from snipetech.exits_menu import COPY_EXIT_MENU
 from snipetech.measure import attribution as A
 from snipetech.models import Trade
 from snipetech.solana.txmeta import PumpIx, TxMeta
@@ -107,8 +108,10 @@ def test_each_trip_says_what_the_best_exit_on_the_menu_would_have_made_from_the_
 
 def test_the_levers_say_what_each_change_would_have_saved_and_who_can_make_it(night):
     """OKTech sending each exit once saves every duplicate; the sell fee back to 0.001 saves 0.001 on each landed
-    sell's tip and on each untipped duplicate (the night's -0.0119 would have been -0.0049); hold60 on all three
-    copies (measure's replay) would have done 0.0020 better. The buys paid OKTech's minimum bid: nothing to save."""
+    sell's tip and on each untipped duplicate (the night's -0.0119 would have been -0.0049). The buys paid OKTech's
+    minimum bid: nothing to save. hold60 on every copy did 0.0020 better in measure's replay, all of it on EZaNbQ (the
+    other two replay the same under both): hindsight on one copy of three, a test and never a saving; no setting runs
+    one exit on every copy, so it is a code change (review, 7 Nov)."""
     ranked = A.levers(list(_trips(night).values()))
     assert [x["lever"] for x in ranked] == ["single_send", "sell_fee", "exit"]
     lv = {x["lever"]: x for x in ranked}
@@ -116,8 +119,49 @@ def test_the_levers_say_what_each_change_would_have_saved_and_who_can_make_it(ni
     assert lv["single_send"]["trips"] == 2
     assert lv["sell_fee"]["sol"] == pytest.approx(0.007) and lv["sell_fee"]["trips"] == 3
     assert lv["sell_fee"]["who"] == "owner" and lv["sell_fee"]["key"] == "oktech.sell_fee_sol"
-    assert lv["exit"]["exit"] == "hold60" and lv["exit"]["sol"] == pytest.approx(0.001984)
-    assert lv["exit"]["who"] == "owner" and lv["exit"]["trips"] == 3
+    ex = lv["exit"]
+    assert (ex["exit"], ex["trips"], ex["differed"], ex["better"], ex["worse"]) == ("hold60", 3, 1, 1, 0)
+    assert ex["sol"] == pytest.approx(0.001984) and ex["who"] == "owner" and ex["needs"] == "code"
+    assert ex["test_only"] is True and ex["clears_bar"] is False and "key" not in ex  # exit_mode cannot do it
+    assert "code change" in ex["words"] and "never a saving" in ex["words"]
+
+
+def _replayed(k: int, gain: float, ran: str = "lab", buy: str | None = None) -> dict:
+    """A copy measure replayed under every exit on the menu: hold60 `gain` SOL better than the exit that ran."""
+    replay = {m.name: -0.01 for m in COPY_EXIT_MENU} | {"hold60": round(-0.01 + gain, 9)}
+    return {"buy_sig": buy or f"B{k}", "levers": {}, "exit": {"ran": ran, "fired": "dead_exit", "replay": replay}}
+
+
+def test_an_exit_clears_the_books_bar_only_on_enough_copies_that_differed_and_better_on_most():
+    """The book runs another exit than lab only after it beat lab on at least EXIT_MIN_TEST unseen trades
+    (book/policy.exit_for). The post-mortem's exit is hindsight over its own copies, so it is worth the owner's eyes
+    only on at least as many copies where the two made a different result (a tie tells nothing), better on most."""
+    from snipetech.analysis.lab import EXIT_MIN_TEST
+
+    def exit_lever(trips):
+        return next(x for x in A.levers(trips) if x["lever"] == "exit")
+
+    enough = [_replayed(k, 0.004) for k in range(EXIT_MIN_TEST - 1)] + [_replayed(90, -0.001), _replayed(91, 0.0)]
+    lv = exit_lever(enough)
+    assert (lv["trips"], lv["differed"], lv["better"], lv["worse"]) == (EXIT_MIN_TEST + 1, EXIT_MIN_TEST, 7, 1)
+    assert lv["clears_bar"] and A.exit_clears_bar(A.exit_gain([t["exit"] for t in enough], "hold60"))
+    assert not exit_lever(enough[1:])["clears_bar"]  # one copy short of EXIT_MIN_TEST that differed
+    split = [_replayed(k, 0.004 if k % 2 else -0.001) for k in range(2 * EXIT_MIN_TEST)]
+    assert exit_lever(split)["sol"] > 0 and not exit_lever(split)["clears_bar"]  # better on half only
+    # a buy two sells closed is one copy, replayed once
+    twice = [_replayed(0, 0.004, buy="B0"), _replayed(1, 0.004, buy="B0")]
+    assert (exit_lever(twice)["trips"], exit_lever(twice)["sol"]) == (1, pytest.approx(0.004))
+
+
+def test_the_exit_record_is_every_copy_measure_replayed_one_per_entry(night):
+    """What a batch's exit is checked against before the owner hears of it: every live copy of the wallet on record
+    with the exit that ran and each exit's replay (exit_shadow)."""
+    record = A.exit_record(night, F.WALLET)
+    assert len(record) == 3 and {e["ran"] for e in record} == {"lab"}
+    g = A.exit_gain(record, "hold60")
+    assert (g["trips"], g["differed"], g["better"], g["worse"]) == (3, 1, 1, 0)
+    assert g["sol"] == pytest.approx(0.001984) and not A.exit_clears_bar(g)
+    assert A.exit_record(night, "SOMEONE-ELSE") == []
 
 
 def test_the_sell_fee_lever_is_gone_once_the_sell_fee_is_already_low(night):
@@ -197,6 +241,44 @@ def test_duplicates_that_flip_a_win_into_a_loss_are_named(tmp_path):
         assert b["kind"] == "lost_to_costs" and "duplicates" in b["flips"]
         assert b["levers"]["single_send"] == pytest.approx(0.00201)
         assert "sell_fee" not in b["levers"]  # the sell fee was already 0.001: its tip and its duplicates' priority
+    finally:
+        st.close()
+
+
+def _copy(st, k: int, sell_quote: int, leader: str = "LEADER") -> None:
+    """One 0.2 SOL copy at OKTech's minimum bid, no duplicate: bought at a 197,530,864-lamport quote (0.2 SOL with
+    pump.fun's 1.25 %), sold at `sell_quote`, both fees 0.003005; its record as measure writes it."""
+    b, s, m, t = f"B{k}", f"S{k}", f"M{k}", T0 + 100 * k
+    sell_fee = sell_quote * 125 // 10_000
+    st.add_trades([_trade(b, t, m, True, 197_530_864, 2_469_136, 1000),
+                   _trade(s, t + 9, m, False, sell_quote, sell_fee, 1000)])  # fmt: skip
+    sol_out = round((sell_quote - sell_fee) / 1e9, 6)
+    st.put_fill(_fill(b, t, m, "buy", 0.2, 1000.0, wallet_copied=leader))
+    st.put_fill(_fill(s, t + 9, m, "sell", sol_out, 1000.0, pnl_sol=round(sol_out - 0.2 - 0.00601, 6),
+                      twin_fee_sol=0.0, buy_sig=b))  # fmt: skip
+
+
+def test_trips_that_lost_on_the_price_rank_the_price_first_when_one_winner_rose_more():
+    """Review, 7 Nov: the price counted as a cause only by its net move over the batch, so one winner's rise hid the
+    falls of every trip that lost on the price. Four copies fell 0.03 SOL each before any cost and one rose 0.15: the
+    net move is +0.03, but the falls took 0.12 SOL on four trips, more than any cost. The causes are what each part
+    took (the price on the trips where it fell); the rises less every cause is the whole result."""
+    st = Store(":memory:")
+    try:
+        for k in range(4):
+            _copy(st, k, 167_530_864, leader="DUMPER")  # each fell 0.03 SOL before any cost
+        _copy(st, 4, 347_530_864, leader="RIDER")  # rose 0.15
+        trips = [b for b in A.break_down(st, W, st.fills(wallet=W, side="sell")).values() if b]
+        s = A.totals(trips)
+        assert (s["trips"], s["rose"], s["fell"], s["lost_on_price"]) == (5, 1, 4, 4)
+        assert s["price_sol"] == pytest.approx(0.03, abs=2e-6)  # the net move: the Price line, additive with the costs
+        assert s["price_fell_sol"] == pytest.approx(-0.12, abs=2e-6)
+        price = s["causes"][0]
+        assert price["cause"] == "price" and price["trips"] == 4 and price["sol"] == pytest.approx(0.12, abs=2e-6)
+        assert [c["cause"] for c in s["causes"]] == ["price", "venue_fee", "buy_fees", "sell_fees"]
+        assert price["sol"] == -s["price_fell_sol"]
+        assert round(s["price_rose_sol"] - sum(c["sol"] for c in s["causes"]), 9) == s["result_sol"]
+        assert s["worst_leader"]["leader"] == "DUMPER" and s["worst_leader"]["trips"] == 4
     finally:
         st.close()
 

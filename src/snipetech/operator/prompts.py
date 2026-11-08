@@ -96,7 +96,9 @@ causes: late or crowded landing (trades behind the leader, price gap), a leader 
 into us), an exit too early, an exit too late or none fired, a bad coin. Count the causes. Then rank the causes by SOL
 (the summary's causes) and say which change would have saved the most and who can make it (the summary's levers:
 the strategist inside its bounds, the owner, or OKTech through the owner); a change that needs the owner becomes an
-idea with owner_needed. Each trip's shadow says what every exit on the menu would have made
+idea with owner_needed. The exit lever (test_only) is hindsight over measure's replays, a test and never a saving:
+say on how many copies it differed (differed, better, worse) and make it an idea only when it clears_bar. Each trip's
+shadow says what every exit on the menu would have made
 from the same entry: say when another exit would have done better and by how much; a pattern needs many trips, never
 one. Compare each wallet's live result with what its verdict predicted (mean_sol at the landing, copy_plan) and say
 where they disagree and by how much. After the turn, code sends the owner the batch's numbers and the change that

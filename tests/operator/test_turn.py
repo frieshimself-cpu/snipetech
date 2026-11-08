@@ -276,7 +276,9 @@ def test_the_post_mortem_works_from_the_codes_breakdown_and_ranks_the_causes_and
 
     text = " ".join(ANALYST_SYSTEM.split())
     for words in ("never redo the arithmetic", "rank the causes by SOL", "would have saved the most",
-                  "who can make it", "lost_to_costs", "lost_on_price", "result_sol"):  # fmt: skip
+                  "who can make it", "lost_to_costs", "lost_on_price", "result_sol",
+                  # review, 7 Nov: the exit lever is hindsight over measure's replays, a test and never a saving
+                  "test_only", "never a saving", "clears_bar"):  # fmt: skip
         assert words in text, words
     for mode in ("postmortem", "analyst"):
         assert "causes ranked by SOL" in _CLOSING[mode] and "saved the most" in _CLOSING[mode], mode

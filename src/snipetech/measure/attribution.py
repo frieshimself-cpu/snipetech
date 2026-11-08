@@ -263,7 +263,7 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
 # -- a batch of trips: the totals, the causes ranked by SOL, the levers ranked by what they would have saved ----------
 
 CAUSE_WORDS = {
-    "price": "the price fell after we bought (net of the trips where it rose)",
+    "price": "the price fell after we bought (what it took on the trips where it fell)",
     "buy_fees": "the buys' priority fee and tip",
     "sell_fees": "the landed sells' priority fee and tip",
     "duplicates": "failed duplicate sells (OKTech's extra copies of a sell: they fail and still pay)",
@@ -278,8 +278,14 @@ def _sum(trips: list[dict], key: str) -> int:
 
 def totals(trips: list[dict]) -> dict[str, Any]:
     """A batch of breakdowns added up: wins and losses by the whole result, how many lost to the costs (they made money
-    on the price) and how many on the price itself, each part's total, and the causes ranked by SOL (the price only
-    when it fell over the batch). The parts add up: price + unsplit_price_net - costs = result."""
+    on the price) and how many on the price itself, each part's total, and the causes ranked by SOL. The parts add up:
+    price + unsplit_price_net - costs = result (price_sol is the net move, what the owner's Price line says).
+
+    A cause is what one part took: each cost in all, and the price on the trips where it fell, never net of the trips
+    where it rose. Review, 7 Nov: ranked by the net move, one winner's rise hid the falls of every trip that lost on
+    the price (over the 58 sells of 5-7 Nov the falls took 0.9222 SOL and CAT's rise of +0.52 left a net of -0.26, so
+    the buys' fees came first). So the rises less every cause is the whole result too:
+    price_rose + unsplit rises - causes = result."""
     trips = [t for t in trips if t]
     split = [t for t in trips if t["price_sol"] is not None]
     unsplit = [t for t in trips if t["price_sol"] is None]
@@ -287,6 +293,8 @@ def totals(trips: list[dict]) -> dict[str, Any]:
     parts = {"venue_fee_sol": _sum(split, "venue_fee_sol"), "buy_fees_sol": _sum(trips, "buy_fee_sol"),
              "sell_fees_sol": _sum(trips, "sell_fee_sol"), "duplicates_sol": _sum(trips, "dup_fee_sol")}  # fmt: skip
     moves = [t["price_sol"] if t["price_sol"] is not None else t["price_net_sol"] for t in trips]
+    fell_l = -sum(_lamports(m) for m in moves if m < 0)  # what the price took where it fell (a trip's after the
+    # venue's fee when the tape has no trade of it, as its venue's fee is in no other part then)
     out: dict[str, Any] = {
         "trips": len(trips), "wins": sum(t["result_sol"] > 0 for t in trips),
         "losses": sum(t["result_sol"] <= 0 for t in trips),
@@ -294,7 +302,7 @@ def totals(trips: list[dict]) -> dict[str, Any]:
         "lost_on_price": sum(t["kind"] == "lost_on_price" for t in trips),
         "rose": sum(m > 0 for m in moves), "fell": sum(m < 0 for m in moves),
         "price_sol": _sol(price_l), "price_rose_sol": _sol(sum(_lamports(m) for m in moves if m > 0)),
-        "price_fell_sol": _sol(sum(_lamports(m) for m in moves if m < 0)),
+        "price_fell_sol": _sol(-fell_l),
         **{k: _sol(v) for k, v in parts.items()},
         "duplicates": sum(t["dups"] or 0 for t in trips), "costs_sol": _sol(sum(parts.values())),
         "result_sol": _sol(_sum(trips, "result_sol")), "recorded_sol": round(sum(t["recorded_sol"] for t in trips), 9),
@@ -304,9 +312,8 @@ def totals(trips: list[dict]) -> dict[str, Any]:
         out["unsplit_price_net_sol"] = _sol(net_l)
     words = VENUE_FEE_WORDS if set(out["venues"]) - {"curve"} else PUMP_FEE_WORDS
     causes = []
-    if price_l + net_l < 0:
-        causes.append({"cause": "price", "sol": _sol(-(price_l + net_l)), "trips": out["fell"],
-                       "words": CAUSE_WORDS["price"]})  # fmt: skip
+    if fell_l > 0:
+        causes.append({"cause": "price", "sol": _sol(fell_l), "trips": out["fell"], "words": CAUSE_WORDS["price"]})
     for cause, key, part in (("venue_fee", "venue_fee_sol", "venue_fee_sol"), ("buy_fees", "buy_fees_sol", "buy_fee_sol"),
                              ("sell_fees", "sell_fees_sol", "sell_fee_sol"), ("duplicates", "duplicates_sol", "dup_fee_sol")):  # fmt: skip
         if parts[key] > 0:
@@ -323,11 +330,76 @@ def totals(trips: list[dict]) -> dict[str, Any]:
     return out
 
 
+def _copy_exits(trips: list[dict]) -> list[dict]:
+    """The exit blocks of the copies measure replayed under every exit on the menu, one per entry: a buy that two sells
+    closed is one replay of the whole position, so one copy."""
+    menu = {m.name for m in COPY_EXIT_MENU}
+    seen: set = set()
+    out = []
+    for t in trips:
+        e = t.get("exit") if t else None
+        if not e or e.get("ran") not in e.get("replay", {}) or not menu <= set(e["replay"]) or t.get("buy_sig") in seen:
+            continue
+        seen.add(t.get("buy_sig"))
+        out.append(e)
+    return out
+
+
+def exit_gain(exits: list[dict], name: str) -> dict[str, Any]:
+    """One exit on the menu against the exit that ran on each copy, replay against replay: what it would have gained
+    in all (SOL), over how many copies, and on how many it made a different result, a better one and a worse one (the
+    replay is rounded to the micro-SOL: a tie is the same number)."""
+    diffs = [e["replay"][name] - e["replay"][e["ran"]] for e in exits
+             if name in e.get("replay", {}) and e.get("ran") in e["replay"]]  # fmt: skip
+    return {"exit": name, "sol": round(sum(diffs), 9), "trips": len(diffs),
+            "differed": sum(abs(d) > 1e-9 for d in diffs), "better": sum(d > 1e-9 for d in diffs),
+            "worse": sum(d < -1e-9 for d in diffs)}  # fmt: skip
+
+
+def exit_clears_bar(gain: dict[str, Any] | None) -> bool:
+    """Whether an exit's edge over the exits that ran is worth the owner's eyes: the bar the book sets before a sniper
+    runs another exit than lab (book/policy.exit_for: at least EXIT_MIN_TEST unseen trades, analysis/lab.py), read
+    here as at least EXIT_MIN_TEST copies on which the two made a different result (a tie tells nothing), better on
+    most of them, and a gain in all. Review, 7 Nov: "the hold60 exit on every copy" reached the owner from one copy of
+    three, where hold60 had lost 0.35 SOL more than lab over the 23 copies on record."""
+    from ..analysis.lab import EXIT_MIN_TEST
+
+    return bool(gain) and gain["sol"] > 0 and gain["differed"] >= EXIT_MIN_TEST and gain["better"] > gain["worse"]
+
+
+def exit_record(store, wallet: str, limit: int = 5000) -> list[dict[str, Any]]:
+    """Every live copy of `wallet` that measure replayed under today's exit menu, one per entry: the exit that ran and
+    each exit's replay (exit_shadow). What a batch's exit is checked against before the owner hears of it, so that a
+    few copies in hindsight never outvote the record. Three short reads: the wallet's sells, its buys, their replays."""
+    if not wallet:
+        return []
+    sells = [s for s in store.fills(wallet=wallet, side="sell", limit=limit) if s.get("buy_sig")]
+    replays: dict[str, dict[str, float]] = {}
+    for r in store.exit_shadow(sorted({s["buy_sig"] for s in sells}), EXIT_MENU_VERSION) if sells else []:
+        if r.get("sim_pnl_sol") is not None:
+            replays.setdefault(r["buy_sig"], {})[r["exit_name"]] = float(r["sim_pnl_sol"])
+    if not replays:
+        return []
+    buys = {b["sig"]: b for b in store.fills(wallet=wallet, side="buy", limit=limit)}
+    trips = []
+    for s in sells:
+        if s["buy_sig"] in replays:
+            ran = s.get("exit_name") or (buys.get(s["buy_sig"]) or {}).get("exit_name")
+            trips.append({"buy_sig": s["buy_sig"], "exit": _exit_block(s, ran, replays[s["buy_sig"]])})
+    return _copy_exits(trips)
+
+
 def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
     """What each change would have saved on these trips, best first, with who can make it: "strategist" (inside its
     [autotune] bounds, strategist/bounds.py), "owner" (needs the owner's yes) or "oktech" (OKTech's to change, asked
-    through the owner). The exit lever is the one menu exit that would have done best on every replayed copy, replay
-    against replay; hindsight over a few trips is no pattern. The venue's fee and the price have no lever."""
+    through the owner). The venue's fee and the price have no lever.
+
+    The exit lever comes last whatever its SOL, marked `test_only`: it is the one menu exit that would have done best
+    over these copies in measure's replay, replay against replay, which is hindsight and never a saving. It says on how
+    many copies it made a different result (`differed`, `better`, `worse`) and whether that clears the book's bar
+    (`clears_bar`, exit_clears_bar); only then may the owner hear of it, and only once the whole record agrees
+    (operator/postmortem.py). No setting runs one exit on every copy (exit_mode sends lab to all, or each wallet's own
+    verified exit), so anything but lab is a code change (`needs`)."""
     from ..config import Config
     from ..strategist.bounds import strategist_may_set
 
@@ -363,17 +435,21 @@ def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
         out.append({"lever": "buy_bid", "sol": _sol(sol), "trips": n, "key": key, "who": who,
                     "words": "the buy tip back to OKTech's minimum of 0.002 SOL" if tip_only else
                              "buying at OKTech's minimum bid only (0.001 SOL priority + 0.002 tip)"})  # fmt: skip
-    menu = [m.name for m in COPY_EXIT_MENU]
-    replayed = [t["exit"] for t in trips
-                if t.get("exit") and t["exit"]["ran"] in t["exit"]["replay"] and set(menu) <= set(t["exit"]["replay"])]  # fmt: skip
-    best, gain = None, 0.0
-    for name in menu:
-        g = sum(e["replay"][name] - e["replay"][e["ran"]] for e in replayed)
-        if g > gain + 1e-12:
-            best, gain = name, g
+    copies = _copy_exits(trips)
+    best = None
+    for m in COPY_EXIT_MENU:
+        g = exit_gain(copies, m.name)
+        if g["sol"] > (best["sol"] if best else 0.0) + 1e-12:
+            best = g
     if best is not None:
-        out.append({"lever": "exit", "exit": best, "sol": round(gain, 9), "trips": len(replayed), "key": "book.exit_mode",
-                    "who": "strategist" if strategist_may_set("book.exit_mode", "per_wallet", cfg) else "owner",
-                    "words": f"the {best} exit on every copy instead of the one that ran (measure's replay of "
-                             f"{len(replayed)} {'copy' if len(replayed) == 1 else 'copies'})"})  # fmt: skip
-    return sorted(out, key=lambda x: -x["sol"])
+        lab = best["exit"] == "lab"  # what the book sends every copy unless the owner chose each wallet's own exit
+        n, same = best["trips"], best["trips"] - best["differed"]
+        how = ("lab is what the book sends every copy with [book] exit_mode fixed, the owner's switch" if lab else
+               "a code change, not a setting: no setting runs one exit on every copy")  # fmt: skip
+        out.append({"lever": "exit", **best, "who": "owner", "needs": "setting" if lab else "code", "test_only": True,
+                    "clears_bar": exit_clears_bar(best),
+                    "words": f"the {best['exit']} exit on every copy instead of the one that ran ({how}); in measure's "
+                             f"replay of {n} {'copy' if n == 1 else 'copies'} it did better on {best['better']}, "
+                             f"worse on {best['worse']} and the same on {same}: hindsight, a test and never a "
+                             "saving"})  # fmt: skip
+    return sorted(out, key=lambda x: (bool(x.get("test_only")), -x["sol"]))

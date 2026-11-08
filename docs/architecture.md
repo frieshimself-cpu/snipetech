@@ -129,26 +129,34 @@ money on the price and the costs took it) or `lost_on_price`; `flips` names the 
 made it a win; the exit that ran is set against the best exit on the menu in measure's replay, replay to replay.
 
 What each change would have saved on the same trips, and who can make it (`strategist/bounds.py strategist_may_set`:
-the strategist only when its overlay would apply the change):
+the strategist only while `[autotune]` is on and its overlay would apply the change):
 
 | change | what it saves on a trip | who |
 |---|---|---|
 | OKTech sends each exit once (one signed sell, not up to three) | every failed duplicate | OKTech, asked by the owner |
 | the sell fee back to 0.001 SOL (`[oktech] sell_fee_sol`) | the landed sell's tip above 0.001 and the same on each duplicate that fee priced | the owner |
 | OKTech's minimum bid (0.001 priority + 0.002 tip) | the buy's excess, and its priority again on the landed sell and on tipped duplicates | the strategist for a raised control tip, else the owner |
-| one exit on the menu for every copy | its replay against the replay of the exit that ran | the owner |
+| one exit on the menu for every copy | nothing it can promise: its replay against the replay of the exit that ran is hindsight, a test and never a saving; a code change, since no setting runs one exit on every copy | the owner |
 
-pump.fun's fee and the price have no lever. The analyst's `read_round_trips` returns each trip's breakdown and the
-batch's causes ranked by SOL and changes ranked by what they would have saved; its instructions say to use those
-numbers as they are, rank the causes and name the change that would have saved the most. After every turn that
-reviewed new live trips, code sends the owner a short summary (`operator/postmortem.py`, called by the round once the
-trips are marked reviewed): the trips, the price move before any cost, what the fees and the duplicates cost, the net,
-the biggest cause and the change that would have saved the most with who can make it; when the price itself took the
-most, the analyst's top idea of the turn comes first. Telegram, and one line in `operator/notes.md`; no wallet balance,
-no key, nothing that changes a setting. For the copies of 7aPo3n of 7 Nov 19:18-19:22: price +0.0294 SOL, pump.fun
-0.0152, buys 0.0090, landed sells 0.0090, 4 failed duplicate sells 0.0080, net -0.0119; OKTech sending each exit once
-would have saved 0.0080, the sell fee at 0.001 0.0070 (`tests/test_measure_attribution.py`,
-`tests/operator/test_postmortem.py`).
+pump.fun's fee and the price have no lever. The causes are what each part took: each cost in all, and the price on
+the trips where it fell, never net of the ones where it rose (the 7 Nov review: over the 58 sells of 5-7 Nov the falls
+took 0.9222 SOL and CAT's +0.52 left a net of -0.26, which had put the buys' fees first). The analyst's
+`read_round_trips` returns each trip's breakdown and the batch's causes ranked by SOL and changes ranked by what they
+would have saved, the exit last and marked `test_only`, with how many copies it differed on; its instructions say to
+use those numbers as they are, rank the causes and name the change that would have saved the most. After every turn
+that reviewed new live trips, code sends the owner a short summary (`operator/postmortem.py`, called by the round once
+the trips are marked reviewed): the trips, the price move before any cost, what the fees and the duplicates cost, the
+net, the biggest cause and the change that would have saved the most with who can make it; when the price itself took
+the most, the analyst's top idea of the turn comes first, an idea it added before one it only moved. An idea is the
+owner's to approve unless it is research the agents run themselves: an idea names no key the code could check
+against the strategist's bounds. An exit is named only as "Worth testing", after the savings, and only once it beat the
+exit that ran on at least 8 copies where the two differed (`EXIT_MIN_TEST`, the book's own bar before a sniper runs
+another exit than lab), better on most of them, in the batch and over every copy measure replayed (`exit_record`).
+Telegram, and one line in `operator/notes.md`; no wallet balance, no key, nothing that changes a setting. For the copies
+of 7aPo3n of 7 Nov 19:18-19:22: price +0.0294 SOL, pump.fun 0.0152, buys 0.0090, landed sells 0.0090, 4 failed
+duplicate sells 0.0080, net -0.0119; OKTech sending each exit once would have saved 0.0080, the sell fee at 0.001
+0.0070; hold60 replayed 0.0020 better on one copy of three, so the owner does not hear of it
+(`tests/test_measure_attribution.py`, `tests/operator/test_postmortem.py`).
 
 What no trip holds, because no fills row has it (the 7 Nov investigation): the seed-account sweeps of 5-6 Nov (0.0592
 SOL, gone since the seed account was turned off), two PumpSwap trips of 6 Nov morning that the tape did not record,

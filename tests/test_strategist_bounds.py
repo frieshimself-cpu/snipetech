@@ -142,3 +142,13 @@ def test_what_the_strategist_may_set_by_itself_is_what_its_overlay_would_apply()
     assert not strategist_may_set("book.exit_mode", "per_wallet", cfg)  # owner-only
     cfg.autotune.bounds["oktech.sell_fee_sol"] = {"min": 0.001, "max": 0.002}
     assert not strategist_may_set("oktech.sell_fee_sol", 0.001, cfg)  # the overlay writes [book] and [qualify] only
+
+
+def test_the_strategist_makes_no_change_while_the_owner_has_it_switched_off():
+    """With [autotune] enabled false the strategist never takes a turn (strategist/run.py), so no change is its to
+    make, whatever its bounds say; the post-mortem then labels a change the owner's (review, 7 Nov)."""
+    from snipetech.strategist.bounds import strategist_may_set
+
+    cfg = Config()
+    cfg.autotune.enabled = False
+    assert not strategist_may_set("book.bid_arms.control.tip", 0.002, cfg)

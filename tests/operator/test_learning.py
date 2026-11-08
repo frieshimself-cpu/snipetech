@@ -167,14 +167,17 @@ def test_a_broken_ideas_file_is_kept_aside_not_lost(paths):
 
 def test_the_ideas_a_turn_added_or_moved_are_read_back_best_first(paths):
     """The owner's post-mortem summary names the analyst's top idea of that turn: the open ideas updated since it
-    started, best first; older ones and closed ones are not this turn's."""
+    started, the ones it added first (best first), then older ones it only moved or changed; ideas it did not touch
+    and closed ones are not this turn's. Review, 7 Nov: an older idea moved to testing ranked above the idea the turn
+    had just added, so the owner read it as the change the post-mortem suggests."""
     old = L.upsert_idea(paths, IDEA | {"title": "Older idea", "priority": 5}, source="analyst", now=NOW - 3600)
     low = L.upsert_idea(paths, IDEA | {"title": "Low idea", "priority": 2}, source="postmortem", now=NOW + 10)
     top = L.upsert_idea(paths, IDEA | {"title": "Top idea", "priority": 4}, source="postmortem", now=NOW + 20)
     L.upsert_idea(paths, IDEA | {"title": "Closed idea", "status": "rejected"}, source="postmortem", now=NOW + 30)
     assert [i["id"] for i in L.ideas_since(paths, NOW)] == [top["id"], low["id"]]
     L.upsert_idea(paths, {"id": old["id"], "status": "testing"}, source="postmortem", now=NOW + 40)  # moved this turn
-    assert [i["id"] for i in L.ideas_since(paths, NOW)] == [old["id"], top["id"], low["id"]]
+    assert [i["id"] for i in L.ideas_since(paths, NOW)] == [top["id"], low["id"], old["id"]]
+    assert [i["id"] for i in L.ideas_since(paths, NOW + 25)] == [old["id"]]  # a turn that only moved an idea
 
 
 def test_an_idea_edited_by_hand_never_breaks_a_turn(paths):

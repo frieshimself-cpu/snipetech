@@ -164,8 +164,11 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
         removal would have made it a win); levers (what each change would have saved on it); exit (the exit that
         ran against the best one in measure's replay, gain_sol between them). The summary adds them up: wins and
         losses by the whole result, pnl_sol (whole) and recorded_sol (landed only), each part's total, causes ranked
-        by SOL, and levers ranked by what each would have saved on these trips, with who can make it (strategist:
-        inside its bounds; owner: needs the owner's yes; oktech: OKTech's to change, asked through the owner).
+        by SOL (the price by what it took on the trips where it fell), and levers ranked by what each would have
+        saved on these trips, with who can make it (strategist: inside its bounds; owner: needs the owner's yes;
+        oktech: OKTech's to change, asked through the owner). The exit lever comes last (test_only): the menu exit
+        that did best in measure's replay of these copies is hindsight, never a saving; differed, better and worse
+        count the copies, and clears_bar says whether it reaches the book's bar for another exit than lab.
 
         Args:
             hours: Look back this many hours (the post-mortem window is in the round's reasons).

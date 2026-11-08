@@ -6,15 +6,16 @@ code lines, and writes it to the notes. The numbers are measure/attribution.py's
 post-mortem left the arithmetic to the model and the owner never saw a summary ("just make it understand why it lost
 and how to do better", 22:05). The change is the one that would have saved the most on these trips, labelled with who
 can make it; when the price itself took the most, no fee setting is the answer and the analyst's top idea of the turn
-comes first. It reads and reports only: no secret, no key, no wallet balance (the owner: "no there's no sol checks idc
-ab it"), nothing that changes a setting."""
+comes first. Another exit on the menu is never a saving: it is named, as a test, only when it clears the book's bar on
+these copies and over every copy on record. It reads and reports only: no secret, no key, no wallet balance (the owner:
+"no there's no sol checks idc ab it"), nothing that changes a setting."""
 
 from __future__ import annotations
 
 import time
 from typing import Any
 
-from ..measure.attribution import break_down, levers, totals
+from ..measure.attribution import break_down, exit_clears_bar, exit_gain, exit_record, levers, totals
 from ..ops import redact
 from . import learning
 from .paths import OperatorPaths
@@ -79,13 +80,18 @@ def _costs(s: dict[str, Any]) -> str:
 
 
 def _cause(s: dict[str, Any]) -> str:
+    """The cause that took the most SOL. The price's is what it took on the trips where it fell (the Price line above
+    is the net move), so the line says on how many."""
     if not s["causes"]:
         return "Biggest cause: none."
     c = s["causes"][0]
     if c["cause"] != "price":
         tail = " The venue sets it; no setting changes it." if c["cause"] == "venue_fee" else ""
         return f"Biggest cause: {c['words']} ({c['sol']:.4f} SOL).{tail}"
-    line = f"Biggest cause: the price fell after we bought ({c['sol']:.4f} SOL)"
+    n, fell = s["trips"], c["trips"]
+    where = "" if n == 1 else " on both trips" if fell == n == 2 else f" on all {n} trips" if fell == n else (
+        f" on {fell} of the {n} trips")  # fmt: skip
+    line = f"Biggest cause: the price fell after we bought{where} ({c['sol']:.4f} SOL)"
     w = s.get("worst_leader")
     if w:
         line += (f"; copies of {str(w['leader'])[:6]} lost {abs(w['price_sol']):.4f} on the price over {w['trips']} "
@@ -97,26 +103,50 @@ def _lever(prefix: str, lv: dict[str, Any]) -> str:
     return f"{prefix}: {lv['words']}: {lv['sol']:.4f} SOL on these trips. {WHO[lv['who']]}"
 
 
+def _exit_test(lv: dict[str, Any] | None, record: list[dict] | None) -> str | None:
+    """The exit worth testing, or None. Only when its hindsight over these copies clears the book's bar
+    (attribution.exit_clears_bar) and so does the same exit over every copy on record (`record`,
+    attribution.exit_record; none given, nothing said), worded as a test and never as a saving, with how many copies
+    it differed on and that it is a code change (review, 7 Nov: "Best change of ours: the hold60 exit on every copy"
+    came from one copy of three, and hold60 had lost 0.35 SOL more than lab over the 23 copies on record)."""
+    if not lv or not lv.get("clears_bar") or record is None:
+        return None
+    rec = exit_gain(record, lv["exit"])
+    if not exit_clears_bar(rec):
+        return None
+    how = ("lab is what the book sends every copy unless you chose each wallet's own exit" if lv["needs"] == "setting"
+           else "a code change, not a setting")  # fmt: skip
+    return (f"Worth testing: the {lv['exit']} exit on every copy instead of the one that ran ({how}). Measure's replay: "
+            f"better on {lv['better']} and worse on {lv['worse']} of the {lv['differed']} copies where they differed, "
+            f"{lv['sol']:+.4f} SOL over these {lv['trips']} copies and {rec['sol']:+.4f} over all {rec['trips']} on "
+            "record. Hindsight, not a saving. Needs your yes.")  # fmt: skip
+
+
 def _idea_label(idea: dict[str, Any]) -> str:
-    """Who acts on the analyst's idea: the owner for anything flagged so (live tests and code always are), the
-    strategist for a config change inside its bounds (its overlay refuses one outside them), the agents for research."""
-    if idea.get("owner_needed"):
-        return "needs your yes"
-    if idea.get("kind") == "config":
-        return "the strategist may make this change within its bounds"
-    if idea.get("kind") == "research":
+    """Who acts on the analyst's idea: the agents for research they run themselves, the owner for everything else. An
+    idea names no key or value to check against the strategist's [autotune] bounds, and the analyst is not shown them,
+    so a config idea is never called the strategist's (review, 7 Nov: "Lower the sell fee to 0.001 SOL" was called the
+    strategist's two lines above the same change marked "Needs your yes"); a yes the strategist did not need costs the
+    owner less than waiting for a change it cannot make. The levers carry the strategist's label, checked
+    (strategist_may_set)."""
+    if idea.get("kind") == "research" and not idea.get("owner_needed"):
         return "the agents test it themselves"
     return "needs your yes"
 
 
-def summary_text(trips: list[dict], cfg: Any = None, idea: dict[str, Any] | None = None) -> str | None:
+def summary_text(trips: list[dict], cfg: Any = None, idea: dict[str, Any] | None = None,
+                 record: list[dict] | None = None) -> str | None:  # fmt: skip
     """The owner's lines for a batch of breakdowns (measure/attribution.py break_down), or None for none. `idea`: the
-    analyst's top idea of the turn (learning.ideas_since), named first when the price itself took the most."""
+    analyst's top idea of the turn (learning.ideas_since), named first when the price itself took the most. `record`:
+    every copy measure replayed (attribution.exit_record), which an exit must also clear before it is named; the
+    exit is only ever a test, after the changes that would have saved SOL."""
     trips = [t for t in trips if t]
     if not trips:
         return None
     s = totals(trips)
-    ranked = levers(trips, cfg=cfg)
+    every = levers(trips, cfg=cfg)
+    ranked = [x for x in every if not x.get("test_only")]  # what would have saved SOL; an exit is hindsight
+    exit_line = _exit_test(next((x for x in every if x["lever"] == "exit"), None), record)
     n = s["trips"]
     price = float(s["price_sol"] or 0.0) + float(s.get("unsplit_price_net_sol") or 0.0)
     unsplit = f" ({s['unsplit']} of them after the venue's fee: no trade on the tape)" if s["unsplit"] else ""
@@ -140,6 +170,7 @@ def summary_text(trips: list[dict], cfg: Any = None, idea: dict[str, Any] | None
             change.append(_lever("Best change of ours", ours))
     elif idea_line:
         change.append(idea_line)
+    change += [exit_line] if exit_line else []
     lines += change or ["No change in our hands would have saved SOL on these trips; the post-mortem report says why."]
     return redact("\n".join(lines))
 
@@ -156,8 +187,11 @@ def send_summary(svc, cfg, paths: OperatorPaths, trips: dict[str, Any], notes, n
              if int(s["ts"]) <= int(trips["newest_ts"])]  # fmt: skip
     parts = break_down(svc.store, wallet, sells, per_tx_sol=cfg.costs.per_tx_sol(),
                        lookback_days=cfg.measure.lookback_days)  # fmt: skip
+    batch = [b for b in parts.values() if b]
     ideas = learning.ideas_since(paths, started)
-    text = summary_text([b for b in parts.values() if b], cfg=cfg, idea=ideas[0] if ideas else None)
+    exit_lv = next((x for x in levers(batch, cfg=cfg) if x["lever"] == "exit"), None)
+    record = exit_record(svc.store, wallet) if exit_lv and exit_lv["clears_bar"] else None  # read only when needed
+    text = summary_text(batch, cfg=cfg, idea=ideas[0] if ideas else None, record=record)
     if text is None:
         return None
     notes.write(text, "info")

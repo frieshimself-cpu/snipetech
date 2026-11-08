@@ -92,13 +92,14 @@ def check_patch(
 
 
 def strategist_may_set(key: str, value: Any, cfg: Config) -> bool:
-    """Whether the strategist could make this one change by itself: its overlay writes only [book] and [qualify]
-    (config.OVERLAY_SECTIONS), and only keys the owner's [autotune] bounds list, never an owner-only one, each value
-    inside its rule (check_patch). The post-mortem labels the change it suggests with this, so it never calls a change
-    the strategist's when its overlay would not apply it."""
+    """Whether the strategist could make this one change by itself: it takes turns only while [autotune] enabled is
+    true (strategist/run.py), its overlay writes only [book] and [qualify] (config.OVERLAY_SECTIONS), and only keys the
+    owner's [autotune] bounds list, never an owner-only one, each value inside its rule (check_patch). The post-mortem
+    labels the change it suggests with this, so it never calls a change the strategist's when its overlay would not
+    apply it."""
     from ..config import OVERLAY_SECTIONS
 
-    if key.split(".", 1)[0] not in OVERLAY_SECTIONS:
+    if not cfg.autotune.enabled or key.split(".", 1)[0] not in OVERLAY_SECTIONS:
         return False
     accepted, _ = check_patch({key: value}, cfg, cfg.autotune)
     return key in accepted
