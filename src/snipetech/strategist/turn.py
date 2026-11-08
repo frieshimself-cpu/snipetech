@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -14,6 +15,7 @@ from anthropic import AsyncAnthropic, beta_async_tool
 from ..config import Config
 from ..operator.budget import Ledger
 from ..operator.learning import context as learning_context
+from ..operator.paths import research_dir
 from ..operator.tools import NoteSink, make_learning_tools
 from ..operator.turn import FALLBACK_BETA
 from .bounds import check_patch
@@ -24,7 +26,9 @@ MAX_TOOL_CALLS = 8  # the evidence, a look at the lessons and ideas, a lesson or
 
 async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes: NoteSink, client: AsyncAnthropic | None = None,
                               now: Callable[[], float] = time.time, turn_usd: float | None = None,
-                              learn: bool = True) -> dict[str, Any]:  # fmt: skip
+                              learn: bool = True, repo: Path | None = None) -> dict[str, Any]:  # fmt: skip
+    """`repo`: the checkout whose docs/research the message's research record comes from; by default the repository
+    above this package (the strategist unit runs /opt/snipetech's own install, with no --repo)."""
     cap = cfg.autotune.turn_usd if turn_usd is None else min(cfg.autotune.turn_usd, float(turn_usd))
     state: dict[str, Any] = {"patch": {}, "reason": ""}
 
@@ -68,7 +72,12 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
             ],
         ],  # a dry-run preview leaves the shared memory alone
         messages=[
-            {"role": "user", "content": user_message(evidence, learned=learning_context(notes.paths, book=cfg.book))}
+            {
+                "role": "user",
+                "content": user_message(
+                    evidence, learned=learning_context(notes.paths, book=cfg.book, research=research_dir(repo))
+                ),
+            }
         ],
         thinking={"type": "adaptive"},
         output_config={"effort": cfg.operator.effort},

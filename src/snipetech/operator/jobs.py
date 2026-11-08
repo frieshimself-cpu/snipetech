@@ -23,6 +23,12 @@ class OperatorJobs:
         self.ops = Ops(repo=repo, data=data, db=db, keys_file=repo / "deploy" / "ops_authorized_keys", branch=branch,
                        command=[str(repo / ".venv" / "bin" / "snipetech"), "--db", str(db)])  # fmt: skip
 
+    @property
+    def repo(self) -> Path:
+        """The checkout the round runs from (the operator's --repo: /opt/snipetech on the server, the checkout `remote
+        update` resets to the branch); its docs/research is the research record the agents read."""
+        return self.ops.repo
+
     def running(self) -> list[dict]:
         """Jobs whose process is alive, read from the shared metadata files (not from this process's memory)."""
         out = []
