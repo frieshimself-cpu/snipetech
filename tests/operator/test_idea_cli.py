@@ -27,3 +27,11 @@ def test_operate_idea_refuses_an_incomplete_idea(tmp_path):
     with pytest.raises(SystemExit, match="not added"):
         _cli(tmp_path, "idea", "--title", "half an idea")
     assert list_ideas(OperatorPaths(tmp_path / "data")) == []
+
+
+def test_operate_idea_updates_an_idea_by_id_with_its_status(tmp_path):
+    _cli(tmp_path, "idea", "--title", "Cap", "--why", "w", "--test", "t", "--expected", "e", "--kind", "research")
+    (idea,) = list_ideas(OperatorPaths(tmp_path / "data"))
+    assert _cli(tmp_path, "idea", "--id", idea["id"], "--status", "adopted", "--why", "owner's yes 21:05") == 0
+    (after,) = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
+    assert after["status"] == "adopted" and after["why"] == "owner's yes 21:05" and after["title"] == "Cap"

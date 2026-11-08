@@ -678,7 +678,7 @@ def build_parser() -> argparse.ArgumentParser:
                          "(operator/AUTOTEST); oktech: show or record what OKTech has confirmed (operator/OKTECH, the "
                          "owner's); idea: hand the server's agents a piece of research (operator/ideas.json), which "
                          "they run on the owner's Anthropic API credits")  # fmt: skip
-    for flag in ("title", "why", "test", "expected", "kind", "priority"):
+    for flag in ("id", "status", "title", "why", "test", "expected", "kind", "priority"):
         sp.add_argument(f"--{flag}", dest=f"idea_{flag}",
                         help=f"idea: its {flag}")  # fmt: skip
     sp.add_argument("--dev-max-zero", dest="dev_max_zero",
@@ -1787,7 +1787,8 @@ def main(argv: list[str] | None = None) -> int:
             from .operator.learning import upsert_idea
             from .operator.paths import OperatorPaths as _Paths
 
-            fields = {k: getattr(args, f"idea_{k}") for k in ("title", "why", "test", "expected", "kind", "priority")}
+            keys = ("id", "status", "title", "why", "test", "expected", "kind", "priority")
+            fields = {k: getattr(args, f"idea_{k}") for k in keys}
             fields = {k: v for k, v in fields.items() if v is not None}
             try:
                 idea = upsert_idea(_Paths(Path(cfg.storage.db_path).resolve().parent).ensure(), fields, source="cloud")
