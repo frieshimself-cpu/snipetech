@@ -1,7 +1,8 @@
-"""Pure: what a proposed patch may change. Only keys listed in [autotune] bounds, each inside its rule; one key outside
-and the whole patch is refused (it becomes a question for the owner). A few things are never tunable whatever the
-table says (`config.never_tunable`): the owner's daily caps and buys per sniper, the buy priority fee, and anything
-that switches the book on, names a wallet or a key, or points at a URL."""
+"""Pure: what a proposed patch may change. Only keys listed in [autotune] bounds, each inside its rule, and the fee
+policy's per-kind bounds (`fees.tune.<kind>.<number>.min|max`, each inside the owner's outer [fees] bounds); one key
+outside and the whole patch is refused (it becomes a question for the owner). A few things are never tunable whatever
+the table says (`config.never_tunable`): the owner's daily caps and buys per sniper, the buy priority fee, the owner's
+outer fee bounds, and anything that switches the book on, names a wallet or a key, or points at a URL."""
 
 from __future__ import annotations
 
@@ -9,7 +10,7 @@ import dataclasses
 import math
 from typing import Any
 
-from ..config import AutotuneConfig, Config, never_tunable
+from ..config import AutotuneConfig, Config, fee_tune_rule, never_tunable
 
 
 def get_path(cfg: Any, dotted: str) -> Any:
@@ -36,7 +37,8 @@ def check_patch(
     accepted: dict[str, Any] = {}
     refusals: list[str] = []
     for key, value in (patch or {}).items():
-        rule = auto.bounds.get(key)
+        # a fee key (fees.tune.<kind>.<number>.min|max) is checked against the owner's outer [fees] bounds
+        rule = auto.bounds.get(key) or fee_tune_rule(current.fees, key)
         if rule is None:
             refusals.append(f"{key}: not in [autotune] bounds")
             continue

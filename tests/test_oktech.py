@@ -354,8 +354,9 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     assert c["priorityFee"] == 0.02 and c["tipAmount"] == 0.02
     assert c["extraParams"]["globalSendCount"] == 1
     # exits do not follow the arm: every sell is sent 2-3 times on separate nonce accounts (the losers fail with 6023 and
-    # still pay the sell priority fee), so a 0.02 sell bid would cost 0.02 per twin; sells bid [oktech] sell_fee_sol
-    assert c["autoSell"]["sellPriorityFeeSol"] == 0.002 and c["autoSell"]["sellTipAmount"] == 0.002
+    # still pay the sell priority fee), so a 0.02 sell bid would cost 0.02 per twin; sells bid [oktech] sell_tip_sol as
+    # the tip (refunded on a failed send) and sell_priority_sol, near zero, as what each twin pays
+    assert c["autoSell"]["sellPriorityFeeSol"] == 0.0001 and c["autoSell"]["sellTipAmount"] == 0.002
     assert "paid" in p.name and any("0.02" in s for s in p.summary)
     base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
     assert base.config["extraParams"] == {"globalSendCount": 1, "seedAccount": False}
@@ -425,10 +426,10 @@ def test_copy_sniper_sells_bid_the_configured_fee_not_the_arm():
     from snipetech.oktech import list_copy_sniper
 
     cfg = Config()
-    assert cfg.oktech.sell_fee_sol == 0.002
+    assert cfg.oktech.sell_tip_sol == 0.002 and cfg.oktech.sell_priority_sol == 0.0001
     paid = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, priority_fee=0.02, tip=0.02).config["autoSell"]
-    assert paid["sellPriorityFeeSol"] == 0.002 and paid["sellTipAmount"] == 0.002
-    cfg.oktech.sell_fee_sol = 0.005
+    assert paid["sellPriorityFeeSol"] == 0.0001 and paid["sellTipAmount"] == 0.002
+    cfg.oktech.sell_fee_sol = 0.005  # the deprecated alias: both the old way
     cheap = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
     assert cheap["sellPriorityFeeSol"] == 0.005 and cheap["sellTipAmount"] == 0.005
 
@@ -1523,12 +1524,13 @@ def test_partial_take_profit_ends_with_a_100_percent_stage():
 
 def test_the_presets_sent_today_are_byte_identical_to_before_the_menu():
     """EXITS is built from the menu now; the book's lab sniper and the hold60 copy sniper are byte for byte what they
-    were before (their externalIds too), so nothing a running book sends changed."""
+    were before (their externalIds too), so nothing a running book sends changed. The 8 Nov sell-fee split is the one
+    change since: sellPriorityFeeSol 0.0001 instead of 0.002 (the digests below are from that payload)."""
     import hashlib
 
     from snipetech.oktech import list_copy_sniper
 
-    want = {"lab": ("9defc929458a5c17", "993a74e05ae2"), "hold60": ("44229e54aef52436", "498aa4cf393c")}
+    want = {"lab": ("6e5fa622912a7897", "d798dcb3344b"), "hold60": ("520c36c6f80bcedd", "8f1c1c97f60e")}
     for name, (digest, config_hash) in want.items():
         p = list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, cfg=Config(), exit_name=name, priority_fee=0.001,
                              tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
@@ -1557,3 +1559,64 @@ def test_copylist_sends_an_exit_given_as_parameters():
         assert lab["deadExit"]["staleSeconds"] == 1 and "trailingStopLoss" not in lab
     finally:
         store.close()
+
+
+def test_autosell_sends_the_sell_tip_and_a_near_zero_sell_priority_by_default():
+    """8 Nov: every landed sell left 1-2 failed twins at priority 2,000,000 lamports (0.008 SOL of a 0.119 gross). The
+    bid is the tip (refunded when a send fails); the priority is what each failed twin pays, so it is near zero."""
+    from snipetech.oktech import autosell
+
+    s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [])
+    assert s["sellTipAmount"] == 0.002 and s["sellPriorityFeeSol"] == 0.0001
+    s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [], sell_tip_sol=0.003, sell_priority_sol=0.0005)
+    assert s["sellTipAmount"] == 0.003 and s["sellPriorityFeeSol"] == 0.0005
+    # the deprecated alias still sets both the old way
+    s = autosell({"stop_loss": 0.3, "max_hold_secs": 300}, [], sell_fee_sol=0.001)
+    assert s["sellTipAmount"] == 0.001 and s["sellPriorityFeeSol"] == 0.001
+
+
+def test_every_builder_sells_at_the_split_fee():
+    for name, p in _every_builder().items():
+        a = p.config.get("autoSell")
+        if a is None:
+            continue
+        assert a["sellTipAmount"] == 0.002 and a["sellPriorityFeeSol"] == 0.0001, name
+
+
+def test_the_oktech_sell_settings_reach_every_builder():
+    from snipetech.oktech import list_copy_sniper, speedtest_snipers, strategy_sniper
+
+    cfg = Config()
+    cfg.oktech.sell_tip_sol, cfg.oktech.sell_priority_sol = 0.0025, 0.0002
+    a = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
+    assert a["sellTipAmount"] == 0.0025 and a["sellPriorityFeeSol"] == 0.0002
+    s = strategy_sniper({"id": "x", "label": "t", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+                         "exit": {"stop_loss": 0.15, "max_hold_secs": 300}}, 5, cfg=cfg)  # fmt: skip
+    assert s.config["autoSell"]["sellTipAmount"] == 0.0025 and s.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
+    for p in speedtest_snipers(0.01, 3, None, cfg=cfg):
+        assert p.config["autoSell"]["sellTipAmount"] == 0.0025 and p.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
+
+
+def test_builders_take_the_fee_policys_numbers_and_say_why():
+    """A planned sniper's buy and sell fees come from the fee policy (fees.py) for its kind, and its notes say which
+    fee it gets and why; an explicit buy bid (the fee test's flags) still wins over the policy."""
+    from snipetech import fees as F
+    from snipetech.oktech import list_copy_sniper, strategy_sniper
+
+    cfg = Config()
+    leader = "W" * 32
+    p = list_copy_sniper(leader, "lead", 0.5, 0.2, cfg=cfg)
+    assert p.config["priorityFee"] == 0.001 and p.config["tipAmount"] == 0.002
+    assert any("fees (copy of WWWWWW" in n and "minimum" in n for n in p.notes), p.notes
+    raised = F.choose(cfg, "copy", leader=leader, floor={"buy_tip": 0.004})
+    p = list_copy_sniper(leader, "lead", 0.5, 0.2, cfg=cfg, fees=raised)
+    assert p.config["tipAmount"] == 0.004 and p.config["autoSell"]["sellPriorityFeeSol"] == 0.0001
+    assert any("0.004 tip" in n and "floor" in n for n in p.notes)
+    p = list_copy_sniper(leader, "lead", 0.5, 0.2, cfg=cfg, fees=raised, priority_fee=0.02, tip=0.02)
+    assert p.config["priorityFee"] == 0.02 and p.config["tipAmount"] == 0.02
+    assert any("asked for by hand" in n for n in p.notes)
+    s = strategy_sniper({"id": "x", "label": "t", "buy_sol": 0.2, "trigger": {"kind": "hunt", "sol": 2.0, "window": 1.0},
+                         "exit": {"stop_loss": 0.15, "max_hold_secs": 300}}, 5, cfg=cfg)  # fmt: skip
+    assert (
+        any("fees (hunt)" in n for n in s.notes) and s.config["priorityFee"] == 0.001 and s.config["tipAmount"] == 0.002
+    )

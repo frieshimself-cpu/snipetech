@@ -851,3 +851,88 @@ def test_a_copy_bought_on_the_curve_and_sold_on_pumpswap_gets_its_whole_result(t
         assert b["result_sol"] == pytest.approx(A.trip_result_sol(sell), abs=1e-9)
     finally:
         st.close()
+
+
+def test_twins_per_sell_is_split_by_the_sell_priority_the_twins_paid():
+    """Measure tells whether the 8 Nov sell-fee split worked: each landed sell's failed twins cost, grouped by the sell
+    priority those twins paid (0.002 before the split, 0.0001 after). A sell with no twins is placed by the sell
+    priority its sniper was created with; one with neither is 'unknown'."""
+    from snipetech.measure.run import twins_per_sell
+
+    sells = [{"sig": "S1", "ts": NOW, "slot": SLOT, "mint": "M1"}, {"sig": "S2", "ts": NOW + 60, "slot": SLOT + 300, "mint": "M2"},
+             {"sig": "S3", "ts": NOW + 120, "slot": SLOT + 600, "mint": "M3"}, {"sig": "S4", "ts": NOW + 180, "slot": SLOT + 900, "mint": "M4"}]  # fmt: skip
+    failed = [{"sig": "F1", "ts": NOW, "slot": SLOT, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+              {"sig": "F2", "ts": NOW + 1, "slot": SLOT + 2, "mint": "M1", "priority_lamports": 2_000_000, "is_sell": True},
+              {"sig": "F3", "ts": NOW + 60, "slot": SLOT + 300, "mint": "M2", "priority_lamports": 100_000, "is_sell": True}]  # fmt: skip
+    out = twins_per_sell(sells, failed, {"S3": 0.0001})
+    assert out["0.002"] == {
+        "sells": 1,
+        "twins": 2,
+        "cost_sol": pytest.approx(0.00401),
+        "per_sell_sol": pytest.approx(0.00401),
+    }
+    assert out["0.0001"] == {
+        "sells": 2,
+        "twins": 1,
+        "cost_sol": pytest.approx(0.000105),
+        "per_sell_sol": pytest.approx(0.0000525),
+    }
+    assert out["unknown"] == {"sells": 1, "twins": 0, "cost_sol": 0.0, "per_sell_sol": 0.0}
+
+
+def test_sells_landed_per_buy_is_watched_before_and_after_the_split():
+    """The risk of a near-zero sell priority: if OKTech's untipped copies were what landed when the tipped one lost, a
+    coin could stay unsold. Measure counts landed sells per buy for buys made by snipers at the old and the new sell
+    priority (a buy younger than the longest hold is not counted: its sell is not due), and says so for the first 20
+    sells after the change; an alert line when the ratio falls."""
+    from snipetech.measure.run import sells_per_buy
+
+    buys = [{"sig": f"B{i}", "ts": NOW - 3600 + i} for i in range(8)]
+    prio = {f"B{i}": 0.002 for i in range(4)} | {f"B{i}": 0.0001 for i in range(4, 8)}
+    trips = [{"buy_sig": "B0", "sell_sig": "S0"}, {"buy_sig": "B1", "sell_sig": "S1"}, {"buy_sig": "B2", "sell_sig": "S2"},
+             {"buy_sig": "B3", "sell_sig": "S3"}, {"buy_sig": "B4", "sell_sig": "S4"}, {"buy_sig": "B5", "sell_sig": "S5"}]  # fmt: skip
+    out = sells_per_buy(buys, trips, prio, now=NOW)
+    assert out["before"] == {"buys": 4, "sells": 4, "ratio": 1.0}
+    assert out["after"] == {"buys": 4, "sells": 2, "ratio": 0.5}
+    assert out["alert"] and "fewer sells land per buy" in out["alert"] and "/sell" in out["alert"]
+    assert out["watch"] and "sells landed per buy" in out["watch"]
+    # a buy of the last 600 s is not counted (its sell is not due), and a healthy ratio raises no alert
+    young = [{"sig": "B9", "ts": NOW - 10}]
+    ok = sells_per_buy(buys[:6] + young, trips, prio | {"B9": 0.0001}, now=NOW)
+    assert ok["after"] == {"buys": 2, "sells": 2, "ratio": 1.0} and ok["alert"] is None
+    # past the first 20 sells the watch line stops; the alert does not
+    many = [{"sig": f"A{i}", "ts": NOW - 7200 + i} for i in range(30)]
+    many_trips = [{"buy_sig": f"A{i}", "sell_sig": f"T{i}"} for i in range(30)]
+    done = sells_per_buy(many, many_trips, {f"A{i}": 0.0001 for i in range(30)}, now=NOW)
+    assert done["after"]["sells"] == 30 and done["watch"] is None and done["alert"] is None
+
+
+def test_run_measure_reports_twins_per_sell_and_sells_per_buy(tmp_path):
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)
+        b, s_ = sigs[0]
+        metas = {b: _meta(b), s_: _meta(s_)}
+        m = _meta("TWIN", priority=2_000_000, tip=0)
+        m.pump_ixs = [PumpIx("pump", "sell", ME, {}, None, addr("c0"))]
+        metas["TWIN"] = m
+        first = asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed)
+        )
+        sell = st.fill(s_)
+
+        async def failed(wallet, since):
+            return [{"signature": "TWIN", "blockTime": sell["ts"], "slot": sell["slot"] + 1,
+                     "err": {"InstructionError": [3, {"Custom": 6023}]}}]  # fmt: skip
+
+        out = asyncio.run(
+            run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas), failed_sigs=failed)
+        )
+        assert first["twins_per_sell"]["unknown"]["sells"] == 1
+        assert out["twins_per_sell"]["0.002"] == {"sells": 1, "twins": 1, "cost_sol": pytest.approx(0.002005),
+                                                  "per_sell_sol": pytest.approx(0.002005)}  # fmt: skip
+        assert set(out["sells_per_buy"]) >= {"before", "after", "alert", "watch"}
+    finally:
+        st.close()

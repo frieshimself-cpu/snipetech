@@ -308,6 +308,51 @@ SOL, gone since the seed account was turned off), two PumpSwap trips of 6 Nov mo
 failed buys outside any trip, and the token-account rent each buy parks (0.00151384 SOL) until the owner closes the
 accounts in Axiom, which returns 99 % of it.
 
+## Fees per task (8 Nov)
+
+The owner, 8 Nov 12:35: "Why is it selling twice? Find a fix yourself. Also the agents should decide on the fees
+depending on what the specific task is."
+
+**Why it sells twice.** OKTech signs every auto-sell on up to three nonce accounts and sends them all; one lands and
+the others fail with pump error 6023 (nothing left to sell), each paying its priority fee plus the 5,000-lamport base
+fee, while a failed send's tip is refunded. `extraParams.globalSendCount 1` does not govern exits (verified 6 Nov).
+Until 8 Nov one setting, `[oktech] sell_fee_sol` (0.002), priced both the landed sell's tip and every twin's priority:
+the three winning copies of 7aPo3n at 12:10–12:20 left four failed twins at 2,000,000 lamports priority each, 0.008
+SOL of a 0.119 SOL gross. The fix splits the two: `[oktech] sell_tip_sol` (0.002) is the bid, carried by the tip and
+refunded when a send fails; `[oktech] sell_priority_sol` (0.0001) is what each failed twin pays. `sell_fee_sol` stays
+readable as a deprecated alias; a file that still sets it sets both the old way and logs a warning, so the server's
+config must not carry it once this is deployed. No running sniper is touched: the split reaches a sniper when the book
+replaces it (every builder in `oktech.py` sends it from then on). The risk, said plainly: if OKTech's untipped copies
+are sometimes what lands when the tipped one loses, a near-zero priority could leave a coin unsold. The unsold-coin
+watch and `/sell` cover that; the measure stage counts it (below).
+
+**Fees per task.** `fees.py` gives each planned sniper its four numbers (buy priority, buy tip, sell tip, sell
+priority) from its kind (a copy of a given leader, a hunt, a launch sniper, a MIG sniper, a probe) and the evidence on
+`fills`, inside the owner's `[fees] bounds` (per kind and number, min and max; defaults at today's values with the
+tips' max at 0.005, the autotune bound the control arm's tip already had). The rule of evidence, in the module's
+docstring: a tip is raised above the minimum only where 10+ fills at the higher tip landed measurably earlier than 10+
+at the lower one (`trades_behind`, else `price_gap_pct`, lower; a one-sided test at the 80 % level); otherwise the
+minimum, because the 6 Nov fee test paid 20 times the fee and landed no earlier. Priorities are never raised: the buy
+priority is charged again on every exit, the sell priority on every failed twin. Evidence is per kind and, for
+copies, per leader: a leader's fills never price another leader's sniper. The book's arm is the floor of a copy's buy
+bid (the policy may raise the tip above it on evidence, never lower it); a verdict's recommended bribe is the floor of
+a dev sniper's; a bid asked for by hand (`oktech copylist --priority --tip`, the fee test) wins over the policy and is
+said so in the sniper's notes. Every planned sniper's notes carry one line: which fee it gets and why. The strategist
+may narrow a kind's bounds (`fees.tune.<kind>.<number>.min|max`, checked against the owner's outer bounds and never
+past them; `config.NEVER_TUNABLE_KEYS` unchanged, `fees.bounds` owner-only). The operator and the analyst read the
+policy's current choice per kind and per leader with `read_fee_policy`; the strategist's weekly evidence carries it as
+`fee_policy`.
+
+**Measuring whether it worked.** Every fill already records its priority and tip. Measure's run summary now has
+`twins_per_sell`: the failed twins' cost per landed sell, grouped by the sell priority the twins paid (0.002 before the
+split, 0.0001 after), and `sells_per_buy`: landed sells per buy for buys made by snipers at the old and the new sell
+priority, a buy counted only once its longest hold (600 s) is over. For the first 20 sells after the split measure
+writes one line per new sell to `operator/notes.md`; when the ratio after falls more than 0.15 under the ratio before
+(four buys due on each side at least) it writes an ALERT line naming `/sell` and `[oktech] sell_priority_sol`. The
+post-mortem's levers carry the same split: the `single_send` lever says the twins' cost per trip at each sell
+priority, and the `sell_fee` lever now names `oktech.sell_tip_sol` (`tests/test_fees.py`, `tests/test_measure_run.py`,
+`tests/test_oktech.py`).
+
 ## What the agents remember: lessons, ideas and, since 8 Nov, the research record
 
 The operator, the analyst and the strategist share one memory, and every turn's message carries it: the book's

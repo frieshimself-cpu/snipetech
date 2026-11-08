@@ -27,8 +27,10 @@ from typing import Any
 
 import httpx
 
+from . import fees as fee_policy
 from .config import Config
 from .exits_menu import MENU
+from .fees import FeeChoice
 from .store import Store
 
 KINDS = ("copy", "dev")  # what `oktech plan --only` names; verdict copies are recorded as kind "vcopy"
@@ -255,11 +257,18 @@ def migration_sell(exit_params: dict | None) -> dict | None:
     return {"enabled": True, "sellPercent": _round(frac * 100, 2), "delayMs": round(ms)}
 
 
-def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0.001) -> dict | None:
+def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0.002, sell_priority_sol: float = 0.0001,
+             *, sell_fee_sol: float | None = None) -> dict | None:  # fmt: skip
     """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell. A take-profit that
     sells part of the position is followed by an unreachable 100 % stage (OKTech's app: "100 % must be last"). Never
     sends autoStop: it switches the exits off on a fast pump (playbook 9). A migration sell goes out as scored
-    (`migration_sell`) and is flagged as never seen live."""
+    (`migration_sell`) and is flagged as never seen live.
+
+    The sell bid is the tip (`sell_tip_sol`, refunded when a send fails); the priority (`sell_priority_sol`) is what
+    each of OKTech's failed twin sends pays, so it is near zero by default (8 Nov: 0.008 SOL of twins on a 0.119 SOL
+    gross at 0.002). `sell_fee_sol` is the deprecated one-number form: it sets both the old way."""
+    if sell_fee_sol is not None:
+        sell_tip_sol = sell_priority_sol = float(sell_fee_sol)
     e = exit_params or {}
     tp, frac = float(e.get("take_profit") or 0), float(e.get("tp_sell_fraction") or 1)
     sl, trail, act = (
@@ -296,8 +305,8 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     out: dict[str, Any] = {
         "enabled": True,
         "stages": stages,
-        "sellTipAmount": sell_fee_sol,
-        "sellPriorityFeeSol": sell_fee_sol,
+        "sellTipAmount": _round(float(sell_tip_sol), 6),
+        "sellPriorityFeeSol": _round(float(sell_priority_sol), 6),
     }
     if hold > 0:
         out |= {"sellAfterSeconds": _round(hold, 1), "sellPercent": 100}
@@ -331,14 +340,18 @@ def dev_sniper(score: dict, cfg: Config) -> PlannedSniper | None:
     if score.get("verdict") != "SNIPE" or not rec.get("buy_sol"):
         return None
     notes: list[str] = []
-    prio, tip = fees(rec.get("bribe_sol"), cfg.oktech.tip_share, notes)
+    # the sweep's recommended bribe is the floor of this launch sniper's buy bid; the policy prices the rest
+    bribe_prio, bribe_tip = fees(rec.get("bribe_sol"), cfg.oktech.tip_share, notes)
+    choice = fee_policy.choose(cfg, "launch", floor={"buy_priority": bribe_prio, "buy_tip": bribe_tip})
+    prio, tip = choice.buy_priority, choice.buy_tip
+    notes.append(choice.note())
     config: dict[str, Any] = {
         "mode": "normal", "platforms": ["pumpfun"], "devWallets": [score["address"]],
         "buyAmount": _capped_size(float(rec["buy_sol"]), cfg, notes), "priorityFee": prio, "tipAmount": tip, "singleSnipe": True,
         "totalSnipes": max(1, min(100, int(cfg.oktech.verdict_max_buys))),
         "extraParams": execution_params(compute_units=cfg.oktech.compute_units),
     }  # fmt: skip
-    sell = autosell(rec.get("exit"), notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
+    sell = autosell(rec.get("exit"), notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
     if cfg.oktech.preconf:
@@ -383,7 +396,9 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
             notes.append("max entry market cap filter skipped: no SOL/USD price available")
     if filt.get("max_crowd_buyers") is not None:
         notes.append(f"'at most {filt['max_crowd_buyers']} other buyers' filter has no OKTech equivalent; not applied")
-    prio, tip = fees(None, cfg.oktech.tip_share, notes)
+    choice = fee_policy.choose(cfg, "copy", leader=a)
+    prio, tip = choice.buy_priority, choice.buy_tip
+    notes.append(choice.note())
     config: dict[str, Any] = {
         "mode": "ctbot", "ctbotWallets": [wallet], "ctbotMinWallets": cfg.oktech.copy_min_wallets,
         "ctbotTimeWindowMs": cfg.oktech.copy_time_window_ms,
@@ -398,7 +413,7 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     own = rec.get("own_exit_params")
     exit_line = "sells when the copied wallet sells"
     if own and rec.get("own_exit_beats_mirroring"):
-        sell = autosell(own | {"copy_exit": True}, notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
+        sell = autosell(own | {"copy_exit": True}, notes, **choice.autosell_fees())
         if sell:
             config["autoSell"] = sell
             exit_line += f", or earlier on its own exits ({_describe_exit(own)}), which did better on unseen positions"
@@ -468,20 +483,28 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
 def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, max_buys: int = 5,
                      exit_params: dict | None = None, cfg: Config | None = None, exit_name: str = "lab",
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
-                     tag: str = "", compute_units: int | None = None, salt: str = "") -> PlannedSniper:  # fmt: skip
+                     tag: str = "", compute_units: int | None = None, salt: str = "",
+                     fees: FeeChoice | None = None) -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
-    the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). `priority_fee` / `tip` (SOL) are the buy
-    bid (the book's arms); sells always bid `[oktech] sell_fee_sol`. `send_count` / `compute_units` go to
-    extraParams (see execution_params); `salt` makes a fresh externalId for a replacement with the same settings."""
+    the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). The four fees come from the fee policy
+    (`fees`, fees.choose for a copy of this leader; without one, the policy with no evidence: the minimums, sells at
+    `[oktech] sell_tip_sol` + `sell_priority_sol`). `priority_fee` / `tip` (SOL) asked for by hand (the fee test's
+    flags) win over the policy's buy bid and are said so. `send_count` / `compute_units` go to extraParams (see
+    execution_params); `salt` makes a fresh externalId for a replacement with the same settings."""
     cfg = cfg or Config()
     notes: list[str] = []
-    prio, tip_amount = fees(None, cfg.oktech.tip_share, notes)
-    if priority_fee is not None:
+    choice = fees or fee_policy.choose(cfg, "copy", leader=address)
+    prio, tip_amount = choice.buy_priority, choice.buy_tip
+    by_hand = []
+    if priority_fee is not None and abs(float(priority_fee) - prio) > 1e-12:
         prio = _round(max(0.001, float(priority_fee)), 4)
-    if tip is not None:
+        by_hand.append(f"priority {prio:g}")
+    if tip is not None and abs(float(tip) - tip_amount) > 1e-12:
         tip_amount = _round(max(0.002, float(tip)), 4)
+        by_hand.append(f"tip {tip_amount:g}")
     tip = tip_amount
+    notes.append(choice.note() + (f"; buy bid {' + '.join(by_hand)} asked for by hand instead" if by_hand else ""))
     ex = dict(exit_params or EXITS[exit_name])
     ex.setdefault("sell_on_dev_sell", False)
     config: dict[str, Any] = {
@@ -497,12 +520,12 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     config["extraParams"] = execution_params(send_count, cu)
     if cfg.oktech.preconf:
         config["preconf"] = True
-    sell = autosell(ex | {"copy_exit": True}, notes, sell_fee_sol=cfg.oktech.sell_fee_sol)
+    sell = autosell(ex | {"copy_exit": True}, notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL, {buy_sol:g} SOL per copy, stops after "
                f"{config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
-               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {cfg.oktech.sell_fee_sol:g} + {cfg.oktech.sell_fee_sol:g} SOL, "
+               f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "
                f"send count {config['extraParams']['globalSendCount']}, no seed account"
                + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else ""),
                "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy"]  # fmt: skip
@@ -631,23 +654,28 @@ async def apply(client: OktechClient, store: Store, plan: SyncPlan, wallet: str 
     return results
 
 
-def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> list[PlannedSniper]:
-    """Two capped snipers that measure where OKTech lands, at the minimum fees:
+def speedtest_snipers(
+    buy_sol: float, snipes: int, copy_wallet: str | None, cfg: Config | None = None
+) -> list[PlannedSniper]:
+    """Two capped snipers that measure where OKTech lands, at the probe kind's fees (the minimums, fees.py):
 
     * launch — buys the next `snipes` pump.fun launches the moment they appear (vs. the create tx);
     * copy   — copies the next `snipes` buys of `copy_wallet` (vs. that wallet's own tx).
     Each sells everything 10 s later (or on a 40% drop; the copy also when the copied wallet sells),
     so almost all of the SOL comes back; the cost is the fees.
     """
-    sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+    choice = fee_policy.choose(cfg or Config(), "probe")
+    sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": choice.sell_tip,
+            "sellPriorityFeeSol": choice.sell_priority,
             "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],  # OKTech needs >= 1 stage; the timer rules
             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
-    base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
+    base = {"buyAmount": _round(buy_sol), "priorityFee": choice.buy_priority, "tipAmount": choice.buy_tip, "singleSnipe": True,
             "totalSnipes": int(snipes), "autoSell": sell, "extraParams": execution_params(), "preconf": True}  # fmt: skip
     out = [PlannedSniper("probe", "launch", f"snipetech speed test: next {snipes} pump.fun launches",
                          {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, **base},
                          summary=[f"buys {buy_sol:g} SOL of each of the next {snipes} pump.fun launches, then stops",
-                                  "sells 100% after 10 s (or at -40%)", "measures: slots and position after the create"])]  # fmt: skip
+                                  "sells 100% after 10 s (or at -40%)", "measures: slots and position after the create"],
+                         notes=[choice.note()])]  # fmt: skip
     if copy_wallet:
         out.append(PlannedSniper("probe", copy_wallet, f"snipetech speed test: copy {copy_wallet[:6]} x{snipes}", {
             "mode": "ctbot", "ctbotWallets": [{"address": copy_wallet, "label": "speed test leader", "minSol": 0.1}],
@@ -655,7 +683,8 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
             "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": 50, "sellPercent": 100, "triggerWalletOnly": True, "delayMs": 0},
             "speedMode": True, **base},
             summary=[f"copies the next {snipes} buys (>= 0.1 SOL) of {copy_wallet} with {buy_sol:g} SOL, then stops",
-                     "sells when it sells, after 10 s at the latest (or at -40%)", "measures: slots and position after its buy"]))  # fmt: skip
+                     "sells when it sells, after 10 s at the latest (or at -40%)", "measures: slots and position after its buy"],
+            notes=[choice.note()]))  # fmt: skip
     return out
 
 
@@ -734,9 +763,21 @@ def venue_refusal(venue: str | None, platforms=STRATEGY_PLATFORMS) -> str | None
             f"(platforms {', '.join(platforms)}): it could never buy the coins its record is made of")  # fmt: skip
 
 
+def strategy_fee_kind(trigger: dict, via: str = "hunt") -> str:
+    """The fee kind a strategy's sniper runs as: mig for a MIG rule, hunt for the launch-window rules sent through
+    OKTech hunt (whale / burst via hunt, and a hunt rule), launch otherwise."""
+    kind = trigger.get("kind")
+    if kind == "mig":
+        return "mig"
+    if kind == "hunt" or (kind in ("whale", "burst") and via != "crowd"):
+        return "hunt"
+    return "launch"
+
+
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60, *,
-    dev_max_zero_confirmed: str = "",
+    dev_max_zero_confirmed: str = "", cfg: Config | None = None, fees: FeeChoice | None = None,
+    fills: list[dict] | None = None, kinds_of: dict[str, str] | None = None,
 ) -> PlannedSniper:  # fmt: skip
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun), a `hunt` sniper
     for the launch-window rules, or a `mig` sniper (OKTech's pump migration sniper) for a MIG rule.
@@ -745,7 +786,10 @@ def strategy_sniper(
     the launch sniper with OKTech's crowd-buy filter: buy once early buyers have put in >= X SOL.
 
     `dev_max_zero_confirmed`: OKTech's answer on maxDevBuySol 0 as the owner recorded it (operator/OKTECH), empty while
-    it is not. A hunt sent with maxDevBuySol 0 is sent as scored either way; its notes say which it is."""
+    it is not. A hunt sent with maxDevBuySol 0 is sent as scored either way; its notes say which it is.
+
+    The four fees come from the fee policy for the sniper's kind (`fees`, or fees.choose over `fills` / `kinds_of`;
+    with nothing, the minimums)."""
     trig, ex = strategy["trigger"], dict(strategy["exit"])
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
@@ -753,8 +797,10 @@ def strategy_sniper(
     why = venue_refusal(trig.get("venue"))
     if why:
         raise ValueError(f"the rule {why}")
+    choice = fees or fee_policy.choose(cfg or Config(), strategy_fee_kind(trig, via), fills=fills, kinds_of=kinds_of)
+    notes.append(choice.note())
     config: dict[str, Any] = {"mode": "normal", "platforms": list(STRATEGY_PLATFORMS), "monitorProgram": True, "buyAmount": _round(buy),
-                              "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
+                              "priorityFee": choice.buy_priority, "tipAmount": choice.buy_tip, "singleSnipe": True,
                               "totalSnipes": max(1, min(100, int(max_buys))), **EXECUTION}  # fmt: skip
     if not preexec:
         config["preexec"] = {"enabled": False}
@@ -762,7 +808,7 @@ def strategy_sniper(
         watched, dry = "every pump.fun coin as it moves to PumpSwap", " with OKTech's local dry run on"
     else:
         watched, dry = "every new pump.fun launch", " and only after a local dry run of the create + buy succeeds"
-    summary = [f"{watched}, {buy:g} SOL per buy, minimum fees (0.001 priority + 0.002 tip)",
+    summary = [f"{watched}, {buy:g} SOL per buy, fees {choice.buy_priority:g} priority + {choice.buy_tip:g} tip",
                f"stops buying by itself after {config['totalSnipes']} buys; earlier positions keep their exits, but the buy that uses up the cap can be left with no exit (DTAU, 4siK)",
                "buys straight into the wallet (no seed account)" + (dry if preexec else ", no local dry run")]  # fmt: skip
     if kind in ("whale", "burst"):
@@ -896,7 +942,7 @@ def strategy_sniper(
         # a coin with no trades for a minute is dead: OKTech's dead exit frees the (one-shot) sniper instead of
         # holding to the timer. Not part of the paper exit, so it is a cap on hold time, never a widening.
         ex["stale_secs"] = float(stale)
-    sell = autosell(ex, notes)
+    sell = autosell(ex, notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
         summary.append(f"exit: {_describe_exit(ex)}")
@@ -921,7 +967,9 @@ def replica_from_study(
     notes: list[str] = []
     summary = [f"rules of {wallet} from {study.get('entries', 0)} entries vs {study.get('skipped_samples', 0)} alternatives "
                f"({study.get('tape_hours', 0):.1f} h of tape)"]  # fmt: skip
-    prio, tip = fees(None, cfg.oktech.tip_share, notes)
+    choice = fee_policy.choose(cfg, "launch")
+    prio, tip = choice.buy_priority, choice.buy_tip
+    notes.append(choice.note())
     config: dict[str, Any] = {"mode": "normal", "platforms": ["pumpfun"], "monitorProgram": True, "buyAmount": _round(buy_sol),
                               "priorityFee": prio, "tipAmount": tip, "singleSnipe": True, "totalSnipes": max(1, min(100, int(max_buys))),
                               "extraParams": execution_params(compute_units=cfg.oktech.compute_units)}  # fmt: skip
@@ -963,7 +1011,7 @@ def replica_from_study(
     stale = xnum.get("secs_since_last_trade")
     hold = xnum.get("hold_s")
     sell: dict[str, Any] = {"enabled": True, "stages": [{"gainPercent": 20, "sellPercent": 50, "delaySellAllSeconds": 0}],
-                            "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+                            "sellTipAmount": choice.sell_tip, "sellPriorityFeeSol": choice.sell_priority,
                             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 20, "sellPercent": 100}], "confirmMs": 250}}  # fmt: skip
     if stale and stale["direction"] == ">=" and stale["others_pass"] <= 0.05:
         secs = max(1, int(round(stale["threshold"])))

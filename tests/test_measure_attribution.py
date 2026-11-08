@@ -118,7 +118,11 @@ def test_the_levers_say_what_each_change_would_have_saved_and_who_can_make_it(ni
     assert lv["single_send"]["sol"] == pytest.approx(0.00802) and lv["single_send"]["who"] == "oktech"
     assert lv["single_send"]["trips"] == 2
     assert lv["sell_fee"]["sol"] == pytest.approx(0.007) and lv["sell_fee"]["trips"] == 3
-    assert lv["sell_fee"]["who"] == "owner" and lv["sell_fee"]["key"] == "oktech.sell_fee_sol"
+    assert lv["sell_fee"]["who"] == "owner" and lv["sell_fee"]["key"] == "oktech.sell_tip_sol"
+    # the twins' cost per landed sell, by the sell priority the twins paid (before / after the 8 Nov split)
+    per = lv["single_send"]["twins_per_sell"]
+    assert per["0.002"]["trips"] == 2 and per["0.002"]["dups"] == 4 and per["0.002"]["sol"] == pytest.approx(0.00802)
+    assert per["0.002"]["per_trip_sol"] == pytest.approx(0.00401)
     ex = lv["exit"]
     assert (ex["exit"], ex["trips"], ex["differed"], ex["better"], ex["worse"]) == ("hold60", 3, 1, 1, 0)
     assert ex["sol"] == pytest.approx(0.001984) and ex["who"] == "owner" and ex["needs"] == "code"

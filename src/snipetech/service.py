@@ -760,7 +760,7 @@ class Service:
 
         if copy_wallet:
             copy_wallet = self._check(copy_wallet)
-        planned = speedtest_snipers(buy_sol, snipes, copy_wallet)
+        planned = speedtest_snipers(buy_sol, snipes, copy_wallet, cfg=self.cfg)
         out = {"wallet": wallet, "snipers": [{"name": p.name, "summary": p.summary, "config": p.config} for p in planned],
                "max_spend_sol": round(len(planned) * snipes * (buy_sol + 0.003 + 0.002), 4)}  # fmt: skip
         if create:
@@ -1226,13 +1226,17 @@ class Service:
                               max_buys: int = 5, exit_name: str = "lab", priority_fee: float | None = None,
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
-                              exit_params: dict | None = None) -> dict:  # fmt: skip
+                              exit_params: dict | None = None, fee_floor: dict | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
         is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
-        (the book's per-wallet exit, book/policy.exit_for), for every spec."""
+        (the book's per-wallet exit, book/policy.exit_for), for every spec. Each sniper's fees are the fee policy's for
+        a copy of its leader over the measure stage's fills (fees.choose), `fee_floor` (the book's arm) as the floor;
+        `priority_fee` / `tip` given by hand win over the policy's buy bid."""
+        from . import fees as fee_policy
         from .oktech import list_copy_sniper
 
+        evidence = fee_policy.evidence_fills(self.store, self.cfg.operator.wallet, time.time())
         out = []
         client = self._oktech() if create else None
         try:
@@ -1252,9 +1256,10 @@ class Service:
                 label = parts[1] if len(parts) > 1 and parts[1] else address[:6]
                 min_sol = float(parts[2]) if len(parts) > 2 and parts[2] else 1.0
                 ex_name = parts[3] if len(parts) > 3 and parts[3] else exit_name
+                choice = fee_policy.choose(self.cfg, "copy", leader=address, fills=evidence, floor=fee_floor)
                 p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name,
                                      priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
-                                     compute_units=compute_units, salt=salt, exit_params=exit_params)  # fmt: skip
+                                     compute_units=compute_units, salt=salt, exit_params=exit_params, fees=choice)  # fmt: skip
                 row = {
                     "id": address,
                     "label": label,
@@ -1292,6 +1297,11 @@ class Service:
         picked = [s for s in frozen if strategy_id in (None, s["id"])]
         if not picked:
             raise SystemExit(f"no frozen strategy {strategy_id or ''}: see `snipetech paper report`")
+        # the fee policy's evidence: the measure stage's fills, each non-copy buy told its kind by the snipers alive at it
+        from . import fees as fee_policy
+
+        evidence = fee_policy.evidence_fills(self.store, self.cfg.operator.wallet, time.time())
+        kinds_of = fee_policy.kinds_of_fills(evidence, self.store.oktech_snipers(active=False))
         out = []
         client = self._oktech() if create else None
         try:
@@ -1299,7 +1309,7 @@ class Service:
                 if buy_sol:
                     s = s | {"buy_sol": buy_sol}
                 try:
-                    p = strategy_sniper(s, max_buys, via, preexec, stale,
+                    p = strategy_sniper(s, max_buys, via, preexec, stale, cfg=self.cfg, fills=evidence, kinds_of=kinds_of,
                                         dev_max_zero_confirmed=str(answer.get("words") or ""))  # fmt: skip
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})

@@ -40,6 +40,18 @@ Whole result +0.1114 SOL on 0.6 SOL deployed, in 10 minutes; the duplicates took
 trades say little about the wallet's expectancy (its forecast was +0.027 a copy); 7aPo3n's live record is now 9
 copies, 4 won, about +0.10 net including the 7 Nov trips, before the three unread trips.
 
+The duplicates, 12:35, the owner: "Why is it selling twice? Find a fix yourself." The four failed twins each paid
+2,000,000 lamports priority because one setting priced the landed sell's tip and the twins' priority alike. The
+`fee-policy` branch splits them: the sell bid is the tip (`[oktech] sell_tip_sol` 0.002, refunded when a send fails),
+the sell priority is 0.0001 (`sell_priority_sol`, what each twin pays), and every sniper's fees come from a policy per
+kind of task (`docs/architecture.md`, "Fees per task"). Nothing live changes on deploy: the split reaches each sniper
+when the book replaces it, and the server's config must not still set `sell_fee_sol` (the alias sets both the old
+way). What to watch on the first sells after: in `fills`, the landed sell at tip 2,000,000 lamports and its twins at
+100,000 priority; measure's `twins_per_sell` line (about 0.0001 a twin instead of 0.002); and `sells_per_buy`, which
+says for the first 20 sells whether sells still land once per buy and writes an ALERT line if fewer do (the one risk:
+if an untipped copy was what landed when the tipped one lost, a coin could stay unsold; the unsold-coin watch and
+`/sell` cover it, and `sell_priority_sol` back toward 0.002 is the owner's switch).
+
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
 The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy landing: n 35, +0.0271 SOL a trade,

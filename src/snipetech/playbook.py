@@ -14,8 +14,16 @@ OKTech playbook (measured on our own live trades, 5-6 Nov 2026; a slot is about 
    agent's: report it with its /sell line.
 3. OKTech charges the task's buy priority fee again on the landed sell of every exit (7 of 7 fee-test sells); the buy
    tip never leaks into sells. A bid is raised only through the tip, never through the priority fee.
-4. Every sell brings 1.2-1.6 failed duplicate sends (42 for 31 sells), each paying a fee; one send requested does not
-   stop them. A round trip at the low bid costs about 0.009 SOL, not the lab's old 0.007.
+4. Every sell brings 1.2-1.6 failed duplicate sends (42 for 31 sells; 4 for 3 sells on 8 Nov), each paying its
+   priority fee plus the base fee while its tip is refunded; one send requested does not stop them. A round trip at
+   the low bid cost about 0.009 SOL, not the lab's old 0.007. Since 8 Nov the sell bid is the tip ([oktech]
+   sell_tip_sol, 0.002) and the sell priority is near zero ([oktech] sell_priority_sol, 0.0001: what each twin
+   pays), on every sniper made from then on; a running sniper keeps its old sells until the book replaces it. On the
+   first live sells after it, verify in fills that the landed sell paid tip 0.002 and its twins 100,000 lamports
+   priority, and in measure's sells_per_buy line that sells still land once per buy: if OKTech's untipped copies were
+   what landed, a coin could stay unsold (the unsold-coin watch and /sell cover it; the owner can set the priority
+   back). What each kind of sniper bids is the fee policy's (read_fee_policy): the minimum unless 10+ fills at a
+   higher tip landed measurably earlier.
 5. Exits as they fire: the 1 s dead exit sells 1.5-2.4 s after the buy (n 6); the copy exit 0-1 slot after the
    leader's big sell (n 4); the stop-loss 1-2 slots after the price crosses (n 3); the 300 s timer within 2 s (n 6).
 6. Landing: quiet leaders are copied 0-1 trade behind at +1-3 % (6 Nov, n 13); crowded leaders 2-4 behind at

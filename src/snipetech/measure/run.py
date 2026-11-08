@@ -204,6 +204,90 @@ def _sells_a_coin(meta) -> bool:
     return meta is not None and any(str(ix.name).startswith("sell") for ix in meta.pump_ixs)
 
 
+SELL_SPLIT_MAX_PRIORITY_SOL = 0.0005  # a sniper whose sell priority is at or under this was made after the 8 Nov split
+SELL_DUE_SECS = (
+    600.0  # the longest hold a live exit scores (oktech.EXIT_MAX_HOLD_SECS): a younger buy's sell is not due
+)
+SELL_SPLIT_WATCH_SELLS = 20  # the first sells after the split are said one by one
+SELL_SPLIT_WATCH_KEY = "measure:sell_split_watch"
+
+
+def sell_priority_of(payload: dict | None) -> float | None:
+    """The sell priority fee (SOL) a sniper was created with (autoSell.sellPriorityFeeSol), None when unknown."""
+    if not isinstance(payload, dict):
+        return None
+    a = payload.get("autoSell")
+    v = a.get("sellPriorityFeeSol") if isinstance(a, dict) else None
+    try:
+        return None if v is None else float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def twins_per_sell(sells: list[dict], failed_rows: list[dict], prio_by_sell: dict[str, float | None],
+                   window_s: float = TWIN_WINDOW_SECS) -> dict[str, dict[str, Any]]:  # fmt: skip
+    """What the failed twins cost per landed sell, grouped by the sell priority the twins paid (the setting that priced
+    them: 0.002 before the 8 Nov split, 0.0001 after), so measure tells whether the split worked. A sell with no twins
+    is grouped by the sell priority its sniper was created with (`prio_by_sell`); one with neither is 'unknown'."""
+    twins = twin_sells(failed_rows, sells, window_s)
+    rows = {f["sig"]: f for f in failed_rows}
+    per_sell: dict[str, list[dict]] = {s["sig"]: [] for s in sells}
+    for fsig, ssig in twins.items():
+        per_sell.setdefault(ssig, []).append(rows[fsig])
+    out: dict[str, dict[str, Any]] = {}
+    for s in sells:
+        tw = per_sell.get(s["sig"]) or []
+        if tw:
+            prio: float | None = statistics.median(int(t["priority_lamports"]) for t in tw) / 1e9
+        else:
+            prio = prio_by_sell.get(s["sig"])
+        key = f"{round(prio, 6):g}" if prio is not None else "unknown"
+        slot = out.setdefault(key, {"sells": 0, "twins": 0, "cost_sol": 0.0})
+        slot["sells"] += 1
+        slot["twins"] += len(tw)
+        slot["cost_sol"] += sum((int(t["priority_lamports"]) + BASE_FEE_LAMPORTS) / 1e9 for t in tw)
+    for slot in out.values():
+        slot["cost_sol"] = round(slot["cost_sol"], 9)
+        slot["per_sell_sol"] = round(slot["cost_sol"] / slot["sells"], 9) if slot["sells"] else 0.0
+    return out
+
+
+def sells_per_buy(buys: list[dict], trips: list[dict], prio_by_buy: dict[str, float | None], now: float, *,
+                  split_max_sol: float = SELL_SPLIT_MAX_PRIORITY_SOL, due_secs: float = SELL_DUE_SECS,
+                  watch_sells: int = SELL_SPLIT_WATCH_SELLS) -> dict[str, Any]:  # fmt: skip
+    """Landed sells per buy for buys made by snipers at the old sell priority ("before" the 8 Nov split) and at the
+    near-zero one ("after"), the risk the split carries: if OKTech's untipped copies were what landed when the tipped
+    one lost, a coin could stay unsold. A buy younger than `due_secs` is not counted (its sell is not due); a buy whose
+    sniper is unknown is nobody's. `watch`: a line for the first `watch_sells` sells after the split; `alert`: a line
+    when the ratio after is more than 0.15 under the ratio before, four buys due on each side at least."""
+    sold = {t["buy_sig"] for t in trips}
+    groups: dict[str, dict[str, Any]] = {"before": {"buys": 0, "sells": 0}, "after": {"buys": 0, "sells": 0}}
+    for b in buys:
+        p = prio_by_buy.get(b.get("sig") or "")
+        if p is None or b.get("ts") is None or float(b["ts"]) > now - due_secs:
+            continue
+        g = groups["after" if float(p) <= split_max_sol + 1e-12 else "before"]
+        g["buys"] += 1
+        g["sells"] += b["sig"] in sold
+    for g in groups.values():
+        g["ratio"] = round(g["sells"] / g["buys"], 3) if g["buys"] else None
+    before, after = groups["before"], groups["after"]
+
+    def words(g: dict[str, Any]) -> str:
+        return f"{g['sells']}/{g['buys']}" + (f" ({g['ratio']:.2f})" if g["ratio"] is not None else "")
+
+    watch = alert = None
+    if 1 <= after["sells"] <= watch_sells:
+        watch = (f"[measure] sells landed per buy since the sell-fee split (sell priority {split_max_sol:g} SOL or less): "
+                 f"{words(after)}, the first {after['sells']} of {watch_sells} sells watched; before the split {words(before)}")  # fmt: skip
+    if (after["buys"] >= 4 and before["buys"] >= 4 and after["ratio"] is not None and before["ratio"] is not None
+            and after["ratio"] < before["ratio"] - 0.15):  # fmt: skip
+        alert = (f"[measure] ALERT: fewer sells land per buy since the sell-fee split: {words(after)} against {words(before)} "
+                 "before. A coin nobody sold is the unsold-coin watch's to report with its /sell line; if coins stay "
+                 "unsold, [oktech] sell_priority_sol back toward 0.002 is the owner's setting to change.")  # fmt: skip
+    return {"before": before, "after": after, "watch": watch, "alert": alert}
+
+
 def _note(cfg: Config, now: float, notes, text: str) -> None:
     """One info line in the operator's notes (the book's sink unless one is passed); never fails the measure run."""
     try:
@@ -362,9 +446,8 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
     failed_meta = store.tx_meta([f["sig"] for f in all_failed]) if all_failed else {}
-    twins = twin_fees_by_sell(
-        [f | {"is_sell": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed], all_sells
-    )
+    failed_flagged = [f | {"is_sell": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed]
+    twins = twin_fees_by_sell(failed_flagged, all_sells)
     closed: dict[str, float] = {}
     for t in paired["trips"]:
         closed[t["sell_sig"]] = closed.get(t["sell_sig"], 0.0) + float(t["tokens"])
@@ -413,6 +496,19 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             store.put_fill(s | want)
     for s, buy in newly_crossed:
         _note(cfg, now, notes, _crossed_line(s, buy))
+    # did the 8 Nov sell-fee split work: the twins' cost per landed sell by the sell priority they paid, and sells
+    # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
+    prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}
+    prio_by_sell = {s["sig"]: prio_by_buy.get(first_buy_for_sell.get(s["sig"]) or "") for s in all_sells}
+    per_sell = twins_per_sell(all_sells, failed_flagged, prio_by_sell)
+    split = sells_per_buy(all_buys, paired["trips"], prio_by_buy, now)
+    said = store.coverage(SELL_SPLIT_WATCH_KEY)
+    if split["watch"] and said.get("sells") != split["after"]["sells"]:
+        _note(cfg, now, notes, split["watch"])
+        store.set_coverage(SELL_SPLIT_WATCH_KEY, {"sells": split["after"]["sells"], "ts": int(now)})
+    if split["alert"] and said.get("alert_sells") != split["after"]["sells"]:
+        _note(cfg, now, notes, split["alert"])
+        store.set_coverage(SELL_SPLIT_WATCH_KEY, said | {"alert_sells": split["after"]["sells"], "ts": int(now)})
     # every exit on the menu replayed from each copy buy six minutes old: what another exit would have made of it
     try:
         shadowed = shadow_new_buys(store, cfg, wallet, now, look)
@@ -450,7 +546,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
-            "landing_by_progress": landing_by_progress(all_buys)}  # fmt: skip
+            "landing_by_progress": landing_by_progress(all_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip
 
 
 async def backfill(svc, cfg: Config, since_ts: int, until_ts: int, **kw) -> dict[str, Any]:

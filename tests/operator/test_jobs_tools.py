@@ -420,3 +420,24 @@ def test_loop_stage_jobs_do_not_use_up_the_research_limit(jobs):
     for i, argv in enumerate((["measure", "run"], ["book", "run"], ["events", "poll", "--once"], ["discover", "run"])):
         _meta(jobs.ops.data / "jobs", f"s{i}", argv, running=True, pid=os.getpid())
     assert jobs.start(["follow", "--kols"])["id"]
+
+
+def test_read_fee_policy_tool_says_each_kinds_fee_and_why(toolbox):
+    """The operator and the analyst can read the fee policy's current choice per kind (and per copied leader) with the
+    evidence behind it, and the owner's bounds; nothing in it trades or changes a setting."""
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        now = 1_793_923_200
+        st.add_oktech_sniper({"id": "c1", "external_id": "c1", "kind": "copy", "source": "LEAD", "name": "snipetech copy book LEAD",
+                              "config_hash": "h", "payload": {"mode": "ctbot", "ctbotWallets": [{"address": "LEAD"}]}})  # fmt: skip
+        for i in range(12):
+            st.put_fill({"sig": f"B{i}", "ts": now - 600 - i, "wallet": "ME", "wallet_copied": "LEAD", "mint": f"M{i}", "side": "buy",
+                         "sol": 0.2, "trades_behind": 3, "price_gap_pct": 25.0, "priority_lamports": 1_000_000, "tip_lamports": 2_000_000})  # fmt: skip
+    finally:
+        st.close()
+    out = json.loads(_call(tools["read_fee_policy"]))
+    assert out["kinds"]["copy"]["buy_tip"] == 0.002 and out["kinds"]["copy"]["sell_priority"] == 0.0001
+    lead = next(r for r in out["copy_leaders"] if r["leader"] == "LEAD")
+    assert lead["buy_tip"] == 0.002 and "12 fills" in lead["why"]["buy_tip"]
+    assert out["bounds"]["copy"]["buy_tip"] == [0.002, 0.005] and "10" in out["rule"]

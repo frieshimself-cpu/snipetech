@@ -8,6 +8,7 @@ Every number that changes a profitability verdict lives here so you can calibrat
 from __future__ import annotations
 
 import dataclasses
+import logging
 import os
 import re
 import tomllib
@@ -170,13 +171,68 @@ class OktechConfig:
     # verdict snipers (`oktech push`): capped like every other sniper, and never bigger than this per buy
     verdict_max_buys: int = 5
     max_buy_sol: float = 1.0
-    # Sells: OKTech sends every sell 2-3 times on separate nonce accounts (measured 5-6 Nov; the losers fail with pump
-    # error 6023 and still pay their priority fee), so the sell bid is a fixed small fee for every arm, never the buy bid.
-    sell_fee_sol: float = 0.002  # autoSell sellPriorityFeeSol and sellTipAmount on copy snipers
+    # Sells: OKTech signs every sell on up to three nonce accounts and sends all (measured 5-8 Nov); one lands, the
+    # others fail with pump error 6023 and pay their priority fee plus the base fee, while a failed send's tip is
+    # refunded. So the sell bid is carried by the tip (sell_tip_sol, autoSell.sellTipAmount) and the priority
+    # (sell_priority_sol, autoSell.sellPriorityFeeSol) is near zero: it is what each failed twin pays. 8 Nov, before the
+    # split: 0.008 SOL of twins on 0.119 SOL gross. Never the buy bid on either. The fee policy (fees.py) may raise the
+    # tip per kind of sniper inside [fees] bounds; these two are the base every builder falls back to.
+    sell_tip_sol: float = 0.002
+    sell_priority_sol: float = 0.0001
     # Compute-unit limit per buy (extraParams.computeUnits). OKTech's default is 150,000; our buys used 54-79k. The leader
     # ranks by fee per CU, so a tighter limit at the same SOL fee bids higher. Unset = OKTech's default; set it per arm
     # from measured consumption (fills.cu_used), never below the largest buy seen.
     compute_units: int | None = None
+
+    @property
+    def sell_fee_sol(self) -> float:
+        """Deprecated (8 Nov): the one sell fee that priced both the landed sell's tip and each failed twin's priority.
+        Readable as the sell bid (sell_tip_sol); a file or a `config set` that sets it sets both the old way."""
+        return self.sell_tip_sol
+
+    @sell_fee_sol.setter
+    def sell_fee_sol(self, value: float) -> None:
+        both = float(value)
+        logging.getLogger("snipetech.config").warning(
+            "[oktech] sell_fee_sol is deprecated: it sets sell_tip_sol and sell_priority_sol both to %g "
+            "(set the two apart: the tip is the bid, the priority is what each failed twin pays)",
+            both,
+        )
+        self.sell_tip_sol = both
+        self.sell_priority_sol = both
+
+
+# The kinds of sniper the fee policy (fees.py) prices apart: a copy of a leader (ctbot), a hunt (OKTech hunt mode), a
+# launch sniper (normal mode on new launches: dev, replica, whale), a MIG sniper, a probe (the speed test).
+FEE_KINDS = ("copy", "hunt", "launch", "mig", "probe")
+FEE_NUMBERS = ("buy_priority", "buy_tip", "sell_tip", "sell_priority")
+
+
+def _fee_bounds_today() -> dict[str, dict[str, float]]:
+    """The owner's outer bounds per number, at today's values: the minimum is what every sniper pays now, the tips may
+    go to 0.005 (the [autotune] bound on the control arm's tip), the buy priority never moves (OKTech charges it again
+    on every exit), the sell priority may go back to 0.002 (what it was before the 8 Nov split) if sells stop landing."""
+    return {
+        "buy_priority": {"min": 0.001, "max": 0.001},
+        "buy_tip": {"min": 0.002, "max": 0.005},
+        "sell_tip": {"min": 0.002, "max": 0.005},
+        "sell_priority": {"min": 0.0001, "max": 0.002},
+    }
+
+
+def _default_fee_bounds() -> dict[str, dict[str, dict[str, float]]]:
+    return {kind: _fee_bounds_today() for kind in FEE_KINDS}
+
+
+@dataclass
+class FeesConfig:
+    """Fees per task (fees.py). `bounds`: the owner's outer bounds per kind and number, never tunable. `tune`: the
+    strategist's per-kind bounds, which may move only inside the owner's (its overlay writes `fees.tune.<kind>.<number>.
+    min|max`, each checked against `bounds`); they start equal to the owner's. The policy picks each number inside
+    the two: the minimum unless 10+ fills at a higher tip landed measurably earlier than 10+ at the lower one."""
+
+    bounds: dict[str, dict] = field(default_factory=_default_fee_bounds)
+    tune: dict[str, dict] = field(default_factory=_default_fee_bounds)
 
 
 @dataclass
@@ -395,6 +451,7 @@ class Config:
     book: BookConfig = field(default_factory=BookConfig)
     autotune: AutotuneConfig = field(default_factory=AutotuneConfig)
     lab: LabConfig = field(default_factory=LabConfig)
+    fees: FeesConfig = field(default_factory=FeesConfig)
     path: Path | None = field(default=None, compare=False, repr=False)
     env_keys: list[str] = field(
         default_factory=list, compare=False, repr=False
@@ -437,6 +494,12 @@ class Config:
         for part in parts[:-1]:
             obj = getattr(obj, part)
         name = parts[-1]
+        if dataclasses.is_dataclass(obj) and isinstance(getattr(type(obj), name, None), property):
+            prop = getattr(type(obj), name)  # a deprecated alias (oktech.sell_fee_sol): its setter does the work
+            if prop.fset is None:
+                raise KeyError(f"config key {dotted!r} is read-only")
+            setattr(obj, name, _coerce(value, type(getattr(obj, name))))
+            return getattr(obj, name)
         if not dataclasses.is_dataclass(obj) or name not in {f.name for f in dataclasses.fields(obj)}:
             raise KeyError(f"unknown config key {dotted!r}")
         current = getattr(obj, name)
@@ -465,7 +528,7 @@ class Config:
         return p
 
 
-OVERLAY_SECTIONS = ("book", "qualify")
+OVERLAY_SECTIONS = ("book", "qualify", "fees")  # in [fees] only the strategist's `tune` leaves (fee_tune_rule)
 OVERLAY_FORBIDDEN_WORDS = ("enabled", "wallet", "key", "token", "secret", "url", "path")
 # the owner's limits: never changed by the strategist or its overlay, whatever [autotune] bounds lists
 NEVER_TUNABLE_KEYS = frozenset({
@@ -483,9 +546,26 @@ def never_tunable(key: str) -> str | None:
         return "an owner-only limit"
     if k.startswith("book.bid_arms.") and k.endswith(".priority"):
         return "the buy priority fee is charged again on every exit"
+    if k.startswith("fees.bounds"):
+        return "the owner's outer fee bounds"
     if any(w in k for w in OVERLAY_FORBIDDEN_WORDS):
         return "switches, wallets, keys and paths are the owner's"
     return None
+
+
+def fee_tune_rule(fees: FeesConfig, key: str) -> dict | None:
+    """The rule a strategist's fee key (`fees.tune.<kind>.<number>.min|max`) is checked against: the owner's outer
+    bounds for that kind and number, as {"min", "max"}. None for any other key, an unknown kind or number, or a leaf
+    other than min / max. So the per-kind bounds move inside the owner's and never past them, without an [autotune]
+    entry per key."""
+    parts = key.split(".")
+    if len(parts) != 5 or parts[:2] != ["fees", "tune"] or parts[4] not in ("min", "max"):
+        return None
+    kind, number = parts[2], parts[3]
+    outer = (fees.bounds.get(kind) or {}).get(number)
+    if not isinstance(outer, dict) or kind not in FEE_KINDS or number not in FEE_NUMBERS:
+        return None
+    return {"min": float(outer["min"]), "max": float(outer["max"])}
 
 
 def overlay_path_for(cfg: Config) -> Path:
@@ -573,7 +653,7 @@ def _apply_overlay(cfg: Config) -> None:
     for section in OVERLAY_SECTIONS:
         if isinstance(data.get(section), dict):
             for key, value in _leaves(data[section], section):
-                rule = cfg.autotune.bounds.get(key)
+                rule = cfg.autotune.bounds.get(key) or fee_tune_rule(cfg.fees, key)
                 if rule is None or never_tunable(key) is not None:
                     continue
                 if _overlay_value_ok(rule, value, _get_leaf(cfg, key)):
@@ -618,6 +698,17 @@ def _coerce(value: Any, target: type) -> Any:
     return str(value)
 
 
+def _merge_fee_table(current: dict[str, dict], value: dict[str, Any]) -> None:
+    """Merge a [fees] table (kind -> number -> {min, max}) over the defaults, leaf by leaf."""
+    for kind, numbers in value.items():
+        if not isinstance(numbers, dict):
+            continue
+        slot = current.setdefault(kind, {})
+        for number, rule in numbers.items():
+            if isinstance(rule, dict):
+                slot[number] = {**slot.get(number, {}), **{k: float(v) for k, v in rule.items()}}
+
+
 def _apply(obj: Any, data: dict[str, Any]) -> None:
     for key, value in data.items():
         if not hasattr(obj, key):
@@ -633,6 +724,12 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
                         current.pop(k, None)
                     else:
                         current[k] = {**current.get(k, {}), **rule}
+            elif isinstance(obj, FeesConfig):
+                # per kind, per number: a file that sets [fees.bounds.copy.buy_tip] max keeps every sibling; the
+                # strategist's tune starts from the owner's bounds unless the file sets tune itself
+                _merge_fee_table(current, value)
+                if key == "bounds" and "tune" not in data:
+                    obj.tune = {k: {n: dict(r) for n, r in v.items()} for k, v in current.items()}
             else:
                 current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
         else:
