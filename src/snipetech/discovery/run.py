@@ -40,6 +40,9 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None) -> d
     before = {c["wallet"]: c["status"] for c in store.candidates(limit=1_000_000)}
     new = updated = banned = 0
     now = int(ctx.now)
+    # every row's upsert, in order, written once the counting is done: in short batches with a pause between, not one
+    # transaction a wallet back to back (4,338 on the first run), which kept the tape recorder waiting for the lock
+    upserts: list[tuple[str, str, dict, int, str | None]] = []
     for name, rows in results.items():
         for r in rows:
             w = str(r.get("wallet") or "").strip()
@@ -49,7 +52,7 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None) -> d
             status = None
             if w in banned_addrs or _flagged(stats) or before.get(w) == "banned":
                 status = "banned"
-            store.upsert_candidate(w, name, stats, now, status=status)
+            upserts.append((w, name, stats, now, status))
             if w not in before:
                 new += 1
                 before[w] = status or "candidate"
@@ -58,5 +61,6 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None) -> d
             if status == "banned" and before.get(w) != "counted":
                 banned += 1
                 before[w] = "counted"
+    store.upsert_candidates(upserts)
     return {"new": new, "updated": updated, "banned": banned, "errors": errors,
             "by_source": {name: len(rows) for name, rows in results.items()}, "ts": now, "pid": os.getpid()}  # fmt: skip
