@@ -797,6 +797,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("action", choices=["next", "search", "digest", "backlog"])
     sp.add_argument("--dry-run", action="store_true", help="next: say what it would start; digest: print, send nothing")
+    sp = cmd(
+        "early-leaders",
+        "wallets like 7aPo: their buys in a coin's first slots, copied 3 trades behind, ranked by "
+        "what a 0.2 SOL copy made over 30 s (reads the tape copy; a research job the agents may start)",
+    )
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--min-n", type=int, default=20, help="early buys a wallet needs to be ranked")
+    sp.add_argument(
+        "--max-slots", type=int, default=20, help="an early buy comes at most this many slots after the create"
+    )
+    sp.add_argument("--min-sol", type=float, default=0.3, help="the smallest leader buy counted")
+    sp.add_argument(
+        "--label", type=int, default=0, help="label the N best with a positive lower bound as cand for qualify"
+    )
     sp = cmd("measure", "the learning loop's measure stage: our live fills audited from the chain and the tape")
     sp.add_argument("action", choices=["run", "backfill", "report"])
     sp.add_argument(
@@ -1541,7 +1555,7 @@ def _remote(args) -> int:
 # on four cores going, the recorder fell 25-44 s behind the chain and its coverage mark up to 5 minutes behind; the
 # PumpSwap stream dropped for falling behind at 16:41). Lab workers inherit the priority of the job that starts them.
 BATCH_COMMANDS = frozenset(
-    {"lab", "qualify", "events", "research", "paper", "discover", "study", "copy-rank", "follow"}
+    {"lab", "qualify", "events", "research", "paper", "discover", "study", "copy-rank", "follow", "early-leaders"}
 )
 BATCH_NICE = 10
 
@@ -1732,6 +1746,26 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "measure":
         return _measure(args, cfg)
+    if args.cmd == "early-leaders":
+        from .analysis.early_leaders import early_leaders
+
+        svc = Service(cfg)
+        try:
+            rows = early_leaders(svc.tape_store, time.time(), hours=args.hours, min_n=args.min_n,
+                                 max_slots=args.max_slots, min_sol=args.min_sol)  # fmt: skip
+            labelled = []
+            for r in [r for r in rows if r["lower_sol"] > 0][: max(0, args.label)]:
+                svc.store.set_label(
+                    r["wallet"], f"early-leader n{r['n']} {r['mean_sol']:+.4f}", "cand", "early-leaders"
+                )
+                labelled.append(r["wallet"])
+        finally:
+            svc.store.close()
+        out = {"hours": args.hours, "min_n": args.min_n, "wallets": rows, "labelled": labelled}
+        print(json.dumps(out, indent=1) if args.json else "\n".join(
+            f"{r['wallet']}  n {r['n']}  mean {r['mean_sol']:+.4f}  lower {r['lower_sol']:+.4f}  win {r['win_rate']:.0%}"
+            for r in rows) or "no wallet has enough early buys")  # fmt: skip
+        return 0
     if args.cmd == "research":
         from .operator.research import research_cli
 

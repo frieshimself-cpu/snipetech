@@ -8,7 +8,9 @@ from pathlib import Path
 from ..ops import Ops, OpsError, _pid_alive
 from .standin import loop_stage
 
-RESEARCH_COMMANDS = frozenset({"lab", "follow", "discover-wallets", "label", "copy-rank", "paper", "study", "copy"})
+RESEARCH_COMMANDS = frozenset(
+    {"lab", "follow", "discover-wallets", "label", "copy-rank", "paper", "study", "copy", "early-leaders"}
+)
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
 # (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
 # change settings. Named here so the refusal says whose they are and the model does not try variants
