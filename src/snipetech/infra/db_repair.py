@@ -200,3 +200,27 @@ def backfill(path: str, table: str, chunk: int = 50_000, max_secs: float | None 
                 "done": lo > top, "secs": round(time.monotonic() - t0, 1)}  # fmt: skip
     finally:
         conn.close()
+
+
+def forget(path: str, table: str) -> dict[str, Any]:
+    """Take a damaged table (one `salvage` or `swap` renamed to *_damaged_*) and its indexes out of the schema, once its
+    readable rows are copied: DROP TABLE would walk its damaged pages and fail, and VACUUM INTO (the hourly copy)
+    reads every table. Its pages stay in the file unused (quick_check then names them "never used") until the file is
+    rebuilt; the copies made from it are whole. Refuses any table whose name does not mark it damaged."""
+    if "_damaged_" not in table:
+        return {"error": "only a damaged table (its name holds _damaged_) can be forgotten"}
+    conn = _connect(path)
+    try:
+        rows = conn.execute("SELECT type, name FROM sqlite_master WHERE tbl_name=?", (table,)).fetchall()
+        if not rows:
+            return {"error": f"no table named {table!r}"}
+        version = conn.execute("PRAGMA schema_version").fetchone()[0]
+        conn.execute("PRAGMA writable_schema = ON")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("DELETE FROM sqlite_master WHERE tbl_name=?", (table,))
+        conn.execute(f"PRAGMA schema_version = {int(version) + 1}")
+        conn.commit()
+        conn.execute("PRAGMA writable_schema = OFF")
+        return {"forgot": table, "entries": [f"{t} {n}" for t, n in rows]}
+    finally:
+        conn.close()

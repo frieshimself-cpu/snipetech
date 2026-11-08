@@ -102,3 +102,27 @@ def test_swap_then_backfill_puts_a_writable_table_in_place_at_once_and_fills_it_
     assert 15000 < n < 20001 and done["skipped_ranges"] and done["done"] is True
     assert c.execute("SELECT count(*) FROM trades WHERE sig='new'").fetchone()[0] == 1
     assert backfill(db, "trades", chunk=1000)["copied"] == 0  # resumable and idempotent
+
+
+def test_forget_takes_a_damaged_table_out_of_the_schema_so_vacuum_into_works_again(tmp_path):
+    from snipetech.infra.db_repair import forget, salvage
+
+    db = _big_db(tmp_path)
+    _damage_a_leaf_page(db)
+    kept = salvage(db, "trades", chunk=1000)["kept_as"]
+    c = sqlite3.connect(db)
+    try:
+        c.execute(f"VACUUM INTO '{tmp_path / 'before.db'}'")
+        failed = False
+    except sqlite3.DatabaseError:
+        failed = True
+    c.close()
+    assert failed
+    assert forget(db, "trades")["error"].startswith("only a damaged")  # never the live table
+    out = forget(db, kept)
+    assert out["forgot"] == kept
+    c = sqlite3.connect(db)
+    c.execute(f"VACUUM INTO '{tmp_path / 'after.db'}'")
+    n = c.execute("SELECT count(*) FROM trades").fetchone()[0]
+    c.close()
+    assert n > 15000 and sqlite3.connect(tmp_path / "after.db").execute("PRAGMA quick_check").fetchone()[0] == "ok"

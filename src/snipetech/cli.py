@@ -744,7 +744,7 @@ def build_parser() -> argparse.ArgumentParser:
         json_flag=False,
     )
     sp = cmd("db", "check the live database (quick_check) or rebuild one table's indexes (reindex)", json_flag=False)
-    sp.add_argument("action", choices=["check", "reindex", "salvage", "swap", "backfill"])
+    sp.add_argument("action", choices=["check", "reindex", "salvage", "swap", "backfill", "forget"])
     sp.add_argument("--table", default="trades")
     sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
     sp.add_argument("signature")
@@ -1621,12 +1621,12 @@ def main(argv: list[str] | None = None) -> int:
         print(asyncio.run(go()))
         return 0
     if args.cmd == "db":
-        from .infra.db_repair import backfill, check, reindex, salvage, swap
+        from .infra.db_repair import backfill, check, forget, reindex, salvage, swap
 
         act = {"check": lambda p, t: check(p), "reindex": reindex, "salvage": salvage, "swap": swap,
-               "backfill": backfill}[args.action]  # fmt: skip
+               "backfill": backfill, "forget": forget}[args.action]  # fmt: skip
         out = act(cfg.storage.db_path, args.table)
-        if args.action in ("salvage", "swap", "backfill"):
+        if args.action in ("salvage", "swap", "backfill", "forget"):
             print(json.dumps(out))
             return 0 if "error" not in out else 1
         print(json.dumps(out))
