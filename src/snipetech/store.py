@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import sqlite3
 import sys
 import threading
@@ -255,6 +256,11 @@ class Store:
     # 2 GB of WAL an hour (16:00-17:58), so 64 MiB is two minutes of that. sqlite trims at the first commit after a
     # restart, on whichever connection makes it: every connection carries the limit.
     JOURNAL_SIZE_LIMIT = 64 << 20
+    # PRAGMA wal_autocheckpoint for this store's connection, also after a reopen() (set it with set_autocheckpoint); None
+    # keeps SQLite's default: the commit that leaves 1,000 pages or more in the WAL runs a PASSIVE checkpoint inside its
+    # own call. The tape recorder sets 0 while a thread of its own checkpoints (live.Checkpointer), so no checkpoint runs
+    # inside a commit on its event loop.
+    WAL_AUTOCHECKPOINT: int | None = None
 
     def __init__(self, path: str | Path = "snipetech.db", readonly: bool = False, immutable: bool = False):
         """`readonly`: a reader of an existing database file beside its writers (a lab worker; WAL lets it read while
@@ -315,11 +321,20 @@ class Store:
         else:
             conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         conn.execute(f"PRAGMA journal_size_limit = {int(self.JOURNAL_SIZE_LIMIT)}")
+        if self.WAL_AUTOCHECKPOINT is not None:
+            conn.execute(f"PRAGMA wal_autocheckpoint = {int(self.WAL_AUTOCHECKPOINT)}")
         return conn
 
     def close(self) -> None:
         with self.lock:
             self.conn.close()
+
+    def set_autocheckpoint(self, pages: int | None) -> None:
+        """PRAGMA wal_autocheckpoint on this connection now and on every reopen(): 0 runs no checkpoint inside a commit,
+        None (SQLite's default) and n each run a PASSIVE one in the commit that leaves n pages (1,000) in the WAL."""
+        with self.lock:
+            self.WAL_AUTOCHECKPOINT = pages
+            self.conn.execute(f"PRAGMA wal_autocheckpoint = {1000 if pages is None else int(pages)}")
 
     def reopen(self) -> None:
         """A fresh connection to the same file, for a writer whose writes keep failing (what a restart did for the tape
@@ -349,15 +364,40 @@ class Store:
     # a write that holds the write lock this long logs the code that asked for it (7 Nov 20:52: the recorder waited
     # 23.5 s for a write while the events scan finished, and nothing said who held the lock)
     SLOW_WRITE_SECS = 5.0
+    # A bulk write pauses this long between two of its batches (never after the last), outside any transaction, so a
+    # writer waiting for the lock gets in. 7 Nov 23:35:25 the tape recorder waited about 14 s for one write while the
+    # events scan wrote 185,251 events as some 371 batches committed back to back: no batch held the lock 5 s, but each
+    # BEGIN IMMEDIATE followed the last commit at once, and SQLite's busy handler (timeout=30 in _connect) polls a
+    # waiting writer only every 100 ms once it has waited about 0.23 s, so the waiter lost nearly every race. A pause
+    # longer than that poll puts one of its polls inside the gap. The price: 0.15 s a batch, about a minute on that
+    # scan. The tape recorder turns it off (live.LiveWatcher): it is the writer the others yield to, and its writes run on
+    # its event loop, where a sleep would stop its streams too.
+    BATCH_YIELD_SECS = 0.15
+    # The pause is at least twice the last batch's hold plus a random jitter of up to BATCH_JITTER_SECS (_yield_secs). A
+    # review on 8 Nov reproduced two bulk writers whose batches held the lock about as long as a fixed pause falling
+    # into step, each one's pause covering the other's batch, so a third writer asking once waited 1.4-8.6 s (about
+    # both runs together): a writer that has just started waiting polls every few milliseconds and beats one that has
+    # waited long and polls every 100 ms. Twice the hold leaves a gap of at least one hold once the other writer's
+    # batch is done, and the jitter keeps two writers from staying in step. The price: a batch that holds 0.3 s (the
+    # 2.4M-trade copy's 20-40 ms batches on a database ten times larger, mostly uncached) pauses 0.6-0.7 s.
+    BATCH_JITTER_SECS = 0.1
 
-    def _write(self, fn, immediate: bool = True) -> None:
+    def _yield_secs(self, hold: float) -> float:
+        """How long a bulk write pauses after a batch that held the write lock `hold` seconds (none when the store's
+        BATCH_YIELD_SECS is 0: the tape recorder's)."""
+        if self.BATCH_YIELD_SECS <= 0:
+            return 0.0
+        return max(self.BATCH_YIELD_SECS, 2 * hold) + random.uniform(0.0, self.BATCH_JITTER_SECS)
+
+    def _write(self, fn, immediate: bool = True) -> float:
         """Run `fn` (its statements on self.conn) as one transaction and commit it. Whatever goes wrong inside rolls it
         back before the error goes on: a transaction left open keeps the write lock until this connection's next
         commit, and its snapshot pins the WAL. A refused lock ("locked", "busy") is waited out for LOCK_PATIENCE.
 
         `immediate` (every write but the schema step at open): BEGIN IMMEDIATE takes the write lock first, so any wait
         for it happens there and the hold that follows is timed alone; a hold of SLOW_WRITE_SECS or more is logged
-        with the code that asked for it. The schema step stays deferred: an up-to-date schema takes no lock at all."""
+        with the code that asked for it. The schema step stays deferred: an up-to-date schema takes no lock at all.
+        Returns that hold in seconds (a bulk write sizes its pause by it)."""
         deadline = time.monotonic() + self.LOCK_PATIENCE
         delay = 0.5
         while True:
@@ -380,7 +420,7 @@ class Store:
                         raise
                 if immediate and held >= self.SLOW_WRITE_SECS:
                     log.warning("store: a write held the database's write lock for %.1f s (%s)", held, _caller())
-                return
+                return held
             except sqlite3.OperationalError as e:
                 if "locked" not in str(e) and "busy" not in str(e):
                     raise
@@ -403,15 +443,27 @@ class Store:
         IGNORE's new rows). Every caller writes rows that stand alone (OR IGNORE / OR REPLACE): a reader mid-call sees
         the first batches, as it sees the recorder's flushes, and a call that fails half way is finished by the next
         one (the recorder keeps its buffer and writes it again)."""
+        return self._batched(rows, lambda batch: self.conn.executemany(sql, batch).rowcount)
+
+    def _batched(self, rows: list, write) -> int:
+        """`write(batch)` (statements on self.conn, returning the rows changed) for each batch of WRITE_BATCH rows, each
+        batch its own transaction, with a pause between two batches (_yield_secs: at least BATCH_YIELD_SECS, longer
+        after a long batch) so a waiting writer gets in. A private in-memory database has no other connection, so nobody
+        to yield to."""
         changed = 0
+        private = self.path == ":memory:"
+        hold = 0.0
         for i in range(0, len(rows), self.WRITE_BATCH):
+            pause = 0.0 if private or not i else self._yield_secs(hold)
+            if pause > 0:
+                time.sleep(pause)
             batch = rows[i : i + self.WRITE_BATCH]
             out: dict[str, int] = {}
 
             def do(batch=batch, out=out):
-                out["n"] = self.conn.executemany(sql, batch).rowcount
+                out["n"] = write(batch)
 
-            self._write(do)
+            hold = self._write(do)
             changed += out["n"]
         return changed
 
@@ -712,22 +764,29 @@ class Store:
 
     def upsert_candidate(self, wallet: str, source: str, stats: dict, now: int, status: str | None = None) -> None:
         """One row per wallet: sources merge as a sorted unique list, stats[source] is replaced, status only when given."""
+        self.upsert_candidates([(wallet, source, stats, now, status)])
 
-        def do():
+    def upsert_candidates(self, rows: Iterable[tuple[str, str, dict, int, str | None]]) -> None:
+        """`upsert_candidate` for each (wallet, source, stats, now, status), in order, WRITE_BATCH rows a transaction:
+        discover's hourly run upserted every wallet of every source one transaction each, back to back (4,338 wallets
+        on its first run, 6 Nov), the pattern that kept the tape recorder waiting at 23:35 on 7 Nov."""
+
+        def one(wallet: str, source: str, stats: dict, now: int, status: str | None) -> int:
             row = self.conn.execute(
                 "SELECT first_seen, sources, stats, status FROM candidates WHERE wallet=?", (wallet,)
             ).fetchone()
             if row is None:
                 self.conn.execute("INSERT INTO candidates (wallet, first_seen, last_seen, sources, stats, status) VALUES (?,?,?,?,?,?)",
                                   (wallet, int(now), int(now), json.dumps([source]), json.dumps({source: stats}, default=str), status or "candidate"))  # fmt: skip
-                return
+                return 1
             sources = sorted(set(json.loads(row[1] or "[]")) | {source})
             all_stats = json.loads(row[2] or "{}")
             all_stats[source] = stats
             self.conn.execute("UPDATE candidates SET last_seen=?, sources=?, stats=?, status=? WHERE wallet=?",
                               (max(int(now), int(row[0] or 0)), json.dumps(sources), json.dumps(all_stats, default=str), status or row[3], wallet))  # fmt: skip
+            return 1
 
-        self._write(do)
+        self._batched(list(rows), lambda batch: sum(one(*r) for r in batch))
 
     def set_candidate_status(self, wallet: str, status: str) -> None:
         self._exec("UPDATE candidates SET status=? WHERE wallet=?", (status, wallet))
@@ -777,7 +836,8 @@ class Store:
                         "stats": json.loads(row[4] or "{}"), "status": row[5], "verdict": verdict})  # fmt: skip
         return out
 
-    def put_verdict(self, v: dict[str, Any]) -> int:
+    @staticmethod
+    def _verdict_row(v: dict[str, Any]) -> list[Any]:
         vals = []
         for c in _VERDICT_COLS:
             x = v.get(c)
@@ -786,17 +846,26 @@ class Store:
             elif c in _VERDICT_JSON:
                 x = json.dumps(x, default=str) if x else None
             vals.append(x)
+        return vals
+
+    _INSERT_VERDICT = (
+        f"INSERT INTO verdicts ({', '.join(_VERDICT_COLS)}) VALUES ({', '.join('?' * len(_VERDICT_COLS))})"
+    )
+
+    def put_verdict(self, v: dict[str, Any]) -> int:
+        vals = self._verdict_row(v)
         holder: dict[str, int] = {}
 
         def do():
-            cur = self.conn.execute(
-                f"INSERT INTO verdicts ({', '.join(_VERDICT_COLS)}) VALUES ({', '.join('?' * len(_VERDICT_COLS))})",
-                vals,
-            )
-            holder["id"] = int(cur.lastrowid)
+            holder["id"] = int(self.conn.execute(self._INSERT_VERDICT, vals).lastrowid)
 
         self._write(do)
         return holder["id"]
+
+    def put_verdicts(self, vs: Iterable[dict[str, Any]]) -> None:
+        """Many verdicts, WRITE_BATCH a transaction, in order: qualify's verdicts for due wallets without a trade on the
+        tape (up to 300 a run) went one transaction each, back to back."""
+        self._many(self._INSERT_VERDICT, [self._verdict_row(v) for v in vs])
 
     def latest_verdicts(self, status: str | None = None) -> list[dict[str, Any]]:
         sql = f"SELECT * FROM ({_LATEST_VERDICT}) v"
@@ -907,16 +976,24 @@ class Store:
         return {r[0] for r in self._q("SELECT DISTINCT buy_sig FROM exit_shadow WHERE menu_version=?", (menu_version,))}
 
     def set_coverage(self, key: str, data: dict[str, Any]) -> None:
-        self._exec(
-            "INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
-            (key, json.dumps(data), int(time.time())),
-        )
+        self.set_coverages({key: data})
+
+    def set_coverages(self, items: dict[str, dict[str, Any]]) -> None:
+        """Several coverage records, WRITE_BATCH a transaction (the tape recorder marks every launch window that closed
+        since its last tick in one write)."""
+        now = int(time.time())
+        self._many("INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
+                   [(key, json.dumps(data), now) for key, data in items.items()])  # fmt: skip
 
     def put_score(self, kind: str, key: str, data: dict[str, Any]) -> None:
-        self._exec(
-            "INSERT OR REPLACE INTO scores (kind, key, computed_at, data) VALUES (?,?,?,?)",
-            (kind, key, int(time.time()), json.dumps(data, default=str)),
-        )
+        self.put_scores(kind, [(key, data)])
+
+    def put_scores(self, kind: str, items: Iterable[tuple[str, dict[str, Any]]]) -> None:
+        """(key, data) scores of one kind, WRITE_BATCH a transaction, a later key replacing an earlier one as one
+        put_score after another did (discover's SolanaTracker source scored each of its wallets one transaction each)."""
+        now = int(time.time())
+        self._many("INSERT OR REPLACE INTO scores (kind, key, computed_at, data) VALUES (?,?,?,?)",
+                   [(kind, key, now, json.dumps(data, default=str)) for key, data in items])  # fmt: skip
 
     def get_score(self, kind: str, key: str) -> dict[str, Any] | None:
         rows = self._q("SELECT computed_at, data FROM scores WHERE kind=? AND key=?", (kind, key))
@@ -978,10 +1055,14 @@ class Store:
         return [s for s in dict.fromkeys(sigs) if s not in have]
 
     def set_label(self, address: str, label: str, kind: str = "service", source: str = "user") -> None:
-        self._exec(
-            "INSERT OR REPLACE INTO labels (address, label, kind, source, added_at) VALUES (?,?,?,?,?)",
-            (address, label, kind, source, int(time.time())),
-        )
+        self.set_labels([(address, label, kind, source)])
+
+    def set_labels(self, rows: Iterable[tuple[str, str, str, str]]) -> None:
+        """(address, label, kind, source) rows, WRITE_BATCH a transaction: qualify labels every new wallet it measures
+        (up to 300 a run) and `label-file` a whole list, which went one transaction each, back to back."""
+        now = int(time.time())
+        self._many("INSERT OR REPLACE INTO labels (address, label, kind, source, added_at) VALUES (?,?,?,?,?)",
+                   [(a, label, kind, source, now) for a, label, kind, source in rows])  # fmt: skip
 
     def labels(self, kind: str | None = None) -> dict[str, str]:
         if kind:
@@ -1261,12 +1342,24 @@ def _event_counts(self, since_ts: int = 0) -> dict[str, int]:
     }
 
 
+_UPSERT_EDGE = (
+    "INSERT INTO edges (src, dst, kind, first_ts, last_ts, lamports, n) VALUES (?,?,?,?,?,?,1) "
+    "ON CONFLICT(src, dst, kind) DO UPDATE SET first_ts = min(first_ts, excluded.first_ts), last_ts = max(last_ts, excluded.last_ts), "
+    "lamports = lamports + excluded.lamports, n = n + 1"
+)
+
+
 def _upsert_edge(self, src: str, dst: str, kind: str, ts: int, lamports: int = 0) -> None:
-    self._exec(
-        "INSERT INTO edges (src, dst, kind, first_ts, last_ts, lamports, n) VALUES (?,?,?,?,?,?,1) "
-        "ON CONFLICT(src, dst, kind) DO UPDATE SET first_ts = min(first_ts, excluded.first_ts), last_ts = max(last_ts, excluded.last_ts), "
-        "lamports = lamports + excluded.lamports, n = n + 1",
-        (src, dst, kind, int(ts), int(ts), int(lamports)),
+    self.upsert_edges([(src, dst, kind, ts, lamports)])
+
+
+def _upsert_edges(self, rows: Iterable[tuple[str, str, str, int, int]]) -> None:
+    """`upsert_edge` for each (src, dst, kind, ts, lamports), WRITE_BATCH a transaction. executemany applies the rows
+    one after another, so an edge twice in one batch counts twice, as two calls did: first_ts the earliest, last_ts the
+    latest, lamports summed, n counted. The events scan of 7 Nov 23:15-23:35 wrote 190,905 paid_by_dev edges one
+    transaction each, back to back."""
+    self._many(
+        _UPSERT_EDGE, [(src, dst, kind, int(ts), int(ts), int(lamports)) for src, dst, kind, ts, lamports in rows]
     )
 
 
@@ -1284,4 +1377,5 @@ Store.add_events = _add_events
 Store.events = _events
 Store.event_counts = _event_counts
 Store.upsert_edge = _upsert_edge
+Store.upsert_edges = _upsert_edges
 Store.edges_to = _edges_to

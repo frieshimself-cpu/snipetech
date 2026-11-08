@@ -608,9 +608,8 @@ class Service:
             await self.ingestor.backfill_address(wallet, max_sigs=self.cfg.copy.max_signatures, since_ts=since)
         if auto_smart:
             # wallets with consistently profitable round trips in the same data, as a "smart money" factor
-            for r in self.discover_wallets(days, 5, auto_smart):
-                if r["wallet"] != wallet and (r.get("ev_lower") or 0) > 0:
-                    self.store.set_label(r["wallet"], "smart", "smart", "auto")
+            self.store.set_labels([(r["wallet"], "smart", "smart", "auto") for r in self.discover_wallets(days, 5, auto_smart)
+                                   if r["wallet"] != wallet and (r.get("ev_lower") or 0) > 0])  # fmt: skip
         if backfill_entries:
             # entries outside the tape: fetch each token's market for `entry_window` seconds before the entry
             spans = self.store.tape_spans()
@@ -1360,16 +1359,17 @@ class Service:
                             for t in tasks]}  # fmt: skip
 
     def label_file(self, path: str, kind: str) -> dict:
-        """Bulk labels: one address per line, optionally followed by a name (comma or whitespace)."""
-        n = 0
+        """Bulk labels: one address per line, optionally followed by a name (comma or whitespace). Written in short
+        batches once the file is read, not one transaction a line."""
+        rows = []
         for line in Path(path).read_text().splitlines():
             line = line.split("#", 1)[0].strip()
             if not line:
                 continue
             parts = line.replace(",", " ").split()
-            self.store.set_label(self._check(parts[0]), " ".join(parts[1:]) or kind, kind, "file")
-            n += 1
-        return {"labeled": n, "kind": kind}
+            rows.append((self._check(parts[0]), " ".join(parts[1:]) or kind, kind, "file"))
+        self.store.set_labels(rows)
+        return {"labeled": len(rows), "kind": kind}
 
     # Discovery reads the tape from the hourly copy (`tape_store`): its count of buys by wallet and its hottest coins
     # each walk the whole trades table through one index, 14 s and 4 s cold on a 2.4M-trade copy (7 Nov), one read of
@@ -1413,7 +1413,8 @@ class Service:
                 now,
                 getattr(client, "requests", None),
             )
-            self.store.put_score("solanatracker", c["wallet"], c)
+        # in short batches, not one transaction a wallet back to back (it runs inside the hourly discover)
+        self.store.put_scores("solanatracker", [(c["wallet"], c) for c in cands])
         return cands
 
     async def discover_birdeye(self, client, days: float = 7.0, top_coins: int | None = None, pnl_top: int | None = None,

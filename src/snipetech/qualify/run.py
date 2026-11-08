@@ -226,14 +226,16 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         )
     }
     measurable = [c for c in due if c["wallet"] in seen]
+    untaped = []  # their verdicts in short batches, not one transaction a wallet back to back (up to 300 a run)
     for c in due:
         if c["wallet"] in seen:
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
-        store.put_verdict(v)
+        untaped.append(v)
         out["no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
+    store.put_verdicts(untaped)
     if not measurable:
         return out
     labs = [j for j in running_jobs(jobs_dir) if (j.get("argv") or [""])[0] == "lab"]
@@ -246,11 +248,11 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         out["deferred"], out["reason"] = True, f"last qualify lab {mins} min ago; interval {q.lab_interval_h:g} h"
         return out
     labelled = store.labels()
-    for c in measurable:
-        w = c["wallet"]
-        if w not in labelled:
-            store.set_label(w, f"cand:{w}", "cand", "qualify")
-            out["labelled"] += 1
+    new_labels = [
+        (c["wallet"], f"cand:{c['wallet']}", "cand", "qualify") for c in measurable if c["wallet"] not in labelled
+    ]
+    store.set_labels(new_labels)  # in short batches, as the verdicts above
+    out["labelled"] += len(new_labels)
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
     landing = qualify_landing(store, q, now=now)

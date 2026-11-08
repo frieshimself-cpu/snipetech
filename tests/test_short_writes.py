@@ -35,6 +35,7 @@ class Guard:
         self.other = sqlite3.connect(st.path, timeout=timeout, isolation_level=None, check_same_thread=False)
         self.other.execute("CREATE TABLE IF NOT EXISTS probe (n INTEGER)")
         self.transactions, self.max_rows, self.got_in = 0, 0, None
+        self.sizes: list[int] = []  # the rows each transaction changed, in order
         self._start: int | None = None
 
     def try_write(self) -> bool | str:
@@ -54,7 +55,8 @@ class Guard:
             if self.transactions == self.after:
                 self.got_in = self.try_write()
         elif head.startswith(("COMMIT", "ROLLBACK")) and self._start is not None:
-            self.max_rows = max(self.max_rows, self.st.conn.total_changes - self._start)
+            self.sizes.append(self.st.conn.total_changes - self._start)
+            self.max_rows = max(self.max_rows, self.sizes[-1])
             self._start = None
 
     def __enter__(self) -> Self:
@@ -359,6 +361,7 @@ def test_a_pile_of_protected_trades_is_walked_once_a_prune_not_once_a_batch(tmp_
     time."""
     st = Store(tmp_path / "t.db")
     st.WRITE_BATCH, st.PRUNE_SCAN = 50, 500
+    st.BATCH_YIELD_SECS = 0.0  # the setup's rows in hundreds of batches: no other writer waits for them here
     cut = T0 + 3600
     pile = [replace(_trade(n), ts=T0 - 20_000 + n if pile_ts == "their own times" else 0, user="KEEP")
             for n in range(10_000)]  # fmt: skip
@@ -384,6 +387,7 @@ def test_scattered_seen_signatures_are_read_once_a_prune_and_never_all_in_one_st
     (2.3 s)."""
     st = Store(tmp_path / "t.db")
     st.WRITE_BATCH, st.PRUNE_SCAN = 50, 500
+    st.BATCH_YIELD_SECS = 0.0  # the setup's rows in hundreds of batches: no other writer waits for them here
     cut = T0
     rows = [(f"s{n}", n, T0 - 1 - n % 3600 if n % 10 == 0 else T0 + n) for n in range(40_000)]
     random.Random(7).shuffle(rows)  # the old ones all through the table
@@ -575,7 +579,10 @@ def test_qualify_holds_no_lock_while_its_lab_runs_and_commits_wallet_by_wallet(t
             return [{"wallet": w, "n": 25, "mean": 0.01, "ev_lower": 0.001, "win_rate": 0.5} for w in ws]
 
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lab)
-    assert out["lab_wallets"] == 4 and during == [True] and g.got_in is True and g.max_rows <= 1
+    assert out["lab_wallets"] == 4 and during == [True] and g.got_in is True
+    # the four new wallets' labels go in one short batch before the lab (8 Nov: they went one transaction each, back to
+    # back); every verdict and score after the lab is still a transaction of its own
+    assert out["labelled"] == 4 and [n for n in g.sizes if n > 1] == [4]
     st.close()
 
 

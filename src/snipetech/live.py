@@ -12,6 +12,11 @@
   in the last `[live] amm_recent_secs` (recent-migrations mode), over a LaserStream
   subscription of those coins' pools alone (without LaserStream: one `logsSubscribe` per
   pool); the tape's own subscription stays what it was.
+* Writes: the recorder's database writes run on its event loop in short transactions, the others' bulk writes pause
+  between batches to let it in, and its WAL checkpoints run on a thread of their own (`Checkpointer`), not inside its
+  commits (7 Nov 23:35 it waited 14.2 s behind the events scan's back-to-back batches; 23:37 and 8 Nov 04:37 its own
+  commits took 6.9 s and 5.7 s, most likely the automatic checkpoint inside them). Its writes stay on the loop for now
+  (docs/architecture.md: "Bulk writers let the recorder in").
 
 Signals go to stdout (JSON lines), the `signals` table (served by the HTTP API) and an
 optional webhook.
@@ -28,6 +33,8 @@ import logging
 import math
 import os
 import sqlite3
+import struct
+import threading
 import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
@@ -93,6 +100,20 @@ STALL_WINDOW_SECS = 60.0
 SLOW_CALL_SECS = 5.0
 SLOW_LOG_EVERY_SECS = 60.0
 AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
+# The recorder's WAL checkpoints (Checkpointer): one every CHECKPOINT_EVERY_SECS, or sooner once CHECKPOINT_PAGES wait to
+# be copied back (SQLite's own bound, 1,000 pages), never two within CHECKPOINT_MIN_GAP_SECS; one that takes
+# CHECKPOINT_SLOW_SECS or more is logged; after CHECKPOINT_STALE_SECS without one that copied back, the recorder's own
+# commits checkpoint again as SQLite's default does, so the WAL never grows without bound. The same happens while the WAL
+# holds more frames than journal_size_limit trims it to (Checkpointer.max_wal_frames): a review on 8 Nov reproduced
+# commits every 10 ms landing inside each PASSIVE checkpoint, so the WAL never started over and grew past 85 MB in 31 s
+# while every checkpoint copied back.
+CHECKPOINT_EVERY_SECS = 5.0
+CHECKPOINT_PAGES = 1000
+CHECKPOINT_MIN_GAP_SECS = 1.0
+CHECKPOINT_POLL_SECS = 0.25
+CHECKPOINT_SLOW_SECS = 2.0
+CHECKPOINT_STALE_SECS = 60.0
+CHECKPOINT_FAIL_LOG_EVERY_SECS = 60.0
 
 ACTIONS = {
     "SNIPE": "snipe",
@@ -309,6 +330,167 @@ class StallMeter:
         return out
 
 
+_WAL_INDEX_VERSION = 3007000  # the wal-index header's version field (SQLite's file format: "the wal-index")
+
+
+def _wal_index(path: str) -> tuple[int, int] | None:
+    """(mxFrame, nBackfill) from the database's wal-index (the `-shm` file): the WAL's last valid frame, at byte 16 of
+    its header, and how many of its frames a checkpoint has copied back, at byte 96, in the machine's byte order. Read
+    without a lock: a torn read only moves one checkpoint, or one hand-back, by a tick. None when there is no wal-index
+    to read (no WAL, an unknown layout)."""
+    try:
+        with open(f"{path}-shm", "rb") as f:
+            head = f.read(100)
+    except OSError:
+        return None
+    if len(head) < 100 or struct.unpack_from("=I", head, 0)[0] != _WAL_INDEX_VERSION or not head[12]:
+        return None
+    return struct.unpack_from("=I", head, 16)[0], struct.unpack_from("=I", head, 96)[0]
+
+
+def wal_pending_frames(path: str) -> int | None:
+    """How many frames of the database's WAL wait to be copied back into the file (None: no wal-index to read)."""
+    idx = _wal_index(path)
+    return None if idx is None else max(0, idx[0] - idx[1])
+
+
+def wal_frames(path: str) -> int | None:
+    """How many frames the database's WAL holds since it last started over (None: no wal-index to read)."""
+    idx = _wal_index(path)
+    return None if idx is None else idx[0]
+
+
+class Checkpointer:
+    """The tape recorder's WAL checkpoints, on a thread and a connection of their own. SQLite runs its automatic
+    checkpoint inside the commit that leaves 1,000 pages in the WAL, so on a busy disk the recorder's commit, on its
+    event loop, waited for the checkpoint too: 7 Nov 23:37:33 "a write held the database's write lock for 6.9 s
+    (live.py:950 _on_tx)", a few pool rows, while a lab read the hourly copy; 8 Nov 04:37:35 5.7 s in its flush, its
+    event loop held 6.5 s. The recorder's connection sets wal_autocheckpoint=0 while this runs a PASSIVE checkpoint
+    (it waits for nobody: writers go on appending, readers keep their snapshot) every `every_secs`, or sooner once
+    `max_pages` wait, and logs one that takes `slow_secs` or more as "tape: a checkpoint took N s": the log then tells a
+    slow write from a slow checkpoint. It never takes the store's lock (the event loop's reads and writes share it).
+    `trouble()` says why it is not doing the job, if it is not: it stopped, it has copied nothing back lately, or the WAL
+    holds more than `max_wal_frames` because a commit lands inside each checkpoint and the WAL never starts over. The
+    recorder hands checkpoints back to its own commits meanwhile (LiveWatcher._watch_checkpoints); an in-commit
+    checkpoint runs while that connection appends nothing, so it lets the WAL start over, and a failing, starved or
+    outpaced checkpointer cannot let the WAL grow without bound."""
+
+    def __init__(self, path: str, every_secs: float = CHECKPOINT_EVERY_SECS, max_pages: int = CHECKPOINT_PAGES,
+                 poll_secs: float = CHECKPOINT_POLL_SECS, min_gap_secs: float = CHECKPOINT_MIN_GAP_SECS,
+                 slow_secs: float = CHECKPOINT_SLOW_SECS, stale_secs: float = CHECKPOINT_STALE_SECS,
+                 max_wal_frames: int | None = None, clock: Callable[[], float] = time.monotonic):  # fmt: skip
+        self.path = str(path)
+        self.every, self.max_pages, self.poll, self.min_gap = every_secs, max_pages, poll_secs, min_gap_secs
+        self.slow, self.stale, self.clock = slow_secs, stale_secs, clock
+        # More frames than this in the WAL and it is not healthy, however much it copies back: SQLite starts the WAL
+        # over only when a write begins after a checkpoint copied every frame back, and a commit landing inside each
+        # PASSIVE checkpoint never lets that happen (review, 8 Nov). The default is the size journal_size_limit trims
+        # the -wal back to (64 MiB of 4 KiB pages, 16,384 frames): past it the file grows instead of being reused.
+        if max_wal_frames is None:
+            from .store import Store
+
+            max_wal_frames = int(Store.JOURNAL_SIZE_LIMIT) // 4096
+        self.max_wal_frames = max_wal_frames
+        self.thread = threading.Thread(target=self._run, name="tape-checkpointer", daemon=True)
+        self._stop = threading.Event()
+        self.done = 0  # checkpoints that ran
+        self.failed = 0  # that raised or found another checkpoint in the way
+        self.slowest = 0.0  # seconds
+        self.last: dict[str, Any] | None = None  # the last one that ran: {"secs", "frames", "copied"}
+        self.started_at: float | None = None
+        self.last_ok: float | None = None  # when one last ran (self.clock)
+        self._failure_said = -math.inf
+
+    def start(self) -> None:
+        self.started_at = self.clock()
+        self.thread.start()
+
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Ask the thread to end and wait for it up to `timeout` (a checkpoint in progress finishes first). True once it
+        has ended. A thread still in a long checkpoint is a daemon: it does not keep the process alive."""
+        self._stop.set()
+        if self.thread.ident is not None:
+            self.thread.join(timeout)
+        return not self.thread.is_alive()
+
+    def trouble(self, now: float | None = None) -> str | None:
+        """Why the recorder's commits should checkpoint for themselves now, in words for the log; None while this thread
+        does the job: it runs, a checkpoint ran within `stale_secs` (or it started that recently), and the WAL holds no
+        more than `max_wal_frames` (the last checkpoint's count, or the wal-index's if it says more)."""
+        if not self.thread.is_alive():
+            return "the checkpointer has stopped"
+        ref = self.last_ok if self.last_ok is not None else self.started_at
+        now = self.clock() if now is None else now
+        if ref is None or now - ref >= self.stale:
+            return f"the checkpointer has copied nothing back for {self.stale:.0f} s or more ({self.failed} failed)"
+        frames = max(self.last["frames"] if self.last else 0, wal_frames(self.path) or 0)
+        if frames > self.max_wal_frames:
+            return (f"the WAL holds {frames} frames and has not started over (a commit lands inside each checkpoint, "
+                    f"or a read pins it; the bound is {self.max_wal_frames})")  # fmt: skip
+        return None
+
+    def healthy(self, now: float | None = None) -> bool:
+        return self.trouble(now) is None
+
+    def _open(self) -> sqlite3.Connection:
+        from .store import Store
+
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None, check_same_thread=False)
+        # a checkpoint that finds the WAL done trims it to the limit, on whichever connection runs it (store.py)
+        conn.execute(f"PRAGMA journal_size_limit = {int(Store.JOURNAL_SIZE_LIMIT)}")
+        return conn
+
+    def _pragma(self, conn: sqlite3.Connection) -> tuple[int, int, int]:
+        return conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+
+    def checkpoint_once(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
+        """One PASSIVE checkpoint, timed. None when it failed or another checkpoint was in the way (busy)."""
+        t0 = self.clock()
+        try:
+            busy, frames, copied = self._pragma(conn)
+        except sqlite3.Error as exc:
+            self.clock()
+            self.failed += 1
+            now = time.monotonic()
+            if now - self._failure_said >= CHECKPOINT_FAIL_LOG_EVERY_SECS:
+                self._failure_said = now
+                log.warning("tape: a checkpoint failed (%s; %d so far); the next one tries again", exc, self.failed)
+            return None
+        t1 = self.clock()
+        secs = max(0.0, t1 - t0)
+        if busy:
+            self.failed += 1
+            return None
+        self.done += 1
+        self.last_ok = t1
+        self.slowest = max(self.slowest, secs)
+        self.last = {"secs": secs, "frames": int(frames), "copied": int(copied)}
+        if secs >= self.slow:
+            log.warning("tape: a checkpoint took %.1f s (%d frames in the WAL, %d copied back): a slow disk, not the "
+                        "recorder's writes", secs, frames, copied)  # fmt: skip
+        return self.last
+
+    def _run(self) -> None:
+        try:
+            conn = self._open()
+        except sqlite3.Error as exc:
+            log.warning("tape: the checkpointer could not open the database (%s); the recorder's commits checkpoint "
+                        "as before", exc)  # fmt: skip
+            return
+        try:
+            next_at = last_try = -math.inf
+            while not self._stop.is_set():
+                now = self.clock()
+                if now >= next_at or (now - last_try >= self.min_gap
+                                      and (wal_pending_frames(self.path) or 0) > self.max_pages):  # fmt: skip
+                    self.checkpoint_once(conn)
+                    last_try = self.clock()
+                    next_at = last_try + self.every
+                self._stop.wait(self.poll)
+        finally:
+            conn.close()
+
+
 class LagValve:
     """Closes when the recorder has run more than `lag_secs` behind the chain for `sustain_secs` straight, and opens
     once it is back within `reopen_secs`. While it is closed the PumpSwap side records nothing and lists the chain time
@@ -376,6 +558,10 @@ class LiveWatcher:
         # the recorder's event loop waits with each of its writes: never the batch jobs' ten minutes (7 Nov 13:47: the
         # streams fell behind while a write waited for the lock)
         self.store.LOCK_PATIENCE = WRITE_PATIENCE_SECS
+        # and never pauses between the batches of a bulk write (Store.BATCH_YIELD_SECS): the pause lets a waiting writer
+        # in, and the recorder is the writer the others' pauses are for; its pause would be a sleep on this event loop
+        self.store.BATCH_YIELD_SECS = 0.0
+        self.checkpointer: Checkpointer | None = None  # its WAL checkpoints, while run() runs (a file database only)
         self.write_fail_since: float | None = None  # when the database started refusing the recorder's writes
         self.write_reopened = False
         self.lag = 0.0  # how far behind the chain the tape's own stream last measured itself (s)
@@ -400,6 +586,7 @@ class LiveWatcher:
     # -- entry point --------------------------------------------------------------------------
 
     async def run(self) -> None:
+        self._start_checkpointer()
         if self.migrated is not None:
             self._seed_recent(self.clock())
         tasks = [asyncio.create_task(self._maintenance())]
@@ -420,6 +607,7 @@ class LiveWatcher:
         finally:
             for t in tasks:
                 t.cancel()
+            self._stop_checkpointer()
             try:
                 self._flush()
             except Exception as exc:  # noqa: BLE001 - leaving anyway: the restart writes nothing twice (INSERT OR IGNORE)
@@ -1093,6 +1281,52 @@ class LiveWatcher:
             log.warning("tape: writes refused for %.0f s: the recorder opens a new connection", failing)
             self.store.reopen()
 
+    # -- checkpoints -----------------------------------------------------------------------------
+
+    def _start_checkpointer(self) -> None:
+        """Checkpoints leave the recorder's commits for a thread of their own (Checkpointer). Its writes still run on
+        this event loop (a writer thread for them is left for later: docs/architecture.md, the tape)."""
+        if str(self.store.path) == ":memory:" or self.store.readonly or self.checkpointer is not None:
+            return
+        self.checkpointer = Checkpointer(str(self.store.path))
+        self.checkpointer.start()
+        self.store.set_autocheckpoint(0)
+
+    def _watch_checkpoints(self) -> None:
+        """While the checkpointer is in trouble (it died, it has copied nothing back for CHECKPOINT_STALE_SECS, or the
+        WAL holds more than its max_wal_frames and never starts over), the recorder's own commits checkpoint again
+        (SQLite's default), so the WAL cannot grow without bound; once it is out of trouble, they stop."""
+        cp = self.checkpointer
+        if cp is None:
+            return
+        self.stats["checkpoints"], self.stats["checkpoint_fails"] = cp.done, cp.failed
+        own = self.store.WAL_AUTOCHECKPOINT == 0
+        why = cp.trouble()
+        ok = why is None
+        try:
+            if own and not ok:
+                self.store.set_autocheckpoint(None)
+                log.warning("tape: %s: the recorder's commits checkpoint again until it is back", why)
+            elif ok and not own:
+                self.store.set_autocheckpoint(0)
+                log.warning(
+                    "tape: the checkpointer copies the WAL back again: the recorder's commits run no checkpoint"
+                )
+        except sqlite3.Error as exc:  # the next tick tries again
+            log.warning("tape: could not change where checkpoints run (%s)", exc)
+
+    def _stop_checkpointer(self) -> None:
+        """With the recorder: the thread ends (bounded wait), and the connection checkpoints as SQLite does again."""
+        cp = self.checkpointer
+        if cp is None:
+            return
+        if not cp.stop(timeout=5.0):
+            log.warning("tape: the checkpointer is still in a checkpoint after 5 s; the recorder leaves it")
+        try:
+            self.store.set_autocheckpoint(None)
+        except sqlite3.Error as exc:
+            log.warning("tape: could not hand checkpoints back to the connection (%s)", exc)
+
     # -- signals ---------------------------------------------------------------------------------
 
     async def _on_launch(self, launch: Launch) -> None:
@@ -1206,6 +1440,7 @@ class LiveWatcher:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
             self.meter.tick()
             self._flush()
+            self._watch_checkpoints()
             with self.meter.timed("coverage"):
                 self._mark_coverage()
                 if self.tape:

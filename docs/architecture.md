@@ -106,6 +106,48 @@ writes the rest. A new index on a big table, or a table rebuilt, holds the lock 
 at a quiet hour, never as a line in `SCHEMA` that every process runs when it opens the database.
 `tests/test_short_writes.py` guards the rule: a second connection writes while each writer is mid-run.
 
+## Bulk writers let the recorder in; the recorder's checkpoints run on a thread of their own (8 Nov)
+
+Short transactions were not enough. 7 Nov 23:35:25 the recorder logged that one database call (its transaction writes)
+held its event loop for 14.2 s, its streams waiting (22.5 s of the last 60 in database calls). Nobody had held the lock
+5 s: the events scan was ending, and its last step wrote 185,251 events as about 371 batches of 500 committed back to
+back, after 190,905 `paid_by_dev` edges written one transaction each. SQLite's busy handler polls a waiting writer only
+every 100 ms once it has waited about a quarter of a second, and the next batch's `BEGIN IMMEDIATE` came at once after
+each commit, so the recorder lost nearly every race. Now `Store._many` pauses `Store.BATCH_YIELD_SECS` (0.15 s, longer
+than that poll) between two of its batches, outside any transaction, so a waiting writer gets in after one batch, not
+after the whole run (0.15 s a batch: about a minute on that scan). The pause is at least twice the last batch's hold,
+plus up to 0.1 s at random: a review on 8 Nov reproduced two bulk writers whose batches held the lock as long as a fixed
+pause taking turns, each one's pause covering the other's batch, and a third writer asking once waited 1.4-8.6 s. The recorder turns the pause off for itself: it is the
+writer the others pause for, and a pause in its writes would be a sleep on its event loop. The tight loops of one-row
+writes in jobs that run beside it now go through `_many` too: the events scan's `paid_by_dev` edges
+(`Store.upsert_edges`, the same sums as one `upsert_edge` a transfer, a repeat inside one batch included), discover's
+candidates, qualify's verdicts without tape and its labels, the SolanaTracker scores, `label-file`, and the ingestor's
+rows of a fetched chunk (six writes a transaction before, one of each kind a chunk now).
+
+7 Nov 23:37:33 "a write held the database's write lock for 6.9 s (live.py:950 _on_tx)": the recorder's own write of a
+few pool rows, while a lab read the hourly copy and the disk was busy. 8 Nov 04:37:35 again: 5.7 s for its flush, its
+event loop held 6.5 s (10.0 s of the last 60 in database calls). SQLite runs its automatic checkpoint (PASSIVE, once a
+commit leaves 1,000 pages in the WAL) inside the committing call, and `Store._write` times the commit, so a slow
+checkpoint reads as a slow write. The recorder's connection now sets `wal_autocheckpoint=0`, and a thread of its own
+(`live.Checkpointer`), on a connection of its own and never under the store's lock, runs a PASSIVE checkpoint every 5 s,
+or sooner once 1,000 frames wait to be copied back (read from the `-shm` wal-index). Each is timed; one of 2 s or more
+is logged as "tape: a checkpoint took N s (... frames ...)". The next slow commit then says which it is: a slow write
+logs "held the database's write lock" with no slow checkpoint beside it, a slow disk logs the checkpoint. If the thread
+copies nothing back for 60 s (it fails or has died), the recorder's commits checkpoint again as SQLite's default does
+until it recovers, so the WAL never grows without bound; `journal_size_limit` stays on every connection. Copying back is
+not enough on its own (review, 8 Nov, reproduced): SQLite starts the WAL over only when a write begins after a checkpoint
+copied every frame back, and commits every 10 ms beside the thread landed inside each PASSIVE checkpoint, so the -wal
+grew past 85 MB in 31 s with the thread healthy. So the recorder's commits also take checkpoints back while the WAL holds
+more frames than `journal_size_limit` trims it to (16,384); their checkpoint runs while that connection appends nothing,
+so the WAL starts over, and the log says "tape: the WAL holds N frames and has not started over ...". Every other
+process keeps SQLite's default. `tests/test_bulk_yield.py` and `tests/test_checkpointer.py` guard both.
+
+The recorder's own writes still run on its event loop, under the store's lock its reads share. Moving them to a writer
+thread of their own is left for later (decided 8 Nov 05:10): it changes every read on the loop that must see rows not yet
+written (a closed launch, the recent migrations), the refused-write, reopen and exit-75 path, and the last flush at
+shutdown, the riskiest change to the tape there is. The pause and the checkpoint thread remove the two causes the logs
+showed; if the recorder's commits are still slow with no slow checkpoint logged, that writer thread is the next step.
+
 ## Every read of the live file is short; the heavy readers read the hourly copy
 
 A read holds its snapshot of the database until its last row. While it is open, no checkpoint can copy the WAL's newer
