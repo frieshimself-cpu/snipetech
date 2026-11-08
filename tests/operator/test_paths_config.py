@@ -1,7 +1,9 @@
+from pathlib import Path
+
 import pytest
 
 from snipetech.config import Config
-from snipetech.operator.paths import OperatorPaths
+from snipetech.operator.paths import OperatorPaths, research_dir
 
 
 def test_operator_config_loads_from_toml(tmp_path):
@@ -28,3 +30,23 @@ def test_paths_and_report_name_guard(tmp_path):
     for bad in ("../x", "a/b", "a\\b"):
         with pytest.raises(ValueError):
             ps.report(bad)
+
+
+def test_the_research_record_is_read_from_the_checkout(tmp_path):
+    """docs/research in the checkout the caller names (the operator's --repo); without one, in the repository above the
+    package, where the server runs it from (setup.sh installs it editable from /opt/snipetech and `remote update`
+    resets that checkout to the branch, docs included). A checkout without it has no record, and that is no error."""
+    (tmp_path / "docs" / "research").mkdir(parents=True)
+    assert research_dir(tmp_path) == research_dir(str(tmp_path)) == tmp_path / "docs" / "research"
+    assert research_dir(tmp_path / "old-checkout") is None
+    assert research_dir() == Path(__file__).resolve().parents[2] / "docs" / "research"  # this test's own checkout
+
+
+def test_an_installed_package_reads_no_research_record(tmp_path, monkeypatch):
+    """Outside a checkout (a wheel in site-packages) there is no docs/research of ours, whatever sits near it."""
+    import snipetech.operator.paths as P
+
+    site = tmp_path / "lib" / "python3.11" / "site-packages"
+    (site.parent / "docs" / "research").mkdir(parents=True)
+    monkeypatch.setattr(P, "__file__", str(site / "snipetech" / "operator" / "paths.py"))
+    assert P.research_dir() is None
