@@ -35,6 +35,7 @@ counted (docs/architecture.md, "The lab and the paper test").
 - [Round 5](2026-11-08-round-5.md), 8 Nov 12:15-14:00: nothing frozen; pump.fun-only creator-0 hunts are positive but 75-90 % of their test rows are the 41 SOL operator's coins (which returned 12:10-12:43); crowd hunts without mayhem and holder-reward coins still lose; fast-bot consensus, the session clock and round 2's MIG-10 Qm test are refuted; one thin picker lead (Ewqs4Pbc).
 
 - [Round 6](2026-11-08-round-6.md), 8 Nov 14:10, interrupted by the usage limit after 3 of 6 lenses: a serial rug crew ("forg", one whale plus dust wallets) is all of the loose creator-0 paper rules' loss today; counting only 0.2 SOL+ buyers avoids it but makes no edge; only the 41 SOL operator's cluster is positive at the landing.
+- [Round 7](2026-11-08-round-7.md), 8 Nov 15:30-16:10, inline (agents blocked by the usage limit): the owner's three asks. KOL copies refuted at our landing (7 scored, none qualifies); crowd-following ("FOMO") leaders were refuted in round 1 (-0.016 to -0.019 on 1,906 copies); dev-wallet snipes of the five serial launchers on the leaderboard refuted at the launch landing (1,306 trades, all lower bounds below zero) with the new `creators` lab knob; MIG-10 at 0.5 SOL refuted (-0.022, n 72).
 
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
