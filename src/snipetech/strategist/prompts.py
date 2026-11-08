@@ -22,6 +22,12 @@ What the keys mean:
   priority fee again on every exit, so the priority fee is never tunable, and the paid arm is retired (paying 20
   times the fee landed no earlier on 6 Nov). Arms are compared only on separate OKTech wallets: one wallet buys a
   coin once, so two arms on one wallet never give a paired comparison.
+- fees.tune.<kind>.<number>.max (kind: copy, hunt, launch, mig, probe; number: buy_tip, sell_tip, sell_priority,
+  buy_priority): the fee policy's per-kind caps (the evidence's fee_policy says its choice per kind and why). The
+  policy itself picks each number inside them: the owner's minimum unless 10+ fills at a higher tip landed measurably
+  earlier than 10+ at the lower one. You may lower a kind's cap, never past the owner's outer [fees] bounds, and never
+  a minimum (a raised minimum is a raised bid with no evidence, which the rule forbids); the buy priority's are 0.001
+  to 0.001 (charged again on every exit) and the sell priority is what each failed twin pays.
 - qualify.max_gap3_pct: the largest price gap to the third buyer behind the leader that still counts as uncrowded.
   qualify.min_n_tape: how many tape trades a wallet needs before its lab number counts. qualify.landing_pos: the
   landing the labs assume ("+6" = up to six trades behind the leader in its slot: the paper test and the event edge

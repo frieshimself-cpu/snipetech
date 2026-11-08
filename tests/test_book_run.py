@@ -38,6 +38,10 @@ class FakeSvc:
 
     async def oktech_copylist(self, specs, wallet, create=False, buy_sol=0.05, max_buys=5, exit_name="lab", priority_fee=None, tip=None,
                               send_count=None, tag="", compute_units=None, salt="", **kw):  # fmt: skip
+        # the arm reaches the create as the fee policy's floor (fee_floor); the call records it where the bid was
+        floor = kw.pop("fee_floor", None) or {}
+        priority_fee = floor.get("buy_priority", priority_fee)
+        tip = floor.get("buy_tip", tip)
         self.calls.append(("create", tuple(specs), wallet, buy_sol, max_buys, priority_fee, tip, send_count, tag))
         self.salts = getattr(self, "salts", []) + [salt]
         self.exits = getattr(self, "exits", []) + [(exit_name, kw)]  # the exit asked for, and any exit_params

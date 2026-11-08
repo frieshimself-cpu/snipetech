@@ -589,7 +589,8 @@ TRIP_VERDICT_KEYS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol",
 
 # what a post-mortem reads of each trip's breakdown and of the batch's totals (measure/attribution.py)
 _BREAKDOWN_KEYS = ("price_sol", "venue_fee_sol", "price_net_sol", "buy_fee_sol", "sell_fee_sol", "dup_fee_sol", "dups",
-                   "result_sol", "recorded_sol", "fees_known", "kind", "flips", "biggest", "levers", "bid_over_minimum")  # fmt: skip
+                   "result_sol", "recorded_sol", "fees_known", "kind", "flips", "biggest", "levers", "bid_over_minimum",
+                   "twin_priority_sol")  # fmt: skip
 _TOTAL_KEYS = ("price_sol", "price_rose_sol", "price_fell_sol", "rose", "fell", "venue_fee_sol", "buy_fees_sol",
                "sell_fees_sol", "duplicates_sol", "duplicates", "costs_sol", "lost_to_costs", "lost_on_price", "unsplit",
                "unsplit_price_net_sol", "causes", "worst_leader")  # fmt: skip

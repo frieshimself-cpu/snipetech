@@ -32,8 +32,8 @@ Biggest cause: pump.fun's fee, 1.25 % on each buy and each sell (0.0152 SOL). Th
 Would have saved the most: OKTech sending each exit once (it signs up to three copies of every sell, and the copies \
 that lose the race fail and still pay): 0.0080 SOL on these trips. Needs your yes: it is OKTech's to change, an ask \
 to them.
-Best change of ours: the sell fee from 0.002 back to 0.001 SOL ([oktech] sell_fee_sol: the landed sell's tip and each \
-failed copy's priority fee): 0.0070 SOL on these trips. Needs your yes."""
+Best change of ours: the sell tip from 0.002 back to 0.001 SOL ([oktech] sell_tip_sol: the landed sell's tip, and the \
+priority of each failed copy still priced at the old joint sell fee): 0.0070 SOL on these trips. Needs your yes."""
 
 
 T0 = 1_793_985_720  # 6 Nov 17:22 UTC
@@ -107,12 +107,12 @@ def test_a_batch_lost_on_the_price_names_the_leader_and_the_analysts_idea():
         "1 trip." in text
     )
     assert "Change it suggests: Copy only leaders whose first sell comes after 10 s (needs your yes)." in text
-    assert "On the fees: the sell fee from 0.002 back to 0.001 SOL" in text  # ours, not OKTech's, after the idea
+    assert "On the fees: the sell tip from 0.002 back to 0.001 SOL" in text  # ours, not OKTech's, after the idea
     assert "Net: -0.0759 SOL. The loss came from the price itself." in text
     owner = P.summary_text(trips, idea=idea | {"owner_needed": True, "kind": "code"})
     assert "(needs your yes)" in owner
     no_idea = P.summary_text(trips)
-    assert "Change it suggests" not in no_idea and "On the fees: the sell fee" in no_idea
+    assert "Change it suggests" not in no_idea and "On the fees: the sell tip" in no_idea
 
 
 def test_an_idea_is_never_called_the_strategists_when_nothing_checked_its_bounds():
@@ -145,7 +145,7 @@ def test_a_batch_that_lost_on_the_price_says_so_when_one_winner_rose_more():
         "0.1200 on the price over 4 trips."
     )
     assert lines[5] == "Change it suggests: Skip leaders that dump within 5 s (the agents test it themselves)."
-    assert lines[6].startswith("On the fees: the sell fee from 0.002 back to 0.001 SOL")
+    assert lines[6].startswith("On the fees: the sell tip from 0.002 back to 0.001 SOL")
 
 
 def test_an_exit_from_a_few_copies_in_hindsight_is_never_offered_to_the_owner():
@@ -173,7 +173,7 @@ def test_an_exit_that_clears_the_books_bar_here_and_on_the_record_is_a_test_neve
     batch = [t["exit"] for t in trips]
     agrees = batch + [_replayed_copy(20 + k, 0.002)["exit"] for k in range(4)]
     lines = P.summary_text(trips, record=agrees).splitlines()
-    assert lines[-2].startswith("Would have saved the most: the sell fee")  # 0.0090 SOL: a saving, ranked first
+    assert lines[-2].startswith("Would have saved the most: the sell tip")  # 0.0090 SOL: a saving, ranked first
     assert lines[-1] == WORTH_TESTING
     disagrees = batch + [_replayed_copy(20 + k, -0.005)["exit"] for k in range(12)]
     assert "Worth testing" not in P.summary_text(trips, record=disagrees)

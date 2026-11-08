@@ -48,7 +48,11 @@ wallets whose verdict scores at least the owner's bar, one sniper per wallet.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
 wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper
-number; say so when the two disagree.
+number; say so when the two disagree. What each kind of sniper bids (buy priority and tip, sell tip and priority) and
+why is the fee policy's (read_fee_policy): the minimums unless 10+ fills at a higher tip landed measurably earlier.
+Measure's run summary says what the failed duplicate sells cost per landed sell at each sell priority (twins_per_sell)
+and how many sells land per buy since the 8 Nov split (sells_per_buy): a fall there is the unsold-coin risk, said with
+its /sell line.
 Events (read_events): trending and graduating lists, exact curve crossings and dev transfers, and the nightly table of
 which event kinds carried edge at the measured landing; a kind with a positive lower bound over 50+ moments is worth a
 decision-level note, not a sniper — snipers are the owner's call.

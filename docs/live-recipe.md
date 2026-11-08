@@ -71,6 +71,23 @@ of 12:10-12:43 made **+0.176 SOL net** (4 won), the losers held to −0.02…−
 winners paid for them. 7aPo3n's live record (7 Nov and 8 Nov): 11 copies, 5 won, about +0.164 net, less the 0.012 of the three
 phantom exits.
 
+The duplicates, 12:35, the owner: "Why is it selling twice? Find a fix yourself." The four failed twins each paid
+2,000,000 lamports priority because one setting priced the landed sell's tip and the twins' priority alike. The
+`fee-policy` branch splits them: the sell bid is the tip (`[oktech] sell_tip_sol` 0.002, refunded when a send fails),
+the sell priority is 0.0001 (`sell_priority_sol`, what each twin pays), and every sniper's fees come from a policy per
+kind of task (`docs/architecture.md`, "Fees per task"). Nothing live changes on deploy: the split reaches each sniper
+when the book replaces it. The server's config may still set `sell_fee_sol` (the 6 Nov audit fix): the alias now sets
+the bid only and leaves the priority at 0.0001, so the fix deploys either way; a journal warning names the key to
+rename. The deploy check, before trusting the numbers: once the book has replaced a sniper, `remote sql` the newest
+row of `oktech_snipers` and confirm its payload's `autoSell.sellPriorityFeeSol` is 0.0001 and `sellTipAmount` 0.002 on
+a copy (0.001 on a hunt, launch, MIG or probe sniper, what those bid before). What to watch on the first sells after:
+in `fills`, the landed sell at tip 2,000,000 lamports and its twins at 100,000 priority; measure's `twins_per_sell`
+line (about 0.0001 a twin instead of 0.002; a sell is filed by its sniper's sell priority, else by its untipped
+twins', never a median of the tipped and untipped); and `sells_per_buy`, which
+says for the first 20 sells whether sells still land once per buy and writes an ALERT line if fewer do (the one risk:
+if an untipped copy was what landed when the tipped one lost, a coin could stay unsold; the unsold-coin watch and
+`/sell` cover it, and `sell_priority_sol` back toward 0.002 is the owner's switch).
+
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
 The book's copy sniper on `7aPo3npv…bGXN8` (armed 16:05, qualified at the copy landing: n 35, +0.0271 SOL a trade,

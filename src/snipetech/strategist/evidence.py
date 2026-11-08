@@ -126,4 +126,22 @@ def week_evidence(store: Store, cfg: Config, now: float, days: int = 7) -> dict[
         "param_changes": [e.get("data") or {} for e in store.events(kind="param_change", limit=7)],
         "current": {"book": dataclasses.asdict(cfg.book), "qualify": dataclasses.asdict(cfg.qualify)},
         "bounds": cfg.autotune.bounds,
+        # the fee policy's choice per kind and per copied leader, with why, and the bounds in force (fees.py): the
+        # strategist may lower a kind's cap with fees.tune.<kind>.<number>.max, inside the owner's outer ones (never a min)
+        "fee_policy": _fee_policy(store, cfg, fills, now),
     }
+
+
+def _fee_policy(store: Store, cfg: Config, fills: list[dict], now: float) -> dict[str, Any]:
+    from .. import fees as F
+    from ..measure.classify import copy_sniper_rows
+
+    try:
+        evidence = F.evidence_fills(store, cfg.operator.wallet or None, now)
+        leaders = {w for r in copy_sniper_rows(store) if r.get("removed_at") is None for w in r["wallets"]}
+        leaders |= {b["wallet_copied"] for b in fills if b.get("wallet_copied")}
+        return F.explain(
+            cfg, evidence, sorted(leaders), kinds_of=F.kinds_of_fills(evidence, store.oktech_snipers(active=False))
+        )
+    except Exception as exc:  # noqa: BLE001 - the week's evidence never fails on the fee policy
+        return {"error": f"{type(exc).__name__}: {exc}"}

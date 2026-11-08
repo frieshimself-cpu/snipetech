@@ -128,9 +128,10 @@ def _lever_savings(sell: dict, lots: list[tuple[dict, float, float]], dups: list
     ("tip" when only in the tip on the control arm, else "priority"; None when at the minimum).
 
     - single_send: OKTech sending each exit once saves every failed duplicate.
-    - sell_fee: [oktech] sell_fee_sol sets both the sell's tip and the untipped copies' priority fee (oktech.autosell);
-      back at 0.001 it saves the landed sell's tip above 0.001 and the same on each duplicate the setting priced (one
-      at the setting's priority, not the buy's). A sale by hand is not the setting's.
+    - sell_fee: the sell tip ([oktech] sell_tip_sol; before the 8 Nov split one sell_fee_sol priced the tip and the
+      untipped copies' priority alike) back at 0.001 saves the landed sell's tip above 0.001 and the same on each
+      duplicate still priced at that joint setting (one at the setting's priority, not the buy's; a duplicate at the
+      split's near-zero priority is not). A sale by hand is not the setting's.
     - buy_bid: the buy's priority and tip above the minimum, and the buy's priority again on the landed sell and on a
       tipped duplicate (OKTech charges the buy's priority on every tipped exit)."""
     out: dict[str, int] = {}
@@ -217,6 +218,11 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
     first_buy = buys.get(sell.get("buy_sig") or "") or shares[0][0]
     ran = sell.get("exit_name") or first_buy.get("exit_name")
     n_dups = (len(dups) or None) if dup_l else 0  # a cost on record but no send tied to it here: count unknown
+    # the sell priority setting that priced the duplicates (0.002 before the 8 Nov split, 0.0001 after): the untipped
+    # ones' priority, since the tipped variant that lost paid the buy's priority instead (run.twin_priority)
+    from .run import twin_priority
+
+    twin_prio = twin_priority(dups)
     return {"sell_sig": sell["sig"], "buy_sig": first_buy["sig"], "mint": sell.get("mint"),
             "leader": first_buy.get("wallet_copied"), "buy_ts": first_buy.get("ts"), "sell_ts": sell.get("ts"),
             "venue": sell_leg["venue"] if sell_leg else None, "price_sol": _sol(price_l),
@@ -226,7 +232,8 @@ def _trip(sell: dict, lots: list[dict], buys: dict[str, dict], legs: dict[str, d
             "biggest": biggest[0] if biggest[1] > 0 else None,
             "tape_check_sol": _sol(price_l - tape_price) if split and price_l is not None else None,
             "exit": _exit_block(sell, ran, replays.get(sell.get("buy_sig") or "")),
-            "levers": {k: _sol(v) for k, v in levers.items()}, "bid_over_minimum": bid_over}  # fmt: skip
+            "levers": {k: _sol(v) for k, v in levers.items()}, "bid_over_minimum": bid_over,
+            "twin_priority_sol": twin_prio}  # fmt: skip
 
 
 def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | None = None,
@@ -418,6 +425,24 @@ def _bid_at_minimum(cfg, tip_only: bool) -> bool:
                and round(float(a.get("tip") or 0) * 1e9) <= MIN_BUY_TIP_LAMPORTS for a in given)  # fmt: skip
 
 
+def twins_per_trip(trips: list[dict]) -> dict[str, dict[str, Any]]:
+    """The duplicates' cost per trip, by the sell priority setting that priced the duplicates (`twin_priority_sol`, the
+    untipped ones' priority: 0.002 before the 8 Nov split, 0.0001 after), over the trips that had any: what the split
+    saves per landed sell, before and after."""
+    out: dict[str, dict[str, Any]] = {}
+    for t in trips:
+        if not t or t.get("twin_priority_sol") is None:
+            continue
+        slot = out.setdefault(f"{t['twin_priority_sol']:g}", {"trips": 0, "dups": 0, "sol": 0})
+        slot["trips"] += 1
+        slot["dups"] += int(t.get("dups") or 0)
+        slot["sol"] += _lamports(t.get("dup_fee_sol"))
+    for slot in out.values():
+        slot["per_trip_sol"] = _sol(round(slot["sol"] / slot["trips"])) if slot["trips"] else 0.0
+        slot["sol"] = _sol(slot["sol"])
+    return out
+
+
 def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
     """What each change would have saved on these trips, best first, with who can make it: "strategist" (inside its
     [autotune] bounds, strategist/bounds.py), "owner" (needs the owner's yes) or "oktech" (OKTech's to change, asked
@@ -443,17 +468,18 @@ def levers(trips: list[dict], cfg=None) -> list[dict[str, Any]]:
     sol, n = saved("single_send")
     if sol:
         out.append({"lever": "single_send", "sol": _sol(sol), "trips": n, "who": "oktech",
+                    "twins_per_sell": twins_per_trip(trips),
                     "words": "OKTech sending each exit once (it signs up to three copies of every sell, and the "
                              "copies that lose the race fail and still pay)"})  # fmt: skip
     sol, n = saved("sell_fee")
-    now = float(cfg.oktech.sell_fee_sol)
+    now = float(cfg.oktech.sell_tip_sol)
     target = LOW_SELL_FEE_LAMPORTS / 1e9
     if sol and now > target + 1e-12:
-        out.append({"lever": "sell_fee", "sol": _sol(sol), "trips": n, "key": "oktech.sell_fee_sol", "now": now,
+        out.append({"lever": "sell_fee", "sol": _sol(sol), "trips": n, "key": "oktech.sell_tip_sol", "now": now,
                     "target": target,
-                    "who": "strategist" if strategist_may_set("oktech.sell_fee_sol", target, cfg) else "owner",
-                    "words": f"the sell fee from {now:g} back to {target:g} SOL ([oktech] sell_fee_sol: the landed "
-                             "sell's tip and each failed copy's priority fee)"})  # fmt: skip
+                    "who": "strategist" if strategist_may_set("oktech.sell_tip_sol", target, cfg) else "owner",
+                    "words": f"the sell tip from {now:g} back to {target:g} SOL ([oktech] sell_tip_sol: the landed "
+                             "sell's tip, and the priority of each failed copy still priced at the old joint sell fee)"})  # fmt: skip
     sol, n = saved("buy_bid")
     tip_only = all(t.get("bid_over_minimum") in (None, "tip") for t in trips if (t.get("levers") or {}).get("buy_bid"))
     if sol and not _bid_at_minimum(cfg, tip_only):

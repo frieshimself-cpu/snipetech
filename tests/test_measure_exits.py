@@ -20,9 +20,10 @@ class Tape(Market):
 
 
 def _sniper(exit_name="lab", exit_params=None, prio=0.001, tip=0.002, sell_fee=0.002) -> dict:
-    """The OKTech config a copy sniper on LEAD was created with (what the local table keeps as its payload)."""
+    """The OKTech config a copy sniper on LEAD was created with (what the local table keeps as its payload). These
+    are 6 Nov snipers, from before the sell-fee split: one `sell_fee` priced the sell tip and the sell priority alike."""
     cfg = Config()
-    cfg.oktech.sell_fee_sol = sell_fee
+    cfg.oktech.sell_tip_sol = cfg.oktech.sell_priority_sol = sell_fee
     return list_copy_sniper(LEAD, "book", 0.3, 0.2, cfg=cfg, exit_name=exit_name, exit_params=exit_params,
                             priority_fee=prio, tip=tip, tag="arm:control").config  # fmt: skip
 
@@ -144,13 +145,13 @@ def test_the_preset_is_read_back_from_the_snipers_payload():
 
 def test_a_landed_sell_at_another_snipers_priority_is_crossed():
     """The landed variant of a sell pays its sniper's buy priority fee (7 of 7 fee-test sells); an untipped variant
-    pays the sell priority (0 since 8 Nov 12:45: the plain second send bids nothing). Anything else came from another
-    sniper on the same leader; a sniper created before then still pays 0.002 on that variant, which its own stored
-    payload says."""
-    assert (1_000_000, 2_000_000) in FEES and (0, 0) in FEES
+    pays the sell priority (0.0001 since the 8 Nov fee split: the plain second send bids next to nothing). Anything
+    else came from another sniper on the same leader; a sniper created before then still pays 0.002 on that variant,
+    which its own stored payload says."""
+    assert (1_000_000, 2_000_000) in FEES and (100_000, 0) in FEES
     assert is_crossed({"priority_lamports": 20_000_000, "tip_lamports": 2_000_000}, LAB) is True
     assert is_crossed({"priority_lamports": 999_999, "tip_lamports": 2_000_000}, LAB) is False
-    assert is_crossed({"priority_lamports": 0, "tip_lamports": 0}, LAB) is False
+    assert is_crossed({"priority_lamports": 100_000, "tip_lamports": 0}, LAB) is False
     assert is_crossed({"priority_lamports": 2_000_000, "tip_lamports": 0}, LAB) is True
     assert is_crossed({"priority_lamports": 1_000_000, "tip_lamports": 2_000_000}, _sniper(prio=0.02, tip=0.02)) is True
     assert is_crossed({"priority_lamports": None, "tip_lamports": None}, LAB) is None

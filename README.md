@@ -199,7 +199,8 @@ refuse while the owner's `/stop` flag is set.
 What every sniper we make sends (audited against the chain and OKTech's app on 6 Nov, see
 `docs/oktech-audit-2026-11-06.md`): seed account off (the tokens are in the wallet from the first
 slot; with it on every fill was two transactions and a 6023 race), one send per transaction, sells at
-`[oktech] sell_fee_sol` (0.002 SOL) whatever the buy bid, preconfs requested, and a compute-unit limit
+`[oktech] sell_tip_sol` (0.002 SOL, the bid) + `sell_priority_sol` (0.0001, what each failed twin pays)
+whatever the buy bid, every fee from the policy per kind of task (`fees.py`), preconfs requested, and a compute-unit limit
 only when `[oktech] compute_units` or a bid arm's `cu` says so. `oktech holdings --address W` lists the
 wallet's *positions* by the one rule every stop decision uses (`positions.py`: WSOL and stablecoins
 never count, dust is anything under 0.001 SOL at the tape's price, unpriced tokens are listed apart).

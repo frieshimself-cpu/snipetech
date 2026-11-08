@@ -380,6 +380,32 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         return redact(json.dumps(out, default=str))
 
     @beta_async_tool
+    async def read_fee_policy() -> str:
+        """The fee policy's current choice per kind of sniper (a copy, a hunt, a launch sniper, a MIG sniper, a probe)
+        and per copied leader: buy priority, buy tip, sell tip and sell priority in SOL, why each tip is where it is
+        (the fills compared), the bounds in force and the owner's outer ones. The rule: a tip is raised above the
+        minimum only where 10+ fills at the higher tip landed measurably earlier than 10+ at the lower one; priorities
+        are never raised (the buy priority is charged again on every exit, the sell priority on every failed twin).
+        Read it before saying a fee should change; the strategist may narrow a kind's bounds, the owner sets the outer
+        ones. Nothing here trades or changes a setting.
+        """
+        try:
+            from .. import fees as F
+            from ..config import Config
+            from ..measure.classify import copy_sniper_rows
+
+            cfg = getattr(svc, "cfg", None) or Config()
+            wallet = getattr(getattr(cfg, "operator", None), "wallet", "") or None
+            fills = F.evidence_fills(svc.store, wallet, now_fn())
+            snipers = svc.store.oktech_snipers(active=False)
+            leaders = {w for r in copy_sniper_rows(svc.store) if r.get("removed_at") is None for w in r["wallets"]}
+            leaders |= {b["wallet_copied"] for b in fills if b.get("wallet_copied")}
+            out = F.explain(cfg, fills, sorted(leaders), kinds_of=F.kinds_of_fills(fills, snipers))
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {type(exc).__name__}: {exc}"
+        return redact(json.dumps(out, default=str))
+
+    @beta_async_tool
     async def read_events(kind: str | None = None, hours: int = 24, limit: int = 50) -> str:
         """The events stage: trending / graduating / curve_cross:<sol> / dev_transfer rows of the last `hours`, counts by
         kind, and the nightly event-expectancy table (which event kinds carried edge at the measured landing).
@@ -444,6 +470,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         write_report,
         read_verdicts,
         read_fills,
+        read_fee_policy,
         read_events,
         *make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet),
     ]

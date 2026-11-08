@@ -476,9 +476,12 @@ def test_read_round_trips_gives_the_analyst_the_breakdown_the_causes_and_the_lev
     out = json.loads(_call(tools["read_round_trips"], hours=1))
     s = out["summary"]
     assert s["trips"] == 3 and s["pnl_sol"] == pytest.approx(-0.011862)
-    assert s["causes"][0]["cause"] == "venue_fee" and s["levers"][0] == pytest.approx(
-        {"lever": "single_send", "sol": 0.00802, "trips": 2, "who": "oktech", "words": s["levers"][0]["words"]}
+    lever = dict(s["levers"][0])
+    per_sell = lever.pop("twins_per_sell")  # the twins' cost per trip at each sell priority (the 8 Nov split)
+    assert s["causes"][0]["cause"] == "venue_fee" and lever == pytest.approx(
+        {"lever": "single_send", "sol": 0.00802, "trips": 2, "who": "oktech", "words": lever["words"]}
     )
+    assert per_sell["0.002"]["trips"] == 2 and per_sell["0.002"]["per_trip_sol"] == pytest.approx(0.00401)
     assert {t["breakdown"]["kind"] for t in out["trips"]} == {"won", "lost_to_costs"}
 
 

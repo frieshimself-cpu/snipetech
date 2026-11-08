@@ -436,7 +436,7 @@ def test_a_mig_plan_is_the_scored_rule_and_nothing_else():
         "mode": "mig", "platforms": ["pumpfun"], "migrationExpirySec": 10, "buyAmount": 0.25, "priorityFee": 0.001,
         "tipAmount": 0.002, "singleSnipe": True, "totalSnipes": 1,
         "extraParams": {"globalSendCount": 1, "seedAccount": False}, "preexec": {"enabled": True}, "preconf": True,
-        "autoSell": autosell(tp30.to_dict() | {"sell_on_dev_sell": False}, []),
+        "autoSell": autosell(tp30.to_dict() | {"sell_on_dev_sell": False}, [], sell_tip_sol=0.001),  # the MIG kind's sell tip
     }  # fmt: skip
     assert "deadExit" not in p.config["autoSell"]
     assert p.config["autoSell"]["stages"][0] == {"gainPercent": 30.0, "sellPercent": 100.0, "delaySellAllSeconds": 0}
