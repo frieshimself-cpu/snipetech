@@ -11,10 +11,12 @@ refuses a creator-0 rule for /test go, the round's start and the automatic test 
 strategy` says so in the plan's notes. Rules with a creator limit above 0 and copies never wait for it.
 
 The owner records it: `/oktech dev0 confirmed` in Telegram (the owner's chat only), or the cloud session with the owner's
-word in chat, `snipetech operate oktech --dev-max-zero "<when and how OKTech answered>"`. Written like operator/RISK and
-operator/AUTOTEST: JSON, atomically, with when it was said, when it was written and who wrote it; a read never raises.
-Only words count: no file, a file that cannot be read, or empty words mean not confirmed, and `/oktech dev0 unconfirmed`
-or an empty --dev-max-zero takes it back. Nothing in the code writes it by itself: the agents' start_job refuses
+word in chat, `snipetech operate oktech --dev-max-zero confirmed --words "<when and how OKTech confirmed it>"`; if
+OKTech says 0 means no limit, record nothing (any answer but `confirmed` changes nothing). The cloud session's record or
+take-back is told to the owner at once, in Telegram and in a decision note, so a wrong record is caught. Written like
+operator/RISK and operator/AUTOTEST: JSON, atomically, with when it was said, when it was written and who wrote it; a
+read never raises. Only words count: no file, a file that cannot be read, or empty words mean not confirmed, and
+`/oktech dev0 unconfirmed` or `--dev-max-zero unconfirmed` (or an empty value) takes it back. Nothing in the code writes it by itself: the agents' start_job refuses
 `operate`, and none of their tools writes a file without an extension in operator/."""
 
 from __future__ import annotations
@@ -30,7 +32,7 @@ from ..ops import redact
 from .paths import OperatorPaths
 
 DEV_MAX_ZERO = "dev_max_zero"  # the answer's key in operator/OKTECH
-WORDS_MAX = 300  # the words kept: when and how OKTech answered
+WORDS_MAX = 300  # the words kept: when and how OKTech confirmed it
 # the question for OKTech, as research round 3 put it to the owner ("What the owner can do now", 2)
 QUESTION = "In Hunt, does maxDevBuySol 0 skip every launch whose creator bought anything, or does 0 mean no limit?"
 WAIT = "waits for OKTech to confirm what maxDevBuySol 0 means"
@@ -40,7 +42,7 @@ WAIT = "waits for OKTech to confirm what maxDevBuySol 0 means"
 DEV0_WHY = (f"{WAIT}: the rule skips every launch whose creator bought anything, and if OKTech reads 0 as no limit its "
             "sniper buys the plain crowd hunt instead, which lost 0.0147 SOL a trade over 1,285 trades on tape the "
             "research had not used (research round 3). /oktech says what to ask OKTech and how to record their "
-            "answer")  # fmt: skip
+            "confirmation")  # fmt: skip
 CONFIRM = "/oktech dev0 confirmed"
 UNCONFIRM = "/oktech dev0 unconfirmed"
 WHO = {"telegram": "you in Telegram", "cli": "the cloud session, with your word"}
@@ -148,25 +150,61 @@ def command(args: list[str], *, paths: OperatorPaths, notes, now: float, date: i
             f"every launch whose creator bought anything, or {UNCONFIRM} to take that back.")  # fmt: skip
 
 
-def oktech_cli(cfg, args, now: float | None = None) -> int:
-    """`snipetech operate oktech [--dev-max-zero "<when and how OKTech answered>"]`: the cloud session records OKTech's
-    answer with the owner's word in chat (`remote --wait run operate oktech --dev-max-zero ...`); an empty value takes
-    it back. Prints where the file is and what is recorded. --dev-max-zero with another action, or another switch's
-    value with this one, changes nothing and exits with the reason."""
+CLI_CONFIRMED = "confirmed"  # the only answer that lifts the wait; "unconfirmed" or an empty value takes it back
+CLI_UNCONFIRMED = "unconfirmed"
+
+
+def oktech_cli(cfg, args, now: float | None = None, notifier=None) -> int:
+    """`snipetech operate oktech [--dev-max-zero confirmed --words "<when and how OKTech confirmed it>"]` and
+    `[--dev-max-zero unconfirmed]`: the cloud session records OKTech's confirmation with the owner's word in chat
+    (`remote --wait run operate oktech --dev-max-zero confirmed --words ...`), or takes it back (unconfirmed, or an empty
+    value). The answer and the words are separate so a "no" can never be recorded as a yes: any other answer, or
+    confirmed without words, changes nothing and exits with the reason. If OKTech says 0 means no limit, record nothing.
+    A record or a take-back is told to the owner at once (Telegram and a decision note), so a wrong one is caught.
+    Prints where the file is and what is recorded. --dev-max-zero with another action, or another switch's value with
+    this one, changes nothing and exits with the reason."""
+    from . import notify
     from .autotest import FIELDS
+    from .live_test import _say
+    from .tools import NoteSink
 
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     if args.action != "oktech":
-        raise SystemExit("--dev-max-zero goes with `operate oktech`")
+        raise SystemExit("--dev-max-zero and --words go with `operate oktech`")
     values = ("day_stop", "risk_floor", "daily_usd", "turn_usd", "tool_calls", "analyst_every_h", "approved",
               "autotest_wallet", *FIELDS)  # fmt: skip
     if any(getattr(args, k, None) is not None for k in values) or any(
         getattr(args, k, False) for k in ("budget_default", "autotest_on", "autotest_off")
     ):
-        raise SystemExit("operate oktech takes --dev-max-zero only: the other values go with `operate budget`, "
-                         "`operate risk` or `operate autotest`")  # fmt: skip
-    if args.dev_max_zero is not None:
-        set_dev_max_zero(paths, args.dev_max_zero, by="cli", now=now)
+        raise SystemExit("operate oktech takes --dev-max-zero and --words only: the other values go with `operate "
+                         "budget`, `operate risk` or `operate autotest`")  # fmt: skip
+    answer = None if args.dev_max_zero is None else " ".join(str(args.dev_max_zero).split()).lower()
+    words = getattr(args, "oktech_words", None)
+    said = None if words is None else " ".join(str(words).split())
+    if answer not in (None, "", CLI_CONFIRMED, CLI_UNCONFIRMED):
+        raise SystemExit(f"operate oktech: not changed: --dev-max-zero takes {CLI_CONFIRMED} (with --words \"<when and "
+                         f"how OKTech confirmed it>\") or {CLI_UNCONFIRMED}, nothing else. If OKTech says 0 means no "
+                         "limit, record nothing: those strategies cannot run on OKTech as they were scored")  # fmt: skip
+    if said is not None and answer != CLI_CONFIRMED:
+        raise SystemExit(f"operate oktech: not changed: --words goes with --dev-max-zero {CLI_CONFIRMED}")
+    if answer == CLI_CONFIRMED and not said:
+        raise SystemExit(f"operate oktech: not changed: --dev-max-zero {CLI_CONFIRMED} needs --words \"<when and how "
+                         "OKTech confirmed it>\"")  # fmt: skip
+    if answer is not None:
+        now = time.time() if now is None else now
+        notes = NoteSink(paths, now=lambda: now)
+        notifier = notifier if notifier is not None else notify.from_env(paths)
+        if answer == CLI_CONFIRMED:
+            a = set_dev_max_zero(paths, said, by="cli", now=now)
+            text = (f"The cloud session recorded, with your word, OKTech's confirmation that maxDevBuySol 0 skips every "
+                    f"launch whose creator bought anything: \"{(a or {}).get('words', '')}\". Hunt strategies whose "
+                    "creator limit is 0 may now start live like any other. If that is not what OKTech said, send "
+                    f"{UNCONFIRM} to take it back.")  # fmt: skip
+        else:
+            set_dev_max_zero(paths, "", by="cli", now=now)
+            text = ("The cloud session took back OKTech's answer on maxDevBuySol 0: it is not recorded any more, and no "
+                    "hunt strategy whose creator limit is 0 starts live until it is recorded again.")  # fmt: skip
+        _say(text, notes, notifier, None)
     print(f"OKTech's answers file {answers_file(paths)} on this machine")
     print(status_words(paths))
     return 0

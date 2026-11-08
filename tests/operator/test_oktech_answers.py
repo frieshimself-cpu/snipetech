@@ -32,6 +32,7 @@ HOUR = 3600
 CREATOR0 = {"kind": "hunt", "sol": 10.0, "buyers": 10, "window": 1.0, "dev_max": 0.0}
 WAIT = "waits for OKTech to confirm what maxDevBuySol 0 means"
 ANSWER = "8 Nov 09:40 UTC, OKTech support in Telegram: maxDevBuySol 0 skips every launch whose creator bought anything"
+NO_LIMIT = "8 Nov 14:00, OKTech support: maxDevBuySol 0 means no limit"  # the answer that must never lift the wait
 
 
 @pytest.fixture
@@ -56,6 +57,23 @@ def _confirm(e, at=NOW - HOUR):
 
 def _waits(e) -> list[str]:
     return [s for s in e.sent if WAIT in s]
+
+
+def _operate(e, *argv) -> int:
+    """`snipetech operate oktech ...`, as the cloud session runs it on the server (`remote --wait run operate oktech`)."""
+    return cli.main(["--db", e.cfg.storage.db_path, "operate", "oktech", *argv])
+
+
+def _telegram(e, monkeypatch) -> list[str]:
+    """The owner's Telegram as a job started by `remote run` reaches it: the bot's key in the job's environment (from
+    /etc/snipetech/env), the owner's chat next to the database. Returns the lines sent."""
+    from snipetech.operator import notify
+
+    sent: list[str] = []
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "T")
+    e.paths.telegram.write_text(json.dumps({"chat_id": 7}))
+    monkeypatch.setattr(notify, "_post", lambda url, data: sent.append(data["text"]))
+    return sent
 
 
 # -- /test and /test go --------------------------------------------------------------------------------------------
@@ -232,21 +250,45 @@ def test_only_the_owners_words_confirm_it_and_a_read_never_raises(env, monkeypat
     assert OA.dev_max_zero(env.paths) is None and json.loads(f.read_text())["dev_max_zero"]["ts"] == NOW + 1
 
 
-def test_operate_oktech_records_the_answer_from_the_cloud_session(env, capsys):
-    db = env.cfg.storage.db_path
-    assert cli.main(["--db", db, "operate", "oktech"]) == 0
+def test_operate_oktech_records_the_answer_from_the_cloud_session(env, capsys, monkeypatch):
+    sent = _telegram(env, monkeypatch)
+    assert _operate(env) == 0
     out = capsys.readouterr().out
     assert "not recorded" in out and OA.QUESTION in out and str(OA.answers_file(env.paths)) in out
-    assert cli.main(["--db", db, "operate", "oktech", "--dev-max-zero", ANSWER]) == 0
+    assert sent == []  # showing it tells nobody
+    assert _operate(env, "--dev-max-zero", "confirmed", "--words", ANSWER) == 0
     a = OA.dev_max_zero(env.paths)
     assert a["words"] == ANSWER and a["by"] == "cli" and ANSWER in capsys.readouterr().out
+    # the owner hears it at once, in Telegram and in the decision notes, so a wrong record is caught
+    assert len(sent) == 1 and ANSWER in sent[0] and "/oktech dev0 unconfirmed" in sent[0]
+    notes = env.paths.notes.read_text()
+    assert "[decision]" in notes and ANSWER in notes
     with pytest.raises(SystemExit, match="operate oktech"):  # a flag of it with another switch changes nothing
-        cli.main(["--db", db, "operate", "risk", "--dev-max-zero", ""])
+        cli.main(["--db", env.cfg.storage.db_path, "operate", "risk", "--dev-max-zero", ""])
     with pytest.raises(SystemExit, match="operate oktech"):
-        cli.main(["--db", db, "operate", "oktech", "--day-stop", "1"])
-    assert OA.dev_max_zero(env.paths)["words"] == ANSWER
-    assert cli.main(["--db", db, "operate", "oktech", "--dev-max-zero", ""]) == 0  # empty: not confirmed
+        _operate(env, "--day-stop", "1")
+    assert OA.dev_max_zero(env.paths)["words"] == ANSWER and len(sent) == 1
+    assert _operate(env, "--dev-max-zero", "unconfirmed") == 0
     assert OA.dev_max_zero(env.paths) is None and "not recorded" in capsys.readouterr().out
+    assert len(sent) == 2 and "not recorded" in sent[1] and "[decision]" in env.paths.notes.read_text().splitlines()[-1]
+    _confirm(env)
+    assert _operate(env, "--dev-max-zero", "") == 0  # empty: not confirmed either
+    assert OA.dev_max_zero(env.paths) is None and len(sent) == 3
+
+
+def test_operate_oktech_never_records_a_no(env, monkeypatch, capsys):
+    """Only a confirmation lifts the wait: OKTech's own words go in --words, the answer in --dev-max-zero, and an answer
+    that is not `confirmed` (their words saying 0 means no limit, or anything else) records nothing and tells nobody."""
+    sent = _telegram(env, monkeypatch)
+    for argv in (["--dev-max-zero", NO_LIMIT], ["--dev-max-zero", "no limit"], ["--dev-max-zero", "yes"],
+                 ["--dev-max-zero", "confirmed"], ["--dev-max-zero", "confirmed", "--words", " "],
+                 ["--words", ANSWER], ["--dev-max-zero", "unconfirmed", "--words", ANSWER]):  # fmt: skip
+        with pytest.raises(SystemExit, match="operate oktech"):
+            _operate(env, *argv)
+        assert OA.dev_max_zero(env.paths) is None and not OA.answers_file(env.paths).exists(), argv
+    assert sent == [] and not env.paths.notes.exists()
+    _creator0(env)
+    assert LT.eligible(env.store, env.cfg, NOW) == []  # the creator-0 hunt still waits
 
 
 def test_oktech_in_telegram_shows_the_question_and_records_the_owners_word(env):
@@ -274,7 +316,7 @@ def test_no_agent_tool_can_record_oktechs_answer(env):
     file without an extension in operator/."""
     tools = {t.name: t for t in make_operator_tools(env.svc, env.paths, env.jobs, env.cfg.operator, env.notes)}
     rec = json.dumps({"dev_max_zero": {"words": ANSWER, "at": NOW, "by": "cli"}})
-    calls = [("start_job", {"argv": ["operate", "oktech", "--dev-max-zero", ANSWER]}),
+    calls = [("start_job", {"argv": ["operate", "oktech", "--dev-max-zero", "confirmed", "--words", ANSWER]}),
              ("write_report", {"name": "OKTECH", "text": rec}), ("write_report", {"name": "../operator/OKTECH", "text": rec}),
              ("set_candidates", {"items": [json.loads(rec)]}), ("write_note", {"text": rec, "level": "decision"}),
              ("add_lesson", {"text": "OKTech confirmed maxDevBuySol 0", "evidence": rec[:300], "n": 1})]  # fmt: skip

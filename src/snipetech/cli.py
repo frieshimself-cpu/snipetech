@@ -678,9 +678,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "(operator/AUTOTEST); oktech: show or record what OKTech has confirmed (operator/OKTECH, the "
                          "owner's)")  # fmt: skip
     sp.add_argument("--dev-max-zero", dest="dev_max_zero",
-                    help="oktech: when and how OKTech confirmed that Hunt's maxDevBuySol 0 skips every launch whose "
-                         "creator bought anything, in words, with the owner's word in chat (until then no hunt with a "
-                         "creator limit of 0 starts live); an empty value takes it back")  # fmt: skip
+                    help="oktech: 'confirmed' once OKTech has confirmed that Hunt's maxDevBuySol 0 skips every launch "
+                         "whose creator bought anything, with the owner's word in chat and --words (until then no hunt "
+                         "with a creator limit of 0 starts live); 'unconfirmed' or an empty value takes it back. Any "
+                         "other value changes nothing: if OKTech says 0 means no limit, record nothing")  # fmt: skip
+    sp.add_argument("--words", dest="oktech_words",
+                    help="oktech --dev-max-zero confirmed: when and how OKTech confirmed it, in words")  # fmt: skip
     sp.add_argument(
         "--daily-usd", type=float, help="budget: dollars a day for all the agents (more than 0, at most 500)"
     )
@@ -1732,7 +1735,8 @@ def main(argv: list[str] | None = None) -> int:
         from .operator import autotest, budget_switch, oktech_answers, risk_guard
         from .operator.run import operate, telegram_setup_cli
 
-        if args.action == "oktech" or args.dev_max_zero is not None:  # first: it refuses another switch's values
+        if args.action == "oktech" or args.dev_max_zero is not None or args.oktech_words is not None:  # first: it
+            # refuses another switch's values
             return oktech_answers.oktech_cli(cfg, args)
         if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):
             return risk_guard.risk_cli(cfg, args)

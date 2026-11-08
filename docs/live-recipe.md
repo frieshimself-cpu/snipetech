@@ -389,8 +389,10 @@ trades on 4-5 Nov tape the research had not used, and OKTech has ignored thresho
 tells the owner once a day, and `oktech strategy` says so in the plan's notes. The rule is still sent as scored
 (maxDevBuySol 0); nothing else changes. Only the owner records the answer, in `operator/OKTECH`: `/oktech dev0
 confirmed` in Telegram, or from the cloud session with the owner's word in chat, `snipetech remote --wait run operate
-oktech --dev-max-zero "<when and how OKTech answered>"`. `/oktech` shows what is recorded and the question to put to
-OKTech; `/oktech dev0 unconfirmed`, or an empty `--dev-max-zero`, takes it back (a block running then runs to its end,
+oktech --dev-max-zero confirmed --words "<when and how OKTech confirmed it>"`; if OKTech says 0 means no limit, record
+nothing (any answer but `confirmed` changes nothing), and the owner gets a Telegram line and a decision note whenever the
+cloud session records or takes it back. `/oktech` shows what is recorded and the question to put to OKTech; `/oktech
+dev0 unconfirmed`, or `--dev-max-zero unconfirmed`, takes it back (a block running then runs to its end,
 and no next block of the rule starts). Nothing in the code writes the file, and the agents cannot. Rules with a creator
 limit above 0, copies and everything live now are untouched. The two creator-0 hunts in the paper test since 7 Nov
 evening (f94add343f, 7d6b4302ff) are the ones this holds back if their paper passes.
