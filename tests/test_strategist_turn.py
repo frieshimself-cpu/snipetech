@@ -110,6 +110,18 @@ def test_evidence_carries_round_trip_costs_and_live_against_paper():
     st.close()
 
 
+def test_evidence_counts_each_sells_failed_duplicates_once_in_the_arms_result():
+    """A sell's failed duplicate sends are beside its pnl_sol (twin_fee_sol): the arm's realised result is the whole
+    result, each cost once (7 Nov: realised_sol summed pnl_sol alone)."""
+    st = _store()  # its sell s1 made +0.008 with no duplicates
+    st.put_fill({"sig": "s3", "ts": NOW - 2800, "slot": 6, "wallet": W, "mint": "M3", "side": "sell", "sol": 0.199443,
+                 "tokens": 100.0, "pnl_sol": -0.006567, "twin_fee_sol": 0.00401, "bid_arm": "control"})  # fmt: skip
+    cfg = Config()
+    cfg.operator.wallet = W
+    assert week_evidence(st, cfg, NOW)["arms"]["control"]["realised_sol"] == round(0.008 - 0.006567 - 0.00401, 6)
+    st.close()
+
+
 def test_evidence_carries_exit_reasons_crossed_sells_and_unmanaged_coins():
     st = _store()
     st.add_events([{"ts": NOW - 600, "slot": 5, "kind": "unmanaged", "wallet": "L1", "mint": "M9",

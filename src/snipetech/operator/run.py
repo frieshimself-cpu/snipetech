@@ -16,7 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive, redact
-from . import learning, live_test, risk_guard
+from . import learning, live_test, postmortem, risk_guard
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -156,6 +156,20 @@ def _mark_postmortem(paths: OperatorPaths, now: float, trips: dict, mode: str, r
         learning.mark_postmortem(paths, now, trips, mode, reviewed=reviewed)
     except OSError as exc:
         _log(paths, now, f"post-mortem mark: failed: {exc}")
+
+
+def _postmortem_summary(cfg: Config, svc, paths: OperatorPaths, trips: dict, notes: NoteSink, notifier,
+                        now: float) -> None:  # fmt: skip
+    """The owner's summary of the live round trips the turn just reviewed (operator/postmortem.py): the numbers in
+    code, the change that would have saved the most. A summary that cannot be built is a log line, never a broken
+    round."""
+    if not trips.get("n"):
+        return
+    try:
+        if postmortem.send_summary(svc, cfg, paths, trips, notes, notifier, now):
+            _log(paths, now, f"post-mortem summary: sent for {trips['n']} round trips")
+    except Exception as exc:  # noqa: BLE001
+        _log(paths, now, redact(f"post-mortem summary: failed: {type(exc).__name__}: {exc}"))
 
 
 def _could_trade(snap, paths: OperatorPaths, now: float) -> bool:
@@ -326,6 +340,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             return 0
         if review and (result or {}).get("stopped") not in ("api_error", "refusal"):  # it ran: these trips are done
             _mark_postmortem(paths, t0, trips, decision.mode, reviewed=True)
+            _postmortem_summary(cfg, svc, paths, trips, notes, notifier, t0)  # the owner hears what they taught
         _log(paths, now(), f"turn {decision.mode}: {json.dumps(result, default=str)}")
         return 0
     finally:

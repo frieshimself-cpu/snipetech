@@ -499,7 +499,12 @@ exit too late or none fired, fees and failed duplicate sends, a bad coin), the c
 against what each wallet's verdict predicted. It then writes at least one lesson (or says why there is none), updates
 the ideas, and may start one research job to test the best of them. Between the daily analyses, 5 new live round trips
 start a post-mortem turn of their own: at most one every 3 hours, paid from the same daily cap, its report in
-`operator/postmortem-<date>-<time>.md`. The six-hour research digest ends with what was learned since the last one and
+`operator/postmortem-<date>-<time>.md`. The money in a post-mortem is worked out in code, not by the model
+(`measure/attribution.py`): each trip's price move before any cost, pump.fun's fee, the buy and sell fees and the failed
+duplicate sells add up to its whole result, each cost counted once, and the causes come ranked by SOL with the change
+that would have saved the most and who can make it (the strategist inside its bounds, you, or OKTech). After each
+post-mortem you get those numbers on Telegram in a few lines: the trips, the price move, the costs, the net, the
+biggest cause and that change. The six-hour research digest ends with what was learned since the last one and
 the ideas tested next; an idea that needs money, a code change or a setting outside the strategist's bounds says
 "needs your yes" and waits for it. Nothing in this loop trades or changes a live setting; only the strategist changes
 settings, inside the `[autotune]` bounds, as before.

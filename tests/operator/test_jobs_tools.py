@@ -328,6 +328,24 @@ def test_read_fills_tool(toolbox):
     assert len(json.loads(_call(tools["read_fills"], hours=24 * 7))["fills"]) == 3
 
 
+def test_read_fills_counts_a_sells_failed_duplicates_once(toolbox):
+    """A sell's failed duplicate sends sit beside its pnl_sol (twin_fee_sol); the summary's PnL is the whole result,
+    each cost once (7 Nov: it summed pnl_sol alone and left 0.1723 SOL of duplicates out of the live record)."""
+    tools, paths, _ = toolbox
+    st = Store(paths.data / "snipetech.db")
+    try:
+        now = 1_793_923_200
+        st.put_fill({"sig": "S1", "ts": now - 300, "wallet": "ME", "mint": "M1", "side": "sell", "sol": 0.199443,
+                     "pnl_sol": -0.006567, "twin_fee_sol": 0.00401})  # fmt: skip
+        st.put_fill({"sig": "S2", "ts": now - 200, "wallet": "ME", "mint": "M2", "side": "sell", "sol": 0.218855,
+                     "pnl_sol": 0.012845, "twin_fee_sol": None})  # fmt: skip
+    finally:
+        st.close()
+    assert json.loads(_call(tools["read_fills"], hours=24))["summary"]["pnl_sol"] == round(
+        -0.006567 - 0.00401 + 0.012845, 6
+    )
+
+
 def test_read_events_tool(toolbox):
     tools, paths, _ = toolbox
     st = Store(paths.data / "snipetech.db")

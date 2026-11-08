@@ -490,6 +490,7 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     chain anyway, about 0.001 SOL each: paper does not model them; a twin is already in its sale's result): every one
     for `all`, all but those in the coins of the copies for `own`. Only our own trades are read: a deposit or a
     withdrawal is in none of it."""
+    from ..measure.attribution import trip_result_sol
     from ..measure.classify import _fill_fee_sol, pair_round_trips
     from ..measure.run import BASE_FEE_LAMPORTS, _sells_a_coin, twin_sells
 
@@ -509,7 +510,7 @@ def block_live(store, wallet: str, t: dict, now: float, *, per_tx_sol: float, fa
     closed_by_sell: dict[str, float] = {}
     for tp in trips:
         closed_by_sell[tp["sell_sig"]] = closed_by_sell.get(tp["sell_sig"], 0.0) + float(tp["tokens"])
-    result_of = {x["sig"]: float(x["pnl_sol"]) - float(x.get("twin_fee_sol") or 0.0) for x in paired}
+    result_of = {x["sig"]: float(trip_result_sol(x)) for x in paired}  # each sale's whole result, its twins in it once
     closed: dict[str, float] = {}
     result: dict[str, float] = {}
     for tp in trips:  # each sale's own result, shared by tokens among the buys it closed

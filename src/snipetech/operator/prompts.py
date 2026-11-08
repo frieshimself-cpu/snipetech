@@ -92,12 +92,23 @@ blunt: most wallets fail where copies land or on their copies after the pick, an
 
 Post-mortem (part of every analyst turn, the whole job of a postmortem round): go through every live round trip since
 the last post-mortem; the window is in the round's reasons, and read_round_trips gives each trip with its landing,
-its exit, its fees and what the wallet's verdict predicted. Say why each trip won or lost. Put each loss in exactly
-one cause: late or crowded landing (trades behind the leader, price gap), a leader that dumps (the copied wallet sold
-into us), an exit too early, an exit too late or none fired, fees and failed duplicate sends, a bad coin. Count the
-causes. Each trip's shadow says what every exit on the menu would have made from the same entry: say when another
-exit would have done better and by how much; a pattern needs many trips, never one. Compare each wallet's live result
-with what its verdict predicted (mean_sol at the landing, copy_plan) and say where they disagree and by how much. Then
+its exit, its fees and what the wallet's verdict predicted. The money is worked out in code: a trip's result_sol is
+its whole result, each cost once (pnl_sol leaves out its failed duplicate sells), and its breakdown holds the parts
+that add up to it: the price move before any cost, pump.fun's fee, the buy's and the landed sell's fees, the failed
+duplicate sells. Use those numbers as they are and never redo the arithmetic. Say why each trip won or lost. A trip
+marked lost_to_costs made money on the price and the costs took it: its cause is fees and failed duplicate sends
+(pump.fun's fee among them). A trip marked lost_on_price lost on the price itself: put it in exactly one of the other
+causes: late or crowded landing (trades behind the leader, price gap), a leader that dumps (the copied wallet sold
+into us), an exit too early, an exit too late or none fired, a bad coin. Count the causes. Then rank the causes by SOL
+(the summary's causes) and say which change would have saved the most and who can make it (the summary's levers:
+the strategist inside its bounds, the owner, or OKTech through the owner); a change that needs the owner becomes an
+idea with owner_needed. The exit lever (test_only) is hindsight over measure's replays, a test and never a saving:
+say on how many copies it differed (differed, better, worse) and make it an idea only when it clears_bar. Each trip's
+shadow says what every exit on the menu would have made
+from the same entry: say when another exit would have done better and by how much; a pattern needs many trips, never
+one. Compare each wallet's live result with what its verdict predicted (mean_sol at the landing, copy_plan) and say
+where they disagree and by how much. After the turn, code sends the owner the batch's numbers and the change that
+would have saved the most; your note adds what the numbers cannot say: why, and what is tested next. Then
 learn: add_lesson at least once, each with its evidence and n, or say in the note why these trips teach nothing new;
 upsert_idea for what to try next, each with its evidence and a concrete test (a lab run, a paper strategy, a live
 measure, or a code change), and move an idea to testing, adopted or rejected when a result decides it. You may start
@@ -159,19 +170,22 @@ def _compact_snapshot(snap: Snapshot) -> dict:
 
 
 _CLOSING = {
-    "analyst": "Write the day's report with the post-mortem in it, add_lesson (or say why there is none), update the "
-    "ideas, then write_note.",
-    "postmortem": "Do the post-mortem: why each round trip won or lost, the causes counted, live against the verdicts. "
-    "Then add_lesson (or say why there is none), update the ideas, write the postmortem report, then write_note.",
+    "analyst": "Write the day's report with the post-mortem in it (the causes ranked by SOL and the change that would "
+    "have saved the most, from read_round_trips), add_lesson (or say why there is none), update the ideas, then "
+    "write_note.",
+    "postmortem": "Do the post-mortem: why each round trip won or lost (each loss in one cause, counted), the causes "
+    "ranked by SOL, the change that would have saved the most and who can make it, live against the verdicts. Then "
+    "add_lesson (or say why there is none), update the ideas, write the postmortem report, then write_note.",
 }
 
 
 def _update_closing(report: str) -> str:
     return (f"An earlier analysis stands in operator/{report}.md: read it first (read_file operator/{report}.md) "
             f"and never replace it. Add this turn's update at its end with write_report(name \"{report}\", "
-            "append=true), headed \"## Update HH:MM UTC\": what changed since the last analysis, the hypothesis you "
-            "tested and its result, the next test. Then add_lesson (or say why there is none), update the ideas, then "
-            "write_note.")  # fmt: skip
+            "append=true), headed \"## Update HH:MM UTC\": what changed since the last analysis, the post-mortem of "
+            "any new round trips (the causes ranked by SOL, the change that would have saved the most), the "
+            "hypothesis you tested and its result, the next test. Then add_lesson (or say why there is none), update "
+            "the ideas, then write_note.")  # fmt: skip
 
 
 def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = "", update_of: str | None = None,

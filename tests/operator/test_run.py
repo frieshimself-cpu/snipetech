@@ -205,6 +205,49 @@ def test_a_post_mortem_is_recorded_only_when_the_turn_is_called(tmp_env, monkeyp
     assert tmp_env["calls"] == [] and learning.postmortem_state(tmp_env["paths"]) == {}
 
 
+def _night(env, sent):
+    """The three 7aPo3n copies of 7 Nov in the store, the book wallet theirs, Telegram captured in `sent`."""
+    from tests import loss_7nov as F
+
+    F.load(env["svc"].store)
+    env["cfg"].operator.wallet = F.WALLET
+    return {"send": lambda text: sent.append(text) or True}
+
+
+def test_the_owner_gets_the_post_mortems_numbers_once_the_turn_ran(tmp_env):
+    """After a turn that reviewed new live round trips (here the analyst's), code sends the owner the batch's summary
+    and writes it to the notes; the model's own note is separate."""
+    sent: list[str] = []
+    _op(tmp_env, analyst=True, **_night(tmp_env, sent))
+    assert len(tmp_env["calls"]) == 1
+    (summary,) = [s for s in sent if s.startswith("Post-mortem:")]
+    assert "3 live round trips" in summary and "Net: -0.0119 SOL." in summary and "0.0080 SOL on these trips" in summary
+    notes = tmp_env["paths"].notes.read_text()
+    assert "[info] Post-mortem: 3 live round trips" in notes and "Net: -0.0119 SOL." in notes
+    _op(tmp_env, analyst=True, send=lambda text: sent.append(text) or True)  # the same trips: reviewed already
+    assert len([s for s in sent if s.startswith("Post-mortem:")]) == 1
+
+
+def test_no_summary_when_the_post_mortem_turn_did_not_run(tmp_env):
+    sent: list[str] = []
+    failed = lambda *a, **k: {"usd": 0.0, "tool_calls": 0, "stopped": "api_error", "notes": 1}
+    _op(tmp_env, analyst=True, turn=failed, **_night(tmp_env, sent))
+    assert not [s for s in sent if s.startswith("Post-mortem:")]
+    assert "Post-mortem:" not in (tmp_env["paths"].notes.read_text() if tmp_env["paths"].notes.exists() else "")
+
+
+def test_a_summary_that_cannot_be_built_never_breaks_the_round(tmp_env, monkeypatch):
+    from snipetech.operator import postmortem
+
+    def boom(*a, **k):
+        raise RuntimeError("tape unreadable")
+
+    monkeypatch.setattr(postmortem, "summary_text", boom)
+    sent: list[str] = []
+    assert _op(tmp_env, analyst=True, **_night(tmp_env, sent)) == 0
+    assert "post-mortem summary: failed: RuntimeError: tape unreadable" in tmp_env["paths"].log.read_text()
+
+
 def test_cli_has_operate_and_ops_allows_it():
     assert "operate" in O.ALLOWED
     a = build_parser().parse_args(["operate", "--dry-run"])
