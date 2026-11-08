@@ -73,3 +73,32 @@ def test_salvage_copies_every_readable_row_and_puts_the_copy_in_place(tmp_path):
     c.commit()
     assert n == out["copied"] and "trades_ts" in names
     assert out["kept_as"] in {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+
+def test_swap_then_backfill_puts_a_writable_table_in_place_at_once_and_fills_it_later(tmp_path):
+    from snipetech.infra.db_repair import backfill, swap
+
+    db = _big_db(tmp_path)
+    _damage_a_leaf_page(db)
+    c = sqlite3.connect(db)  # a salvage that was stopped after its first chunks
+    c.execute(
+        c.execute("SELECT sql FROM sqlite_master WHERE name='trades'")
+        .fetchone()[0]
+        .replace("trades", "trades_salvage", 1)
+    )
+    c.execute("INSERT INTO trades_salvage SELECT * FROM trades WHERE rowid <= 3000")
+    c.commit()
+    c.close()
+    out = swap(db, "trades")
+    assert "error" not in out
+    c = sqlite3.connect(db)
+    c.execute("INSERT INTO trades VALUES ('new', 0, 99999)")  # the recorder writes at once
+    c.commit()
+    assert c.execute("SELECT count(*) FROM trades WHERE ts >= 0").fetchone()[0] == 3001
+    c.close()
+    done = backfill(db, "trades", chunk=1000)
+    c = sqlite3.connect(db)
+    n = c.execute("SELECT count(*) FROM trades WHERE ts >= 0").fetchone()[0]
+    assert 15000 < n < 20001 and done["skipped_ranges"] and done["done"] is True
+    assert c.execute("SELECT count(*) FROM trades WHERE sig='new'").fetchone()[0] == 1
+    assert backfill(db, "trades", chunk=1000)["copied"] == 0  # resumable and idempotent

@@ -107,3 +107,96 @@ def salvage(path: str, table: str, chunk: int = 200_000) -> dict[str, Any]:
         conn.close()
     return {"table": table, "copied": copied, "skipped_ranges": skipped, "kept_as": kept,
             "secs": round(time.monotonic() - t0, 1)}  # fmt: skip
+
+
+STATE = "repair_state"  # one row per repaired table: the damaged table and how far its backfill has read
+
+
+def swap(path: str, table: str) -> dict[str, Any]:
+    """Put <table>_salvage (a salvage stopped part way) in place of the damaged table at once, so writers work again;
+    `backfill` then copies the rest. The damaged table is renamed and kept (its indexes go with it under their own
+    names), and the copy gets the same indexes under names ending in _r: the schema step creates an index only when
+    its name is missing, and any index on the right columns serves the queries."""
+    conn = _connect(path)
+    try:
+        new = f"{table}_salvage"
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if new not in tables or table not in tables:
+            return {"error": f"needs both {table!r} and {new!r}"}
+        indexes = conn.execute(
+            "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=? AND sql IS NOT NULL", (table,)
+        ).fetchall()
+        kept = f"{table}_damaged_{int(time.time())}"
+        copied = conn.execute(f'SELECT count(*) FROM "{new}"').fetchone()[0]
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(f'ALTER TABLE "{table}" RENAME TO "{kept}"')
+        conn.execute(f'ALTER TABLE "{new}" RENAME TO "{table}"')
+        conn.execute(f'CREATE TABLE IF NOT EXISTS "{STATE}" (tbl TEXT PRIMARY KEY, src TEXT, next_rowid INTEGER)')
+        start = max(1, copied - 400_000)  # the stopped salvage read in rowid order; INSERT OR IGNORE drops repeats
+        conn.execute(f'INSERT OR REPLACE INTO "{STATE}" VALUES (?, ?, ?)', (table, kept, start))
+        conn.commit()
+        t0 = time.monotonic()
+        for name, sql in indexes:
+            _head, _, cols = sql.partition(" ON ")
+            conn.execute(f'CREATE INDEX IF NOT EXISTS "{name}_r" ON "{table}"' + cols[cols.index("(") :])
+            conn.commit()
+        return {"table": table, "kept_as": kept, "rows": copied, "backfill_from": start,
+                "index_secs": round(time.monotonic() - t0, 1)}  # fmt: skip
+    finally:
+        conn.close()
+
+
+def backfill(path: str, table: str, chunk: int = 50_000, max_secs: float | None = None) -> dict[str, Any]:
+    """Copy the damaged table's readable rows into the table in its place, chunk by chunk (each its own short
+    transaction, INSERT OR IGNORE, so a re-run or an overlap adds nothing twice), skipping damaged rowid ranges and
+    saving its place after each chunk, so it can stop and resume."""
+    conn = _connect(path)
+    t0 = time.monotonic()
+    try:
+        row = conn.execute(f'SELECT src, next_rowid FROM "{STATE}" WHERE tbl=?', (table,)).fetchone()
+        if not row:
+            return {"error": f"no repair of {table!r} on record"}
+        src, lo = row
+        cols = [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")')]
+        names = ", ".join(f'"{c}"' for c in cols)
+        try:
+            top = conn.execute(f'SELECT max(rowid) FROM "{src}"').fetchone()[0] or 0
+        except sqlite3.DatabaseError:
+            top = 0
+            for (n,) in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name=?", (src,)
+            ).fetchall():
+                try:
+                    top = max(top, conn.execute(f'SELECT max(rowid) FROM "{src}" INDEXED BY "{n}"').fetchone()[0] or 0)
+                except sqlite3.DatabaseError:
+                    continue
+        copied, skipped = 0, []
+
+        def one(a: int, b: int) -> int:
+            try:
+                cur = conn.execute(
+                    f'INSERT OR IGNORE INTO "{table}" ({names}) SELECT {names} FROM "{src}" WHERE rowid BETWEEN ? AND ?',
+                    (a, b),
+                )
+                conn.commit()
+                return cur.rowcount
+            except sqlite3.DatabaseError:
+                conn.rollback()
+                if b - a < 64:
+                    skipped.append([a, b])
+                    return 0
+                m = (a + b) // 2
+                return one(a, m) + one(m + 1, b)
+
+        while lo <= top:
+            hi = min(lo + chunk - 1, top)
+            copied += one(lo, hi)
+            lo = hi + 1
+            conn.execute(f'UPDATE "{STATE}" SET next_rowid=? WHERE tbl=?', (lo, table))
+            conn.commit()
+            if max_secs is not None and time.monotonic() - t0 > max_secs:
+                break
+        return {"table": table, "copied": copied, "skipped_ranges": skipped, "next_rowid": lo, "top": top,
+                "done": lo > top, "secs": round(time.monotonic() - t0, 1)}  # fmt: skip
+    finally:
+        conn.close()
