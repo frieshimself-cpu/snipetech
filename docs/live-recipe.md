@@ -49,9 +49,14 @@ every buy 0 trades behind the leader at +0.5 %, and all three won:
 | 12:14:29 | 7Avk6P | 13 s | copy exit | +0.0380 | 1 (0.0020) | +0.0360 |
 | 12:20:01 | EnzACy | 9 s | copy exit | +0.0690 | 2 (0.0040) | +0.0650 |
 
-Whole result +0.1114 SOL on 0.6 SOL deployed, in 10 minutes; the duplicates took 0.008 of a 0.119 gross. Three
-trades say little about the wallet's expectancy (its forecast was +0.027 a copy); 7aPo3n's live record is now 9
-copies, 4 won, about +0.10 net including the 7 Nov trips, before the three unread trips.
+Whole result +0.1114 SOL on 0.6 SOL deployed, in 10 minutes; the duplicates took 0.008 of a 0.119 gross.
+
+Five more by 12:43 (all 7aPo3n, 0.2 SOL, landing 0-1 trades behind at +0.4 to +4.1 %): 12:34 42X976 dead exit
+−0.0247; 12:37 DatepQ dead exit −0.0403; 12:39 Bh3vMa dead exit −0.0218; 12:41 Gwje9b copy exit **+0.1807**
+(0.2 → 0.389 in 24 s); 12:42 Gwje9b again (the leader bought it a second time) copy exit −0.0298. The eight copies
+of 12:10-12:43 made **+0.176 SOL net** (4 won), the losers held to −0.02…−0.04 each by the dead exit and the
+winners paid for them. 7aPo3n's live record (7 Nov and 8 Nov, the three unread 11:30-11:44 trips aside): 11 copies,
+5 won, about +0.164 net.
 
 ## Live copies of 7aPo3n, 7 Nov 2026 19:18–19:22 UTC (the book, control arm, 0.2 SOL)
 
