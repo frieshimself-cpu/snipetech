@@ -353,9 +353,9 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     c = p.config
     assert c["priorityFee"] == 0.02 and c["tipAmount"] == 0.02
     assert c["extraParams"]["globalSendCount"] == 1
-    # exits do not follow the arm: every sell is sent 2-3 times on separate nonce accounts (the losers fail with 6023 and
-    # still pay the sell priority fee), so a 0.02 sell bid would cost 0.02 per twin; sells bid [oktech] sell_fee_sol
-    assert c["autoSell"]["sellPriorityFeeSol"] == 0.002 and c["autoSell"]["sellTipAmount"] == 0.002
+    # exits do not follow the arm: sells bid [oktech] sell_fee_sol in the tip of the relay-sent sell; the plain second
+    # send OKTech makes of every sell (8 Nov 12:10-12:20: it fails with 6023 and pays sellPriorityFeeSol) bids nothing
+    assert c["autoSell"]["sellPriorityFeeSol"] == 0 and c["autoSell"]["sellTipAmount"] == 0.002
     assert "paid" in p.name and any("0.02" in s for s in p.summary)
     base = list_copy_sniper("4yo9CUuTBbds9NFhZd4MzPiZZkUvveXdTnAH8qMsE8ku", "Gfree", 0.5, 0.2, 5)
     assert base.config["extraParams"] == {"globalSendCount": 1, "seedAccount": False}
@@ -427,10 +427,10 @@ def test_copy_sniper_sells_bid_the_configured_fee_not_the_arm():
     cfg = Config()
     assert cfg.oktech.sell_fee_sol == 0.002
     paid = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg, priority_fee=0.02, tip=0.02).config["autoSell"]
-    assert paid["sellPriorityFeeSol"] == 0.002 and paid["sellTipAmount"] == 0.002
+    assert paid["sellPriorityFeeSol"] == 0 and paid["sellTipAmount"] == 0.002
     cfg.oktech.sell_fee_sol = 0.005
     cheap = list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg).config["autoSell"]
-    assert cheap["sellPriorityFeeSol"] == 0.005 and cheap["sellTipAmount"] == 0.005
+    assert cheap["sellPriorityFeeSol"] == 0 and cheap["sellTipAmount"] == 0.005
 
 
 def test_compute_units_are_sent_only_when_set():
@@ -1523,12 +1523,14 @@ def test_partial_take_profit_ends_with_a_100_percent_stage():
 
 def test_the_presets_sent_today_are_byte_identical_to_before_the_menu():
     """EXITS is built from the menu now; the book's lab sniper and the hold60 copy sniper are byte for byte what they
-    were before (their externalIds too), so nothing a running book sends changed."""
+    were before (their externalIds too), so nothing a running book sends changed. Pins moved once, 8 Nov 12:45 UTC,
+    when the plain second send of every sell stopped bidding (sellPriorityFeeSol 0): the book then replaces its
+    snipers with the new config, as it does after each buy."""
     import hashlib
 
     from snipetech.oktech import list_copy_sniper
 
-    want = {"lab": ("9defc929458a5c17", "993a74e05ae2"), "hold60": ("44229e54aef52436", "498aa4cf393c")}
+    want = {"lab": ("3414bcdc6b827f22", "1e28c8ea8678"), "hold60": ("7412a4fd0e194526", "bf8dc9111eca")}
     for name, (digest, config_hash) in want.items():
         p = list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, cfg=Config(), exit_name=name, priority_fee=0.001,
                              tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
@@ -1557,3 +1559,18 @@ def test_copylist_sends_an_exit_given_as_parameters():
         assert lab["deadExit"]["staleSeconds"] == 1 and "trailingStopLoss" not in lab
     finally:
         store.close()
+
+
+def test_every_sell_bids_only_in_its_tip_so_oktechs_second_send_costs_nothing():
+    """8 Nov 12:10-12:20 UTC, three copies of 7aPo3n (fills): each exit was two sends. The one that landed went through
+    a relay with sellTipAmount as its tip and the buy's priority; the one that failed (pump 6023) was a plain send with
+    no tip and sellPriorityFeeSol as its priority, 0.002 SOL each, 0.008 of the trips' 0.119 gross. A failed send keeps
+    its priority fee and gives its tip back, so the bid lives in the tip and the plain send bids nothing."""
+    from snipetech.oktech import autosell, speedtest_snipers
+
+    notes: list[str] = []
+    for exit_params in ({"max_hold_secs": 60}, {"stop_loss": 0.3, "stale_secs": 1}, {"take_profit": 0.2}):
+        out = autosell(exit_params, notes, sell_fee_sol=0.002)
+        assert out["sellPriorityFeeSol"] == 0 and out["sellTipAmount"] == 0.002, exit_params
+    for p in speedtest_snipers(0.01, 5, "W" * 32):
+        assert p.config["autoSell"]["sellPriorityFeeSol"] == 0

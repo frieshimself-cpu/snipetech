@@ -296,8 +296,12 @@ def autosell(exit_params: dict | None, notes: list[str], sell_fee_sol: float = 0
     out: dict[str, Any] = {
         "enabled": True,
         "stages": stages,
+        # The bid lives in the tip. OKTech sends every exit twice: through a relay with this tip and the buy's priority
+        # (the one that lands), and plainly with sellPriorityFeeSol and no tip (8 Nov 12:10-12:20: every plain send
+        # failed with pump 6023 and kept its 0.002 priority, 0.008 SOL of the trips' 0.119 gross; a failed send gives
+        # its tip back). The plain send therefore bids nothing.
         "sellTipAmount": sell_fee_sol,
-        "sellPriorityFeeSol": sell_fee_sol,
+        "sellPriorityFeeSol": 0,
     }
     if hold > 0:
         out |= {"sellAfterSeconds": _round(hold, 1), "sellPercent": 100}
@@ -639,7 +643,7 @@ def speedtest_snipers(buy_sol: float, snipes: int, copy_wallet: str | None) -> l
     Each sells everything 10 s later (or on a 40% drop; the copy also when the copied wallet sells),
     so almost all of the SOL comes back; the cost is the fees.
     """
-    sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+    sell = {"enabled": True, "sellPercent": 100, "sellAfterSeconds": 10, "sellTipAmount": 0.001, "sellPriorityFeeSol": 0,
             "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],  # OKTech needs >= 1 stage; the timer rules
             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 40, "sellPercent": 100}], "confirmMs": 0}}  # fmt: skip
     base = {"buyAmount": _round(buy_sol), "priorityFee": 0.001, "tipAmount": 0.002, "singleSnipe": True,
@@ -963,7 +967,7 @@ def replica_from_study(
     stale = xnum.get("secs_since_last_trade")
     hold = xnum.get("hold_s")
     sell: dict[str, Any] = {"enabled": True, "stages": [{"gainPercent": 20, "sellPercent": 50, "delaySellAllSeconds": 0}],
-                            "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001,
+                            "sellTipAmount": 0.001, "sellPriorityFeeSol": 0,
                             "stopLoss": {"enabled": True, "stages": [{"percentLoss": 20, "sellPercent": 100}], "confirmMs": 250}}  # fmt: skip
     if stale and stale["direction"] == ">=" and stale["others_pass"] <= 0.05:
         secs = max(1, int(round(stale["threshold"])))

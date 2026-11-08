@@ -144,11 +144,14 @@ def test_the_preset_is_read_back_from_the_snipers_payload():
 
 def test_a_landed_sell_at_another_snipers_priority_is_crossed():
     """The landed variant of a sell pays its sniper's buy priority fee (7 of 7 fee-test sells); an untipped variant
-    pays the sell priority. Anything else came from another sniper on the same leader."""
-    assert (1_000_000, 2_000_000) in FEES and (2_000_000, 0) in FEES
+    pays the sell priority (0 since 8 Nov 12:45: the plain second send bids nothing). Anything else came from another
+    sniper on the same leader; a sniper created before then still pays 0.002 on that variant, which its own stored
+    payload says."""
+    assert (1_000_000, 2_000_000) in FEES and (0, 0) in FEES
     assert is_crossed({"priority_lamports": 20_000_000, "tip_lamports": 2_000_000}, LAB) is True
     assert is_crossed({"priority_lamports": 999_999, "tip_lamports": 2_000_000}, LAB) is False
-    assert is_crossed({"priority_lamports": 2_000_000, "tip_lamports": 0}, LAB) is False
+    assert is_crossed({"priority_lamports": 0, "tip_lamports": 0}, LAB) is False
+    assert is_crossed({"priority_lamports": 2_000_000, "tip_lamports": 0}, LAB) is True
     assert is_crossed({"priority_lamports": 1_000_000, "tip_lamports": 2_000_000}, _sniper(prio=0.02, tip=0.02)) is True
     assert is_crossed({"priority_lamports": None, "tip_lamports": None}, LAB) is None
     assert is_crossed({"priority_lamports": 20_000_000, "tip_lamports": 0}, None) is None

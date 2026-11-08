@@ -527,7 +527,7 @@ def test_strategy_sniper_sends_a_mig_trigger_exactly_as_scored():
         "tipAmount": 0.002, "singleSnipe": True, "totalSnipes": 1,
         "extraParams": {"globalSendCount": 1, "seedAccount": False}, "preexec": {"enabled": True}, "preconf": True,
         "autoSell": {"enabled": True, "stages": [{"gainPercent": 10000, "sellPercent": 100, "delaySellAllSeconds": 0}],
-                     "sellTipAmount": 0.001, "sellPriorityFeeSol": 0.001, "sellAfterSeconds": 300.0, "sellPercent": 100,
+                     "sellTipAmount": 0.001, "sellPriorityFeeSol": 0, "sellAfterSeconds": 300.0, "sellPercent": 100,
                      "stopLoss": {"enabled": True, "stages": [{"percentLoss": 30.0, "sellPercent": 100}], "confirmMs": 250},
                      "deadExit": {"enabled": True, "staleSeconds": 1, "sellPercent": 100}},
     }  # fmt: skip
