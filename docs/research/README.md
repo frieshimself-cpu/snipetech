@@ -32,6 +32,8 @@ no sniper of ours buys; a lab job from before the deploy holds such rows. Since 
 launches only unless the trigger says `"venue": "launchlab"`, and frozen rules' LaunchLab paper trades are kept but not
 counted (docs/architecture.md, "The lab and the paper test").
 
+- [Round 5](2026-11-08-round-5.md), 8 Nov 12:15-14:00: nothing frozen; pump.fun-only creator-0 hunts are positive but 75-90 % of their test rows are the 41 SOL operator's coins (which returned 12:10-12:43); crowd hunts without mayhem and holder-reward coins still lose; fast-bot consensus, the session clock and round 2's MIG-10 Qm test are refuted; one thin picker lead (Ewqs4Pbc).
+
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
 from the moment of the buy (it starts about 1.3 s later), so its numbers are 0.002 to 0.006 SOL a trade too kind. Since
