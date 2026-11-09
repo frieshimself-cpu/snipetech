@@ -77,6 +77,8 @@ class FactorContext:
     def market_at(self, ts: int) -> dict:
         """Market-wide activity in the 5 minutes before `ts` (cached: alternatives share their moment)."""
         if ts not in self._market:
+            if len(self._market) >= 5000:  # emptied before the new moment goes in, never after (8 Nov: KeyError)
+                self._market.clear()
             q = self.store._q
             vol = q("SELECT mint, SUM(quote + fee) v FROM trades WHERE ts>? AND ts<=? GROUP BY mint ORDER BY v DESC", (ts - 300, ts))
             self._market[ts] = {
@@ -84,8 +86,6 @@ class FactorContext:
                 "trades_60s": q("SELECT COUNT(*) FROM trades WHERE ts>? AND ts<=?", (ts - 60, ts))[0][0],
                 "launches_300s": q("SELECT COUNT(*) FROM launches WHERE ts>? AND ts<=?", (ts - 300, ts))[0][0],
             }  # fmt: skip
-            if len(self._market) > 5000:
-                self._market.clear()
         return self._market[ts]
 
     def deployer_prior(self, launch: Launch) -> int:
