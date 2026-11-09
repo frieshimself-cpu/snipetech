@@ -1654,6 +1654,16 @@ def test_a_launch_strategy_limited_to_one_dev_wallet_is_a_dev_wallet_sniper_and_
         strategy_sniper(strat | {"trigger": {"kind": "launch", "creators": "dev"}}, 10)
 
 
+def test_a_crew_only_rule_is_refused_live_since_oktech_cannot_tell_a_crews_coin():
+    """A rule scored on serial crews' coins alone would, sent to OKTech, buy every launch: it is refused."""
+    from snipetech.oktech import strategy_sniper
+
+    strat = {"id": "x", "label": "crew", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+             "trigger": {"kind": "hunt", "sol": 4, "window": 1, "crew": "only"}}  # fmt: skip
+    with pytest.raises(ValueError, match="crew"):
+        strategy_sniper(strat, 10)
+
+
 def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_it():
     """I15/I21 (8 Nov): 7aPo and AG89's buys in the first ~20 slots of a coin pay at our landing, their late re-buys
     lose; OKTech's copy filter for that is the wallet's maxMcapUsd. Without a cap nothing is sent."""

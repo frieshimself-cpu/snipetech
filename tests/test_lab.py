@@ -710,3 +710,48 @@ def test_the_paper_test_skips_a_serial_crews_coins_too():
     mints = {t["mint"] for t in store.paper_trades(whale["id"])}
     assert len(mints) == 11 and not mints & set(crew)
     store.close()
+
+
+def test_a_crew_only_trigger_fires_only_on_a_serial_crews_coins():
+    """Owner, 9 Nov: rug crews' charts often run up before the rug; if we can get in and out first, trade them. A
+    launch-type trigger with crew "only" scores the crews' coins alone (the default, "", still skips them)."""
+    store = Store(":memory:")
+    whale_world(store, n=10)
+    crew = [addr(f"lab-{i}") for i in range(4)]
+    for i, m in enumerate(crew):
+        store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    data = collect(store, cfg, buy_sol=0.2, latency_slots=0, position="start",
+                   triggers=[Trigger("whale", sol=2.0, crew="only")])  # fmt: skip
+    fired = {r["mint"] for r in data["rows"]}
+    assert fired and fired <= set(crew)
+    assert "serial-crew coins only" in Trigger("whale", sol=2.0, crew="only").label()
+    store.close()
+
+
+def test_the_crew_knob_takes_only_only_and_only_on_launch_type_triggers():
+    from snipetech.analysis.lab import parse_trigger
+
+    assert parse_trigger('{"kind": "hunt", "sol": 4, "window": 1, "crew": "only"}').crew == "only"
+    with pytest.raises(ValueError, match="crew"):
+        parse_trigger('{"kind": "launch", "crew": "maybe"}')
+    with pytest.raises(ValueError, match="crew"):
+        parse_trigger('{"kind": "kol", "sol": 1, "crew": "only"}')
+
+
+def test_a_crew_only_rule_keeps_old_ids_and_the_paper_test_fires_it_on_crew_coins_alone():
+    from snipetech.analysis import paper
+
+    assert paper.strategy_id({"kind": "whale", "sol": 2.0, "crew": ""}, {}, "+1", 0, 0.2) == paper.strategy_id(
+        {"kind": "whale", "sol": 2.0}, {}, "+1", 0, 0.2)  # fmt: skip
+    store = Store(":memory:")
+    whale_world(store)
+    crew = [addr(f"lab-{i}") for i in range(30, 34)]
+    for i, m in enumerate(crew):
+        store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
+    assert paper.crew_skips(Trigger("whale", sol=2.0, crew="only"), store.launch(addr("lab-1")), {"ipfs://forg"})
+    assert not paper.crew_skips(Trigger("whale", sol=2.0, crew="only"), store.launch(crew[0]), {"ipfs://forg"})
+    assert paper.crew_skips(Trigger("whale", sol=2.0), store.launch(crew[0]), {"ipfs://forg"})
+    assert not paper.crew_skips(Trigger("kol", sol=1.0), store.launch(crew[0]), {"ipfs://forg"})
+    store.close()

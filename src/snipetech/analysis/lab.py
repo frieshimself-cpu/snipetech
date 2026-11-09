@@ -148,6 +148,10 @@ class Trigger:
     # launch: only coins created by a wallet in this label group ("dev": `snipetech label --kind dev`), the lab's form
     # of OKTech's dev sniping (`devWallets`, oktech.dev_sniper); "" = every launch
     creators: str = ""
+    # launch, hunt, whale, burst: serial crews' coins (one metadata uri on 3+ launches by 2+ creators, store.crew_uris).
+    # "" (the default) skips them; "only" scores them alone (owner, 9 Nov: crews' charts often run up before the rug).
+    # OKTech cannot tell a crew's coin, so a crew-only rule is research only (oktech.strategy_sniper refuses it)
+    crew: str = ""
 
     def label(self) -> str:
         base = self._label()
@@ -157,6 +161,7 @@ class Trigger:
             + (["normal coins"] if self.plain else [])
             + (["not a create bundle"] if self.solo else [])
             + ([f"on {VENUE_WORDS.get(self.venue, self.venue)} launches"] if self.venue != PUMPFUN else [])
+            + (["serial-crew coins only"] if self.crew == "only" else [])
         )
         return base + (f" ({', '.join(extra)})" if extra else "")
 
@@ -230,12 +235,12 @@ TRIGGERS = (
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
-    "launch": ("plain", "venue", "creators"),
-    "burst": ("buyers", "sol", "window", "max_age", "plain", "venue"),
-    "whale": ("sol", "max_age", "plain", "solo", "venue"),
+    "launch": ("plain", "venue", "creators", "crew"),
+    "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
+    "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
     "kol": ("sol", "group", "max_age", "plain"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
-    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue"),
+    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
     "mig": ("window", "dev_paid"),
 }
@@ -247,7 +252,8 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers")
 FLAG_FIELDS = ("plain", "solo")
-TEXT_FIELDS = ("kind", "group", "event", "venue", "creators")
+TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew")
+CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
 TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
@@ -319,6 +325,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
+    if trig.crew not in CREW_CHOICES:
+        raise ValueError(f'crew must be "" (skip serial crews\' coins) or "only" (score them alone), not {trig.crew!r}')
     if kind == "hunt":
         _whole_hunt(trig.sol, "sol (minTotalSol)")
         if trig.dev_max is not None:
@@ -1048,6 +1056,14 @@ def _span_migration(store: Store, mint: str, a, b):
 CREW_LOOKBACK_SECS = 6 * 3600  # a crew's earlier coins, launched before the tape span starts, still mark its uri
 
 
+def crew_skips(trig: Trigger, launch, crews) -> bool:
+    """True when a launch-type trigger passes over this coin: a serial crew's coin by default, any other coin when the
+    trigger is crew "only". Copy, momentum and MIG triggers, and coins with no launch on the tape, are never skipped."""
+    if trig.kind not in LAUNCH_KINDS or launch is None:
+        return False
+    return (launch.uri in crews) != (trig.crew == "only")
+
+
 def _crew_uris(store: Store, spans) -> set[str]:
     """The serial crews' metadata uris over the tape's spans (and the hours before the first)."""
     if not spans:
@@ -1099,8 +1115,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     for ti, trig in run.triggers:
         if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
             continue
-        if trig.kind in LAUNCH_KINDS and launch is not None and launch.uri in run.crew_uris:
-            continue  # a serial crew's coin (one metadata uri on many creators' launches)
+        if crew_skips(trig, launch, run.crew_uris):
+            continue  # a serial crew's coin (one metadata uri on many creators' launches), or not one for crew "only"
         in_span = launch if (launch and a <= launch.ts) else None
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)

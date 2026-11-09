@@ -49,6 +49,7 @@ from .lab import (
     _crew_uris,
     _fire,
     collect,
+    crew_skips,
     curve_done,
     dev_paid_earlier,
     exit_gap,
@@ -102,8 +103,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
     # trigger fields added later, at their defaults: OKTech hunt's two, then MIG's paid-creator split (7 Nov), the
     # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
-    # and the dev-wallet filter of a launch rule (8 Nov evening: "", every launch)
-    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": ""}
+    # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)
+    later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
+                  "crew": ""}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
@@ -378,8 +380,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             for s, trig, ex, costs in parsed:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
-                if trig.kind in LAUNCH_KINDS and launch is not None and launch.uri in crews:
-                    continue  # a serial crew's coin, as in the lab (lab._crew_uris)
+                if crew_skips(trig, launch, crews):
+                    continue  # a serial crew's coin (or, for crew "only", any other), as in the lab
                 i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue

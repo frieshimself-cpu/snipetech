@@ -818,6 +818,9 @@ def strategy_sniper(
     why = venue_refusal(trig.get("venue"))
     if why:
         raise ValueError(f"the rule {why}")
+    if trig.get("crew") == "only":
+        raise ValueError("the rule was scored on serial crews' coins alone (crew only), and OKTech cannot tell a crew's "
+                         "coin from any other launch: it would buy every launch; research only")  # fmt: skip
     choice = fees or fee_policy.choose(cfg or Config(), strategy_fee_kind(trig, via), fills=fills, kinds_of=kinds_of)
     notes.append(choice.note())
     config: dict[str, Any] = {"mode": "normal", "platforms": list(STRATEGY_PLATFORMS), "monitorProgram": True, "buyAmount": _round(buy),
