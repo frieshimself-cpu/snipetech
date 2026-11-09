@@ -33,6 +33,22 @@ trades start from the freeze; judge them at 20+ new trades each.
      row with >= 1 SOL KOL buys has the strongest bound (+0.144 on n 115).
   3. Our sells: OKTech's exits watch 1.3 s after the buy; the shadow exit runner (exitrun) is the fix if they cost.
 
+## Forward paper so far (07:00 UTC, trades after each freeze; the USDC fault excluded)
+
+| id | size | trades | total | mean per trade |
+|---|---|---|---|---|
+| 0cd0374b1d | 2 SOL | 14 | +0.96 SOL | +3.4 % |
+| b17196e12a | 5 SOL | 14 | +0.44 SOL | +0.6 % |
+| a0c5b59350 | 10 SOL | 12 | -4.48 SOL | -3.7 % |
+| bd20e4ebb1 | 20 SOL, KOL buys >= 1 SOL | 5 | +12.25 SOL | +12.2 % |
+| d55c50d94b | 20 SOL, KOL buys >= 0.1 SOL | 7 | +11.41 SOL | +8.1 % |
+
+At 04:31 the first 8 trades were -5 to -12 % (stops filling at -17 to -32 % at size); since then the 2 and 20 SOL rows
+turned positive and the 10 SOL row stayed negative. Every row is under the 20 trades a decision needs, and two or three
+coins carry the 20 SOL rows. Separate labs on the newest 24 h at 0.2 SOL (KOL buys >= 0.1, >= 1, >= 3 SOL) were flat
+or negative: whatever edge there is lives at size. Fixed on the way (234698b): the KOL trigger had bought USDC on paper
+(EPjF..., marked pump.fun on the tape, 11 M SOL market cap); coins above 1 M SOL are now skipped.
+
 ## Live test proposal (for the owner's yes; nothing starts without it)
 
 - **What:** copy the 19 labelled KOL wallets' first buys of 1 SOL or more, one OKTech copy sniper, the 20 SOL row's
