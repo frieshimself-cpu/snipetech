@@ -798,6 +798,22 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["next", "search", "digest", "backlog"])
     sp.add_argument("--dry-run", action="store_true", help="next: say what it would start; digest: print, send nothing")
     sp = cmd(
+        "winners",
+        "how the winners win: every wallet's closed round trips in coins launched in the window, ranked by realized "
+        "SOL, with its style (slots after the create, hold, pieces sold); reads the tape copy (a research job)",
+    )
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--min-trips", type=int, default=30, help="closed round trips a wallet needs to be ranked")
+    sp.add_argument("--top", type=int, default=200)
+    sp = cmd(
+        "leaders-of",
+        "the wallets a copy bot buys right after: who bought the same coin up to N slots before its first buy, over "
+        "its coins, with how far behind it landed (reads the tape copy; a research job)",
+    )
+    sp.add_argument("wallet")
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--max-slots", type=int, default=5)
+    sp = cmd(
         "early-leaders",
         "wallets like 7aPo: their buys in a coin's first slots, copied 3 trades behind, ranked by "
         "what a 0.2 SOL copy made over 30 s (reads the tape copy; a research job the agents may start)",
@@ -1583,6 +1599,8 @@ BATCH_COMMANDS = frozenset(
         "follow",
         "early-leaders",
         "fomo-wallets",
+        "winners",
+        "leaders-of",
     }
 )
 BATCH_NICE = 10
@@ -1804,6 +1822,26 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
             or "no FOMO wallet with enough buys")  # fmt: skip
+        return 0
+    if args.cmd in ("winners", "leaders-of"):
+        from .analysis.winners import leaders_of, winners
+
+        svc = Service(cfg)
+        try:
+            if args.cmd == "winners":
+                rows = winners(svc.tape_store, time.time(), hours=args.hours, min_trips=args.min_trips, top=args.top)
+                out = {"hours": args.hours, "min_trips": args.min_trips, "wallets": rows}
+                text = "\n".join(f"{r['wallet']}  {r['pnl_sol']:+.3f} SOL over {r['trips']}  win {r['win_rate']:.0%}  "
+                                 f"{r['style']}" for r in rows) or "no wallet has enough closed round trips"  # fmt: skip
+            else:
+                rows = leaders_of(svc.tape_store, args.wallet, time.time(), hours=args.hours, max_slots=args.max_slots)
+                out = {"wallet": args.wallet, "hours": args.hours, "leaders": rows}
+                text = "\n".join(f"{r['wallet']}  led {r['coins']} coins  {r['median_slots_behind']} slots / "
+                                 f"{r['median_trades_behind']} trades behind  gap {r['median_price_gap_pct']} %"
+                                 for r in rows) or "no wallet bought before it"  # fmt: skip
+        finally:
+            svc.store.close()
+        print(json.dumps(out, indent=1) if args.json else text)
         return 0
     if args.cmd == "early-leaders":
         from .analysis.early_leaders import early_leaders

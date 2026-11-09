@@ -282,8 +282,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     async def start_job(argv: list[str]) -> str:
         """Start a research job in the background; returns the job id.
 
-        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders and fomo-wallets are allowed; one lab
-        at a time. ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
+        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, fomo-wallets, winners and leaders-of are
+        allowed; one lab at a time. ["winners", "--hours", "144", "--json"] ranks every wallet's closed round trips by
+        realized SOL with its style (entry slots, hold, pieces sold); ["leaders-of", "<wallet>", "--json"] lists the
+        wallets a copy bot buys right after (6Z91). ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
         ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. A
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,

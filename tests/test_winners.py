@@ -1,0 +1,85 @@
+"""How the winners win (owner, 9 Nov 20:40: "people are making money doing this, there's a way"): every wallet's closed
+round trips on the tape, ranked by realized SOL, with the style that made it (how soon after the create it buys, how long
+it holds, in how many pieces it sells); and, for one wallet such as 6Z91, the wallets it buys right after (its leaders).
+A batch job: the server agents' SQL stops at 30 s."""
+
+import time
+
+from snipetech.analysis.winners import leaders_of, winners
+from snipetech.store import Store
+
+from .synth import Market, addr
+
+NOW = int(time.time())
+
+
+def _coin(st, i, *, winner_slot=2, loser=True):
+    m = Market(st, addr(f"wn-coin-{i}"), addr(f"wn-dev-{i}"), NOW - 3000 + i * 100, 60_000_000 + i * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("leader"), 2.0, winner_slot - 1)  # the wallet the follower copies, one slot ahead of it
+    m.buy(addr("winner"), 1.0, winner_slot)
+    m.buy(addr("follower"), 0.5, winner_slot + 1)
+    m.buy(addr("crowd"), 6.0, winner_slot + 5)
+    m.sell(addr("winner"), 0.5, winner_slot + 8)
+    m.sell(addr("winner"), 1.0, winner_slot + 12)  # two pieces
+    if loser:
+        m.buy(addr("loser"), 1.0, winner_slot + 13)
+        m.sell(addr("crowd"), 1.0, winner_slot + 14)
+        m.sell(addr("loser"), 1.0, winner_slot + 15)
+    m.commit()
+    return m
+
+
+def test_the_winners_are_ranked_by_realized_sol_with_their_style():
+    st = Store(":memory:")
+    try:
+        for i in range(3):
+            _coin(st, i)
+        rows = winners(st, NOW, hours=2, min_trips=2, top=10)
+        by = {r["wallet"]: r for r in rows}
+        w = by[addr("winner")]
+        assert rows[0]["wallet"] == addr("winner") and w["trips"] == 3 and w["pnl_sol"] > 0 and w["win_rate"] == 1.0
+        assert w["median_entry_slots"] == 2 and w["create_slot_share"] == 0.0 and w["median_sells"] == 2
+        assert w["median_hold_secs"] > 0 and w["median_buy_sol"] > 0.9
+        assert by[addr("loser")]["pnl_sol"] < 0 and rows[-1]["pnl_sol"] <= w["pnl_sol"]
+        assert addr("wn-dev-0") not in by  # a coin's creator is not a trader of it
+    finally:
+        st.close()
+
+
+def test_a_wallets_leaders_are_the_wallets_it_buys_right_after_again_and_again():
+    st = Store(":memory:")
+    try:
+        for i in range(3):
+            _coin(st, i, loser=False)
+        rows = leaders_of(st, addr("follower"), NOW, hours=2, max_slots=5)
+        assert rows[0]["wallet"] == addr("winner") or rows[0]["wallet"] == addr("leader")
+        lead = next(r for r in rows if r["wallet"] == addr("leader"))
+        assert lead["coins"] == 3 and lead["median_slots_behind"] == 2 and lead["median_price_gap_pct"] > 0
+        assert all(r["wallet"] != addr(f"wn-dev-{i}") for r in rows for i in range(3))
+    finally:
+        st.close()
+
+
+def test_the_agents_may_start_both_and_the_cli_prints_json(tmp_path, capsys):
+    import json
+
+    from snipetech import cli
+    from snipetech.operator.jobs import OWNER_COMMANDS, RESEARCH_COMMANDS
+    from snipetech.ops import ALLOWED
+
+    for c in ("winners", "leaders-of"):
+        assert c in RESEARCH_COMMANDS and c in ALLOWED and c not in OWNER_COMMANDS
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        for i in range(3):
+            _coin(st, i)
+    finally:
+        st.close()
+    assert cli.main(["--db", str(db), "winners", "--hours", "2", "--min-trips", "2", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["wallets"][0]["wallet"] == addr("winner") and out["wallets"][0]["style"]
+    assert cli.main(["--db", str(db), "leaders-of", addr("follower"), "--hours", "2", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["wallet"] == addr("follower") and {r["wallet"] for r in out["leaders"]} >= {addr("leader")}
