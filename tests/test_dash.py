@@ -253,3 +253,8 @@ def test_the_live_page_shows_the_agents_thinking_ideas_paper_tests_job_logs_and_
     assert p["id"] == "0cd0374b1d" and p["label"] == "KOL first buy" and p["trades"] == 1 and p["total_sol"] == 0.3
     assert s["paper"]["recent"][0]["mint"] == "M1"
     json.dumps(s)
+
+
+def test_the_page_password_is_scrubbed_like_every_other_secret(monkeypatch):
+    monkeypatch.setenv("DASH_TOKEN", "pagepassword12345")
+    assert "pagepassword12345" not in O.redact("the password is pagepassword12345")
