@@ -68,5 +68,7 @@ def test_cli_labels_the_busiest_fomo_wallets_as_candidates_and_the_agents_may_ru
     st = Store(db)
     try:
         assert addr("fomo-a") in st.labels("cand")
+        (c,) = [c for c in st.candidates() if c["wallet"] == addr("fomo-a")]  # in qualify's queue, never evaluated
+        assert "fomo" in c["sources"] and c["status"] == "candidate"
     finally:
         st.close()

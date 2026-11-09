@@ -1775,6 +1775,7 @@ def main(argv: list[str] | None = None) -> int:
             labelled = []
             for r in rows[: max(0, args.label)]:
                 svc.store.set_label(r["wallet"], f"fomo {r['buys']} buys {r['buy_sol']:g} SOL", "cand", "fomo")
+                svc.store.upsert_candidate(r["wallet"], "fomo", r, int(time.time()))  # qualify's queue
                 labelled.append(r["wallet"])
         finally:
             svc.store.close()
@@ -1795,6 +1796,7 @@ def main(argv: list[str] | None = None) -> int:
                 svc.store.set_label(
                     r["wallet"], f"early-leader n{r['n']} {r['mean_sol']:+.4f}", "cand", "early-leaders"
                 )
+                svc.store.upsert_candidate(r["wallet"], "early-leaders", r, int(time.time()))  # qualify's queue
                 labelled.append(r["wallet"])
         finally:
             svc.store.close()

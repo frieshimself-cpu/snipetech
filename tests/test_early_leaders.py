@@ -66,3 +66,9 @@ def test_cli_early_leaders_prints_the_ranking_as_json(tmp_path, capsys):
     assert cli.main(["--db", str(db), "early-leaders", "--hours", "24", "--min-n", "20", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["wallets"][0]["wallet"] == addr("early") and out["hours"] == 24
+    assert cli.main(["--db", str(db), "early-leaders", "--hours", "24", "--min-n", "20", "--label", "1", "--json"]) == 0
+    st = Store(db)
+    try:
+        assert [c["wallet"] for c in st.candidates() if "early-leaders" in c["sources"]] == [addr("early")]
+    finally:
+        st.close()
