@@ -812,6 +812,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--label", type=int, default=0, help="label the N best with a positive lower bound as cand for qualify"
     )
     sp = cmd(
+        "exitrun",
+        "our own exits: run (shadow: watch the coins our snipers bought over their own LaserStream "
+        "subscription and record when and at what price our rules would sell, sending nothing) or report (each "
+        "decision against OKTech's real sale of the coin)",
+    )
+    sp.add_argument("action", choices=["run", "report"])
+    sp.add_argument("--minutes", type=float, default=60.0, help="run: how long to watch")
+    sp = cmd(
         "fomo-wallets",
         "FOMO app traders on our tape (FOMO pays their gas from one wallet), busiest first; --label N "
         "labels the N busiest cand so qualify scores them at the live copy landing (a research job the agents may start)",
@@ -1766,6 +1774,19 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "measure":
         return _measure(args, cfg)
+    if args.cmd == "exitrun":
+        from .exitrun.run import log_path, run_shadow, shadow_report
+
+        svc = Service(cfg)
+        try:
+            if args.action == "report":
+                out = shadow_report(svc.store, cfg.operator.wallet, log_path(cfg))
+            else:
+                out = asyncio.run(run_shadow(cfg, svc, args.minutes))
+        finally:
+            svc.store.close()
+        print(json.dumps(out, indent=1, default=str))
+        return 0
     if args.cmd == "fomo-wallets":
         from .analysis.fomo_wallets import fomo_wallets
 
