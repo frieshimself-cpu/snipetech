@@ -83,3 +83,16 @@ def test_the_agents_may_start_both_and_the_cli_prints_json(tmp_path, capsys):
     assert cli.main(["--db", str(db), "leaders-of", addr("follower"), "--hours", "2", "--json"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["wallet"] == addr("follower") and {r["wallet"] for r in out["leaders"]} >= {addr("leader")}
+
+
+def test_leaders_of_can_look_only_at_the_wallets_later_buys():
+    """6Z91 buys ~480 coins a day, most in a coin's first slots beside other snipers: its copying shows only in its
+    buys well after the create, so `after_slots` keeps those alone."""
+    st = Store(":memory:")
+    try:
+        for i in range(3):
+            _coin(st, i, loser=False)  # follower buys 3 slots after the create
+        assert leaders_of(st, addr("follower"), NOW, hours=2, max_slots=5, after_slots=10) == []
+        assert leaders_of(st, addr("follower"), NOW, hours=2, max_slots=5, after_slots=3)
+    finally:
+        st.close()

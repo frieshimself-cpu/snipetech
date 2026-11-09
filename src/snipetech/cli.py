@@ -813,6 +813,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("wallet")
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--max-slots", type=int, default=5)
+    sp.add_argument("--after-slots", type=int, default=0, help="only its first buys this many slots after the create")
     sp = cmd(
         "early-leaders",
         "wallets like 7aPo: their buys in a coin's first slots, copied 3 trades behind, ranked by "
@@ -1834,7 +1835,8 @@ def main(argv: list[str] | None = None) -> int:
                 text = "\n".join(f"{r['wallet']}  {r['pnl_sol']:+.3f} SOL over {r['trips']}  win {r['win_rate']:.0%}  "
                                  f"{r['style']}" for r in rows) or "no wallet has enough closed round trips"  # fmt: skip
             else:
-                rows = leaders_of(svc.tape_store, args.wallet, time.time(), hours=args.hours, max_slots=args.max_slots)
+                rows = leaders_of(svc.tape_store, args.wallet, time.time(), hours=args.hours, max_slots=args.max_slots,
+                                  after_slots=args.after_slots)  # fmt: skip
                 out = {"wallet": args.wallet, "hours": args.hours, "leaders": rows}
                 text = "\n".join(f"{r['wallet']}  led {r['coins']} coins  {r['median_slots_behind']} slots / "
                                  f"{r['median_trades_behind']} trades behind  gap {r['median_price_gap_pct']} %"

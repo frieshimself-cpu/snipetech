@@ -87,10 +87,12 @@ def winners(store, now: float, *, hours: float = 72, min_trips: int = 30, top: i
     return rows[:top]
 
 
-def leaders_of(store, wallet: str, now: float, *, hours: float = 72, max_slots: int = 5,
+def leaders_of(store, wallet: str, now: float, *, hours: float = 72, max_slots: int = 5, after_slots: int = 0,
                limit: int = 30) -> list[dict[str, Any]]:  # fmt: skip
     """The wallets that bought a coin up to `max_slots` slots before `wallet`'s first buy in it (never the coin's
-    creator), by how many of its coins they led: median slots and trades behind them, and the price gap it paid."""
+    creator), by how many of its coins they led: median slots and trades behind them, and the price gap it paid.
+    `after_slots`: only its first buys made at least that many slots after the create (a copy bot's copying shows in its
+    later buys; in a coin's first slots it sits beside other snipers)."""
     start = int(now - hours * 3600)
     mints = [r[0] for r in store._q("SELECT DISTINCT mint FROM trades WHERE user=? AND is_buy=1 AND ts>=? AND ts<?",
                                     (wallet, start, int(now)))]  # fmt: skip
@@ -103,6 +105,8 @@ def leaders_of(store, wallet: str, now: float, *, hours: float = 72, max_slots: 
         if i is None:
             continue
         mine = trades[i]
+        if after_slots and (launch is None or int(mine.slot) - int(launch.slot) < after_slots):
+            continue
         p_mine = _price(mine)
         counted: set[str] = set()
         for j in range(i - 1, -1, -1):
