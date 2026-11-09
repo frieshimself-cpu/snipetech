@@ -124,7 +124,7 @@ for line in read("operator/spend.jsonl").splitlines():
         spend[k] = spend.get(k, 0.0) + float(d.get("usd", 0))
 dump("spend", [{"day": k, "usd": round(v, 2)} for k, v in sorted(spend.items())])
 
-lag = sql(f"SELECT {NOW} - MAX(ts) AS lag FROM trades WHERE ts > {NOW - 600}")[0]["lag"]
+lag = max(0, sql(f"SELECT {NOW} - MAX(ts) AS lag FROM trades WHERE ts > {NOW - 600}")[0]["lag"] or 0)
 jobs = call(URL, KEY, "jobs")
 jl = jobs.get("jobs", jobs) if isinstance(jobs, dict) else jobs
 running = [" ".join(j["argv"][:2]) for j in jl if j.get("running")]
