@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from ..sim.exits import ExitParams
@@ -50,6 +50,18 @@ class Runner:
     def track(self, pos: Position, ex: ExitParams, leader_tokens: int = 0) -> None:
         if pos.mint not in self.positions:
             self.positions[pos.mint] = Watched(pos, ex, int(leader_tokens), pos.entry_price, pos.entry_ts)
+
+    def adopt_leader(self, mint: str, leader: str, leader_tokens: int) -> None:
+        """A position first seen on the stream gets its leader once the tape has it; a known leader never changes."""
+        w = self.positions.get(mint)
+        if w is not None and not w.pos.leader and leader:
+            w.pos = replace(w.pos, leader=leader)
+            w.leader_tokens = int(leader_tokens)
+
+    def stale(self, on_tape: set[str], now: float, grace: float) -> set[str]:
+        """Watched coins the tape no longer shows held, except those bought within `grace` s (the tape lags the
+        stream, so a coin seen bought on the stream is not on the tape yet)."""
+        return {m for m, w in self.positions.items() if m not in on_tape and now - w.pos.entry_ts > grace}
 
     def forget(self, mint: str) -> None:
         self.positions.pop(mint, None)

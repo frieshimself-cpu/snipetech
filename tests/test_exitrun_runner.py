@@ -49,3 +49,20 @@ def test_ticks_on_coins_not_held_are_ignored():
     r, rec, _ = _runner()
     asyncio.run(r.on_tick(Tick(mint="OTHER", ts=100.0, slot=5, price=0.1, user="X", is_buy=False, tokens=1)))
     assert rec == []
+
+
+def test_a_leader_found_later_on_the_tape_is_adopted_once():
+    r, _, _ = _runner()
+    r.track(Position(mint="N", entry_price=1.0, entry_ts=99.0, tokens=10, leader=""), EX)
+    r.adopt_leader("N", "L", 400)
+    assert r.positions["N"].pos.leader == "L" and r.positions["N"].leader_tokens == 400
+    r.adopt_leader("N", "L2", 9)
+    assert r.positions["N"].pos.leader == "L" and r.positions["N"].leader_tokens == 400
+
+
+def test_a_young_position_the_tape_has_not_caught_up_with_is_kept():
+    r, _, _ = _runner()  # M entered at 90
+    r.track(Position(mint="N", entry_price=1.0, entry_ts=99.0, tokens=10, leader=""), EX)
+    assert r.stale(set(), now=100.0, grace=60.0) == set()
+    assert r.stale(set(), now=155.0, grace=60.0) == {"M"}
+    assert r.stale({"M"}, now=200.0, grace=60.0) == {"N"}

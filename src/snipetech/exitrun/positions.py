@@ -19,6 +19,13 @@ def ticks_from_trades(trades: Iterable, watched: set[str]) -> list[Tick]:
                  tokens=int(t.base)) for t in trades if t.mint in watched and _price(t) > 0]  # fmt: skip
 
 
+def our_buys(trades: Iterable, wallet: str) -> list[Position]:
+    """Our wallet's buys among streamed trades, each a position from that moment (OKTech's dead exit sells within
+    1-3 s, before the tape's refresh would see it). The leader is left blank: the next tape refresh fills it."""
+    return [Position(mint=t.mint, entry_price=_price(t), entry_ts=float(t.ts), tokens=int(t.base), leader="")
+            for t in trades if t.user == wallet and t.is_buy and _price(t) > 0]  # fmt: skip
+
+
 def open_positions(
     store, wallet: str, now: float, *, leaders: set[str], hours: float = 2.0
 ) -> list[tuple[Position, int]]:

@@ -1,7 +1,8 @@
 """The exit runner on the server: `snipetech exitrun --minutes N` (shadow: records, never sends) and `exitrun report`.
 
-Every 15 s it reads, from the tape, the coins our wallet bought in the last 2 h and has not sold (exitrun/positions.py),
-with the leader a book sniper copies; it watches each coin's bonding curve over its own LaserStream subscription (the
+Our wallet's own buys arrive on a LaserStream subscription to the wallet and are watched at once (OKTech's dead exit
+sells within 1-3 s); every 15 s it also reads, from the tape, the coins our wallet bought in the last 2 h and has not
+sold (exitrun/positions.py), with the leader a book sniper copies, which fills the leader in; it watches each coin's bonding curve over its own LaserStream subscription (the
 trades within a second of the chain, not through the 26 GB database) and runs our rules on every trade and every half
 second. The exit is the book's lab preset with the copy exit OKTech is sent ([oktech] copy_exit_threshold_percent).
 Each decision goes to operator/exitrun.jsonl; `exitrun report` sets it against OKTech's real sale of the coin."""
@@ -17,12 +18,13 @@ from pathlib import Path
 from typing import Any
 
 from ..sim.exits import ExitParams
-from .positions import _price, open_positions, ticks_from_trades
+from .positions import _price, open_positions, our_buys, ticks_from_trades
 from .runner import Runner
 
 log = logging.getLogger(__name__)
 REFRESH_SECS = 15.0
 CLOCK_SECS = 0.5
+TAPE_GRACE_SECS = 120.0  # the tape can lag the stream by this much: a coin bought since is kept
 
 
 def log_path(cfg) -> Path:
@@ -92,11 +94,23 @@ async def run_shadow(cfg, svc, minutes: float) -> dict[str, Any]:
     watched: set[str] = set()
     stream_task: asyncio.Task | None = None
 
+    seen: dict[str, None] = {}  # signatures handled: a sale of ours touches both streams
+
     def on_tx(txj: dict, index: int) -> None:
+        sig = (txj.get("transaction", {}).get("signatures") or [""])[0]
+        if sig in seen:
+            return
+        seen[sig] = None
+        if len(seen) > 5000:
+            del seen[next(iter(seen))]
         ev = extract_from_transaction(txj)
         if ev.failed or not ev.events:
             return
-        ticks = ticks_from_trades(normalize(ev, index).trades, set(runner.positions))
+        trades = normalize(ev, index).trades
+        for pos in our_buys(trades, wallet):  # seen on the stream: watched now, not at the next tape refresh
+            if pos.mint not in runner.positions:
+                runner.track(pos, ex)
+        ticks = ticks_from_trades(trades, set(runner.positions))
         counts["ticks"] += len(ticks)
         for t in ticks:
             asyncio.get_running_loop().create_task(runner.on_tick(t))
@@ -111,6 +125,7 @@ async def run_shadow(cfg, svc, minutes: float) -> dict[str, Any]:
                 log.warning("exitrun stream dropped: %s", str(exc)[:200])
                 await asyncio.sleep(2)
 
+    wallet_task = asyncio.create_task(stream([wallet]))  # our own buys, the moment they land
     next_refresh = 0.0
     while time.time() < end:
         if time.time() >= next_refresh:
@@ -123,18 +138,20 @@ async def run_shadow(cfg, svc, minutes: float) -> dict[str, Any]:
             if got is not None:
                 for pos, lt in got:
                     runner.track(pos, ex, leader_tokens=lt)
-                for m in set(runner.positions) - {p.mint for p, _ in got}:
+                    runner.adopt_leader(pos.mint, pos.leader, lt)
+                for m in runner.stale({p.mint for p, _ in got}, time.time(), TAPE_GRACE_SECS):
                     runner.forget(m)  # sold (by OKTech) or gone
-                now_set = set(runner.positions)
-                counts["watched"] = max(counts["watched"], len(now_set))
-                if now_set != watched:
-                    watched = now_set
-                    if stream_task is not None:
-                        stream_task.cancel()
-                    stream_task = (asyncio.create_task(stream([bonding_curve(m) for m in sorted(watched)]))
-                                   if watched else None)  # fmt: skip
+        now_set = set(runner.positions)
+        counts["watched"] = max(counts["watched"], len(now_set))
+        if now_set != watched:
+            watched = now_set
+            if stream_task is not None:
+                stream_task.cancel()
+            stream_task = (asyncio.create_task(stream([bonding_curve(m) for m in sorted(watched)]))
+                           if watched else None)  # fmt: skip
         await runner.on_clock()
         await asyncio.sleep(CLOCK_SECS)
+    wallet_task.cancel()
     if stream_task is not None:
         stream_task.cancel()
     return {"minutes": minutes, **counts, "log": str(path)}

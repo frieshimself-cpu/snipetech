@@ -49,6 +49,20 @@ coins carry the 20 SOL rows. Separate labs on the newest 24 h at 0.2 SOL (KOL bu
 or negative: whatever edge there is lives at size. Fixed on the way (234698b): the KOL trigger had bought USDC on paper
 (EPjF..., marked pump.fun on the tape, 11 M SOL market cap); coins above 1 M SOL are now skipped.
 
+### 11:00 UTC update
+
+| id | size | trades | total | mean per trade |
+|---|---|---|---|---|
+| 0cd0374b1d | 2 SOL | 16 | +0.32 SOL | +1.0 % |
+| b17196e12a | 5 SOL | 16 | -1.16 SOL | -1.4 % |
+| a0c5b59350 | 10 SOL | 14 | -7.73 SOL | -5.5 % |
+| bd20e4ebb1 | 20 SOL, KOL buys >= 1 SOL | 6 | +9.16 SOL | +7.6 % |
+| d55c50d94b | 20 SOL, KOL buys >= 0.1 SOL | 9 | +8.06 SOL | +4.5 % |
+
+The three trades since 07:00 all lost (B9La, 2mtr, 27ia: the 15 % stop filled at -15 to -16 %). Every row has fallen
+towards zero; the 2 SOL row is now +1 % on 16 trades and one early winner (7afy, +64 %) carries all of it. The 5 and 10
+SOL rows are negative. The live proposal still waits for 20 trades, and on these numbers it is unlikely to clear.
+
 ## Live test proposal (for the owner's yes; nothing starts without it)
 
 - **What:** copy the 19 labelled KOL wallets' first buys of 1 SOL or more, one OKTech copy sniper, the 20 SOL row's
