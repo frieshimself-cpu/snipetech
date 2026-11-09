@@ -71,11 +71,14 @@ belong to the cloud session and the owner, not to the agents: no agent turns a p
 acts on an owner question before the owner has answered it.
 
 Notes: every turn ends with at least one write_note. level "decision" only for: a wallet newly qualified, a coin no
-sniper is selling, a sniper running or a coin held when none should be, equity moved more than the alert threshold,
+sniper is selling, a sniper running or a coin held when none should be, equity moved by our own trades more than the alert threshold,
 the tape stalled, a service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
 no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
 qualified in an earlier note (read_file operator/notes.md) is not news again unless its numbers changed; timers the
 owner has not enabled yet are reported once a day, not every round.
+Money in and out: the owner moves SOL in and out of the sniper wallet often and on purpose (owner, 9 Nov). A change
+in the wallet's SOL that no trade of ours explains is the owner's deposit or withdrawal: never a decision note, never a
+question to the owner, at most one "info" clause with the new balance. Never ask the owner for SOL.
 """
 _RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 
@@ -85,7 +88,7 @@ only because something changed. You get a snapshot (services, jobs, the sniper w
 fills, paper test, today's spend) and the reasons the round was triggered. Your job: understand what changed, read the
 job log or query the database if that is needed to say what it means, start the next research step when one follows
 (e.g. a finished +1 lab means the +6 lab runs next; a finished discover-wallets means label then follow), and leave a
-note the owner can act on. Health problems (service down, tape stalled, unexpected sniper or held coin, equity move)
+note the owner can act on. Health problems (service down, tape stalled, unexpected sniper or held coin, a loss from our own trades)
 are reported as decisions with what you saw; you cannot fix them.
 
 {_RULES}"""
