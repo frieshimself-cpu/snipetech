@@ -1043,6 +1043,22 @@ def _span_migration(store: Store, mint: str, a, b):
     return mig if mig is not None and a <= mig.ts <= b else None
 
 
+# No pump.fun coin is worth this much: the curve completes near 400 SOL and the largest PumpSwap graduates stay far
+# below. A path above it is not a meme coin (9 Nov: USDC trades on the tape marked pump.fun, 11 M SOL, and the KOL
+# trigger fired on them), so the lab and the paper test never score it.
+MAX_COIN_MCAP_SOL = 1_000_000.0
+
+
+def implausible_coin(path: MarketPath) -> bool:
+    """A path whose market cap ever exceeds MAX_COIN_MCAP_SOL (1B supply, 6 decimals: q / b x 1e6)."""
+    if not getattr(path, "n", 0):
+        return False
+    b = np.asarray(path.b, dtype=float)
+    q = np.asarray(path.q, dtype=float)
+    ok = b > 0
+    return bool(ok.any() and float(np.max(q[ok] / b[ok]) * 1e6) > MAX_COIN_MCAP_SOL)
+
+
 def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> list[dict]:
     """One coin's moments in the tape span [a, b]: every trigger that fires on it, entered at the trigger's landing and
     sold by every exit. The serial lab and each worker of a parallel one run this same code. A MIG trigger fires on
@@ -1056,7 +1072,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         return []
     launch = store.launch(mint)
     path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
-    if path.n < run.min_trades:
+    if path.n < run.min_trades or implausible_coin(path):
         return []
     wants_mig = run.mig_sell or any(t.kind in AMM_KINDS for _, t in run.triggers)
     mig = _span_migration(store, mint, a, b) if wants_mig else None

@@ -52,6 +52,7 @@ from .lab import (
     dev_paid_earlier,
     exit_gap,
     fired_at,
+    implausible_coin,
     label_groups,
     leader_sell_fractions,
     mig_moment,
@@ -369,7 +370,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             launch = store.launch(mint)
             in_span = launch if (launch and a <= launch.ts) else None
             path = MarketPath.build(trades, in_span, slot_secs=slot_secs)
-            if path.n < min_trades:
+            if path.n < min_trades or implausible_coin(path):
                 continue
             paid = dev_paid_earlier(store, in_span) if paid_runs and mint in migs else None
             for s, trig, ex, costs in parsed:

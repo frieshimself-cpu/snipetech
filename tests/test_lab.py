@@ -657,3 +657,18 @@ def test_a_launch_trigger_can_be_limited_to_labeled_dev_wallets():
         parse_trigger('{"kind": "whale", "sol": 2, "creators": "dev"}')
     store.set_label(addr("lab-dev-0"), "a dev", "dev")
     assert label_groups(store)["dev"] == {addr("lab-dev-0")}
+
+
+def test_a_coin_no_pump_curve_could_price_is_never_a_moment():
+    """9 Nov: the tape holds USDC trades marked pump.fun (EPjF..., 11 M SOL market cap) and the KOL trigger fired on
+    them: 23 of 381 KOL paper trades were on mints with no pump.fun launch. A coin priced above any pump.fun coin's reach
+    is not a meme coin; the lab and the paper test skip it."""
+    import numpy as np
+
+    from snipetech.analysis.lab import MAX_COIN_MCAP_SOL, implausible_coin
+
+    p = MarketPath.__new__(MarketPath)
+    p.q, p.b, p.n = np.array([30e9, 31e9]), np.array([1.07e15, 1.05e15]), 2
+    assert not implausible_coin(p)  # a fresh curve: ~28 SOL
+    p.q = np.array([30e9, MAX_COIN_MCAP_SOL * 1.1 * 1.05e15 / 1e6])  # mcap = q / b x 1e6
+    assert implausible_coin(p)
