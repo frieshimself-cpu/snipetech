@@ -63,7 +63,24 @@ The three trades since 07:00 all lost (B9La, 2mtr, 27ia: the 15 % stop filled at
 towards zero; the 2 SOL row is now +1 % on 16 trades and one early winner (7afy, +64 %) carries all of it. The 5 and 10
 SOL rows are negative. The live proposal still waits for 20 trades, and on these numbers it is unlikely to clear.
 
-## Live test proposal (for the owner's yes; nothing starts without it)
+### Verdict, 17:00 UTC: refuted at 20+ trades
+
+US hours brought 19 KOL first buys in an hour (16:00-16:40), and every row passed 20 forward trades. None holds without
+its 3 best coins:
+
+| id | size | trades | total | mean per trade | wins | without its top 3 coins |
+|---|---|---|---|---|---|---|
+| 0cd0374b1d | 2 SOL | 37 | +0.06 SOL | +0.1 % | 11 | -2.82 SOL |
+| b17196e12a | 5 SOL | 37 | +0.87 SOL | +0.5 % | 17 | -4.89 SOL |
+| a0c5b59350 | 10 SOL | 35 | -5.18 SOL | -1.5 % | 10 | -16.71 SOL |
+| bd20e4ebb1 | 20 SOL, KOL buys >= 1 SOL | 27 | +4.06 SOL | +0.7 % | 12 | -15.18 SOL |
+| d55c50d94b | 20 SOL, KOL buys >= 0.1 SOL | 30 | +2.97 SOL | +0.5 % | 13 | -16.27 SOL |
+
+Copying a labelled KOL's first buy is break-even at best at every size: a third of the trades win, the 15 % stop fills
+at -15 to -22 %, and three runners carry each row. The live test proposal below is withdrawn; nothing was put to the
+owner. What remains open from this family: I42 (only buys below a low market cap, where our landing is cheaper).
+
+## Live test proposal (withdrawn 9 Nov 17:00: refuted on paper) (for the owner's yes; nothing starts without it)
 
 - **What:** copy the 19 labelled KOL wallets' first buys of 1 SOL or more, one OKTech copy sniper, the 20 SOL row's
   exit (SL-15 %, trailing 10 %, 300 s), our copy exit off.
