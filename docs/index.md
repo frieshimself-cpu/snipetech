@@ -20,4 +20,5 @@
 
 Live state that is not in a document: the server's `operator/notes.md` (what the operator saw each round) and
 `operator/candidates.json` (wallets that cleared the three gates), both readable with `snipetech remote read`; the
-live dashboard at `https://<host>/dash` (password `DASH_TOKEN`) shows the same plus services, jobs and resources.
+live dashboard at `https://<host>/dash` (password `DASH_TOKEN`) shows the same plus services, jobs and resources; it answers 404 until `DASH_TOKEN` is set in /etc/snipetech/env (9 Nov: not set).
+- `tools/dashboard_snapshot.py` — writes the hourly snapshot behind the owner's dashboard, Snipetech Control Room (https://claude.ai/artifact/HbtWazUA7gNP9phU8fddNZ): status, KOL paper tests, live round trips, copied wallets, the agents' log and ideas, API spend.
