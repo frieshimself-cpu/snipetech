@@ -72,3 +72,19 @@ def test_cli_labels_the_busiest_fomo_wallets_as_candidates_and_the_agents_may_ru
         assert "fomo" in c["sources"] and c["status"] == "candidate"
     finally:
         st.close()
+
+
+def test_screened_wallets_jump_qualifys_queue_ahead_of_older_discovery_candidates():
+    """9 Nov: a 900-wallet qualify run never reached the 84 FOMO wallets: never-evaluated candidates go oldest first,
+    and thousands of older discovery candidates sat ahead. The owner's and the screens' wallets go first."""
+    st = Store(":memory:")
+    try:
+        for i in range(5):
+            st.upsert_candidate(addr(f"old-{i}"), "solanatracker", {}, NOW - 86400 + i)
+        st.upsert_candidate(addr("fomo-new"), "fomo", {}, NOW)
+        st.upsert_candidate(addr("early-new"), "early-leaders", {}, NOW)
+        st.upsert_candidate(addr("owner-pick"), "owner", {}, NOW)
+        first3 = {c["wallet"] for c in st.candidates(due_before=NOW + 1, limit=3)}
+        assert first3 == {addr("fomo-new"), addr("early-new"), addr("owner-pick")}
+    finally:
+        st.close()

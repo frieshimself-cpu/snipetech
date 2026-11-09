@@ -247,6 +247,14 @@ def _caller() -> str:
     return f"{Path(f.f_code.co_filename).name}:{f.f_lineno} {f.f_code.co_name}" if f is not None else "unknown"
 
 
+# never-evaluated candidates from the owner or the targeted screens (fomo-wallets, early-leaders) go ahead of the
+# discovery sources' backlog (9 Nov: a 900-wallet qualify run never reached the 84 FOMO wallets queued that night)
+_PRIORITY_SOURCES = (
+    "CASE WHEN c.sources LIKE '%\"owner\"%' OR c.sources LIKE '%\"fomo\"%' "
+    "OR c.sources LIKE '%\"early-leaders\"%' THEN 0 ELSE 1 END"
+)
+
+
 class Store:
     # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
     # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
@@ -767,7 +775,7 @@ class Store:
         # never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
         sql += (
             f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
-            f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, v.next_review, c.first_seen, c.wallet LIMIT ?"
+            f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, {_PRIORITY_SOURCES}, v.next_review, c.first_seen, c.wallet LIMIT ?"
         )
         params.append(int(limit))
         out = []
