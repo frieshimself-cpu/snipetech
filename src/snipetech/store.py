@@ -625,6 +625,16 @@ class Store:
         )
         return [_launch(r) for r in rows]
 
+    def crew_uris(self, start_ts: int, end_ts: int, min_launches: int = 3, min_creators: int = 2) -> set[str]:
+        """Metadata uris reused by `min_launches` launches or more from `min_creators` creators or more in [start, end]:
+        a serial crew's coins (8 Nov: "forg", one uri on 28 coins from 20 fresh creators in an hour, every one rugged)."""
+        rows = self._q(
+            "SELECT uri FROM launches WHERE ts>=? AND ts<? AND uri IS NOT NULL AND uri != '' GROUP BY uri "
+            "HAVING COUNT(*) >= ? AND COUNT(DISTINCT COALESCE(NULLIF(creator, ''), user)) >= ?",
+            (int(start_ts), int(end_ts), int(min_launches), int(min_creators)),
+        )
+        return {r[0] for r in rows}
+
     def deployer_counts(self, min_launches: int = 2, since_ts: int = 0) -> list[tuple[str, int, int, int]]:
         """(deployer, launches, first_ts, last_ts) grouped by creator wallet (signer when absent)."""
         return self._q(

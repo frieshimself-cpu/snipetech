@@ -46,6 +46,7 @@ from .lab import (
     MIG_LAND_SLOTS,
     SKIP_WORDS,
     Trigger,
+    _crew_uris,
     _fire,
     collect,
     curve_done,
@@ -351,6 +352,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
     sell_runs = any(ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS for _, trig, ex, _ in parsed)
     amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
+    crews = _crew_uris(store, store.tape_spans())  # serial crews' metadata uris: no launch-type moment on their coins
     skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades} the PumpSwap tape does not hold whole
     added = 0
     for a, b in store.tape_spans():
@@ -376,6 +378,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
             for s, trig, ex, costs in parsed:
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
+                if trig.kind in LAUNCH_KINDS and launch is not None and launch.uri in crews:
+                    continue  # a serial crew's coin, as in the lab (lab._crew_uris)
                 i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue

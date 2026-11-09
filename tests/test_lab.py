@@ -672,3 +672,41 @@ def test_a_coin_no_pump_curve_could_price_is_never_a_moment():
     assert not implausible_coin(p)  # a fresh curve: ~28 SOL
     p.q = np.array([30e9, MAX_COIN_MCAP_SOL * 1.1 * 1.05e15 / 1e6])  # mcap = q / b x 1e6
     assert implausible_coin(p)
+
+
+def test_coins_of_a_serial_crew_reusing_one_metadata_uri_are_no_launch_moments():
+    """8 Nov: the "forg" rug crew reused one metadata uri on 28 coins from 20 fresh creators in an hour and was all of
+    the loose creator-0 hunts' paper losses. A uri on 3+ launches by 2+ creators marks a crew: launch-type triggers
+    (launch, hunt, whale, burst) skip its coins in the lab; a KOL or momentum trigger does not."""
+    store = Store(":memory:")
+    whale_world(store, n=10)
+    crew = [addr(f"lab-{i}") for i in range(4)]
+    for i, m in enumerate(crew):
+        store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
+    assert store.crew_uris(NOW - 10_000, NOW) == {"ipfs://forg"}
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    w = Trigger("whale", sol=2.0)
+    data = collect(store, cfg, buy_sol=0.2, latency_slots=0, position="start", triggers=[w])
+    fired = {r["mint"] for r in data["rows"]}
+    assert fired and not fired & set(crew)
+    store.close()
+
+
+def test_the_paper_test_skips_a_serial_crews_coins_too():
+    """The forward paper test fires launch-type rules on the same coins the lab scores: a crew's coins are skipped."""
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    whale_world(store)
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    rep = paper.freeze(store, cfg, top=3, position="+1", now=NOW - 3500)
+    whale = rep["frozen"][0]
+    crew = [addr(f"lab-{i}") for i in range(30, 34)]  # four of the coins after the freeze
+    for i, m in enumerate(crew):
+        store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
+    paper.run(store, cfg, now=NOW)
+    mints = {t["mint"] for t in store.paper_trades(whale["id"])}
+    assert len(mints) == 11 and not mints & set(crew)
+    store.close()

@@ -1016,6 +1016,8 @@ class _Run:
     amm_cov: dict[str, Any] = field(default_factory=dict)
     horizon: float = 0.0
     mig_sell: bool = False
+    # metadata uris of serial crews in the tape's span (store.crew_uris): their coins are no launch-type moment
+    crew_uris: frozenset = frozenset()
     # the exits a MIG trigger's moments are scored on (default: `mig_exit_set`), and their horizon
     mig_exits: list[ExitParams] = field(default_factory=list)
     mig_horizon: float = 0.0
@@ -1041,6 +1043,19 @@ def _span_migration(store: Store, mint: str, a, b):
     """The coin's migration to PumpSwap as the tape recorded it (`migrations`), when it lies in the span [a, b]."""
     mig = store.migration(mint)
     return mig if mig is not None and a <= mig.ts <= b else None
+
+
+CREW_LOOKBACK_SECS = 6 * 3600  # a crew's earlier coins, launched before the tape span starts, still mark its uri
+
+
+def _crew_uris(store: Store, spans) -> set[str]:
+    """The serial crews' metadata uris over the tape's spans (and the hours before the first)."""
+    if not spans:
+        return set()
+    try:
+        return store.crew_uris(int(spans[0][0]) - CREW_LOOKBACK_SECS, int(spans[-1][1]) + 1)
+    except Exception:  # noqa: BLE001 - an older store without the column: no crew is known
+        return set()
 
 
 # No pump.fun coin is worth this much: the curve completes near 400 SOL and the largest PumpSwap graduates stay far
@@ -1084,6 +1099,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     for ti, trig in run.triggers:
         if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
             continue
+        if trig.kind in LAUNCH_KINDS and launch is not None and launch.uri in run.crew_uris:
+            continue  # a serial crew's coin (one metadata uri on many creators' launches)
         in_span = launch if (launch and a <= launch.ts) else None
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
@@ -1331,7 +1348,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
-               mig_horizon=exits_horizon(mig_exits))  # fmt: skip
+               mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)))  # fmt: skip
     plan = _plan(store, spans, group_wallets, min_trades)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
