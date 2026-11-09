@@ -3,118 +3,298 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>snipetech</title>
+<title>Snipetech Live</title>
 <style>
-  :root { --bg:#0f1115; --card:#171a21; --fg:#e6e6e6; --dim:#9aa0a6; --ok:#2ecc71; --warn:#f1c40f; --crit:#e74c3c; --line:#262a33; }
-  * { box-sizing: border-box; }
-  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.45 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
-  header { padding:12px 16px; border-bottom:1px solid var(--line); display:flex; gap:12px; align-items:baseline; flex-wrap:wrap; }
-  header h1 { font-size:16px; margin:0; letter-spacing:.3px; }
-  header .meta { color:var(--dim); font-size:12px; }
-  main { padding:12px 16px 40px; display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(300px, 1fr)); max-width:1400px; margin:0 auto; }
-  section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:0; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 8px; }
-  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; }
-  .kv div:nth-child(odd) { color:var(--dim); }
-  .big { font-size:26px; font-weight:600; }
-  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; }
-  .ok { background:var(--ok); } .warn { background:var(--warn); } .crit { background:var(--crit); } .unknown { background:var(--dim); }
-  ul { margin:0; padding-left:0; list-style:none; }
-  li { padding:4px 0; border-top:1px solid var(--line); word-break:break-word; }
-  li:first-child { border-top:0; }
-  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
-  .dim { color:var(--dim); }
-  .banner { grid-column:1/-1; padding:10px 14px; border-radius:10px; font-weight:600; }
-  .banner.stop { background:#3a1f1f; color:#ffb4b4; }
-  .banner.err { background:#3a2f1f; color:#ffe0a8; }
-  table { width:100%; border-collapse:collapse; font-size:12px; }
-  td, th { text-align:left; padding:3px 6px 3px 0; border-top:1px solid var(--line); white-space:nowrap; }
-  th { color:var(--dim); font-weight:500; border-top:0; }
-  .right { text-align:right; }
+  :root { --bg:#0e1013; --card:#161a20; --raised:#1c2129; --fg:#e7e9ec; --dim:#98a0aa; --ok:#3ccf7e; --warn:#f0c040; --crit:#f0645a;
+          --accent:#7db4ff; --think:#c9a7ff; --line:#252b34; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:var(--bg); border-bottom:1px solid var(--line);
+           padding:10px max(16px, env(safe-area-inset-left)) 0; }
+  .top { display:flex; gap:10px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:17px; margin:0; }
+  #meta { color:var(--dim); font-size:12px; }
+  nav { display:flex; gap:2px; overflow-x:auto; margin-top:8px; scrollbar-width:none; }
+  nav button { background:none; border:0; color:var(--dim); padding:8px 12px; font:inherit; cursor:pointer; border-bottom:2px solid transparent; white-space:nowrap; }
+  nav button.on { color:var(--fg); border-bottom-color:var(--accent); }
+  nav button:focus-visible { outline:2px solid var(--accent); }
+  main { padding:14px max(16px, env(safe-area-inset-left)) 60px; max-width:1200px; margin:0 auto; }
+  .what { color:var(--dim); margin:0 0 14px; max-width:75ch; }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px 14px; min-width:0; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.8px; color:var(--dim); margin:0 0 8px; font-weight:600; }
+  .big { font-size:24px; font-weight:600; font-variant-numeric:tabular-nums; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:6px; vertical-align:middle; background:var(--dim); }
+  .ok { background:var(--ok); } .warn { background:var(--warn); } .crit { background:var(--crit); }
+  .pos { color:var(--ok); } .neg { color:var(--crit); }
+  .dim { color:var(--dim); } .mono, code, pre { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; }
+  pre { white-space:pre-wrap; word-break:break-word; margin:6px 0 0; background:var(--raised); padding:8px; border-radius:6px; max-height:360px; overflow:auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; font-variant-numeric:tabular-nums; }
+  td, th { text-align:left; padding:5px 8px 5px 0; border-top:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; border-top:0; white-space:nowrap; }
+  .r { text-align:right; white-space:nowrap; }
+  .wrap { overflow-x:auto; }
+  .chip { display:inline-block; padding:0 8px; border-radius:999px; border:1px solid var(--line); font-size:12px; white-space:nowrap; }
+  .chip.ok { background:none; color:var(--ok); border-color:var(--ok); } .chip.crit { background:none; color:var(--crit); border-color:var(--crit); }
+  .chip.warn { background:none; color:var(--warn); border-color:var(--warn); } .chip.acc { color:var(--accent); border-color:var(--accent); }
+  .turn { background:var(--card); border:1px solid var(--line); border-radius:10px; margin-bottom:12px; }
+  .turn > summary { list-style:none; cursor:pointer; padding:10px 14px; display:flex; gap:8px; flex-wrap:wrap; align-items:baseline; }
+  .turn > summary::-webkit-details-marker { display:none; }
+  .turn .why { color:var(--dim); flex-basis:100%; font-size:13px; }
+  .steps { border-top:1px solid var(--line); padding:6px 14px 12px; }
+  .step { padding:8px 0 8px 12px; border-left:2px solid var(--line); margin:6px 0; }
+  .step.thinking { border-left-color:var(--think); } .step.thinking .lbl { color:var(--think); }
+  .step.say { border-left-color:var(--accent); } .step.say .lbl { color:var(--accent); }
+  .step.tool .lbl { color:var(--warn); } .step.tool { border-left-color:var(--warn); }
+  .lbl { font-size:11px; text-transform:uppercase; letter-spacing:.7px; font-weight:600; }
+  .txt { white-space:pre-wrap; word-break:break-word; margin-top:2px; }
+  details.sub summary { cursor:pointer; color:var(--dim); font-size:12px; margin-top:4px; }
+  ul.feed { list-style:none; margin:0; padding:0; } ul.feed li { padding:6px 0; border-top:1px solid var(--line); word-break:break-word; }
+  ul.feed li:first-child { border-top:0; }
+  .banner { padding:10px 14px; border-radius:10px; font-weight:600; margin-bottom:12px; background:#3a1f1f; color:#ffc2bc; }
+  .flow { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:13px; margin:4px 0 14px; }
+  .flow span.s { background:var(--raised); border:1px solid var(--line); border-radius:6px; padding:3px 8px; }
+  @media (prefers-reduced-motion:no-preference) { .new { animation: flash 1.6s ease-out; } @keyframes flash { from { background:#20324a; } to { background:var(--card); } } }
 </style>
 </head>
 <body>
 <header>
-  <h1>snipetech</h1>
-  <span class="meta" id="meta">loading…</span>
+  <div class="top"><h1>Snipetech Live</h1><span id="meta">loading…</span></div>
+  <nav id="tabs" role="tablist">
+    <button data-tab="overview" class="on">Overview</button>
+    <button data-tab="agents">Agents' thinking</button>
+    <button data-tab="tests">Tests running</button>
+    <button data-tab="paper">Paper trading</button>
+    <button data-tab="live">Live trading</button>
+    <button data-tab="wallets">Wallet hunt</button>
+    <button data-tab="ideas">Ideas &amp; lessons</button>
+    <button data-tab="health">Health</button>
+  </nav>
 </header>
-<main id="main"></main>
+<main>
+  <section data-panel="overview">
+    <p class="what">The whole system on one screen. How it flows:</p>
+    <div class="flow"><span class="s">Recorder saves every trade</span>→<span class="s">Lab tests ideas on old trades</span>→<span class="s">Paper test on new trades</span>→<span class="s">Your yes</span>→<span class="s">Live trades</span></div>
+    <div id="overview"></div>
+  </section>
+  <section data-panel="agents" hidden>
+    <p class="what">Every time an agent wakes up: why it woke, what it thought, each thing it looked at and what came back, and
+      what it decided. The Operator checks health every 15 minutes; the Analyst runs the research every 30. Newest first; tap a
+      turn to open it.</p>
+    <div id="agents"></div>
+  </section>
+  <section data-panel="tests" hidden>
+    <p class="what">Jobs on the server: lab tests (does an idea pay on recorded trades?), wallet scoring, the paper test and the
+      exit watcher. One heavy test runs at a time. The live output of each running job is shown under it.</p>
+    <div id="tests"></div>
+  </section>
+  <section data-panel="paper" hidden>
+    <p class="what">Rules that passed the lab, trading with pretend money on new trades as they happen. A rule needs 20 trades,
+      still in profit with its 3 luckiest coins removed, before it is put to you for a live test.</p>
+    <div id="paper"></div>
+  </section>
+  <section data-panel="live" hidden>
+    <p class="what">Real trades through OKTech: the wallet, the snipers copying wallets, and every buy and sell.</p>
+    <div id="live"></div>
+  </section>
+  <section data-panel="wallets" hidden>
+    <p class="what">Wallets the scouts found (KOLs, FOMO users, big early buyers, yours) and how they score when copied from
+      where our buys really land. Qualified wallets get a sniper automatically.</p>
+    <div id="wallets"></div>
+  </section>
+  <section data-panel="ideas" hidden>
+    <p class="what">The agents' idea list, and the lessons they wrote down from what failed or worked.</p>
+    <div id="ideas"></div>
+  </section>
+  <section data-panel="health" hidden>
+    <p class="what">Services, resources, and the scheduler's log: why each round called an agent or stayed quiet.</p>
+    <div id="health"></div>
+  </section>
+</main>
 <script>
 (function () {
   const $ = (id) => document.getElementById(id);
-  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-  const ago = (ts, now) => { if (!ts) return "never"; const s = Math.max(0, now - ts); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s/60) + " min ago" : (s/3600).toFixed(1) + " h ago"; };
-  const dot = (st) => `<span class="dot ${esc(st)}"></span>`;
-  const svcClass = (v) => v === "active" ? "ok" : (v === "inactive" || v === "unknown") ? "warn" : "crit";
-  const num = (v, d) => v == null ? "—" : Number(v).toFixed(d);
+  const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  const ago = (ts, now) => { if (!ts) return "never"; const s = Math.max(0, now - ts); return s < 90 ? Math.round(s) + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? (s / 3600).toFixed(1) + " h ago" : Math.round(s / 86400) + " d ago"; };
+  const clock = (ts) => ts ? new Date(ts * 1000).toISOString().slice(11, 16) + " UTC" : "";
+  const num = (v, d) => v == null || isNaN(v) ? "—" : Number(v).toFixed(d);
+  const signed = (v, d) => v == null || isNaN(v) ? "—" : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}${Number(v).toFixed(d)}</span>`;
+  const dot = (cls) => `<span class="dot ${cls}"></span>`;
+  const short = (a) => esc(String(a || "").slice(0, 8));
+  const TOOL_WORDS = { sql: "Queried the database", read_file: "Read a file", read_job_log: "Read a job's output",
+    start_job: "Started a job", write_note: "Wrote a note for you", write_report: "Wrote the report",
+    upsert_idea: "Added or updated an idea", list_ideas: "Read the idea list", read_lessons: "Read past lessons",
+    add_lesson: "Recorded a lesson", read_round_trips: "Read live round trips", set_candidates: "Updated the candidate list",
+    read_verdicts: "Read wallet verdicts", read_fills: "Read live fills", read_fee_policy: "Read the fee policy",
+    read_events: "Read market events" };
+
+  // tab switching, remembered in the address (#agents) so a link opens the same tab
+  function show(tab) {
+    document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+    document.querySelectorAll("[data-panel]").forEach((p) => { p.hidden = p.dataset.panel !== tab; });
+  }
+  document.querySelectorAll("nav button").forEach((b) => b.addEventListener("click", () => { history.replaceState(null, "", "#" + b.dataset.tab); show(b.dataset.tab); }));
+  show((location.hash || "#overview").slice(1));
+
+  // keep what the owner opened open across refreshes
+  const opened = new Set();
+  document.addEventListener("toggle", (e) => { const k = e.target.dataset && e.target.dataset.key; if (k) e.target.open ? opened.add(k) : opened.delete(k); }, true);
+  const openAttr = (k) => opened.has(k) ? " open" : "";
+  const seenTurns = new Set(); let firstRender = true;
+
+  function overview(s, now) {
+    const snap = s.snapshot || {}, op = s.operator || {};
+    const running = (s.jobs || []).filter((j) => j.running);
+    const lastTurn = (s.turns || []).slice(-1)[0];
+    const lastSay = lastTurn ? (lastTurn.steps || []).filter((x) => x.kind === "say").slice(-1)[0] : null;
+    const paper = (s.paper && s.paper.strategies) || [];
+    const best = paper.filter((p) => p.trades > 0).sort((a, b) => b.total_sol - a.total_sol)[0];
+    const svcs = Object.values(s.services || {}); const down = svcs.filter((v) => v === "failed").length;  // timer jobs sit inactive between runs
+    return `${s.book && s.book.stopped ? '<div class="banner">Stopped by you (/stop). No new sniper starts until /resume.</div>' : ""}
+    <div class="grid">
+      <div class="card"><h2>Recorder</h2><div class="big">${snap.tape_lag_secs == null ? "—" : snap.tape_lag_secs + " s"}</div>
+        <div class="dim">behind the market · ${s.tape && s.tape.hours != null ? Math.round(s.tape.hours) + " h of trades saved" : ""}</div></div>
+      <div class="card"><h2>Running now</h2><div class="big">${running.length}</div>
+        <div class="dim">${running.map((j) => esc(j.argv.split(" ").slice(0, 2).join(" "))).join(", ") || "nothing"}</div></div>
+      <div class="card"><h2>Agents</h2><div class="big">${num(op.spend_today_usd, 2)} $</div>
+        <div class="dim">spent today · last turn ${lastTurn ? ago(lastTurn.ended || lastTurn.ts, now) + " (" + esc(lastTurn.mode) + ")" : "none yet"}</div></div>
+      <div class="card"><h2>Wallet</h2><div class="big">${snap.equity == null ? "—" : num(snap.equity, 3) + " SOL"}</div>
+        <div class="dim">${snap.snipers_known ? Object.entries(snap.snipers || {}).map(([k, v]) => v + " " + k).join(", ") || "no snipers" : "OKTech not answering"} · ${snap.held ?? 0} coins held</div></div>
+      <div class="card"><h2>Best paper rule</h2>${best ? `<div class="big">${signed(best.total_sol, 3)} SOL</div><div class="dim">${esc(best.label || best.id)} · ${best.trades} trades</div>` : '<div class="dim">no paper trades yet</div>'}</div>
+      <div class="card"><h2>Services</h2><div class="big">${down ? dot("crit") + down + " failed" : dot("ok") + "all fine"}</div><div class="dim">${svcs.filter((v) => v === "active" || v === "activating").length} running now, the rest wait for their timer</div></div>
+    </div>
+    <div class="card" style="margin-top:12px"><h2>What the agents said last</h2>
+      ${lastSay ? `<div class="txt">${esc(lastSay.text)}</div><div class="dim" style="margin-top:6px">${esc(lastTurn.mode)} · ${clock(lastTurn.ts)}</div>` : '<div class="dim">no recorded turn yet: the next agent turn appears here</div>'}</div>
+    <div class="card" style="margin-top:12px"><h2>Latest notes for you</h2><ul class="feed">${(op.notes || []).slice(-6).reverse().map((l) => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || '<li class="dim">none</li>'}</ul></div>`;
+  }
+
+  function stepHtml(step, key) {
+    if (step.kind === "thinking") return `<div class="step thinking"><div class="lbl">Thinking</div><div class="txt">${esc(step.text)}</div></div>`;
+    if (step.kind === "say") return `<div class="step say"><div class="lbl">Said</div><div class="txt">${esc(step.text)}</div></div>`;
+    const inp = step.input || {};
+    const main = inp.query || inp.sql || inp.path || inp.text || inp.job_id || inp.title || (inp.argv ? [].concat(inp.argv).join(" ") : "") || "";
+    const rest = JSON.stringify(inp, null, 1);
+    return `<div class="step tool"><div class="lbl">${esc(TOOL_WORDS[step.name] || step.name)}${step.error ? ' <span class="chip crit">error</span>' : ""}</div>
+      ${main ? `<pre>${esc(main)}</pre>` : ""}
+      <details class="sub" data-key="${key}-in"${openAttr(key + "-in")}><summary>full request</summary><pre>${esc(rest)}</pre></details>
+      <details class="sub" data-key="${key}-out"${openAttr(key + "-out")}><summary>what came back</summary><pre>${esc(step.result == null ? "(nothing)" : step.result)}</pre></details></div>`;
+  }
+
+  function agents(s, now) {
+    const turns = (s.turns || []).slice().reverse();
+    if (!turns.length) return '<div class="card dim">No turn recorded yet. The next time an agent wakes up, its thinking appears here.</div>';
+    return turns.map((t, i) => {
+      const key = "t" + t.ts + t.mode;
+      const isNew = !firstRender && !seenTurns.has(key); seenTurns.add(key);
+      const nTools = (t.steps || []).filter((x) => x.kind === "tool").length;
+      return `<details class="turn${isNew ? " new" : ""}" data-key="${key}"${openAttr(key) || (i === 0 && !opened.size ? " open" : "")}>
+        <summary><b>${t.mode === "analyst" ? "Analyst" : t.mode === "postmortem" ? "Post-mortem" : "Operator"}</b>
+          <span class="dim">${clock(t.ts)} · ${ago(t.ended || t.ts, now)}</span>
+          <span class="chip">${nTools} step${nTools === 1 ? "" : "s"}</span><span class="chip">${num(t.usd, 2)} $</span>
+          ${t.stopped && t.stopped !== "end_turn" ? `<span class="chip warn">${esc(t.stopped)}</span>` : ""}
+          <span class="why">Woke up because: ${esc((t.reasons || []).join("; ") || "—")}</span></summary>
+        <div class="steps">${(t.steps || []).map((st, j) => stepHtml(st, key + "-" + j)).join("") || '<div class="dim">no steps</div>'}</div></details>`;
+    }).join("");
+  }
+
+  function tests(s, now) {
+    const jobs = s.jobs || [];
+    if (!jobs.length) return '<div class="card dim">no jobs</div>';
+    return jobs.map((j) => {
+      const key = "job" + j.id;
+      const state = j.running ? `${dot("warn")}running for ${ago(j.started, now).replace(" ago", "")}` : `${dot(j.exit_code === 0 ? "ok" : "crit")}${j.exit_code === 0 ? "finished" : "ended (code " + esc(j.exit_code) + ")"} ${ago(j.ended, now)}`;
+      return `<div class="card" style="margin-bottom:10px"><div><b class="mono">${esc(j.argv.length > 160 ? j.argv.slice(0, 160) + "…" : j.argv)}</b></div>
+        <div class="dim">${state} · <span class="mono">${esc(j.id)}</span></div>
+        ${j.log_tail ? `<details class="sub" data-key="${key}"${openAttr(key) || (j.running && !opened.has(key + "-x") ? " open" : "")}><summary>${j.running ? "live output" : "how it ended"}</summary><pre>${esc(j.log_tail)}</pre></details>` : ""}</div>`;
+    }).join("");
+  }
+
+  function paper(s, now) {
+    const p = s.paper || {strategies: [], recent: []};
+    const names = Object.fromEntries((p.strategies || []).map((x) => [x.id, x.label || x.id]));
+    return `<div class="card wrap"><h2>Rules on paper (${(p.strategies || []).length})</h2><table>
+      <tr><th>Rule</th><th class="r">Buy</th><th class="r">Trades</th><th class="r">Total SOL</th><th class="r">Mean</th><th>Last trade</th></tr>
+      ${(p.strategies || []).map((x) => `<tr><td>${esc(x.label || x.id)} <span class="dim mono">${esc(x.id)}</span></td><td class="r">${num(x.buy_sol, 2)}</td>
+        <td class="r">${x.trades}${x.trades >= 20 ? "" : '<span class="dim"> /20</span>'}</td><td class="r">${signed(x.total_sol, 3)}</td>
+        <td class="r">${x.mean_pct == null ? "—" : signed(x.mean_pct, 1) + " %"}</td><td class="dim">${x.last_trade ? ago(x.last_trade, now) : "none yet"}</td></tr>`).join("") || '<tr><td class="dim" colspan="6">none</td></tr>'}
+      </table></div>
+      <div class="card wrap" style="margin-top:12px"><h2>Newest paper trades</h2><table><tr><th>When</th><th>Rule</th><th>Coin</th><th class="r">SOL</th><th class="r">Return</th><th>Exit</th></tr>
+      ${(p.recent || []).map((t) => `<tr><td class="dim">${ago(t.entry_ts, now)}</td><td>${esc(names[t.strategy] || t.strategy)}</td><td class="mono">${short(t.mint)}</td>
+        <td class="r">${signed(t.pnl, 4)}</td><td class="r">${t.roi == null ? "—" : signed(t.roi * 100, 1) + " %"}</td><td class="dim">${esc(t.reason || "")}</td></tr>`).join("") || '<tr><td class="dim" colspan="6">none</td></tr>'}</table></div>`;
+  }
+
+  function live(s, now) {
+    const snap = s.snapshot || {};
+    const fills = s.fills || [];
+    return `<div class="grid"><div class="card"><h2>Wallet</h2><div class="big">${snap.equity == null ? "—" : num(snap.equity, 3) + " SOL"}</div>
+      <div class="dim">${num(snap.native_sol, 3)} SOL + ${num(snap.wsol, 3)} wrapped · ${snap.held ?? 0} coins held</div></div>
+      <div class="card"><h2>Snipers</h2><div class="big">${snap.snipers_known ? Object.values(snap.snipers || {}).reduce((a, b) => a + b, 0) : "—"}</div>
+      <div class="dim">${snap.snipers_known ? Object.entries(snap.snipers || {}).map(([k, v]) => v + " " + k).join(", ") || "none" : "OKTech not answering"} · book ${s.book && s.book.enabled ? "on" : "off"}</div></div></div>
+      <div class="card wrap" style="margin-top:12px"><h2>Every buy and sell (newest first)</h2><table>
+      <tr><th>When</th><th>Side</th><th>Coin</th><th>Copied</th><th class="r">SOL</th><th class="r">Profit</th><th class="r">Behind</th><th class="r">Price gap</th><th>Exit</th></tr>
+      ${fills.map((f) => `<tr><td class="dim">${ago(f.ts, now)}</td><td>${f.side === "buy" ? '<span class="chip acc">buy</span>' : '<span class="chip">sell</span>'}</td>
+        <td class="mono">${short(f.mint)}</td><td class="mono">${short(f.wallet_copied)}</td><td class="r">${num(f.sol, 3)}</td>
+        <td class="r">${f.pnl_sol == null ? "" : signed(f.pnl_sol, 4)}</td><td class="r">${f.trades_behind ?? ""}</td>
+        <td class="r">${f.price_gap_pct == null ? "" : num(f.price_gap_pct, 1) + " %"}</td><td class="dim">${esc(f.exit_reason || "")}</td></tr>`).join("") || '<tr><td class="dim" colspan="9">no trades yet</td></tr>'}</table></div>`;
+  }
+
+  function wallets(s, now) {
+    const c = s.candidates || {counts: {}, top: []};
+    return `<div class="card"><h2>Where the scouts stand</h2><div>${Object.entries(c.counts || {}).map(([k, v]) => `<span class="chip">${v} ${esc(k)}</span>`).join(" ") || '<span class="dim">none yet</span>'}</div>
+      ${c.last_lab ? `<div class="dim" style="margin-top:6px">last scoring run ${ago(c.last_lab.ts, now)}</div>` : ""}</div>
+      <div class="card wrap" style="margin-top:12px"><h2>Qualified wallets, best first</h2><table><tr><th>Wallet</th><th class="r">Copies tested</th><th class="r">Mean SOL</th><th class="r">Cautious low</th><th class="r">Score</th></tr>
+      ${(c.top || []).map((x) => `<tr><td class="mono">${esc(x.wallet)}</td><td class="r">${x.n ?? ""}</td><td class="r">${signed(x.mean_sol, 4)}</td><td class="r">${signed(x.lower_sol, 4)}</td><td class="r">${num(x.score, 3)}</td></tr>`).join("") || '<tr><td class="dim" colspan="5">none qualified right now</td></tr>'}</table></div>`;
+  }
+
+  function ideas(s) {
+    const order = {testing: 0, open: 1, adopted: 2, rejected: 3};
+    const list = (s.ideas || []).slice().sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || (a.priority ?? 9) - (b.priority ?? 9));
+    const cls = {testing: "warn", adopted: "ok", rejected: "crit"};
+    return `<div class="card wrap"><h2>Ideas (${list.length})</h2><table><tr><th>Id</th><th>Idea</th><th>State</th><th class="r">Priority</th></tr>
+      ${list.map((i) => `<tr><td class="mono">${esc(i.id)}</td><td><details class="sub" data-key="idea${esc(i.id)}"${openAttr("idea" + i.id)}><summary style="color:var(--fg);font-size:13px">${esc(i.title)}</summary>
+        ${i.why ? `<div class="dim" style="margin-top:4px"><b>Why:</b> ${esc(i.why)}</div>` : ""}${i.test ? `<div class="dim"><b>Test:</b> ${esc(i.test)}</div>` : ""}
+        ${i.expected ? `<div class="dim"><b>Expected:</b> ${esc(i.expected)}</div>` : ""}${i.result || i.verdict ? `<div><b>Result:</b> ${esc(i.result || i.verdict)}</div>` : ""}</details></td>
+        <td><span class="chip ${cls[i.status] || ""}">${esc(i.status)}</span></td><td class="r">${esc(i.priority ?? "")}</td></tr>`).join("")}</table></div>
+      <div class="card" style="margin-top:12px"><h2>Lessons, newest first</h2><ul class="feed">${(s.lessons || []).slice().reverse().map((l) => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || '<li class="dim">none yet</li>'}</ul></div>
+      <div class="card" style="margin-top:12px"><h2>Today's analyst report (latest part)</h2><pre>${esc(s.analyst_report || "none yet")}</pre></div>`;
+  }
+
+  function health(s, now) {
+    const svc = (v) => v === "active" || v === "activating" ? "ok" : v === "failed" ? "crit" : "";  // inactive: a timer job between runs
+    return `<div class="grid"><div class="card"><h2>Services</h2><ul class="feed">${Object.entries(s.services || {}).map(([k, v]) => `<li>${dot(svc(v))}${esc(k)} <span class="dim">${esc(v)}</span></li>`).join("") || '<li class="dim">none</li>'}</ul></div>
+      <div class="card"><h2>Resources</h2><ul class="feed">${(s.resources || []).map((r) => `<li>${dot(r.status)}<b>${esc(r.name)}</b> <span class="dim">${esc(r.message)}</span></li>`).join("") || '<li class="dim">no check yet</li>'}</ul>
+      <div class="dim" style="margin-top:8px">disk ${s.disk_gb ? s.disk_gb.free + " of " + s.disk_gb.total + " GB free" : "—"} · code <span class="mono">${esc(s.version || "—")}</span></div></div></div>
+      <div class="card" style="margin-top:12px"><h2>Scheduler log: why each round woke an agent or stayed quiet</h2><pre>${esc((s.decision_log || []).slice().reverse().join("\n") || "empty")}</pre></div>`;
+  }
 
   function render(s) {
     const now = s.generated_at;
-    const parts = [];
-    if (s.book && s.book.stopped) parts.push(`<div class="banner stop">STOPPED by owner (/stop). No sniper is expected until /resume.</div>`);
-    if (s.snapshot && s.snapshot.errors && s.snapshot.errors.length) parts.push(`<div class="banner err">snapshot errors: ${esc(s.snapshot.errors.join("; "))}</div>`);
-
-    const snap = s.snapshot || {};
-    parts.push(`<section><h2>Wallet</h2>
-      <div class="big">${snap.equity == null ? "unknown" : num(snap.equity, 3) + " SOL"}</div>
-      <div class="kv">
-        <div>SOL / wSOL</div><div>${num(snap.native_sol, 3)} / ${num(snap.wsol, 3)}</div>
-        <div>coins held</div><div>${snap.held ?? "—"}</div>
-        <div>snipers</div><div>${snap.snipers_known ? (Object.entries(snap.snipers || {}).map(([k,v]) => v + " " + k).join(", ") || "none") : '<span class="dim">unknown (OKTech not answering)</span>'}</div>
-        <div>fills since last round</div><div>${snap.fills_since_last ?? 0}</div>
-        <div>snapshot</div><div>${ago(snap.ts, now)}</div>
-        <div>tape lag</div><div>${snap.tape_lag_secs == null ? "—" : snap.tape_lag_secs + " s"}</div>
-        <div>book</div><div>${s.book && s.book.enabled ? "on" : "off"}</div>
-      </div></section>`);
-
-    const svcs = Object.entries(s.services || {});
-    parts.push(`<section><h2>Services</h2><ul>${svcs.map(([k,v]) => `<li>${dot(svcClass(v))}${esc(k)} <span class="dim">${esc(v)}</span></li>`).join("") || "<li class='dim'>none</li>"}</ul>
-      <div class="kv" style="margin-top:8px"><div>disk free</div><div>${s.disk_gb ? s.disk_gb.free + " / " + s.disk_gb.total + " GB" : "—"}</div>
-      <div>tape</div><div>${s.tape && s.tape.hours != null ? s.tape.hours + " h in " + s.tape.spans + " span(s)" : "—"}</div>
-      <div>code</div><div class="mono">${esc(s.version || "—")}</div></div></section>`);
-
-    const res = s.resources || [];
-    parts.push(`<section><h2>Resources</h2><ul>${res.map(r => `<li>${dot(r.status)}<b>${esc(r.name)}</b> <span class="dim">${esc(r.message)}</span></li>`).join("") || "<li class='dim'>no resource check yet</li>"}</ul></section>`);
-
-    const op = s.operator || {};
-    parts.push(`<section><h2>Operator</h2>
-      <div class="kv"><div>Claude spend</div><div>${num(op.spend_today_usd, 2)} $ today, ${num(op.spend_7d_usd, 2)} $ in 7 d</div>
-      <div>last round</div><div>${ago(op.last_round, now)}</div><div>telegram</div><div>${op.telegram ? "connected" : "not set up"}</div></div>
-      <h2 style="margin-top:10px">Last decisions</h2><ul class="mono">${(op.decisions || []).slice().reverse().map(l => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || "<li class='dim'>none yet</li>"}</ul></section>`);
-
-    const jobs = s.jobs || [];
-    parts.push(`<section><h2>Jobs</h2><table><tr><th>job</th><th>command</th><th class="right">state</th></tr>
-      ${jobs.map(j => `<tr><td class="mono">${esc(j.id)}</td><td class="mono">${esc(j.argv)}</td><td class="right">${j.running ? dot("warn") + "running " + ago(j.started, now) : dot(j.exit_code === 0 ? "ok" : "crit") + "exit " + esc(j.exit_code) + " " + ago(j.ended, now)}</td></tr>`).join("") || "<tr><td class='dim' colspan=3>no jobs</td></tr>"}</table></section>`);
-
-    const c = s.candidates || {counts: {}, top: []};
-    parts.push(`<section><h2>Candidates <span class="dim">(${esc(c.source)})</span></h2>
-      <div class="dim">${Object.entries(c.counts || {}).map(([k,v]) => v + " " + k).join(", ") || "none yet"}</div>
-      <table>${(c.top || []).map(x => `<tr><td class="mono">${esc(x.wallet)}</td><td>${esc(x.source || "")}</td><td class="right">${x.score == null ? "" : num(x.score, 3)}</td></tr>`).join("")}</table></section>`);
-
-    const fills = s.fills || [];
-    parts.push(`<section><h2>Fills</h2><table>${fills.map(f => `<tr><td class="dim">${ago(f.ts, now)}</td><td>${esc(f.side)}</td><td class="mono">${esc(String(f.mint || "").slice(0, 8))}…</td><td class="right">${num(f.sol, 3)} SOL</td></tr>`).join("") || "<tr><td class='dim'>no fills table yet (phase 3)</td></tr>"}</table></section>`);
-
-    const evs = s.events || {counts_24h: {}, recent: []};
-    parts.push(`<section><h2>Events</h2>
-      <div class="dim">${Object.entries(evs.counts_24h || {}).map(([k,v]) => v + " " + k).join(", ") || "none in 24 h"}${evs.last_poll ? " · last poll " + ago(evs.last_poll.ts, now) : ""}</div>
-      ${evs.edge && evs.edge.rows && evs.edge.rows.length ? `<table><tr><th>event kind</th><th class="right">moments</th><th class="right">lower bound</th></tr>${evs.edge.rows.slice(0, 8).map(r => `<tr><td>${esc(r.kind)}</td><td class="right">${esc(r.moments)}</td><td class="right">${r.ev_lower == null ? "" : num(r.ev_lower, 4)}</td></tr>`).join("")}</table>` : `<div class="dim">no event-expectancy table yet (nightly)</div>`}
-      <table>${(evs.recent || []).slice(0, 10).map(e => `<tr><td class="dim">${ago(e.ts, now)}</td><td>${esc(e.kind)}</td><td class="mono">${esc(String(e.mint || "").slice(0, 8))}…</td><td class="dim">${esc(e.source || "")}</td></tr>`).join("")}</table></section>`);
-
-    parts.push(`<section><h2>Recent notes</h2><ul class="mono">${(op.notes || []).slice().reverse().map(l => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || "<li class='dim'>none yet</li>"}</ul></section>`);
-
-    $("main").innerHTML = parts.join("");
-    $("meta").textContent = "updated " + new Date(now * 1000).toISOString().replace("T", " ").slice(0, 19) + " UTC · refreshes every 15 s";
+    $("overview").innerHTML = overview(s, now);
+    $("agents").innerHTML = agents(s, now);
+    $("tests").innerHTML = tests(s, now);
+    $("paper").innerHTML = paper(s, now);
+    $("live").innerHTML = live(s, now);
+    $("wallets").innerHTML = wallets(s, now);
+    $("ideas").innerHTML = ideas(s);
+    $("health").innerHTML = health(s, now);
+    firstRender = false;
+    $("meta").textContent = "updated " + clock(now) + " · refreshes every 10 s";
   }
 
+  let busy = false;
   async function tick() {
+    if (busy || document.hidden) return;
+    busy = true;
     try {
       const r = await fetch("/api/dash/state", {cache: "no-store"});
-      if (!r.ok) { $("meta").textContent = "state: HTTP " + r.status; return; }
+      if (!r.ok) { $("meta").textContent = "could not load (HTTP " + r.status + ")"; return; }
       render(await r.json());
-    } catch (e) { $("meta").textContent = "state: " + e; }
+    } catch (e) { $("meta").textContent = "could not load: " + e; }
+    finally { busy = false; }
   }
   tick();
-  setInterval(tick, 15000);
+  setInterval(tick, 10000);
+  document.addEventListener("visibilitychange", tick);
 })();
 </script>
 </body>

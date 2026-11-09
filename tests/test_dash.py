@@ -2,6 +2,7 @@
 
 import base64
 import json
+import os
 import sqlite3
 import sys
 import threading
@@ -107,7 +108,9 @@ def test_state_uses_phase2_tables_when_present(ops):
                             "n_tape": 25, "mean_sol": 0.02, "lower_sol": 0.004, "next_review": NOW + 3600})  # fmt: skip
         st.upsert_candidate("W4", "tape", {}, NOW - 100, status="banned")
         st.set_coverage("qualify:last_lab", {"ts": NOW - 50, "wallets": 3})
-        st.put_fill({"sig": "S1", "ts": NOW - 10, "wallet": "W1", "mint": "M1", "side": "buy", "sol": 0.2, "sniper_id": "s1"})
+        st.put_fill(
+            {"sig": "S1", "ts": NOW - 10, "wallet": "W1", "mint": "M1", "side": "buy", "sol": 0.2, "sniper_id": "s1"}
+        )
     finally:
         st.close()
     s = dash_state(ops, now=NOW)
@@ -175,13 +178,32 @@ def test_state_has_events_section(ops):
 
     st = Store(ops.db)
     try:
-        st.add_events([{"ts": NOW - 60, "slot": 1, "kind": "graduating", "mint": "M1", "wallet": None, "data": {"rank": 2}, "source": "solanatracker"}])
+        st.add_events(
+            [
+                {
+                    "ts": NOW - 60,
+                    "slot": 1,
+                    "kind": "graduating",
+                    "mint": "M1",
+                    "wallet": None,
+                    "data": {"rank": 2},
+                    "source": "solanatracker",
+                }
+            ]
+        )
         st.set_coverage("events:last_poll", {"ts": NOW - 30, "added": 1, "errors": {}})
-        st.set_coverage("events:edge", {"ts": NOW - 3600, "landing": "+6", "rows": [{"kind": "graduating", "moments": 12, "ev_lower": -0.001}]})
+        st.set_coverage(
+            "events:edge",
+            {"ts": NOW - 3600, "landing": "+6", "rows": [{"kind": "graduating", "moments": 12, "ev_lower": -0.001}]},
+        )
     finally:
         st.close()
     s = dash_state(ops, now=NOW)
-    assert s["events"]["counts_24h"] == {"graduating": 1} and s["events"]["last_poll"]["added"] == 1 and s["events"]["edge"]["rows"][0]["kind"] == "graduating"
+    assert (
+        s["events"]["counts_24h"] == {"graduating": 1}
+        and s["events"]["last_poll"]["added"] == 1
+        and s["events"]["edge"]["rows"][0]["kind"] == "graduating"
+    )
     assert s["events"]["recent"][0]["mint"] == "M1"
 
 
@@ -191,3 +213,43 @@ def test_the_dashboard_shows_the_owners_book_switch(ops):
 
     book_switch(OperatorPaths(ops.data).ensure(), True, "test", now=NOW)
     assert dash_state(ops, now=NOW)["book"]["enabled"] is True
+
+
+def test_the_live_page_shows_the_agents_thinking_ideas_paper_tests_job_logs_and_the_decision_log(ops):
+    """Owner, 9 Nov: "see exactly what each thing is doing all the time ... their logic, how they are thinking"."""
+    from snipetech.operator.turnlog import TurnLog
+    from snipetech.store import Store
+
+    paths = OperatorPaths(ops.data).ensure()
+    log = TurnLog("analyst", ["job ended: lab 1"], started=NOW - 60)
+    log.add_message([{"type": "thinking", "thinking": "it lost, reject"}, {"type": "text", "text": "rejecting I41"}])
+    log.finish({"usd": 0.5, "tool_calls": 0, "stopped": "end_turn"}, paths, ended=NOW - 30)
+    (paths.root / "ideas.json").write_text(json.dumps([{"id": "I43", "title": "rug crews", "status": "testing",
+                                                        "priority": 1, "why": "owner", "test": "lab", "expected": "x"}]))  # fmt: skip
+    (paths.root / "lessons.md").write_text("# lessons\n\n- 2026-11-09 the burst crowd lost\n- 2026-11-09 crews next\n")
+    paths.log.write_text("2026-11-09T13:00:59Z call analyst: analysis due\n2026-11-09T13:45:32Z quiet\n")
+    paths.report("analyst-2026-11-09").write_text("# analyst\n\n**Hypothesis:** crews pay.\n")
+    (ops.data / "jobs" / "20261109-133159-41c50b.json").write_text(json.dumps({"id": "20261109-133159-41c50b", "argv": ["lab", "--trigger", "{}"],
+                                                                               "started": NOW - 600, "ended": None, "exit_code": None,
+                                                                               "running": True, "pid": os.getpid()}))  # fmt: skip
+    (ops.data / "jobs" / "20261109-133159-41c50b.log").write_text("scoring 120 coins\nhalf done\n")
+    st = Store(ops.db)
+    try:
+        st.set_coverage("paper_strategies", {"strategies": [{"id": "0cd0374b1d", "label": "KOL first buy", "buy_sol": 2.0,
+                                                             "frozen_at": NOW - 9000}], "superseded": []})  # fmt: skip
+        st._exec("INSERT INTO paper_trades (strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason) VALUES "
+                 "('0cd0374b1d', 'M1', ?, ?, ?, 0.3, 0.15, 'trail')", (NOW - 500, NOW - 500, NOW - 400))  # fmt: skip
+    finally:
+        st.close()
+    s = dash_state(ops, now=NOW)
+    turn = s["turns"][-1]
+    assert turn["mode"] == "analyst" and [x["kind"] for x in turn["steps"]] == ["thinking", "say"]
+    assert s["ideas"][0]["id"] == "I43" and s["ideas"][0]["status"] == "testing"
+    assert s["lessons"][-1].endswith("crews next") and s["decision_log"][-1].endswith("quiet")
+    assert "crews pay" in s["analyst_report"]
+    job = next(j for j in s["jobs"] if j["running"])
+    assert job["log_tail"].endswith("half done\n")
+    p = s["paper"]["strategies"][0]
+    assert p["id"] == "0cd0374b1d" and p["label"] == "KOL first buy" and p["trades"] == 1 and p["total_sol"] == 0.3
+    assert s["paper"]["recent"][0]["mint"] == "M1"
+    json.dumps(s)

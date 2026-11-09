@@ -22,6 +22,7 @@ from .paths import OperatorPaths, research_dir
 from .prompts import ANALYST_SYSTEM, OPERATOR_SYSTEM, user_message
 from .snapshot import Snapshot
 from .tools import NoteSink, make_operator_tools
+from .turnlog import TurnLog
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
@@ -108,6 +109,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         fallbacks="default",
     )
     usd, calls, stopped, message_stop_reason = 0.0, 0, "end_turn", None
+    record = TurnLog(decision.mode, decision.reasons, started)  # the owner's live page: how the turn thought
     error = None
     notes_before, decisions_before = notes.count, len(notes.decisions)
     # the cadence counts from this turn as soon as it starts: one the unit kills is not started over by the next round
@@ -121,6 +123,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
             async for message in runner:
                 message_stop_reason = message.stop_reason
                 usd += ledger.record(mode, message.usage.model_dump(), now())
+                record.add_message(message.content)
                 tool_uses = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
                 if message.stop_reason == "refusal":
                     stopped = "refusal"
@@ -137,7 +140,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                     stopped = "tool_calls"
                     break
                 calls += len(tool_uses)
-                await runner.generate_tool_call_response()  # this reply's calls run: they may be the report and note
+                record.add_results(await runner.generate_tool_call_response())  # the calls run (report, note)
                 if now() - started >= TURN_WALL_SECS:
                     notes.write(f"turn time limit reached ({(now() - started) / 60:.0f} min of "
                                 f"{TURN_WALL_SECS // 60}) before the round finished", "info")  # fmt: skip
@@ -186,4 +189,5 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     out = {"usd": round(usd, 4), "tool_calls": calls, "stopped": stopped, "notes": notes.count - notes_before}
     if error:  # the round's log line carries the API's own words too
         out["error"] = error
+    record.finish(out, paths, now())
     return out

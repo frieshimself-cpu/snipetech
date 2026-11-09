@@ -11,12 +11,19 @@ from typing import Any
 
 from .operator.budget import Ledger
 from .operator.paths import OperatorPaths
+from .operator.turnlog import read_turns
 
 NOTE_LINES = 20
 DECISION_LINES = 5
 JOB_LINES = 10
 TOP_CANDIDATES = 10
 FILL_LINES = 20
+TURN_LINES = 15  # the agents' newest turns, each with its reasoning and tool calls (operator/turnlog.py)
+LESSON_LINES = 15
+DECISION_LOG_LINES = 40  # operator/log.txt: why each round called an agent, or stayed quiet
+JOB_LOG_CHARS = 2500  # the tail of a job's own log, shown under it
+REPORT_CHARS = 6000  # the end of today's analyst report
+PAPER_RECENT = 25
 
 
 def _read_json(path: Path, default):
@@ -52,6 +59,80 @@ def _notes(paths: OperatorPaths) -> tuple[list[str], list[str]]:
     return lines[-NOTE_LINES:], [ln for ln in lines if "[decision]" in ln][-DECISION_LINES:]
 
 
+def _tail(path: Path, chars: int) -> str:
+    try:
+        with path.open("rb") as f:
+            f.seek(0, 2)
+            size = f.tell()
+            f.seek(max(0, size - chars * 4))
+            return f.read().decode("utf-8", "replace")[-chars:]
+    except OSError:
+        return ""
+
+
+IDEA_FIELDS = (
+    "id",
+    "title",
+    "status",
+    "priority",
+    "kind",
+    "why",
+    "test",
+    "expected",
+    "result",
+    "verdict",
+    "source",
+    "updated_at",
+    "created_at",
+)
+
+
+def _ideas(paths: OperatorPaths) -> list[dict]:
+    raw = _read_json(paths.root / "ideas.json", [])
+    items = raw if isinstance(raw, list) else raw.get("ideas", []) if isinstance(raw, dict) else []
+    return [{k: i.get(k) for k in IDEA_FIELDS if k in i} for i in items if isinstance(i, dict)]
+
+
+def _lines(path: Path, n: int, prefix: str = "") -> list[str]:
+    try:
+        lines = [ln for ln in path.read_text().splitlines() if ln.strip() and ln.startswith(prefix)]
+    except OSError:
+        return []
+    return lines[-n:]
+
+
+def _latest_report(paths: OperatorPaths) -> str:
+    reports = sorted(paths.root.glob("analyst-*.md"))
+    return _tail(reports[-1], REPORT_CHARS) if reports else ""
+
+
+def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
+    """Every paper strategy still running, with its trades so far, and the newest paper trades across them."""
+    out: dict[str, Any] = {"strategies": [], "recent": []}
+    if con is None or not {"paper_trades", "coverage"} <= tables:
+        return out
+    try:
+        row = con.execute("SELECT data FROM coverage WHERE key = 'paper_strategies'").fetchone()
+        strategies = (json.loads(row[0]) or {}).get("strategies", []) if row else []
+        stats = {sid: (n, tot, mean, last) for sid, n, tot, mean, last in con.execute(
+            "SELECT strategy, count(*), sum(pnl), avg(roi), max(entry_ts) FROM paper_trades GROUP BY strategy")}  # fmt: skip
+        for st in strategies:
+            n, tot, mean, last = stats.get(st.get("id"), (0, 0.0, None, None))
+            out["strategies"].append({"id": st.get("id"), "label": st.get("label"), "buy_sol": st.get("buy_sol"),
+                                      "frozen_at": st.get("frozen_at"), "trades": int(n or 0),
+                                      "total_sol": round(float(tot or 0.0), 4),
+                                      "mean_pct": None if mean is None else round(float(mean) * 100, 2),
+                                      "last_trade": last})  # fmt: skip
+        out["strategies"].sort(key=lambda r: r["last_trade"] or 0, reverse=True)
+        out["recent"] = [{"strategy": sid, "mint": m, "entry_ts": e, "exit_ts": x, "pnl": p, "roi": r, "reason": why}
+                         for sid, m, e, x, p, r, why in con.execute(
+                             "SELECT strategy, mint, entry_ts, exit_ts, pnl, roi, reason FROM paper_trades "
+                             "ORDER BY entry_ts DESC LIMIT ?", (PAPER_RECENT,))]  # fmt: skip
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+    return out
+
+
 def _jobs(ops) -> list[dict]:
     out = []
     try:
@@ -60,9 +141,12 @@ def _jobs(ops) -> list[dict]:
         return out
     running = [j for j in jobs if j and j.get("running")]
     ended = [j for j in jobs if j and not j.get("running")][:JOB_LINES]
-    for j in running + ended:
-        out.append({"id": j.get("id"), "argv": " ".join(j.get("argv") or []), "started": j.get("started"), "ended": j.get("ended"),
-                    "exit_code": j.get("exit_code"), "running": bool(j.get("running"))})  # fmt: skip
+    for k, j in enumerate(running + ended):
+        row = {"id": j.get("id"), "argv": " ".join(j.get("argv") or []), "started": j.get("started"), "ended": j.get("ended"),
+               "exit_code": j.get("exit_code"), "running": bool(j.get("running"))}  # fmt: skip
+        if j.get("running") or k < len(running) + 4:  # what it is doing now, or how the last few ended
+            row["log_tail"] = _tail(Path(ops.data) / "jobs" / f"{j.get('id')}.log", JOB_LOG_CHARS)
+        out.append(row)
     return out
 
 
@@ -194,6 +278,12 @@ def dash_state(ops, now: float | None = None) -> dict[str, Any]:
                 "stopped": paths.stop_flag.exists(),
             },
             "events": _events(con, tables, now),
+            "paper": _paper(con, tables),
+            "turns": read_turns(paths, TURN_LINES),
+            "ideas": _ideas(paths),
+            "lessons": _lines(paths.root / "lessons.md", LESSON_LINES, "- "),
+            "decision_log": _lines(paths.log, DECISION_LOG_LINES),
+            "analyst_report": _latest_report(paths),
         }
     finally:
         if con is not None:
