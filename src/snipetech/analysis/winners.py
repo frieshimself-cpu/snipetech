@@ -25,6 +25,8 @@ def _price(t) -> float | None:
 
 
 def _style(r: dict[str, Any]) -> str:
+    if r.get("oversold_share", 0) >= 0.5:
+        return "insider (sells more than it buys: supply handed to it)"
     if r["create_slot_share"] >= 0.4:
         return "launch sniper (buys in the create slot)"
     entry = r["median_entry_slots"]
@@ -63,8 +65,12 @@ def winners(store, now: float, *, hours: float = 72, min_trips: int = 30, top: i
         for user, p in pos.items():
             if p["first"] is None or p["bought"] <= 0 or p["sold"] < close_frac * p["bought"]:
                 continue
+            # sales beyond the tokens it bought are supply handed to it (a creator team's wallets): only the part its
+            # own buys cover is a trading result (9 Nov: a +9,009 SOL "winner" sold 10x what it bought)
+            covered = min(1.0, p["bought"] / p["sold"]) if p["sold"] > 0 else 1.0
             per.setdefault(user, []).append({
-                "pnl": (p["in"] - p["out"]) / LAMPORTS, "entry": int(p["first"].slot) - int(launch.slot),
+                "pnl": (p["in"] * covered - p["out"]) / LAMPORTS, "oversold": p["sold"] > 1.02 * p["bought"],
+                "entry": int(p["first"].slot) - int(launch.slot),
                 "hold": float(p["last_sell"].ts) - float(p["first"].ts), "sells": p["sells"],
                 "buy": p["out"] / LAMPORTS, "amm": p["amm"]})  # fmt: skip
     rows = []
@@ -80,7 +86,8 @@ def winners(store, now: float, *, hours: float = 72, min_trips: int = 30, top: i
              "median_hold_secs": round(median(x["hold"] for x in trips), 1),
              "median_sells": median(x["sells"] for x in trips),
              "median_buy_sol": round(median(x["buy"] for x in trips), 4),
-             "pumpswap_share": round(sum(1 for x in trips if x["amm"]) / n, 3)}  # fmt: skip
+             "pumpswap_share": round(sum(1 for x in trips if x["amm"]) / n, 3),
+             "oversold_share": round(sum(1 for x in trips if x["oversold"]) / n, 3)}  # fmt: skip
         r["style"] = _style(r)
         rows.append(r)
     rows.sort(key=lambda r: -r["pnl_sol"])

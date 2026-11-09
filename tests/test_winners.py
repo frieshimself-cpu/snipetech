@@ -96,3 +96,16 @@ def test_leaders_of_can_look_only_at_the_wallets_later_buys():
         assert leaders_of(st, addr("follower"), NOW, hours=2, max_slots=5, after_slots=3)
     finally:
         st.close()
+
+
+def test_tokens_sold_beyond_what_the_wallet_bought_are_not_counted_as_profit():
+    """9 Nov 23:00: the top 'winner' (+9,009 SOL in 3 days, 92 % wins, 36 sells a coin) sold far more tokens than it
+    bought: supply handed to it by a creator team. Only the part of the sales its own buys cover is a trading result."""
+    from types import SimpleNamespace as N
+
+    launch = N(mint="M", user="dev", creator="dev", slot=100, ts=NOW - 600)
+    trades = [N(user="dumper", venue="curve", is_buy=True, quote=1_000_000_000, fee=0, base=1_000, slot=105, ts=NOW - 590),
+              N(user="dumper", venue="curve", is_buy=False, quote=3_000_000_000, fee=0, base=10_000, slot=110, ts=NOW - 580)]  # fmt: skip
+    store = N(launches_between=lambda a, b: [launch], trades_for_mint=lambda m, *a: trades)
+    r = winners(store, NOW, hours=1, min_trips=1)[0]
+    assert r["wallet"] == "dumper" and abs(r["pnl_sol"] - (-0.7)) < 1e-9 and r["oversold_share"] == 1.0
