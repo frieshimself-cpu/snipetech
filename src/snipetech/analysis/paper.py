@@ -104,8 +104,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # trigger fields added later, at their defaults: OKTech hunt's two, then MIG's paid-creator split (7 Nov), the
     # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
     # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)
+    # and a KOL rule's consensus, size and market-cap gates (10 Nov: unset, the first known wallet in at any size)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
-                  "crew": ""}  # fmt: skip
+                  "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
@@ -117,6 +118,20 @@ def copy_landing(store: Store, cfg: Config, now: float) -> str:
     from ..qualify.run import effective_landing_pos
 
     return effective_landing_pos(store, cfg.qualify, now=now)
+
+
+def hypothesis_landing(copy_pos: str, override: str | None) -> tuple[int, str]:
+    """(slots after the trigger, position in that slot) a `lab --trigger` hypothesis is scored at: the measured copy
+    landing, or `--copy-position` when given: "+N" (N trades of the coin ahead of us in the followed wallet's slot,
+    "+0" right behind it), "+Nx" (behind the N-th buy after it, across slots), start, middle or end. A place closer
+    than the measured one is bought with a bid: charge it with --per-tx, or the result is no evidence."""
+    if override is None:
+        return (0, copy_pos)
+    pos = str(override).strip()
+    plus = pos.startswith("+") and (pos[1:].isdigit() or (pos.endswith("x") and pos[1:-1].isdigit()))
+    if not plus and pos not in ("start", "middle", "end"):
+        raise ValueError(f"--copy-position is +N, +Nx, start, middle or end, not {override!r}")
+    return (0, pos)
 
 
 def live_landing(kind: str | None, copy_pos: str) -> tuple[int, str]:

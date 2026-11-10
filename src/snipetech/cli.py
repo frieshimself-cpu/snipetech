@@ -446,6 +446,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "scored where it trades live (launch, hunt, whale and burst where a hunt buy lands, kol and "
                          "momentum at the copy landing, `copy_landing` in the output): --latency / --position do not "
                          "apply to it")  # fmt: skip
+    sp.add_argument("--copy-position", metavar="POS",
+                    help="with --trigger: score copies (kol, momentum) at this place in the followed wallet's slot "
+                         "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
+                         "the N-th buy across slots. A closer place is bought with a bid: charge it with --per-tx")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
 
     sp = cmd(
@@ -1171,7 +1175,8 @@ async def _run(args, cfg: Config) -> int:
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
             # of their own: their copies at the copy landing; the grid's copies at --latency / --position
-            lat, pos = (0, copy_pos) if args.trigger else (args.latency, args.position)
+            lat, pos = (paper.hypothesis_landing(copy_pos, args.copy_position) if args.trigger
+                        else (args.latency, args.position))  # fmt: skip
             # what a transaction costs live, as `paper freeze`, the qualify lab and the strategy search charge it, unless
             # told: every lab of research round 1 (7 Nov) charged the flat 0.0035 against about 0.0045 live, so every
             # mean was 0.002 SOL a trade too kind

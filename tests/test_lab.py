@@ -755,3 +755,87 @@ def test_a_crew_only_rule_keeps_old_ids_and_the_paper_test_fires_it_on_crew_coin
     assert paper.crew_skips(Trigger("whale", sol=2.0), store.launch(crew[0]), {"ipfs://forg"})
     assert not paper.crew_skips(Trigger("kol", sol=1.0), store.launch(crew[0]), {"ipfs://forg"})
     store.close()
+
+
+def _consensus_world(store):
+    m = Market(store, addr("lab-k2"), addr("lab-k2-dev"), NOW - 4000, 31_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("kol-1"), 1.0, 2)  # the first known wallet in
+    m.buy(addr("crowd-1"), 3.0, 5)
+    m.buy(addr("kol-2"), 2.0, 300)  # the second, 2 SOL, 120 s after the first, 6.5 SOL in the curve after it
+    m.buy(addr("kol-3"), 6.0, 400)  # the third, 6 SOL, 40 s after the second
+    m.commit()
+    launch = store.launch(addr("lab-k2"))
+    return MarketPath.build(store.trades_for_mint(addr("lab-k2")), launch), launch
+
+
+def test_a_kol_trigger_can_wait_for_the_second_known_wallet_and_read_the_buy_and_the_coin():
+    """Owner, 10 Nov: "if 2 kols are in, copy trade when the second one gets in". The grid's KOL rule fired on the
+    first known wallet into a coin only, the case the tape says is worth nothing (+0.5 % at 5 s behind the first,
+    +8.5 % behind the second; docs/research/2026-11-10-three-bots.md). The knobs are the ones OKTech's copy mode has:
+    ctbotMinWallets within ctbotTimeWindowMs (known, within), a wallet's minSol / maxSol (sol, max_sol) and its market
+    cap limits (min_curve, max_curve: SOL in the curve after the followed buy)."""
+    store = Store(":memory:")
+    path, launch = _consensus_world(store)
+    groups = {"kol": {addr("kol-1"), addr("kol-2"), addr("kol-3")}}
+    who = lambda **kw: (lambda i: None if i is None else path.users[i])(
+        _fire(Trigger("kol", **kw), path, launch, groups)
+    )
+    assert who() == addr("kol-1")  # as before: the first known wallet in
+    assert who(known=2) == addr("kol-2") and who(known=3) == addr("kol-3") and who(known=4) is None
+    assert who(known=2, within=60.0) == addr("kol-3")  # kol-2 came 120 s after kol-1; kol-3 40 s after kol-2
+    assert who(known=2, within=30.0) is None
+    assert who(known=2, max_sol=3.0) == addr("kol-2") and who(known=2, max_sol=1.5) is None
+    assert who(known=2, sol=3.0) == addr("kol-3")  # the second's buy is too small: the next known buy that fits
+    assert who(min_curve=5.0) == addr("kol-2") and who(min_curve=7.0) == addr("kol-3")
+    assert who(max_curve=2.0) == addr("kol-1") and who(known=2, max_curve=2.0) is None
+    label = Trigger("kol", sol=1.0, max_sol=3.0, known=2, within=300.0, min_curve=15.0, max_curve=60.0).label()
+    for words in ("2 known wallets", "within 300 s", "<= 3 SOL", "15", "60 SOL in the curve"):
+        assert words in label, (words, label)
+    store.close()
+
+
+def test_the_consensus_knobs_are_an_agents_to_set_on_kol_triggers_only_and_keep_old_ids():
+    from dataclasses import asdict
+
+    from snipetech.analysis import paper
+    from snipetech.analysis.lab import parse_trigger
+
+    t = parse_trigger('{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2, "within": 300, '
+                      '"min_curve": 15, "max_curve": 60}')  # fmt: skip
+    assert (t.known, t.within, t.max_sol, t.min_curve, t.max_curve) == (2, 300.0, 3.0, 15.0, 60.0)
+    with pytest.raises(ValueError, match="known"):
+        parse_trigger('{"kind": "whale", "sol": 2, "known": 2}')
+    with pytest.raises(ValueError, match="known"):
+        parse_trigger('{"kind": "kol", "known": 2.5}')
+    with pytest.raises(ValueError, match="max_sol"):
+        parse_trigger('{"kind": "kol", "sol": 3, "max_sol": 1}')
+    old = asdict(Trigger("kol", sol=1.0, group="wallet"))
+    before = {k: v for k, v in old.items() if k not in ("known", "within", "max_sol", "min_curve", "max_curve")}
+    ex = {"take_profit": 0.3, "stop_loss": 0.2, "max_hold_secs": 30.0}
+    assert paper.strategy_id(old, ex, "+3x", 0, 0.2) == paper.strategy_id(before, ex, "+3x", 0, 0.2)
+    new = asdict(Trigger("kol", sol=1.0, group="wallet", known=2))
+    assert paper.strategy_id(new, ex, "+3x", 0, 0.2) != paper.strategy_id(old, ex, "+3x", 0, 0.2)
+
+
+def test_the_exit_set_has_the_seconds_long_timers_the_profitable_bots_sell_on():
+    """10 Nov, three bots' playbooks: the first sell comes 3 to 6 s after the buy, up or down. The shortest timer the
+    lab scored was 10 s."""
+    from snipetech.analysis.lab import exit_set
+
+    timers = sorted(e.max_hold_secs for e in exit_set() if not (e.take_profit or e.stop_loss or e.trailing_stop
+                                                               or e.stale_secs))  # fmt: skip
+    assert timers[:3] == [3, 5, 10]
+
+
+def test_a_hypothesis_can_be_scored_at_a_paid_place_instead_of_the_measured_copy_landing():
+    """10 Nov: the place right behind the followed wallet is a fee auction (6Z91 pays a median 0.033 SOL a buy for it).
+    `lab --trigger ... --copy-position +0 --per-tx 0.035` scores a copy there with the bid charged; without the flag a
+    hypothesis keeps the measured copy landing."""
+    from snipetech.analysis import paper
+
+    assert paper.hypothesis_landing("+3x", None) == (0, "+3x")
+    assert paper.hypothesis_landing("+3x", "+0") == (0, "+0") and paper.hypothesis_landing("+3x", "+1x") == (0, "+1x")
+    assert paper.hypothesis_landing("+3x", "start") == (0, "start")
+    with pytest.raises(ValueError, match="copy-position"):
+        paper.hypothesis_landing("+3x", "second")

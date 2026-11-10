@@ -298,7 +298,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
         whale, kol, momentum or hunt, with its numbers), refused at once with its reason, before any job starts, when a
         number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt triggers
-        are the ones OKTech can run exactly as scored.
+        are the ones OKTech can run exactly as scored. A kol trigger takes the gates OKTech's copy mode has: "known"
+        (fire only once that many group wallets have made a first buy in the coin, this one included: 2 = the second
+        known wallet in; the grid tests only the first), "within" (all of them in the last N seconds), "sol" /
+        "max_sol" (the followed buy's size), "min_curve" / "max_curve" (SOL in the curve after it). "--copy-position",
+        "+0" with "--per-tx" scores a copy right behind the wallet at the bid that buys the place, e.g. ["lab",
+        "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
+        "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"].
 
         Args:
             argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"],

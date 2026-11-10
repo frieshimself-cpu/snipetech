@@ -152,6 +152,17 @@ class Trigger:
     # "" (the default) skips them; "only" scores them alone (owner, 9 Nov: crews' charts often run up before the rug).
     # OKTech cannot tell a crew's coin, so a crew-only rule is research only (oktech.strategy_sniper refuses it)
     crew: str = ""
+    # kol: the consensus, size and market-cap gates OKTech's copy mode has (10 Nov; owner: "if 2 kols are in, copy
+    # trade when the second one gets in"). `known` = ctbotMinWallets: fire on a group wallet's first buy only once this
+    # many group wallets have made a first buy in the coin, this one included (0 or 1 = the first one in, the rule every
+    # grid row before 10 Nov tested); `within` = ctbotTimeWindowMs / 1000: all of them in the last this many seconds
+    # (0 = since the launch). `max_sol` = the wallet's maxSol: the followed buy is at most this (`sol` is its minSol).
+    # `min_curve` / `max_curve` = its market-cap limits, as SOL in the curve after the followed buy (0 = no limit)
+    known: int = 0
+    within: float = 0.0
+    max_sol: float = 0.0
+    min_curve: float = 0.0
+    max_curve: float = 0.0
 
     def label(self) -> str:
         base = self._label()
@@ -187,7 +198,16 @@ class Trigger:
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
             who = "a KOL" if self.group == "kol" else f"a tracked wallet ({self.group})"
-            return f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
+            gates = (
+                ([f"<= {self.max_sol:g} SOL"] if self.max_sol else [])
+                + ([f"with >= {self.known} known wallets in"
+                    + (f" within {self.within:g} s" if self.within else "")] if self.known > 1 else [])
+                + ([f"{self.min_curve:g} to {self.max_curve:g} SOL in the curve"] if self.min_curve and self.max_curve
+                   else [f">= {self.min_curve:g} SOL in the curve"] if self.min_curve
+                   else [f"<= {self.max_curve:g} SOL in the curve"] if self.max_curve else [])
+            )  # fmt: skip
+            return (f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
+                    + "".join(f", {g}" for g in gates))  # fmt: skip
         return "at the launch"
 
 
@@ -238,7 +258,7 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
     "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
-    "kol": ("sol", "group", "max_age", "plain"),
+    "kol": ("sol", "group", "max_age", "plain", "known", "within", "max_sol", "min_curve", "max_curve"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
@@ -249,8 +269,9 @@ HUNT_CANNOT = ("OKTech hunt cannot skip mayhem or holder-reward coins (plain), s
 TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "max_buyers": (0, 200),
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
+    "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
 }  # fmt: skip
-WHOLE_FIELDS = ("buyers", "holders", "max_buyers")
+WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo")
 TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
@@ -322,6 +343,11 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"venue must be one of {', '.join(TRIGGER_VENUES)}, not {trig.venue!r}")
     if kind == "kol" and trig.group not in TRIGGER_GROUPS:
         raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
+    if trig.max_sol and trig.max_sol < (trig.sol or KOL_MIN_SOL):
+        raise ValueError(f"max_sol ({trig.max_sol:g}) is under the smallest buy the rule follows (sol, "
+                         f"{trig.sol or KOL_MIN_SOL:g}): no buy fits")  # fmt: skip
+    if trig.max_curve and trig.max_curve < trig.min_curve:
+        raise ValueError(f"max_curve ({trig.max_curve:g}) is under min_curve ({trig.min_curve:g}): no coin fits")
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
@@ -763,7 +789,8 @@ def exit_set() -> list[ExitParams]:
     for tp in (0.3, 1.0):
         for hold in (30, 120):
             out.append(ExitParams(take_profit=tp, stop_loss=0.2, max_hold_secs=hold, sell_on_dev_sell=False))
-    for hold in (10, 30, 60):
+    # 3 and 5 s: where the profitable bots start selling, up or down (10 Nov, three playbooks: first sell 3 to 6 s in)
+    for hold in (3, 5, 10, 30, 60):
         out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=hold, sell_on_dev_sell=False))
     # the scale-out ladder the best copy bot on the tape (6Z91) runs: bank part at a small gain, trail the rest,
     # dump everything on a pause or a dip below entry
@@ -784,6 +811,27 @@ def exit_set() -> list[ExitParams]:
         out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False,
                               migration_sell_frac=frac, migration_sell_delay=0.1))  # fmt: skip
     return out
+
+
+CURVE_VIRTUAL_SOL = 30.0  # a pump.fun curve's virtual SOL reserve before any buy
+
+
+def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -> bool:
+    """A KOL trigger's gates beyond the wallet and the smallest buy, at the group wallet's first buy `i`: the buy is
+    at most `max_sol`, at least `known` group wallets have made a first buy in the coin (this one included; all within
+    the last `within` seconds when set), and the SOL in the curve after the buy is inside `min_curve` / `max_curve`."""
+    if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
+        return False
+    if trig.known > 1:
+        ts = float(path.ts[i])
+        n = sum(1 for t in known_at if t >= ts - trig.within) if trig.within else len(known_at)
+        if n < trig.known:
+            return False
+    if trig.min_curve or trig.max_curve:
+        curve = float(path.q[i]) / LAMPORTS - CURVE_VIRTUAL_SOL
+        if curve < trig.min_curve or (trig.max_curve and curve > trig.max_curve):
+            return False
+    return True
 
 
 def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
@@ -829,6 +877,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return max(idx) if idx else None
     group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
     seen: set[str] = set()  # buyers so far: a KOL trigger wants the wallet's *first* buy in the coin, not a top-up
+    known_at: list[float] = []  # when each group wallet made its first buy in the coin (a KOL trigger's consensus)
     for i in range(path.n):
         if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
             return None
@@ -836,6 +885,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             continue
         first = path.users[i] not in seen
         seen.add(path.users[i])
+        if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= KOL_MIN_SOL * LAMPORTS:
+            known_at.append(float(path.ts[i]))
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
             if trig.solo:
                 # live (5 Nov): a >= 2 SOL buy inside the create bundle cannot be followed in its own slot; we land
@@ -853,6 +904,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             and first
             and path.users[i] in group
             and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS
+            and _kol_gates(trig, path, i, known_at)
         ):
             return i
         if trig.kind == "burst":
