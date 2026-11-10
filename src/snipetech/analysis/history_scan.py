@@ -35,7 +35,22 @@ SOL_QUOTES = (None, "", "So11111111111111111111111111111111111111112", "11111111
 COLUMNS = ("event_type", "slot_number", "timestamp", "token_mint", "token_creator", "action", "user_wallet",
            "lamports_amount", "fee_lamports", "virtual_token_reserve", "virtual_lamports_reserve", "symbol", "uri",
            "lamports_mint")  # fmt: skip
-WINDOW_SLOTS = 400  # trades kept for a launch: the horizons need 150
+WINDOW_SLOTS = 1500  # trades kept for a launch: ten minutes, the longest exit rule
+# exit rules walked along a launch's path (`exit_return`): a time limit in slots, a stop under the entry, a take above
+# it, a trail under the highest price so far (fractions)
+EXITS: dict[str, dict[str, float]] = {
+    "t5s": {"slots": 13},
+    "t60s": {"slots": 150},
+    "t4m": {"slots": 600},
+    "t10m": {"slots": 1500},
+    "stop15_t10m": {"stop": 0.15, "slots": 1500},
+    "stop25_t10m": {"stop": 0.25, "slots": 1500},
+    "trail20_t10m": {"trail": 0.20, "slots": 1500},
+    "trail35_t10m": {"trail": 0.35, "slots": 1500},
+    "stop15_take50_t4m": {"stop": 0.15, "take": 0.5, "slots": 600},
+    "stop20_take100_t10m": {"stop": 0.20, "take": 1.0, "slots": 1500},
+    "stop15_trail30_t10m": {"stop": 0.15, "trail": 0.30, "slots": 1500},
+}
 TRACK_SLOTS = 54_000  # six hours: how long a launch's peak is followed
 HORIZONS = (13, 150)
 BONDED_SOL = 84.0  # the curve is complete: nothing left to buy on it
@@ -59,6 +74,42 @@ def _columns(path: Path) -> dict[str, list]:
     cols = {name: table.column(name).to_pylist() for name in table.column_names}
     n = table.num_rows
     return {c: cols.get(c) or [None] * n for c in COLUMNS}
+
+
+def _path(st: dict) -> list[list[float]]:
+    """The price at the end of every block after the entry block (the one after the create) in which the coin traded,
+    as [blocks after the entry, price / entry price]; empty when nobody traded by the entry block."""
+    entry_slot = st["launch"].slot + 1
+    entry = None
+    out: list[list[float]] = []
+    for t in st["trades"]:
+        if not t.b_after or not t.q_after:
+            continue
+        price = t.q_after / t.b_after
+        if t.slot <= entry_slot:
+            entry = price
+        elif entry:
+            d = t.slot - entry_slot
+            if out and out[-1][0] == d:
+                out[-1][1] = round(price / entry, 4)
+            else:
+                out.append([d, round(price / entry, 4)])
+    return out
+
+
+def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
+    """What a buy at the entry price returns in percent (before fees) when it is sold by `rule`: at the first block
+    that closes `stop` under the entry, `take` above it or `trail` under the highest close so far, else at the last
+    close inside `slots`. The price is the block's close: a stop is filled where the block ended, not at its level."""
+    limit, stop, take, trail = rule.get("slots", WINDOW_SLOTS), rule.get("stop"), rule.get("take"), rule.get("trail")
+    peak = last = 1.0
+    for d, r in path:
+        if d > limit:
+            break
+        last, peak = r, max(peak, r)
+        if (stop and r <= 1 - stop) or (take and r >= 1 + take) or (trail and r <= peak * (1 - trail)):
+            break
+    return round((last - 1.0) * 100.0, 4)
 
 
 def _record(st: dict, horizons: tuple[int, ...], last_slot: int) -> dict[str, Any] | None:
@@ -96,7 +147,10 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
             stats["scored"] += 1
             for h in horizons:
                 stats["ret_sum"][h] += rec["rets"][h]
-        return rec if rec["block_sol"] >= min_block_sol else None
+        if rec["block_sol"] < min_block_sol:
+            return None
+        rec["path"] = _path(st) if rec["rets"] else []
+        return rec
 
     for path in sorted(paths, key=lambda p: p.name):
         c = _columns(path)
@@ -145,20 +199,38 @@ def _mean(vals: list[float]) -> float | None:
 def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *, min_block_sol: float,
                   stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
                   x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
-                  min_cell: int = 50) -> dict[str, Any]:  # fmt: skip
+                  min_cell: int = 50, exits: bool = False) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
     "no account" = the coin names none, "unknown" = it names one that was never looked up. `cross` (names of splits)
     adds every combination of their buckets with `min_cell` launches or more, each with its return at the last horizon
     on the first and on the second half of the days, best first by the worse half: a cell among dozens that pays on
-    one half only is luck."""
+    one half only is luck. `exits` scores every rule of `EXITS` on the launches' kept paths, for all organised launches
+    and for each crossed cell: mean and median return before fees, the share above the fees, and the mean on each half
+    of the days."""
     bundled = [r for r in records if r["block_sol"] >= min_block_sol]
     organised = [r for r in bundled if not r.get("bonded_at_once")]  # a curve its own bundle filled cannot be bought
     items = [(SimpleNamespace(mint=r["mint"], symbol=r["symbol"], creator=r["creator"], user=r["creator"]),
               {"traded": True, "peak": r["peak_sol"], "rets": r["rets"], "block_sol": r["block_sol"],
                "block_wallets": r["block_wallets"], "dev_sol": r["dev_sol"]}) for r in organised]  # fmt: skip
     metas = {r["mint"]: meta_of(r["mint"]) for r in organised}
+    day_of = {r["mint"]: r["day"] for r in organised}
+    all_days = sorted(set(day_of.values()))
+    first_days = set(all_days[: (len(all_days) + 1) // 2])
+    path_of = {r["mint"]: r.get("path") for r in organised if r["rets"]}
+
+    def exit_rows(mints: list[str]) -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for name, rule in EXITS.items():
+            vals = [(exit_return(path_of[m], rule), m) for m in mints if path_of.get(m) is not None]
+            rets = [v for v, _ in vals]
+            out[name] = {"n": len(rets), "ret": _mean(rets), "med": round(median(rets), 2) if rets else None,
+                         "win": round(sum(v > fee_pct for v in rets) / len(rets), 3) if rets else None,
+                         "first_half": _mean([v for v, m in vals if day_of[m] in first_days]),
+                         "second_half": _mean([v for v, m in vals if day_of[m] not in first_days])}  # fmt: skip
+        return out
+
     by: dict[str, list[dict]] = {}
     for key, (label, names) in LINK_SPLITS.items():
         groups: dict[str, list] = {}
@@ -186,10 +258,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
             by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
     crossed = None
     if cross:
-        day_of = {r["mint"]: r["day"] for r in organised}
         ts_at = {r["mint"]: r["ts"] for r in organised}
-        all_days = sorted(set(day_of.values()))
-        first_days = set(all_days[: (len(all_days) + 1) // 2])
         numeric = SPLITS | {"block_sol": BLOCK_SOL}
 
         def label(key: str, item: tuple) -> str:
@@ -218,7 +287,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 if it[1]["rets"]:
                     halves[day_of[it[0].mint] not in first_days].append(it[1]["rets"][hl])
             crossed.append({"cell": row.pop("mark"), **row, "first_half": _mean(halves[0]), "first_half_n": len(halves[0]),
-                            "second_half": _mean(halves[1]), "second_half_n": len(halves[1])})  # fmt: skip
+                            "second_half": _mean(halves[1]), "second_half_n": len(halves[1]),
+                            **({"exits": exit_rows([it[0].mint for it in group])} if exits else {})})  # fmt: skip
         worst = lambda c: min(c["first_half"] if c["first_half"] is not None else -1e9,
                               c["second_half"] if c["second_half"] is not None else -1e9)  # fmt: skip
         crossed.sort(key=lambda c: (-worst(c), c["cell"]))
@@ -239,6 +309,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
             "all": {"launches": n, "reached_30": round(stats.get("reached_30", 0) / n, 3) if n else None,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},
             "by": by, "by_day": by_day, **({"cross": crossed, "cross_keys": list(cross)} if cross else {}),
+            **({"exits": exit_rows([r["mint"] for r in organised])} if exits else {}),
             "order_breaks": round(stats.get("breaks", 0) / stats["checked"], 4) if stats.get("checked") else None}  # fmt: skip
 
 

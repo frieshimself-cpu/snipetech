@@ -235,3 +235,44 @@ def test_features_are_crossed_and_each_cell_is_shown_for_each_half_of_the_days(t
         assert "cross" not in history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
     finally:
         st.close()
+
+
+def test_an_exit_rule_is_walked_along_a_launchs_price_path():
+    """Most bundled launches lose a little and a few run far (30 days, 10 Nov: the mean is +5 %, the median -3 %), so
+    the exit decides the result. The scan keeps each launch's price at the end of every block after the entry, as a
+    ratio to the entry price; a rule is walked along it at table time."""
+    from snipetech.analysis.history_scan import exit_return
+
+    path = [[1, 1.05], [3, 0.95], [10, 1.40], [30, 1.90], [80, 1.30], [200, 0.60], [900, 0.20]]
+    assert exit_return(path, {"slots": 13}) == 40.0  # time only: the price at the last block inside the time
+    assert exit_return(path, {"slots": 2}) == 5.0
+    assert round(exit_return(path, {"slots": 1500}), 6) == -80.0
+    assert round(exit_return(path, {"stop": 0.10, "slots": 1500}), 6) == -40.0  # the stop is seen a block late
+    assert round(exit_return(path, {"stop": 0.03, "slots": 1500}), 6) == -5.0  # out at the block that closed under it
+    assert round(exit_return(path, {"take": 0.5, "slots": 1500}), 6) == 90.0  # the block closed at +90 %, not at +50 %
+    assert round(exit_return(path, {"trail": 0.25, "slots": 1500}), 6) == 30.0  # 25 % under the high of 1.90
+    assert (
+        round(exit_return(path, {"stop": 0.5, "trail": 0.5, "slots": 100}), 6) == 30.0
+    )  # nothing hit: the time ends it
+    assert exit_return([], {"slots": 150}) == 0.0  # nobody traded after the entry: in and out at one price
+
+
+def test_the_scan_keeps_each_organised_launchs_path_and_the_table_scores_exit_rules_on_it(tmp_path):
+    st = Store(":memory:")
+    try:
+        st.put_token_meta("WEBcoin", "u", True, {"website": "https://web.io", "x_kind": "profile", "telegram": ""})
+        st.put_token_meta("RUGcoin", "u", True, {"website": "", "x_kind": "tweet", "telegram": ""})
+        stats: dict = {}
+        recs = {r["mint"]: r for r in scan_files(_two_hours(tmp_path), min_block_sol=15, stats=stats)}
+        web, rug = recs["WEBcoin"]["path"], recs["RUGcoin"]["path"]
+        assert web[0][0] == 59 and web[0][1] > 1.5  # the crowd's buy, 59 blocks after the entry block
+        assert rug[0][0] == 39 and rug[0][1] < 0.6  # the team's dump
+        out = history_table(list(recs.values()), st.token_meta, min_block_sol=15, stats=stats, cross=("website",),
+                            min_cell=1, exits=True)  # fmt: skip
+        cells = {c["cell"]: c for c in out["cross"]}
+        yes, no = cells["website=yes"]["exits"], cells["website=no"]["exits"]
+        assert yes["t60s"]["ret"] > 50 and no["t60s"]["ret"] < -40 and no["stop15_t10m"]["ret"] < -40
+        assert set(yes) == set(out["exits"]) and out["exits"]["t60s"]["n"] == 2
+        assert "first_half" in yes["t60s"] and "win" in yes["t60s"]
+    finally:
+        st.close()
