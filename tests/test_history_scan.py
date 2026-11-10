@@ -31,6 +31,7 @@ class Coin:
             "action": action, "user_wallet": user, "lamports_amount": lamports, "virtual_token_reserve": self.vt,
             "virtual_lamports_reserve": self.vs, "real_lamports_reserve": self.vs - V0_SOL,
             "name": more.get("name"), "symbol": more.get("symbol"), "uri": more.get("uri"), "lamports_mint": self.quote,
+            "fee_lamports": more.get("fee", lamports // 100 if lamports else None),
         })  # fmt: skip
 
     def buy(self, user, sol, off):
@@ -43,7 +44,8 @@ class Coin:
     def sell(self, user, tokens, off):
         s = self.vs * tokens // (self.vt + tokens)
         self.vs, self.vt = self.vs - s, self.vt + tokens
-        self._row("swap", self.slot0 + off, user, "sell", s)
+        fee = s // 100  # the vendor's sell amount is what the seller got: the reserves fall by amount + fee
+        self._row("swap", self.slot0 + off, user, "sell", s - fee, fee=fee)
 
 
 def _write(path: Path, rows: list[dict]) -> Path:
@@ -111,5 +113,34 @@ def test_the_table_says_how_organised_launches_did_with_and_without_a_website_an
             and day["no_website_ret_150"] < -40
         )
         assert out["order_breaks"] == 0.0  # the rows were in chain order: each trade's reserves follow the one before
+    finally:
+        st.close()
+
+
+def test_a_launch_whose_bundle_bought_the_whole_curve_is_counted_apart_not_scored(tmp_path):
+    """5-9 Oct on the bought files: the median organised launch showed exactly 0 % a minute later. Those are coins
+    whose own bundle fills the curve in the create block (85 SOL): there is nothing left to buy a block later, a
+    sniper's buy fails. They are counted (`bonded_at_once`) and left out of every row."""
+    rows: list[dict] = []
+    full = Coin(rows, "FULLcoin", "dev-full", S0 + 100)
+    full.buy("dev-full", 5.0, 0)
+    for i in range(4):
+        full.buy(f"full-team-{i}", 20.5, 0)  # 87 SOL in the create block: the curve is complete
+    part = Coin(rows, "PARTcoin", "dev-part", S0 + 200)
+    part.buy("dev-part", 1.0, 0)
+    for i in range(4):
+        part.buy(f"part-team-{i}", 8.0, 0)
+    part.buy("crowd", 10.0, 60)
+    part.buy("late", 1.0, 400)
+    path = _write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows)
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(scan_files([path], min_block_sol=15, stats=stats))
+        assert {r["mint"]: r["bonded_at_once"] for r in recs} == {"FULLcoin": True, "PARTcoin": False}
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
+        assert out["organised"] == 1 and out["bonded_at_once"] == 1
+        sol = {r["bucket"]: r["launches"] for r in out["by"]["block_sol"]}
+        assert sol == {"25-50": 1} and out["order_breaks"] == 0.0
     finally:
         st.close()
