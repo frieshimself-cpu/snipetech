@@ -120,6 +120,65 @@ So this bot is not a copier at all: it rides volume bursts in the same block as 
 pause. The lab's momentum rules were scored behind the 3rd buy after the trigger; at the place right behind the buy,
 with the bid charged, they have not been.
 
+## The paper test by place in the block and by bid (lab, 13:16-13:40 UTC)
+
+The rule "a tracked wallet's first buy of 1-3 SOL, with at least 2 known wallets in the coin", 1 SOL bought, sold 5 s
+later, 66.7 h of tape, the newest 40 % held out (800 trades, 30 an hour). SOL per trade after fees and the bid; "lower"
+is the 80 % lower bound.
+
+| place behind the trigger | bid per transaction | per trade | lower | wins |
+|---|---|---|---|---|
+| the next trade (+0) | 0.02 | +0.063 | +0.055 | 53 % |
+| one trade later (+1) | 0.02 | +0.018 | +0.010 | 44 % |
+| two later (+2) | 0.02 | -0.008 | -0.016 | 38 % |
+| three later (+3) | 0.02 | -0.015 | -0.022 | 36 % |
+| three or more, across blocks (+3x) | 0.02 | -0.039 | -0.045 | 28 % |
+| the next trade (+0) | 0.05 | +0.003 | -0.005 | 41 % |
+| the next trade (+0) | 0.10 | -0.097 | -0.105 | 28 % |
+
+The other rules fall the same way and sooner: the third known wallet is +0.052 at +0 and +0.005 at +1; any tracked
+wallet's 1-3 SOL buy is +0.039 at +0 and -0.009 at +1; a labelled KOL's buy is +0.084 at +0 (lower +0.028, wins 25 %)
+and +0.013 at +1.
+
+Read: the whole result is the one place right behind the buy, and it is worth about 0.05 SOL per transaction on a
+1 SOL trade. 6Z91's median bid is 0.033 SOL a buy (a quarter of its buys above 0.07). The bots already pay most of
+what the place is worth; a newcomer who outbids them hands the edge to the validators.
+
+## The owner's tracker is the tracked list, and a third of it is teams (13:35 UTC)
+
+The owner pasted the Axiom wallet tracker (2,630 wallets, `docs/inbox/2026-11-10-axiom-tracked-wallets.json`; "a lot
+of them I js track for fun or are friends"). 2,613 of them were already the server's 2,663 "tracked" wallets (loaded
+5 Nov), so every "known wallet" number above is this list. Read by name (`analysis/names.py`):
+
+- 1,626 different names: 1,357 wallets share a name with another, 682 sit in teams of five or more ("Faucet" 53,
+  "Aloh" 45, "Doji bundle" 37, "AtlasDrill" 26, "COMMUNITY ..." 17, "Crime" 16, "INSIDER" 16, "ORANGE TT" 15).
+- kinds by name: 1,681 traders, 223 snipers and bots, 219 devs, 159 insiders and cabals, 127 one coin's top traders
+  or holders, 71 faucets and exchanges, 62 bundles, 53 whales, 24 named KOLs, and 10 of the owner's own wallets.
+- The bot's own wallet (`6VFr...`, "Me") was in the tracked list: the labs counted our own buys as a known wallet's.
+  The ten own wallets are now kind `own` (no leader group). Five traders missing from the server were added.
+
+So "the second known wallet is in" is often the second wallet of one team's bundle, and the paper copy at +0 then sits
+between two wallets of a bundle, a place no bid buys. `copy-context --by-entity` counts a team as one known wallet,
+makes its first buy the one event and enters behind the team's back-to-back buys in the block; two new splits show
+the slots since the previous known wallet and the kind of name.
+
+## A fourth bot, `EjywYB...` (owner: "buys from KOLs' dev wallets after the dev sell ... not very profitable")
+
+`playbook`, 72 h: 586 coins, 0.22 SOL a buy, one sell of everything a median 5 slots (2 s) later, 79 % out within 6 s.
+53 % of its buys are in the same block as someone's buy, one trade behind it (net +2.2 SOL over 309 coins before
+bids). It sat behind 142 wallets; 30 % of its copies are behind one, `4EZyPz...` (131 of that wallet's 456 coins).
+Over the whole tape (5.7 days): 1,351 buys, 338.6 SOL in, 356.3 out, +17.7 SOL before about 0.002-0.004 SOL a
+transaction. The same play as the other three at a tenth of the size, near break-even: the owner's read is right.
+
+## The dev wallet `Bjr89z...` (owner: Jack Duval's dev wallet)
+
+`deployer`, the whole tape: 26 launches in three mornings (04:30-07:00 UTC, a minute apart), signed for 17 different
+creator wallets; 20 dead, 4 rinsed, 1 runner ("Coin", 44 SOL), 1 graduated (RM, creator `5JE1ij...`; 6 SOL in the curve
+a block after the create, 25 at 5 s, 66 at 5 min; 6Z91 bought 1.78 SOL in its create block). A 0.5 SOL snipe a block
+after every launch: +0.025 SOL a launch, 15 % wins, the newest ten lost, most of the profit one coin: MARGINAL. Both
+wallets are labelled `dev`. Two paying launches cannot tell RM from the nine "FAKE" coins at the create; OKTech's
+Web kind (follow the wallets a dev funds) is the feature for a dev who launches from fresh wallets.
+
 ## What this does not say yet
 
 - These are price changes for a copy too small to move the price. A 2 SOL buy in a coin holding 15 SOL pushes the price
