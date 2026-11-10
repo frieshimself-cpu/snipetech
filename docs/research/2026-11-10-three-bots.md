@@ -457,6 +457,65 @@ the link, and no X data source is connected. Other launchpads: the tape records 
 LaunchLab (127 LaunchLab coins in the last hour against 2,457 on pump.fun's curve); Meteora DBC (Believe, Bags) is not
 recorded, though OKTech snipes it. `launch-tools` scores pump.fun curves only: LaunchLab is the next venue for it.
 
+### The bought month on ordered rows: what survived (23:10 UTC)
+
+The scan over 5 Oct 08:00 - 9 Nov 2026 (856 hourly files, 1,244,675 launches), every file put in chain order first
+(`history_scan.Orderer`; the token-reserve chain breaks on 0.3 % of followed trades; `path_check`: 4 of 20,387
+launches differ between the table's minute and the same hold walked on the kept path, against 2,140 of 16,202
+before). 20,387 bundled launches (others put 15+ SOL in the create block and the curve could still be bought; 4,286
+more were bought out by their own bundle). A buy at the end of the block after the create, percent before 2.5 % of
+round-trip fees. **These replace every number in the three sections under the correction note below.**
+
+| split | launches | 5 s | 60 s | median 60 s | up after fees |
+|---|---|---|---|---|---|
+| every bundled launch | 20,387 | -1.1 | -6.5 | | |
+| website yes / no | 12,256 / 5,278 | -0.1 / -2.0 | -4.5 / -9.8 | -9.0 / -26.7 | 37 % / 33 % |
+| Telegram yes / no | 548 / 16,986 | +1.4 / -0.8 | +2.3 / -6.4 | 0.0 / -14.4 | 41 % / 35 % |
+| dev bought 0 | 7,245 | -2.1 | -10.0 | -35.2 | 30 % |
+| dev bought 0.5-1 SOL | 4,950 | +1.5 | -3.6 | -9.4 | 40 % |
+| dev bought 1-2 SOL | 1,904 | -1.0 | -2.5 | -7.2 | 41 % |
+| dev bought 2+ SOL | 1,946 | -3.4 | -12.7 | -20.2 | 27 % |
+| others' SOL 15-25 / 25-50 / 50+ | 15,344 / 3,474 / 1,569 | | -8.0 / -2.2 / -2.3 | -25.9 / 0 / 0 | 33 / 35 / 41 % |
+
+The website, the dev's own buy and the bundle's size each make a launch less bad; none makes it pay. The +5 % of
+"dev bought 0.5-2 SOL" and the website's +1.3 % were made by the corrupted paths.
+
+The record of a launch's create-block wallets on their earlier launches (split `team`, five or more earlier launches,
+walked in time order):
+
+| the team's earlier launches averaged | launches | bundle wallets | 60 s | median | up after fees | first / second half | one / three / eight blocks late |
+|---|---|---|---|---|---|---|---|
+| under -10 % | 4,590 | 12,783 | -22.2 | -51.1 | 23 % | -21.7 / -22.8 | -21.6 / -21.5 / -18.7 |
+| -10 to 0 % | 6,947 | 18,620 | -5.0 | -11.7 | 36 % | -5.1 / -4.7 | -4.7 / -5.1 / -3.8 |
+| 0 to +10 % | 1,380 | 5,717 | +1.9 | -2.0 | 45 % | +1.2 / +2.9 | +1.4 / +0.8 / -0.2 |
+| +10 to +25 % | 344 | 1,464 | +15.0 | +8.4 | 54 % | +18.4 / +9.2 | +13.2 / +12.2 / +10.0 |
+| over +25 % | 107 | 497 | +3.7 | -1.8 | 47 % | +10.6 / -8.2 | +4.5 / +2.1 / +1.5 |
+| no record | 7,019 | 42,358 | -0.8 | 0.0 | 36 % | -1.6 / 0.0 | -1.4 / -2.0 / -2.7 |
+
+On the days never used to find anything (4-9 Nov, `--show-from 2026-11-04`, 3,696 launches): under -10 %: -23.5 %
+(953); -10 to 0: -3.0 % (918); 0 to +10: +6.5 % (228); +10 to +25: -1.7 % (35); over +25: -7.0 % (21); no record
+-1.1 % (1,541). From 23 Oct on (9,605 launches): +10 to +25: +9.2 % (128; halves +14.4 / -1.9); over +25: -8.2 % (39).
+
+Read:
+
+1. **A team with a bad record keeps losing**: -22 to -24 % a minute later in every period, the unseen days included,
+   4,590 launches. It is the one result here that is fully confirmed, and it is a filter: no launch rule should buy
+   those, and they are a quarter of all bundled launches.
+2. **A team with a good record is not confirmed.** +15 % over the 36 days with a positive median and little lost when
+   the buy lands late (eight blocks late still +10 %), but +9 % from 23 Oct on, and -2 % on the 35 launches of the
+   unseen days. The top row ("over +25 %") does worse than the row under it and turns negative late in the period:
+   a mean of a few earlier launches is carried by one lucky runner and falls back. 451 launches in 36 days is 12 a
+   day, 56 on the unseen days: too few to call.
+3. **The rule OKTech can run natively does not work** (split `hunt`: any create-block wallet on a list rebuilt once a
+   day, 1,167 wallets): -1.6 % against -7.1 % for the rest. The pooled, minute-fresh team record carries the signal;
+   one listed wallet among strangers does not.
+4. **Hold times**: for the +10 to +25 % row the mean climbs to a minute (+4 at 5 s, +9 at 20 s, +12 at 30 s, +15 at
+   60 s) and the median peaks at 40-60 s (+8 %); at four minutes the median is -57 %. For bad teams the fall is over in
+   30 seconds.
+
+Next: a steadier team score (earlier returns clipped, and pulled toward the average when there are few), judged week
+by week; the copy check re-read on ordered rows (running); and more months only if a score holds.
+
 > **Correction, 22:10 UTC, for the three sections that follow** (the bought month; copying on it; the team record).
 > Their numbers were read with a wrong assumption of mine: that every hourly file holds a coin's trades in block
 > order. Some October files do not. `path_check` (the table's one-minute return against the same hold walked along the
@@ -464,8 +523,8 @@ recorded, though OKTech snipes it. `launch-tools` scores pump.fun curves only: L
 > sections are inflated by such launches (one read +834 % where the path says +17 %), the medians less. Since ea30e46
 > every file is put in chain order first (`history_scan.Orderer`: by block, then by the token reserves inside a
 > block; across blocks it agrees with our tape on 100 % of neighbouring trades). The scan over 5 Oct - 9 Nov and the
-> follow run are being read again on ordered rows; until their tables replace these, take the direction of each
-> result (which rows are better than which) and not its size.
+> follow run were read again on ordered rows: the section above holds the scan's ordered tables. The three sections
+> below are kept as the record of what was said at the time; their numbers are superseded.
 
 ### The same question on a bought month: the website helps, the dev's own buy helps more (20:40 UTC)
 

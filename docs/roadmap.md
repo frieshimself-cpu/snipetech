@@ -6,6 +6,20 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 10 Nov, 23:10 UTC: the month re-read on ordered rows; one thing confirmed, nothing ready to trade
+
+- **Nothing is profitable live and nothing is ready for a live test.** On ordered rows (36 days, 20,387 bundled
+  launches, the last six never used to find anything) a buy a block after the create loses 6.5 % a minute later
+  before fees. A website, the dev's own buy and a bigger bundle make it less bad; none makes it pay.
+- **Confirmed:** a bundle team whose earlier launches averaged under -10 % loses 22-24 % on its next ones, in every
+  period (4,590 launches). A filter for any launch rule.
+- **Not confirmed:** a team with a +10 to +25 % record made +15 % over the 36 days (344 launches, positive median,
+  robust to a late landing), +9 % in the last 18 days and -2 % on the 35 launches of the unseen days. The mean of a
+  few earlier launches is too jumpy a score; a steadier one is next.
+- **OKTech's native wallet-list rule (Hunt, known wallets) does not carry it**; a team rule needs our own trigger.
+- **Copying** is being re-read on ordered rows (inside-block places now come from the token-reserve chain).
+- Tables: [research/2026-11-10-three-bots.md](research/2026-11-10-three-bots.md), "The bought month on ordered rows".
+
 ## 10 Nov, 22:10 UTC: the month's first numbers were read from unordered files; they are being re-read
 
 - **Nothing is profitable live, and nothing from the bought month is a result yet.** Tonight's tables (website rule,
