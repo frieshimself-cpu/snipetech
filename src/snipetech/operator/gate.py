@@ -148,6 +148,26 @@ def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_
     return f"analysis due: every {every:g} h, the last one {(now - last) / 3600:.1f} h ago"
 
 
+CADENCE_PREFIX = "analysis due: every"
+QUIET_MAX_SECS = 3 * 3600  # a long research job never silences the cadence for longer than this
+
+
+def nothing_for_the_cadence(snap, paths: OperatorPaths, now: float, new_trips: int) -> bool:
+    """A cadence analysis with nothing to read and nothing to start (10 Nov: one every 30 minutes at about a dollar,
+    and turn after turn said "the lab is still running, the next turn reads it"): a research job is running, none has
+    ended since the last analysis, no live round trip is new, and the last analysis is under `QUIET_MAX_SECS` old. With
+    no research running the turn is due: it starts the next test."""
+    from .snapshot import _read_metas
+
+    last = last_analyst_ts(paths, now)
+    if last is None or now - last >= QUIET_MAX_SECS - CADENCE_SLACK_SECS or int(new_trips or 0) > 0:
+        return False
+    if not any(loop_stage(j.get("argv")) is None for j in snap.jobs_running or []):
+        return False
+    return not any(loop_stage(m.get("argv")) is None and not m.get("running") and float(m.get("ended") or 0) >= last
+                   for m in _read_metas(paths.jobs))  # fmt: skip
+
+
 def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_today: float = 0.0) -> bool:
     return analyst_reason(paths, now, cfg, spent_today) is not None
 
@@ -198,7 +218,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     OKTech unknown, tape stale, service down, a loop stage failing) call when they appear and then at most once per
     `refire_secs`. A loop stage that ended cleanly is neither. `new_trips` live round trips since the last post-mortem
     (from `trips_since`) start an analyst turn as a post-mortem (mode "postmortem") when `postmortem_due`; the daily
-    analysis reviews them itself. The day's cap is the owner's /budget when set, else the config's daily_usd."""
+    analysis reviews them itself. An analysis by the cadence waits while it has nothing to read or start
+    (`nothing_for_the_cadence`). The day's cap is the owner's /budget when set, else the config's daily_usd."""
     if snap.spent_today >= effective_daily_usd(cfg, paths):
         return Decision(False, "none", ["budget"])
     events: list[str] = []
@@ -274,6 +295,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     reasons = events + fresh_states
     trips = _trips_line(new_trips, trips_since, now) if new_trips else None
     why = analyst_reason(paths, now, cfg, snap.spent_today)
+    if why and why.startswith(CADENCE_PREFIX) and nothing_for_the_cadence(snap, paths, now, new_trips):
+        why = None
     if why:
         return Decision(True, "analyst", reasons + [why] + ([f"post-mortem: {trips}"] if trips else []), state_keys)
     if trips and postmortem_due(paths, now, new_trips, cfg, snap.spent_today):

@@ -539,3 +539,49 @@ def test_the_cadence_allows_for_the_rounds_own_timing(paths):
     assert _at(paths, AT_0630 + 2 * 3600 - 15).mode == "analyst"
     assert _at(paths, AT_0630 + 2 * 3600 - CADENCE_SLACK_SECS - 60).mode == "none"
     assert 60 <= CADENCE_SLACK_SECS < 15 * 60  # never a whole round early
+
+
+# -- a cadence analysis needs something to read or something to start -----------------------------------------------
+
+
+def _job(paths, jid, argv, *, ended=None):
+    paths.jobs.mkdir(parents=True, exist_ok=True)
+    meta = {"id": jid, "argv": argv, "started": AT_0630 - 60, "running": ended is None, "ended": ended,
+            "exit_code": None if ended is None else 0}  # fmt: skip
+    (paths.jobs / f"{jid}.json").write_text(json.dumps(meta))
+    return {"id": jid, "argv": argv, "started": meta["started"]}
+
+
+def test_a_cadence_analysis_waits_while_research_runs_and_nothing_new_ended(paths):
+    """10 Nov: an analysis every 30 minutes at about a dollar each, and turn after turn said "the lab is still
+    running, the next turn reads it" (46 turns, 19.67 $ by 15:30). With a research job running, no research job ended
+    and no live trade since the last analysis, the cadence turn has nothing to read and nothing to start."""
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    lab = _job(paths, "lab-1", ["lab", "--hours", "72"])
+    due = AT_0630 + 2 * 3600
+    assert _at(paths, due, jobs_running=[lab]).mode == "none"
+    assert _at(paths, due).mode == "analyst"  # nothing running: the turn starts the next test
+    _job(paths, "measure-1", ["measure", "run"], ended=due - 60)  # a loop stage ending is not research
+    assert _at(paths, due, jobs_running=[lab]).mode == "none"
+    _job(paths, "study-1", ["study", "W"], ended=AT_0630 - 60)  # ended before the last analysis: already read
+    assert _at(paths, due, jobs_running=[lab]).mode == "none"
+    _job(paths, "study-2", ["study", "W"], ended=due - 60)
+    d = _at(paths, due, jobs_running=[lab])
+    assert d.mode == "analyst" and d.reasons == ["analysis due: every 2 h, the last one 2.0 h ago"]
+
+
+def test_new_live_trades_or_three_quiet_hours_still_bring_the_analysis(paths):
+    from snipetech.operator.gate import mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    lab = _job(paths, "lab-1", ["lab", "--hours", "72"])
+    due = AT_0630 + 2 * 3600
+    quiet = snap(ts=due, tape_last_ts=due - 5, jobs_running=[lab])
+    assert decide(quiet, snap(), due, CFG, paths, new_trips=2, trips_since=AT_0630).mode == "analyst"
+    later = AT_0630 + 3 * 3600
+    assert _at(paths, later - 600, jobs_running=[lab]).mode == "none"
+    assert _at(paths, later, jobs_running=[lab]).mode == "analyst"  # a long job never silences it for good

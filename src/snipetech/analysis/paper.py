@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -259,6 +260,36 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
     return live
 
 
+# 10 Nov: 35 frozen strategies were scored every hour, most of them long decided (one at -0.05 SOL a trade after 14,670
+# trades in a day, several exact twins). A strategy is refuted once it has this many trades in its record and its mean
+# is below zero by this many standard errors; it keeps its record and its place in the report, and is not scored again.
+REFUTE_MIN_TRADES = 300
+REFUTE_SIGMAS = 3.0
+
+
+def retire_refuted(store: Store, strategies: list[dict], now: float) -> tuple[list[dict], list[str]]:
+    """(the strategies still worth scoring, the ids refuted by this call). A refuted strategy is marked in the frozen
+    list (`refuted`: when, on how many trades, at what mean) and left out from then on."""
+    kept: list[dict] = []
+    marks: dict[str, dict] = {}
+    for s in strategies:
+        if s.get("refuted"):
+            continue
+        rows, _ = record(store, s)
+        pnl = np.array([r["pnl"] for r in rows], dtype=np.float64)
+        if len(pnl) >= REFUTE_MIN_TRADES:
+            mean = float(pnl.mean())
+            if mean + REFUTE_SIGMAS * float(pnl.std(ddof=1)) / math.sqrt(len(pnl)) < 0:
+                marks[s["id"]] = {"at": int(now), "trades": len(pnl), "mean_sol": round(mean, 5)}
+                continue
+        kept.append(s)
+    if marks:
+        cov = store.coverage("paper_strategies")
+        frozen = [x | {"refuted": marks[x["id"]]} if x.get("id") in marks else x for x in cov.get("strategies", [])]
+        store.set_coverage("paper_strategies", cov | {"strategies": frozen})
+    return kept, sorted(marks)
+
+
 def live_id(strategy: dict) -> str:
     """The id of a frozen strategy as OKTech runs it: its strategy_id with the exit's watch delay left out. OKTech's
     sniper reads no watch delay (oktech.strategy_sniper), so a launch-type rule frozen before 7 Nov evening (no delay)
@@ -353,11 +384,14 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     copy_pos = copy_landing(store, cfg, now)
     state = store.coverage("paper")
     strategies = to_live_landing(store, strategies, copy_pos, state.get("done_until"), now)
+    strategies, retired = retire_refuted(store, strategies, now)
+    if not strategies:
+        return {"new_trades": 0, "retired": retired, "note": "every frozen strategy is refuted: freeze new ones"}
     tag_venues(store)  # the rows scored before the venue knob, once: each new row is tagged as it is written
     since = max(int(state.get("done_until", 0)), min(s["from_ts"] for s in strategies))
     until = int(now - SETTLE_SECS)
     if until <= since:
-        return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos)}
+        return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos), "retired": retired}
     kols = label_groups(store)
     unscored = {  # a MIG strategy whose exit holds past MIG_MAX_HOLD_SECS: the lab never scored one, nor does this
         s["id"]: MIG_CAP for s in strategies
@@ -448,7 +482,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
     codes = sorted({c for why in skipped.values() for c in why})
     return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
-            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}}  # fmt: skip
+            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}, "retired": retired}  # fmt: skip
 
 
 def _stats(store: Store, strategy: dict, conf: float, samples: int) -> tuple[np.ndarray, dict, int]:
