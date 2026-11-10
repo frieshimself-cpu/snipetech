@@ -346,3 +346,47 @@ def test_a_late_entry_and_how_many_teams_stand_behind_a_row_are_shown(tmp_path):
         assert out["exits"]["late3_t60s"]["ret"] == out["exits"]["t60s"]["ret"]  # nothing traded in the first blocks
     finally:
         st.close()
+
+
+def test_a_stop_or_a_take_fills_a_block_after_it_is_seen_and_rows_can_start_at_a_later_day(tmp_path):
+    """A stop or a take is seen at a block's close and the sell lands in the next block: the fill is the next block's
+    close when the coin traded in it (or the one after), else the price it was seen at. And a rule found on a month
+    is judged on later days only: the team records still come from every launch, the rows from `show_from` on."""
+    from snipetech.analysis.history_scan import exit_return
+
+    path = [[1, 1.10], [2, 1.60], [3, 1.30], [50, 0.70], [200, 0.40]]
+    assert exit_return(path, {"take": 0.5, "slots": 150}) == 30.0  # seen at 1.60, filled a block later at 1.30
+    assert (
+        exit_return(path, {"stop": 0.2, "slots": 150}) == -30.0
+    )  # seen at 0.70; the coin did not trade in the next blocks
+    assert exit_return(path, {"take": 0.5, "slots": 150, "fill": 0}) == 60.0  # the old reading, for comparison
+
+    rows1: list[dict] = []
+    for i in range(4):
+        good = Coin(rows1, f"GOOD{i}", f"gdev{i}", S0 + 100 + 1000 * i)
+        for k in range(4):
+            good.buy(f"good-team-{k}", 4.0, 0)
+        good.buy("crowd", 20.0, 60)
+        good.buy("late", 0.1, 400)
+    rows2: list[dict] = []
+    later = Coin(rows2, "GOOD9", "gdev9", S0 + 216_000 + 100)  # a day of slots later
+    for k in range(4):
+        later.buy(f"good-team-{k}", 4.0, 0)
+    later.buy("crowd", 20.0, 60)
+    later.buy("late", 0.1, 400)
+    paths = [
+        _write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows1),
+        _write(tmp_path / "pump_fun_2026-10-28_00.parquet", rows2),
+    ]
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(scan_files(paths, min_block_sol=15, stats=stats))
+        day2 = max(r["day"] for r in recs)
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2, show_from=day2)
+        assert out["organised"] == 1 and out["show_from"] == day2
+        assert [(r["bucket"], r["launches"]) for r in out["by"]["team"]] == [
+            ("25+", 1)
+        ]  # its record is the day before's
+    finally:
+        st.close()

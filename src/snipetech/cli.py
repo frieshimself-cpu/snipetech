@@ -866,6 +866,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
                     "block_wallets, block_sol, dev_sol, team, x_badge, x_followers, x_age); each cell is shown per half of the days")
     sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
+    sp.add_argument("--show-from", help="scan/table: rows hold only launches of this day (YYYY-MM-DD) and later; team "
+                    "records still use every launch")  # fmt: skip
     sp.add_argument("--team-min-prior", type=int, default=5, help="scan/table: earlier launches a bundle wallet needs "
                     "for a launch to get its team's record (the split `team`)")  # fmt: skip
     sp.add_argument("--exits", action="store_true", help="scan/table: score the exit rules (time, stop, take, trail) on "
@@ -1776,7 +1778,7 @@ def _history(args, cfg: Config) -> int:
             accounts = store.x_accounts(handles)
             out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats,
                                 x_of=accounts.get if accounts else None, min_cell=args.min_cell, exits=args.exits,
-                                team_min_prior=args.team_min_prior,
+                                team_min_prior=args.team_min_prior, show_from=args.show_from,
                                 cross=tuple(k for k in (args.cross or "").split(",") if k) or None)  # fmt: skip
         finally:
             store.close()

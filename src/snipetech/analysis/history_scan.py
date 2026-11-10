@@ -62,6 +62,7 @@ EXITS: dict[str, dict[str, float]] = {
 TRACK_SLOTS = 54_000  # six hours: how long a launch's peak is followed
 HORIZONS = (13, 150)
 BONDED_SOL = 84.0  # the curve is complete: nothing left to buy on it
+FILL_BLOCKS = 2  # a triggered sell lands within this many blocks
 TEAM_KEPT = 16  # create-block buyers kept per launch
 # a launch's bundle wallets' record before it: the mean a-minute-later return of their earlier launches, in percent
 TEAM = ((-10.0, 0.0, 10.0, 25.0), ("<-10", "-10-0", "0-10", "10-25", "25+"))
@@ -112,11 +113,13 @@ def _path(st: dict) -> list[list[float]]:
 def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
     """What a buy at the entry price returns in percent (before fees) when it is sold by `rule`: at the first block
     that closes `stop` under the entry, `take` above it or `trail` under the highest close so far, else at the last
-    close inside `slots`. The price is the block's close: a stop is filled where the block ended, not at its level."""
+    close inside `slots`. A stop, take or trail is seen at a block's close and sold in the next block: the fill is the
+    close of the next block the coin traded in when that is within `FILL_BLOCKS` (`fill`: 0 turns that off), else the
+    close it was seen at. `enter`: the buy lands that many blocks after the entry block, at that block's close."""
     limit, stop, take, trail = rule.get("slots", WINDOW_SLOTS), rule.get("stop"), rule.get("take"), rule.get("trail")
-    late = rule.get("enter", 0)  # the buy lands this many blocks after the entry block, at that block's close
+    late, fill = rule.get("enter", 0), rule.get("fill", 1)
     entry = peak = last = 1.0
-    for d, r in path:
+    for i, (d, r) in enumerate(path):
         if d <= late:
             entry = r
             continue
@@ -125,6 +128,8 @@ def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
         r = r / entry
         last, peak = r, max(peak, r)
         if (stop and r <= 1 - stop) or (take and r >= 1 + take) or (trail and r <= peak * (1 - trail)):
+            if fill and i + 1 < len(path) and path[i + 1][0] - d <= FILL_BLOCKS:
+                last = path[i + 1][1] / entry
             break
     return round((last - 1.0) * 100.0, 4)
 
@@ -245,7 +250,8 @@ def _mean(vals: list[float]) -> float | None:
 def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *, min_block_sol: float,
                   stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
                   x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
-                  min_cell: int = 50, exits: bool = False, team_min_prior: int = 5) -> dict[str, Any]:  # fmt: skip
+                  min_cell: int = 50, exits: bool = False, team_min_prior: int = 5,
+                  show_from: str | None = None) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
@@ -255,8 +261,12 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     one half only is luck. `exits` scores every rule of `EXITS` on the launches' kept paths, for all organised launches
     and for each crossed cell: mean and median return before fees, the share above the fees, and the mean on each half
     of the days. The split "team" is the record the launch's bundle wallets had before it (`team_records`, from every
-    launch in `records`; `team_min_prior` earlier launches or more)."""
+    launch in `records`; `team_min_prior` earlier launches or more). `show_from` (a day) keeps only the launches of
+    that day and later in every row, with the team records still built from all of `records`: a rule found on a month
+    judged on the days after it."""
     bundled = [r for r in records if r["block_sol"] >= min_block_sol]
+    if show_from:
+        bundled = [r for r in bundled if r["day"] >= show_from]
     organised = [r for r in bundled if not r.get("bonded_at_once")]  # a curve its own bundle filled cannot be bought
     items = [(SimpleNamespace(mint=r["mint"], symbol=r["symbol"], creator=r["creator"], user=r["creator"]),
               {"traded": True, "peak": r["peak_sol"], "rets": r["rets"], "block_sol": r["block_sol"],
@@ -368,6 +378,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                "unknown": len(d.get("unknown", []))} for day, d in sorted(days.items())]  # fmt: skip
     n, scored = stats.get("launches", 0), stats.get("scored", 0)
     return {"files": stats.get("files", 0), "launches": n, "organised": len(organised), "min_block_sol": min_block_sol,
+            "show_from": show_from,
             "bonded_at_once": len(bundled) - len(organised),
             "all": {"launches": n, "reached_30": round(stats.get("reached_30", 0) / n, 3) if n else None,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},
