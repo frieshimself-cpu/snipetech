@@ -305,6 +305,14 @@ def test_a_launch_is_sorted_by_how_its_bundle_wallets_earlier_launches_did(tmp_p
         team = {r["bucket"]: r for r in out["by"]["team"]}
         assert team["no record"]["launches"] == 4  # each team's first two launches: fewer than two before them
         assert team["25+"]["launches"] == 2 and team["25+"]["ret_150"] > 50  # the good team's third and fourth
+        assert team["25+"]["top_wallets"][0] == ["good-team-0", 2]  # who stands behind the row, commonest first
+        picked = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2,
+                               wallets=("good-team-1", "nobody"))  # fmt: skip
+        hand = {r["bucket"]: r for r in picked["by"]["wallets"]}  # a hand-picked list: what a Hunt sniper is given
+        assert (
+            hand["picked"]["launches"] == 4 and hand["picked"]["ret_150"] > 50 and hand["not picked"]["launches"] == 4
+        )
+        assert [w["launches"] for w in hand["picked"]["weeks"]] == [4]
         weeks = team["25+"]["weeks"]  # each row week by week: a row is believed when it pays in every one
         assert [w["launches"] for w in weeks] == [2] and weeks[0]["ret"] > 50 and len(weeks[0]["week"]) == 10
         assert team["<-10"]["launches"] == 2 and team["<-10"]["ret_150"] < -40  # the dumping team's third and fourth

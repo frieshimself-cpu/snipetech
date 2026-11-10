@@ -78,6 +78,7 @@ HORIZONS = (13, 150)
 BONDED_SOL = 84.0  # the curve is complete: nothing left to buy on it
 FILL_BLOCKS = 2  # a triggered sell lands within this many blocks
 TEAM_KEPT = 16  # create-block buyers kept per launch
+TOP_WALLETS = 12  # a row's commonest bundle wallets shown
 # a launch's bundle wallets' record before it: the mean a-minute-later return of their earlier launches, in percent
 TEAM = ((-10.0, 0.0, 10.0, 25.0), ("<-10", "-10-0", "0-10", "10-25", "25+"))
 TEAM_KNOWN_SECS = 60  # a launch's outcome counts for later launches once its minute has passed
@@ -408,7 +409,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                   x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
                   min_cell: int = 50, exits: bool = False, team_min_prior: int = 5,
                   show_from: str | None = None, team_clip: float | None = None,
-                  team_shrink: float = 0.0) -> dict[str, Any]:  # fmt: skip
+                  team_shrink: float = 0.0, wallets: tuple[str, ...] = ()) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
@@ -486,18 +487,38 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     first_day = date.fromisoformat(all_days[0]) if all_days else None
     week_of = {r["mint"]: (first_day + timedelta(days=(date.fromisoformat(r["day"]) - first_day).days // 7 * 7)).isoformat()
                for r in organised}  # fmt: skip
-    for row in by["team"]:  # many teams or one crew: the row's distinct bundle wallets and its commonest wallet's share
+
+    def who_and_when(row: dict, group: list) -> None:
+        """Many teams or one crew (the row's distinct bundle wallets, the commonest ones and the commonest one's
+        share of its launches), and the row week by week."""
         counts: dict[str, int] = {}
-        for item in groups[row["bucket"]]:
+        by_week: dict[str, list[float]] = {}
+        for item in group:
             for user in users_of[item[0].mint]:
                 counts[user] = counts.get(user, 0) + 1
-        row["team_wallets"] = len(counts)
-        row["top_wallet_share"] = round(max(counts.values()) / row["launches"], 3) if counts else None
-        by_week: dict[str, list[float]] = {}
-        for item in groups[row["bucket"]]:
             if item[1]["rets"]:
                 by_week.setdefault(week_of[item[0].mint], []).append(item[1]["rets"][max(horizons)])
-        row["weeks"] = [{"week": w, "launches": len(v), "ret": _mean(v)} for w, v in sorted(by_week.items())]
+        top = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[:TOP_WALLETS]
+        row["team_wallets"] = len(counts)
+        row["top_wallet_share"] = round(top[0][1] / row["launches"], 3) if top else None
+        row["top_wallets"] = [[w, n] for w, n in top]
+        row["weeks"] = [{"week": w, "launches": len(v), "ret": _mean(v),
+                         "med": round(median(v), 2), "win": round(sum(x > fee_pct for x in v) / len(v), 3)}
+                        for w, v in sorted(by_week.items())]  # fmt: skip
+
+    for row in by["team"]:
+        who_and_when(row, groups[row["bucket"]])
+    if wallets:  # a hand-picked list, as a Hunt sniper is given one: launches with one of these wallets in the block
+        chosen = set(wallets)
+        groups_w: dict[str, list] = {}
+        for item in items:
+            groups_w.setdefault("picked" if chosen.intersection(users_of[item[0].mint]) else "not picked", []).append(
+                item
+            )
+        by["wallets"] = [{"bucket": r.pop("mark"), **r}
+                         for r in (_row(n, groups_w[n], horizons, fee_pct) for n in ("picked", "not picked") if n in groups_w)]  # fmt: skip
+        for row in by["wallets"]:
+            who_and_when(row, groups_w[row["bucket"]])
     crossed = None
     if cross:
         ts_at = {r["mint"]: r["ts"] for r in organised}
@@ -513,6 +534,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 return team_of.get(mint, "no record")
             if key == "hunt":
                 return hunt_of.get(mint, "not listed")
+            if key == "wallets":
+                return "picked" if set(wallets).intersection(users_of[mint]) else "not picked"
             handle = xaccounts.handle_of(metas[mint])
             if not handle or x_of is None:
                 return "no account" if not handle else "unknown"

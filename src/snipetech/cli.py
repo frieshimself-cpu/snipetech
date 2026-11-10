@@ -866,6 +866,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
                     "block_wallets, block_sol, dev_sol, team, hunt, x_badge, x_followers, x_age); each cell is shown per half of the days")
     sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
+    sp.add_argument("--wallets", help="scan/table: comma-separated wallets; the split `wallets` is launches with one "
+                    "of them in the create block (a hand-picked Hunt list)")  # fmt: skip
     sp.add_argument("--team-clip", type=float, help="scan/table: cap each earlier return of a team at plus/minus this "
                     "many percent before it is averaged")  # fmt: skip
     sp.add_argument("--team-shrink", type=float, default=0.0, help="scan/table: pull a team's record toward the average "
@@ -1784,6 +1786,7 @@ def _history(args, cfg: Config) -> int:
                                 x_of=accounts.get if accounts else None, min_cell=args.min_cell, exits=args.exits,
                                 team_min_prior=args.team_min_prior, show_from=args.show_from,
                                 team_clip=args.team_clip, team_shrink=args.team_shrink,
+                                wallets=tuple(w for w in (args.wallets or "").split(",") if w),
                                 cross=tuple(k for k in (args.cross or "").split(",") if k) or None)  # fmt: skip
         finally:
             store.close()
