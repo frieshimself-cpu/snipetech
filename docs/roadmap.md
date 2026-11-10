@@ -15,6 +15,13 @@ first on the server's recording and only then run live in capped batches.
   copies land in the leader's block too (20 of 24 since 7 Nov, 0.3 trades behind): speed is not the gap. We tried
   0.2 SOL at a 0.003 SOL bid behind quiet scalpers; the paper tests scored KOL copies behind the 3rd buy after the
   leader's. Record: [research/2026-11-10-same-block.md](research/2026-11-10-same-block.md).
+- **12:30: three bots read off the chain, and the owner's splits scored** ([research/2026-11-10-three-bots.md](research/2026-11-10-three-bots.md)).
+  6Z91 and two more bots follow no wallet list: each buys 1-3 SOL right behind someone's 1-3 SOL buy, in the same
+  block, and sells on a 3-6 s timer in pieces (+380, +73 and +92 SOL in 72 h before bids). A copy right behind a
+  known wallet is worth +8 to +11 % at 5 s, before costs, when a second known wallet is already in the coin, the
+  coin has 60+ SOL of volume or 5+ minutes of age, or the followed buy is 1-3 SOL; behind the first known wallet in
+  a young, thin coin it is worth about nothing. Costs at 2 SOL are near 8-10 %, so only the combined good splits can
+  pay: that is the lab and forward-paper test now (I51).
 - **What is being tested, in order.** (1) A paid place right behind known wallets at 1-5 SOL with exits in seconds
   (idea I51, lab on 72 h, then forward paper; a live step needs the owner's yes). (2) The owner's splits with the new
   `copy-context` study: the second known wallet in, the coin's volume, its age, the hour, the buys later in the
