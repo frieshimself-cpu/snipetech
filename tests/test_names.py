@@ -74,3 +74,22 @@ def test_different_people_keep_different_entities():
 def test_a_nameless_wallet_is_its_own_entity():
     assert entity("", "Abc123") == "Abc123" and entity("...", "Xyz") == "Xyz" and entity("5", "W5") == "W5"
     assert entity("cand:Abc123", "Abc123") == "Abc123" and entity("found:YARSci", "YARSciFull") == "YARSciFull"
+
+
+def test_the_owners_own_wallets_can_be_named_without_being_leaders(tmp_path):
+    """10 Nov: the tracker export names the bot's own wallet "Me", and the server had it in the tracked list, so the
+    labs counted our own buys as a known wallet's. Kind `own` names a wallet and puts it in no leader group."""
+    from snipetech import cli
+    from snipetech.store import Store
+
+    from .synth import addr
+
+    db = tmp_path / "snipetech.db"
+    Store(db).close()
+    assert cli.main(["--db", str(db), "label", addr("mine"), "Me", "--kind", "wallet"]) == 0
+    assert cli.main(["--db", str(db), "label", addr("mine"), "Me", "--kind", "own"]) == 0
+    st = Store(db)
+    try:
+        assert st.labels("own") == {addr("mine"): "Me"} and addr("mine") not in st.labels("wallet")
+    finally:
+        st.close()

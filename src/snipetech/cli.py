@@ -411,7 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("label", "name an address (router, tip/fee destination, wallet, KOL) in reports and studies")
     sp.add_argument("address", nargs="?")
     sp.add_argument("name", nargs="?")
-    sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart", "dev"], default="service")
+    sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart", "dev", "own"], default="service")
     sp.add_argument(
         "--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)"
     )
