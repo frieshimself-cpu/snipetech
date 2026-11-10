@@ -836,6 +836,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-sol", type=float, default=0.5, help="the leader's smallest buy that counts")
     sp.add_argument("--groups", default="kol,wallet", help="label kinds whose wallets are leaders")
     sp.add_argument("--any-buyer", action="store_true", help="every wallet's buy of --min-sol is an event")
+    sp.add_argument("--by-entity", action="store_true", help="wallets whose tracker names share a team count as one "
+                    "known wallet, and the copy lands behind the team's back-to-back buys")  # fmt: skip
     sp.add_argument("--taken-by", default="", help="bots (comma-separated): each row gets the share of its buys one "
                     "of them followed in the same block")  # fmt: skip
     sp = cmd(
@@ -1887,7 +1889,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             out = copy_context(
                 svc.tape_store, time.time(), hours=args.hours, entry_slots=args.entry_slots, min_sol=args.min_sol,
-                behind_leader=args.behind_leader,
+                behind_leader=args.behind_leader, by_entity=args.by_entity,
                 any_buyer=args.any_buyer, taken_by=tuple(w.strip() for w in args.taken_by.split(",") if w.strip()),
                 horizons=tuple(int(h) for h in args.horizons.split(",") if h.strip()),
                 kinds=tuple(k.strip() for k in args.groups.split(",") if k.strip()),

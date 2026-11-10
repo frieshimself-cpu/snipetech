@@ -65,7 +65,7 @@ def test_events_are_also_grouped_by_the_coins_volume_age_hour_size_and_group():
         out = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5)
         assert set(out["by"]) == {"known_wallets_in", "volume_before_sol", "age", "hour_utc", "leader_buy_sol",
                                   "same_slot_followers_sol", "group", "curve_sol", "buyers_before",
-                                  "recent_volume_sol"}  # fmt: skip
+                                  "recent_volume_sol", "known_gap", "category"}  # fmt: skip
         vol = {r["bucket"]: r["n"] for r in out["by"]["volume_before_sol"]}
         assert vol == {"<5": 6}  # 0.5 SOL before kol1, 4.5 before kol2 (sells count as volume)
         assert {r["bucket"]: r["n"] for r in out["by"]["age"]} == {"<30 s": 6}
@@ -156,5 +156,62 @@ def test_any_wallets_buy_can_be_the_event_and_the_ones_a_bot_followed_are_marked
         curve = {r["bucket"]: r["n"] for r in out["by"]["curve_sol"]}
         assert curve["<5"] == 6 and sum(curve.values()) == 15  # 0.5 before kol1, 4.5 before the crowd's buy
         assert all(r["bucket"] != "bot" for r in out["by"]["group"])  # the bot's own buys are not events
+    finally:
+        st.close()
+
+
+def _bundle_coin(st, i):
+    """One team's two tracker wallets buy back to back in a block; a different trader buys five blocks later."""
+    m = Market(st, addr(f"bd-coin-{i}"), addr(f"bd-dev-{i}"), NOW - 3000 + i * 100, 80_000_000 + i * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("doji-a"), 1.0, 5)
+    m.buy(addr("doji-b"), 1.0, 5)
+    m.buy(addr("crowd"), 1.0, 6)
+    m.buy(addr("cupsey"), 2.0, 10)
+    m.buy(addr("whale"), 10.0, 20)
+    m.commit()
+
+
+def _bundle_store(n=3):
+    st = Store(":memory:")
+    st.set_label(addr("doji-a"), "Doji bundle", "wallet", "file")
+    st.set_label(addr("doji-b"), "Doji Bundle", "wallet", "file")
+    st.set_label(addr("cupsey"), "Cupsey Side 2", "wallet", "file")
+    for i in range(n):
+        _bundle_coin(st, i)
+    return st
+
+
+def test_one_teams_wallets_count_as_one_known_wallet_and_the_copy_lands_behind_its_bundle():
+    """10 Nov, the owner's tracker: 2,630 wallets are 1,626 names, 37 of them "Doji bundle". By address the bundle's
+    second wallet is "the second known wallet in" and the paper copy sits between two wallets of one bundle, a place
+    no bid buys. By entity the team is one known wallet, its buy one event, and the copy enters behind its last
+    back-to-back buy in the block."""
+    st = _bundle_store()
+    try:
+        kw = {"hours": 2, "horizons": (3, 12), "min_sol": 0.5, "behind_leader": True}
+        by_addr = copy_context(st, NOW, **kw)
+        by_team = copy_context(st, NOW, by_entity=True, **kw)
+        rows = lambda out: {r["bucket"]: r for r in out["by"]["known_wallets_in"]}
+        assert {b: r["n"] for b, r in rows(by_addr).items()} == {"1": 3, "2": 3, "3": 3}
+        assert {b: r["n"] for b, r in rows(by_team).items()} == {"1": 3, "2": 3} and by_team["by_entity"] is True
+        # by address the first wallet's copy enters before its own team's second buy; by team, after it
+        assert rows(by_addr)["1"]["ret_3"] > rows(by_team)["1"]["ret_3"] > 0
+        assert rows(by_team)["1"]["ret_3"] == rows(by_addr)["2"]["ret_3"]  # the same entry as behind the second wallet
+        assert rows(by_team)["2"]["ret_12"] == rows(by_addr)["3"]["ret_12"]  # the other trader's buy is untouched
+    finally:
+        st.close()
+
+
+def test_events_are_split_by_how_long_after_the_previous_known_wallet_and_by_the_names_kind():
+    st = _bundle_store()
+    try:
+        out = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5, behind_leader=True)
+        gap = {r["bucket"]: r["n"] for r in out["by"]["known_gap"]}
+        assert gap == {"first": 3, "same block": 3, "3-25": 3}  # doji-a, doji-b in its block, cupsey 5 blocks on
+        kind = {r["bucket"]: r["n"] for r in out["by"]["category"]}
+        assert kind == {"bundle": 6, "trader": 3}
+        team = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5, behind_leader=True, by_entity=True)
+        assert {r["bucket"]: r["n"] for r in team["by"]["known_gap"]} == {"first": 3, "3-25": 3}
     finally:
         st.close()
