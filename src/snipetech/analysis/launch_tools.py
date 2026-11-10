@@ -9,12 +9,15 @@ A deploy tool shows in the launch itself, whatever it is called:
 - `program:<address>`: a top-level program other than pump.fun and the standard ones (a wrapper: OKTech's Launch
   shape reads the same thing);
 - `payer:<wallet>`: the wallet that signed and paid when it is not the creator (a tool or a team launching for fresh
-  creator wallets).
+  creator wallets);
+- `alt:<address>`: an address lookup table the create loads (Proxima, 10 Nov: the owner's coins carry no fee, no
+  wrapper and their own creator's signature; the table `Hyif6e...` is all the tool leaves in the transaction).
 
 `tool_table` groups launches by mark and says how far each mark's coins ran on the tape: the share that traded, that
 reached 30 SOL in the curve and that graduated, the median peak, and the price change from a block-late entry (the end
 of the slot after the create, where a launch snipe lands) to each horizon. A mark seen fewer than `min_launches` times
-is not a tool. The marks whose coins run are the ones to target; a coin the owner names only says which mark is which.
+is not a tool. The marks whose coins run are the ones to target; `coin_marks` reads the coins the owner names, and the
+mark they share says which tool is which.
 A batch job: one getTransaction per launch (never the live database: the tape copy)."""
 
 from __future__ import annotations
@@ -25,6 +28,8 @@ from collections.abc import Callable, Iterable
 from statistics import median
 from typing import Any
 
+from ..solana.normalize import normalize
+from ..solana.tx import extract_from_transaction
 from ..solana.txmeta import PROGRAM_LABELS, _account_keys, extract_tx_meta
 
 log = logging.getLogger(__name__)
@@ -45,7 +50,52 @@ def tx_marks(tx: dict, creator: str) -> list[str]:
     marks |= {f"fee:{t['dst']}" for t in meta.transfers if 0 < t["lamports"] <= FEE_MAX_SOL * LAMPORTS}
     if meta.fee_payer and meta.fee_payer != creator:
         marks.add(f"payer:{meta.fee_payer}")
+    marks |= {f"alt:{t['accountKey']}" for t in tx["transaction"]["message"].get("addressTableLookups") or []}
     return sorted(marks)
+
+
+async def _first_signature(rpc, mint: str, max_pages: int) -> str | None:
+    """The oldest successful transaction that names the mint: its create. None when there is none within `max_pages`
+    pages of 1,000 (a coin traded more than that is read from the tape or not at all)."""
+    oldest = cursor = None
+    for _ in range(max_pages):
+        page = await rpc.get_signatures(mint, before=cursor)
+        if not page:
+            return oldest
+        cursor = page[-1]["signature"]
+        ok = [s["signature"] for s in page if not s.get("err")]
+        oldest = ok[-1] if ok else oldest
+    return None
+
+
+async def coin_marks(rpc, store, mints: Iterable[str], *, max_pages: int = 500) -> dict[str, Any]:
+    """The marks of the coins the owner names, one row a coin in the order given, and `shared`: the marks every coin
+    found carries (the tool's own). A coin on the tape is read from its recorded create; another from the first
+    transaction that named its mint, its creator from that transaction's create event (its signer when unreadable)."""
+    coins: list[dict[str, Any]] = []
+    for mint in mints:
+        launch = store.launch(mint)
+        row: dict[str, Any] = {"mint": mint, "symbol": launch.symbol if launch else None, "on_tape": bool(launch),
+                               "sig": None, "creator": None, "marks": [], "error": None}  # fmt: skip
+        coins.append(row)
+        sig = launch.sig if launch else await _first_signature(rpc, mint, max_pages)
+        tx = (await rpc.get_transactions([sig])).get(sig) if sig else None
+        if tx is None:
+            row["error"] = "no create transaction found" if sig is None else "create transaction not returned"
+            continue
+        row["sig"] = sig
+        try:
+            creator = (launch.creator or launch.user) if launch else None
+            if creator is None:
+                made = [x for x in normalize(extract_from_transaction(tx, sig)).launches if x.mint == mint]
+                creator = (made[0].creator or made[0].user) if made else _account_keys(tx)[0]
+                row["symbol"] = made[0].symbol if made else None
+            row["creator"] = creator
+            row["marks"] = tx_marks(tx, creator)
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            row["error"] = f"unreadable: {exc}"
+    found = [set(c["marks"]) for c in coins if c["sig"] and not c["error"]]
+    return {"coins": coins, "shared": sorted(set.intersection(*found)) if found else []}
 
 
 def _outcome(launch, trades: list, horizons: tuple[int, ...]) -> dict[str, Any]:

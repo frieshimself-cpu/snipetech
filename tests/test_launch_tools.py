@@ -4,17 +4,22 @@ to automatically detect proxima?"). A tool pays itself a small fee inside the la
 program, or signs the launch for the creator. Launches grouped by mark, with how far each mark's coins run, show the
 tools worth targeting whatever their names."""
 
+import asyncio
 import json
 import time
 from pathlib import Path
 
-from snipetech.analysis.launch_tools import tool_table, tx_marks
+from snipetech.analysis.launch_tools import coin_marks, tool_table, tx_marks
 from snipetech.store import Store
 
 from .synth import Market, addr
 
 NOW = int(time.time())
 RM = json.loads((Path(__file__).parent / "fixtures" / "launch_tools" / "rm_create.json").read_text())
+CALLINU = json.loads((Path(__file__).parent / "fixtures" / "launch_tools" / "callinu_create.json").read_text())
+PROXIMA_TABLE = "alt:Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP"
+CALLINU_MINT = "58EqSxVamSPQH56cfaMU9mxvvsV3nfgXYe6QEsKDpump"
+CALLINU_DEV = "EYbH2PN8rGUpRWaRHJZ5v27Z7k6isdLk2RFKSD173kDk"
 SIGNER = "Bjr89zvdsKjferx1uYxcZ9kywqK4zE8PVzAUbHGXBHJr"
 CREATOR = "5JE1ijBKFi8hJ2nGct2ZjKh6w4wirn9WrsSUfrLoqH4A"
 
@@ -26,6 +31,52 @@ def test_a_real_tool_launch_carries_the_tools_fee_wallet_and_its_signer_and_not_
     assert "fee:moonKfftMiGSak3cezvhEqvkPSzwrmQxQHXuspC96yj" in marks and f"payer:{SIGNER}" in marks
     assert not any(m.startswith(("program:", "fee:noz")) for m in marks) and len(marks) == 2
     assert tx_marks(RM, SIGNER) == ["fee:moonKfftMiGSak3cezvhEqvkPSzwrmQxQHXuspC96yj"]  # its own launch: no payer mark
+
+
+def test_a_tools_address_lookup_table_is_a_mark():
+    """Callout Inu, 5 Nov, one of six coins the owner named as Proxima deploys: no fee, no wrapper, signed by its own
+    creator; what the tool leaves is the address lookup table its transactions load."""
+    assert tx_marks(CALLINU, CALLINU_DEV) == [PROXIMA_TABLE]
+    assert not any(m.startswith("alt:") for m in tx_marks(RM, CREATOR))
+
+
+class _Rpc:
+    """Signatures by mint, newest first, two to a page; the oldest is its create."""
+
+    def __init__(self, sigs, txs):
+        self.sigs, self.txs, self.pages = sigs, txs, 0
+
+    async def get_signatures(self, address, before=None, until=None, limit=1000):
+        self.pages += 1
+        sigs = self.sigs.get(address, [])
+        start = sigs.index(before) + 1 if before else 0
+        return [{"signature": s, "slot": 1} for s in sigs[start : start + 2]]
+
+    async def get_transactions(self, sigs):
+        return {s: self.txs[s] for s in sigs if s in self.txs}
+
+
+def test_named_coins_say_which_mark_is_the_tools():
+    """The owner names coins a tool launched; the mark they all carry is the tool's. A coin on the tape is read from
+    its recorded create; an older one from the first transaction that ever named its mint."""
+    st = Store(":memory:")
+    try:
+        on_tape = _coin(st, 30, run=True)
+        sigs = {CALLINU_MINT: ["s5", "s4", "s3", "s2", "create-sig"]}
+        rpc = _Rpc(sigs, {on_tape.sig: RM, "create-sig": CALLINU})
+        out = asyncio.run(coin_marks(rpc, st, [on_tape.mint, CALLINU_MINT, addr("never-launched")]))
+        a, b, c = out["coins"]
+        assert (
+            a["on_tape"] and a["sig"] == on_tape.sig and "fee:moonKfftMiGSak3cezvhEqvkPSzwrmQxQHXuspC96yj" in a["marks"]
+        )
+        assert not b["on_tape"] and b["sig"] == "create-sig" and b["creator"] == CALLINU_DEV
+        assert b["marks"] == [PROXIMA_TABLE] and rpc.pages == 5  # 3 pages of 2 and the empty one; one for (c)
+        assert c["sig"] is None and c["marks"] == [] and c["error"]
+        assert out["shared"] == []  # the two coins found carry no common mark
+        both = asyncio.run(coin_marks(_Rpc(sigs, {"create-sig": CALLINU}), st, [CALLINU_MINT, CALLINU_MINT]))
+        assert both["shared"] == [PROXIMA_TABLE]
+    finally:
+        st.close()
 
 
 def _coin(st, i, *, run):

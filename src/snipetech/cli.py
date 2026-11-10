@@ -848,6 +848,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=float, default=12.0)
     sp.add_argument("--max", type=int, default=20_000, help="the newest N launches of the window")
     sp.add_argument("--min-launches", type=int, default=5, help="a mark seen fewer times is not a tool")
+    sp.add_argument("--mint", action="append", default=[], help="instead of the scan: the marks of this coin's create "
+                    "(repeat for several; the marks they share are the tool's)")  # fmt: skip
     sp = cmd(
         "leaders-of",
         "the wallets a copy bot buys right after: who bought the same coin up to N slots before its first buy, over "
@@ -1892,12 +1894,14 @@ def main(argv: list[str] | None = None) -> int:
                   f"{t['followed_share']} of that wallet's {t['its_coins']}")  # fmt: skip
         return 0
     if args.cmd == "launch-tools":
-        from .analysis.launch_tools import launch_tools
+        from .analysis.launch_tools import coin_marks, launch_tools
 
         svc = Service(cfg)
 
         async def scan():
             try:
+                if args.mint:
+                    return await coin_marks(svc.rpc, svc.tape_store, args.mint)
                 return await launch_tools(svc.rpc, svc.tape_store, time.time(), hours=args.hours,
                                           max_launches=args.max, min_launches=args.min_launches)  # fmt: skip
             finally:
@@ -1907,6 +1911,11 @@ def main(argv: list[str] | None = None) -> int:
         out = asyncio.run(scan())
         if args.json:
             print(json.dumps(out, indent=1))
+            return 0
+        if args.mint:
+            for c in out["coins"]:
+                print(f"{c['mint']} {c['symbol'] or '?'}: {', '.join(c['marks']) or c['error'] or 'no mark'}")
+            print(f"shared: {', '.join(out['shared']) or 'none'}")
             return 0
         print(f"{out['launches']} launches read of {out['window_launches']} in {out['hours']:g} h; all: "
               f"{out['all']['reached_30']:.1%} reached 30 SOL")  # fmt: skip
