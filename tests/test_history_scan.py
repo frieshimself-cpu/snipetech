@@ -276,3 +276,37 @@ def test_the_scan_keeps_each_organised_launchs_path_and_the_table_scores_exit_ru
         assert "first_half" in yes["t60s"] and "win" in yes["t60s"]
     finally:
         st.close()
+
+
+def test_a_launch_is_sorted_by_how_its_bundle_wallets_earlier_launches_did(tmp_path):
+    """10 Nov, 30 days: launches bundled by wallets whose earlier launches ran kept running the week after. The scan
+    keeps who bought in each create block; the table gives every launch the record its bundle wallets had BEFORE it
+    (the mean a-minute-later return of their earlier launches), so the split uses nothing a live rule would not have."""
+    rows: list[dict] = []
+    for i in range(4):  # one team launches four coins that run; another four that it dumps
+        good = Coin(rows, f"GOOD{i}", f"gdev{i}", S0 + 100 + 1000 * i)
+        for k in range(4):
+            good.buy(f"good-team-{k}", 4.0, 0)
+        good.buy("crowd", 20.0, 60)
+        good.buy("late", 0.1, 400)
+        bad = Coin(rows, f"BAD{i}", f"bdev{i}", S0 + 600 + 1000 * i)
+        bags = [bad.buy(f"bad-team-{k}", 4.0, 0) for k in range(4)]
+        for k, bag in enumerate(bags):
+            bad.sell(f"bad-team-{k}", bag, 40)
+        bad.buy("late", 0.1, 400)
+    path = _write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows)
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(scan_files([path], min_block_sol=15, stats=stats))
+        assert sorted(recs[0]["block_users"]) == [f"good-team-{k}" for k in range(4)]
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2)
+        team = {r["bucket"]: r for r in out["by"]["team"]}
+        assert team["no record"]["launches"] == 4  # each team's first two launches: fewer than two before them
+        assert team["25+"]["launches"] == 2 and team["25+"]["ret_150"] > 50  # the good team's third and fourth
+        assert team["<-10"]["launches"] == 2 and team["<-10"]["ret_150"] < -40  # the dumping team's third and fourth
+        crossed = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2,
+                                cross=("team",), min_cell=1)  # fmt: skip
+        assert {c["cell"] for c in crossed["cross"]} == {"team=no record", "team=25+", "team=<-10"}
+    finally:
+        st.close()

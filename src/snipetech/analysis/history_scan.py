@@ -54,6 +54,10 @@ EXITS: dict[str, dict[str, float]] = {
 TRACK_SLOTS = 54_000  # six hours: how long a launch's peak is followed
 HORIZONS = (13, 150)
 BONDED_SOL = 84.0  # the curve is complete: nothing left to buy on it
+TEAM_KEPT = 16  # create-block buyers kept per launch
+# a launch's bundle wallets' record before it: the mean a-minute-later return of their earlier launches, in percent
+TEAM = ((-10.0, 0.0, 10.0, 25.0), ("<-10", "-10-0", "0-10", "10-25", "25+"))
+TEAM_KNOWN_SECS = 60  # a launch's outcome counts for later launches once its minute has passed
 # how much others put in the create block, finer than `launch_tools.SPLITS` (which stops at 10+)
 BLOCK_SOL = ((10.0, 15.0, 25.0, 50.0), ("<10", "10-15", "15-25", "25-50", "50+"))
 
@@ -118,11 +122,14 @@ def _record(st: dict, horizons: tuple[int, ...], last_slot: int) -> dict[str, An
         return None  # the files end before its longest horizon
     o = _outcome(launch, st["trades"], horizons)
     at_entry = max((t.q_after / LAMPORTS - VIRTUAL_SOL for t in st["trades"] if t.slot <= launch.slot + 1), default=0.0)
+    team = list(dict.fromkeys(t.user for t in st["trades"]
+                              if t.slot == launch.slot and t.is_buy and t.user != launch.creator))[:TEAM_KEPT]  # fmt: skip
     return {"mint": launch.mint, "symbol": launch.symbol, "uri": launch.uri, "ts": launch.ts, "creator": launch.creator,
             "day": time.strftime("%Y-%m-%d", time.gmtime(launch.ts)), "dev_sol": round(o["dev_sol"], 3),
             "block_wallets": o["block_wallets"], "block_sol": round(o["block_sol"], 3),
             "peak_sol": round(max(st["peak"], o["peak"]), 2), "rets": o["rets"],
-            "bonded_at_once": at_entry >= BONDED_SOL, "partial": last_slot < launch.slot + TRACK_SLOTS}  # fmt: skip
+            "bonded_at_once": at_entry >= BONDED_SOL, "partial": last_slot < launch.slot + TRACK_SLOTS,
+            "block_users": team}  # fmt: skip
 
 
 def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | None = None,
@@ -192,6 +199,32 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
             yield rec
 
 
+def team_records(records: list[dict], min_prior: int) -> dict[str, str]:
+    """mint -> the bucket of `TEAM` its create-block wallets' earlier launches put it in, or "no record" when none of
+    them was in `min_prior` scored launches before it. Walked in time order: a launch's own outcome is added to its
+    wallets only once its minute has passed, so the label holds nothing a live rule would not know at the launch."""
+    seen: dict[str, list[float]] = {}  # wallet -> [launches, sum of their returns]
+    waiting: list[tuple[int, list[str], float]] = []
+    out: dict[str, str] = {}
+    h = max(HORIZONS)
+    for r in sorted(records, key=lambda r: r["ts"]):
+        while waiting and waiting[0][0] <= r["ts"]:
+            _, users, ret = waiting.pop(0)
+            for user in users:
+                row = seen.setdefault(user, [0, 0.0])
+                row[0] += 1
+                row[1] += ret
+        users = r.get("block_users") or []
+        prior = [seen[u] for u in users if u in seen]
+        if prior and max(p[0] for p in prior) >= min_prior:
+            out[r["mint"]] = _bucket(sum(p[1] for p in prior) / sum(p[0] for p in prior), *TEAM)
+        else:
+            out[r["mint"]] = "no record"
+        if users and r.get("rets") and not r.get("bonded_at_once"):
+            waiting.append((r["ts"] + TEAM_KNOWN_SECS, users, r["rets"][h]))
+    return out
+
+
 def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 2) if vals else None
 
@@ -199,7 +232,7 @@ def _mean(vals: list[float]) -> float | None:
 def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *, min_block_sol: float,
                   stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
                   x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
-                  min_cell: int = 50, exits: bool = False) -> dict[str, Any]:  # fmt: skip
+                  min_cell: int = 50, exits: bool = False, team_min_prior: int = 5) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
@@ -208,7 +241,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     on the first and on the second half of the days, best first by the worse half: a cell among dozens that pays on
     one half only is luck. `exits` scores every rule of `EXITS` on the launches' kept paths, for all organised launches
     and for each crossed cell: mean and median return before fees, the share above the fees, and the mean on each half
-    of the days."""
+    of the days. The split "team" is the record the launch's bundle wallets had before it (`team_records`, from every
+    launch in `records`; `team_min_prior` earlier launches or more)."""
     bundled = [r for r in records if r["block_sol"] >= min_block_sol]
     organised = [r for r in bundled if not r.get("bonded_at_once")]  # a curve its own bundle filled cannot be bought
     items = [(SimpleNamespace(mint=r["mint"], symbol=r["symbol"], creator=r["creator"], user=r["creator"]),
@@ -256,6 +290,12 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 groups.setdefault(label, []).append(item)
             order = [n for n in (*names, "no account") if n in groups]
             by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
+    team_of = team_records(records, team_min_prior)
+    groups = {}
+    for item in items:
+        groups.setdefault(team_of.get(item[0].mint, "no record"), []).append(item)
+    by["team"] = [{"bucket": r.pop("mark"), **r}
+                  for r in (_row(n, groups[n], horizons, fee_pct) for n in (*TEAM[1], "no record") if n in groups)]  # fmt: skip
     crossed = None
     if cross:
         ts_at = {r["mint"]: r["ts"] for r in organised}
@@ -267,6 +307,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 return LINK_SPLITS[key][0](metas[mint])
             if key in numeric:
                 return _bucket(item[1][key], *numeric[key])
+            if key == "team":
+                return team_of.get(mint, "no record")
             handle = xaccounts.handle_of(metas[mint])
             if not handle or x_of is None:
                 return "no account" if not handle else "unknown"
