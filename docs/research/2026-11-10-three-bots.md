@@ -310,10 +310,54 @@ created: no rule here pays yet.
 The owner's page has the section "Proxima launches" (the table above, each launch as a dot, the newest organised
 launches). `tools/dashboard_snapshot.py` fills it from the newest finished `launch-tools ... --mark ... --json` job.
 
+### The table is pump.fun's standard path; the tell is how the wallets are funded (owner, 17:30: "around 500 launches a day with proxima ... there's something else to it")
+
+The mark over-counts: 3,309 launches in 19.5 h carry the table (about 4,070 a day). Sixty of their creates, fetched
+raw, have the same shape as the six Proxima coins whatever else happens around them (compute budget, CreateV2 with
+16 accounts, a token account, BuyV2 with 27 accounts, two signers, the one table): it is pump.fun's own create path,
+which Proxima uses like everyone else. The token metadata says `createdOn: https://pump.fun` too. The create
+transaction alone cannot say Proxima.
+
+What the two coins on the tape show around the create:
+
+- **The team's buys are one bundle with the create.** CALLINU's and CUBCAT's four buys right behind the create carry
+  the create's own recent blockhash, a compute limit and price that look random (251593 / 429509, 265266 / 689109,
+  ...), a plain `buy` with 18 accounts, and the last of the four has no compute budget and pays 0.003 SOL to a Jito
+  tip account. Create plus four buys is the five-transaction limit of a Jito bundle. (The 6.9 SOL buy behind them in
+  CALLINU's block is a sniper: another blockhash, another shape, a 0.011 SOL fee.)
+- **Every wallet was funded minutes before, each from its own one-off wallet, by the same odd transaction.** The
+  first transaction of all 10 wallets (2 creators, 8 team wallets) is `setComputeUnitLimit(1450)` plus one SOL
+  transfer from a wallet used for nothing else, 2 to 4 minutes before the launch (CALLINU: 00:35:38, 00:36:01,
+  00:36:18, 00:36:23, launch 00:39:33). The creators of the other Proxima coins are the same: 4 of the 4 that were
+  ever funded, each with 0.174-0.178 SOL (Mwezi's creator was never funded: its payer wallet was).
+- **Other launches do not have it.** The first transaction of 40 creators of other launches with the table (solo dev
+  buys, launches with one bundled buyer, with several, the same-name crew's): 1 has the same shape (limit 1450 and a
+  transfer, 0.02 SOL), 1 has the limit with a price as well, 38 have neither. The crew's creators are funded with
+  20-28 SOL in a transfer with an estimated limit: the crew is not Proxima.
+
+So the working definition of a Proxima launch: pump.fun's standard create, whose creator (and bundle wallets) were
+first funded by a transfer with a compute limit of exactly 1450 from a one-off wallet minutes earlier. Not counted
+yet: how many launches a day fit it (the owner says about 500). If the count agrees, the funding is visible two to
+four minutes BEFORE the coin exists, which the create is not.
+
+By the size of the bundle right behind the create (plain buys by other wallets at the next positions): none 3,713 a
+day, one wallet 238, two 76, three 15, four 21, more 10.
+
+### What OKTech's developer said (owner, 17:40)
+
+"sniper hunt is my fav tho cause you can trail bundlers, especially bwam". `bwamJz...` signs launches for fresh
+creator wallets: 121 in the last 19.5 h, each for a different creator. A buy one block after its creates: +4.3 % at
+5 s (median 0, 43 % up after fees), −12.5 % at one minute, 2.5 % reach 30 SOL. A blind snipe behind bwam is a
+five-second flip worth about its fees; Hunt mode adds thresholds (SOL and buyers inside a window) that the blind
+number does not test. "The AIL snipe is in S mode too": what AIL stands for is not known here.
+
 ### Next for Proxima
 
-1. Keep each launch's marks in the database (a `launch_marks` table written by the scan, then by the recorder as each
-   create arrives), so a re-scan costs no RPC calls and the lab can gate on a mark.
+0. Count the funding tell: for every launch with the table, the creator's first transaction (two RPC calls a
+   launch); mark `fund:cu1450` when it is a transfer with a compute limit of 1450 and nothing else. Launches a day
+   with it against the owner's 500; then score those launches alone (reach 30 SOL, a buy one block later, at 30-120 s).
+1. Keep each launch's marks in the database (done 17:12: `launch_marks`, written by the scan); then the recorder writes
+   them as each create arrives, so the lab can gate on a mark.
 2. Lab over the whole tape: the mark with 10+ SOL from others in the create block, bought at 30, 60 and 120 s if the
    price is still above the create block's close, sold on a timer and on the first large sale by a create-block
    wallet; at 0.5-2 SOL with fees. Forward paper only if the held-out half is positive without its three best coins.
