@@ -845,8 +845,10 @@ def build_parser() -> argparse.ArgumentParser:
         "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape; "
         "the key is PUMPFUNDATA_API_KEY in the server's env file",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "scan"])
     sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
+    sp.add_argument("--min-block-sol", type=float, default=15.0, help="scan: an organised launch is one where others "
+                    "put this much SOL in the create block")  # fmt: skip
     sp.add_argument("--from", dest="from_day", help="fetch: first day, YYYY-MM-DD")
     sp.add_argument("--to", dest="to_day", help="fetch: last day, YYYY-MM-DD (default: the first day)")
     sp.add_argument("--max-files", type=int, default=24, help="fetch: credits this run may spend (one a file)")
@@ -1687,6 +1689,26 @@ def _history(args, cfg: Config) -> int:
         print(f"{pfd.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
         return 2
     dest = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
+
+    if args.action == "scan":  # no call to the vendor: the files on disk, and the coins' metadata links
+        from .analysis.history_scan import history_table, scan_files
+        from .meta import fetch_meta
+
+        lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
+        paths = [p for p in sorted(dest.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
+        stats: dict = {}
+        records = list(scan_files(paths, min_block_sol=min(5.0, args.min_block_sol), stats=stats))
+        store = Store(cfg.storage.db_path)
+        try:
+            fetched = asyncio.run(fetch_meta(store, [(r["mint"], r["uri"]) for r in records
+                                                     if r["uri"] and r["block_sol"] >= args.min_block_sol]))  # fmt: skip
+            out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats)
+        finally:
+            store.close()
+        out.update({"from": paths[0].name if paths else None, "to": paths[-1].name if paths else None,
+                    "metadata_fetched": fetched})  # fmt: skip
+        print(json.dumps(out, indent=1, default=str))
+        return 0
 
     async def go() -> dict:
         async with httpx.AsyncClient(timeout=120.0) as http:

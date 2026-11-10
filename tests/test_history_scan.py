@@ -1,0 +1,115 @@
+"""The website rule on bought history: "a bundled launch (others put 15+ SOL in the create block) with a website" was
++22 % a minute later on one day of our own tape. The scan reads the vendor's hourly files in order and scores every
+launch the same way `launch-tools` scores the tape, so the rule is checked on weeks, day by day."""
+
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from snipetech.analysis.history_scan import history_table, scan_files
+from snipetech.store import Store
+
+SOL = 1_000_000_000
+V0_SOL, V0_TOK = 30 * SOL, 1_073_000_000_000_000
+T0, S0 = 1_793_000_000, 460_000_000  # an hour's first second and slot
+
+
+class Coin:
+    """Writes one coin's rows the way the vendor does: a create row, then swaps with the reserves after each."""
+
+    def __init__(self, rows, mint, dev, slot, uri="https://x/meta.json", quote=None):
+        self.rows, self.mint, self.dev, self.slot0 = rows, mint, dev, slot
+        self.vs, self.vt, self.n, self.quote = V0_SOL, V0_TOK, 0, quote
+        self._row("create", slot, dev, None, 0, name=mint, symbol=mint[:4].upper(), uri=uri)
+
+    def _row(self, kind, slot, user, action, lamports, **more):
+        self.n += 1
+        self.rows.append({
+            "event_type": kind, "signature": f"{self.mint}-{self.n}", "slot_number": slot,
+            "timestamp": float(T0 + int((slot - S0) * 0.4)), "token_mint": self.mint, "token_creator": self.dev,
+            "action": action, "user_wallet": user, "lamports_amount": lamports, "virtual_token_reserve": self.vt,
+            "virtual_lamports_reserve": self.vs, "real_lamports_reserve": self.vs - V0_SOL,
+            "name": more.get("name"), "symbol": more.get("symbol"), "uri": more.get("uri"), "lamports_mint": self.quote,
+        })  # fmt: skip
+
+    def buy(self, user, sol, off):
+        s = int(sol * SOL)
+        out = self.vt * s // (self.vs + s)
+        self.vs, self.vt = self.vs + s, self.vt - out
+        self._row("swap", self.slot0 + off, user, "buy", s)
+        return out
+
+    def sell(self, user, tokens, off):
+        s = self.vs * tokens // (self.vt + tokens)
+        self.vs, self.vt = self.vs - s, self.vt + tokens
+        self._row("swap", self.slot0 + off, user, "sell", s)
+
+
+def _write(path: Path, rows: list[dict]) -> Path:
+    rows = sorted(rows, key=lambda r: r["slot_number"])  # stable: a coin's rows keep their order inside a slot
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return path
+
+
+def _two_hours(tmp_path):
+    first, second = [], []
+    web = Coin(first, "WEBcoin", "dev-web", S0 + 100)  # organised, has a website, runs
+    web.buy("dev-web", 1.0, 0)
+    for i in range(4):
+        web.buy(f"web-team-{i}", 4.0, 0)
+    web.buy("crowd", 20.0, 60)
+    rug = Coin(first, "RUGcoin", "dev-rug", S0 + 200)  # organised, no website, dumped
+    rug.buy("dev-rug", 1.0, 0)
+    bags = [rug.buy(f"rug-team-{i}", 4.0, 0) for i in range(4)]
+    rug.buy("sniper", 1.0, 1)
+    for i, bag in enumerate(bags):
+        rug.sell(f"rug-team-{i}", bag, 40)
+    solo = Coin(first, "SOLOcoin", "dev-solo", S0 + 300)  # nobody else in its create block
+    solo.buy("dev-solo", 0.5, 0)
+    solo.buy("late", 1.0, 5)
+    usd = Coin(first, "USDcoin", "dev-usd", S0 + 400, quote="EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v")
+    usd.buy("dev-usd", 1.0, 0)  # not priced in SOL: left out
+    web.rows = second  # the coin keeps trading in the next hour's file: its peak is followed across files
+    web.buy("whale", 40.0, 9_500)
+    return [
+        _write(tmp_path / "pump_fun_2026-10-27_00.parquet", first),
+        _write(tmp_path / "pump_fun_2026-10-27_01.parquet", second),
+    ]
+
+
+def test_every_launch_in_the_files_is_scored_like_the_tape_and_followed_across_files(tmp_path):
+    recs = {r["mint"]: r for r in scan_files(_two_hours(tmp_path), min_block_sol=0)}
+    assert set(recs) == {"WEBcoin", "RUGcoin", "SOLOcoin"}  # the coin not priced in SOL is left out
+    web, rug, solo = recs["WEBcoin"], recs["RUGcoin"], recs["SOLOcoin"]
+    assert web["block_wallets"] == 4 and round(web["block_sol"]) == 16 and round(web["dev_sol"], 1) == 1.0
+    assert web["rets"][150] > 50 and web["peak_sol"] > 75 and web["uri"] == "https://x/meta.json"
+    assert rug["block_wallets"] == 4 and rug["rets"][150] < -40 and rug["peak_sol"] < 20
+    assert solo["block_wallets"] == 0 and solo["block_sol"] == 0
+    assert web["day"] == "2026-10-27" or len(web["day"]) == 10
+    kept = list(scan_files(_two_hours(tmp_path), min_block_sol=15))
+    assert {r["mint"] for r in kept} == {"WEBcoin", "RUGcoin"}  # only the organised ones are kept one by one
+
+
+def test_the_table_says_how_organised_launches_did_with_and_without_a_website_and_by_day(tmp_path):
+    st = Store(":memory:")
+    try:
+        st.put_token_meta("WEBcoin", "u", True, {"website": "https://web.io", "x_kind": "profile", "telegram": ""})
+        st.put_token_meta("RUGcoin", "u", True, {"website": "", "x_kind": "tweet", "telegram": ""})
+        stats: dict = {}
+        recs = list(scan_files(_two_hours(tmp_path), min_block_sol=15, stats=stats))
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
+        assert stats["launches"] == 3 and out["launches"] == 3 and out["organised"] == 2 and out["files"] == 2
+        web = {r["bucket"]: r for r in out["by"]["website"]}
+        assert web["yes"]["launches"] == 1 and web["yes"]["ret_150"] > 50 and web["yes"]["reached_30"] == 1.0
+        assert web["no"]["launches"] == 1 and web["no"]["ret_150"] < -40
+        day = out["by_day"][0]
+        assert (
+            day["website"] == 1
+            and day["website_ret_150"] > 50
+            and day["no_website"] == 1
+            and day["no_website_ret_150"] < -40
+        )
+        assert out["order_breaks"] == 0.0  # the rows were in chain order: each trade's reserves follow the one before
+    finally:
+        st.close()
