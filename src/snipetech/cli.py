@@ -1812,7 +1812,8 @@ def _history(args, cfg: Config) -> int:
         ordered = pfd.order_report([rows[i] for i in perm], places)
         keys = ("same_slot_pairs", "same_slot_in_order", "cross_slot_pairs", "cross_slot_in_order")
         print(json.dumps({"date": args.date, "hour": args.hour, "tape_trades": len(places), **report,
-                          "after_ordering": {"rows_moved": orderer.moved, **{k: ordered[k] for k in keys}}}, indent=1))  # fmt: skip
+                          "after_ordering": {"rows_moved": orderer.moved, **{k: ordered[k] for k in keys},
+                                             "chain": ordered["chain"]}}, indent=1))  # fmt: skip
         return 0
 
     async def go() -> dict:
