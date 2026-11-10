@@ -35,3 +35,34 @@ def test_a_refused_priority_change_never_stops_the_job(monkeypatch):
 
     monkeypatch.setattr(cli.os, "nice", refuse)
     cli._yield_cpu("lab")  # no exception
+
+
+def test_a_research_job_on_a_paid_rpc_asks_faster_than_the_always_on_services():
+    """10 Nov: the owner's Helius plan allows 200 requests a second and showed no rate limit hit; a scan of the whole
+    tape was held to our own 40 a second and took hours. A batch command on a paid endpoint asks at 120 a second with
+    24 requests in flight; the recorder's, the operator's and the book's rate stays, and so does a rate the owner set."""
+    from snipetech.config import Config
+
+    cfg = Config()
+    cfg.rpc.max_rps, cfg.rpc.max_concurrency = 40, 8
+    cli._batch_rpc(cfg, "book")
+    assert (cfg.rpc.max_rps, cfg.rpc.max_concurrency) == (40, 8)
+    cli._batch_rpc(cfg, "launch-tools")
+    assert (cfg.rpc.max_rps, cfg.rpc.max_concurrency) == (120, 24)
+    public = Config()  # the public endpoint's 8 a second is a limit of the endpoint, not ours
+    cli._batch_rpc(public, "launch-tools")
+    assert public.rpc.max_rps == 8.0
+    fast = Config()
+    fast.rpc.max_rps = 300  # already above ours: left alone
+    cli._batch_rpc(fast, "launch-tools")
+    assert fast.rpc.max_rps == 300
+
+
+def test_a_rate_the_owner_set_in_the_environment_is_kept(monkeypatch):
+    from snipetech.config import Config
+
+    monkeypatch.setenv("SNIPETECH_RPC_RPS", "60")
+    cfg = Config()
+    cfg.rpc.max_rps, cfg.rpc.max_concurrency = 60, 8
+    cli._batch_rpc(cfg, "launch-tools")
+    assert (cfg.rpc.max_rps, cfg.rpc.max_concurrency) == (60, 8)

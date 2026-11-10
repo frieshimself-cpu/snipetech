@@ -1661,6 +1661,20 @@ BATCH_COMMANDS = frozenset(
 BATCH_NICE = 10
 
 
+BATCH_RPS, BATCH_CONCURRENCY = 120.0, 24  # a research job's RPC rate on a paid endpoint (Helius Business: 200 a second)
+PAID_RPS = 40  # what the config sets when it finds a paid endpoint's key: the always-on services' rate
+
+
+def _batch_rpc(cfg: Config, cmd: str) -> None:
+    """A batch command on a paid endpoint asks faster than the services that are always on (10 Nov: a scan of the whole
+    tape took hours at 40 a second while the plan allowed 200 and showed no rate limit hit). The public endpoint's rate
+    and one the owner set in SNIPETECH_RPC_RPS are kept; the limiter still halves the rate on a 429."""
+    if cmd not in BATCH_COMMANDS or cfg.rpc.max_rps < PAID_RPS or os.environ.get("SNIPETECH_RPC_RPS"):
+        return
+    cfg.rpc.max_rps = max(cfg.rpc.max_rps, BATCH_RPS)
+    cfg.rpc.max_concurrency = max(cfg.rpc.max_concurrency, BATCH_CONCURRENCY)
+
+
 def _yield_cpu(cmd: str) -> None:
     """Lower this process's priority when `cmd` is a heavy research job; the recorder, the operator, the book, the
     measure stage and OKTech actions keep theirs. A refused change never stops the job."""
@@ -1689,6 +1703,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "remote":
         return _remote(args)
     cfg = Config.load(args.config)
+    _batch_rpc(cfg, args.cmd)
     if args.db:
         cfg.storage.db_path = args.db
     if args.rpc:
