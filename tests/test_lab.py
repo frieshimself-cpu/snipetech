@@ -839,3 +839,68 @@ def test_a_hypothesis_can_be_scored_at_a_paid_place_instead_of_the_measured_copy
     assert paper.hypothesis_landing("+3x", "start") == (0, "start")
     with pytest.raises(ValueError, match="copy-position"):
         paper.hypothesis_landing("+3x", "second")
+
+
+def _team_world(store):
+    """One team's two wallets buy back to back in a block; another trader buys 40 s later; a third 4 s after that."""
+    m = Market(store, addr("lab-tm"), addr("lab-tm-dev"), NOW - 4000, 32_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("doji-a"), 1.0, 2)
+    m.buy(addr("doji-b"), 1.0, 2)
+    m.buy(addr("crowd-1"), 1.0, 5)
+    m.buy(addr("cupsey"), 2.0, 102)
+    m.buy(addr("cented"), 2.0, 112)
+    m.commit()
+    launch = store.launch(addr("lab-tm"))
+    return MarketPath.build(store.trades_for_mint(addr("lab-tm")), launch), launch
+
+
+def test_a_kol_trigger_can_count_a_team_once_and_ask_for_a_gap_since_the_previous_known_wallet():
+    """10 Nov, the owner's tracker: 2,630 wallets are 1,626 names. By address the second wallet of a bundle is "the
+    second known wallet in" and a copy at +0 sits inside the bundle. `teams`: wallets that share a team count once and
+    the rule fires at the team's last back-to-back buy in its block. Tape, by team, right behind at 5 s: the second
+    team in is worth +10.3 %, and +11.6 % when it comes 26+ slots after the previous one (`gap`, in seconds)."""
+    from snipetech.analysis.lab import TEAMS, parse_trigger
+
+    store = Store(":memory:")
+    path, launch = _team_world(store)
+    wallets = {addr("doji-a"), addr("doji-b"), addr("cupsey"), addr("cented")}
+    groups = {"wallet": wallets, TEAMS: {addr("doji-a"): "doji", addr("doji-b"): "doji"}}
+    at = lambda **kw: _fire(Trigger("kol", group="wallet", **kw), path, launch, groups)
+
+    def who(**kw):
+        i = at(**kw)
+        return None if i is None else path.users[i]
+
+    assert who(known=2) == addr("doji-b")  # by address: the bundle's own second wallet
+    assert who(known=2, teams=True) == addr("cupsey") and who(known=3, teams=True) == addr("cented")
+    assert who(teams=True) == addr("doji-b") and at(teams=True) == at() + 1  # behind the team's last back-to-back buy
+    assert who(known=2, teams=True, gap=30.0) == addr("cupsey")  # 40 s after the team
+    assert who(known=2, teams=True, gap=60.0) is None  # cented came 4 s after cupsey
+    assert who(known=2, gap=30.0) == addr("cupsey")  # by address too: doji-b came in doji-a's block
+    assert who(known=2, teams=True) == who(known=2, teams=True, gap=0.0)
+    assert _fire(Trigger("kol", group="wallet", known=2, teams=True), path, launch, {"wallet": wallets}) == at(known=2)
+    label = Trigger("kol", group="wallet", known=2, teams=True, gap=10.0).label()
+    assert "teams count once" in label and "10 s after the previous" in label
+    spec = parse_trigger({"kind": "kol", "group": "wallet", "known": 2, "teams": True, "gap": 10})
+    assert spec.teams is True and spec.gap == 10.0
+    with pytest.raises(ValueError):
+        parse_trigger({"kind": "whale", "sol": 2, "teams": True})
+    store.close()
+
+
+def test_label_groups_carry_each_tracked_wallets_team_and_a_group_without_bots_and_faucets():
+    """Tape, 72 h: wallets the tracker names Faucet are 27 % of known-wallet buys and worth +1.7 % at 5 s right
+    behind, ones named sniper +0.5 %, plain traders +5.0 %. Group `trader` leaves those two kinds out."""
+    from snipetech.analysis.lab import TEAMS, label_groups
+
+    store = Store(":memory:")
+    for who, name in (("a", "Doji bundle"), ("b", "Doji Bundle"), ("c", "Cupsey Side 2"), ("f", "Faucet"),
+                      ("s", "Mintech Sniper 3")):  # fmt: skip
+        store.set_label(addr(who), name, "wallet", "file")
+    store.set_label(addr("k"), "Gake", "kol", "file")
+    groups = label_groups(store)
+    assert groups["wallet"] == {addr(w) for w in "abcfs"} and groups["trader"] == {addr(w) for w in "abc"}
+    teams = groups[TEAMS]
+    assert teams[addr("a")] == teams[addr("b")] != teams[addr("c")] and teams[addr("k")] == "gake"
+    store.close()

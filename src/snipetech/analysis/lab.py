@@ -56,6 +56,7 @@ from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
+from .names import category, entity
 from .stats import summarize
 
 LAMPORTS = 1e9
@@ -163,6 +164,12 @@ class Trigger:
     max_sol: float = 0.0
     min_curve: float = 0.0
     max_curve: float = 0.0
+    # 10 Nov, the owner's tracker (2,630 wallets, 1,626 names): `teams` = wallets whose tracker names share a team
+    # (`names.entity`, carried in the groups under TEAMS) count as one known wallet and the rule fires at the team's
+    # last back-to-back buy in its block, the first place a copy can land. `gap` = the followed buy comes at least
+    # this many seconds after the previous known wallet's first buy (tape: +11.6 % at 5 s from 26 slots on)
+    teams: bool = False
+    gap: float = 0.0
 
     def label(self) -> str:
         base = self._label()
@@ -205,6 +212,8 @@ class Trigger:
                 + ([f"{self.min_curve:g} to {self.max_curve:g} SOL in the curve"] if self.min_curve and self.max_curve
                    else [f">= {self.min_curve:g} SOL in the curve"] if self.min_curve
                    else [f"<= {self.max_curve:g} SOL in the curve"] if self.max_curve else [])
+                + (["teams count once"] if self.teams else [])
+                + ([f">= {self.gap:g} s after the previous known wallet"] if self.gap else [])
             )  # fmt: skip
             return (f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
                     + "".join(f", {g}" for g in gates))  # fmt: skip
@@ -258,7 +267,7 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
     "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
-    "kol": ("sol", "group", "max_age", "plain", "known", "within", "max_sol", "min_curve", "max_curve"),
+    "kol": ("sol", "group", "max_age", "plain", "known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
@@ -270,9 +279,10 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "max_buyers": (0, 200),
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
+    "gap": (0, 86_400),
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
-FLAG_FIELDS = ("plain", "solo")
+FLAG_FIELDS = ("plain", "solo", "teams")
 TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
@@ -827,6 +837,8 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
         n = sum(1 for t in known_at if t >= ts - trig.within) if trig.within else len(known_at)
         if n < trig.known:
             return False
+    if trig.gap and (len(known_at) < 2 or float(path.ts[i]) - known_at[-2] < trig.gap):
+        return False  # the first known wallet in, or one that came right behind the previous
     if trig.min_curve or trig.max_curve:
         curve = float(path.q[i]) / LAMPORTS - CURVE_VIRTUAL_SOL
         if curve < trig.min_curve or (trig.max_curve and curve > trig.max_curve):
@@ -876,6 +888,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         idx = [i for i in range(path.n) if path.sigs[i] == launch.sig]
         return max(idx) if idx else None
     group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
+    team_of = (kols.get(TEAMS) or {}) if trig.teams and isinstance(kols, dict) else {}
     seen: set[str] = set()  # buyers so far: a KOL trigger wants the wallet's *first* buy in the coin, not a top-up
     known_at: list[float] = []  # when each group wallet made its first buy in the coin (a KOL trigger's consensus)
     for i in range(path.n):
@@ -883,8 +896,9 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             return None
         if not path.is_buy[i] or path.users[i] in dev:
             continue
-        first = path.users[i] not in seen
-        seen.add(path.users[i])
+        who = team_of.get(path.users[i], path.users[i])  # the known wallet this buyer counts as
+        first = who not in seen
+        seen.add(who)
         if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= KOL_MIN_SOL * LAMPORTS:
             known_at.append(float(path.ts[i]))
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
@@ -906,6 +920,14 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS
             and _kol_gates(trig, path, i, known_at)
         ):
+            while (  # a copy cannot land inside the team's bundle: behind its last back-to-back buy in the block
+                trig.teams
+                and i + 1 < path.n
+                and path.slot[i + 1] == path.slot[i]
+                and path.is_buy[i + 1]
+                and team_of.get(path.users[i + 1], path.users[i + 1]) == who
+            ):
+                i += 1
             return i
         if trig.kind == "burst":
             lo = np.searchsorted(path.ts, path.ts[i] - trig.window, side="left")
@@ -943,13 +965,20 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
     return out
 
 
-def label_groups(store: Store) -> dict[str, set[str]]:
+TEAMS = "__teams__"  # in the label groups: {address: team} for a KOL trigger with `teams`
+NOT_TRADERS = ("infra", "sniper")  # tracker names worth +1.7 % and +0.5 % at 5 s right behind; traders +5.0 % (10 Nov)
+
+
+def label_groups(store: Store) -> dict[str, Any]:
     """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list,
-    `cand` = the qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor); `dev` = the deployers
-    a launch trigger with `creators` fires on (dev-wallet snipes)."""
+    `trader` = the tracked list without the wallets its names call faucets, exchanges, snipers or bots, `cand` = the
+    qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor); `dev` = the deployers a launch
+    trigger with `creators` fires on (dev-wallet snipes). Under TEAMS, each KOL's and tracked wallet's team by name."""
+    names = {**store.labels("wallet"), **store.labels("kol")}
     wallet = set(store.labels("wallet"))
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet,
-            "dev": set(store.labels("dev"))}  # fmt: skip
+            "trader": {a for a in wallet if category(names[a]) not in NOT_TRADERS},
+            "dev": set(store.labels("dev")), TEAMS: {a: entity(n, a) for a, n in names.items()}}  # fmt: skip
 
 
 # Wallets one read of `_mints_with_buys_by` asks about. The read walks every trade each wallet ever made (the wallet
