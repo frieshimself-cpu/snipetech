@@ -188,3 +188,50 @@ def test_a_scan_is_kept_on_disk_so_the_table_is_made_again_without_reading_the_f
         assert recs2[0]["rets"].keys() == recs[0]["rets"].keys()  # the horizons are numbers again, not text
     finally:
         st.close()
+
+
+def test_features_are_crossed_and_each_cell_is_shown_for_each_half_of_the_days(tmp_path):
+    """30 days, 10 Nov: a website alone is +1.3 % a minute later, a Telegram link +5.7 %, a dev buy of 0.5-2 SOL +5 %.
+    Whether they add up is a cross of them; and a cell found among dozens is luck unless it pays in both halves of the
+    days, so every cell carries its first-half and second-half return."""
+    rows1: list[dict] = []
+    rows2: list[dict] = []
+    for day, rows in enumerate((rows1, rows2)):
+        for i in range(3):
+            good = Coin(rows, f"GOOD{day}{i}", f"gdev{day}{i}", S0 + 100 + 50 * i)  # website, dev buys 0.7 SOL, runs
+            good.buy(f"gdev{day}{i}", 0.7, 0)
+            for k in range(4):
+                good.buy(f"g{day}{i}-team-{k}", 4.0, 0)
+            good.buy("crowd", 20.0, 60)
+            good.buy("late", 0.1, 400)
+            bad = Coin(rows, f"BAD{day}{i}", f"bdev{day}{i}", S0 + 110 + 50 * i)  # website, no dev buy, dumped
+            bags = [bad.buy(f"b{day}{i}-team-{k}", 4.0, 0) for k in range(4)]
+            for k, bag in enumerate(bags):
+                bad.sell(f"b{day}{i}-team-{k}", bag, 40)
+            bad.buy("late", 0.1, 400)
+    paths = [_write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows1)]
+    for r in rows2:  # the second day's coins a day later
+        r["slot_number"] += 216_000
+        r["timestamp"] += 86_400
+    paths.append(_write(tmp_path / "pump_fun_2026-10-28_00.parquet", rows2))
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(scan_files(paths, min_block_sol=15, stats=stats))
+        for r in recs:
+            st.put_token_meta(r["mint"], "u", True, {"website": "https://w.io", "x_kind": "profile", "telegram": ""})
+        out = history_table(
+            recs, st.token_meta, min_block_sol=15, stats=stats, cross=("website", "dev_sol"), min_cell=2
+        )
+        assert [c["cell"] for c in out["cross"]] == ["website=yes, dev_sol=0.5-1", "website=yes, dev_sol=0"]
+        good, bad = out["cross"]  # cells are listed best first, by the worse of their two halves
+        assert good["launches"] == 6 and good["ret_150"] > 50 and good["first_half"] > 50 and good["second_half"] > 50
+        assert good["first_half_n"] == 3 and good["second_half_n"] == 3
+        assert bad["launches"] == 6 and bad["first_half"] < -40 and bad["second_half"] < -40
+        small = history_table(
+            recs, st.token_meta, min_block_sol=15, stats=stats, cross=("website", "dev_sol"), min_cell=7
+        )
+        assert small["cross"] == []  # a cell with too few launches is not shown
+        assert "cross" not in history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
+    finally:
+        st.close()

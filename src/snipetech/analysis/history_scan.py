@@ -144,11 +144,15 @@ def _mean(vals: list[float]) -> float | None:
 
 def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *, min_block_sol: float,
                   stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
-                  x_of: Callable[[str], dict | None] | None = None) -> dict[str, Any]:  # fmt: skip
+                  x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
+                  min_cell: int = 50) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
-    "no account" = the coin names none, "unknown" = it names one that was never looked up."""
+    "no account" = the coin names none, "unknown" = it names one that was never looked up. `cross` (names of splits)
+    adds every combination of their buckets with `min_cell` launches or more, each with its return at the last horizon
+    on the first and on the second half of the days, best first by the worse half: a cell among dozens that pays on
+    one half only is luck."""
     bundled = [r for r in records if r["block_sol"] >= min_block_sol]
     organised = [r for r in bundled if not r.get("bonded_at_once")]  # a curve its own bundle filled cannot be bought
     items = [(SimpleNamespace(mint=r["mint"], symbol=r["symbol"], creator=r["creator"], user=r["creator"]),
@@ -180,6 +184,44 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 groups.setdefault(label, []).append(item)
             order = [n for n in (*names, "no account") if n in groups]
             by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
+    crossed = None
+    if cross:
+        day_of = {r["mint"]: r["day"] for r in organised}
+        ts_at = {r["mint"]: r["ts"] for r in organised}
+        all_days = sorted(set(day_of.values()))
+        first_days = set(all_days[: (len(all_days) + 1) // 2])
+        numeric = SPLITS | {"block_sol": BLOCK_SOL}
+
+        def label(key: str, item: tuple) -> str:
+            mint = item[0].mint
+            if key in LINK_SPLITS:
+                return LINK_SPLITS[key][0](metas[mint])
+            if key in numeric:
+                return _bucket(item[1][key], *numeric[key])
+            handle = xaccounts.handle_of(metas[mint])
+            if not handle or x_of is None:
+                return "no account" if not handle else "unknown"
+            return xaccounts.labels(x_of(handle), ts_at[mint])[key]
+
+        cells: dict[tuple[str, ...], list] = {}
+        for item in items:
+            cells.setdefault(tuple(label(key, item) for key in cross), []).append(item)
+        hl = max(horizons)
+        crossed = []
+        for names, group in cells.items():
+            if len(group) < min_cell:
+                continue
+            row = _row(", ".join(f"{k}={n}" for k, n in zip(cross, names, strict=True)), group, horizons, fee_pct)
+            row.pop("examples", None)
+            halves = ([], [])
+            for it in group:
+                if it[1]["rets"]:
+                    halves[day_of[it[0].mint] not in first_days].append(it[1]["rets"][hl])
+            crossed.append({"cell": row.pop("mark"), **row, "first_half": _mean(halves[0]), "first_half_n": len(halves[0]),
+                            "second_half": _mean(halves[1]), "second_half_n": len(halves[1])})  # fmt: skip
+        worst = lambda c: min(c["first_half"] if c["first_half"] is not None else -1e9,
+                              c["second_half"] if c["second_half"] is not None else -1e9)  # fmt: skip
+        crossed.sort(key=lambda c: (-worst(c), c["cell"]))
     website = LINK_SPLITS["website"][0]
     days: dict[str, dict[str, list[float]]] = {}
     h = max(horizons)
@@ -196,7 +238,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
             "bonded_at_once": len(bundled) - len(organised),
             "all": {"launches": n, "reached_30": round(stats.get("reached_30", 0) / n, 3) if n else None,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},
-            "by": by, "by_day": by_day,
+            "by": by, "by_day": by_day, **({"cross": crossed, "cross_keys": list(cross)} if cross else {}),
             "order_breaks": round(stats.get("breaks", 0) / stats["checked"], 4) if stats.get("checked") else None}  # fmt: skip
 
 

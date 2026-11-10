@@ -862,6 +862,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-create-share", type=float, default=1.0, help="follow: leave out wallets with a larger share "
                     "of their buys in the create slot (a copy cannot land there)")  # fmt: skip
     sp.add_argument("--rescan", action="store_true", help="follow: read the files again even if a run was kept")
+    sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
+                    "block_wallets, block_sol, dev_sol, x_badge, x_followers, x_age); each cell is shown per half of the days")
+    sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
     sp.add_argument("--date", help="check: the day, YYYY-MM-DD")
     sp.add_argument("--hour", type=int, help="check: the hour, 0-23 UTC")
     sp = cmd(
@@ -1765,7 +1768,8 @@ def _history(args, cfg: Config) -> int:
                 x_run = asyncio.run(look_up())
             accounts = store.x_accounts(handles)
             out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats,
-                                x_of=accounts.get if accounts else None)  # fmt: skip
+                                x_of=accounts.get if accounts else None, min_cell=args.min_cell,
+                                cross=tuple(k for k in (args.cross or "").split(",") if k) or None)  # fmt: skip
         finally:
             store.close()
         out.update(
