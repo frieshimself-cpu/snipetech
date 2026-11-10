@@ -40,7 +40,19 @@ WINDOW_SLOTS = 1500  # trades kept for a launch: ten minutes, the longest exit r
 # it, a trail under the highest price so far (fractions)
 EXITS: dict[str, dict[str, float]] = {
     "t5s": {"slots": 13},
+    "t10s": {"slots": 25},
+    "t20s": {"slots": 50},
+    "t30s": {"slots": 75},
+    "t40s": {"slots": 100},
+    "t50s": {"slots": 125},
+    "t59s": {
+        "slots": 148
+    },  # the table's 60 s return ends one block before `t60s`: the pair shows a cliff at the minute
     "t60s": {"slots": 150},
+    "t61s": {"slots": 152},
+    "t70s": {"slots": 175},
+    "t90s": {"slots": 225},
+    "t2m": {"slots": 300},
     "t4m": {"slots": 600},
     "t10m": {"slots": 1500},
     "stop15_t10m": {"stop": 0.15, "slots": 1500},
