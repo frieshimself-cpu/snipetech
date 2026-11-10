@@ -248,3 +248,36 @@ def test_the_scan_reads_the_funding_of_a_marks_creators_once_and_counts_the_laun
         assert {r["mark"]: r["launches"] for r in again["marks"]}["fund:cu1450"] == 2
     finally:
         st.close()
+
+
+def test_a_launch_whose_create_block_buyers_were_relay_funded_is_marked_too():
+    """The creator's funding found about 100 Proxima launches a day where the owner says 500: a dev launching from a
+    wallet they already had is missed. The bundle wallets buying in the create's own block are funded by the same relay
+    (8 of 8 around the owner's coins), so their first transaction is read as well."""
+    from snipetech.analysis.launch_tools import launch_tools
+
+    st = Store(":memory:")
+    try:
+        m = Market(st, addr("tm-coin"), addr("tm-dev"), NOW - 3000, 92_000_000)
+        m.buy(m.deployer, 1.0, 0, sig=m.create_sig)
+        m.buy(addr("tm-team-a"), 2.5, 0)
+        m.buy(addr("tm-team-b"), 2.5, 0)
+        m.buy(addr("tm-late"), 1.0, 3)  # after the create block: not a bundle wallet, never looked up
+        m.buy(addr("crowd"), 20.0, 5)
+        m.commit()
+        _coin(st, 90, run=False)  # a launch with nobody else in its create block
+        rpc = _FundingRpc([addr("tm-team-b"), addr("tm-late")])
+        out = asyncio.run(
+            launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st, funding_of=PROXIMA_TABLE)
+        )
+        rows = {r["mark"]: r for r in out["marks"]}
+        assert rows["team:cu1450"]["launches"] == 1 and "fund:cu1450" not in rows and out["team_read"] == 2
+        assert rows["team:cu1450"]["examples"][0]["mint"] == addr("tm-coin") and not any("read" in k for k in rows)
+        calls = (rpc.tx_calls, rpc.sig_calls)
+        again = asyncio.run(
+            launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st, funding_of=PROXIMA_TABLE)
+        )
+        assert (rpc.tx_calls, rpc.sig_calls) == calls and again["team_read"] == 0
+        assert {r["mark"] for r in again["marks"]} >= {"team:cu1450", PROXIMA_TABLE}
+    finally:
+        st.close()

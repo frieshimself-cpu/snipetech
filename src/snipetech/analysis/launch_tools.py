@@ -59,6 +59,8 @@ def tx_marks(tx: dict, creator: str) -> list[str]:
 COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111"
 SYSTEM = "11111111111111111111111111111111"
 FUNDING_READ = "fund:read"  # kept with a launch's marks once its creator's funding was looked up; never a tool
+TEAM_READ = "team:read"  # the same for the buyers in its create block
+TEAM_MAX = 6  # a Jito bundle is five transactions: the create and four buys; a little room for a second bundle
 
 
 def funding_mark(tx: dict) -> str | None:
@@ -77,6 +79,21 @@ def funding_mark(tx: dict) -> str | None:
         else:
             return None
     return f"fund:cu{limits[0]}" if len(limits) == 1 and transfers == 1 else None
+
+
+def _block_buyers(launch, trades: list) -> list[str]:
+    """The other wallets that bought in the create's own block, in the order they landed, `TEAM_MAX` at most: the
+    bundle a launch tool sends with the create (and any sniper that made the block; its funding says which it is)."""
+    devs = {launch.creator, launch.user}
+    out: list[str] = []
+    for t in trades:
+        if int(t.slot) != int(launch.slot):
+            if int(t.slot) > int(launch.slot):
+                break
+            continue
+        if t.is_buy and t.user not in devs and t.user not in out:
+            out.append(t.user)
+    return out[:TEAM_MAX]
 
 
 async def _funding(rpc, wallet: str) -> str | None:
@@ -258,7 +275,8 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
     `mark_split` under "split". With `marks_store` (the live database: `store` is the read-only tape copy), a launch's
     marks are kept once read and only launches never read are fetched: a create never changes. With `funding_of` (a
     mark, and a `marks_store`), the creator of each launch carrying that mark has its first transaction read once
-    (`funding_mark`), so the launches a tool's relay funded stand apart from the rest of a broad mark."""
+    (`funding_mark`), so the launches a tool's relay funded stand apart from the rest of a broad mark; the buyers in
+    its create block are read the same way (`team:cu<limit>` when any of them was relay-funded)."""
     horizons = (13, 150)
     end = int(now - max(horizons) * SLOT_SECS - 60)
     launches = store.launches_between(int(now - hours * 3600), end)[-max_launches:]
@@ -294,9 +312,23 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
         marks_store.put_launch_marks(fresh)
         for mint, added in fresh.items():
             known[mint] = [*known[mint], *added]
-    pairs = [
-        (launch, [m for m in known[launch.mint] if m != FUNDING_READ]) for launch in launches if launch.mint in known
-    ]
+    teams = [launch for launch in launches
+             if funding_of and marks_store is not None and funding_of in known.get(launch.mint, ())
+             and TEAM_READ not in known[launch.mint]]  # fmt: skip
+    for i in range(0, len(teams), 10):
+        part = teams[i : i + 10]
+        buyers = [_block_buyers(launch, store.trades_for_mint(launch.mint, int(launch.ts)) or []) for launch in part]
+        found = await asyncio.gather(*(_funding(rpc, wallet) for wallets in buyers for wallet in wallets))
+        fresh, at = {}, 0
+        for launch, wallets in zip(part, buyers, strict=True):
+            got = {m for m in found[at : at + len(wallets)] if m}
+            at += len(wallets)
+            fresh[launch.mint] = [TEAM_READ, *sorted("team:" + m.split(":", 1)[1] for m in got)]
+        marks_store.put_launch_marks(fresh)
+        for mint, added in fresh.items():
+            known[mint] = [*known[mint], *added]
+    notes = (FUNDING_READ, TEAM_READ)
+    pairs = [(launch, [m for m in known[launch.mint] if m not in notes]) for launch in launches if launch.mint in known]
     out = tool_table(pairs, store.trades_for_mint, min_launches=min_launches, horizons=horizons)
     out.update(
         {
@@ -305,6 +337,7 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
             "not_fetched": missing,
             "fetched": len(todo) - missing,
             "funding_read": len(funded),
+            "team_read": len(teams),
         }
     )
     if mark:
