@@ -3,8 +3,12 @@
 **Question (owner, 10 Nov):** "6Z91 makes so much money off copytrading, it just copytraded Gake." How does it do it,
 and why does copying the same wallets lose for us?
 
-**Answer: 6Z91 buys in the same block as the wallet it copies and sells about 5 seconds later. After that block the
-price falls on average. We land after that block, so we buy what it sells.**
+**Answer: 6Z91 buys in the same block as the wallet it copies, pays for its place right behind that wallet (a median
+0.033 SOL a buy), buys 3-5 SOL and sells about 5 seconds later. After that block the price falls on average. Our copies
+land in the same block too, but we have only tried 0.2 SOL at a 0.003 SOL bid on quiet wallets: the gap is the bid, the
+size, the exit and the choice of wallets, not speed.**
+
+*Corrected at 11:50 UTC: the first version said our copies land a block late. The fills table says otherwise (below).*
 
 All numbers are from the server's tape, 72 hours to 10 Nov 11:20 UTC, wallet
 `6Z91Dgiz9E44bMW11rQuMBjt1NwwPoQGXFNZieGfVtAb`.
@@ -35,19 +39,39 @@ other fast bots, not to one short list.
 From slot +30 to slot +450 the price rose in 30 % of the coins (average −10.1 %): there is no second wave to buy
 either, on average.
 
+## Where our own copies land (the fills table)
+
+| day | leader | copies | same block | next block | trades behind | price gap | our bid a buy |
+|---|---|---|---|---|---|---|---|
+| 6 Nov | 2YDnmM | 10 | 10 | 0 | 0.2 | +2.0 % | 0.010 |
+| 6 Nov | 4yo9CU (crowded) | 6 | 4 | 1 | 4.3 | +29.2 % | 0.021 |
+| 7-9 Nov | 7aPo3n | 13 | 10 | 3 | 0.3 | +1 % | 0.003 |
+| 8 Nov | AG89fn | 6 | 6 | 0 | 0.2 | +0.6 % | 0.003 |
+| 9 Nov | 2Tp9sc | 5 | 4 | 1 | 0.2 | +1.6 % | 0.003 |
+
+Since 7 Nov: 20 of 24 copies in the leader's own block, 0.3 trades behind. OKTech's speed is not the problem. Behind
+a wallet many bots follow (4yo9CU) the place inside the block is a fee auction and the minimum bid lands last.
+
+## What 6Z91 pays for its place
+
+142 of its buys have fee data on the tape: priority fee plus tip a buy is 0.033 SOL at the median (a quarter under
+0.006, a quarter over 0.07, a tenth at 0.29 or more), 1.3 % of the buy at the median, on buys of 3.5 SOL. The gross
++459 SOL above is before these fees; at the median fee they are about 50 SOL of it, at the mean (0.22) about 340.
+
 ## What it means
 
-- The whole move of a copied wallet's buy is inside its own block. A bot in that block takes it and sells into the
-  slower copiers within seconds.
-- Our copies land 2-4 trades behind the leader at +18 to +43 % price: behind those bots. Every copy test at our
-  landing lost for this reason (KOL first buys at every size, single KOLs, the tracked list). Sizes, fees and exits do
-  not fix it.
-- Two routes are left for copying: (1) land in the leader's block, which is an execution question for OKTech or for
-  whatever 6Z91's owner runs; (2) copy only leaders that no fast bot follows inside their block (idea I50, with the
-  server's agents: the share of a leader's buys with a same-slot follower, and the result of copying the low-share
-  leaders).
-- Strategies that do not depend on another wallet's buy (the mid and late swing traders of the winners study, I46)
-  are not touched by this.
+- The move of a copied wallet's buy is inside its own block and the seconds after it. A bot right behind the wallet
+  takes it and sells into the slower copiers.
+- We are in that block already. What we have not done is what 6Z91 does: bid for the place behind wallets that bring a
+  crowd, at a size where the bid is about 1 % of the trade, and sell within seconds. Our live copies were 0.2 SOL at a
+  0.003 SOL bid behind quiet scalpers, where fixed fees alone are 2.5 % of the trade.
+- The paper tests that refuted KOL copying scored a copy behind the 3rd buy after the leader's ("+3x"), the place a
+  minimum bid gets behind a crowded wallet. A paid place right behind the leader is untested (idea I51: 1-5 SOL, bid
+  0.01-0.07 a transaction, exits in seconds, on 72 h of tape; then forward paper).
+- The owner's splits (10 Nov: the second known wallet in, the coin's volume, the time of day) are scored by the new
+  `copy-context` study at both landings (`--behind-leader` and a block late).
+- Idea I50 (leaders nobody follows inside their block) and the winners study's mid and late swing traders (I46) stay
+  open beside it.
 
 ## How it was measured
 

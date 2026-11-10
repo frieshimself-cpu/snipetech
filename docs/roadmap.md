@@ -6,18 +6,21 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
-## 10 Nov: copying loses one block late; the analyst runs on a stronger model (11:30 UTC)
+## 10 Nov: what 6Z91 does that we have not tried; the analyst runs on a stronger model (11:50 UTC)
 
-- **The honest state: nothing is profitable at our landing yet, and we now know why copying is not.** 6Z91 (the
-  owner's friend's bot, +459 SOL in 72 h on our tape) buys in the same block as the wallet it copies and sells about
-  5 seconds later. On 339 such coins the price is +1.3 % two slots after the leader's block, −1.7 % at 15 slots,
-  −6.9 % at one minute and −18.5 % at ten minutes. Our copies land 2-4 trades behind, after that block, so they buy
-  what the fast bots sell. Sizes, fees and exits do not fix it. The opening paragraph above ("enter one step behind")
-  is refuted for copies by this. Record: [research/2026-11-10-same-block.md](research/2026-11-10-same-block.md).
-- **What is left, in order.** (1) Same-block landing: an execution question for OKTech and for whoever runs 6Z91
-  (owner). (2) Leaders that no fast bot follows inside their block (idea I50, server agents). (3) The winners study's
-  mid and late swing traders (I46): 40 picked wallets wait for their copy verdicts; `qualify` waits while a lab runs,
-  so it is started right after the next deploy.
+- **The honest state: nothing is profitable yet; the untested thing is now named.** 6Z91 (the owner's friend's bot,
+  +459 SOL gross in 72 h on our tape) buys in the same block as the wallet it copies, pays a median 0.033 SOL a buy
+  for the place right behind it, buys 3-5 SOL and sells about 5 seconds later. On 339 such coins the price is +1.3 %
+  two slots after the leader's block, −1.7 % at 15 slots, −6.9 % at one minute and −18.5 % at ten minutes. Our own
+  copies land in the leader's block too (20 of 24 since 7 Nov, 0.3 trades behind): speed is not the gap. We tried
+  0.2 SOL at a 0.003 SOL bid behind quiet scalpers; the paper tests scored KOL copies behind the 3rd buy after the
+  leader's. Record: [research/2026-11-10-same-block.md](research/2026-11-10-same-block.md).
+- **What is being tested, in order.** (1) A paid place right behind known wallets at 1-5 SOL with exits in seconds
+  (idea I51, lab on 72 h, then forward paper; a live step needs the owner's yes). (2) The owner's splits with the new
+  `copy-context` study: the second known wallet in, the coin's volume, its age, the hour, the buys later in the
+  leader's block. (3) Leaders nobody follows inside their block (I50). (4) The winners study's mid and late swing
+  traders (I46): 40 picked wallets wait for their copy verdicts; `qualify` waits while a lab runs, so it is started
+  right after the next deploy.
 - **Refuted since 8 Nov:** KOL first-buy copies at every size on forward paper (20+ trades), single KOLs, rug crews'
   coins at launch, KOL buys on coins under 2 minutes old, three momentum versions, whale buys of 2-10 SOL.
 - **The analyst runs on `claude-fable-5-2`** (owner, 10 Nov: "ok do it"; 27b0e13). The operator stays on

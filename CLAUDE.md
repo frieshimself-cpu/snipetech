@@ -34,8 +34,10 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 1. **No live trading without the owner's explicit yes in chat for that specific step** (wallet, size, duration).
    Never create or start an OKTech sniper, move SOL, or change wallets on your own. A stopped sniper strands its
    coin: never stop one that holds a position it bought.
-2. **Measure at the real landing.** Live copies land 2–4 trades behind the leader at +18–43 % price (the "+6
-   regime"); launch snipes land a slot after the create. Paper results at better landings are not evidence.
+2. **Measure at the real landing.** Live copies land in the leader's own block (20 of 24 since 7 Nov); the place
+   inside it is a fee auction. At a 0.003 SOL bid: 0.3 trades behind at +1 % behind a quiet leader, 2–4 trades behind
+   at +18–43 % behind a crowded one (the "+6 regime"). Launch snipes land a slot after the create. A paper result
+   names its landing and the bid that buys it; one at a better landing than its bid buys is not evidence.
 3. **One `lab` job at a time** on the server; it is the heavy one.
 4. **Do not touch `/home/user/velo`** or any other repository the owner has not pointed you at.
 5. Commits end with the attribution trailers the session is given; no model names in repo artifacts.
