@@ -843,10 +843,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd(
         "history",
         "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape | "
-        "scan the files on disk | table from a kept scan; "
+        "scan the files on disk | table from a kept scan | follow: copy every wallet's first buys; "
         "the key is PUMPFUNDATA_API_KEY in the server's env file",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check", "scan", "table"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "scan", "table", "follow"])
     sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
     sp.add_argument("--min-block-sol", type=float, default=15.0, help="scan: an organised launch is one where others "
                     "put this much SOL in the create block")  # fmt: skip
@@ -855,6 +855,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-files", type=int, default=24, help="fetch: credits this run may spend (one a file)")
     sp.add_argument("--x-max", type=int, default=0, help="scan/table: look up at most this many X accounts the organised "
                     "launches link to (twitterapi.io, paid; kept, so never twice); 0 = none")  # fmt: skip
+    sp.add_argument("--min-sol", type=float, default=0.5, help="follow: the smallest first buy that is scored as a copy")
+    sp.add_argument("--test-weeks", type=int, default=1, help="follow: the last weeks, on which picked wallets are judged")
+    sp.add_argument("--min-pick", type=int, default=30, help="follow: first buys a wallet needs in the picking weeks")
+    sp.add_argument("--top", type=int, default=50, help="follow: picked wallets listed one by one")
+    sp.add_argument("--max-create-share", type=float, default=1.0, help="follow: leave out wallets with a larger share "
+                    "of their buys in the create slot (a copy cannot land there)")  # fmt: skip
+    sp.add_argument("--rescan", action="store_true", help="follow: read the files again even if a run was kept")
     sp.add_argument("--date", help="check: the day, YYYY-MM-DD")
     sp.add_argument("--hour", type=int, help="check: the hour, 0-23 UTC")
     sp = cmd(
@@ -1692,6 +1699,30 @@ def _history(args, cfg: Config) -> int:
         print(f"{pfd.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
         return 2
     dest = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
+
+    if args.action == "follow":  # no call to the vendor: every wallet's first buys in the files on disk, as copies
+        from .analysis.history_follow import Follow, follow_files, follow_table
+
+        lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
+        kept = dest / "follows" / f"follow_{lo}_{hi}_{args.min_sol:g}.json"
+        if kept.exists() and not args.rescan:
+            agg, span = Follow.load(kept), {"kept": kept.name}
+        else:
+            paths = [p for p in sorted(dest.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
+            if not paths:
+                print(f"history follow: no files on disk for {lo}..{hi}", file=sys.stderr)
+                return 2
+            first, last = (calendar.timegm(time.strptime(p.name.split("_")[-2], "%Y-%m-%d")) for p in (paths[0], paths[-1]))
+            weeks = -(-(last + 86400 - first) // (7 * 86400))  # weeks are counted back from the last day: the last is whole
+            agg = Follow(start_ts=last + 86400 - weeks * 7 * 86400)
+            stats: dict = {}
+            follow_files(paths, agg.add, min_sol=args.min_sol, stats=stats)
+            agg.save(kept)
+            agg, span = Follow.load(kept), {"from": paths[0].name, "to": paths[-1].name, "scan": stats}
+        out = follow_table(agg, test_weeks=args.test_weeks, min_pick=args.min_pick, top=args.top,
+                           max_create_share=args.max_create_share)  # fmt: skip
+        print(json.dumps(span | {"min_sol": args.min_sol} | out, indent=1, default=str))
+        return 0
 
     if args.action in ("scan", "table"):  # no call to the vendor: the files on disk, and the coins' metadata links
         from . import xaccounts as xa
