@@ -9,9 +9,14 @@ from pathlib import Path
 _MILLION = 1_000_000.0
 
 
-def cost_usd(usage: dict, prices: dict, analyst: bool) -> float:
-    """Dollars for one response's token counts; missing counts are 0; analyst turns use the analyst_* rates."""
-    p = lambda k: float(prices.get(f"analyst_{k}" if analyst else k, 0.0))
+TIERS = {"analyst": "analyst", "postmortem": "analyst", "strategist": "strategist"}  # a turn's mode -> its price rows
+
+
+def cost_usd(usage: dict, prices: dict, analyst: bool = False, tier: str = "") -> float:
+    """Dollars for one response's token counts; missing counts are 0. Each agent runs on its own model, so each has
+    its own rows in the price table: plain names for the operator, analyst_* and strategist_* for the other two."""
+    tier = tier or ("analyst" if analyst else "")
+    p = lambda k: float(prices.get(f"{tier}_{k}" if tier else k, 0.0))
     n = lambda k: int(usage.get(k) or 0)  # the SDK reports unused counters as None
     return (
         n("input_tokens") * p("in")
@@ -31,7 +36,7 @@ class Ledger:
 
     def record(self, mode: str, usage: dict, now: float | None = None) -> float:
         now = time.time() if now is None else now
-        usd = cost_usd(usage, self.prices, analyst=(mode in ("analyst", "strategist")))  # both run on the analyst model
+        usd = cost_usd(usage, self.prices, tier=TIERS.get(mode, ""))
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
                 "usd": round(usd, 6)}  # fmt: skip

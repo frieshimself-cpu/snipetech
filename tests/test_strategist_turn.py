@@ -167,11 +167,13 @@ def test_turn_returns_patch_and_reason(tmp_path):
     assert out["stopped"] == "end_turn" and out["usd"] > 0 and ledger.spent_today(NOW) > 0
     lines = [json.loads(ln) for ln in paths.spend.read_text().splitlines() if ln.strip()]
     assert {ln["mode"] for ln in lines} == {"strategist"}  # its own line in the ledger, priced at the analyst rates
-    expected = 3 * (10 * cfg.operator.prices["analyst_in"] + 5 * cfg.operator.prices["analyst_out"]) / 1e6
+    expected = 3 * (10 * cfg.operator.prices["strategist_in"] + 5 * cfg.operator.prices["strategist_out"]) / 1e6
     assert (
         abs(ledger.spent_today(NOW) - expected) < 1e-9 and abs(out["usd"] - expected) < 1e-4
     )  # usd is rounded to 4 places
-    assert requests[0]["model"] == cfg.operator.analyst_model and "bounds" in requests[0]["system"].lower()
+    assert requests[0]["model"] == "claude-opus-5-5" == cfg.operator.strategist_model  # not the analyst's model
+    assert requests[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert "bounds" in requests[0]["system"].lower()
     assert any(t["name"] == "propose_patch" for t in requests[0]["tools"])
 
 

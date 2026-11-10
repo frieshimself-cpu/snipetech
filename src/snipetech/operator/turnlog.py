@@ -46,6 +46,7 @@ class TurnLog:
 
     def __init__(self, mode: str, reasons: list[str], started: float) -> None:
         self.mode, self.reasons, self.started = mode, list(reasons), started
+        self.model: str | None = None
         self.steps: list[dict] = []
         self._by_id: dict[str, dict] = {}
 
@@ -79,8 +80,8 @@ class TurnLog:
                     step["error"] = True
 
     def finish(self, out: dict, paths: OperatorPaths, ended: float) -> None:
-        row = {"ts": int(self.started), "ended": int(ended), "mode": self.mode, "reasons": self.reasons,
-               "usd": out.get("usd"), "tool_calls": out.get("tool_calls"), "stopped": out.get("stopped"),
+        row = {"ts": int(self.started), "ended": int(ended), "mode": self.mode, "model": self.model,
+               "reasons": self.reasons, "usd": out.get("usd"), "tool_calls": out.get("tool_calls"), "stopped": out.get("stopped"),
                "error": out.get("error"), "steps": self.steps}  # fmt: skip
         with contextlib.suppress(OSError, TypeError, ValueError):
             line = redact(json.dumps(row, default=str)) + "\n"

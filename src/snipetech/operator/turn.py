@@ -102,7 +102,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         system=ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM,
         tools=tools,
         messages=[{"role": "user", "content": content}],
-        thinking={"type": "adaptive"},
+        # the current models return empty thinking text unless asked for its summary; the owner's live page shows it
+        thinking={"type": "adaptive", "display": "summarized"},
         output_config={"effort": op.effort},
         cache_control={"type": "ephemeral"},
         betas=[FALLBACK_BETA],
@@ -123,6 +124,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
             async for message in runner:
                 message_stop_reason = message.stop_reason
                 usd += ledger.record(mode, message.usage.model_dump(), now())
+                record.model = getattr(message, "model", None)  # the model that answered (a fallback may)
                 record.add_message(message.content)
                 tool_uses = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
                 if message.stop_reason == "refusal":

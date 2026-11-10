@@ -59,7 +59,7 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
 
     client = client or AsyncAnthropic()
     runner = client.beta.messages.tool_runner(
-        model=cfg.operator.analyst_model,
+        model=cfg.operator.strategist_model,
         max_tokens=cfg.operator.analyst_max_tokens,
         system=STRATEGIST_SYSTEM,
         tools=[
@@ -79,7 +79,7 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
                 ),
             }
         ],
-        thinking={"type": "adaptive"},
+        thinking={"type": "adaptive", "display": "summarized"},
         output_config={"effort": cfg.operator.effort},
         cache_control={"type": "ephemeral"},
         betas=[FALLBACK_BETA],

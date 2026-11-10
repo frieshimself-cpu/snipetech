@@ -114,7 +114,19 @@ def test_turn_records_usage_and_sends_decisions(env):
 def test_analyst_mode_uses_analyst_model(env):
     handler, requests = _scripted(([{"type": "text", "text": "nothing"}], "end_turn"))
     _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
-    assert requests[0]["model"] == "claude-opus-5-5" and _system(requests[0]).startswith(ANALYST_SYSTEM[:40])
+    assert requests[0]["model"] == "claude-fable-5-2" and _system(requests[0]).startswith(ANALYST_SYSTEM[:40])
+
+
+def test_every_turn_asks_for_readable_reasoning_and_records_the_model_that_answered(env):
+    """The current models return empty thinking text unless asked for a summary: without it the owner's live page
+    shows what an agent did but not how it thought. The record also names the model that answered (a fallback may
+    answer in place of the one asked for)."""
+    from snipetech.operator.turnlog import read_turns
+
+    handler, requests = _scripted(([{"type": "text", "text": "nothing"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    assert requests[0]["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert read_turns(env["paths"], 1)[0]["model"] == "claude-sonnet-5-5"  # what the scripted reply says answered
 
 
 def test_turn_stops_at_turn_usd(env):

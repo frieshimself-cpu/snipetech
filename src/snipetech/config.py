@@ -248,15 +248,35 @@ class AgentConfig:
     max_tokens: int = 16000
 
 
-DEFAULT_OPERATOR_PRICES: dict[str, float] = {  # USD per million tokens
-    "in": 3.0,
-    "out": 15.0,
-    "cache_read": 0.3,
-    "cache_write": 3.75,  # claude-sonnet-5-5
-    "analyst_in": 5.0,
-    "analyst_out": 25.0,
-    "analyst_cache_read": 0.5,
-    "analyst_cache_write": 6.25,  # claude-opus-5-5
+DEFAULT_OPERATOR_PRICES: dict[str, float] = {  # USD per million tokens (cache_write: the 5-minute cache)
+    "in": 2.0,
+    "out": 10.0,
+    "cache_read": 0.1,
+    "cache_write": 2.5,  # the operator's model, claude-sonnet-5-5
+    "analyst_in": 8.0,
+    "analyst_out": 40.0,
+    "analyst_cache_read": 0.2,
+    "analyst_cache_write": 10.0,  # the analyst's model, claude-fable-5-2
+    "strategist_in": 4.0,
+    "strategist_out": 20.0,
+    "strategist_cache_read": 0.2,
+    "strategist_cache_write": 5.0,  # the strategist's model, claude-opus-5-5
+}
+
+# The server's file is `init`'s dump of every default of its day and the owner does not edit it, so a default that
+# changes here would never reach the server. A value in the file that equals one of these retired defaults is not a
+# choice and follows the new default; any other value is the owner's and stays. 10 Nov: the analyst moved from
+# claude-opus-5-5 (owner: "ok do it"), and the price table of 6 Nov overstated every line of the spend ledger.
+RETIRED_OPERATOR_DEFAULTS: dict[str, tuple] = {"analyst_model": ("claude-opus-5-5",)}
+RETIRED_OPERATOR_PRICES: dict[str, tuple] = {
+    "in": (3.0,),
+    "out": (15.0,),
+    "cache_read": (0.3,),
+    "cache_write": (3.75,),
+    "analyst_in": (5.0,),
+    "analyst_out": (25.0,),
+    "analyst_cache_read": (0.5,),
+    "analyst_cache_write": (6.25,),
 }
 
 
@@ -279,8 +299,9 @@ class OperatorConfig:
     # on 7 Nov, so the server's file (a dump of the old defaults) does not pin it; the owner's /budget overrides it
     analyst_every_h: float = 2.0
     digest_hour_utc: int = 7  # the daily Telegram digest goes out in the first round after this hour (UTC)
-    model: str = "claude-sonnet-5-5"
-    analyst_model: str = "claude-opus-5-5"
+    model: str = "claude-sonnet-5-5"  # the 15-minute health check
+    analyst_model: str = "claude-fable-5-2"  # the research thinking (analyst turns and post-mortems)
+    strategist_model: str = "claude-opus-5-5"  # the daily settings review
     max_tokens: int = 8000
     analyst_max_tokens: int = 16000
     effort: str = "medium"
@@ -737,8 +758,12 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
                 _merge_fee_table(current, value)
                 if key == "bounds" and "tune" not in data:
                     obj.tune = {k: {n: dict(r) for n, r in v.items()} for k, v in current.items()}
+            elif isinstance(obj, OperatorConfig) and key == "prices":
+                current.update({k: v for k, v in value.items() if v not in RETIRED_OPERATOR_PRICES.get(k, ())})
             else:
                 current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
+        elif isinstance(obj, OperatorConfig) and value in RETIRED_OPERATOR_DEFAULTS.get(key, ()):
+            continue  # the file's dump of an old default, not the owner's choice
         else:
             setattr(obj, key, _coerce(value, type(current)))
 

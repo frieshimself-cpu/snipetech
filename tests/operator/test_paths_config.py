@@ -11,15 +11,44 @@ def test_operator_config_loads_from_toml(tmp_path):
     p.write_text('[operator]\nwallet = "W"\ndaily_usd = 1.5\nprices = { in = 1.0 }\n')
     cfg = Config.load(p)
     assert cfg.operator.wallet == "W" and cfg.operator.daily_usd == 1.5
-    assert cfg.operator.prices["in"] == 1.0 and cfg.operator.prices["out"] == 15.0  # merged over defaults
+    assert cfg.operator.prices["in"] == 1.0 and cfg.operator.prices["out"] == 10.0  # merged over defaults
     assert cfg.operator.model == "claude-sonnet-5-5" and cfg.operator.daily_usd != 15.0
 
 
 def test_operator_config_defaults():
     o = Config().operator
     assert (o.daily_usd, o.turn_usd, o.max_jobs, o.equity_alert_sol, o.tape_stale_secs) == (15.0, 2.0, 3, 0.1, 300)
-    assert o.analyst_after_utc == "06:00" and o.analyst_model == "claude-opus-5-5"
-    assert o.prices["analyst_out"] == 25.0
+    assert o.analyst_after_utc == "06:00"
+    # owner, 10 Nov ("ok do it"): the analyst, where the research thinking happens, runs on the strongest model; the
+    # 15-minute health check and the daily settings review stay where they were
+    assert (o.model, o.analyst_model, o.strategist_model) == (
+        "claude-sonnet-5-5",
+        "claude-fable-5-2",
+        "claude-opus-5-5",
+    )
+    assert (o.prices["in"], o.prices["out"], o.prices["cache_read"], o.prices["cache_write"]) == (2.0, 10.0, 0.1, 2.5)
+    assert (o.prices["analyst_in"], o.prices["analyst_out"]) == (8.0, 40.0)
+    assert (o.prices["analyst_cache_read"], o.prices["analyst_cache_write"]) == (0.2, 10.0)
+    assert (o.prices["strategist_in"], o.prices["strategist_out"]) == (4.0, 20.0)
+    assert (o.prices["strategist_cache_read"], o.prices["strategist_cache_write"]) == (0.2, 5.0)
+
+
+def test_a_retired_default_in_the_servers_file_is_not_a_choice(tmp_path):
+    """The server's file is `init`'s dump of every default of its day, so it pins the old analyst model and the old
+    price table, and the owner does not edit it. A value there that equals a retired default follows the new default;
+    any other value is the owner's and stays."""
+    p = tmp_path / "s.toml"
+    p.write_text(
+        '[operator]\nmodel = "claude-sonnet-5-5"\nanalyst_model = "claude-opus-5-5"\n\n[operator.prices]\n'
+        "in = 3.0\nout = 15.0\ncache_read = 0.3\ncache_write = 3.75\n"
+        "analyst_in = 5.0\nanalyst_out = 25.0\nanalyst_cache_read = 0.5\nanalyst_cache_write = 6.25\n"
+    )
+    o = Config.load(p).operator
+    assert o.analyst_model == "claude-fable-5-2" and o.model == "claude-sonnet-5-5"
+    assert o.prices == Config().operator.prices
+    p.write_text('[operator]\nanalyst_model = "claude-sonnet-5-5"\nprices = { analyst_in = 7.0, in = 3.0 }\n')
+    o = Config.load(p).operator
+    assert o.analyst_model == "claude-sonnet-5-5" and o.prices["analyst_in"] == 7.0 and o.prices["in"] == 2.0
 
 
 def test_paths_and_report_name_guard(tmp_path):
