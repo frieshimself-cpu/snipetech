@@ -519,6 +519,45 @@ held on two separate halves of a month; it is not a strategy until the exit is c
 other (`history scan --exits`: each launch's block-end prices for ten minutes are kept and time, stop, take and trail
 rules are walked along them; running).
 
+### Copying, asked of the same month: the place pays, the wallet barely (21:10 UTC)
+
+`history follow --from 2026-10-05 --to 2026-11-03 --min-sol 0.5`: 6,108,611 first buys of 0.5 SOL or more by 675,118
+wallets in coins created inside the files, each scored as a copy. Percent a trade after 2.5 % of round-trip fees,
+before the bid, held a minute:
+
+| who is copied | trades | right behind the buy | one trade behind | end of the buy's block |
+|---|---|---|---|---|
+| every wallet, last week | 1,185,630 | +3.3 | -0.8 | -4.5 |
+| picked on weeks 1-4 (40+ buys, positive by two standard errors at the block's end, not a create-block buyer), judged on week 5 | 11,629 by 204 wallets | +13.3 | +7.0 | +1.4 |
+| the same, 100+ buys | 10,458 by 115 wallets | +13.8 | +7.4 | +1.6 |
+| picked on weeks 1-3, judged on weeks 4-5 | 30,258 by 141 wallets | +11.9 | +6.0 | +0.6 |
+
+1. **The first run picked on "one trade behind" and was wrong to.** Its best wallets were teams that buy their own
+   launch with six wallets in one bundle; one trade behind the first of them is inside the bundle. The pick is now made
+   at the end of the copied buy's block, the place a copy can count on (the files' order inside a block is right for
+   88 % of neighbours, across blocks for 99.9 %).
+2. **At that place, picking wallets is worth six points over copying everyone and ends near +1.5 %**, which the bid
+   and a late landing eat. That is what the three live copy snipers show (-0.29 SOL over 24 round trips).
+3. **Right behind the buy the same picks are +13 %.** The copy edge is the place inside the block. It is bought with
+   the bid and fought over by bots that pay 0.03 SOL and more a buy.
+4. **Walked forward** (`--walk`: for each week, wallets picked on the weeks before it, at rising bars on their mean):
+
+| judged on | bar 0 | bar +3 % | bar +6 % | bar +10 % |
+|---|---|---|---|---|
+| week 2 | -0.3 (31,423) | +1.0 | +1.2 | +1.4 (2,023) |
+| week 3 | +1.5 (16,766) | +2.3 | +3.1 | +5.3 (2,561) |
+| week 4 | +0.6 (17,810) | +1.1 | +2.4 | +5.6 (1,946) |
+| week 5 | +1.4 (11,629) | +1.8 | +3.3 (3,773) | +1.6 (1,627) |
+
+   The return rises with the bar in every week: the selection is real, and thin. At a +6 % bar it is +1 to +3 % a
+   trade on 4,000-7,000 trades a week.
+5. **With create-block buyers left in, the same walk is +5.5 to +6.5 % at bar 0 and +13 to +15 % at bar +10 %**
+   (weeks 3-5, 9,000-14,000 wallet-trades a week, 70-80 % of the wallets up). Those are bundle wallets, and "the end of
+   their block" is the end of the create block, which no buyer outside the bundle gets. What it does say: **a bundle
+   team's record carries over to its next launches.** `history scan` now keeps each launch's create-block wallets and
+   `history table`'s split `team` gives every launch the record those wallets had before it, scored at the launch
+   snipe's own landing (the end of the block after the create); running.
+
 ### Next for Proxima
 
 FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job), then run it
