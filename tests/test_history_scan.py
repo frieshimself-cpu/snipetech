@@ -390,3 +390,48 @@ def test_a_stop_or_a_take_fills_a_block_after_it_is_seen_and_rows_can_start_at_a
         ]  # its record is the day before's
     finally:
         st.close()
+
+
+def test_a_wallet_list_refreshed_once_a_day_is_what_a_sniper_can_be_given(tmp_path):
+    """OKTech's Hunt buys a launch once a wallet from a list it was given has bought (`knownBotWallets`). The split
+    `hunt` is that rule: a launch is "listed" when one of its create-block wallets was, at the last daily refresh
+    before it, in five or more scored launches averaging +10 % or better a minute later. The list's size is reported."""
+    day = 216_000  # slots
+    rows1: list[dict] = []
+    for i in range(3):
+        good = Coin(rows1, f"GOOD{i}", f"gdev{i}", S0 + 100 + 1000 * i)
+        for k in range(4):
+            good.buy(f"good-team-{k}", 4.0, 0)
+        good.buy("crowd", 20.0, 60)
+        good.buy("late", 0.1, 400)
+        bad = Coin(rows1, f"BAD{i}", f"bdev{i}", S0 + 600 + 1000 * i)
+        bags = [bad.buy(f"bad-team-{k}", 4.0, 0) for k in range(4)]
+        for k, bag in enumerate(bags):
+            bad.sell(f"bad-team-{k}", bag, 40)
+        bad.buy("late", 0.1, 400)
+    rows2: list[dict] = []
+    mixed = Coin(rows2, "MIXED", "mdev", S0 + day + 100)  # one listed wallet among new ones
+    mixed.buy("good-team-0", 4.0, 0)
+    for k in range(3):
+        mixed.buy(f"new-{k}", 4.0, 0)
+    mixed.buy("crowd", 20.0, 60)
+    mixed.buy("late", 0.1, 400)
+    again = Coin(rows2, "BADAGAIN", "bdev9", S0 + day + 600)
+    for k in range(4):
+        again.buy(f"bad-team-{k}", 4.0, 0)
+    again.buy("late", 0.1, 400)
+    paths = [
+        _write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows1),
+        _write(tmp_path / "pump_fun_2026-10-28_00.parquet", rows2),
+    ]
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(scan_files(paths, min_block_sol=15, stats=stats))
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=3)
+        hunt = {r["bucket"]: r for r in out["by"]["hunt"]}
+        assert hunt["listed"]["launches"] == 1 and hunt["listed"]["examples"][0]["symbol"] == "MIXE"
+        assert hunt["not listed"]["launches"] == 7  # the first day's six (the list is a day old) and the bad team's
+        assert out["hunt_list"] == {"wallets": 4, "min_prior": 3, "min_ret": 10.0, "refresh_secs": 86400}
+    finally:
+        st.close()

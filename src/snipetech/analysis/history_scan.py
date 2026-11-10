@@ -67,6 +67,8 @@ TEAM_KEPT = 16  # create-block buyers kept per launch
 # a launch's bundle wallets' record before it: the mean a-minute-later return of their earlier launches, in percent
 TEAM = ((-10.0, 0.0, 10.0, 25.0), ("<-10", "-10-0", "0-10", "10-25", "25+"))
 TEAM_KNOWN_SECS = 60  # a launch's outcome counts for later launches once its minute has passed
+HUNT_MIN_RET = 10.0  # a wallet is on the hunt list when its earlier launches averaged this or better
+HUNT_REFRESH_SECS = 86_400  # the list a sniper holds is rebuilt once a day
 # how much others put in the create block, finer than `launch_tools.SPLITS` (which stops at 10+)
 BLOCK_SOL = ((10.0, 15.0, 25.0, 50.0), ("<10", "10-15", "15-25", "25-50", "50+"))
 
@@ -243,6 +245,41 @@ def team_records(records: list[dict], min_prior: int) -> dict[str, str]:
     return out
 
 
+def hunt_records(records: list[dict], min_prior: int, min_ret: float = HUNT_MIN_RET,
+                 refresh_secs: int = HUNT_REFRESH_SECS) -> tuple[dict[str, str], int]:  # fmt: skip
+    """The rule a sniper with a wallet list can run (OKTech's Hunt, `knownBotWallets`): mint -> "listed" when one of
+    the launch's create-block wallets was on the list at the last refresh before it, else "not listed". A wallet is
+    on the list when it was in `min_prior` or more scored launches averaging `min_ret` percent or better a minute
+    later; the list is rebuilt every `refresh_secs` (a launch's outcome reaches it at the first refresh after its
+    minute). Also returns how many wallets the list holds after the last launch."""
+    seen: dict[str, list[float]] = {}
+    waiting: list[tuple[int, list[str], float]] = []
+    out: dict[str, str] = {}
+    h = max(HORIZONS)
+
+    def learn(until: float) -> None:
+        while waiting and waiting[0][0] <= until:
+            _, users, ret = waiting.pop(0)
+            for user in users:
+                row = seen.setdefault(user, [0, 0.0])
+                row[0] += 1
+                row[1] += ret
+
+    def on_list(user: str) -> bool:
+        row = seen.get(user)
+        return bool(row) and row[0] >= min_prior and row[1] / row[0] >= min_ret
+
+    for r in sorted(records, key=lambda r: r["ts"]):
+        learn(r["ts"])
+        users = r.get("block_users") or []
+        out[r["mint"]] = "listed" if any(on_list(u) for u in users) else "not listed"
+        if users and r.get("rets") and not r.get("bonded_at_once"):
+            known = r["ts"] + TEAM_KNOWN_SECS
+            waiting.append((-(-known // refresh_secs) * refresh_secs if refresh_secs else known, users, r["rets"][h]))
+    learn(float("inf"))
+    return out, sum(on_list(u) for u in seen)
+
+
 def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 2) if vals else None
 
@@ -319,6 +356,12 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
         groups.setdefault(team_of.get(item[0].mint, "no record"), []).append(item)
     by["team"] = [{"bucket": r.pop("mark"), **r}
                   for r in (_row(n, groups[n], horizons, fee_pct) for n in (*TEAM[1], "no record") if n in groups)]  # fmt: skip
+    hunt_of, hunt_size = hunt_records(records, team_min_prior)
+    groups_h: dict[str, list] = {}
+    for item in items:
+        groups_h.setdefault(hunt_of.get(item[0].mint, "not listed"), []).append(item)
+    by["hunt"] = [{"bucket": r.pop("mark"), **r}
+                  for r in (_row(n, groups_h[n], horizons, fee_pct) for n in ("listed", "not listed") if n in groups_h)]  # fmt: skip
     users_of = {r["mint"]: r.get("block_users") or [] for r in organised}
     for row in by["team"]:  # many teams or one crew: the row's distinct bundle wallets and its commonest wallet's share
         counts: dict[str, int] = {}
@@ -340,6 +383,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 return _bucket(item[1][key], *numeric[key])
             if key == "team":
                 return team_of.get(mint, "no record")
+            if key == "hunt":
+                return hunt_of.get(mint, "not listed")
             handle = xaccounts.handle_of(metas[mint])
             if not handle or x_of is None:
                 return "no account" if not handle else "unknown"
@@ -379,6 +424,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     n, scored = stats.get("launches", 0), stats.get("scored", 0)
     return {"files": stats.get("files", 0), "launches": n, "organised": len(organised), "min_block_sol": min_block_sol,
             "show_from": show_from,
+            "hunt_list": {"wallets": hunt_size, "min_prior": team_min_prior, "min_ret": HUNT_MIN_RET,
+                          "refresh_secs": HUNT_REFRESH_SECS},
             "bonded_at_once": len(bundled) - len(organised),
             "all": {"launches": n, "reached_30": round(stats.get("reached_30", 0) / n, 3) if n else None,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},

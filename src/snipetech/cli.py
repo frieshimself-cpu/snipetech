@@ -864,7 +864,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--rescan", action="store_true", help="follow: read the files again even if a run was kept")
     sp.add_argument("--walk", action="store_true", help="follow: also pick and judge week by week at rising bars")
     sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
-                    "block_wallets, block_sol, dev_sol, team, x_badge, x_followers, x_age); each cell is shown per half of the days")
+                    "block_wallets, block_sol, dev_sol, team, hunt, x_badge, x_followers, x_age); each cell is shown per half of the days")
     sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
     sp.add_argument("--show-from", help="scan/table: rows hold only launches of this day (YYYY-MM-DD) and later; team "
                     "records still use every launch")  # fmt: skip
