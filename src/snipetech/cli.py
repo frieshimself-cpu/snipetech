@@ -815,6 +815,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--entry-slots", type=int, default=1, help="slots after the leader's slot where we enter")
+    sp.add_argument(
+        "--behind-leader",
+        action="store_true",
+        help="enter right behind the leader's buy in its own block (where most live copies land)",
+    )
     sp.add_argument("--horizons", default="15,75,150,450", help="slots after the leader's slot where we mark")
     sp.add_argument("--min-sol", type=float, default=0.5, help="the leader's smallest buy that counts")
     sp.add_argument("--groups", default="kol,wallet", help="label kinds whose wallets are leaders")
@@ -1845,6 +1850,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             out = copy_context(
                 svc.tape_store, time.time(), hours=args.hours, entry_slots=args.entry_slots, min_sol=args.min_sol,
+                behind_leader=args.behind_leader,
                 horizons=tuple(int(h) for h in args.horizons.split(",") if h.strip()),
                 kinds=tuple(k.strip() for k in args.groups.split(",") if k.strip()),
             )  # fmt: skip
@@ -1853,8 +1859,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.json:
             print(json.dumps(out, indent=1))
             return 0
-        print(f"{out['events']} buys of known wallets in {out['coins']} coins, entered {out['entry_slots']} slot(s) "
-              f"late; returns in % before {out['fee_pct']} % of fees")  # fmt: skip
+        print(f"{out['events']} buys of known wallets in {out['coins']} coins, entered {out['entry']}; "
+              f"returns in % before {out['fee_pct']} % of fees")  # fmt: skip
         for name, rows in out["by"].items():
             print(f"\n{name}")
             for r in rows:

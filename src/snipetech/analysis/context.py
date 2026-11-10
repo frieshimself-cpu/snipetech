@@ -50,7 +50,7 @@ ORDER = {name: {b: i for i, b in enumerate(names)} for name, (_, names) in SPLIT
 
 
 def _events_of(launch, trades: list, group_of: dict[str, str], *, entry_slots: int, horizons: tuple[int, ...],
-               min_lamports: int, last_ts: float) -> list[dict[str, Any]]:  # fmt: skip
+               min_lamports: int, last_ts: float, behind_leader: bool = False) -> list[dict[str, Any]]:  # fmt: skip
     devs = {launch.user, launch.creator}
     slots: list[int] = []
     prices: list[float] = []  # the curve's price at the end of each slot that has a trade
@@ -77,7 +77,7 @@ def _events_of(launch, trades: list, group_of: dict[str, str], *, entry_slots: i
         if (t.is_buy and t.user in group_of and t.user not in devs and t.user not in seen and quote >= min_lamports):  # fmt: skip
             seen.add(t.user)
             s = int(t.slot)
-            entry = price_at(s + entry_slots)
+            entry = _price(t) if behind_leader else price_at(s + entry_slots)
             if entry and float(t.ts) <= last_ts:  # the longest horizon is on the tape
                 followers = 0
                 for later in trades[i + 1 :]:
@@ -108,10 +108,14 @@ def _row(bucket: str, events: list[dict[str, Any]], horizons: tuple[int, ...], f
 
 def copy_context(store, now: float, *, hours: float = 72, kinds: tuple[str, ...] = ("kol", "wallet"),
                  entry_slots: int = 1, horizons: tuple[int, ...] = (15, 75, 150, 450), min_sol: float = 0.5,
-                 fee_pct: float = 2.5) -> dict[str, Any]:  # fmt: skip
+                 fee_pct: float = 2.5, behind_leader: bool = False) -> dict[str, Any]:  # fmt: skip
     """Known wallets' first buys in coins launched in the last `hours`, entered `entry_slots` after the leader's slot
-    and marked at each horizon, grouped one split at a time. Returns in percent, gross of `fee_pct`."""
-    horizons = tuple(sorted(int(h) for h in horizons if int(h) > entry_slots))
+    and marked at each horizon, grouped one split at a time. Returns in percent, gross of `fee_pct`.
+    `behind_leader`: enter at the price the leader's own buy left, the next trade of its block (10 Nov: 20 of 24 live
+    copies since 7 Nov landed in the leader's block, 0.3 trades behind), not a block late. Our own buy's push on the
+    price is not counted either way: read the result as a small copy's."""
+    floor = 0 if behind_leader else entry_slots
+    horizons = tuple(sorted(int(h) for h in horizons if int(h) > floor))
     start = int(now - hours * 3600)
     group_of: dict[str, str] = {}
     for kind in kinds:  # a wallet on two lists counts in the first
@@ -125,7 +129,7 @@ def copy_context(store, now: float, *, hours: float = 72, kinds: tuple[str, ...]
         if not any(t.user in group_of for t in trades):
             continue
         found = _events_of(launch, trades, group_of, entry_slots=entry_slots, horizons=horizons,
-                           min_lamports=int(min_sol * LAMPORTS), last_ts=last_ts)  # fmt: skip
+                           min_lamports=int(min_sol * LAMPORTS), last_ts=last_ts, behind_leader=behind_leader)  # fmt: skip
         coins += bool(found)
         events.extend(found)
     by: dict[str, list[dict[str, Any]]] = {}
@@ -140,6 +144,7 @@ def copy_context(store, now: float, *, hours: float = 72, kinds: tuple[str, ...]
         for e in events:
             groups.setdefault(key(e), []).append(e)
         by[name] = [_row(b, groups[b], horizons, fee_pct) for b in sorted(groups)]
-    return {"hours": hours, "events": len(events), "coins": coins, "entry_slots": entry_slots,
+    entry = "right behind the leader's buy" if behind_leader else f"{entry_slots} slot(s) after the leader's"
+    return {"hours": hours, "events": len(events), "coins": coins, "entry_slots": entry_slots, "entry": entry,
             "horizons": list(horizons), "fee_pct": fee_pct, "min_sol": min_sol,
             "all": _row("all", events, horizons, fee_pct) if events else None, "by": by}  # fmt: skip

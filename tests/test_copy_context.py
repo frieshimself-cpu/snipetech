@@ -121,3 +121,18 @@ def test_the_agents_may_start_it_and_the_cli_prints_json(tmp_path, capsys):
     assert cli.main(argv) == 0
     text = capsys.readouterr().out
     assert "known_wallets_in" in text and "ret_12" in text
+
+
+def test_a_copy_right_behind_the_leader_in_its_own_block_enters_before_the_followers():
+    """10 Nov, our fills: 20 of 24 live copies since 7 Nov landed in the leader's own block, 0.3 trades behind. Scored
+    there, the copy enters at the price the leader's buy left, ahead of what the block's other followers add."""
+    st = _store(fast=3.0)
+    try:
+        late = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5)
+        behind = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5, behind_leader=True)
+        assert behind["entry"] == "right behind the leader's buy" and late["entry"] == "1 slot(s) after the leader's"
+        first = lambda out: next(r for r in out["by"]["known_wallets_in"] if r["bucket"] == "1")
+        assert first(behind)["ret_3"] > first(late)["ret_3"]  # the fast bot's 3 SOL and the crowd came after our entry
+        assert first(behind)["ret_3"] > 0 > first(late)["ret_3"]
+    finally:
+        st.close()
