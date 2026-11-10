@@ -282,8 +282,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     async def start_job(argv: list[str]) -> str:
         """Start a research job in the background; returns the job id.
 
-        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, fomo-wallets, winners, leaders-of and
-        copy-context are allowed; one lab at a time. ["copy-context", "--hours", "72", "--json"] scores every known
+        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, fomo-wallets, winners, leaders-of,
+        copy-context and playbook are allowed; one lab at a time. ["playbook", "<wallet>", "--json"] reads a bot's
+        rules off the tape: what each first buy came right after, who it follows and how often, its filters, sizes,
+        bids and exits (6Z91). ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's
         volume, age, hour, the leader's size and the buys later in its own block ("--groups", "kol" for KOLs alone;
         "--behind-leader" enters in the leader's own block, where most live copies land). ["winners", "--hours", "144", "--json"] ranks every wallet's closed round trips by

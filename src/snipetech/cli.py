@@ -808,6 +808,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label", type=int, default=0, help="send the N best mid/late traders (no create-slot sniping, "
                     "no insider sales) to qualify's queue as cand")  # fmt: skip
     sp = cmd(
+        "playbook",
+        "a bot's rules read off the tape: what each first buy came right after, who it follows and how often, its "
+        "filters, sizes, bids and exits (reads the tape copy; a research job)",
+    )
+    sp.add_argument("wallet")
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--top", type=int, default=60, help="followed wallets to list")
+    sp = cmd(
         "copy-context",
         "what a known wallet's buy is worth by its context: entered a block late and marked at each horizon, split by "
         "how many known wallets were in, the coin's volume, age, hour, the leader's size and the buys later in its own "
@@ -1621,6 +1629,7 @@ BATCH_COMMANDS = frozenset(
         "winners",
         "leaders-of",
         "copy-context",
+        "playbook",
     }
 )
 BATCH_NICE = 10
@@ -1842,6 +1851,26 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
             or "no FOMO wallet with enough buys")  # fmt: skip
+        return 0
+    if args.cmd == "playbook":
+        from .analysis.playbook import playbook
+
+        svc = Service(cfg)
+        try:
+            out = playbook(svc.tape_store, args.wallet, time.time(), hours=args.hours, top=args.top)
+        finally:
+            svc.store.close()
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(f"{out['wallet']}: {out['coins']} coins in {out['hours']:g} h")
+        for r in out["entries"]:
+            print(f"  {r['kind']}: {r['n']} ({r['share']:.0%})  net {r['net_sol']:+.2f} SOL  win {r['win']}  "
+                  f"buys {r['buy_sol']['p50']} SOL  first sell after {(r['slots_to_first_sell'] or {}).get('p50')} "
+                  f"slots  bid {(r['bid_sol'] or {}).get('p50')}")  # fmt: skip
+        for t in out["triggers"][:20]:
+            print(f"  follows {t['wallet']} ({t['label'] or 'no label'}): {t['coins']} coins, "
+                  f"{t['followed_share']} of that wallet's {t['its_coins']}")  # fmt: skip
         return 0
     if args.cmd == "copy-context":
         from .analysis.context import copy_context
