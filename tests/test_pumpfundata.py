@@ -106,3 +106,28 @@ def test_history_needs_the_key_and_says_so_without_calling_anyone(monkeypatch, c
     monkeypatch.delenv(pfd.KEY_ENV, raising=False)
     assert cli.main(["history", "range"]) == 2
     assert pfd.KEY_ENV in capsys.readouterr().err
+
+
+def _swap(sig, slot, mint, action, amount, vs, fee=0):
+    return {"event_type": "swap", "signature": sig, "slot_number": slot, "token_mint": mint, "action": action,
+            "lamports_amount": amount, "fee_lamports": fee, "virtual_lamports_reserve": vs}  # fmt: skip
+
+
+def test_the_files_trade_order_is_checked_against_the_tapes_place_in_the_block():
+    """10 Nov: a third of a month's trades did not continue the reserves of the row before them. Either the rows of a
+    block are not in chain order or the amounts are read wrong; our own tape of the same hour knows every trade's
+    place in its block, so it says which."""
+    rows = [
+        _swap("a", 10, "M", "buy", 100, 1100),
+        _swap("c", 10, "M", "buy", 50, 1350),  # the file has c before b; the chain went a, b, c
+        _swap("b", 10, "M", "buy", 200, 1300),
+        _swap("d", 11, "M", "sell", 90, 1250, fee=10),  # a sell takes out what the seller got plus the fee
+        _swap("x", 11, "OTHER", "buy", 5, 1005),
+    ]
+    tape = {"a": (10, 3, 0), "b": (10, 5, 0), "c": (10, 9, 0), "d": (11, 1, 0)}
+    out = pfd.order_report(rows, tape)
+    assert out["pairs"] == 3 and out["same_slot_pairs"] == 2 and out["same_slot_in_order"] == 1
+    assert out["cross_slot_pairs"] == 1 and out["cross_slot_in_order"] == 1
+    assert out["chain"]["pairs"] == 3 and out["chain"]["ok"] == 0  # c after a, b after c, d after b: none continues
+    assert out["chain_in_tape_order"]["pairs"] == 3 and out["chain_in_tape_order"]["ok"] == 3  # a, b, c, d does
+    assert out["sell_fits"]["amount_plus_fee"] == 1 and out["buy_fits"]["amount"] == 2

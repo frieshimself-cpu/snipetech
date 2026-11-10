@@ -5,9 +5,13 @@ and six days cannot tell a wallet that is good from one that was lucky. A month 
 scores every wallet's first buy of a coin the way a copy would trade it, `Follow` adds the buys up per wallet and week,
 and `follow_table` picks wallets on the first weeks and judges the same wallets on the last.
 
-A copy is scored at two places behind the buy (rule 2 of CLAUDE.md: the place is a fee auction):
+A copy is scored at three places behind the buy (rule 2 of CLAUDE.md: the place is a fee auction):
 - place 0: right behind the copied buy, before anyone else (the price after the buy);
-- place 1: one trade behind (the price after the next trade of the coin, whoever made it).
+- place 1: one trade behind (the price after the next trade of the coin, whoever made it);
+- place "slot": at the end of the copied buy's block (the price after the coin's last trade in that slot). A live copy
+  lands in the leader's own block, behind whoever outbid it; this is the place it can count on. The first run
+  (10 Nov) showed why it must be the one wallets are picked on: its best wallets were teams that buy their own launch
+  with six wallets in one bundle, and "one trade behind" the first of them is inside the bundle.
 It leaves at a fixed time (`HORIZONS`, in slots: about 5 s and a minute) or when the copied wallet first sells, at the
 same place behind that sell ("sell"; a wallet that has not sold by the last horizon is left at the last horizon).
 Returns are price moves in percent before fees; `follow_table` takes the round trip's fees off.
@@ -27,7 +31,7 @@ from typing import Any
 from .history_scan import SOL_QUOTES, _columns
 
 LAMPORTS = 1_000_000_000
-PLACES = (0, 1)
+PLACES = (0, 1, "slot")
 HORIZONS = (13, 150)
 EVICT_SLOTS = 9_000  # an hour without a trade: the coin's buyers are forgotten
 WEEK_SECS = 7 * 86400
@@ -42,11 +46,27 @@ N, R, R2, SOL, CREATE = (
 )  # trades, sum and sum of squares of (1, last horizon), SOL bought, create-slot buys
 SUMS = {key: 5 + i for i, key in enumerate(KEYS)}  # the sum of every return
 WIDTH = 5 + len(KEYS)
-MAIN = (1, HORIZONS[-1])
+MAIN = ("slot", HORIZONS[-1])  # what wallets are picked on: the end of the block, held a minute
 
 
 class _Ev:
-    __slots__ = ("after", "age", "entry", "entry_slot", "exit", "sell", "slot", "sol", "sold", "ts", "wallet")
+    """One copied buy. `entry`, `entry_slot` and `sell` are lists by place: right behind, one trade behind, the end
+    of the block."""
+
+    __slots__ = (
+        "after",
+        "age",
+        "entry",
+        "entry_slot",
+        "exit",
+        "sell",
+        "sell_slot",
+        "slot",
+        "sol",
+        "sold",
+        "ts",
+        "wallet",
+    )
 
 
 def _emit(e: _Ev, price: float, on_event: Callable[[dict], None]) -> None:
@@ -56,15 +76,17 @@ def _emit(e: _Ev, price: float, on_event: Callable[[dict], None]) -> None:
             e.exit[h] = price
     if e.entry[1] is None:  # nobody traded behind the buy: one trade behind is right behind
         e.entry[1], e.entry_slot[1] = e.entry[0], e.slot
+    if e.entry[2] is None:  # no trade of the coin after his block: the block ended at the price it has now
+        e.entry[2] = price
     if e.sold == 0:
-        e.sell = [e.exit[last], e.exit[last]]
-    elif e.sold == 1:
-        e.sell[1] = e.exit[last]
+        e.sell = [e.exit[last]] * 3
+    else:
+        e.sell = [e.exit[last] if v is None else v for v in e.sell]
     rets: dict[tuple, float] = {}
-    for k in PLACES:
+    for i, k in enumerate(PLACES):
         for h in HORIZONS:  # an entry that came after the horizon is in and out at one price
-            rets[(k, h)] = (e.exit[h] / e.entry[k] - 1.0) * 100.0 if e.entry_slot[k] <= e.slot + h else 0.0
-        rets[(k, "sell")] = (e.sell[k] / e.entry[k] - 1.0) * 100.0
+            rets[(k, h)] = (e.exit[h] / e.entry[i] - 1.0) * 100.0 if e.entry_slot[i] <= e.slot + h else 0.0
+        rets[(k, "sell")] = (e.sell[i] / e.entry[i] - 1.0) * 100.0
     on_event({"wallet": e.wallet, "ts": e.ts, "sol": e.sol, "age": e.age, "rets": rets})
 
 
@@ -118,6 +140,8 @@ def follow_files(paths: list[Path], on_event: Callable[[dict], None], *, min_sol
             if st["pending"]:
                 done = False
                 for e in st["pending"]:
+                    if e.entry[2] is None and slot > e.slot:
+                        e.entry[2] = prev  # the first trade of a later block: his block ended at the price before it
                     for h in HORIZONS:
                         if e.exit[h] is None and slot > e.slot + h:
                             e.exit[h] = prev
@@ -127,10 +151,13 @@ def follow_files(paths: list[Path], on_event: Callable[[dict], None], *, min_sol
                     e.after += 1
                     if e.after == 1:
                         e.entry[1], e.entry_slot[1] = price, slot
-                    if e.sold == 1:
-                        e.sell[1], e.sold = price, 2
-                    elif e.sold == 0 and not buy and user == e.wallet:
-                        e.sell, e.sold = [price, None], 1
+                    if e.sold:
+                        if e.sell[1] is None:
+                            e.sell[1] = price
+                        if e.sell[2] is None and slot > e.sell_slot:
+                            e.sell[2] = prev
+                    elif not buy and user == e.wallet:
+                        e.sell, e.sold, e.sell_slot = [price, None, None], 1, slot
                 if done:
                     keep = []
                     for e in st["pending"]:
@@ -153,8 +180,8 @@ def follow_files(paths: list[Path], on_event: Callable[[dict], None], *, min_sol
                         amount / LAMPORTS,
                         slot - st["create"],
                     )
-                    e.entry, e.entry_slot, e.after = [price, None], [slot, None], 0
-                    e.exit, e.sold, e.sell = dict.fromkeys(HORIZONS), 0, None
+                    e.entry, e.entry_slot, e.after = [price, None, None], [slot, None, slot], 0
+                    e.exit, e.sold, e.sell, e.sell_slot = dict.fromkeys(HORIZONS), 0, None, 0
                     st["pending"].append(e)
                     busy.add(mint)
         for mint in list(busy):
@@ -226,8 +253,8 @@ def _mean(row: list[float], key: tuple, fee_pct: float) -> float | None:
 
 def follow_table(agg: Follow, *, test_weeks: int = 1, min_pick: int = 30, top: int = 50, fee_pct: float = 2.5,
                  max_create_share: float = 1.0) -> dict[str, Any]:  # fmt: skip
-    """Wallets picked on every week but the last `test_weeks` (`min_pick` first buys or more, and the mean return one
-    trade behind, held to the last horizon, positive by two standard errors after `fee_pct`), then the same wallets'
+    """Wallets picked on every week but the last `test_weeks` (`min_pick` first buys or more, and the mean return at the end
+    of the block, held to the last horizon (`MAIN`), positive by two standard errors after `fee_pct`), then the same wallets'
     buys in the weeks they were not picked on. `max_create_share` leaves out wallets that mostly buy in the create
     slot (a copy cannot land there). `everyone` is every wallet's buys, the comparison."""
     everyone = getattr(agg, "everyone", None)  # a kept run holds every wallet's total, the small wallets included
@@ -266,9 +293,11 @@ def follow_table(agg: Follow, *, test_weeks: int = 1, min_pick: int = 30, top: i
                      "test_trades": int(all_test[N]), **line(all_test)},
         "top": [{"wallet": wallet, "pick_n": int(pick[N]), "pick_ret": _mean(pick, MAIN, fee_pct),
                  "pick_lower": round(lower, 2), "pick_ret_0": _mean(pick, (0, HORIZONS[-1]), fee_pct),
-                 "pick_sell": _mean(pick, (1, "sell"), fee_pct), "sol": round(pick[SOL] / pick[N], 2),
+                 "pick_ret_1": _mean(pick, (1, HORIZONS[-1]), fee_pct),
+                 "pick_sell": _mean(pick, ("slot", "sell"), fee_pct), "sol": round(pick[SOL] / pick[N], 2),
                  "create_share": round(pick[CREATE] / pick[N], 2), "test_n": int(tst[N]),
                  "test_ret": _mean(tst, MAIN, fee_pct), "test_ret_0": _mean(tst, (0, HORIZONS[-1]), fee_pct),
-                 "test_sell": _mean(tst, (1, "sell"), fee_pct)}
+                 "test_ret_1": _mean(tst, (1, HORIZONS[-1]), fee_pct),
+                 "test_sell": _mean(tst, ("slot", "sell"), fee_pct)}
                 for lower, wallet, pick, tst in picked[:top]],
     }  # fmt: skip

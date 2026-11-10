@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, timedelta
+from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
@@ -116,3 +117,58 @@ def compare(rows: list[dict[str, Any]], tape_sigs: set[str]) -> dict[str, Any]:
     union = len(theirs | tape_sigs)
     return {"file_trades": len(theirs), "tape_trades": len(tape_sigs), "both": both, "only_file": len(theirs) - both,
             "only_tape": len(tape_sigs) - both, "match": round(both / union, 3) if union else None}  # fmt: skip
+
+
+def order_report(rows: list[dict[str, Any]], tape_pos: dict[str, tuple]) -> dict[str, Any]:
+    """Are a file's rows in chain order? `tape_pos` is our own tape of the same hour: signature -> (slot, place in the
+    block, event). Per coin, each trade and the file's next trade of that coin: how often the tape has them in that
+    order (inside one block and across blocks), how often the second continues the first's reserves (`chain`: a buy
+    adds its amount, a sell takes out its amount plus the fee), the same in the tape's order (`chain_in_tape_order`),
+    and which reading of the amounts fits there (`buy_fits`, `sell_fits`)."""
+    coins: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        if r.get("event_type") == "swap" and r.get("virtual_lamports_reserve"):
+            coins.setdefault(r["token_mint"], []).append(r)
+
+    def moved(r: dict[str, Any]) -> int:
+        amount, fee = int(r.get("lamports_amount") or 0), int(r.get("fee_lamports") or 0)
+        return amount if r.get("action") == "buy" else -(amount + fee)
+
+    def chain(seq: list[dict[str, Any]], into: dict[str, int]) -> None:
+        for a, b in pairwise(seq):
+            into["pairs"] += 1
+            delta = int(b["virtual_lamports_reserve"]) - int(a["virtual_lamports_reserve"])
+            into["ok"] += abs(delta - moved(b)) <= 2
+
+    out: dict[str, Any] = {"pairs": 0, "same_slot_pairs": 0, "same_slot_in_order": 0, "cross_slot_pairs": 0,
+                           "cross_slot_in_order": 0, "chain": {"pairs": 0, "ok": 0},
+                           "chain_in_tape_order": {"pairs": 0, "ok": 0},
+                           "buy_fits": {"amount": 0, "amount_minus_fee": 0, "amount_plus_fee": 0, "none": 0},
+                           "sell_fits": {"amount": 0, "amount_plus_fee": 0, "amount_minus_fee": 0, "none": 0}}  # fmt: skip
+    for seq in coins.values():
+        chain(seq, out["chain"])
+        for a, b in pairwise(seq):
+            pa, pb = tape_pos.get(a["signature"]), tape_pos.get(b["signature"])
+            if pa is None or pb is None:
+                continue
+            out["pairs"] += 1
+            if int(a["slot_number"]) == int(b["slot_number"]):
+                out["same_slot_pairs"] += 1
+                out["same_slot_in_order"] += tuple(pa) < tuple(pb)
+            else:
+                out["cross_slot_pairs"] += 1
+                out["cross_slot_in_order"] += pa[0] < pb[0]
+        known = sorted((r for r in seq if r["signature"] in tape_pos), key=lambda r: tuple(tape_pos[r["signature"]]))
+        chain(known, out["chain_in_tape_order"])
+        for a, b in pairwise(known):
+            delta = int(b["virtual_lamports_reserve"]) - int(a["virtual_lamports_reserve"])
+            amount, fee = int(b.get("lamports_amount") or 0), int(b.get("fee_lamports") or 0)
+            if b.get("action") == "buy":
+                fits, cands = out["buy_fits"], {"amount": amount, "amount_minus_fee": amount - fee,
+                                                "amount_plus_fee": amount + fee}  # fmt: skip
+            else:
+                fits, cands = out["sell_fits"], {"amount": -amount, "amount_plus_fee": -(amount + fee),
+                                                 "amount_minus_fee": -(amount - fee)}  # fmt: skip
+            hit = next((name for name, value in cands.items() if abs(delta - value) <= 2), "none")
+            fits[hit] += 1
+    return out

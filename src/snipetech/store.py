@@ -469,6 +469,15 @@ class Store:
         )
         return {r[0] for r in rows}
 
+    def trade_places_between(self, start_ts: int, end_ts: int, venue: str) -> dict[str, tuple[int, int, int]]:
+        """signature -> (slot, place in the block, event) of a venue's trades in [start, end): the order bought history
+        is checked against. A transaction with several trades keeps its first."""
+        rows = self._q(
+            "SELECT sig, slot, pos, MIN(ev) FROM trades WHERE ts>=? AND ts<? AND venue=? GROUP BY sig",
+            (int(start_ts), int(end_ts), venue),
+        )
+        return {sig: (int(slot), int(pos), int(ev)) for sig, slot, pos, ev in rows}
+
     def active_mints(self, start_ts: int, end_ts: int, min_trades: int = 1) -> list[tuple[str, int]]:
         """Tokens traded in a time range (SOL and foreign), with their trade counts, in mint order. Read in pieces of
         READ_SPAN_SECS, each read whole before the next one starts, no transaction between them: [start, start + span),

@@ -846,7 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
         "scan the files on disk | table from a kept scan | follow: copy every wallet's first buys; "
         "the key is PUMPFUNDATA_API_KEY in the server's env file",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check", "scan", "table", "follow"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow"])
     sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
     sp.add_argument("--min-block-sol", type=float, default=15.0, help="scan: an organised launch is one where others "
                     "put this much SOL in the create block")  # fmt: skip
@@ -1704,7 +1704,7 @@ def _history(args, cfg: Config) -> int:
         from .analysis.history_follow import Follow, follow_files, follow_table
 
         lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
-        kept = dest / "follows" / f"follow_{lo}_{hi}_{args.min_sol:g}.json"
+        kept = dest / "follows" / f"follow_{lo}_{hi}_{args.min_sol:g}_slot.json"  # _slot: the end-of-block place
         if kept.exists() and not args.rescan:
             agg, span = Follow.load(kept), {"kept": kept.name}
         else:
@@ -1772,6 +1772,25 @@ def _history(args, cfg: Config) -> int:
             span | {"metadata_fetched": fetched, "x_handles": len(handles), "x_kept": len(accounts), "x_run": x_run}
         )
         print(json.dumps(out, indent=1, default=str))
+        return 0
+
+    if args.action == "order":  # no call to the vendor: an hour already on disk against our own tape's order
+        if args.date is None or args.hour is None:
+            raise SystemExit("history order: --date YYYY-MM-DD --hour H")
+        path = dest / pfd.file_name(args.exchange, args.date, args.hour)
+        if not path.exists():
+            print(f"history order: {path.name} is not on disk (`history check` downloads an hour)", file=sys.stderr)
+            return 2
+        start = calendar.timegm(time.strptime(f"{args.date} {args.hour:02d}", "%Y-%m-%d %H"))
+        store = Store(cfg.storage.db_path)
+        try:
+            places = store.trade_places_between(start - 60, start + 3660, "curve" if args.exchange == "pump_fun" else "amm")
+        finally:
+            store.close()
+        rows = pfd.read_rows(path, ["event_type", "signature", "slot_number", "token_mint", "action", "lamports_amount",
+                                    "fee_lamports", "virtual_lamports_reserve"])  # fmt: skip
+        print(json.dumps({"date": args.date, "hour": args.hour, "tape_trades": len(places),
+                          **pfd.order_report(rows, places)}, indent=1))  # fmt: skip
         return 0
 
     async def go() -> dict:
