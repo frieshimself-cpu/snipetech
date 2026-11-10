@@ -46,7 +46,8 @@ _NOZOMI = ("TEMPaMeCRFAS9EKF53Jd6KpHxgL47uWLcpFArU1Fanq", "noz3jAjPiHuBPqiSPkkug
            "nozNVWs5N8mgzuD3qigrCG2UoKxZttxzZ85pvAQVrbP", "nozUacTVWub3cL4mJmGCYjKZTnE9RbdY5AP46iQgbPJ", "nozWCyTPppJjRuw2fpzDhhWbW355fzosWSzrrMYB1Qk",
            "nozWNju6dY353eMkMqURqwQEoM3SFgEKC6psLCSfUne", "nozc5yT15LazbLTFVZzoNZCwjh3yUtW86LoUyqsBu4L", "nozievPk7HyK1Rqy1MPJwVQ7qQg2QoJGyP71oeDwbsu",
            "noznbgwYnBLDHu8wcQVCEw6kDrXkPdKkydGJGNXGvL7", "nozpEGbwx4BcGp6pvEdAh1JoC2CQGZdU6HbNP1v2p6P", "nozrhjhkCr3zXT3BiT4WCodYCUFeQvcdUkM7MqhKqge",
-           "nozrwQtWhEdrA6W8dkbt9gnUaMs52PdAv5byipnadq3", "nozxNBgWohjR75vdspfxR5H9ceC7XXH99xpxhVGt3Bb")  # fmt: skip
+           "nozrwQtWhEdrA6W8dkbt9gnUaMs52PdAv5byipnadq3", "nozxNBgWohjR75vdspfxR5H9ceC7XXH99xpxhVGt3Bb",
+           "nozcpUkzLaxcu24kYW7RppB8i7hmosBEqnvvQWSFZMJ")  # fmt: skip
 _HELIUS_SENDER = ("2nyhqdwKcJZR2vcqCyrYsaPVdAnFoJjiksCXJ7hfEYgD", "2q5pghRs6arqVjRvT5gfgWfWcHWmw1ZuCzphgd5KfWGJ", "3KCKozbAaF75qEU33jtzozcJ29yJuaLJTy2jFdzUY8bT",
                   "4ACfpUFoaSD9bfPdeu6DBt89gB6ENTeHBXCAi87NhDEE", "4TQLFNWK8AovT1gFvda5jfw2oJeRMKEmw7aH6MGBJ3or", "4vieeGHPYPG2MmyPRcYjdiDmmhN3ww7hsFNap8pVN3Ey",
                   "5VY91ws6B2hMmBFRsXkoAAdsPHBJwRfBht4DXox3xkwn", "9bnz4RShgq1hAnLnZbP8kbgBg1kEmcJBYQq3gQbmnSta", "D2L6yPZ2FmmmTKPgzaMKdhu6EWZcTpLy1Vhx8uvZe7NZ",

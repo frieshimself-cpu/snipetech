@@ -841,6 +841,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--taken-by", default="", help="bots (comma-separated): each row gets the share of its buys one "
                     "of them followed in the same block")  # fmt: skip
     sp = cmd(
+        "launch-tools",
+        "deploy tools by the mark they leave in a create transaction (a fee wallet, a wrapper program, a signer that is "
+        "not the creator) and how far each mark's coins run (one getTransaction per launch; a research job)",
+    )
+    sp.add_argument("--hours", type=float, default=12.0)
+    sp.add_argument("--max", type=int, default=20_000, help="the newest N launches of the window")
+    sp.add_argument("--min-launches", type=int, default=5, help="a mark seen fewer times is not a tool")
+    sp = cmd(
         "leaders-of",
         "the wallets a copy bot buys right after: who bought the same coin up to N slots before its first buy, over "
         "its coins, with how far behind it landed (reads the tape copy; a research job)",
@@ -1640,6 +1648,7 @@ BATCH_COMMANDS = frozenset(
         "leaders-of",
         "copy-context",
         "playbook",
+        "launch-tools",
     }
 )
 BATCH_NICE = 10
@@ -1881,6 +1890,29 @@ def main(argv: list[str] | None = None) -> int:
         for t in out["triggers"][:20]:
             print(f"  follows {t['wallet']} ({t['label'] or 'no label'}): {t['coins']} coins, "
                   f"{t['followed_share']} of that wallet's {t['its_coins']}")  # fmt: skip
+        return 0
+    if args.cmd == "launch-tools":
+        from .analysis.launch_tools import launch_tools
+
+        svc = Service(cfg)
+
+        async def scan():
+            try:
+                return await launch_tools(svc.rpc, svc.tape_store, time.time(), hours=args.hours,
+                                          max_launches=args.max, min_launches=args.min_launches)  # fmt: skip
+            finally:
+                await svc.close()
+                svc.store.close()
+
+        out = asyncio.run(scan())
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(f"{out['launches']} launches read of {out['window_launches']} in {out['hours']:g} h; all: "
+              f"{out['all']['reached_30']:.1%} reached 30 SOL")  # fmt: skip
+        for r in out["marks"]:
+            print(f"  {r['mark']}: {r['launches']} launches, {r['creators']} creators, {r['reached_30']:.0%} reached "
+                  f"30 SOL, {r['graduated']:.0%} graduated, median peak {r['peak_sol']} SOL, +5 s {r['ret_13']} %")  # fmt: skip
         return 0
     if args.cmd == "copy-context":
         from .analysis.context import copy_context
