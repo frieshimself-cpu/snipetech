@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import time
 from collections.abc import Callable, Iterator
+from datetime import date, timedelta
 from pathlib import Path
 from statistics import median
 from types import SimpleNamespace
@@ -303,29 +304,44 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
             yield rec
 
 
-def team_records(records: list[dict], min_prior: int) -> dict[str, str]:
+def team_records(
+    records: list[dict], min_prior: int, *, clip: float | None = None, shrink: float = 0.0
+) -> dict[str, str]:
     """mint -> the bucket of `TEAM` its create-block wallets' earlier launches put it in, or "no record" when none of
     them was in `min_prior` scored launches before it. Walked in time order: a launch's own outcome is added to its
-    wallets only once its minute has passed, so the label holds nothing a live rule would not know at the launch."""
+    wallets only once its minute has passed, so the label holds nothing a live rule would not know at the launch.
+    The record is the mean a-minute-later return of those earlier launches. `clip` caps each earlier return at plus
+    and minus that many percent, and `shrink` pulls the record toward the average of every launch known so far, as if
+    the team had that many more launches at the average: one runner then stops making a team (10 Nov: the plain
+    mean's top row did worse than the row under it)."""
     seen: dict[str, list[float]] = {}  # wallet -> [launches, sum of their returns]
+    everyone = [0, 0.0]
     waiting: list[tuple[int, list[str], float]] = []
     out: dict[str, str] = {}
     h = max(HORIZONS)
     for r in sorted(records, key=lambda r: r["ts"]):
         while waiting and waiting[0][0] <= r["ts"]:
             _, users, ret = waiting.pop(0)
+            everyone[0] += 1
+            everyone[1] += ret
             for user in users:
                 row = seen.setdefault(user, [0, 0.0])
                 row[0] += 1
                 row[1] += ret
         users = r.get("block_users") or []
         prior = [seen[u] for u in users if u in seen]
-        if prior and max(p[0] for p in prior) >= min_prior:
-            out[r["mint"]] = _bucket(sum(p[1] for p in prior) / sum(p[0] for p in prior), *TEAM)
+        known = max((p[0] for p in prior), default=0)  # the launches of the wallet that was in the most
+        if prior and known >= min_prior:
+            mean = sum(p[1] for p in prior) / sum(p[0] for p in prior)
+            if shrink:
+                average = everyone[1] / everyone[0] if everyone[0] else 0.0
+                mean = (mean * known + average * shrink) / (known + shrink)
+            out[r["mint"]] = _bucket(mean, *TEAM)
         else:
             out[r["mint"]] = "no record"
         if users and r.get("rets") and not r.get("bonded_at_once"):
-            waiting.append((r["ts"] + TEAM_KNOWN_SECS, users, r["rets"][h]))
+            ret = r["rets"][h] if clip is None else max(-clip, min(clip, r["rets"][h]))
+            waiting.append((r["ts"] + TEAM_KNOWN_SECS, users, ret))
     return out
 
 
@@ -391,7 +407,8 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                   stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
                   x_of: Callable[[str], dict | None] | None = None, cross: tuple[str, ...] | None = None,
                   min_cell: int = 50, exits: bool = False, team_min_prior: int = 5,
-                  show_from: str | None = None) -> dict[str, Any]:  # fmt: skip
+                  show_from: str | None = None, team_clip: float | None = None,
+                  team_shrink: float = 0.0) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
     by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
     (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
@@ -453,7 +470,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 groups.setdefault(label, []).append(item)
             order = [n for n in (*names, "no account") if n in groups]
             by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
-    team_of = team_records(records, team_min_prior)
+    team_of = team_records(records, team_min_prior, clip=team_clip, shrink=team_shrink)
     groups = {}
     for item in items:
         groups.setdefault(team_of.get(item[0].mint, "no record"), []).append(item)
@@ -466,6 +483,9 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     by["hunt"] = [{"bucket": r.pop("mark"), **r}
                   for r in (_row(n, groups_h[n], horizons, fee_pct) for n in ("listed", "not listed") if n in groups_h)]  # fmt: skip
     users_of = {r["mint"]: r.get("block_users") or [] for r in organised}
+    first_day = date.fromisoformat(all_days[0]) if all_days else None
+    week_of = {r["mint"]: (first_day + timedelta(days=(date.fromisoformat(r["day"]) - first_day).days // 7 * 7)).isoformat()
+               for r in organised}  # fmt: skip
     for row in by["team"]:  # many teams or one crew: the row's distinct bundle wallets and its commonest wallet's share
         counts: dict[str, int] = {}
         for item in groups[row["bucket"]]:
@@ -473,6 +493,11 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                 counts[user] = counts.get(user, 0) + 1
         row["team_wallets"] = len(counts)
         row["top_wallet_share"] = round(max(counts.values()) / row["launches"], 3) if counts else None
+        by_week: dict[str, list[float]] = {}
+        for item in groups[row["bucket"]]:
+            if item[1]["rets"]:
+                by_week.setdefault(week_of[item[0].mint], []).append(item[1]["rets"][max(horizons)])
+        row["weeks"] = [{"week": w, "launches": len(v), "ret": _mean(v)} for w, v in sorted(by_week.items())]
     crossed = None
     if cross:
         ts_at = {r["mint"]: r["ts"] for r in organised}
@@ -527,6 +552,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     n, scored = stats.get("launches", 0), stats.get("scored", 0)
     return {"files": stats.get("files", 0), "launches": n, "organised": len(organised), "min_block_sol": min_block_sol,
             "show_from": show_from,
+            "team_score": {"min_prior": team_min_prior, "clip": team_clip, "shrink": team_shrink},
             "hunt_list": {"wallets": hunt_size, "min_prior": team_min_prior, "min_ret": HUNT_MIN_RET,
                           "refresh_secs": HUNT_REFRESH_SECS},
             "bonded_at_once": len(bundled) - len(organised),

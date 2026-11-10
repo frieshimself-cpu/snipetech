@@ -305,6 +305,8 @@ def test_a_launch_is_sorted_by_how_its_bundle_wallets_earlier_launches_did(tmp_p
         team = {r["bucket"]: r for r in out["by"]["team"]}
         assert team["no record"]["launches"] == 4  # each team's first two launches: fewer than two before them
         assert team["25+"]["launches"] == 2 and team["25+"]["ret_150"] > 50  # the good team's third and fourth
+        weeks = team["25+"]["weeks"]  # each row week by week: a row is believed when it pays in every one
+        assert [w["launches"] for w in weeks] == [2] and weeks[0]["ret"] > 50 and len(weeks[0]["week"]) == 10
         assert team["<-10"]["launches"] == 2 and team["<-10"]["ret_150"] < -40  # the dumping team's third and fourth
         crossed = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2,
                                 cross=("team",), min_cell=1)  # fmt: skip
@@ -476,3 +478,25 @@ def test_rows_stored_out_of_order_are_put_back_in_chain_order_before_anything_is
     run = next(r for r in want if r["mint"] == "RUNcoin")
     assert run["path"][0][0] == 59 and run["path"][0][1] > 1.2  # one close for block 60: after all three of its trades
     assert s1["breaks"] == 0 and s2["breaks"] == 0 and s1["reordered"] == 0 and s2["reordered"] > 5
+
+
+def test_a_teams_record_can_be_clipped_and_pulled_to_the_average_and_rows_show_each_week():
+    """36 days on ordered rows, 10 Nov: the top team row ("over +25 %") did worse than the row under it and turned
+    negative late in the period. A mean of a few earlier launches is carried by one runner. Clipping each earlier
+    return and pulling a short record toward the average of all launches so far makes one runner worth less; and a
+    row is only believed when it pays week after week, so every team row carries its weeks."""
+    from snipetech.analysis.history_scan import team_records
+
+    def rec(mint, ts, users, ret):
+        return {"mint": mint, "ts": ts, "block_users": users, "rets": {13: 0.0, 150: ret}, "bonded_at_once": False,
+                "day": "2026-10-27", "block_sol": 20.0}  # fmt: skip
+
+    lucky = [rec(f"L{i}", 1000 * i, ["lucky"], r) for i, r in enumerate([400.0, -30.0, -30.0, -30.0, -30.0])]
+    steady = [rec(f"S{i}", 1000 * i + 500, ["steady"], 30.0) for i in range(5)]
+    crowd = [rec(f"C{i}", 1000 * i + 700, [f"one-off-{i}"], -10.0) for i in range(5)]
+    nxt = [rec("LX", 9000, ["lucky"], 0.0), rec("SX", 9001, ["steady"], 0.0)]
+    plain = team_records(lucky + steady + crowd + nxt, min_prior=3)
+    assert plain["LX"] == "25+" and plain["SX"] == "25+"  # one +400 % makes the lucky team's mean +56 %
+    robust = team_records(lucky + steady + crowd + nxt, min_prior=3, clip=60.0, shrink=5)
+    assert robust["LX"] == "-10-0" and robust["SX"] == "10-25"  # clipped to +60 and pulled toward the average
+    assert plain["L0"] == "no record" and robust["L0"] == "no record"
