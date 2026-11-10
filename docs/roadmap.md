@@ -39,6 +39,15 @@ first on the server's recording and only then run live in capped batches.
      run two at a time near 24 of 26.9 GB.
 - **Not a problem:** disk free fell 533 to 502 GB after the 12:30 resize and has held at 501 GB since; it was the
   hourly tape copy being rebuilt, not a leak. `doctor` passes on every line; the recorder is 2-5 s behind.
+- **18:17-18:51 UTC: a 33-minute hole in the tape.** Helius refused the recorder's LaserStream connection with
+  "Unable to verify project. Please check your API key" from 18:17:43 (before the 18:19 deploy; plain RPC calls with
+  the same key kept working, `doctor` passed). The recorder kept retrying and has recorded again since about 18:51.
+  Nothing of ours caused or fixed it. The gap is not backfilled yet.
+- **Research jobs ask Helius at 120 requests a second since 18:49** (ff90ce5): the owner's plan is Business (200 a
+  second, no rate limit hit in 24 h, 35 of 100 million credits used); scans were held to our own 40.
+- **Bought data, if the owner buys it:** PumpFunData's hourly files (sample checked: wallet, slot, signature, reserves
+  after each trade, creator; no place in the block, no metadata, no fees) are the pick for months of history; the first
+  step after a key is a trade-for-trade comparison with a day we recorded ourselves.
 - **Next, in order:** (1) a `launch_marks` table written by the scan and then by the recorder, so a re-scan costs
   nothing and the lab can gate on a mark; (2) the lab for organised Proxima launches bought at 30-120 s if still above
   the create block's close; (3) the bid that wins the place behind a known wallet; (4) forward paper at "+1 with a bid".
