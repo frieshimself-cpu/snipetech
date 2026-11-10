@@ -254,6 +254,18 @@ create transaction (OKTech's required-accounts filter) or the wallet that pays (
 fresh creator each time (`bwamJz...` "Bdubs" 724, "Theo dev" 161). Whether `moonKfft...` is Proxima is not known: one
 coin the owner knows was a Proxima deploy gives its mark, then every launch with it can be counted and scored.
 
+### Next for launch tools (owner, 14:30: "is there a way for it to automatically detect proxima?")
+
+Told yes. Build `launch-tools --hours N` (a batch job, tests first; add to ops ALLOWED and the research commands): for
+every launch in the window fetch its create transaction (the `tx` path; `doctor` measured about 98 a second), take its
+marks (top-level programs other than pump.fun, system, token, associated-token and compute-budget; the destinations of
+SOL transfers that are not known tip accounts; signer other than the creator), group launches by mark, and give per
+mark: launches, share that reached 30 SOL and that graduated, SOL in the curve at 5 s and 60 s after a block-late
+entry. The marks whose launches run are the tools worth targeting, Proxima among them whatever its address; a coin the
+owner names only confirms which mark is which. Live, a mark is an OKTech required-account filter on the create (a fee
+wallet) or a Launch shape wrapper program. The 2 SOL team-counted run one trade behind (14:23): +0.064 SOL a trade,
+lower +0.049, 704 trades.
+
 ## What this does not say yet
 
 - These are price changes for a copy too small to move the price. A 2 SOL buy in a coin holding 15 SOL pushes the price
