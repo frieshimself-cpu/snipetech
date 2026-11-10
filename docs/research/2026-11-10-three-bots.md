@@ -457,6 +457,68 @@ the link, and no X data source is connected. Other launchpads: the tape records 
 LaunchLab (127 LaunchLab coins in the last hour against 2,457 on pump.fun's curve); Meteora DBC (Believe, Bags) is not
 recorded, though OKTech snipes it. `launch-tools` scores pump.fun curves only: LaunchLab is the next venue for it.
 
+### The same question on a bought month: the website helps, the dev's own buy helps more (20:40 UTC)
+
+The owner bought pumpfundata.com's history (10 Nov, 3,000 credits). Every pump.fun trade from 5 Oct 08:00 to 3 Nov 2026
+(712 hourly files, 125.9 million rows, 1,056,694 launches priced in SOL) is on the server. Checked against our own tape:
+the hour 9 Nov 12:00 holds 99.9 % of our SOL trades; the file's row order agrees with the tape's blocks on 99.9 % of
+neighbouring trades of a coin and with the tape's place inside a block on 88 % (`history order`). So prices at block
+ends can be trusted and "one trade behind" inside a block cannot. (The scan's `order_breaks` of 0.34 is mostly a third
+reading of the amounts that fits neither "buy adds the amount" nor "sell takes amount plus fee": 26 % of trades do not
+chain even in the tape's own order. The reserves after each trade are the chain's own numbers and are what is used.)
+
+`history scan --from 2026-10-05 --to 2026-11-03 --min-block-sol 15`: 16,202 launches where others put 15+ SOL into the
+create block and the curve could still be bought a block later (3,136 more were bought out by their own bundle and are
+left out). A buy at the end of the block after the create, in percent, before 2.5 % of round-trip fees:
+
+| split | launches | reach 30 SOL | graduate | 5 s | 60 s | median 60 s | up after fees |
+|---|---|---|---|---|---|---|---|
+| website yes | 9,926 | 65 % | 17 % | +4.3 | +1.3 | -4.5 | 40 % |
+| website no | 3,620 | 57 % | 13 % | +1.6 | -5.6 | -21.0 | 34 % |
+| metadata unreadable | 2,656 | 54 % | 7 % | +2.8 | -4.0 | 0.0 | 27 % |
+| X link: a profile | 4,669 | 71 % | 22 % | +5.0 | +2.1 | 0.0 | 42 % |
+| X link: a tweet | 7,875 | 57 % | 12 % | +3.3 | -1.5 | -19.1 | 37 % |
+| no X link | 762 | 70 % | 19 % | -1.8 | -8.0 | -6.5 | 30 % |
+| Telegram yes | 446 | 75 % | 35 % | +5.8 | +5.7 | 0.0 | 45 % |
+| Telegram no | 13,100 | 63 % | 15 % | +3.5 | -0.8 | -8.8 | 38 % |
+| others' SOL 15-25 | 11,827 | 49 % | 9 % | +3.0 | -2.7 | -19.8 | 35 % |
+| others' SOL 25-50 | 2,910 | 94 % | 17 % | +4.6 | +3.5 | 0.0 | 38 % |
+| others' SOL 50+ | 1,465 | 100 % | 54 % | +5.0 | +2.5 | +1.2 | 46 % |
+| dev bought 0 | 5,858 | 50 % | 11 % | +1.6 | -6.0 | -27.0 | 33 % |
+| dev bought under 0.5 SOL | 3,747 | 69 % | 20 % | +3.6 | +0.6 | 0.0 | 37 % |
+| dev bought 0.5-1 SOL | 3,420 | 68 % | 14 % | +7.7 | +5.0 | -3.5 | 42 % |
+| dev bought 1-2 SOL | 1,494 | 66 % | 14 % | +3.6 | +6.2 | -3.1 | 44 % |
+| dev bought 2+ SOL | 1,683 | 68 % | 14 % | +1.2 | -6.8 | -14.0 | 29 % |
+
+Read:
+
+1. **The one day was a lucky day.** "Website and 15+ SOL" was +22 % a minute later on 9-10 Nov; over 30 days it is
+   +1.3 %, which fees turn into a loss. The website side is ahead of the no-website side on 23 of 30 days, so it is a
+   real filter, and it clears the fees on 9 of 30 days, so it is not a rule.
+2. **The dev's own buy sorts them better.** A dev who buys 0.5-2 SOL of the coin in the create (4,914 launches, about
+   160 a day): +5 to +6 % a minute later. No dev buy: -6 %. A dev buy over 2 SOL: -7 %.
+3. **Every row's median is zero or negative.** Most of these launches lose a little and a few run far: the exit rule
+   decides the result, not the entry filter.
+
+Crossed (`--cross`), each cell with its 60 s return on the first and on the second 15 days (a cell among dozens that
+pays in one half only is luck):
+
+| cell | launches | 60 s | first half | second half |
+|---|---|---|---|---|
+| no website, no Telegram, dev 1-2 SOL | 399 | +7.3 | +6.4 | +7.9 |
+| website, no Telegram, dev 1-2 SOL | 856 | +4.5 | +3.3 | +6.7 |
+| website, no Telegram, dev 0.5-1 SOL | 2,201 | +4.8 | +6.1 | +1.4 |
+| website, dev 0, others' SOL 25-50 | 560 | +7.3 (median +9.5, 62 % up) | +11.0 | +3.2 |
+| X tweet, dev 1-2 SOL, 4+ wallets in the block | 773 | +6.3 | +5.3 | +7.1 |
+| X tweet, dev 0.5-1 SOL, 4+ wallets | 1,315 | +5.9 | +5.1 | +6.6 |
+| website, no Telegram, dev 2+ SOL | 1,064 | -5.1 | -3.8 | -7.6 |
+
+"Dev bought 1-2 SOL" holds in both halves in every cell it appears in, with or without a website. After fees that is
++2 to +5 % a trade before the landing fee, on a mean carried by few winners. It is the first launch rule here that
+held on two separate halves of a month; it is not a strategy until the exit is chosen on one half and holds on the
+other (`history scan --exits`: each launch's block-end prices for ten minutes are kept and time, stop, take and trail
+rules are walked along them; running).
+
 ### Next for Proxima
 
 FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job), then run it
