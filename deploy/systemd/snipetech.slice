@@ -7,7 +7,10 @@ Description=snipetech: every snipetech service shares these limits and yields to
 # it throttled 15 % of periods while nothing else ran there. Set on the server with systemctl set-property as well.
 CPUWeight=20
 IOWeight=20
-# Memory, page cache included (the 19 GB database is read from it): the 16 GB machine keeps about 2 GB for itself.
-# 7 Nov the 2600M/3G limits were hit 4 million times and the recorder waited on the disk 9 % of its time.
-MemoryHigh=12G
-MemoryMax=14G
+# Memory, page cache included (the 40 GB database is read from it), as shares of the machine so a resize needs no
+# edit here: 13 and 14 GB on the 16 GB machine, 26 and 28 GB on a 32 GB one. 7 Nov the 2600M/3G limits were hit
+# 4 million times and the recorder waited on the disk 9 % of its time; 10 Nov the 12G limit was hit 166,000 times in
+# an hour and the machine froze once. After a resize: `systemctl set-property snipetech.slice MemoryHigh=80%
+# MemoryMax=88%` as root, or the owner's `deploy/setup.sh` run.
+MemoryHigh=80%
+MemoryMax=88%

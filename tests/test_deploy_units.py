@@ -157,8 +157,11 @@ def test_the_slice_lets_snipetech_use_the_machine():
     quota had throttled 65,589 of 440,259 periods (12,888 s of CPU denied), memory.high had been hit 4,027,792 times
     with 2.72 GB in use, the recorder spent 9 % of its time waiting on the disk, and no other service on the machine
     held 100 MB. The slice keeps its low weight against everything else (sshd, Caddy come first under contention), so it
-    needs no CPU quota, and its memory limits leave the machine about 2 GB."""
+    needs no CPU quota. 10 Nov: the limits are shares of the machine's memory, not gigabytes, so a bigger server (the
+    16 GB one sat at its 12 GB limit all day and froze once) is used after the owner's one `setup.sh` run, with no
+    edit here: 80 % before the slice is squeezed, 88 % at most (16 GB: 13 and 14 GB; 32 GB: 26 and 28 GB)."""
     sl = _unit("snipetech.slice")
     assert ("Slice", "CPUQuota") not in sl
-    high, top = _bytes(sl[("Slice", "MemoryHigh")]), _bytes(sl[("Slice", "MemoryMax")])
-    assert 8 << 30 <= high < top <= 14 << 30
+    high, top = sl[("Slice", "MemoryHigh")], sl[("Slice", "MemoryMax")]
+    assert high.endswith("%") and top.endswith("%")
+    assert 70 <= float(high[:-1]) < float(top[:-1]) <= 90
