@@ -24,6 +24,14 @@ first on the server's recording and only then run live in capped batches.
   pay: that is the lab and forward-paper test now (I51).
   The same buys entered one block late are worth −1.7 % at 5 s and no split is above +1 %: the trade exists only
   right behind the wallet, in its block.
+- **13:00: the lab can test what the tape points to** (bebe012). Its KOL rule fired only on the first known wallet
+  into a coin; a kol trigger now takes OKTech copy mode's own gates (`known` = ctbotMinWallets, `within`, `max_sol`,
+  `min_curve` / `max_curve`), the exit set has 3 s and 5 s timers, and `--copy-position +0 --per-tx <bid>` scores the
+  place right behind the wallet. First run queued: second and third known wallet in, 1-3 SOL buys, 1 SOL a copy, 0.02
+  a transaction, 72 h. The second bot's rule is read out (hot coin this second, sell at the first pause).
+- **The server is 32 GB / 8 cores / 644 GB since 12:30** (owner). The slice still holds the old 12 GB limit until
+  `systemctl set-property snipetech.slice MemoryHigh=80% MemoryMax=88%` is run as root; the owner confirms the
+  account has OKTech's [S] tab (Shapes / Web / Hunt), which `oktech.py` still treats as not granted.
 - **The analyst runs on claude-fable-5-2 since its 12:17 turn** (verified in operator/turns.jsonl: the model that
   answered, three recorded pieces of reasoning where earlier turns had none, 0.68 $ for the turn).
 - **What is being tested, in order.** (1) A paid place right behind known wallets at 1-5 SOL with exits in seconds

@@ -99,6 +99,27 @@ The whole value of the trade is inside the followed wallet's block, right behind
   12-15 UTC. No single factor here makes them buy: their trigger is narrower than any one split, which is what the
   50-factor `study` of each bot is for.
 
+## The second bot's rule, from 50 factors (`study`, 12:55 UTC)
+
+282 entries of niggerd5…dkm5zS against 4,230 moments it passed on, in the same minutes, and 279 sells against 1,055
+moments it held. A depth-3 tree on the strongest factors, cross-validated at 93 %:
+
+- **It buys when the coin is hot this second:** at least 1 SOL traded in the last 5 s (its median 5.9 SOL; the moments
+  it passed on, 0), a trade in the same second, and a buy of 0.87 SOL or more in the last minute. 261 of its 282
+  entries fit, against 231 of the others.
+- **What "hot" looks like at its entries (medians):** 22 SOL traded in 30 s and 39 SOL in a minute, 6 buys of 1 SOL or
+  more in the minute, 20 different buyers in 30 s, price +11 % in 5 s, +25 % in 30 s and +96 % in 5 minutes, among the
+  12 busiest coins of the market, market cap 74 SOL (40 to 186: 18 to 75 % of the curve), 82 s old (6 s to 6.5 min).
+- **Who is in does not matter to it:** a labelled KOL bought in the minute before 3.5 % of its entries. The creator had
+  bought 3 SOL at the median and had already sold in 82 %.
+- **It sells when the tape pauses:** every one of the 113 sells made after a second with no trade in the coin, held
+  over a second, fits "held more than 1 s and the last trade a second or more ago"; the rest come as others' sells pile
+  up (more than 5 in 5 s). Its first sell is 3 s in at the median. This is the dead exit OKTech has (1 s at least).
+
+So this bot is not a copier at all: it rides volume bursts in the same block as a 1 SOL buy and leaves at the first
+pause. The lab's momentum rules were scored behind the 3rd buy after the trigger; at the place right behind the buy,
+with the bid charged, they have not been.
+
 ## What this does not say yet
 
 - These are price changes for a copy too small to move the price. A 2 SOL buy in a coin holding 15 SOL pushes the price
