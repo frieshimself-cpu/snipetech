@@ -377,6 +377,15 @@ wallets, which are not identified yet. The other buyers in its create blocks are
 `7PtVk5...` on 104 of its launches in 72 h, `AmN88f...` 62, `2NUMEz...` 40, `6anjqM...` 32), present on 304 of 977
 launches. A buy one block after a bwam create is what bwam sells into.
 
+**The bundle wallets counted too (18:15).** The same scan now reads the first transaction of each launch's
+create-block buyers (`team:cu1450`). 59 launches have a relay-funded bundle wallet, 79 a relay-funded creator, **104
+either: about 130 a day**, still well under the owner's 500. The value 1450 is the only one that repeats (79 and 59;
+the next is 5345 on 4 launches, then scattered values on 2-3). A buy one block later on the 59: +2.3 % at 5 s, −11 %
+at a minute, 12 % reach 30 SOL; on the 12 of them with 10+ SOL from others, 50 % reach 30 SOL and −19 % at a minute.
+On this definition a Proxima launch is no better to snipe a block late than any other: the bundle's SOL is in the
+price and the bundle sells into the buyers. What is left to try is the entry after the first minute and whether the
+owner's list of Proxima launches differs from this one.
+
 OKTech's developer on Hunt: "if 5 bloom snipers buy a dev I wanna buy as well ... if mintech snipers go, if bwam
 bundle wallets go, if blockx go, I go": Hunt buys a launch once named bots (by wallet, program, lookup table or
 account) have bought it inside a window. Our crowd hunts counted any wallets and lost; which wallets is untested:
