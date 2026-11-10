@@ -351,6 +351,37 @@ creator wallets: 121 in the last 19.5 h, each for a different creator. A buy one
 five-second flip worth about its fees; Hunt mode adds thresholds (SOL and buyers inside a window) that the blind
 number does not test. "The AIL snipe is in S mode too": what AIL stands for is not known here.
 
+### The count (17:55 UTC) and bwam, read from the tape (18:00)
+
+`launch-tools --hours 24 --max 30000 --funding-of alt:Hyif6e... --mark fund:cu1450` read the first transaction of
+the creator of each of the 3,262 launches with the table. **79 were first funded by the relay transfer** (78
+creators; about 97 a day), against the owner's "around 500 a day". The gap is not explained: the tell only sees a
+creator whose FIRST transaction is the relay's, so a dev launching from a wallet they already had is missed even
+when their bundle wallets were relay-funded. Reading the create-block buyers' funding as well is the next count.
+
+| relay-funded creators | n | reached 30 SOL | +5 s | +60 s | up after fees at 60 s |
+|---|---|---|---|---|---|
+| all | 79 | 15.2 % | +1.4 % | −7.6 % | 20 % |
+| nobody else in the create block | 20 | 0 % | +3.0 % | −5.1 % | 18 % |
+| others put under 10 SOL | 40 | 2.5 % | −1.5 % | −13 % | 5 % |
+| others put 10 SOL or more | 19 | 57.9 % | +6.2 % | +2.4 % (median +10.7 %) | 53 % |
+
+Nineteen launches are too few to act on; the pattern matches the owner's "organised and go high" (58 % reach 30 SOL).
+
+**bwam** (`bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa`), the last 24 h on the tape: it traded 218 coins, every one a
+launch it signed itself for a fresh creator wallet. It buys once, in the create's own block, into an empty curve
+(median 5.9 SOL, 12 SOL at the 90th percentile), and its last sell is a median 6 s later. 95 % of the coins paid it,
++2.8 SOL a coin, +610 SOL in the day (+1,418 SOL over 72 h on 608 coins). It never bought a second time on any of the
+217 coins: on the tape its own wallet does not "buy up the chart"; if bwam does that on some deploys it uses other
+wallets, which are not identified yet. The other buyers in its create blocks are small snipers (0.1-0.5 SOL:
+`7PtVk5...` on 104 of its launches in 72 h, `AmN88f...` 62, `2NUMEz...` 40, `6anjqM...` 32), present on 304 of 977
+launches. A buy one block after a bwam create is what bwam sells into.
+
+OKTech's developer on Hunt: "if 5 bloom snipers buy a dev I wanna buy as well ... if mintech snipers go, if bwam
+bundle wallets go, if blockx go, I go": Hunt buys a launch once named bots (by wallet, program, lookup table or
+account) have bought it inside a window. Our crowd hunts counted any wallets and lost; which wallets is untested:
+idea I59 (the top first-slot snipers by profit as the group, known 2/3/5, coins under 10 s old, +1 landing).
+
 ### Next for Proxima
 
 0. Count the funding tell: for every launch with the table, the creator's first transaction (two RPC calls a

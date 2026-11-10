@@ -136,11 +136,14 @@ dump("status", [{"snapshot_at": iso(NOW), "tape_lag_s": lag, "jobs_running": len
                  "ideas_open": sum(1 for i in ideas if i.get("status") in ("open", "testing")),
                  "ideas_total": len(ideas)}])  # fmt: skip
 
-# Proxima launches: the newest finished `launch-tools --mark` scan on the server (the hourly round starts one; this only
-# reads it). Each launch of the mark with what happened in its create block, and the mark's launches by that buying.
-PROXIMA = "alt:Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP"
+# Proxima launches: the newest finished `launch-tools --funding-of <table> --mark fund:cu1450` scan on the server (the
+# hourly round starts one; this only reads it). The table is pump.fun's standard create path (about 4,000 launches a
+# day); a Proxima launch, as far as the chain shows on 10 Nov, is one whose creator was first funded by the tool's relay
+# (a bare transfer with a compute limit of 1450). Each such launch with what happened in its create block.
+TABLE = "alt:Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP"
+PROXIMA = "fund:cu1450"
 scans = [j for j in jl if not j.get("running") and j.get("exit_code") == 0 and "launch-tools" in j["argv"]
-         and PROXIMA in j["argv"] and "--json" in j["argv"]]  # fmt: skip
+         and "--funding-of" in j["argv"] and PROXIMA in j["argv"] and "--json" in j["argv"]]  # fmt: skip
 prox, prox_split = [], []
 if scans:
     job = max(scans, key=lambda j: j["started"])
@@ -151,7 +154,9 @@ if scans:
         prox.append({"mint": c["mint"], "coin": c["symbol"] or short(c["mint"]), "launched": iso(c["ts"]),
                      "dev_sol": c["dev_sol"], "block_wallets": c["block_wallets"], "block_sol": c["block_sol"],
                      "peak_sol": c["peak_sol"], "ret_5s_pct": c["ret_13"], "ret_60s_pct": c["ret_150"]})  # fmt: skip
-    rows = [("All launches", everything), ("Proxima's mark", next(m for m in scan["marks"] if m["mark"] == PROXIMA))]
+    by_mark = {m["mark"]: m for m in scan["marks"]}
+    rows = [("All launches", everything), ("pump.fun's standard launch path", by_mark[TABLE]),
+            ("Proxima's mark", by_mark[PROXIMA])]  # fmt: skip
     rows += [(f"Proxima, others put {r['bucket']} SOL in the launch block", r) for r in split["by"]["block_sol"]]
     for label, r in rows:
         prox_split.append({"group": label, "launches": r["launches"], "reached_30_pct": round(r["reached_30"] * 100, 1),
