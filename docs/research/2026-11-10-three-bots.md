@@ -162,6 +162,37 @@ between two wallets of a bundle, a place no bid buys. `copy-context --by-entity`
 makes its first buy the one event and enters behind the team's back-to-back buys in the block; two new splits show
 the slots since the previous known wallet and the kind of name.
 
+### The check (13:49 UTC): the second known wallet holds when a team counts once
+
+`copy-context --behind-leader`, 72 h, 0.5 SOL and more, percent right behind the buy before 2.5 % of fees:
+
+| | n | 2 slots | 13 slots (5 s) | 150 slots (60 s) | above fees at 13 |
+|---|---|---|---|---|---|
+| by address: first known wallet in | 9,673 | +3.7 | +0.5 | -8.9 | 40 % |
+| by address: second | 2,362 | +9.0 | +8.5 | +4.8 | 56 % |
+| **by team: second** (behind the team's bundle) | 2,054 | +10.1 | +10.3 | +7.2 | 59 % |
+| by team: third | 1,207 | +10.7 | +11.8 | +8.9 | 65 % |
+| by team: fourth or later | 2,007 | +10.5 | +11.3 | +9.1 | 67 % |
+| by team: in the previous known team's block | 439 | +18.3 | +18.8 | +17.6 | 76 % |
+| by team: 1-2 slots after it | 217 | +5.7 | +6.1 | -1.1 | 52 % |
+| by team: 3-25 slots after it | 1,172 | +7.4 | +7.5 | +2.0 | 54 % |
+| **by team: 26 slots (10 s) or more after it** | 3,440 | +10.7 | +11.6 | +9.9 | 66 % |
+
+The guess that the result was a bundle artefact was wrong: with a team counted once and the copy behind its bundle the
+second known wallet is worth more, not less (17,268 events become 14,940). The 439 "same block" events are the part
+that still looks like one team under two names (the whole gain is there after 2 slots). The rest of the gain is also
+there after 2 slots (0.8 s) and then holds for a minute: buyers who arrive right behind the known wallet. That fits
+the lab: the place right behind takes it, one trade later most of it is gone.
+
+By the kind of name (by address, at 13 slots): the 18 labelled KOLs +15.0 % (n 266, 76 % above fees, +15.6 % at 60 s);
+bundle +14.4 % (181), dev +11.5 % (143), insider +10.5 % (112); plain traders +5.0 % (11,657); sniper names +0.5 %
+(376); faucets and exchanges +1.7 % and 27 % of all events (4,741: the "Faucet" wallets are high-frequency bots).
+
+Built from it (lab, 43aed3f): a KOL rule's `teams` (a team counts once, fires behind its back-to-back buys), `gap`
+(seconds since the previous known wallet's first buy) and the label group `trader` (the tracked list without faucets,
+exchanges and snipers). Running: second known team in, 1-3 SOL, with and without a 10 s gap, on `wallet` and on
+`trader`, at +1 and at +0, 1 SOL, 0.02 a transaction.
+
 ## A fourth bot, `EjywYB...` (owner: "buys from KOLs' dev wallets after the dev sell ... not very profitable")
 
 `playbook`, 72 h: 586 coins, 0.22 SOL a buy, one sell of everything a median 5 slots (2 s) later, 79 % out within 6 s.
@@ -178,6 +209,16 @@ a block after the create, 25 at 5 s, 66 at 5 min; 6Z91 bought 1.78 SOL in its cr
 after every launch: +0.025 SOL a launch, 15 % wins, the newest ten lost, most of the profit one coin: MARGINAL. Both
 wallets are labelled `dev`. Two paying launches cannot tell RM from the nine "FAKE" coins at the create; OKTech's
 Web kind (follow the wallets a dev funds) is the feature for a dev who launches from fresh wallets.
+
+## A launch tool's mark (owner, 13:55: "a tool called proxima ... launches are usually organised and go high")
+
+RM's create transaction (`tx`): a direct pump.fun CreateV2 and buy, no wrapper program, signed by `Bjr89z...` and the
+mint, with two transfers at the end: 0.0085 SOL to a Nozomi tip account and 0.0025 SOL to `moonKfft...`, a fee wallet.
+A tool that launches this way is not a "wrapped" launch for OKTech's Launch shape; its mark is the fee wallet in the
+create transaction (OKTech's required-accounts filter) or the wallet that pays (Launch shape's platform payer). In
+72 h 22,051 of 113,590 launches were signed by a wallet other than the creator; the busiest signers launch from a
+fresh creator each time (`bwamJz...` "Bdubs" 724, "Theo dev" 161). Whether `moonKfft...` is Proxima is not known: one
+coin the owner knows was a Proxima deploy gives its mark, then every launch with it can be counted and scored.
 
 ## What this does not say yet
 
