@@ -413,10 +413,54 @@ whether it holds on the other five days. Then the lab with size and fees, then f
 without us: its metadata filter takes "website present", and Hunt's thresholds take the SOL and buyers in the first
 seconds.
 
+### Which bundled launches pay: fourteen features on the same 279 (owner, 18:40: "are there any other distinct features ... or anything with these bundled coins that make them profitable")
+
+The 279 launches of the last 19.5 h where others put 5+ SOL in the create block, a buy one block later, at one
+minute, before fees. Exploratory: one day, fourteen splits read after the fact.
+
+| feature | value | n | mean | median | up after fees | reach 30 SOL |
+|---|---|---|---|---|---|---|
+| all | | 279 | +3.4 % | −2.9 % | 43 % | 48 % |
+| website | none | 141 | −7.2 % | −14.1 % | 36 % | 44 % |
+| | its own site | 100 | +12.8 % | +0.4 % | 47 % | 56 % |
+| | a social or other page as the website | 38 | +18.0 % | +8.8 % | 58 % | 39 % |
+| X link | none | 21 | −15.5 % | −12.5 % | 24 % | 14 % |
+| description | none | 191 | +7.1 % | +0.2 % | 48 % | 53 % |
+| | short | 61 | −6.6 % | −7.7 % | 31 % | 30 % |
+| SOL others put in | 5-15 | 101 | −1.2 % | −6 % | 33 % | 18 % |
+| | 15-25 | 164 | +5.7 % | +13.9 % | 51 % | 62 % |
+| wallets in the block | 4 | 31 | −12.4 % | −9.0 % | 29 % | 35 % |
+| | 5-6 | 77 | +12.7 % | 0 % | 47 % | 58 % |
+| | 11+ | 29 | +11.0 % | +30.2 % | 59 % | 69 % |
+| relay-funded (Proxima's pattern) | yes | 48 | −5.1 % | −0.5 % | 35 % | 25 % |
+| | no | 231 | +5.2 % | −3.3 % | 45 % | 52 % |
+| the same name launched again within 30 min (hindsight) | yes | 97 | −13.7 % | −63.5 % | 35 % | 49 % |
+
+Nothing in the dev's buy size, the tweet's age, the hour or a signer other than the creator separates them. Combined,
+using only what is known at the launch:
+
+| rule | n | mean | without its 3 best | median | up after fees | reach 30 SOL |
+|---|---|---|---|---|---|---|
+| **website and 15+ SOL from others** | **77** | **+22.2 %** | **+16.9 %** | **+29.1 %** | 60 % | 75 % |
+| the same, not a repeat of a name from the last 30 min | 43 | +25.9 % | +17.2 % | +23.6 % | 63 % | 74 % |
+| no website and 15+ SOL | 101 | −6.3 % | −9.7 % | −14.1 % | 41 % | 56 % |
+| website, relay-funded | 27 | +3.3 % | −3.4 % | +0.6 % | 48 % | 15 % |
+| website, first half of the window / second half | 69 / 69 | +9.9 % / +18.6 % | +1.3 % / +13.9 % | | | |
+
+"A bundled launch with a website" is about 95 launches a day at +22 % a minute later before 2.5 % of fees and our
+own price impact, and it keeps most of that without its three best coins. It is still one day. The whole-tape scan
+(job 20261110-182301-dbfaa6) gives the website split on six days at 5+ SOL; rerun it with `--block-sol-min 15` when
+it ends (marks and metadata are kept, so the rerun only recomputes outcomes).
+
+Not available: whether the coin's X account is verified (gold or blue), its followers or age: the metadata holds only
+the link, and no X data source is connected. Other launchpads: the tape records pump.fun, PumpSwap and Raydium
+LaunchLab (127 LaunchLab coins in the last hour against 2,457 on pump.fun's curve); Meteora DBC (Believe, Bags) is not
+recorded, though OKTech snipes it. `launch-tools` scores pump.fun curves only: LaunchLab is the next venue for it.
+
 ### Next for Proxima
 
-FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job): the website
-split by day; if it holds, a lab test with size and fees (launch trigger with others' create-block SOL >= 5-10 and a
+FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job), then run it
+again with `--block-sol-min 15` and read the website rows: "website and 15+ SOL from others" on six days, by day; if it holds, a lab test with size and fees (launch trigger with others' create-block SOL >= 5-10 and a
 website, 0.5-2 SOL, exits 30 s to 5 min and a stop), then forward paper; tell the owner the result either way.
 
 0. Count the funding tell: for every launch with the table, the creator's first transaction (two RPC calls a
