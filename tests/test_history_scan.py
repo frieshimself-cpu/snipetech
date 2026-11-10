@@ -310,3 +310,39 @@ def test_a_launch_is_sorted_by_how_its_bundle_wallets_earlier_launches_did(tmp_p
         assert {c["cell"] for c in crossed["cross"]} == {"team=no record", "team=25+", "team=<-10"}
     finally:
         st.close()
+
+
+def test_a_late_entry_and_how_many_teams_stand_behind_a_row_are_shown(tmp_path):
+    """The team record's top rows were +13 to +24 % a minute later (30 days, 10 Nov). Two questions before it is a
+    rule: is a row many teams or one crew (its distinct bundle wallets, and the share of its launches the commonest
+    wallet is in), and what is left when the buy lands a few blocks later than the block after the create."""
+    from snipetech.analysis.history_scan import exit_return
+
+    path = [[1, 1.10], [2, 1.20], [5, 1.50], [100, 1.80], [200, 0.90]]
+    assert exit_return(path, {"slots": 150}) == 80.0
+    assert exit_return(path, {"enter": 2, "slots": 150}) == 50.0  # in at the close two blocks later: 1.80 / 1.20
+    assert exit_return(path, {"enter": 4, "slots": 150}) == 50.0  # nothing traded in blocks 3 and 4: still 1.20
+    assert (
+        round(exit_return(path, {"enter": 2, "stop": 0.2, "slots": 400}), 4) == -25.0
+    )  # the stop is from the late entry
+    assert exit_return([[9, 2.0]], {"enter": 3, "slots": 150}) == 100.0  # nobody traded before the late entry
+
+    rows: list[dict] = []
+    for i in range(4):
+        good = Coin(rows, f"GOOD{i}", f"gdev{i}", S0 + 100 + 1000 * i)
+        for k in range(4):
+            good.buy(f"good-team-{k}", 4.0, 0)
+        good.buy("crowd", 20.0, 60)
+        good.buy("late", 0.1, 400)
+    st = Store(":memory:")
+    try:
+        stats: dict = {}
+        recs = list(
+            scan_files([_write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows)], min_block_sol=15, stats=stats)
+        )
+        out = history_table(recs, st.token_meta, min_block_sol=15, stats=stats, team_min_prior=2, exits=True)
+        top = next(r for r in out["by"]["team"] if r["bucket"] == "25+")
+        assert top["team_wallets"] == 4 and top["top_wallet_share"] == 1.0  # one crew: the same four wallets every time
+        assert out["exits"]["late3_t60s"]["ret"] == out["exits"]["t60s"]["ret"]  # nothing traded in the first blocks
+    finally:
+        st.close()

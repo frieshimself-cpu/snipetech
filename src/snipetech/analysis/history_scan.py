@@ -50,6 +50,14 @@ EXITS: dict[str, dict[str, float]] = {
     "stop15_take50_t4m": {"stop": 0.15, "take": 0.5, "slots": 600},
     "stop20_take100_t10m": {"stop": 0.20, "take": 1.0, "slots": 1500},
     "stop15_trail30_t10m": {"stop": 0.15, "trail": 0.30, "slots": 1500},
+    "stop15_take50_t60s": {"stop": 0.15, "take": 0.5, "slots": 150},
+    "stop25_take50_t60s": {"stop": 0.25, "take": 0.5, "slots": 150},
+    "take30_t60s": {"take": 0.3, "slots": 150},
+    # the same buy landing later than the block after the create
+    "late1_t60s": {"enter": 1, "slots": 150},
+    "late3_t60s": {"enter": 3, "slots": 150},
+    "late8_t60s": {"enter": 8, "slots": 150},
+    "late3_stop15_take50_t4m": {"enter": 3, "stop": 0.15, "take": 0.5, "slots": 600},
 }
 TRACK_SLOTS = 54_000  # six hours: how long a launch's peak is followed
 HORIZONS = (13, 150)
@@ -106,10 +114,15 @@ def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
     that closes `stop` under the entry, `take` above it or `trail` under the highest close so far, else at the last
     close inside `slots`. The price is the block's close: a stop is filled where the block ended, not at its level."""
     limit, stop, take, trail = rule.get("slots", WINDOW_SLOTS), rule.get("stop"), rule.get("take"), rule.get("trail")
-    peak = last = 1.0
+    late = rule.get("enter", 0)  # the buy lands this many blocks after the entry block, at that block's close
+    entry = peak = last = 1.0
     for d, r in path:
+        if d <= late:
+            entry = r
+            continue
         if d > limit:
             break
+        r = r / entry
         last, peak = r, max(peak, r)
         if (stop and r <= 1 - stop) or (take and r >= 1 + take) or (trail and r <= peak * (1 - trail)):
             break
@@ -296,6 +309,14 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
         groups.setdefault(team_of.get(item[0].mint, "no record"), []).append(item)
     by["team"] = [{"bucket": r.pop("mark"), **r}
                   for r in (_row(n, groups[n], horizons, fee_pct) for n in (*TEAM[1], "no record") if n in groups)]  # fmt: skip
+    users_of = {r["mint"]: r.get("block_users") or [] for r in organised}
+    for row in by["team"]:  # many teams or one crew: the row's distinct bundle wallets and its commonest wallet's share
+        counts: dict[str, int] = {}
+        for item in groups[row["bucket"]]:
+            for user in users_of[item[0].mint]:
+                counts[user] = counts.get(user, 0) + 1
+        row["team_wallets"] = len(counts)
+        row["top_wallet_share"] = round(max(counts.values()) / row["launches"], 3) if counts else None
     crossed = None
     if cross:
         ts_at = {r["mint"]: r["ts"] for r in organised}
