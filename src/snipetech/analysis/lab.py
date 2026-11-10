@@ -287,7 +287,7 @@ TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
-TRIGGER_GROUPS = ("kol", "wallet", "cand")  # the groups `label_groups` reads from the labels
+TRIGGER_GROUPS = ("kol", "wallet", "cand", "trader")  # the groups `label_groups` reads from the labels
 CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` can name (`label --kind dev`)
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
 

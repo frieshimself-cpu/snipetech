@@ -884,6 +884,7 @@ def test_a_kol_trigger_can_count_a_team_once_and_ask_for_a_gap_since_the_previou
     assert "teams count once" in label and "10 s after the previous" in label
     spec = parse_trigger({"kind": "kol", "group": "wallet", "known": 2, "teams": True, "gap": 10})
     assert spec.teams is True and spec.gap == 10.0
+    assert parse_trigger({"kind": "kol", "group": "trader", "known": 2}).group == "trader"
     with pytest.raises(ValueError):
         parse_trigger({"kind": "whale", "sol": 2, "teams": True})
     store.close()
