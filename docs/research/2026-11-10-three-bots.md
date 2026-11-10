@@ -151,6 +151,20 @@ KOL's buy +0.192 with a lower bound of +0.076): the edge grows with the size and
 about 0.10 a transaction still breaks even. What is not measured yet is the bid that wins the place: the fee paid by
 the trade that did land right behind these buys, event by event (`tx_meta`).
 
+Teams counted once (lab `teams`, 14:18 UTC), 1 SOL, 0.02 a transaction, best exit of each rule, held out:
+
+| rule (second known team in, 1-3 SOL) | trades | per trade at +0 | lower | per trade at +1 | lower |
+|---|---|---|---|---|---|
+| by address (from the table above) | 800 | +0.063 | +0.055 | +0.018 | +0.010 |
+| tracked list, teams once | 704 | +0.075 | +0.067 | +0.026 | +0.018 |
+| the same, 10 s after the previous team | 493 | +0.077 | +0.068 | +0.013 | -0.000 |
+| traders only (no faucets, snipers), teams once | 527 | +0.068 | +0.057 | +0.011 | +0.001 |
+| traders only, 10 s after the previous team | 385 | +0.082 | +0.071 | +0.029 | +0.019 |
+| a KOL's first buy of 0.5 SOL | 159 | +0.087 | +0.034 | +0.016 | -0.026 |
+
+Counting a team once adds about 0.01 SOL a trade and keeps a positive lower bound one trade behind; the gap and the
+trader group do not add to it reliably (each variant picked a different exit). Size adds more than any of them.
+
 ### Next (written 14:10 UTC)
 
 The 2 SOL run one trade behind (809 held-out trades, 30 an hour; the third known wallet +0.042, lower +0.028) is the
@@ -162,8 +176,7 @@ first rule here with a positive lower bound at a place other than the one right 
    not reach it. Sizes above 0.2 SOL are the owner's yes, in chat, for that step.
 3. Measure what a 0.035 SOL bid buys behind these buys (the fee of the trades that landed first and second behind
    them, `tx_meta`). Our 0.003 bid lands 2-4 trades behind a crowded leader; +2 loses.
-4. The team-counted runs (`lab_team_p1.full`, `lab_team_p0.full`: wallet and trader groups, with and without a 10 s
-   gap) say whether counting a team once and dropping faucets and snipers adds to it.
+4. Rerun the rule to freeze as "tracked list, teams once" at 2 SOL, +1 and +0, 0.035 a transaction.
 
 ## The owner's tracker is the tracked list, and a third of it is teams (13:35 UTC)
 
