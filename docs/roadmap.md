@@ -6,6 +6,43 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 10 Nov, 17:00 UTC: Proxima can be detected; a check of the whole system
+
+- **The honest state: nothing is profitable live** (−0.29 SOL over 24 round trips in three days; three copy snipers
+  running at 0.2 SOL). The best paper result is still the paid place one trade behind a tracked wallet's 1-3 SOL buy
+  when a second known team is already in: 2 SOL at a 0.035 SOL bid, +0.064 SOL a trade (lower +0.049, n 704, 26 an
+  hour). The bid that wins that place is not measured, and the forward paper test scores every rule at the live copy
+  landing, so it cannot yet hold a rule at "+1 with a bid".
+- **Proxima** ([research/2026-11-10-three-bots.md](research/2026-11-10-three-bots.md)). The owner named six coins; all
+  six load one address lookup table at launch and `launch-tools` now reads it as a mark. It is on 3,401 of the newest
+  30,000 launches. Where others put 10+ SOL into the create block, 54 % reach 30 SOL against 14 % of all launches, but
+  a buy one block later is +1.4 % at a minute before fees: most are one crew relaunching the same names, dumping most
+  in one block within 40 s and letting one run. The lead: buy only what still stands after a minute (17 trades,
+  about +4 %, not evidence). The owner's page has a "Proxima launches" section fed by the newest finished scan.
+- **Two bots' rules, read from 50 factors:** 6Z91 and Fhbh1 buy in the second a large buy lands in a coin that is
+  moving, hold one to three seconds and sell at the first pause. No wallet list is needed.
+- **Winners study:** `qualify` scored 60 of its wallets at the live copy landing; none qualified.
+- **Found and fixed in the check (2d37b92):**
+  1. The analyst ran every 30 minutes at about a dollar a turn (46 turns, 19.67 $ by 15:30) and most turns said the
+     lab was still running. A cadence analysis now waits while research runs and nothing new has ended (three hours
+     at most); with nothing running it still runs, to start the next test.
+  2. The hourly paper run scored 35 frozen strategies, most long decided and several exact twins. A strategy with
+     300+ trades and a mean three standard errors below zero is marked refuted and left out: 18 went on the first run.
+- **Found, not fixed yet:**
+  1. Failed duplicate sends cost 0.001 SOL each: 0.014 SOL on 9 Nov against 0.027 SOL lost on the six round trips
+     themselves (idea I7).
+  2. `[oktech] sell_fee_sol` is deprecated in the server's settings file and warns in every job log; `config` is not a
+     remote command, so the rename to `sell_tip_sol` is a line for the owner's next SSH visit (same value, no effect on
+     trading).
+  3. The snapshot's "snipers armed" counts finished OKTech snipers too (9 listed, 3 running).
+  4. The slice has crossed its soft memory limit 223,546 times (no kills, the recorder's memory pressure is 0): labs
+     run two at a time near 24 of 26.9 GB.
+- **Not a problem:** disk free fell 533 to 502 GB after the 12:30 resize and has held at 501 GB since; it was the
+  hourly tape copy being rebuilt, not a leak. `doctor` passes on every line; the recorder is 2-5 s behind.
+- **Next, in order:** (1) a `launch_marks` table written by the scan and then by the recorder, so a re-scan costs
+  nothing and the lab can gate on a mark; (2) the lab for organised Proxima launches bought at 30-120 s if still above
+  the create block's close; (3) the bid that wins the place behind a known wallet; (4) forward paper at "+1 with a bid".
+
 ## 10 Nov: what 6Z91 does that we have not tried; the analyst runs on a stronger model (11:50 UTC)
 
 - **The honest state: nothing is profitable yet; the untested thing is now named.** 6Z91 (the owner's friend's bot,
