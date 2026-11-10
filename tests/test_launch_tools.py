@@ -153,3 +153,46 @@ def test_the_agents_may_start_it():
     from snipetech.ops import ALLOWED
 
     assert "launch-tools" in RESEARCH_COMMANDS and "launch-tools" in ALLOWED and "launch-tools" not in OWNER_COMMANDS
+
+
+def test_a_launchs_marks_are_kept_and_a_launch_with_none_is_remembered_as_read():
+    st = Store(":memory:")
+    try:
+        assert st.launch_marks_of(["a", "b"]) == {}
+        assert st.put_launch_marks({"a": ["fee:X", PROXIMA_TABLE], "b": []}) == 2
+        assert st.launch_marks_of(["a", "b", "c"]) == {"a": sorted(["fee:X", PROXIMA_TABLE]), "b": []}
+        st.put_launch_marks({"a": ["fee:X", PROXIMA_TABLE]})  # written twice: still one of each
+        assert st.launch_marks_of(["a"]) == {"a": sorted(["fee:X", PROXIMA_TABLE])}
+    finally:
+        st.close()
+
+
+class _CountingRpc:
+    def __init__(self):
+        self.fetched = 0
+
+    async def get_transactions(self, sigs):
+        self.fetched += len(sigs)
+        return dict.fromkeys(sigs, CALLINU)
+
+
+def test_a_second_scan_reads_the_marks_from_the_database_and_fetches_only_new_launches():
+    """10 Nov: a 24 h scan is 30,000 getTransaction calls and a quarter of an hour, and the owner's page wants it
+    every hour. A launch's marks never change: once read they are kept, and the next scan fetches the new launches."""
+    from snipetech.analysis.launch_tools import launch_tools
+
+    st = Store(":memory:")
+    try:
+        for i in range(6):
+            _coin(st, 60 + i, run=i % 2 == 0)
+        rpc = _CountingRpc()
+        first = asyncio.run(launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st, mark=PROXIMA_TABLE))
+        assert rpc.fetched == 6 and first["launches"] == 6 and first["fetched"] == 6
+        assert first["split"]["launches"] == 6 and first["marks"][0]["mark"] == PROXIMA_TABLE
+        _coin(st, 70, run=True)
+        again = asyncio.run(launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st, mark=PROXIMA_TABLE))
+        assert rpc.fetched == 7 and again["launches"] == 7 and again["fetched"] == 1
+        plain = asyncio.run(launch_tools(rpc, st, NOW, hours=12, min_launches=1))  # no marks store: every one fetched
+        assert rpc.fetched == 14 and plain["launches"] == 7
+    finally:
+        st.close()

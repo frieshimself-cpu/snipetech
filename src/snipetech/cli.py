@@ -1904,7 +1904,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.mint:
                     return await coin_marks(svc.rpc, svc.tape_store, args.mint)
                 return await launch_tools(svc.rpc, svc.tape_store, time.time(), hours=args.hours,
-                                          max_launches=args.max, min_launches=args.min_launches, mark=args.mark)  # fmt: skip
+                                          max_launches=args.max, min_launches=args.min_launches, mark=args.mark,
+                                          marks_store=svc.store)  # fmt: skip
             finally:
                 await svc.close()
                 svc.store.close()

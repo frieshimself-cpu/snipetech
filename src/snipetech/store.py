@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS exit_shadow (
     buy_sig TEXT NOT NULL, exit_name TEXT NOT NULL, menu_version TEXT NOT NULL, sim_pnl_sol REAL, sim_reason TEXT,
     computed_at INTEGER, PRIMARY KEY (buy_sig, exit_name, menu_version)
 );
+CREATE TABLE IF NOT EXISTS launch_marks (mint TEXT NOT NULL, mark TEXT NOT NULL, PRIMARY KEY (mint, mark));
+CREATE INDEX IF NOT EXISTS launch_marks_mark ON launch_marks(mark);
 """
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
@@ -1062,6 +1064,33 @@ class Store:
 
         self._write(do)
         return out["n"]
+
+    def put_launch_marks(self, marks: dict[str, list[str]]) -> int:
+        """Keep what each launch's create transaction carries (`analysis.launch_tools.tx_marks`): one row a mark, and
+        one row with an empty mark for a launch read and found without any, so it is not fetched again. Returns the
+        launches written."""
+        rows = [(mint, mark) for mint, found in marks.items() for mark in (found or [""])]
+
+        def do():
+            self.conn.executemany("INSERT OR IGNORE INTO launch_marks (mint, mark) VALUES (?,?)", rows)
+
+        if rows:
+            self._write(do)
+        return len(marks)
+
+    def launch_marks_of(self, mints: list[str]) -> dict[str, list[str]]:
+        """The marks of the launches already read, sorted; a launch never read is absent, one without marks has []."""
+        out: dict[str, list[str]] = {}
+        for i in range(0, len(mints), 500):
+            chunk = mints[i : i + 500]
+            rows = self._q(
+                f"SELECT mint, mark FROM launch_marks WHERE mint IN ({','.join('?' * len(chunk))}) ORDER BY mark", chunk
+            )
+            for mint, mark in rows:
+                out.setdefault(mint, [])
+                if mark:
+                    out[mint].append(mark)
+        return out
 
     def paper_trades(self, strategy: str | None = None) -> list[dict]:
         sql = "SELECT strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data FROM paper_trades"

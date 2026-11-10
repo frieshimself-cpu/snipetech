@@ -214,30 +214,40 @@ def mark_split(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callabl
 
 
 async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launches: int = 20_000,
-                       min_launches: int = 5, chunk: int = 200, mark: str | None = None) -> dict[str, Any]:  # fmt: skip
+                       min_launches: int = 5, chunk: int = 200, mark: str | None = None,
+                       marks_store=None) -> dict[str, Any]:  # fmt: skip
     """`tool_table` over the launches of the last `hours` (the newest `max_launches`), each one's create transaction
     fetched from the RPC. Launches too fresh for the longest horizon are left out. With `mark`, also that mark's
-    `mark_split` under "split"."""
+    `mark_split` under "split". With `marks_store` (the live database: `store` is the read-only tape copy), a launch's
+    marks are kept once read and only launches never read are fetched: a create never changes."""
     horizons = (13, 150)
     end = int(now - max(horizons) * SLOT_SECS - 60)
     launches = store.launches_between(int(now - hours * 3600), end)[-max_launches:]
-    pairs: list[tuple[Any, list[str]]] = []
+    known = marks_store.launch_marks_of([launch.mint for launch in launches]) if marks_store is not None else {}
+    todo = [launch for launch in launches if launch.mint not in known]
     missing = 0
-    for i in range(0, len(launches), chunk):
-        part = launches[i : i + chunk]
+    for i in range(0, len(todo), chunk):
+        part = todo[i : i + chunk]
         txs = await rpc.get_transactions([launch.sig for launch in part])
+        fresh: dict[str, list[str]] = {}
         for launch in part:
             tx = txs.get(launch.sig)
             if tx is None:
                 missing += 1
                 continue
             try:
-                pairs.append((launch, tx_marks(tx, launch.creator or launch.user)))
+                fresh[launch.mint] = tx_marks(tx, launch.creator or launch.user)
             except (KeyError, IndexError, TypeError, ValueError) as exc:
                 log.warning("launch-tools: %s unreadable: %s", launch.sig, exc)
                 missing += 1
+        known.update(fresh)
+        if marks_store is not None:
+            marks_store.put_launch_marks(fresh)  # a chunk a write: short, and a scan cut off keeps what it read
+    pairs = [(launch, known[launch.mint]) for launch in launches if launch.mint in known]
     out = tool_table(pairs, store.trades_for_mint, min_launches=min_launches, horizons=horizons)
-    out.update({"hours": hours, "window_launches": len(launches), "not_fetched": missing})
+    out.update(
+        {"hours": hours, "window_launches": len(launches), "not_fetched": missing, "fetched": len(todo) - missing}
+    )
     if mark:
         out["split"] = mark_split(pairs, store.trades_for_mint, mark, horizons=horizons)
     return out
