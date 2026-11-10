@@ -99,14 +99,18 @@ async def fetch_meta(store: Store, items: list[tuple[str, str]], concurrency: in
                     try:
                         r = await http.get(url)
                         data = r.json() if r.status_code == 200 else None
-                    except (httpx.HTTPError, ValueError):
+                    except (httpx.HTTPError, httpx.InvalidURL, ValueError):  # creators type anything as the uri
                         data = None
                     if isinstance(data, dict):
                         break
             if isinstance(data, dict):
                 store.put_token_meta(mint, uri, True, parse_socials(data, uri))
             else:
-                store.put_token_meta(mint, uri, False, {"platform": _site(urlparse(uri).netloc) or None})
+                try:
+                    host = urlparse(uri).netloc
+                except ValueError:
+                    host = ""
+                store.put_token_meta(mint, uri, False, {"platform": _site(host) or None})
 
         await asyncio.gather(*(one(m, u) for m, u in todo))
     return len(todo)

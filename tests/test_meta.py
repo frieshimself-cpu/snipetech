@@ -29,3 +29,20 @@ def test_ipfs_uris_go_through_working_gateways():
     assert resolve_uri(f"https://ipfs.io/ipfs/{cid}") == [g + cid for g in IPFS_GATEWAYS]
     assert resolve_uri(f"ipfs://{cid}")[0].endswith(cid)
     assert resolve_uri("https://metadata.j7tracker.io/metadata/x.json") == ["https://metadata.j7tracker.io/metadata/x.json"]
+
+
+def test_a_coin_whose_metadata_address_is_not_a_web_address_is_kept_as_unreadable_not_a_crash():
+    """10 Nov: a scan of 16 days of bought history ended on one coin's uri with a second "https:" where the port
+    goes (httpx.InvalidURL is not an HTTPError); 25 minutes of reading were lost. Creators type anything there."""
+    import asyncio
+
+    from snipetech.meta import fetch_meta
+    from snipetech.store import Store
+
+    st = Store(":memory:")
+    try:
+        bad = [("M1", "https://ipfs.io:https://x/meta.json"), ("M2", "http://[not-an-address/meta.json")]
+        assert asyncio.run(fetch_meta(st, bad)) == 2
+        assert st.token_meta("M1")["ok"] is False and st.token_meta("M2")["ok"] is False
+    finally:
+        st.close()
