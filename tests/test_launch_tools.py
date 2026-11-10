@@ -9,7 +9,7 @@ import json
 import time
 from pathlib import Path
 
-from snipetech.analysis.launch_tools import coin_marks, tool_table, tx_marks
+from snipetech.analysis.launch_tools import coin_marks, mark_split, tool_table, tx_marks
 from snipetech.store import Store
 
 from .synth import Market, addr
@@ -108,6 +108,42 @@ def test_launches_are_grouped_by_mark_with_how_far_each_marks_coins_run():
         assert t["ret_13"] > 50 and p["ret_13"] < 0 and t["win_150"] == 1.0 and p["win_150"] == 0.0
         assert len(t["examples"]) == 3 and t["examples"][0]["mint"].startswith("") and "peak_sol" in t["examples"][0]
         assert out["marks"][0]["mark"] == "fee:TOOL"  # marks first by the share of their coins that ran
+    finally:
+        st.close()
+
+
+def test_a_marks_launches_are_split_by_who_bought_in_the_launch_block():
+    """Proxima's table is on one launch in nine and most of those die; the coins the owner named had four wallets
+    buying about 10 SOL in the create's own block. The split says which launches of a mark run, and lists them."""
+    st = Store(":memory:")
+    try:
+        organised = []
+        for i in range(3):
+            m = Market(st, addr(f"ms-org-{i}"), addr(f"ms-dev-{i}"), NOW - 4000 + i * 10, 91_000_000 + i * 100)
+            m.buy(m.deployer, 1.0, 0, sig=m.create_sig)
+            for w in range(4):
+                m.buy(addr(f"ms-team-{i}-{w}"), 2.5, 0)
+            m.buy(addr("crowd"), 20.0, 5)
+            m.buy(addr("whale"), 30.0, 100)
+            m.commit()
+            organised.append((st.launch(m.mint), ["alt:T"]))
+        solo = [(_coin(st, 40 + i, run=False), ["alt:T", "fee:Y"]) for i in range(2)]
+        other = [(_coin(st, 50, run=True), ["fee:X"])]
+        out = mark_split(organised + solo + other, st.trades_for_mint, "alt:T", horizons=(13, 150))
+        assert out["mark"] == "alt:T" and out["launches"] == 5
+        w = {r["bucket"]: r for r in out["by"]["block_wallets"]}
+        assert w["4+"]["launches"] == 3 and w["4+"]["reached_30"] == 1.0 and w["4+"]["ret_150"] > 50
+        assert w["0"]["launches"] == 2 and w["0"]["reached_30"] == 0.0 and "1" not in w  # empty buckets are left out
+        sol = {r["bucket"]: r for r in out["by"]["block_sol"]}
+        assert sol["10+"]["launches"] == 3 and sol["0"]["launches"] == 2
+        dev = {r["bucket"]: r for r in out["by"]["dev_sol"]}
+        assert dev["1-2"]["launches"] == 3 and dev["0.5-1"]["launches"] == 2
+        coins = {c["mint"]: c for c in out["coins"]}
+        c = coins[addr("ms-org-1")]
+        assert c["block_wallets"] == 4 and round(c["block_sol"], 1) == 10.0 and round(c["dev_sol"], 1) == 1.0
+        assert c["peak_sol"] > 50 and c["ret_13"] > 0 and c["creator"] == addr("ms-dev-1") and c["ts"] == NOW - 3990
+        assert [x["ts"] for x in out["coins"]] == sorted((x["ts"] for x in out["coins"]), reverse=True)  # newest first
+        assert len(mark_split(organised + solo, st.trades_for_mint, "alt:T", max_coins=2)["coins"]) == 2
     finally:
         st.close()
 

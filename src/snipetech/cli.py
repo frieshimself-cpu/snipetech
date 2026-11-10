@@ -848,6 +848,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=float, default=12.0)
     sp.add_argument("--max", type=int, default=20_000, help="the newest N launches of the window")
     sp.add_argument("--min-launches", type=int, default=5, help="a mark seen fewer times is not a tool")
+    sp.add_argument("--mark", help="also split this mark's launches by who bought in the create's block, and list them")
     sp.add_argument("--mint", action="append", default=[], help="instead of the scan: the marks of this coin's create "
                     "(repeat for several; the marks they share are the tool's)")  # fmt: skip
     sp = cmd(
@@ -1903,7 +1904,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.mint:
                     return await coin_marks(svc.rpc, svc.tape_store, args.mint)
                 return await launch_tools(svc.rpc, svc.tape_store, time.time(), hours=args.hours,
-                                          max_launches=args.max, min_launches=args.min_launches)  # fmt: skip
+                                          max_launches=args.max, min_launches=args.min_launches, mark=args.mark)  # fmt: skip
             finally:
                 await svc.close()
                 svc.store.close()
@@ -1922,6 +1923,10 @@ def main(argv: list[str] | None = None) -> int:
         for r in out["marks"]:
             print(f"  {r['mark']}: {r['launches']} launches, {r['creators']} creators, {r['reached_30']:.0%} reached "
                   f"30 SOL, {r['graduated']:.0%} graduated, median peak {r['peak_sol']} SOL, +5 s {r['ret_13']} %")  # fmt: skip
+        for key, rows in (out.get("split") or {"by": {}})["by"].items():
+            for r in rows:
+                print(f"  {args.mark} {key} {r['bucket']}: {r['launches']} launches, {r['reached_30']:.0%} reached 30 "
+                      f"SOL, +5 s {r['ret_13']} %, +60 s {r['ret_150']} %")  # fmt: skip
         return 0
     if args.cmd == "copy-context":
         from .analysis.context import copy_context

@@ -102,9 +102,18 @@ def _outcome(launch, trades: list, horizons: tuple[int, ...]) -> dict[str, Any]:
     slots: list[int] = []
     prices: list[float] = []
     peak = 0.0
+    devs = {launch.creator, launch.user}
+    dev_sol = block_sol = 0.0
+    block: set[str] = set()
     for t in trades:
         if t.venue != "curve":
             continue
+        if t.is_buy and int(t.slot) == int(launch.slot):
+            if t.user in devs:
+                dev_sol += t.quote / LAMPORTS
+            else:
+                block_sol += t.quote / LAMPORTS
+                block.add(t.user)
         b, q = float(t.b_after or 0), float(t.q_after or 0)
         if b <= 0 or q <= 0:
             continue
@@ -121,7 +130,8 @@ def _outcome(launch, trades: list, horizons: tuple[int, ...]) -> dict[str, Any]:
 
     entry = price_at(int(launch.slot) + 1)
     rets = {h: (price_at(int(launch.slot) + h) / entry - 1.0) * 100.0 for h in horizons} if entry else None
-    return {"traded": bool(slots), "peak": peak, "rets": rets}
+    return {"traded": bool(slots), "peak": peak, "rets": rets, "dev_sol": dev_sol, "block_sol": block_sol,
+            "block_wallets": len(block)}  # fmt: skip
 
 
 def _row(mark: str, items: list[tuple[Any, dict]], horizons: tuple[int, ...], fee_pct: float) -> dict[str, Any]:
@@ -165,10 +175,49 @@ def tool_table(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callabl
             "all": _row("all", every, horizons, fee_pct) if every else None, "marks": rows}  # fmt: skip
 
 
+def _bucket(value: float, edges: tuple[float, ...], names: tuple[str, ...]) -> str:
+    return names[bisect_right(edges, value)]
+
+
+# what happened in the create's own block: how many other wallets bought, how much they put in, how much the dev did
+SPLITS: dict[str, tuple[tuple[float, ...], tuple[str, ...]]] = {
+    "block_wallets": ((0.5, 1.5, 3.5), ("0", "1", "2-3", "4+")),
+    "block_sol": ((1e-9, 2.0, 5.0, 10.0), ("0", "<2", "2-5", "5-10", "10+")),
+    "dev_sol": ((1e-9, 0.5, 1.0, 2.0), ("0", "<0.5", "0.5-1", "1-2", "2+")),
+}
+
+
+def mark_split(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callable[..., list], mark: str, *,
+               horizons: tuple[int, ...] = (13, 150), fee_pct: float = 2.5, max_coins: int = 300) -> dict[str, Any]:  # fmt: skip
+    """One mark's launches split by what happened in the create's own block (`SPLITS`), each bucket scored like a
+    `tool_table` row, and `coins`: its newest `max_coins` launches one by one. A broad tool's mark is on junk and on
+    organised launches alike (Proxima's table, 10 Nov: one launch in nine); the block's buying tells them apart, and a
+    launch snipe a block later has it in view."""
+    items = [(launch, _outcome(launch, trades_of(launch.mint, int(launch.ts)) or [], horizons))
+             for launch, marks in launch_marks if mark in marks]  # fmt: skip
+    by: dict[str, list[dict[str, Any]]] = {}
+    for key, (edges, names) in SPLITS.items():
+        groups: dict[str, list[tuple[Any, dict]]] = {}
+        for item in items:
+            groups.setdefault(_bucket(item[1][key], edges, names), []).append(item)
+        rows = [_row(name, groups[name], horizons, fee_pct) for name in names if name in groups]
+        by[key] = [{"bucket": r.pop("mark"), **r} for r in rows]
+    coins = []
+    for launch, o in sorted(items, key=lambda it: -int(it[0].ts))[:max_coins]:
+        rets = o["rets"] or {}
+        coins.append({"mint": launch.mint, "symbol": getattr(launch, "symbol", None), "ts": int(launch.ts),
+                      "creator": launch.creator or launch.user, "dev_sol": round(o["dev_sol"], 3),
+                      "block_wallets": o["block_wallets"], "block_sol": round(o["block_sol"], 3),
+                      "peak_sol": round(o["peak"], 1),
+                      **{f"ret_{h}": round(rets[h], 1) if h in rets else None for h in horizons}})  # fmt: skip
+    return {"mark": mark, "launches": len(items), "by": by, "coins": coins}
+
+
 async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launches: int = 20_000,
-                       min_launches: int = 5, chunk: int = 200) -> dict[str, Any]:  # fmt: skip
+                       min_launches: int = 5, chunk: int = 200, mark: str | None = None) -> dict[str, Any]:  # fmt: skip
     """`tool_table` over the launches of the last `hours` (the newest `max_launches`), each one's create transaction
-    fetched from the RPC. Launches too fresh for the longest horizon are left out."""
+    fetched from the RPC. Launches too fresh for the longest horizon are left out. With `mark`, also that mark's
+    `mark_split` under "split"."""
     horizons = (13, 150)
     end = int(now - max(horizons) * SLOT_SECS - 60)
     launches = store.launches_between(int(now - hours * 3600), end)[-max_launches:]
@@ -189,4 +238,6 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
                 missing += 1
     out = tool_table(pairs, store.trades_for_mint, min_launches=min_launches, horizons=horizons)
     out.update({"hours": hours, "window_launches": len(launches), "not_fetched": missing})
+    if mark:
+        out["split"] = mark_split(pairs, store.trades_for_mint, mark, horizons=horizons)
     return out
