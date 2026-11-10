@@ -805,6 +805,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=float, default=72.0)
     sp.add_argument("--min-trips", type=int, default=30, help="closed round trips a wallet needs to be ranked")
     sp.add_argument("--top", type=int, default=200)
+    sp.add_argument("--label", type=int, default=0, help="send the N best mid/late traders (no create-slot sniping, "
+                    "no insider sales) to qualify's queue as cand")  # fmt: skip
     sp = cmd(
         "leaders-of",
         "the wallets a copy bot buys right after: who bought the same coin up to N slots before its first buy, over "
@@ -1831,7 +1833,13 @@ def main(argv: list[str] | None = None) -> int:
         try:
             if args.cmd == "winners":
                 rows = winners(svc.tape_store, time.time(), hours=args.hours, min_trips=args.min_trips, top=args.top)
-                out = {"hours": args.hours, "min_trips": args.min_trips, "wallets": rows}
+                labelled = []
+                for r in [r for r in rows if r["pnl_sol"] > 0 and r["oversold_share"] < 0.5 and r["create_slot_share"]
+                          < 0.4 and r["median_entry_slots"] > 20][: max(0, args.label)]:  # fmt: skip
+                    svc.store.set_label(r["wallet"], f"winner {r['pnl_sol']:+.0f} SOL/{r['trips']}", "cand", "winners")
+                    svc.store.upsert_candidate(r["wallet"], "winners", r, int(time.time()))  # qualify's queue
+                    labelled.append(r["wallet"])
+                out = {"hours": args.hours, "min_trips": args.min_trips, "wallets": rows, "labelled": labelled}
                 text = "\n".join(f"{r['wallet']}  {r['pnl_sol']:+.3f} SOL over {r['trips']}  win {r['win_rate']:.0%}  "
                                  f"{r['style']}" for r in rows) or "no wallet has enough closed round trips"  # fmt: skip
             else:

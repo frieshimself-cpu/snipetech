@@ -251,7 +251,7 @@ def _caller() -> str:
 # discovery sources' backlog (9 Nov: a 900-wallet qualify run never reached the 84 FOMO wallets queued that night)
 _PRIORITY_SOURCES = (
     "CASE WHEN c.sources LIKE '%\"owner\"%' OR c.sources LIKE '%\"fomo\"%' "
-    "OR c.sources LIKE '%\"early-leaders\"%' THEN 0 ELSE 1 END"
+    "OR c.sources LIKE '%\"early-leaders\"%' OR c.sources LIKE '%\"winners\"%' THEN 0 ELSE 1 END"
 )
 
 

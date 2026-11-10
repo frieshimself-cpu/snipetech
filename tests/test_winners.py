@@ -109,3 +109,30 @@ def test_tokens_sold_beyond_what_the_wallet_bought_are_not_counted_as_profit():
     store = N(launches_between=lambda a, b: [launch], trades_for_mint=lambda m, *a: trades)
     r = winners(store, NOW, hours=1, min_trips=1)[0]
     assert r["wallet"] == "dumper" and abs(r["pnl_sol"] - (-0.7)) < 1e-9 and r["oversold_share"] == 1.0
+
+
+def test_label_sends_the_best_mid_and_late_traders_to_qualify(tmp_path, capsys):
+    """I46: the winners study's genuine mid/late traders (no create-slot sniping, no insider sales) go to qualify's
+    queue as cand, first in line like the other screens' picks."""
+    import json
+
+    from snipetech import cli
+    from snipetech.store import _PRIORITY_SOURCES
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    try:
+        for i in range(3):
+            _coin(st, i, winner_slot=30)
+    finally:
+        st.close()
+    assert cli.main(["--db", str(db), "winners", "--hours", "2", "--min-trips", "2", "--label", "1", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["labelled"] == [addr("winner")]
+    st = Store(db)
+    try:
+        assert addr("winner") in st.labels("cand")
+        assert [c["wallet"] for c in st.candidates() if "winners" in c["sources"]] == [addr("winner")]
+    finally:
+        st.close()
+    assert "winners" in _PRIORITY_SOURCES
