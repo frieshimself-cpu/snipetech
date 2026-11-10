@@ -20,6 +20,7 @@ sample chains 391 of 394)."""
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -27,6 +28,7 @@ from statistics import median
 from types import SimpleNamespace
 from typing import Any
 
+from .. import xaccounts
 from .launch_tools import LAMPORTS, LINK_SPLITS, SPLITS, VIRTUAL_SOL, _bucket, _outcome, _row
 
 SOL_QUOTES = (None, "", "So11111111111111111111111111111111111111112", "11111111111111111111111111111111")
@@ -141,9 +143,12 @@ def _mean(vals: list[float]) -> float | None:
 
 
 def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *, min_block_sol: float,
-                  stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5) -> dict[str, Any]:  # fmt: skip
+                  stats: dict, horizons: tuple[int, ...] = HORIZONS, fee_pct: float = 2.5,
+                  x_of: Callable[[str], dict | None] | None = None) -> dict[str, Any]:  # fmt: skip
     """The organised launches (`min_block_sol` or more from others in the create block) by what the coin links to,
-    by the create block's buying, and day by day with and without a website; `all` is every launch scored."""
+    by the create block's buying, and day by day with and without a website; `all` is every launch scored. With `x_of`
+    (a looked-up X account by handle, `xaccounts`) also by the badge, followers and age of the account the coin names:
+    "no account" = the coin names none, "unknown" = it names one that was never looked up."""
     bundled = [r for r in records if r["block_sol"] >= min_block_sol]
     organised = [r for r in bundled if not r.get("bonded_at_once")]  # a curve its own bundle filled cannot be bought
     items = [(SimpleNamespace(mint=r["mint"], symbol=r["symbol"], creator=r["creator"], user=r["creator"]),
@@ -165,6 +170,16 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
             {"bucket": r.pop("mark"), **r}
             for r in (_row(n, groups[n], horizons, fee_pct) for n in names if n in groups)
         ]
+    if x_of is not None:
+        ts_of = {r["mint"]: r["ts"] for r in organised}
+        for key, names in xaccounts.LABELS.items():
+            groups = {}
+            for item in items:
+                handle = xaccounts.handle_of(metas[item[0].mint])
+                label = xaccounts.labels(x_of(handle), ts_of[item[0].mint])[key] if handle else "no account"
+                groups.setdefault(label, []).append(item)
+            order = [n for n in (*names, "no account") if n in groups]
+            by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
     website = LINK_SPLITS["website"][0]
     days: dict[str, dict[str, list[float]]] = {}
     h = max(horizons)
@@ -183,3 +198,21 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},
             "by": by, "by_day": by_day,
             "order_breaks": round(stats.get("breaks", 0) / stats["checked"], 4) if stats.get("checked") else None}  # fmt: skip
+
+
+def save_scan(path: Path, records: list[dict], stats: dict) -> None:
+    """Keep a scan's launches and counts, so the next table does not read the files again (16 days: 20 minutes)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".part")
+    tmp.write_text(json.dumps({"stats": stats, "records": records}))
+    tmp.replace(path)
+
+
+def load_scan(path: Path) -> tuple[list[dict], dict]:
+    """A saved scan as `scan_files` gave it: the horizons are numbers again (JSON keeps keys as text)."""
+    data = json.loads(path.read_text())
+    stats = data["stats"]
+    stats["ret_sum"] = {int(k): v for k, v in stats.get("ret_sum", {}).items()}
+    for r in data["records"]:
+        r["rets"] = {int(k): v for k, v in (r.get("rets") or {}).items()}
+    return data["records"], stats

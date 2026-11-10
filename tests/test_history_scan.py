@@ -144,3 +144,47 @@ def test_a_launch_whose_bundle_bought_the_whole_curve_is_counted_apart_not_score
         assert sol == {"25-50": 1} and out["order_breaks"] == 0.0
     finally:
         st.close()
+
+
+def test_the_table_also_splits_by_the_x_account_behind_the_coin_when_accounts_were_looked_up(tmp_path):
+    """Owner, 10 Nov: "like X is gold verified". The coin's link names an account; the account's badge, followers and
+    age are rows of the same table. A coin with no account link, and an account never looked up, each get their own."""
+    st = Store(":memory:")
+    try:
+        st.put_token_meta("WEBcoin", "u", True, {"website": "https://web.io", "x_kind": "profile", "x_handle": "acme"})
+        st.put_token_meta("RUGcoin", "u", True, {"website": "", "x_kind": "community", "x_community": "9"})
+        st.put_x_account({"handle": "acme", "found": True, "badge": "gold", "followers": 52_000,
+                          "created_ts": T0 - 3 * 365 * 86400})  # fmt: skip
+        stats: dict = {}
+        recs = list(scan_files(_two_hours(tmp_path), min_block_sol=15, stats=stats))
+        out = history_table(
+            recs, st.token_meta, min_block_sol=15, stats=stats, x_of=lambda h: st.x_accounts([h]).get(h)
+        )
+        badge = {r["bucket"]: r for r in out["by"]["x_badge"]}
+        assert badge["gold"]["launches"] == 1 and badge["gold"]["ret_150"] > 50
+        assert badge["no account"]["launches"] == 1 and badge["no account"]["ret_150"] < -40
+        assert [r["bucket"] for r in out["by"]["x_followers"]] == ["10k-100k", "no account"]
+        assert [r["bucket"] for r in out["by"]["x_age"]] == ["1y+", "no account"]
+        plain = history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
+        assert "x_badge" not in plain["by"]  # no lookups asked for: no rows of unknowns
+    finally:
+        st.close()
+
+
+def test_a_scan_is_kept_on_disk_so_the_table_is_made_again_without_reading_the_files(tmp_path):
+    """16 days of files take 20 minutes to read (10 Nov). The launches and the counts are saved once; a new split or a
+    new threshold is then a table over the saved launches."""
+    from snipetech.analysis.history_scan import load_scan, save_scan
+
+    st = Store(":memory:")
+    try:
+        st.put_token_meta("WEBcoin", "u", True, {"website": "https://web.io", "x_kind": "profile"})
+        stats: dict = {}
+        recs = list(scan_files(_two_hours(tmp_path), min_block_sol=5, stats=stats))
+        first = history_table(recs, st.token_meta, min_block_sol=15, stats=stats)
+        save_scan(tmp_path / "scan.json", recs, stats)
+        recs2, stats2 = load_scan(tmp_path / "scan.json")
+        assert history_table(recs2, st.token_meta, min_block_sol=15, stats=stats2) == first
+        assert recs2[0]["rets"].keys() == recs[0]["rets"].keys()  # the horizons are numbers again, not text
+    finally:
+        st.close()

@@ -842,16 +842,19 @@ def build_parser() -> argparse.ArgumentParser:
                     "of them followed in the same block")  # fmt: skip
     sp = cmd(
         "history",
-        "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape; "
+        "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape | "
+        "scan the files on disk | table from a kept scan; "
         "the key is PUMPFUNDATA_API_KEY in the server's env file",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check", "scan"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "scan", "table"])
     sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
     sp.add_argument("--min-block-sol", type=float, default=15.0, help="scan: an organised launch is one where others "
                     "put this much SOL in the create block")  # fmt: skip
     sp.add_argument("--from", dest="from_day", help="fetch: first day, YYYY-MM-DD")
     sp.add_argument("--to", dest="to_day", help="fetch: last day, YYYY-MM-DD (default: the first day)")
     sp.add_argument("--max-files", type=int, default=24, help="fetch: credits this run may spend (one a file)")
+    sp.add_argument("--x-max", type=int, default=0, help="scan/table: look up at most this many X accounts the organised "
+                    "launches link to (twitterapi.io, paid; kept, so never twice); 0 = none")  # fmt: skip
     sp.add_argument("--date", help="check: the day, YYYY-MM-DD")
     sp.add_argument("--hour", type=int, help="check: the hour, 0-23 UTC")
     sp = cmd(
@@ -1690,23 +1693,53 @@ def _history(args, cfg: Config) -> int:
         return 2
     dest = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
 
-    if args.action == "scan":  # no call to the vendor: the files on disk, and the coins' metadata links
-        from .analysis.history_scan import history_table, scan_files
+    if args.action in ("scan", "table"):  # no call to the vendor: the files on disk, and the coins' metadata links
+        from . import xaccounts as xa
+        from .analysis.history_scan import history_table, load_scan, save_scan, scan_files
         from .meta import fetch_meta
 
         lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
-        paths = [p for p in sorted(dest.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
-        stats: dict = {}
-        records = list(scan_files(paths, min_block_sol=min(5.0, args.min_block_sol), stats=stats))
+        kept = dest / "scans" / f"scan_{lo}_{hi}.json"
+        if args.action == "table":  # the launches a scan of the same days kept: no file is read again
+            if not kept.exists():
+                print(
+                    f"history table: no scan kept for {lo}..{hi}; run `history scan` with the same days",
+                    file=sys.stderr,
+                )
+                return 2
+            records, stats = load_scan(kept)
+            span = {"scan": kept.name}
+        else:
+            paths = [p for p in sorted(dest.glob("*.parquet")) if lo <= p.name.split("_")[-2] <= hi]
+            stats = {}
+            records = list(scan_files(paths, min_block_sol=min(5.0, args.min_block_sol), stats=stats))
+            save_scan(kept, records, stats)
+            span = {"from": paths[0].name if paths else None, "to": paths[-1].name if paths else None}
+        organised = [r for r in records if r["block_sol"] >= args.min_block_sol and not r.get("bonded_at_once")]
         store = Store(cfg.storage.db_path)
         try:
-            fetched = asyncio.run(fetch_meta(store, [(r["mint"], r["uri"]) for r in records
-                                                     if r["uri"] and r["block_sol"] >= args.min_block_sol]))  # fmt: skip
-            out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats)
+            fetched = asyncio.run(fetch_meta(store, [(r["mint"], r["uri"]) for r in organised if r["uri"]]))
+            handles = sorted({h for r in organised if (h := xa.handle_of(store.token_meta(r["mint"])))})
+            x_run = None
+            if args.x_max > 0:  # paid lookups: only when asked for, and never more than asked for
+                x_key = os.environ.get(xa.KEY_ENV, "")
+                if not x_key:
+                    print(f"{xa.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
+                    return 2
+
+                async def look_up() -> dict:
+                    async with httpx.AsyncClient(timeout=30.0) as http:
+                        return await xa.fetch_accounts(xa.Client(x_key, http), store, handles, args.x_max)
+
+                x_run = asyncio.run(look_up())
+            accounts = store.x_accounts(handles)
+            out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats,
+                                x_of=accounts.get if accounts else None)  # fmt: skip
         finally:
             store.close()
-        out.update({"from": paths[0].name if paths else None, "to": paths[-1].name if paths else None,
-                    "metadata_fetched": fetched})  # fmt: skip
+        out.update(
+            span | {"metadata_fetched": fetched, "x_handles": len(handles), "x_kept": len(accounts), "x_run": x_run}
+        )
         print(json.dumps(out, indent=1, default=str))
         return 0
 

@@ -158,6 +158,7 @@ CREATE TABLE IF NOT EXISTS exit_shadow (
 );
 CREATE TABLE IF NOT EXISTS launch_marks (mint TEXT NOT NULL, mark TEXT NOT NULL, PRIMARY KEY (mint, mark));
 CREATE INDEX IF NOT EXISTS launch_marks_mark ON launch_marks(mark);
+CREATE TABLE IF NOT EXISTS x_accounts (handle TEXT PRIMARY KEY, fetched_at INTEGER, data TEXT NOT NULL);
 """
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
@@ -1097,6 +1098,20 @@ class Store:
                 out.setdefault(mint, [])
                 if mark:
                     out[mint].append(mark)
+        return out
+
+    def put_x_account(self, account: dict) -> None:
+        """One X account as `xaccounts.parse_user` read it (a missing account is kept too: it is an answer)."""
+        self._exec("INSERT OR REPLACE INTO x_accounts (handle, fetched_at, data) VALUES (?,?,?)",
+                   (account["handle"], int(time.time()), json.dumps(account)))  # fmt: skip
+
+    def x_accounts(self, handles: list[str]) -> dict[str, dict]:
+        """The X accounts already looked up, by handle; one never asked for is absent."""
+        out: dict[str, dict] = {}
+        for i in range(0, len(handles), 500):
+            chunk = handles[i : i + 500]
+            rows = self._q(f"SELECT handle, data FROM x_accounts WHERE handle IN ({','.join('?' * len(chunk))})", chunk)
+            out.update({handle: json.loads(data) for handle, data in rows})
         return out
 
     def paper_trades(self, strategy: str | None = None) -> list[dict]:
