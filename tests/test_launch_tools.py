@@ -281,3 +281,41 @@ def test_a_launch_whose_create_block_buyers_were_relay_funded_is_marked_too():
         assert {r["mark"] for r in again["marks"]} >= {"team:cu1450", PROXIMA_TABLE}
     finally:
         st.close()
+
+
+def test_a_marks_launches_split_by_what_the_coin_links_to_and_narrowed_to_the_organised_ones():
+    """Owner, 10 Nov: "maybe sniping them when it is linked to a certain type of thing, for example tech projects,
+    has a website". The split also says how a mark's launches did by website, X link and Telegram (from the coin's
+    metadata; "unknown" where it was never fetched), and can be narrowed to launches where others put N SOL or more
+    in the create block."""
+    st = Store(":memory:")
+    try:
+        organised = []
+        for i in range(4):
+            m = Market(st, addr(f"mw-org-{i}"), addr(f"mw-dev-{i}"), NOW - 4000 + i * 10, 93_000_000 + i * 100)
+            m.buy(m.deployer, 1.0, 0, sig=m.create_sig)
+            m.buy(addr(f"mw-team-{i}"), 12.0, 0)
+            if i < 2:
+                m.buy(addr("crowd"), 30.0, 100)
+            else:
+                m.sell(addr(f"mw-team-{i}"), 1.0, 20)
+            m.commit()
+            organised.append((st.launch(m.mint), ["alt:T"]))
+        solo = [(_coin(st, 95 + i, run=False), ["alt:T"]) for i in range(2)]
+        st.put_token_meta(addr("mw-org-0"), "u", True, {"website": "https://a.ai", "x_kind": "profile", "telegram": ""})
+        st.put_token_meta(
+            addr("mw-org-1"), "u", True, {"website": "https://b.io", "x_kind": "tweet", "telegram": "t.me/b"}
+        )
+        st.put_token_meta(addr("mw-org-2"), "u", True, {"website": "", "x_kind": None, "telegram": ""})
+        out = mark_split(organised + solo, st.trades_for_mint, "alt:T", meta_of=st.token_meta, min_block_sol=10)
+        assert out["launches"] == 4 and out["min_block_sol"] == 10  # the two with nobody else in the block are left out
+        web = {r["bucket"]: r for r in out["by"]["website"]}
+        assert web["yes"]["launches"] == 2 and web["yes"]["reached_30"] == 1.0 and web["yes"]["ret_150"] > 0
+        assert web["no"]["launches"] == 1 and web["no"]["reached_30"] == 0.0 and web["unknown"]["launches"] == 1
+        x = {r["bucket"]: r["launches"] for r in out["by"]["x_link"]}
+        assert x == {"profile": 1, "tweet": 1, "none": 1, "unknown": 1}
+        tg = {r["bucket"]: r["launches"] for r in out["by"]["telegram"]}
+        assert tg == {"yes": 1, "no": 2, "unknown": 1}
+        assert "website" not in mark_split(organised, st.trades_for_mint, "alt:T")["by"]  # no metadata asked: as before
+    finally:
+        st.close()

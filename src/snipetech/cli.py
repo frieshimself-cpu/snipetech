@@ -849,6 +849,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max", type=int, default=20_000, help="the newest N launches of the window")
     sp.add_argument("--min-launches", type=int, default=5, help="a mark seen fewer times is not a tool")
     sp.add_argument("--mark", help="also split this mark's launches by who bought in the create's block, and list them")
+    sp.add_argument("--block-sol-min", type=float, default=0.0, help="with --mark: only launches where others put this "
+                    "much SOL in the create block")  # fmt: skip
     sp.add_argument("--funding-of", help="also read, once, how the creator of each launch with this mark was first "
                     "funded (mark fund:cu<limit>: a tool's relay)")  # fmt: skip
     sp.add_argument("--mint", action="append", default=[], help="instead of the scan: the marks of this coin's create "
@@ -1907,7 +1909,8 @@ def main(argv: list[str] | None = None) -> int:
                     return await coin_marks(svc.rpc, svc.tape_store, args.mint)
                 return await launch_tools(svc.rpc, svc.tape_store, time.time(), hours=args.hours,
                                           max_launches=args.max, min_launches=args.min_launches, mark=args.mark,
-                                          marks_store=svc.store, funding_of=args.funding_of)  # fmt: skip
+                                          marks_store=svc.store, funding_of=args.funding_of,
+                                          min_block_sol=args.block_sol_min)  # fmt: skip
             finally:
                 await svc.close()
                 svc.store.close()

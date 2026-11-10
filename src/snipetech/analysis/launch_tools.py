@@ -241,15 +241,43 @@ SPLITS: dict[str, tuple[tuple[float, ...], tuple[str, ...]]] = {
 }
 
 
+def _has(field: str) -> Callable[[dict | None], str]:
+    return lambda meta: "unknown" if not meta or not meta.get("ok", True) else ("yes" if meta.get(field) else "no")
+
+
+def _x_link(meta: dict | None) -> str:
+    return "unknown" if not meta or not meta.get("ok", True) else str(meta.get("x_kind") or "none")
+
+
+# what the coin's metadata links to (`meta.parse_meta`): a website, the kind of X link, a Telegram
+LINK_SPLITS: dict[str, tuple[Callable[[dict | None], str], tuple[str, ...]]] = {
+    "website": (_has("website"), ("yes", "no", "unknown")),
+    "x_link": (_x_link, ("tweet", "profile", "community", "other", "none", "unknown")),
+    "telegram": (_has("telegram"), ("yes", "no", "unknown")),
+}
+
+
 def mark_split(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callable[..., list], mark: str, *,
-               horizons: tuple[int, ...] = (13, 150), fee_pct: float = 2.5, max_coins: int = 300) -> dict[str, Any]:  # fmt: skip
+               horizons: tuple[int, ...] = (13, 150), fee_pct: float = 2.5, max_coins: int = 300,
+               meta_of: Callable[[str], dict | None] | None = None, min_block_sol: float = 0.0) -> dict[str, Any]:  # fmt: skip
     """One mark's launches split by what happened in the create's own block (`SPLITS`), each bucket scored like a
     `tool_table` row, and `coins`: its newest `max_coins` launches one by one. A broad tool's mark is on junk and on
     organised launches alike (Proxima's table, 10 Nov: one launch in nine); the block's buying tells them apart, and a
-    launch snipe a block later has it in view."""
+    launch snipe a block later has it in view. `min_block_sol` keeps only launches where others put that much in the
+    create block; with `meta_of` (the coin's stored metadata) the launches are also split by what the coin links to
+    (`LINK_SPLITS`: website, X link, Telegram; "unknown" where the metadata was never fetched)."""
     items = [(launch, _outcome(launch, trades_of(launch.mint, int(launch.ts)) or [], horizons))
              for launch, marks in launch_marks if mark in marks]  # fmt: skip
+    items = [it for it in items if it[1]["block_sol"] >= min_block_sol]
     by: dict[str, list[dict[str, Any]]] = {}
+    if meta_of is not None:
+        metas = {launch.mint: meta_of(launch.mint) for launch, _ in items}
+        for key, (label, names) in LINK_SPLITS.items():
+            groups: dict[str, list[tuple[Any, dict]]] = {}
+            for item in items:
+                groups.setdefault(label(metas[item[0].mint]), []).append(item)
+            order = [n for n in names if n in groups] + sorted(n for n in groups if n not in names)
+            by[key] = [{"bucket": r.pop("mark"), **r} for r in (_row(n, groups[n], horizons, fee_pct) for n in order)]
     for key, (edges, names) in SPLITS.items():
         groups: dict[str, list[tuple[Any, dict]]] = {}
         for item in items:
@@ -264,12 +292,13 @@ def mark_split(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callabl
                       "block_wallets": o["block_wallets"], "block_sol": round(o["block_sol"], 3),
                       "peak_sol": round(o["peak"], 1),
                       **{f"ret_{h}": round(rets[h], 1) if h in rets else None for h in horizons}})  # fmt: skip
-    return {"mark": mark, "launches": len(items), "by": by, "coins": coins}
+    return {"mark": mark, "launches": len(items), "min_block_sol": min_block_sol, "by": by, "coins": coins}
 
 
 async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launches: int = 20_000,
                        min_launches: int = 5, chunk: int = 200, mark: str | None = None,
-                       marks_store=None, funding_of: str | None = None) -> dict[str, Any]:  # fmt: skip
+                       marks_store=None, funding_of: str | None = None,
+                       min_block_sol: float = 0.0) -> dict[str, Any]:  # fmt: skip
     """`tool_table` over the launches of the last `hours` (the newest `max_launches`), each one's create transaction
     fetched from the RPC. Launches too fresh for the longest horizon are left out. With `mark`, also that mark's
     `mark_split` under "split". With `marks_store` (the live database: `store` is the read-only tape copy), a launch's
@@ -341,5 +370,13 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
         }
     )
     if mark:
-        out["split"] = mark_split(pairs, store.trades_for_mint, mark, horizons=horizons)
+        metas = store
+        if marks_store is not None:  # the metadata of the mark's launches that was never fetched, kept like the marks
+            from ..meta import fetch_meta
+
+            await fetch_meta(marks_store, [(launch.mint, launch.uri) for launch, found in pairs
+                                           if mark in found and launch.uri])  # fmt: skip
+            metas = marks_store
+        out["split"] = mark_split(pairs, store.trades_for_mint, mark, horizons=horizons, meta_of=metas.token_meta,
+                                  min_block_sol=min_block_sol)  # fmt: skip
     return out
