@@ -558,6 +558,59 @@ before the bid, held a minute:
    `history table`'s split `team` gives every launch the record those wallets had before it, scored at the launch
    snipe's own landing (the end of the block after the create); running.
 
+### A bundle team's record predicts its next launch (21:45 UTC)
+
+`history scan --exits` keeps, for every bundled launch, who bought in the create block and the price at the end of
+every block for ten minutes. `history table`'s split `team` gives a launch the mean a-minute-later return of the
+earlier launches its bundle wallets were in (five or more earlier launches; walked in time order, a launch's own
+outcome counts only once its minute has passed). The same 16,202 launches of 5 Oct - 3 Nov, bought at the end of the
+block after the create, percent before 2.5 % of fees:
+
+| the team's earlier launches averaged | launches | bundle wallets (commonest one's share) | 60 s | median | up after fees |
+|---|---|---|---|---|---|
+| under -10 % | 2,276 | 5,573 (20 %) | -24.7 | -51.6 | 21 % |
+| -10 to 0 % | 4,888 | 12,828 (16 %) | -2.6 | -13.8 | 36 % |
+| 0 to +10 % | 2,861 | 10,042 (14 %) | +3.1 | -4.1 | 43 % |
+| +10 to +25 % | 578 | 2,266 (19 %) | +12.7 | +5.0 | 52 % |
+| over +25 % | 216 | 677 (32 %) | +24.3 | +13.1 | 61 % |
+| no record | 5,383 | 33,428 | +5.2 | 0.0 | 37 % |
+
+It rises row by row, the two top rows have positive medians, and it is not one crew. With three or ten earlier
+launches required instead of five the table has the same shape.
+
+Exit rules on the kept paths (a stop or a take is seen at a block's close and filled at the next block's close; first
+half / second half of the days):
+
+| team record | exit | mean | median | up after fees | first half | second half |
+|---|---|---|---|---|---|---|
+| +10 to +25 % (578) | hold 60 s | +10.1 | +4.3 | 52 % | +9.5 | +11.1 |
+| | take +30 % or 60 s | +9.4 | +13.7 | 63 % | +10.1 | +8.1 |
+| | stop -25 %, take +50 %, 60 s | +9.1 | +5.7 | 55 % | +7.5 | +11.8 |
+| | one block late, 60 s | +7.4 | +2.4 | 50 % | +7.5 | +7.1 |
+| | three blocks late, 60 s | +5.5 | +0.6 | 49 % | +6.5 | +3.9 |
+| | hold 4 minutes | -6.0 | -55.3 | 33 % | -6.1 | -5.8 |
+| over +25 % (216) | hold 60 s | +18.3 | +11.4 | 59 % | +25.9 | +3.0 |
+| | stop -15 %, take +50 %, 60 s | +12.2 | +9.1 | 57 % | +15.1 | +6.5 |
+| | one block late, 60 s | +14.3 | +7.2 | 54 % | +22.8 | -2.8 |
+| no record (5,383) | take +30 % or 60 s | +6.8 | +1.5 | 49 % | +6.7 | +6.9 |
+| | one block late, 60 s | -0.2 | 0.0 | 34 % | -0.7 | +0.3 |
+
+Read:
+
+1. **Teams with a record of +10 % or better: 794 launches in 30 days, about 26 a day, +10 to +18 % a minute later on
+   time, both halves positive.** After fees that is +7 to +15 % a trade before the landing fee.
+2. **Speed is half of it.** One block late keeps about +7 %, three blocks late +5.5 % (second half +3.9 %, which fees
+   nearly eat), and the "over +25 %" row's second half goes negative when late. The buy has to land in the block after
+   the create, which is where OKTech's launch snipes land; a trigger of our own that calls OKTech after reading the
+   block is two to four blocks late.
+3. **Sell within the minute.** Held four minutes every row loses. A take at +30 % raises the median and the share of
+   winning trades; the mean is the same as a plain 60 s hold.
+4. **The worst row is as useful as the best**: a team whose earlier launches averaged under -10 % loses 25 % a minute
+   later (2,276 launches). Any launch rule should refuse those.
+5. Not yet: days outside the month (4-9 Nov bought, 143 files; the scan over 5 Oct - 9 Nov with `--show-from
+   2026-11-04` is running), the same on our own tape at an exact landing, and how the list of good team wallets is
+   handed to OKTech (Hunt takes known wallets; how many is not documented).
+
 ### Next for Proxima
 
 FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job), then run it
