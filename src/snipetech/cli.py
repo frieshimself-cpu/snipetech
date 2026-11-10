@@ -1801,10 +1801,18 @@ def _history(args, cfg: Config) -> int:
             places = store.trade_places_between(start - 60, start + 3660, "curve" if args.exchange == "pump_fun" else "amm")
         finally:
             store.close()
-        rows = pfd.read_rows(path, ["event_type", "signature", "slot_number", "token_mint", "action", "lamports_amount",
-                                    "fee_lamports", "virtual_lamports_reserve"])  # fmt: skip
-        print(json.dumps({"date": args.date, "hour": args.hour, "tape_trades": len(places),
-                          **pfd.order_report(rows, places)}, indent=1))  # fmt: skip
+        from .analysis.history_scan import Orderer
+
+        names = ["event_type", "signature", "slot_number", "token_mint", "action", "lamports_amount", "fee_lamports",
+                 "virtual_lamports_reserve", "virtual_token_reserve", "token_amount"]  # fmt: skip
+        rows = pfd.read_rows(path, names)
+        report = pfd.order_report(rows, places)
+        orderer = Orderer()  # the same hour after the rows are put in chain order: what the scans read
+        perm = orderer.order({name: [r.get(name) for r in rows] for name in names})
+        ordered = pfd.order_report([rows[i] for i in perm], places)
+        keys = ("same_slot_pairs", "same_slot_in_order", "cross_slot_pairs", "cross_slot_in_order")
+        print(json.dumps({"date": args.date, "hour": args.hour, "tape_trades": len(places), **report,
+                          "after_ordering": {"rows_moved": orderer.moved, **{k: ordered[k] for k in keys}}}, indent=1))  # fmt: skip
         return 0
 
     async def go() -> dict:

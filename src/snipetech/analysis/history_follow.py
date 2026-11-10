@@ -16,8 +16,8 @@ It leaves at a fixed time (`HORIZONS`, in slots: about 5 s and a minute) or when
 same place behind that sell ("sell"; a wallet that has not sold by the last horizon is left at the last horizon).
 Returns are price moves in percent before fees; `follow_table` takes the round trip's fees off.
 
-The files do not hold the place in a block; rows are in chain order (`history_scan`'s order check), so "the next trade
-of the coin" is the next row of the coin. The copy's own price impact and the bid that wins a place are not in these
+The files do not hold the place in a block and are not all in block order; `history_scan.Orderer` puts the rows in
+chain order first, so "the next trade of the coin" is the next row of the coin. The copy's own price impact and the bid that wins a place are not in these
 numbers: a pick here is a wallet to put through the lab on our own tape, not a result."""
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from math import sqrt
 from pathlib import Path
 from typing import Any
 
-from .history_scan import SOL_QUOTES, _columns
+from .history_scan import SOL_QUOTES, Orderer, _columns
 
 LAMPORTS = 1_000_000_000
 PLACES = (0, 1, "slot")
@@ -98,6 +98,7 @@ def follow_files(paths: list[Path], on_event: Callable[[dict], None], *, min_sol
     stats = stats if stats is not None else {}
     for key in ("files", "rows", "coins", "events", "dropped"):
         stats.setdefault(key, 0)
+    orderer = Orderer()  # the files' rows are not all in chain order: see `history_scan.Orderer`
     coins: dict[str, dict] = {}
     busy: set[str] = set()  # coins with a buy still being followed
     last_slot, hmax, floor = 0, HORIZONS[-1], int(min_sol * LAMPORTS)
@@ -115,7 +116,8 @@ def follow_files(paths: list[Path], on_event: Callable[[dict], None], *, min_sol
             busy.discard(mint)
 
     for path in sorted(paths, key=lambda p: p.name):
-        c = _columns(path)
+        c = _columns(path, orderer)
+        stats["reordered"] = orderer.moved
         stats["files"] += 1
         stats["rows"] += len(c["event_type"])
         kinds, slots, mints, users = c["event_type"], c["slot_number"], c["token_mint"], c["user_wallet"]

@@ -14,9 +14,10 @@ there is nothing left to buy on its curve.
 `LINK_SPLITS`, from the coin's metadata) and by day, so "a bundled launch with a website" shows whether it held on each
 day or on one.
 
-The files do not say where in a block a trade landed. Rows are taken in file order; `order_breaks` is the share of
-followed trades whose reserves do not continue the trade before them (0 when the file is in chain order; the vendor's
-sample chains 391 of 394)."""
+The files do not say where in a block a trade landed, and some do not hold a coin's trades in block order at all.
+`Orderer` puts every file in chain order first (by block, then by the token reserves inside a block); `order_breaks`
+is the share of followed trades whose token reserve still does not continue the trade before them, and `reordered`
+the rows that changed place."""
 
 from __future__ import annotations
 
@@ -34,7 +35,7 @@ from .launch_tools import LAMPORTS, LINK_SPLITS, SPLITS, VIRTUAL_SOL, _bucket, _
 SOL_QUOTES = (None, "", "So11111111111111111111111111111111111111112", "11111111111111111111111111111111")
 COLUMNS = ("event_type", "slot_number", "timestamp", "token_mint", "token_creator", "action", "user_wallet",
            "lamports_amount", "fee_lamports", "virtual_token_reserve", "virtual_lamports_reserve", "symbol", "uri",
-           "lamports_mint")  # fmt: skip
+           "lamports_mint", "token_amount")  # fmt: skip
 WINDOW_SLOTS = 1500  # trades kept for a launch: ten minutes, the longest exit rule
 # exit rules walked along a launch's path (`exit_return`): a time limit in slots, a stop under the entry, a take above
 # it, a trail under the highest price so far (fractions)
@@ -93,14 +94,83 @@ class _Trade:
         self.q_after, self.b_after, self.venue = q_after, b_after, "curve"
 
 
-def _columns(path: Path) -> dict[str, list]:
+class Orderer:
+    """Puts a file's rows in chain order. Some hourly files do not hold a coin's trades in block order (10 Nov: one
+    launch in eight of a month had a price path that jumped tenfold and back), and no file says where in a block a
+    trade was. Rows are sorted by block (a coin's create before its trades); a coin's trades inside one block are
+    then ordered by the token reserves, which chain exactly: a buy takes its tokens out of the reserve it found, a
+    sell puts them back, so each trade names the reserve before it. The reserve a coin was left at carries over from
+    block to block and file to file (`vt`); a coin first seen mid-life starts from the trade no other trade of the
+    block leads to. `moved` counts the rows that changed place."""
+
+    def __init__(self) -> None:
+        self.vt: dict[str, int] = {}
+        self.moved = 0
+
+    def order(self, c: dict[str, list]) -> list[int]:
+        slots, kinds, mints = c["slot_number"], c["event_type"], c["token_mint"]
+        after, amounts, actions = c["virtual_token_reserve"], c["token_amount"], c["action"]
+        n = len(slots)
+        perm = sorted(range(n), key=slots.__getitem__)
+        i = 0
+        while i < n:
+            j = i + 1
+            slot = slots[perm[i]]
+            while j < n and slots[perm[j]] == slot:
+                j += 1
+            places: dict[str, list[int]] = {}  # coin -> where its rows sit in this block
+            for k in range(i, j):
+                if kinds[perm[k]] == "create" or (kinds[perm[k]] == "swap" and after[perm[k]]):
+                    places.setdefault(mints[perm[k]], []).append(k)
+            for mint, ks in places.items():
+                rows = [perm[k] for k in ks]
+                creates = [r for r in rows if kinds[r] == "create"]
+                swaps = [r for r in rows if kinds[r] != "create"]
+                if creates and after[creates[-1]]:
+                    self.vt[mint] = int(after[creates[-1]])
+                if len(swaps) > 1:
+                    swaps = self._chain(swaps, self.vt.get(mint), after, amounts, actions)
+                for k, row in zip(ks, creates + swaps, strict=True):  # a coin's create before its trades
+                    perm[k] = row
+                if swaps:
+                    self.vt[mint] = int(after[swaps[-1]])
+            i = j
+        self.moved += sum(1 for k, row in enumerate(perm) if row != k)
+        return perm
+
+    @staticmethod
+    def _chain(rows: list[int], cur: int | None, after: list, amounts: list, actions: list) -> list[int]:
+        if any(amounts[r] is None for r in rows):
+            return rows
+        before = {r: int(after[r]) + int(amounts[r]) * (1 if actions[r] == "buy" else -1) for r in rows}
+        if cur is None:
+            afters = {int(after[r]) for r in rows}
+            starts = [r for r in rows if before[r] not in afters]
+            if len(starts) != 1:
+                return rows
+            cur = before[starts[0]]
+        left, out = list(rows), []
+        while left:
+            nxt = min(left, key=lambda r: abs(before[r] - cur))
+            left.remove(nxt)
+            out.append(nxt)
+            cur = int(after[nxt])
+        return out
+
+
+def _columns(path: Path, orderer: Orderer | None = None) -> dict[str, list]:
+    """One hourly file as columns; with an `Orderer`, the rows in chain order."""
     import pyarrow.parquet as pq
 
     have = set(pq.ParquetFile(path).schema.names)
     table = pq.read_table(path, columns=[c for c in COLUMNS if c in have])
     cols = {name: table.column(name).to_pylist() for name in table.column_names}
     n = table.num_rows
-    return {c: cols.get(c) or [None] * n for c in COLUMNS}
+    cols = {c: cols.get(c) or [None] * n for c in COLUMNS}
+    if orderer is not None:
+        perm = orderer.order(cols)
+        cols = {name: [col[i] for i in perm] for name, col in cols.items()}
+    return cols
 
 
 def _path(st: dict) -> list[list[float]]:
@@ -170,8 +240,9 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
     files end): the ones where others put `min_block_sol` or more in the create block. `stats` (when given) counts
     every launch scored, the files and the order check."""
     stats = stats if stats is not None else {}
-    for key in ("files", "rows", "launches", "scored", "reached_30", "checked", "breaks"):
+    for key in ("files", "rows", "launches", "scored", "reached_30", "checked", "breaks", "reordered"):
         stats.setdefault(key, 0)
+    orderer = Orderer()
     stats.setdefault("ret_sum", dict.fromkeys(horizons, 0.0))
     open_: dict[str, dict] = {}
     last_slot = 0
@@ -192,9 +263,10 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
         return rec
 
     for path in sorted(paths, key=lambda p: p.name):
-        c = _columns(path)
+        c = _columns(path, orderer)
         stats["files"] += 1
         stats["rows"] += len(c["event_type"])
+        stats["reordered"] = orderer.moved
         kinds, slots, mints = c["event_type"], c["slot_number"], c["token_mint"]
         for i, kind in enumerate(kinds):
             mint, slot = mints[i], int(slots[i])
@@ -204,7 +276,7 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
                     creator = c["token_creator"][i]
                     launch = SimpleNamespace(mint=mint, user=creator, creator=creator, symbol=c["symbol"][i],
                                              uri=c["uri"][i], slot=slot, ts=int(c["timestamp"][i] or 0))  # fmt: skip
-                    open_[mint] = {"launch": launch, "trades": [], "peak": 0.0, "vs": c["virtual_lamports_reserve"][i]}
+                    open_[mint] = {"launch": launch, "trades": [], "peak": 0.0, "vt": c["virtual_token_reserve"][i]}
                 continue
             st = open_.get(mint)
             if st is None or kind != "swap":
@@ -215,12 +287,12 @@ def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | N
             st["peak"] = max(st["peak"], vs / LAMPORTS - VIRTUAL_SOL)
             if slot <= st["launch"].slot + WINDOW_SLOTS:
                 buy, amount = c["action"][i] == "buy", int(c["lamports_amount"][i] or 0)
-                if st["vs"]:  # a buy adds its amount to the reserve; a sell takes out what the seller got plus the fee
-                    moved = amount if buy else -(amount + int(c["fee_lamports"][i] or 0))
+                tokens = c["token_amount"][i]
+                if st["vt"] and tokens is not None:  # a buy takes its tokens out of the reserve, a sell puts them back
                     stats["checked"] += 1
-                    stats["breaks"] += abs((vs - st["vs"]) - moved) > 2
+                    stats["breaks"] += abs(int(vt) + int(tokens) * (1 if buy else -1) - int(st["vt"])) > 2
                 st["trades"].append(_Trade(slot, c["user_wallet"][i], buy, amount, vs, vt))
-            st["vs"] = vs
+            st["vt"] = vt
         for mint in [m for m, st in open_.items() if last_slot >= st["launch"].slot + TRACK_SLOTS]:
             rec = close(open_.pop(mint))
             if rec:

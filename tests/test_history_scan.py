@@ -32,20 +32,21 @@ class Coin:
             "virtual_lamports_reserve": self.vs, "real_lamports_reserve": self.vs - V0_SOL,
             "name": more.get("name"), "symbol": more.get("symbol"), "uri": more.get("uri"), "lamports_mint": self.quote,
             "fee_lamports": more.get("fee", lamports // 100 if lamports else None),
+            "token_amount": more.get("tokens"),
         })  # fmt: skip
 
     def buy(self, user, sol, off):
         s = int(sol * SOL)
         out = self.vt * s // (self.vs + s)
         self.vs, self.vt = self.vs + s, self.vt - out
-        self._row("swap", self.slot0 + off, user, "buy", s)
+        self._row("swap", self.slot0 + off, user, "buy", s, tokens=out)
         return out
 
     def sell(self, user, tokens, off):
         s = self.vs * tokens // (self.vt + tokens)
         self.vs, self.vt = self.vs - s, self.vt + tokens
         fee = s // 100  # the vendor's sell amount is what the seller got: the reserves fall by amount + fee
-        self._row("swap", self.slot0 + off, user, "sell", s - fee, fee=fee)
+        self._row("swap", self.slot0 + off, user, "sell", s - fee, fee=fee, tokens=tokens)
 
 
 def _write(path: Path, rows: list[dict]) -> Path:
@@ -435,3 +436,43 @@ def test_a_wallet_list_refreshed_once_a_day_is_what_a_sniper_can_be_given(tmp_pa
         assert out["hunt_list"] == {"wallets": 4, "min_prior": 3, "min_ret": 10.0, "refresh_secs": 86400}
     finally:
         st.close()
+
+
+def test_rows_stored_out_of_order_are_put_back_in_chain_order_before_anything_is_scored(tmp_path):
+    """10 Nov: one launch in eight of the bought month had a price path that jumped tenfold and back. Some hourly
+    files do not hold a coin's trades in block order, and none says where in a block a trade was. Every file is
+    put in block order first, and a coin's trades inside one block are ordered by the token reserves, which chain
+    exactly (a buy takes its tokens out of the reserve, a sell puts them back)."""
+    import random
+
+    rows: list[dict] = []
+    coin = Coin(rows, "RUNcoin", "dev", S0 + 100)
+    coin.buy("dev", 1.0, 0)
+    for k in range(4):
+        coin.buy(f"team-{k}", 4.0, 0)
+    bag = coin.buy("sniper-a", 1.0, 1)
+    coin.buy("sniper-b", 2.0, 1)
+    coin.sell("sniper-a", bag, 1)  # three trades in the entry block: its close is the sell
+    coin.buy("crowd", 10.0, 60)
+    coin.sell("sniper-b", coin.vt // 300, 60)
+    coin.buy("more", 3.0, 60)
+    coin.buy("late", 0.1, 400)
+    other = Coin(rows, "OTHERcoin", "odev", S0 + 100)  # another coin's rows in the same blocks stay its own
+    for k in range(4):
+        other.buy(f"o-team-{k}", 4.0, 0)
+    other.buy("late", 0.1, 400)
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    good = _write(tmp_path / "a" / "pump_fun_2026-10-27_00.parquet", rows)
+    mixed = list(rows)
+    random.Random(7).shuffle(mixed)
+    bad = tmp_path / "b" / "pump_fun_2026-10-27_00.parquet"
+    pq.write_table(pa.Table.from_pylist(mixed), bad)  # neither in block order nor in order inside a block
+    s1: dict = {}
+    s2: dict = {}
+    want = list(scan_files([good], min_block_sol=15, stats=s1))
+    got = list(scan_files([bad], min_block_sol=15, stats=s2))
+    assert {r["mint"]: r for r in got} == {r["mint"]: r for r in want} and len(want) == 2
+    run = next(r for r in want if r["mint"] == "RUNcoin")
+    assert run["path"][0][0] == 59 and run["path"][0][1] > 1.2  # one close for block 60: after all three of its trades
+    assert s1["breaks"] == 0 and s2["breaks"] == 0 and s1["reordered"] == 0 and s2["reordered"] > 5
