@@ -196,3 +196,55 @@ def test_a_second_scan_reads_the_marks_from_the_database_and_fetches_only_new_la
         assert rpc.fetched == 14 and plain["launches"] == 7
     finally:
         st.close()
+
+
+FUNDING = json.loads((Path(__file__).parent / "fixtures" / "launch_tools" / "proxima_funding.json").read_text())
+
+
+def test_a_wallets_first_funding_by_a_bare_transfer_with_a_set_compute_limit_is_a_mark():
+    """Proxima, 10 Nov: the create is pump.fun's standard path, on 4,000 launches a day. What its launches share is
+    how the wallets are funded minutes before: a transfer from a one-off wallet with setComputeUnitLimit(1450) and
+    nothing else (14 of 14 wallets around the owner's coins, 1 of 40 creators of other launches)."""
+    from snipetech.analysis.launch_tools import funding_mark
+
+    assert funding_mark(FUNDING) == "fund:cu1450"
+    assert funding_mark(RM) is None and funding_mark(CALLINU) is None  # a launch is not a funding
+
+
+class _FundingRpc:
+    """Each creator's only earlier transaction is the Proxima funding; every create is CALLINU's."""
+
+    def __init__(self, funded):
+        self.funded, self.tx_calls, self.sig_calls = set(funded), 0, 0
+
+    async def get_signatures(self, address, before=None, until=None, limit=1000):
+        self.sig_calls += 1
+        if before:
+            return []
+        return [{"signature": f"fund-{address}"}] if address in self.funded else [{"signature": f"other-{address}"}]
+
+    async def get_transactions(self, sigs):
+        self.tx_calls += len(sigs)
+        return {s: (FUNDING if s.startswith("fund-") else RM if s.startswith("other-") else CALLINU) for s in sigs}
+
+
+def test_the_scan_reads_the_funding_of_a_marks_creators_once_and_counts_the_launches_with_it():
+    from snipetech.analysis.launch_tools import launch_tools
+
+    st = Store(":memory:")
+    try:
+        coins = [_coin(st, 80 + i, run=i < 2) for i in range(5)]
+        rpc = _FundingRpc([c.creator for c in coins[:2]])
+        out = asyncio.run(launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st,
+                                       funding_of=PROXIMA_TABLE, mark="fund:cu1450"))  # fmt: skip
+        rows = {r["mark"]: r for r in out["marks"]}
+        assert rows[PROXIMA_TABLE]["launches"] == 5 and rows["fund:cu1450"]["launches"] == 2
+        assert rows["fund:cu1450"]["reached_30"] == 1.0 and out["split"]["launches"] == 2 and out["funding_read"] == 5
+        assert not any(m.startswith("fund:read") for m in rows)  # the "already read" note is not a tool
+        calls = (rpc.tx_calls, rpc.sig_calls)
+        again = asyncio.run(launch_tools(rpc, st, NOW, hours=12, min_launches=1, marks_store=st,
+                                         funding_of=PROXIMA_TABLE))  # fmt: skip
+        assert (rpc.tx_calls, rpc.sig_calls) == calls and again["funding_read"] == 0
+        assert {r["mark"]: r["launches"] for r in again["marks"]}["fund:cu1450"] == 2
+    finally:
+        st.close()

@@ -22,12 +22,14 @@ A batch job: one getTransaction per launch (never the live database: the tape co
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from bisect import bisect_right
 from collections.abc import Callable, Iterable
 from statistics import median
 from typing import Any
 
+from ..solana.base58 import b58decode
 from ..solana.normalize import normalize
 from ..solana.tx import extract_from_transaction
 from ..solana.txmeta import PROGRAM_LABELS, _account_keys, extract_tx_meta
@@ -52,6 +54,41 @@ def tx_marks(tx: dict, creator: str) -> list[str]:
         marks.add(f"payer:{meta.fee_payer}")
     marks |= {f"alt:{t['accountKey']}" for t in tx["transaction"]["message"].get("addressTableLookups") or []}
     return sorted(marks)
+
+
+COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111"
+SYSTEM = "11111111111111111111111111111111"
+FUNDING_READ = "fund:read"  # kept with a launch's marks once its creator's funding was looked up; never a tool
+
+
+def funding_mark(tx: dict) -> str | None:
+    """`fund:cu<limit>` for a transaction that is one SOL transfer and one setComputeUnitLimit and nothing else: how a
+    launch tool's relay funds a wallet (Proxima: limit 1450, from a one-off wallet, minutes before the launch). A
+    wallet's own transfer estimates its limit or sets a price too; any other transaction gives None."""
+    keys = _account_keys(tx)
+    limits: list[int] = []
+    transfers = 0
+    for ix in tx["transaction"]["message"].get("instructions", []):
+        program, data = keys[ix["programIdIndex"]], b58decode(ix["data"])
+        if program == COMPUTE_BUDGET and data[:1] == b"\x02":
+            limits.append(int.from_bytes(data[1:5], "little"))
+        elif program == SYSTEM and int.from_bytes(data[:4], "little") == 2:
+            transfers += 1
+        else:
+            return None
+    return f"fund:cu{limits[0]}" if len(limits) == 1 and transfers == 1 else None
+
+
+async def _funding(rpc, wallet: str) -> str | None:
+    """The funding mark of a wallet's first transaction; None for a wallet with a long history (not made for a launch)
+    or whose first transaction is anything else."""
+    try:
+        sig = await _first_signature(rpc, wallet, 2)
+        tx = (await rpc.get_transactions([sig])).get(sig) if sig else None
+        return funding_mark(tx) if tx else None
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        log.warning("launch-tools: funding of %s unreadable: %s", wallet, exc)
+        return None
 
 
 async def _first_signature(rpc, mint: str, max_pages: int) -> str | None:
@@ -215,11 +252,13 @@ def mark_split(launch_marks: Iterable[tuple[Any, list[str]]], trades_of: Callabl
 
 async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launches: int = 20_000,
                        min_launches: int = 5, chunk: int = 200, mark: str | None = None,
-                       marks_store=None) -> dict[str, Any]:  # fmt: skip
+                       marks_store=None, funding_of: str | None = None) -> dict[str, Any]:  # fmt: skip
     """`tool_table` over the launches of the last `hours` (the newest `max_launches`), each one's create transaction
     fetched from the RPC. Launches too fresh for the longest horizon are left out. With `mark`, also that mark's
     `mark_split` under "split". With `marks_store` (the live database: `store` is the read-only tape copy), a launch's
-    marks are kept once read and only launches never read are fetched: a create never changes."""
+    marks are kept once read and only launches never read are fetched: a create never changes. With `funding_of` (a
+    mark, and a `marks_store`), the creator of each launch carrying that mark has its first transaction read once
+    (`funding_mark`), so the launches a tool's relay funded stand apart from the rest of a broad mark."""
     horizons = (13, 150)
     end = int(now - max(horizons) * SLOT_SECS - 60)
     launches = store.launches_between(int(now - hours * 3600), end)[-max_launches:]
@@ -243,10 +282,30 @@ async def launch_tools(rpc, store, now: float, *, hours: float = 12.0, max_launc
         known.update(fresh)
         if marks_store is not None:
             marks_store.put_launch_marks(fresh)  # a chunk a write: short, and a scan cut off keeps what it read
-    pairs = [(launch, known[launch.mint]) for launch in launches if launch.mint in known]
+    funded = [launch for launch in launches
+              if funding_of and marks_store is not None and funding_of in known.get(launch.mint, ())
+              and FUNDING_READ not in known[launch.mint]]  # fmt: skip
+    for i in range(0, len(funded), 20):
+        part = funded[i : i + 20]
+        found = await asyncio.gather(*(_funding(rpc, launch.creator or launch.user) for launch in part))
+        fresh = {
+            launch.mint: [FUNDING_READ, *([mark] if mark else [])] for launch, mark in zip(part, found, strict=True)
+        }
+        marks_store.put_launch_marks(fresh)
+        for mint, added in fresh.items():
+            known[mint] = [*known[mint], *added]
+    pairs = [
+        (launch, [m for m in known[launch.mint] if m != FUNDING_READ]) for launch in launches if launch.mint in known
+    ]
     out = tool_table(pairs, store.trades_for_mint, min_launches=min_launches, horizons=horizons)
     out.update(
-        {"hours": hours, "window_launches": len(launches), "not_fetched": missing, "fetched": len(todo) - missing}
+        {
+            "hours": hours,
+            "window_launches": len(launches),
+            "not_fetched": missing,
+            "fetched": len(todo) - missing,
+            "funding_read": len(funded),
+        }
     )
     if mark:
         out["split"] = mark_split(pairs, store.trades_for_mint, mark, horizons=horizons)
