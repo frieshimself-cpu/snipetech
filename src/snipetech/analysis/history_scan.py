@@ -292,6 +292,25 @@ def hunt_records(records: list[dict], min_prior: int, min_ret: float = HUNT_MIN_
     return out, sum(on_list(u) for u in seen)
 
 
+def _path_check(organised: list[dict]) -> dict[str, Any]:
+    """The table's last-horizon return against the same hold walked along the kept path, launch by launch: the two
+    are one number read two ways, so how many differ by more than a point, and the widest few, say whether the paths
+    can be trusted."""
+    h = max(HORIZONS)
+    diffs = []
+    for r in organised:
+        if r.get("rets") and r.get("path") is not None:
+            walked = exit_return(r["path"], {"slots": h - 1})
+            if abs(walked - r["rets"][h]) > 1.0:
+                diffs.append((abs(walked - r["rets"][h]), r["mint"], round(r["rets"][h], 2), walked, r["path"][:4],
+                              [p for p in r["path"] if h - 6 <= p[0] <= h + 3]))  # fmt: skip
+    diffs.sort(reverse=True)
+    scored = sum(1 for r in organised if r.get("rets") and r.get("path") is not None)
+    return {"launches": scored, "differ": len(diffs),
+            "widest": [{"mint": m, "table": a, "walked": b, "path_start": p, "path_at_horizon": q}
+                       for _, m, a, b, p, q in diffs[:6]]}  # fmt: skip
+
+
 def _mean(vals: list[float]) -> float | None:
     return round(sum(vals) / len(vals), 2) if vals else None
 
@@ -443,6 +462,7 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
                     **{f"ret_{k}": round(v / scored, 2) if scored else None for k, v in stats.get("ret_sum", {}).items()}},
             "by": by, "by_day": by_day, **({"cross": crossed, "cross_keys": list(cross)} if cross else {}),
             **({"exits": exit_rows([r["mint"] for r in organised])} if exits else {}),
+            **({"path_check": _path_check(organised)} if exits else {}),
             "order_breaks": round(stats.get("breaks", 0) / stats["checked"], 4) if stats.get("checked") else None}  # fmt: skip
 
 
