@@ -75,6 +75,30 @@ The means barely move without their 3 best events (the `ex3` columns of the job 
 2-10 SOL, +20.0 % (83 % above fees); 10 SOL and more, +51 %. This one is known only after the block: it says the gain
 belongs to whoever is right behind the leader, ahead of the other bots, which is what the bid buys.
 
+## The same buys entered one block late
+
+The same 17,426 buys, entered at the end of the block after the wallet's (`copy-context --entry-slots 1`): −0.3 % at
+5 slots, −1.7 % at 13, −2.9 % at 30, −8.0 % at 150; a quarter to a third above fees. No split is worth more than +1 %:
+the second known wallet in −0.2 % at 13 slots, 60 SOL of volume +0.1 %, a 1-3 SOL buy −0.7 %, a labelled KOL +0.9 %.
+The whole value of the trade is inside the followed wallet's block, right behind it.
+
+## Every wallet's buy of 1 SOL or more, and which ones the bots took
+
+63,527 first buys of 1 SOL or more by any wallet in 6,744 coins of the last 24 h, entered right behind
+(`copy-context --any-buyer --min-sol 1 --behind-leader --taken-by <the three bots>`).
+
+- **Young, thin coins are not readable this way.** Under 30 s of age, under 5 buyers or under 5 SOL in the curve the
+  averages are +40 to +90 %: creators' bundles, several wallets of one sender in one block, where nobody can land
+  between them. Leave these rows out.
+- **Established coins:** behind any 1 SOL buy in a coin older than 30 s, +3.5 to +4.6 % at 13 slots; with 60 SOL of
+  volume +3.3 %; with 100 or more earlier buyers +3.0 %. Less than behind a known wallet in the same coins (+8 to +9 %),
+  so who buys matters.
+- **Who buys:** a labelled KOL +15.2 % at 13 slots (120 buys, 75 % above fees); a tracked wallet +6.4 %.
+- **What the bots took:** one of the three was in the block behind 1.3 % of these buys: 4.2 % behind a labelled KOL
+  and 4.0 % behind a tracked wallet against 1.1 % behind an unlabelled one, 2 to 3 % in the youngest coins, 0.9 % at
+  12-15 UTC. No single factor here makes them buy: their trigger is narrower than any one split, which is what the
+  50-factor `study` of each bot is for.
+
 ## What this does not say yet
 
 - These are price changes for a copy too small to move the price. A 2 SOL buy in a coin holding 15 SOL pushes the price

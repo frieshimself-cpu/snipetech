@@ -22,6 +22,10 @@ first on the server's recording and only then run live in capped batches.
   coin has 60+ SOL of volume or 5+ minutes of age, or the followed buy is 1-3 SOL; behind the first known wallet in
   a young, thin coin it is worth about nothing. Costs at 2 SOL are near 8-10 %, so only the combined good splits can
   pay: that is the lab and forward-paper test now (I51).
+  The same buys entered one block late are worth −1.7 % at 5 s and no split is above +1 %: the trade exists only
+  right behind the wallet, in its block.
+- **The analyst runs on claude-fable-5-2 since its 12:17 turn** (verified in operator/turns.jsonl: the model that
+  answered, three recorded pieces of reasoning where earlier turns had none, 0.68 $ for the turn).
 - **What is being tested, in order.** (1) A paid place right behind known wallets at 1-5 SOL with exits in seconds
   (idea I51, lab on 72 h, then forward paper; a live step needs the owner's yes). (2) The owner's splits with the new
   `copy-context` study: the second known wallet in, the coin's volume, its age, the hour, the buys later in the
