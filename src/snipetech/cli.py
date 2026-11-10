@@ -862,6 +862,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-create-share", type=float, default=1.0, help="follow: leave out wallets with a larger share "
                     "of their buys in the create slot (a copy cannot land there)")  # fmt: skip
     sp.add_argument("--rescan", action="store_true", help="follow: read the files again even if a run was kept")
+    sp.add_argument("--walk", action="store_true", help="follow: also pick and judge week by week at rising bars")
     sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
                     "block_wallets, block_sol, dev_sol, x_badge, x_followers, x_age); each cell is shown per half of the days")
     sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
@@ -1706,7 +1707,7 @@ def _history(args, cfg: Config) -> int:
     dest = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
 
     if args.action == "follow":  # no call to the vendor: every wallet's first buys in the files on disk, as copies
-        from .analysis.history_follow import Follow, follow_files, follow_table
+        from .analysis.history_follow import Follow, follow_files, follow_table, walk_forward
 
         lo, hi = args.from_day or "0000", args.to_day or args.from_day or "9999"
         kept = dest / "follows" / f"follow_{lo}_{hi}_{args.min_sol:g}_slot.json"  # _slot: the end-of-block place
@@ -1726,6 +1727,8 @@ def _history(args, cfg: Config) -> int:
             agg, span = Follow.load(kept), {"from": paths[0].name, "to": paths[-1].name, "scan": stats}
         out = follow_table(agg, test_weeks=args.test_weeks, min_pick=args.min_pick, top=args.top,
                            max_create_share=args.max_create_share)  # fmt: skip
+        if args.walk:
+            out["walk_forward"] = walk_forward(agg, min_pick=args.min_pick, max_create_share=args.max_create_share)
         print(json.dumps(span | {"min_sol": args.min_sol} | out, indent=1, default=str))
         return 0
 

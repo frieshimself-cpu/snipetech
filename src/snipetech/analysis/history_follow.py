@@ -301,3 +301,34 @@ def follow_table(agg: Follow, *, test_weeks: int = 1, min_pick: int = 30, top: i
                  "test_sell": _mean(tst, ("slot", "sell"), fee_pct)}
                 for lower, wallet, pick, tst in picked[:top]],
     }  # fmt: skip
+
+
+def walk_forward(agg: Follow, *, bars: tuple[float, ...] = (0.0, 3.0, 6.0, 10.0), min_pick: int = 40,
+                 fee_pct: float = 2.5, max_create_share: float = 1.0) -> list[dict[str, Any]]:  # fmt: skip
+    """The pick repeated for every week in turn: wallets picked on all the weeks before it (as in `follow_table`),
+    judged on that week, once for each bar on the picking weeks' mean return after fees. A real edge rises with the
+    bar in every week; a lucky list does not."""
+    weeks = sorted({w for by in agg.wallets.values() for w in by} | set(getattr(agg, "everyone", None) or {}))
+    out = []
+    for week in weeks[1:]:
+        cands = []
+        for by_week in agg.wallets.values():
+            pick = _total([r for w, r in by_week.items() if w < week])
+            if pick[N] < min_pick or pick[CREATE] / pick[N] > max_create_share:
+                continue
+            mean = pick[R] / pick[N]
+            se = sqrt(max(0.0, pick[R2] / pick[N] - mean * mean) / pick[N])
+            if mean - fee_pct - 2 * se > 0:
+                cands.append((mean - fee_pct, by_week.get(week)))
+        rows = []
+        for bar in bars:
+            tests = [t for net, t in cands if net >= bar and t is not None and t[N]]
+            total = _total(tests)
+            rows.append({"min_ret": bar, "picked": sum(net >= bar for net, _ in cands), "test_wallets": len(tests),
+                         "test_trades": int(total[N]), "test_ret": _mean(total, MAIN, fee_pct),
+                         "test_sell": _mean(total, ("slot", "sell"), fee_pct),
+                         "test_ret_0": _mean(total, (0, HORIZONS[-1]), fee_pct),
+                         "wallets_up": round(sum(t[R] / t[N] - fee_pct > 0 for t in tests) / len(tests), 3)
+                         if tests else None})  # fmt: skip
+        out.append({"test_week": week, "bars": rows})
+    return out

@@ -92,3 +92,28 @@ def test_wallets_are_picked_on_the_first_weeks_and_judged_on_the_last(tmp_path):
     assert out["test"]["trades"] == 20 and out["test"]["ret_slot_150"] == round((10 * -22.5 + 10 * 10.4) / 20, 2)
     assert out["test"]["wallets_up"] == 0.5  # half the picked wallets paid in the week they were not picked on
     assert out["everyone"]["test_trades"] == 30  # every wallet's test-week trades, the comparison
+
+
+def test_picking_is_walked_forward_week_by_week_at_rising_bars():
+    """10 Nov, 30 days: wallets positive by two standard errors on four weeks made +1.5 % in the fifth, and a group of
+    twenty made +4 to +13 %. To tell that group from luck the pick is repeated for every week in turn (wallets picked
+    on the weeks before it, judged on it) at rising bars on the picking weeks' mean: a real edge rises with the bar in
+    every week, luck does not."""
+    from snipetech.analysis.history_follow import walk_forward
+
+    t0 = 1_793_000_000
+    agg = Follow(start_ts=t0)
+    for week in range(4):
+        for i in range(30):
+            ts = t0 + week * 7 * 86400 + i
+            agg.add(_ev("strong", ts, 20.0 + (i % 2)))  # +20 % every week
+            agg.add(_ev("mild", ts, 6.0 + (i % 2)))  # +6 % every week
+            agg.add(_ev("fader", ts, 25.0 if week < 2 else -15.0))  # strong for two weeks, then gone
+    out = walk_forward(agg, bars=(0.0, 10.0), min_pick=20, fee_pct=2.5)
+    assert [w["test_week"] for w in out] == [1, 2, 3]  # the first week has nothing before it to pick on
+    by = {(w["test_week"], b["min_ret"]): b for w in out for b in w["bars"]}
+    assert by[(1, 0.0)]["picked"] == 3 and by[(1, 10.0)]["picked"] == 2  # mild is under the 10 % bar
+    assert by[(1, 10.0)]["test_ret"] == round((18.0 + 22.5) / 2, 2)  # strong and fader, a good week for both
+    assert by[(2, 10.0)]["test_ret"] == round((18.0 - 17.5) / 2, 2)  # the week the fader went
+    assert by[(3, 10.0)]["picked"] == 1 and by[(3, 10.0)]["test_trades"] == 30  # the fader's mean fell under the bar
+    assert by[(3, 0.0)]["wallets_up"] == round(2 / 3, 3)
