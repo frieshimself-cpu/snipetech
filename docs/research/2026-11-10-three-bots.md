@@ -135,6 +135,7 @@ is the 80 % lower bound.
 | three or more, across blocks (+3x) | 0.02 | -0.039 | -0.045 | 28 % |
 | the next trade (+0) | 0.05 | +0.003 | -0.005 | 41 % |
 | the next trade (+0) | 0.10 | -0.097 | -0.105 | 28 % |
+| the next trade (+0), 2 SOL bought | 0.035 | +0.141 | +0.124 | 54 % |
 
 The other rules fall the same way and sooner: the third known wallet is +0.052 at +0 and +0.005 at +1; any tracked
 wallet's 1-3 SOL buy is +0.039 at +0 and -0.009 at +1; a labelled KOL's buy is +0.084 at +0 (lower +0.028, wins 25 %)
@@ -143,6 +144,11 @@ and +0.013 at +1.
 Read: the whole result is the one place right behind the buy, and it is worth about 0.05 SOL per transaction on a
 1 SOL trade. 6Z91's median bid is 0.033 SOL a buy (a quarter of its buys above 0.07). The bots already pay most of
 what the place is worth; a newcomer who outbids them hands the edge to the validators.
+
+At 2 SOL the same place is worth twice as much (+0.141 SOL a trade at a 0.035 bid, the third known wallet +0.118, a
+KOL's buy +0.192 with a lower bound of +0.076): the edge grows with the size and the bid does not, so at 2 SOL a bid of
+about 0.10 a transaction still breaks even. What is not measured yet is the bid that wins the place: the fee paid by
+the trade that did land right behind these buys, event by event (`tx_meta`).
 
 ## The owner's tracker is the tracked list, and a third of it is teams (13:35 UTC)
 
