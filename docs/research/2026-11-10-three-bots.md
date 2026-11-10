@@ -457,6 +457,16 @@ the link, and no X data source is connected. Other launchpads: the tape records 
 LaunchLab (127 LaunchLab coins in the last hour against 2,457 on pump.fun's curve); Meteora DBC (Believe, Bags) is not
 recorded, though OKTech snipes it. `launch-tools` scores pump.fun curves only: LaunchLab is the next venue for it.
 
+> **Correction, 22:10 UTC, for the three sections that follow** (the bought month; copying on it; the team record).
+> Their numbers were read with a wrong assumption of mine: that every hourly file holds a coin's trades in block
+> order. Some October files do not. `path_check` (the table's one-minute return against the same hold walked along the
+> kept path) disagreed on 2,140 of 16,202 launches, with paths that jumped tenfold and back; the means in these
+> sections are inflated by such launches (one read +834 % where the path says +17 %), the medians less. Since ea30e46
+> every file is put in chain order first (`history_scan.Orderer`: by block, then by the token reserves inside a
+> block; across blocks it agrees with our tape on 100 % of neighbouring trades). The scan over 5 Oct - 9 Nov and the
+> follow run are being read again on ordered rows; until their tables replace these, take the direction of each
+> result (which rows are better than which) and not its size.
+
 ### The same question on a bought month: the website helps, the dev's own buy helps more (20:40 UTC)
 
 The owner bought pumpfundata.com's history (10 Nov, 3,000 credits). Every pump.fun trade from 5 Oct 08:00 to 3 Nov 2026

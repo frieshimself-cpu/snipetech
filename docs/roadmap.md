@@ -6,6 +6,24 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 10 Nov, 22:10 UTC: the month's first numbers were read from unordered files; they are being re-read
+
+- **Nothing is profitable live, and nothing from the bought month is a result yet.** Tonight's tables (website rule,
+  the dev's own buy, copying, a bundle team's record) were read assuming every hourly file holds a coin's trades in
+  block order. Some do not: one launch in eight had a corrupted price path, which inflates the means. The fix
+  (ea30e46) puts every file in chain order before it is scored; the scan over 5 Oct - 9 Nov (36 days, the last six
+  never used to find anything) and the copy check run again on it. The owner was told the first numbers as they came
+  and is told the corrected ones in the same words.
+- **What the first pass pointed at, to be confirmed or dropped by the re-read:** (1) a bundled launch with a website
+  is a filter, not a rule; (2) the dev buying 0.5-2 SOL of the coin sorts bundled launches better; (3) the record of
+  a launch's bundle wallets on their earlier launches sorted them best of all, row by row, with positive medians in
+  the top rows; (4) copying picked wallets at the end of their block is about break-even, and the value is in the
+  place right behind the buy.
+- **Owner, 21:00: "Figure it all out urself."** No more homework for the owner; one yes/no before anything spends
+  SOL. The owner offered 100 SOL once there is proof; proof needs 0.2-1 SOL trades.
+- **The path to money, fixed:** a month of history (both halves), then days never used, then our own tape at the real
+  landing, then a paper day, then a capped live test with the owner's yes.
+
 ## 10 Nov, 20:10 UTC: a month of bought history is on the server; two checks run on it
 
 - **The honest state is unchanged: nothing is profitable live.** What changed is the evidence we can ask: the owner
