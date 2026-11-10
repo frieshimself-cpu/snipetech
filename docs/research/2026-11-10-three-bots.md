@@ -136,6 +136,7 @@ is the 80 % lower bound.
 | the next trade (+0) | 0.05 | +0.003 | -0.005 | 41 % |
 | the next trade (+0) | 0.10 | -0.097 | -0.105 | 28 % |
 | the next trade (+0), 2 SOL bought | 0.035 | +0.141 | +0.124 | 54 % |
+| **one trade later (+1), 2 SOL bought** | 0.035 | +0.047 | +0.033 | 46 % |
 
 The other rules fall the same way and sooner: the third known wallet is +0.052 at +0 and +0.005 at +1; any tracked
 wallet's 1-3 SOL buy is +0.039 at +0 and -0.009 at +1; a labelled KOL's buy is +0.084 at +0 (lower +0.028, wins 25 %)
@@ -149,6 +150,20 @@ At 2 SOL the same place is worth twice as much (+0.141 SOL a trade at a 0.035 bi
 KOL's buy +0.192 with a lower bound of +0.076): the edge grows with the size and the bid does not, so at 2 SOL a bid of
 about 0.10 a transaction still breaks even. What is not measured yet is the bid that wins the place: the fee paid by
 the trade that did land right behind these buys, event by event (`tx_meta`).
+
+### Next (written 14:10 UTC)
+
+The 2 SOL run one trade behind (809 held-out trades, 30 an hour; the third known wallet +0.042, lower +0.028) is the
+first rule here with a positive lower bound at a place other than the one right behind. Before it is frozen:
+
+1. `paper freeze --trigger` scores a KOL rule at the live copy landing, not at a named place: give `paper freeze` the
+   lab's `--copy-position` (tests first) so the rule is frozen at +1, 2 SOL, 0.035 a transaction.
+2. Read how the automatic live test picks from frozen strategies (`live_test.eligible`) first: a frozen 2 SOL rule must
+   not reach it. Sizes above 0.2 SOL are the owner's yes, in chat, for that step.
+3. Measure what a 0.035 SOL bid buys behind these buys (the fee of the trades that landed first and second behind
+   them, `tx_meta`). Our 0.003 bid lands 2-4 trades behind a crowded leader; +2 loses.
+4. The team-counted runs (`lab_team_p1.full`, `lab_team_p0.full`: wallet and trader groups, with and without a 10 s
+   gap) say whether counting a team once and dropping faucets and snipers adds to it.
 
 ## The owner's tracker is the tracked list, and a third of it is teams (13:35 UTC)
 
