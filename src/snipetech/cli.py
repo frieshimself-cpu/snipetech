@@ -808,6 +808,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label", type=int, default=0, help="send the N best mid/late traders (no create-slot sniping, "
                     "no insider sales) to qualify's queue as cand")  # fmt: skip
     sp = cmd(
+        "copy-context",
+        "what a known wallet's buy is worth by its context: entered a block late and marked at each horizon, split by "
+        "how many known wallets were in, the coin's volume, age, hour, the leader's size and the buys later in its own "
+        "block (reads the tape copy; a research job)",
+    )
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--entry-slots", type=int, default=1, help="slots after the leader's slot where we enter")
+    sp.add_argument("--horizons", default="15,75,150,450", help="slots after the leader's slot where we mark")
+    sp.add_argument("--min-sol", type=float, default=0.5, help="the leader's smallest buy that counts")
+    sp.add_argument("--groups", default="kol,wallet", help="label kinds whose wallets are leaders")
+    sp = cmd(
         "leaders-of",
         "the wallets a copy bot buys right after: who bought the same coin up to N slots before its first buy, over "
         "its coins, with how far behind it landed (reads the tape copy; a research job)",
@@ -1604,6 +1615,7 @@ BATCH_COMMANDS = frozenset(
         "fomo-wallets",
         "winners",
         "leaders-of",
+        "copy-context",
     }
 )
 BATCH_NICE = 10
@@ -1825,6 +1837,28 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
             or "no FOMO wallet with enough buys")  # fmt: skip
+        return 0
+    if args.cmd == "copy-context":
+        from .analysis.context import copy_context
+
+        svc = Service(cfg)
+        try:
+            out = copy_context(
+                svc.tape_store, time.time(), hours=args.hours, entry_slots=args.entry_slots, min_sol=args.min_sol,
+                horizons=tuple(int(h) for h in args.horizons.split(",") if h.strip()),
+                kinds=tuple(k.strip() for k in args.groups.split(",") if k.strip()),
+            )  # fmt: skip
+        finally:
+            svc.store.close()
+        if args.json:
+            print(json.dumps(out, indent=1))
+            return 0
+        print(f"{out['events']} buys of known wallets in {out['coins']} coins, entered {out['entry_slots']} slot(s) "
+              f"late; returns in % before {out['fee_pct']} % of fees")  # fmt: skip
+        for name, rows in out["by"].items():
+            print(f"\n{name}")
+            for r in rows:
+                print("  " + "  ".join(f"{k} {v}" for k, v in r.items()))
         return 0
     if args.cmd in ("winners", "leaders-of"):
         from .analysis.winners import leaders_of, winners

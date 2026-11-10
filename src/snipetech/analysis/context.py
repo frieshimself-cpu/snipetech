@@ -1,0 +1,145 @@
+"""What a known wallet's buy is worth by its context (owner, 10 Nov: "look into stats of the coin. For example if 2
+kols are in, copy trade when the second one gets in, or the volume of the coin or the certain type of day").
+
+Every first buy of at least `min_sol` by a labelled wallet (the KOL list, the tracked list) in a coin launched in the
+window is an event. We enter `entry_slots` after the leader's slot, a block late, where a copy of ours lands at best,
+at the price the curve shows at the end of that slot, and mark the curve's price at each horizon (slots after the
+leader's slot). The return is gross: the reader takes `fee_pct` (both pump.fun fees and the tips) off it, and `win` is
+the share of events above it. Events are grouped, one split at a time, by:
+
+- how many known wallets were in the coin, this one included (1 = the first, 2 = the second ...);
+- the coin's volume before the buy, its age, the hour of the day (UTC), the leader's own size;
+- the SOL other wallets bought later in the leader's own block (10 Nov: 6Z91 buys there and sells 5 s later, so a
+  leader with such followers leaves nothing for a copy one block late);
+- the label group (kol or wallet).
+
+`ex3` is the mean without the 3 best events, the forward paper test's own rule against one lucky coin. A coin's creator
+is never its leader. A batch read of the tape copy, too long for the agents' 30 s SQL; never the live file."""
+
+from __future__ import annotations
+
+from bisect import bisect_right
+from statistics import median
+from typing import Any
+
+LAMPORTS = 1_000_000_000
+SLOT_SECS = 0.4
+
+
+def _price(t) -> float | None:
+    b = float(getattr(t, "b_after", 0) or 0)
+    q = float(getattr(t, "q_after", 0) or 0)
+    return q / b if b > 0 and q > 0 else None
+
+
+def _bucket(value: float, edges: tuple[float, ...], names: tuple[str, ...]) -> str:
+    for edge, name in zip(edges, names, strict=False):
+        if value < edge:
+            return name
+    return names[-1]
+
+
+SPLITS: dict[str, tuple[tuple[float, ...], tuple[str, ...]]] = {
+    "known_wallets_in": ((2, 3, 4), ("1", "2", "3", "4+")),
+    "volume_before_sol": ((5, 20, 60), ("<5", "5-20", "20-60", "60+")),
+    "age": ((75, 750, 9000), ("<30 s", "30 s-5 min", "5-60 min", "1 h+")),  # slots since the create
+    "leader_buy_sol": ((1, 3, 10), ("<1", "1-3", "3-10", "10+")),
+    "same_slot_followers_sol": ((1e-9, 2, 10), ("0", "<2", "2-10", "10+")),
+}
+ORDER = {name: {b: i for i, b in enumerate(names)} for name, (_, names) in SPLITS.items()}
+
+
+def _events_of(launch, trades: list, group_of: dict[str, str], *, entry_slots: int, horizons: tuple[int, ...],
+               min_lamports: int, last_ts: float) -> list[dict[str, Any]]:  # fmt: skip
+    devs = {launch.user, launch.creator}
+    slots: list[int] = []
+    prices: list[float] = []  # the curve's price at the end of each slot that has a trade
+    for t in trades:
+        p = _price(t)
+        if p is None:
+            continue
+        s = int(t.slot)
+        if slots and slots[-1] == s:
+            prices[-1] = p
+        else:
+            slots.append(s)
+            prices.append(p)
+
+    def price_at(slot: int) -> float | None:
+        i = bisect_right(slots, slot) - 1
+        return prices[i] if i >= 0 else None
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    volume = 0
+    for i, t in enumerate(trades):
+        quote = int(t.quote or 0)
+        if (t.is_buy and t.user in group_of and t.user not in devs and t.user not in seen and quote >= min_lamports):  # fmt: skip
+            seen.add(t.user)
+            s = int(t.slot)
+            entry = price_at(s + entry_slots)
+            if entry and float(t.ts) <= last_ts:  # the longest horizon is on the tape
+                followers = 0
+                for later in trades[i + 1 :]:
+                    if int(later.slot) != s:
+                        break
+                    if later.is_buy and later.user != t.user:
+                        followers += int(later.quote or 0)
+                rets = {h: (price_at(s + h) / entry - 1.0) * 100.0 for h in horizons}
+                out.append({
+                    "known_wallets_in": len(seen), "volume_before_sol": volume / LAMPORTS,
+                    "age": s - int(launch.slot), "leader_buy_sol": quote / LAMPORTS,
+                    "same_slot_followers_sol": followers / LAMPORTS,
+                    "hour_utc": int(float(t.ts) % 86400 // 3600), "group": group_of[t.user], "rets": rets})  # fmt: skip
+        volume += quote
+    return out
+
+
+def _row(bucket: str, events: list[dict[str, Any]], horizons: tuple[int, ...], fee_pct: float) -> dict[str, Any]:
+    row: dict[str, Any] = {"bucket": bucket, "n": len(events)}
+    for h in horizons:
+        rets = sorted(e["rets"][h] for e in events)
+        row[f"ret_{h}"] = round(sum(rets) / len(rets), 2)
+        row[f"ex3_{h}"] = round(sum(rets[:-3]) / len(rets[:-3]), 2) if len(rets) > 3 else None
+        row[f"med_{h}"] = round(median(rets), 2)
+        row[f"win_{h}"] = round(sum(1 for r in rets if r > fee_pct) / len(rets), 3)
+    return row
+
+
+def copy_context(store, now: float, *, hours: float = 72, kinds: tuple[str, ...] = ("kol", "wallet"),
+                 entry_slots: int = 1, horizons: tuple[int, ...] = (15, 75, 150, 450), min_sol: float = 0.5,
+                 fee_pct: float = 2.5) -> dict[str, Any]:  # fmt: skip
+    """Known wallets' first buys in coins launched in the last `hours`, entered `entry_slots` after the leader's slot
+    and marked at each horizon, grouped one split at a time. Returns in percent, gross of `fee_pct`."""
+    horizons = tuple(sorted(int(h) for h in horizons if int(h) > entry_slots))
+    start = int(now - hours * 3600)
+    group_of: dict[str, str] = {}
+    for kind in kinds:  # a wallet on two lists counts in the first
+        for address in store.labels(kind):
+            group_of.setdefault(address, kind)
+    last_ts = now - max(horizons, default=0) * SLOT_SECS - 60
+    events: list[dict[str, Any]] = []
+    coins = 0
+    for launch in store.launches_between(start, int(now)):
+        trades = [t for t in store.trades_for_mint(launch.mint, int(launch.ts)) or [] if t.venue == "curve"]
+        if not any(t.user in group_of for t in trades):
+            continue
+        found = _events_of(launch, trades, group_of, entry_slots=entry_slots, horizons=horizons,
+                           min_lamports=int(min_sol * LAMPORTS), last_ts=last_ts)  # fmt: skip
+        coins += bool(found)
+        events.extend(found)
+    by: dict[str, list[dict[str, Any]]] = {}
+    for name, (edges, names) in SPLITS.items():
+        groups: dict[str, list] = {}
+        for e in events:
+            groups.setdefault(_bucket(e[name], edges, names), []).append(e)
+        by[name] = [_row(b, groups[b], horizons, fee_pct) for b in sorted(groups, key=ORDER[name].get)]
+    for name, key in (("hour_utc", lambda e: f"{e['hour_utc'] // 4 * 4:02d}-{e['hour_utc'] // 4 * 4 + 3:02d}"),
+                      ("group", lambda e: e["group"])):  # fmt: skip
+        groups = {}
+        for e in events:
+            groups.setdefault(key(e), []).append(e)
+        by[name] = [_row(b, groups[b], horizons, fee_pct) for b in sorted(groups)]
+    return {"hours": hours, "events": len(events), "coins": coins, "entry_slots": entry_slots,
+            "horizons": list(horizons), "fee_pct": fee_pct, "min_sol": min_sol,
+            "all": _row("all", events, horizons, fee_pct) if events else None, "by": by}  # fmt: skip
