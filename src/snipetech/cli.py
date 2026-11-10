@@ -841,6 +841,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--taken-by", default="", help="bots (comma-separated): each row gets the share of its buys one "
                     "of them followed in the same block")  # fmt: skip
     sp = cmd(
+        "history",
+        "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape; "
+        "the key is PUMPFUNDATA_API_KEY in the server's env file",
+    )
+    sp.add_argument("action", choices=["range", "fetch", "check"])
+    sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
+    sp.add_argument("--from", dest="from_day", help="fetch: first day, YYYY-MM-DD")
+    sp.add_argument("--to", dest="to_day", help="fetch: last day, YYYY-MM-DD (default: the first day)")
+    sp.add_argument("--max-files", type=int, default=24, help="fetch: credits this run may spend (one a file)")
+    sp.add_argument("--date", help="check: the day, YYYY-MM-DD")
+    sp.add_argument("--hour", type=int, help="check: the hour, 0-23 UTC")
+    sp = cmd(
         "launch-tools",
         "deploy tools by the mark they leave in a create transaction (a fee wallet, a wrapper program, a signer that is "
         "not the creator) and how far each mark's coins run (one getTransaction per launch; a research job)",
@@ -1661,6 +1673,54 @@ BATCH_COMMANDS = frozenset(
 BATCH_NICE = 10
 
 
+def _history(args, cfg: Config) -> int:
+    """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/."""
+    import calendar
+
+    import httpx
+
+    from . import pumpfundata as pfd
+    from .store import Store
+
+    key = os.environ.get(pfd.KEY_ENV, "")
+    if not key:
+        print(f"{pfd.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
+        return 2
+    dest = Path(cfg.storage.db_path).resolve().parent / "history" / "pumpfundata" / args.exchange
+
+    async def go() -> dict:
+        async with httpx.AsyncClient(timeout=120.0) as http:
+            client = pfd.Client(key, http)
+            if args.action == "range":
+                on_disk = len(list(dest.parent.glob("*/*.parquet"))) if dest.parent.is_dir() else 0
+                return {"ranges": [await client.range(x) for x in pfd.EXCHANGES], "files_on_disk": on_disk}
+            if args.action == "fetch":
+                if not args.from_day:
+                    raise SystemExit("history fetch: --from YYYY-MM-DD")
+                have = {p.name for p in dest.glob("*.parquet")} if dest.is_dir() else set()
+                hours = pfd.plan_hours(args.from_day, args.to_day or args.from_day, have, args.exchange)
+                return await pfd.fetch(client, dest, args.exchange, hours, args.max_files)
+            if args.date is None or args.hour is None:
+                raise SystemExit("history check: --date YYYY-MM-DD --hour H")
+            got = await pfd.fetch(client, dest, args.exchange, [(args.date, args.hour)], 1)
+            path = dest / pfd.file_name(args.exchange, args.date, args.hour)
+            if not path.exists():
+                return {"error": "the hour's file is not on disk", "fetch": got}
+            start = calendar.timegm(time.strptime(f"{args.date} {args.hour:02d}", "%Y-%m-%d %H"))
+            venue = "curve" if args.exchange == "pump_fun" else "amm"
+            store = Store(cfg.storage.db_path)
+            try:
+                sigs = store.trade_sigs_between(start, start + 3600, venue)
+            finally:
+                store.close()
+            rows = pfd.read_rows(path, ["event_type", "signature"])
+            return {"date": args.date, "hour": args.hour, "exchange": args.exchange, "rows": len(rows),
+                    "credits_spent": got["downloaded"], **pfd.compare(rows, sigs)}  # fmt: skip
+
+    print(json.dumps(asyncio.run(go()), indent=1, default=str))
+    return 0
+
+
 BATCH_RPS, BATCH_CONCURRENCY = 120.0, 24  # a research job's RPC rate on a paid endpoint (Helius Business: 200 a second)
 PAID_RPS = 40  # what the config sets when it finds a paid endpoint's key: the always-on services' rate
 
@@ -1913,6 +1973,8 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  follows {t['wallet']} ({t['label'] or 'no label'}): {t['coins']} coins, "
                   f"{t['followed_share']} of that wallet's {t['its_coins']}")  # fmt: skip
         return 0
+    if args.cmd == "history":
+        return _history(args, cfg)
     if args.cmd == "launch-tools":
         from .analysis.launch_tools import coin_marks, launch_tools
 

@@ -18,6 +18,7 @@ dependencies = [
     "grpcio>=1.70",
     "protobuf>=7.35.1,<8",
     "solders>=0.21",
+    "pyarrow>=15",
 ]
 
 [project.optional-dependencies]

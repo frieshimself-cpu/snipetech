@@ -461,6 +461,13 @@ class Store:
     # cold on a 2.4M-trade copy in one read.
     READ_SPAN_SECS = 600
 
+    def trade_sigs_between(self, start_ts: int, end_ts: int, venue: str) -> set[str]:
+        """The signatures of a venue's trades in [start, end): what an hour of bought history is checked against."""
+        rows = self._q(
+            "SELECT DISTINCT sig FROM trades WHERE ts>=? AND ts<? AND venue=?", (int(start_ts), int(end_ts), venue)
+        )
+        return {r[0] for r in rows}
+
     def active_mints(self, start_ts: int, end_ts: int, min_trades: int = 1) -> list[tuple[str, int]]:
         """Tokens traded in a time range (SOL and foreign), with their trade counts, in mint order. Read in pieces of
         READ_SPAN_SECS, each read whole before the next one starts, no transaction between them: [start, start + span),
