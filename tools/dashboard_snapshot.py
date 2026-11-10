@@ -2,7 +2,7 @@
 
 Run from /home/user/snipetech with .venv/bin/python; reads SNIPETECH_OPS_URL / SNIPETECH_OPS_KEY (a key PATH).
 Writes JSON files to OUT ($DASH_OUT, default the session scratchpad): status, paper, paper_trades, live_trades, leaders, agent_log, ideas,
-spend. No secrets: only short addresses, numbers and the agents' own notes."""
+spend, proxima, proxima_split. No secrets: only short addresses, numbers and the agents' own notes."""
 
 import json
 import os
@@ -136,7 +136,34 @@ dump("status", [{"snapshot_at": iso(NOW), "tape_lag_s": lag, "jobs_running": len
                  "ideas_open": sum(1 for i in ideas if i.get("status") in ("open", "testing")),
                  "ideas_total": len(ideas)}])  # fmt: skip
 
-PARTS = ("status", "paper", "paper_trades", "live_trades", "leaders", "agent_log", "ideas", "spend")
+# Proxima launches: the newest finished `launch-tools --mark` scan on the server (the hourly round starts one; this only
+# reads it). Each launch of the mark with what happened in its create block, and the mark's launches by that buying.
+PROXIMA = "alt:Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP"
+scans = [j for j in jl if not j.get("running") and j.get("exit_code") == 0 and "launch-tools" in j["argv"]
+         and PROXIMA in j["argv"] and "--json" in j["argv"]]  # fmt: skip
+prox, prox_split = [], []
+if scans:
+    job = max(scans, key=lambda j: j["started"])
+    text = call(URL, KEY, "read", path=f"jobs/{job['id']}.log", tail=60_000_000)["content"]
+    scan = json.loads(text[text.find("\n{\n"):])
+    split, everything = scan["split"], scan["all"]
+    for c in split["coins"]:
+        prox.append({"mint": c["mint"], "coin": c["symbol"] or short(c["mint"]), "launched": iso(c["ts"]),
+                     "dev_sol": c["dev_sol"], "block_wallets": c["block_wallets"], "block_sol": c["block_sol"],
+                     "peak_sol": c["peak_sol"], "ret_5s_pct": c["ret_13"], "ret_60s_pct": c["ret_150"]})  # fmt: skip
+    rows = [("All launches", everything), ("Proxima's mark", next(m for m in scan["marks"] if m["mark"] == PROXIMA))]
+    rows += [(f"Proxima, others put {r['bucket']} SOL in the launch block", r) for r in split["by"]["block_sol"]]
+    for label, r in rows:
+        prox_split.append({"group": label, "launches": r["launches"], "reached_30_pct": round(r["reached_30"] * 100, 1),
+                           "graduated_pct": round(r["graduated"] * 100, 1), "median_peak_sol": r["peak_sol"],
+                           "ret_5s_pct": r["ret_13"], "ret_60s_pct": r["ret_150"],
+                           "wins_60s_pct": None if r["win_150"] is None else round(r["win_150"] * 100, 1),
+                           "hours": scan["hours"], "scanned": iso(job["ended"])})  # fmt: skip
+dump("proxima", prox)
+dump("proxima_split", prox_split)
+
+PARTS = ("status", "paper", "paper_trades", "live_trades", "leaders", "agent_log", "ideas", "spend", "proxima",
+         "proxima_split")  # fmt: skip
 combined = {k: json.loads((OUT / f"{k}.json").read_text()) for k in PARTS}
 (OUT / "snapshot.json").write_text(json.dumps(combined))
 print("snapshot.json", (OUT / "snapshot.json").stat().st_size)

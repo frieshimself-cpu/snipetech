@@ -266,6 +266,86 @@ owner names only confirms which mark is which. Live, a mark is an OKTech require
 wallet) or a Launch shape wrapper program. The 2 SOL team-counted run one trade behind (14:23): +0.064 SOL a trade,
 lower +0.049, 704 trades.
 
+## Proxima's mark, found from six coins the owner named (14:40-15:30 UTC)
+
+The owner named six coins as Proxima deploys (CUBCAT, CALLINU, FUENTES, NUT, Mwezi, GiftTok). `launch-tools --mint`
+read each one's create transaction (two from the tape, four from the first transaction that named the mint). They pay
+no tool fee, use no wrapper program and five of six are signed by their own creator. **All six load the same address
+lookup table, `Hyif6eWb8x88RVrvjPfabsgRYnwkVnyByEXTVTXbUcyP`**, and nothing else is common to them. The scanner now
+returns it as the mark `alt:<table>`. CALLINU and CUBCAT were each followed, in the create's own block, by four
+wallets buying 2.2-2.9 SOL in four separate transactions (the team's bundle).
+
+The mark is broad. Over the newest 30,000 launches (`launch-tools --hours 24 --mark alt:Hyif6e...`, entry at the end of
+the block after the create, where a launch snipe lands, returns before about 2.5 % of fees):
+
+| launches | n | reached 30 SOL | graduated | median peak | +5 s | +60 s | up after fees at 60 s |
+|---|---|---|---|---|---|---|---|
+| all | 30,000 | 14.1 % | 5.0 % | 1.0 SOL | +0.1 % | −1.8 % | 24 % |
+| the mark | 3,401 (1,562 creators) | 19.0 % | 6.9 % | 4.4 | +0.4 % | +0.2 % | 22 % |
+| the mark, nobody else in the create block | 2,595 | 18.3 % | 7.8 % | 2.2 | +0.6 % | −0.4 % | 20 % |
+| others put under 2 SOL in the create block | 420 | 9.3 % | 2.6 % | 3.0 | −0.3 % | +2.9 % | 22 % |
+| 2-5 SOL | 119 | 6.7 % | 0 % | 7.1 | −0.3 % | −1.8 % | 24 % |
+| 5-10 SOL | 60 | 18.3 % | 3.3 % | 13.6 | +1.4 % | +4.5 % | 33 % |
+| **10 SOL or more ("organised")** | **207 (202 creators)** | **53.6 %** | 9.7 % | 31.1 | −0.2 % | **+1.4 %** (median −1.4 %) | 46 % |
+
+- The owner is right that organised Proxima launches go high: more than half reach 30 SOL against one launch in seven.
+- A snipe one block later does not collect it. The team's 10-20 SOL is already in the price it pays, and the mean
+  at one minute is +1.4 % before 2.5 % of fees.
+- The mean hides two outcomes. Of the 41 organised launches in the newest 1.3 hours, 23 were at −63 to −65 % a
+  minute later and 16 were at +30 to +113 %. Each loss is one block: the team's wallets sell everything at once,
+  5 to 40 seconds after the launch. Most of these 41 are one operation (6 or 10 wallets put 19-20 SOL in the create
+  block, the creator buys 0.99 SOL, a fresh creator wallet each time) relaunching the same names minutes apart
+  (fomocat, ATTENTION, SEYONG, Inuployed, tagcat, MOMO). Of 9 groups of same-name launches, every earlier attempt
+  was dumped (16 of 16) and the last one ran in 7 of 9.
+- The ones still up after a minute went on to +100 to +200 % at two to five minutes in 9 of 17 cases, and 5 of the 17
+  were dumped to −60 % by then. Bought at one minute and sold a minute later, those 17 average about +4 % with two
+  losses of −70 to −80 %: a lead, on 17 trades from 1.3 hours, not a result.
+- The owner's six coins are a week old and only two are on the tape; whether the organised launches the owner means
+  are this crew's or a slower, hand-run kind is not known from the chain.
+
+OKTech can target the mark without us: Hunt mode takes `knownBotLuts[]` with `minLutMatches`, and the account filter
+takes keys a launch must name (whether that covers a lookup table's address is a question for OKTech). Nothing is
+created: no rule here pays yet.
+
+The owner's page has the section "Proxima launches" (the table above, each launch as a dot, the newest organised
+launches). `tools/dashboard_snapshot.py` fills it from the newest finished `launch-tools ... --mark ... --json` job.
+
+### Next for Proxima
+
+1. Keep each launch's marks in the database (a `launch_marks` table written by the scan, then by the recorder as each
+   create arrives), so a re-scan costs no RPC calls and the lab can gate on a mark.
+2. Lab over the whole tape: the mark with 10+ SOL from others in the create block, bought at 30, 60 and 120 s if the
+   price is still above the create block's close, sold on a timer and on the first large sale by a create-block
+   wallet; at 0.5-2 SOL with fees. Forward paper only if the held-out half is positive without its three best coins.
+3. A split by the wallets in the create block (the crew's 6 or 10 at 19 SOL against other shapes), so the crew's
+   launches are scored apart from hand-run ones.
+
+## The two bots' rules from 50 factors, and the winners' verdicts (`study`, `qualify`; read 15:00 UTC)
+
+`study <wallet> --days 3` compares what a bot bought with what it passed on at the same moments (129 h of tape).
+
+| | 6Z91 | Fhbh1 |
+|---|---|---|
+| buys scored | 2,794 | 3,626 |
+| buys in the same second as another trade | 95 % | 97 % |
+| SOL traded in the coin in the last 5 s (median) | 5.7 | 8.2 |
+| price change in the last 5 s (median) | +18 % | +11 % |
+| largest buy in the last minute (median) | 3.0 SOL | 4.0 SOL |
+| coin's age at the buy (median) | 1 s (half in the first second) | 14 s |
+| SOL in the curve at the buy (median) | 27 % of the way | 32 % |
+| holds for (median) | 3 s | 1 s |
+| sells when | no trade in the last second (45 % of sells), or 2 s held and 1 % off the peak | no trade in the last second (50 %) |
+
+Both follow the same rule and it needs no wallet list: buy in the block where a large buy lands in a coin that is
+moving this second, hold one to three seconds, sell at the first pause in the buying. The tree that separates their
+buys from their passes is right 92 % of the time on "a trade this second, and the price up over the last 5 s"
+(6Z91) and "a trade this second, the coin up over 5 minutes and under 8 minutes old" (Fhbh1). It is the trade the
+paper test above scores (a paid place behind a 1-3 SOL buy), with any large buyer as the leader. Whether the rule
+pays without their place in the block is the open question: the same buys one block late lose.
+
+`qualify run --max 60 --early` on the winners study's wallets: 60 scored at the live copy landing, **0 qualified**, 33
+stay candidates, 27 retired. No mid or late swing trader from that list is worth copying at our landing.
+
 ## What this does not say yet
 
 - These are price changes for a copy too small to move the price. A 2 SOL buy in a coin holding 15 SOL pushes the price
