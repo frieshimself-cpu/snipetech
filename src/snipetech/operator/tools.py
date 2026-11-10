@@ -283,7 +283,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """Start a research job in the background; returns the job id.
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, fomo-wallets, winners, leaders-of,
-        copy-context and playbook are allowed; one lab at a time. ["playbook", "<wallet>", "--json"] reads a bot's
+        copy-context and playbook are allowed; one lab at a time on a machine under 24 GB, two on a bigger one (the refusal
+        names the limit). ["playbook", "<wallet>", "--json"] reads a bot's
         rules off the tape: what each first buy came right after, who it follows and how often, its filters, sizes,
         bids and exits (6Z91). ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's

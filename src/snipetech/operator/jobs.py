@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+from ..analysis.lab_lock import lab_slots
 from ..ops import Ops, OpsError, _pid_alive
 from .standin import loop_stage
 
@@ -112,8 +113,10 @@ class OperatorJobs:
                 f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"
             )
         running = self.running()
-        if argv[0] == "lab" and any(m.get("argv", [""])[0] == "lab" for m in running):
-            raise PermissionError("a lab is already running; one lab at a time")
+        labs, slots = sum(1 for m in running if m.get("argv", [""])[0] == "lab"), lab_slots()
+        if argv[0] == "lab" and labs >= slots:
+            raise PermissionError(f"{labs} lab{'s are' if labs > 1 else ' is'} already running; this machine runs "
+                                  f"{slots} at a time")  # fmt: skip
         research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
         if len(research) >= self.max_jobs:
             raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")

@@ -145,7 +145,8 @@ launches instead, research only (no sniper of ours buys LaunchLab, so it never g
 data.venue says which launchpad it was on (a rule's record counts only its own). The lab
 scores every hypothesis where it trades live, so it needs no --latency or --position: launch, hunt, whale and burst
 triggers run live through OKTech hunt and are always scored where a hunt buy lands, kol and momentum at copy_landing
-(where our copies land, as measured). One lab at a time: while a lab runs, read the last lab's result instead of
+(where our copies land, as measured). The machine runs a set number of labs at once (two on the 32 GB server, one on a smaller
+one; start_job says when it is full): while it is full, read the last lab's result instead of
 starting one. The next turn reads the result (read_job_log): copy_landing, each ranked trigger with its exit, landing,
 live_landing, moments, per_hour and test numbers, and under triggers every hypothesis with its moments and whether it
 was ranked. A hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes

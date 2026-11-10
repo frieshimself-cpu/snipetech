@@ -38,7 +38,8 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
    inside it is a fee auction. At a 0.003 SOL bid: 0.3 trades behind at +1 % behind a quiet leader, 2–4 trades behind
    at +18–43 % behind a crowded one (the "+6 regime"). Launch snipes land a slot after the create. A paper result
    names its landing and the bid that buys it; one at a better landing than its bid buys is not evidence.
-3. **One `lab` job at a time** on the server; it is the heavy one.
+3. **At most two `lab` jobs at a time** on the 32 GB server (one on a machine under 24 GB); the lab lock
+   (`analysis/lab_lock.py`) enforces it, and `qualify` takes a slot too.
 4. **Do not touch `/home/user/velo`** or any other repository the owner has not pointed you at.
 5. Commits end with the attribution trailers the session is given; no model names in repo artifacts.
 6. Tests first (the Superpowers workflow is enabled on the owner's account): a failing test, then the code.
