@@ -64,7 +64,8 @@ def test_events_are_also_grouped_by_the_coins_volume_age_hour_size_and_group():
     try:
         out = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5)
         assert set(out["by"]) == {"known_wallets_in", "volume_before_sol", "age", "hour_utc", "leader_buy_sol",
-                                  "same_slot_followers_sol", "group"}  # fmt: skip
+                                  "same_slot_followers_sol", "group", "curve_sol", "buyers_before",
+                                  "recent_volume_sol"}  # fmt: skip
         vol = {r["bucket"]: r["n"] for r in out["by"]["volume_before_sol"]}
         assert vol == {"<5": 6}  # 0.5 SOL before kol1, 4.5 before kol2 (sells count as volume)
         assert {r["bucket"]: r["n"] for r in out["by"]["age"]} == {"<30 s": 6}
@@ -134,5 +135,26 @@ def test_a_copy_right_behind_the_leader_in_its_own_block_enters_before_the_follo
         first = lambda out: next(r for r in out["by"]["known_wallets_in"] if r["bucket"] == "1")
         assert first(behind)["ret_3"] > first(late)["ret_3"]  # the fast bot's 3 SOL and the crowd came after our entry
         assert first(behind)["ret_3"] > 0 > first(late)["ret_3"]
+    finally:
+        st.close()
+
+
+def test_any_wallets_buy_can_be_the_event_and_the_ones_a_bot_followed_are_marked():
+    """10 Nov, the three bots' playbooks: none follows a wallet list (6Z91 sat right behind 446 different wallets); each
+    jumps behind a 1-2 SOL buy by anyone, in its own block. Scored over every such buy, with the share a named bot
+    followed in the block, the splits show which buys they take and which they pass."""
+    st = _store(fast=3.0)
+    try:
+        out = copy_context(st, NOW, hours=2, horizons=(3, 12), min_sol=0.5, any_buyer=True,
+                           taken_by=(addr("fastbot"),))  # fmt: skip
+        assert out["events"] == 15 and out["all"]["taken"] == 0.2  # 5 buys a coin, the bot behind one of them
+        size = {r["bucket"]: r for r in out["by"]["leader_buy_sol"]}
+        assert size["1-3"]["n"] == 12 and size["1-3"]["taken"] == 0.25 and size["10+"]["taken"] == 0.0
+        group = {r["bucket"]: r for r in out["by"]["group"]}
+        assert group["kol"]["taken"] == 1.0 and group["wallet"]["taken"] == 0.0 and group["none"]["n"] == 9
+        assert {"curve_sol", "buyers_before", "recent_volume_sol"} <= set(out["by"])
+        curve = {r["bucket"]: r["n"] for r in out["by"]["curve_sol"]}
+        assert curve["<5"] == 6 and sum(curve.values()) == 15  # 0.5 before kol1, 4.5 before the crowd's buy
+        assert all(r["bucket"] != "bot" for r in out["by"]["group"])  # the bot's own buys are not events
     finally:
         st.close()
