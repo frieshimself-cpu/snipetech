@@ -391,7 +391,33 @@ bundle wallets go, if blockx go, I go": Hunt buys a launch once named bots (by w
 account) have bought it inside a window. Our crowd hunts counted any wallets and lost; which wallets is untested:
 idea I59 (the top first-slot snipers by profit as the group, known 2/3/5, coins under 10 s old, +1 landing).
 
+### Organised launches with a website (owner, 18:15: "maybe sniping them when it is linked to a certain type of thing, for example tech projects, has a website")
+
+`launch-tools --mark alt:Hyif6e... --block-sol-min 5` (pump.fun's standard path, others put 5+ SOL in the create
+block; 279 launches in 19.5 h), split by what the coin's metadata links to. A buy one block later, before fees:
+
+| | n | reached 30 SOL | +5 s | +60 s | median +60 s | up after fees at 60 s |
+|---|---|---|---|---|---|---|
+| has a website | 138 | 51 % | +2.2 % | **+14.3 %** | +1.9 % | 50 % |
+| no website | 132 | 46 % | +2.1 % | **−6.8 %** | −18.9 % | 37 % |
+| X link is a tweet | 201 | 50 % | +3.4 % | +3.5 % | −3.3 % | 46 % |
+| X link is a profile | 56 | 52 % | −0.8 % | +10.6 % | 0 % | 41 % |
+| no X link | 12 | 8 % | −4.3 % | −16.8 % | −25.4 % | 25 % |
+| has a Telegram | 7 | 71 % | −4.1 % | +16.6 % | +1.0 % | 43 % |
+
+The website splits the organised launches by 21 points at one minute. It is one day, read after the fact, one of
+three splits looked at, before 2.5 % of fees and before the price our own buy moves; the mean is carried by the
+winners (median +1.9 %). It is the first split of launch snipes on this tape with a clearly positive mean at a
+landing we have. Running: the same scan over the whole tape (`--hours 140 --max 250000`, job started 18:25) to see
+whether it holds on the other five days. Then the lab with size and fees, then forward paper. OKTech can express it
+without us: its metadata filter takes "website present", and Hunt's thresholds take the SOL and buyers in the first
+seconds.
+
 ### Next for Proxima
+
+FIRST (18:25): read the whole-tape scan when it ends (the newest finished `launch-tools --hours 140` job): the website
+split by day; if it holds, a lab test with size and fees (launch trigger with others' create-block SOL >= 5-10 and a
+website, 0.5-2 SOL, exits 30 s to 5 min and a stop), then forward paper; tell the owner the result either way.
 
 0. Count the funding tell: for every launch with the table, the creator's first transaction (two RPC calls a
    launch); mark `fund:cu1450` when it is a transfer with a compute limit of 1450 and nothing else. Launches a day
