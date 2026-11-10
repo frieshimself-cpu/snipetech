@@ -131,7 +131,7 @@ def test_every_turn_asks_for_readable_reasoning_and_records_the_model_that_answe
 
 def test_turn_stops_at_turn_usd(env):
     env["cfg"].operator.turn_usd = 0.5
-    big = {"input_tokens": 1_000_000, "output_tokens": 0}  # 3 $ at Sonnet rates
+    big = {"input_tokens": 1_000_000, "output_tokens": 0}  # 2 $ at the operator's rates
     handler, requests = _scripted(
         ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "a"}}], "tool_use", big),
         ([{"type": "tool_use", "id": "t2", "name": "write_note", "input": {"text": "b"}}], "tool_use", big),
@@ -156,7 +156,7 @@ def test_the_owners_budget_sets_the_turns_dollar_cap(env):
     from snipetech.operator.budget_switch import set_budget
 
     set_budget(env["paths"], env["cfg"], {"turn_usd": 0.5}, "telegram", NOW)
-    mid = {"input_tokens": 300_000, "output_tokens": 0}  # 0.9 $ at the operator's 3 $ per million input tokens
+    mid = {"input_tokens": 450_000, "output_tokens": 0}  # 0.9 $ at the operator's 2 $ per million input tokens
     tool = lambda i: (
         [{"type": "tool_use", "id": f"t{i}", "name": "write_note", "input": {"text": str(i)}}],
         "tool_use",

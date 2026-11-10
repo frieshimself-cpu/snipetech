@@ -166,7 +166,7 @@ def test_turn_returns_patch_and_reason(tmp_path):
     assert out["patch"] == {"book.explore_share": 0.25} and out["reason"] == "the paid arm needs more fills"
     assert out["stopped"] == "end_turn" and out["usd"] > 0 and ledger.spent_today(NOW) > 0
     lines = [json.loads(ln) for ln in paths.spend.read_text().splitlines() if ln.strip()]
-    assert {ln["mode"] for ln in lines} == {"strategist"}  # its own line in the ledger, priced at the analyst rates
+    assert {ln["mode"] for ln in lines} == {"strategist"}  # its own line in the ledger, priced at its own rates
     expected = 3 * (10 * cfg.operator.prices["strategist_in"] + 5 * cfg.operator.prices["strategist_out"]) / 1e6
     assert (
         abs(ledger.spent_today(NOW) - expected) < 1e-9 and abs(out["usd"] - expected) < 1e-4

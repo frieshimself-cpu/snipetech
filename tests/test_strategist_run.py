@@ -299,7 +299,7 @@ def test_the_strategist_shares_the_owners_daily_budget(tmp_path):
     paths = OperatorPaths(tmp_path / "data").ensure()
     st = Store(tmp_path / "data" / "snipetech.db")
     _trips(st, 20, NOW - 86400)
-    Ledger(paths.spend, cfg.operator.prices).record("operator", {"input_tokens": 10_000_000}, NOW - 60)  # 30 $
+    Ledger(paths.spend, cfg.operator.prices).record("operator", {"input_tokens": 15_000_000}, NOW - 60)  # 30 $
     caps = []
 
     async def turn(cfg_, evidence, ledger, notes, client=None, now=None, **kw):

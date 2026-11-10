@@ -43,9 +43,9 @@ def test_anthropic_credit_alert_at_20_percent(tmp_store, ledger):
     cfg.resources.anthropic_credit_usd = 100
     for _ in range(17):
         ledger.record(
-            "operator", {"input_tokens": 1_000_000, "output_tokens": 100_000}, now=NOW - 60
+            "operator", {"input_tokens": 1_500_000, "output_tokens": 150_000}, now=NOW - 60
         )  # 4.5 $ each → 76.5 $
-    ledger.record("operator", {"input_tokens": 3_000_000}, now=NOW - 30)  # +9 → 85.5 $ spent, 14.5 % left
+    ledger.record("operator", {"input_tokens": 4_500_000}, now=NOW - 30)  # +9 → 85.5 $ spent, 14.5 % left
     rs = {
         x.name: x
         for x in check_resources(
