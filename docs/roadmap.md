@@ -6,6 +6,30 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 10 Nov: copying loses one block late; the analyst runs on a stronger model (11:30 UTC)
+
+- **The honest state: nothing is profitable at our landing yet, and we now know why copying is not.** 6Z91 (the
+  owner's friend's bot, +459 SOL in 72 h on our tape) buys in the same block as the wallet it copies and sells about
+  5 seconds later. On 339 such coins the price is +1.3 % two slots after the leader's block, −1.7 % at 15 slots,
+  −6.9 % at one minute and −18.5 % at ten minutes. Our copies land 2-4 trades behind, after that block, so they buy
+  what the fast bots sell. Sizes, fees and exits do not fix it. The opening paragraph above ("enter one step behind")
+  is refuted for copies by this. Record: [research/2026-11-10-same-block.md](research/2026-11-10-same-block.md).
+- **What is left, in order.** (1) Same-block landing: an execution question for OKTech and for whoever runs 6Z91
+  (owner). (2) Leaders that no fast bot follows inside their block (idea I50, server agents). (3) The winners study's
+  mid and late swing traders (I46): 40 picked wallets wait for their copy verdicts; `qualify` waits while a lab runs,
+  so it is started right after the next deploy.
+- **Refuted since 8 Nov:** KOL first-buy copies at every size on forward paper (20+ trades), single KOLs, rug crews'
+  coins at launch, KOL buys on coins under 2 minutes old, three momentum versions, whale buys of 2-10 SOL.
+- **The analyst runs on `claude-fable-5-2`** (owner, 10 Nov: "ok do it"; 27b0e13). The operator stays on
+  `claude-sonnet-5-5`, the strategist on `claude-opus-5-5` (`[operator] strategist_model`). The spend ledger's prices
+  are corrected (it overstated every line) and each agent is priced at its own model's rates. The server's settings
+  file pinned the old model and prices, so a value there that equals a retired default now follows the new default.
+  At 9 Nov's amount of work the analyst costs about 35 $ a day instead of 19 $; the operator about 2.60 $. Compare a
+  day of its ideas and verdicts with 9 Nov before keeping it.
+- **Built 9-10 Nov:** the live page (`/dash`, waits for the owner's password), the turn record with each agent's
+  reasoning, `winners` and `leaders-of` (how the most profitable wallets trade and who a wallet follows), the lab's
+  crew knob, exitrun's wallet stream (our buys are seen within a second).
+
 ## The night of 8 Nov: what the live trades really cost; the recorder off the database's waits
 
 - **The live database's trades table was damaged at 09:51 UTC 8 Nov and is repaired (11:49).** Twenty minutes after the

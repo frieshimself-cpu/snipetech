@@ -39,6 +39,7 @@ counted (docs/architecture.md, "The lab and the paper test").
 - [Round 8](2026-11-08-round-8-fees.md), 8 Nov 20:57, by the server analyst on the owner's API credits: paying more to land ahead of other copy traders does not pay at 0.2 SOL (1st instead of 3rd behind the leader is worth 0.004-0.007 SOL on early buys; the bots ahead bid 0.01-0.3 SOL).
 - [Round 9](2026-11-08-round-9-early-leaders.md), 8 Nov 23:06: the new `early-leaders` job ranks wallets by their early buys; it finds AG89 first, but its 7 new wallets all fail qualify at the live landing (bundle members, mostly off pump.fun, or losing with real exits).
 - [Night grid](2026-11-09-night-grid.md), 9 Nov 02:46-04:20: every strategy at 2-40 SOL with paid fees; copying a labelled KOL's first buy pays about +3 % a trade at 2-20 SOL (n 115-136, lower bounds +0.007 to +0.144), flat at 0.2 SOL, nothing at 40 SOL; frozen into forward paper; live test proposal at 2 SOL for the owner.
+- [The same-block finding](2026-11-10-same-block.md), 10 Nov 11:30: 6Z91 buys in the same block as the wallet it copies and sells about 5 s later (+145 SOL on 349 such coins in 72 h); after that block the price falls on average (−1.7 % at 15 slots, −18.5 % at 10 min), so copies that land a block late buy what the fast bots sell; idea I50.
 
 **Lab numbers from round 1 and from later labs are not comparable.** Round 1's labs charged the lab's flat 0.0035 SOL
 a transaction (0.007 a round trip, against about 0.009 live) and scored launch-type exits as if OKTech watched a coin
