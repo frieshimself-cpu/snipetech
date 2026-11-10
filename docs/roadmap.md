@@ -6,6 +6,28 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 10 Nov, 20:10 UTC: a month of bought history is on the server; two checks run on it
+
+- **The honest state is unchanged: nothing is profitable live.** What changed is the evidence we can ask: the owner
+  bought pumpfundata.com's history (3,000 credits, about 720 used). Every pump.fun trade from 5 Oct to 3 Nov (712 hourly
+  files, 16 GB) is on the server; one hour checked against our own tape holds 99.9 % of our SOL trades.
+- **The website rule does not clearly hold so far.** One day of our tape said "others put 15+ SOL in the create block
+  and the coin has a website: +22 % a minute later". The first five bought days (5-9 Oct, 3,781 such launches, read
+  before launches whose own bundle fills the curve were set apart): +3.5 % with a website, +2.3 % without, median 0,
+  the website side ahead on 2 days of 5. `history scan` over all 30 days runs since 20:08 and decides it.
+- **Copying, asked of a month** (`history follow`, running since 20:08): every wallet's first buy of 0.5 SOL or more
+  in a coin is scored as a copy right behind it and one trade behind, out at 5 s, a minute or the wallet's first sell.
+  Wallets are picked on the weeks before the last and the same wallets are judged on the last week. Six days of tape
+  could not tell a good wallet from a lucky one; this can. Numbers are after 2.5 % of fees and before the bid and our
+  own price impact, so a pick is a wallet for the lab, not a result.
+- **X accounts** (owner: "like X is gold verified"): `xaccounts.py` reads the account a coin links to (badge, followers,
+  age) from twitterapi.io and `history table --x-max N` adds those rows. It waits for a key on the server
+  (`TWITTERAPI_KEY`; pay as you go, no subscription).
+- **Two mistakes of mine today, fixed:** a scan of 16 days died on one coin's malformed metadata address after 17
+  minutes and my retry loop started it again (34d67e2: such a coin is kept as unreadable; a scan is saved before links
+  are read; long jobs are started once and polled). `ruff format` on the whole tree rewrote 38 files; reverted before
+  the commit.
+
 ## 10 Nov, 17:00 UTC: Proxima can be detected; a check of the whole system
 
 - **The honest state: nothing is profitable live** (−0.29 SOL over 24 round trips in three days; three copy snipers
