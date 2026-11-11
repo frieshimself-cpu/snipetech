@@ -132,3 +132,39 @@ def test_the_agents_may_start_it_and_the_cli_prints_json(tmp_path, capsys):
     assert out["coins"] == 3 and out["triggers"][0]["wallet"] == KOL
     assert cli.main(["--db", str(db), "playbook", BOT, "--hours", "2"]) == 0
     assert "same block as a buy" in capsys.readouterr().out
+
+
+def test_a_buy_right_after_the_migration_is_classed_as_one():
+    """11 Nov: four bots buy 0.2-0.5 SOL in the first two blocks after one fast migration in ten. Other bots buy in
+    those same blocks, so the playbook called every such buy "same block as a buy" and named whoever stood before it
+    as the wallet it follows: a migration sniper read as a copy bot. A first buy on the pool within MIG_SLOTS blocks
+    of the coin's migration is "after the migration", and nobody is its leader."""
+    from snipetech.analysis.playbook import KINDS, MIG_SLOTS
+
+    st = Store(":memory:")
+    try:
+        for i in range(3):
+            m = Market(st, addr(f"pb-mig-{i}"), addr(f"pb-mdev-{i}"), NOW - 3000 + i * 100, 81_000_000 + i * 1000)
+            m.buy(m.deployer, 1.0, 0, sig=m.create_sig)
+            m.complete(addr(f"pb-bundle-{i}"), 0)  # the launcher's set buys the curve out in the create block
+            m.migrate(1)
+            m.buy(addr("pb-other-bot"), 0.3, 2)  # another sniper, a block after the migration
+            m.buy(BOT, 0.3, 2)  # ours, in the same block
+            m.sell(BOT, 1.0, 12)
+            m.commit()
+        late = Market(st, addr("pb-mig-late"), addr("pb-mdev-late"), NOW - 2000, 81_900_000)
+        late.buy(late.deployer, 1.0, 0, sig=late.create_sig)
+        late.complete(addr("pb-bundle-late"), 0)
+        late.migrate(1)
+        late.buy(addr("pb-other-bot"), 0.3, 1 + MIG_SLOTS + 40)
+        late.buy(BOT, 0.3, 1 + MIG_SLOTS + 40)  # long after the migration, right behind someone: a copy as before
+        late.sell(BOT, 1.0, 1 + MIG_SLOTS + 60)
+        late.commit()
+        out = playbook(st, BOT, NOW, hours=2)
+    finally:
+        st.close()
+    assert "after the migration" in KINDS
+    by = {e["kind"]: e for e in out["entries"]}
+    assert by["after the migration"]["n"] == 3 and by["same block as a buy"]["n"] == 1
+    assert [t["wallet"] for t in out["triggers"]] == [addr("pb-other-bot")] and out["triggers"][0]["coins"] == 1
+    assert out["filters"]["after the migration"]["slots_after_migration"]["p50"] == 1

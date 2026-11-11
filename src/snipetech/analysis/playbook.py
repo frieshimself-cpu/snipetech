@@ -1,8 +1,9 @@
 """A bot's rules, read off the tape (owner, 10 Nov: "You can literally see on chain exactly what he's doing"; idea
 I28, the study of 6Z91). For one wallet, every coin it bought in the window:
 
-- **what its first buy came right after**: the coin's create (same block), another wallet's buy in the same block, a
-  buy one or two blocks earlier, or nothing recent ("later"); with the result, size, bid and exit of each kind;
+- **what its first buy came right after**: the coin's create (same block), its migration (a buy on the pool within
+  MIG_SLOTS blocks of it: a migration sniper, whoever else bought in that block), another wallet's buy in the same
+  block, a buy one or two blocks earlier, or nothing recent ("later"); with the result, size, bid and exit of each;
 - **who it follows**: the buyer right before it, counted over its coins, with how many coins that buyer bought in the
   window, so a wallet on its copy list (most of its coins followed) stands apart from one that happened to be there;
 - **its filters**: the size of the buy it followed, the coin's age, the SOL in the curve and the buyers before it;
@@ -18,9 +19,16 @@ from __future__ import annotations
 from collections import Counter
 from typing import Any
 
+from ..models import AMM
+
 LAMPORTS = 1_000_000_000
 VIRTUAL_SOL = 30.0  # a pump.fun curve's virtual SOL reserve before any buy
-KINDS = ("create block", "same block as a buy", "1-2 blocks after a buy", "later", "first buyer")
+# A first buy on the pool this many blocks after the coin's migration, or sooner, came after the migration: the lab
+# lands a migration sniper's buy within 10 blocks of it (lab.MIG_LAND_SLOTS). 11 Nov: other snipers buy in those same
+# blocks, so such a buy was classed "same block as a buy" and the wallet before it named as the one it follows.
+MIG_SLOTS = 10
+KINDS = ("create block", "after the migration", "same block as a buy", "1-2 blocks after a buy", "later",
+         "first buyer")  # fmt: skip
 COPIES = ("same block as a buy", "1-2 blocks after a buy")  # the kinds where the buyer before it is who it follows
 WITHIN = (5, 15, 40, 150, 750)
 
@@ -39,15 +47,19 @@ def _price(t) -> float | None:
     return q / b if b > 0 and q > 0 else None
 
 
-def _coin(trades: list, launch, wallet: str, start: int) -> dict[str, Any] | None:
+def _coin(trades: list, launch, wallet: str, start: int, mig=None) -> dict[str, Any] | None:
+    """`mig`: the coin's migration to PumpSwap as the tape recorded it, if it has one."""
     i = next((k for k, t in enumerate(trades) if t.user == wallet and t.is_buy and t.ts >= start), None)
     if i is None:
         return None
     mine = trades[i]
     j = next((k for k in range(i - 1, -1, -1) if trades[k].is_buy and trades[k].user != wallet), None)
     trig = trades[j] if j is not None else None
+    after_mig = int(mine.slot) - int(mig.slot) if mig is not None and mine.venue == AMM else None
     if launch is not None and int(mine.slot) == int(launch.slot):
         kind = "create block"
+    elif after_mig is not None and 0 <= after_mig <= MIG_SLOTS:
+        kind = "after the migration"
     elif trig is None:
         kind = "first buyer"
     elif int(trig.slot) == int(mine.slot):
@@ -65,6 +77,7 @@ def _coin(trades: list, launch, wallet: str, start: int) -> dict[str, Any] | Non
         "trigger": trig.user if trig is not None else None,
         "trigger_sol": (int(trig.quote) + int(trig.fee or 0)) / LAMPORTS if trig is not None else None,
         "trades_behind": i - j if j is not None else None,
+        "slots_after_migration": after_mig if kind == "after the migration" else None,
     }  # fmt: skip
     p_mine, p_trig = _price(mine), _price(trig) if trig is not None else None
     row["gap_pct"] = (p_mine / p_trig - 1.0) * 100 if p_mine and p_trig else None
@@ -129,7 +142,9 @@ def playbook(store, wallet: str, now: float, *, hours: float = 72, top: int = 60
                                     (wallet, start, int(now)))]  # fmt: skip
     rows: list[dict[str, Any]] = []
     for mint in mints:
-        row = _coin(store.trades_for_mint(mint, start - 3600) or [], store.launch(mint), wallet, start)
+        row = _coin(
+            store.trades_for_mint(mint, start - 3600) or [], store.launch(mint), wallet, start, store.migration(mint)
+        )
         if row is not None:
             rows.append(row)
     sigs = [r["sig"] for r in rows]
@@ -173,7 +188,8 @@ def playbook(store, wallet: str, now: float, *, hours: float = 72, top: int = 60
                         "gap_pct": _q((r["gap_pct"] for r in by_kind[k]), 1),
                         "age_slots": _q((r["age_slots"] for r in by_kind[k]), 0),
                         "curve_sol": _q(r["curve_sol"] for r in by_kind[k]),
-                        "buyers_before": _q((r["buyers_before"] for r in by_kind[k]), 0)}
+                        "buyers_before": _q((r["buyers_before"] for r in by_kind[k]), 0),
+                        "slots_after_migration": _q((r["slots_after_migration"] for r in by_kind[k]), 0)}
                     for k in KINDS if by_kind[k]},
         "sizing": {"buy_sol": _q(r["buy_sol"] for r in rows),
                    "common_sol": [[v, n] for v, n in Counter(round(r["buy_sol"], 2) for r in rows).most_common(8)],
