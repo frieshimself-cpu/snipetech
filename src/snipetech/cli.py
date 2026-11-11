@@ -1754,6 +1754,32 @@ BATCH_NICE = 10
 SNAPSHOT_NICE = 15  # deploy/systemd/snipetech-snapshot.service: Nice=15
 
 
+def _copy_hurdle(cfg: Config, store=None) -> tuple[float, dict]:
+    """(what a copy of the book's size gives up between its buy and its sale, in percent of the buy; what that is made
+    of): pump.fun's fee both ways and two transactions at their measured cost (`qualify.run.lab_tx_cost_info`).
+
+    11 Nov: copy-context, early-leaders and the history tables each took a hurdle of their own off a simulated copy's
+    return (2.5 %: pump.fun's fees alone; or 0.009 SOL: the transactions alone). Two transactions at the measured
+    0.0042 SOL are 4.2 % of the book's 0.2 SOL copy; with pump.fun's 2.5 % a copy must make 6.7 % to break even.
+    `store`: the live database (the measured cost is kept there); opened for the read when not given."""
+    from .analysis.context import round_trip_pct
+    from .qualify.run import lab_tx_cost_info
+    from .store import Store
+
+    own = store is None
+    store = Store(cfg.storage.db_path) if own else store
+    try:
+        cost = lab_tx_cost_info(store, cfg)
+    finally:
+        if own:
+            store.close()
+    buy = float(cfg.book.fill_min_sol)
+    pump_pct = 2.0 * float(cfg.costs.default_pump_fee_bps) / 100.0
+    pct = round_trip_pct(cfg.costs.default_pump_fee_bps, cost["per_tx_sol"], buy)
+    return pct, {"buy_sol": buy, "per_tx_sol": cost["per_tx_sol"], "per_tx_source": cost["per_tx_source"],
+                 "pump_fees_pct": pump_pct, "tx_pct": pct - pump_pct}  # fmt: skip
+
+
 def _history(args, cfg: Config) -> int:
     """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/."""
     import calendar
@@ -1792,11 +1818,13 @@ def _history(args, cfg: Config) -> int:
             follow_files(paths, agg.add, min_sol=args.min_sol, stats=stats)
             agg.save(kept)
             agg, span = Follow.load(kept), {"from": paths[0].name, "to": paths[-1].name, "scan": stats}
+        hurdle, parts = _copy_hurdle(cfg)  # every return below is after it: the whole round trip of a copy of ours
         out = follow_table(agg, test_weeks=args.test_weeks, min_pick=args.min_pick, top=args.top,
-                           max_create_share=args.max_create_share)  # fmt: skip
+                           max_create_share=args.max_create_share, fee_pct=hurdle)  # fmt: skip
         if args.walk:
-            out["walk_forward"] = walk_forward(agg, min_pick=args.min_pick, max_create_share=args.max_create_share)
-        print(json.dumps(span | {"min_sol": args.min_sol} | out, indent=1, default=str))
+            out["walk_forward"] = walk_forward(agg, min_pick=args.min_pick, max_create_share=args.max_create_share,
+                                               fee_pct=hurdle)  # fmt: skip
+        print(json.dumps(span | {"min_sol": args.min_sol, "costs": parts} | out, indent=1, default=str))
         return 0
 
     if args.action in ("scan", "table"):  # no call to the vendor: the files on disk, and the coins' metadata links
@@ -1839,7 +1867,9 @@ def _history(args, cfg: Config) -> int:
 
                 x_run = asyncio.run(look_up())
             accounts = store.x_accounts(handles)
+            hurdle, parts = _copy_hurdle(cfg, store)  # a "win" is a return above the whole round trip of a copy
             out = history_table(records, store.token_meta, min_block_sol=args.min_block_sol, stats=stats,
+                                fee_pct=hurdle,
                                 x_of=accounts.get if accounts else None, min_cell=args.min_cell, exits=args.exits,
                                 team_min_prior=args.team_min_prior, show_from=args.show_from,
                                 team_clip=args.team_clip, team_shrink=args.team_shrink,
@@ -1850,6 +1880,7 @@ def _history(args, cfg: Config) -> int:
         out.update(
             span | {"metadata_fetched": fetched, "x_handles": len(handles), "x_kept": len(accounts), "x_run": x_run}
         )
+        out["costs"] = parts
         print(json.dumps(out, indent=1, default=str))
         return 0
 
@@ -2303,20 +2334,25 @@ def _main(args) -> int:
 
         svc = Service(cfg)
         try:
+            # the hurdle a return must clear: a copy of the book's size, at what a transaction costs live
+            hurdle, parts = _copy_hurdle(cfg, svc.store)
             out = copy_context(
                 svc.tape_store, time.time(), hours=args.hours, entry_slots=args.entry_slots, min_sol=args.min_sol,
-                behind_leader=args.behind_leader, by_entity=args.by_entity,
+                behind_leader=args.behind_leader, by_entity=args.by_entity, fee_pct=hurdle,
                 any_buyer=args.any_buyer, taken_by=tuple(w.strip() for w in args.taken_by.split(",") if w.strip()),
                 horizons=tuple(int(h) for h in args.horizons.split(",") if h.strip()),
                 kinds=tuple(k.strip() for k in args.groups.split(",") if k.strip()),
             )  # fmt: skip
         finally:
             svc.store.close()
+        out["costs"] = parts
         if args.json:
             print(json.dumps(out, indent=1))
             return 0
         print(f"{out['events']} buys of known wallets in {out['coins']} coins, entered {out['entry']}; "
-              f"returns in % before {out['fee_pct']} % of fees")  # fmt: skip
+              f"returns in % before {hurdle:.1f} % of costs on a {parts['buy_sol']:g} SOL copy "
+              f"({parts['pump_fees_pct']:g} % pump.fun fees, {parts['tx_pct']:.1f} % for two transactions at "
+              f"{parts['per_tx_sol']:g} SOL)")  # fmt: skip
         for name, rows in out["by"].items():
             print(f"\n{name}")
             for r in rows:
@@ -2354,8 +2390,13 @@ def _main(args) -> int:
 
         svc = Service(cfg)
         try:
+            # a copy of the book's size: pump.fun's fee both ways and two transactions at their measured cost (until
+            # 11 Nov a flat 0.009 SOL: the transactions, nothing for pump.fun's 0.005)
+            hurdle, tx = _copy_hurdle(cfg, svc.store)
+            buy = tx["buy_sol"]
+            cost = buy * hurdle / 100.0
             rows = early_leaders(svc.tape_store, time.time(), hours=args.hours, min_n=args.min_n,
-                                 max_slots=args.max_slots, min_sol=args.min_sol)  # fmt: skip
+                                 max_slots=args.max_slots, min_sol=args.min_sol, buy_sol=buy, cost=cost)  # fmt: skip
             labelled = []
             for r in [r for r in rows if r["lower_sol"] > 0][: max(0, args.label)]:
                 svc.store.set_label(
@@ -2365,7 +2406,8 @@ def _main(args) -> int:
                 labelled.append(r["wallet"])
         finally:
             svc.store.close()
-        out = {"hours": args.hours, "min_n": args.min_n, "wallets": rows, "labelled": labelled}
+        out = {"hours": args.hours, "min_n": args.min_n, "buy_sol": buy, "cost_sol": cost,
+               "per_tx_source": tx["per_tx_source"], "wallets": rows, "labelled": labelled}  # fmt: skip
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  n {r['n']}  mean {r['mean_sol']:+.4f}  lower {r['lower_sol']:+.4f}  win {r['win_rate']:.0%}"
             for r in rows) or "no wallet has enough early buys")  # fmt: skip

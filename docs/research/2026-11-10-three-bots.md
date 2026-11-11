@@ -8,6 +8,11 @@ block, sell on a timer within seconds), and the tape says that trade is worth mo
 already in the coin, the coin has volume and some age, and the buy followed is 1 to 3 SOL.** All of it is before our
 own costs; the paper test at 1-5 SOL with the bid counted is the next step (idea I51).
 
+**Note of 11 Nov on every "2.5 % of fees" and "up after fees" below.** 2.5 % is pump.fun's fee both ways and nothing
+else. A copy also pays two transactions, 0.0042 SOL each as measured: 4.2 % of the book's 0.2 SOL copy, 0.8 % of a
+1 SOL one. So a 0.2 SOL copy breaks even at +6.7 %, and a column headed "up after fees" counts every return above
+2.5 %. The tools now take the whole round trip off for the book's size and say what it is made of (audit row 55).
+
 Tools (new, 10 Nov): `snipetech playbook <wallet>` and `snipetech copy-context`. Tape: 72 h to 10 Nov 12:15 UTC.
 
 ## The bots

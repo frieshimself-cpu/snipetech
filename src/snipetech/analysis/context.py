@@ -145,6 +145,13 @@ def _events_of(launch, trades: list, group_of: dict[str, str], *, entry_slots: i
     return out
 
 
+def round_trip_pct(pump_fee_bps: float, per_tx_sol: float, buy_sol: float) -> float:
+    """What a copy of `buy_sol` gives up between its buy and its sale, in percent of the buy: pump.fun's fee both ways
+    and two transactions. 11 Nov: the report took 2.5 % (pump.fun's fees alone) as the hurdle, and two transactions at
+    the measured 0.0042 SOL are 4.2 % of the book's 0.2 SOL copy on top of it."""
+    return 2.0 * float(pump_fee_bps) / 100.0 + 100.0 * 2.0 * float(per_tx_sol) / float(buy_sol)
+
+
 def _row(bucket: str, events: list[dict[str, Any]], horizons: tuple[int, ...], fee_pct: float,
          taken: bool = False) -> dict[str, Any]:  # fmt: skip
     row: dict[str, Any] = {"bucket": bucket, "n": len(events)}
@@ -164,7 +171,9 @@ def copy_context(store, now: float, *, hours: float = 72, kinds: tuple[str, ...]
                  fee_pct: float = 2.5, behind_leader: bool = False, any_buyer: bool = False,
                  taken_by: tuple[str, ...] = (), by_entity: bool = False) -> dict[str, Any]:  # fmt: skip
     """Known wallets' first buys in coins launched in the last `hours`, entered `entry_slots` after the leader's slot
-    and marked at each horizon, grouped one split at a time. Returns in percent, gross of `fee_pct`.
+    and marked at each horizon, grouped one split at a time. Returns in percent, gross of `fee_pct`: what a round trip
+    costs in percent of the buy (`round_trip_pct`; the command passes the book's size at the measured cost of a
+    transaction; the default here is pump.fun's two fees alone).
     `behind_leader`: enter at the price the leader's own buy left, the next trade of its block (10 Nov: 20 of 24 live
     copies since 7 Nov landed in the leader's block, 0.3 trades behind), not a block late. Our own buy's push on the
     price is not counted either way: read the result as a small copy's.

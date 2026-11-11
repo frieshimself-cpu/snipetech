@@ -215,3 +215,41 @@ def test_events_are_split_by_how_long_after_the_previous_known_wallet_and_by_the
         assert {r["bucket"]: r["n"] for r in team["by"]["known_gap"]} == {"first": 3, "3-25": 3}
     finally:
         st.close()
+
+
+def test_the_hurdle_is_what_a_copy_of_our_size_costs_not_pump_funs_fees_alone(tmp_path, capsys):
+    """11 Nov: the report said "returns in % before 2.5 % of fees" and counted a return above 2.5 % as a win. 2.5 % is
+    pump.fun's fee both ways. A copy also pays two transactions, 0.0042 SOL each as measured: on the book's 0.2 SOL copy
+    that is 4.2 % more, so a bucket at +5 % read as a winner and loses. The command works the hurdle out for the book's
+    size at the measured cost of a transaction and says what it is made of."""
+    import json
+
+    import pytest
+
+    from snipetech import cli
+    from snipetech.analysis.context import round_trip_pct
+    from snipetech.config import Config
+    from snipetech.qualify.run import LIVE_TX_SOL
+
+    assert round_trip_pct(125, 0.00421, 0.2) == pytest.approx(6.71)
+    assert round_trip_pct(125, 0.00421, 1.0) == pytest.approx(3.342)
+    db = tmp_path / "cx.db"
+    st = Store(db)
+    st.set_label(addr("kol1"), "KOL one", "kol", "file")
+    st.set_label(addr("kol2"), "tracked two", "wallet", "file")
+    for i in range(3):
+        _coin(st, i)
+    st.close()
+    assert cli.main(["--db", str(db), "copy-context", "--hours", "2", "--horizons", "3,12", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    buy = Config().book.fill_min_sol
+    want = round_trip_pct(Config().costs.default_pump_fee_bps, LIVE_TX_SOL, buy)  # nothing measured: the estimate
+    assert out["fee_pct"] == pytest.approx(want) and want > 6
+    assert out["costs"] == {"buy_sol": buy, "per_tx_sol": LIVE_TX_SOL, "per_tx_source": "estimate",
+                            "pump_fees_pct": 2.5, "tx_pct": pytest.approx(want - 2.5)}  # fmt: skip
+    # a win is a return above the whole hurdle
+    row = out["all"]
+    assert row["n"] > 0 and all(0 <= row[f"win_{h}"] <= 1 for h in out["horizons"])
+    assert cli.main(["--db", str(db), "copy-context", "--hours", "2", "--horizons", "3,12"]) == 0
+    said = capsys.readouterr().out
+    assert f"before {want:.1f} % of costs on a {buy:g} SOL copy" in said and "2.5 % pump.fun fees" in said

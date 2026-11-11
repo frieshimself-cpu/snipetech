@@ -5,7 +5,9 @@ from the 3rd trade after them, and their later buys lose. This ranks every walle
 buy of `min_sol` or more in each coin, made 1 to `max_slots` slots after the create (never in the create slot), on coins
 whose create slot did not already buy the curve out (`slot0_cap_sol`: those graduate at once and no copy reaches them).
 Each buy is entered at the `behind`-th trade after it (where a live copy lands) and marked `horizon` seconds after the
-leader's buy; the result is SOL per `buy_sol` trade less `cost` (a round trip). Read the tape copy, never the live file.
+leader's buy; the result is SOL per `buy_sol` trade less `cost`, the whole round trip: pump.fun's fee both ways and two
+transactions (the command works it out for the book's size at the measured cost, `context.round_trip_pct`; the default
+here is two transactions alone). Read the tape copy, never the live file.
 """
 
 from __future__ import annotations

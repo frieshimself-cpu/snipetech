@@ -117,3 +117,49 @@ def test_picking_is_walked_forward_week_by_week_at_rising_bars():
     assert by[(2, 10.0)]["test_ret"] == round((18.0 - 17.5) / 2, 2)  # the week the fader went
     assert by[(3, 10.0)]["picked"] == 1 and by[(3, 10.0)]["test_trades"] == 30  # the fader's mean fell under the bar
     assert by[(3, 0.0)]["wallets_up"] == round(2 / 3, 3)
+
+
+def test_the_command_takes_off_what_a_copy_of_our_size_costs(tmp_path, monkeypatch, capsys):
+    """11 Nov: `history follow` and `history table` took 2.5 % off every return, pump.fun's fee both ways, and called the
+    rest "after fees". A copy also pays two transactions: 4.2 % of the book's 0.2 SOL copy at the measured 0.0042 SOL.
+    Every "return after fees" of the month's tables was that much too kind. The commands take the whole round trip
+    off (`cli._copy_hurdle`: the book's size at the measured cost of a transaction) and say what it is made of."""
+    import json
+
+    import pytest
+
+    from snipetech import cli
+    from snipetech.config import Config
+    from snipetech.qualify.run import LIVE_TX_SOL, LOW_BID_ARM, TX_COST_KEY
+    from snipetech.store import Store
+
+    db = tmp_path / "data" / "snipetech.db"
+    db.parent.mkdir()
+    store = Store(db)
+    try:
+        cfg = Config()
+        pct, parts = cli._copy_hurdle(cfg, store)
+        assert pct == pytest.approx(2.5 + 100 * 2 * LIVE_TX_SOL / cfg.book.fill_min_sol)  # nothing measured: 7.0
+        assert parts == {"buy_sol": cfg.book.fill_min_sol, "per_tx_sol": LIVE_TX_SOL, "per_tx_source": "estimate",
+                         "pump_fees_pct": 2.5, "tx_pct": pytest.approx(pct - 2.5)}  # fmt: skip
+        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.00421, "arm": LOW_BID_ARM, "n": 75, "ts": 1_794_000_000})
+        assert cli._copy_hurdle(cfg, store)[0] == pytest.approx(6.71)
+    finally:
+        store.close()
+
+    t0 = 1_793_000_000
+    agg = Follow(start_ts=t0)
+    for i in range(40):
+        ts = t0 + (i % 4) * 7 * 86400 + i
+        agg.add(_ev("steady", ts, 12.0 + (i % 3)))
+        agg.add(_ev("loser", ts, -8.0))
+    kept = db.parent / "history" / "pumpfundata" / "pump_fun" / "follows" / "follow_2026-10-01_2026-10-28_0.5_slot.json"
+    kept.parent.mkdir(parents=True)
+    agg.save(kept)
+    monkeypatch.setenv("PUMPFUNDATA_API_KEY", "not-used-by-follow")
+    args = ["--db", str(db), "history", "follow", "--from", "2026-10-01", "--to", "2026-10-28", "--min-pick", "20"]
+    assert cli.main(args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["fee_pct"] == pytest.approx(6.71) and out["costs"]["per_tx_source"] == "last measured"
+    steady = next(r for r in out["top"] if r["wallet"] == "steady")
+    assert steady["pick_ret"] == pytest.approx(13.0 - 6.71, abs=0.02)  # 13 % a copy before costs
