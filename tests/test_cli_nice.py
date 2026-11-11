@@ -66,3 +66,26 @@ def test_a_rate_the_owner_set_in_the_environment_is_kept(monkeypatch):
     cfg.rpc.max_rps, cfg.rpc.max_concurrency = 60, 8
     cli._batch_rpc(cfg, "launch-tools")
     assert (cfg.rpc.max_rps, cfg.rpc.max_concurrency) == (60, 8)
+
+
+def test_the_database_copy_runs_at_its_units_priority_whoever_starts_it(monkeypatch, tmp_path, capsys):
+    """Since 11 Nov the operator's round starts the copy as a job (the timer's unit is killed after 20 minutes): a job
+    starts at the ops service's priority, where the unit gave the copy Nice=15. The command brings itself to 15 from
+    wherever it starts, and stays there when the unit already put it there."""
+    from snipetech.store import Store
+
+    db = tmp_path / "snipetech.db"
+    Store(db).close()
+    for start, want in ((0, [15]), (15, [0]), (19, [0])):
+        level, moves = [start], []
+
+        def nice(n, level=level, moves=moves):
+            if n:
+                moves.append(n)
+            level[0] = min(19, level[0] + n)
+            return level[0]
+
+        monkeypatch.setattr(cli.os, "nice", nice)
+        assert cli.main(["--db", str(db), "snapshot-db", "--force"]) == 0
+        capsys.readouterr()
+        assert (moves or [0]) == want

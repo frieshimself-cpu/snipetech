@@ -253,7 +253,7 @@ def _caller() -> str:
 # never-evaluated candidates from the owner or the targeted screens (fomo-wallets, early-leaders) go ahead of the
 # discovery sources' backlog (9 Nov: a 900-wallet qualify run never reached the 84 FOMO wallets queued that night)
 _PRIORITY_SOURCES = (
-    "CASE WHEN c.sources LIKE '%\"owner\"%' OR c.sources LIKE '%\"fomo\"%' "
+    "CASE WHEN c.sources LIKE '%\"owner\"%' OR c.sources LIKE '%\"fomo\"%' OR c.sources LIKE '%\"picked\"%' "
     "OR c.sources LIKE '%\"early-leaders\"%' OR c.sources LIKE '%\"winners\"%' THEN 0 ELSE 1 END"
 )
 
@@ -1020,6 +1020,11 @@ class Store:
             (address, label, kind, source, int(time.time())),
         )
 
+    def label_kind(self, address: str) -> str | None:
+        """The kind of the one label an address has, or None."""
+        row = self._q("SELECT kind FROM labels WHERE address=?", (address,))
+        return row[0][0] if row else None
+
     def labels(self, kind: str | None = None) -> dict[str, str]:
         if kind:
             return {a: l for a, l in self._q("SELECT address, label FROM labels WHERE kind=?", (kind,))}
@@ -1211,9 +1216,10 @@ class Store:
             pass
         return counts
 
-    def prune_steps(self, before_ts: int) -> Iterator[dict[str, int]]:
+    def prune_steps(self, before_ts: int, walks: bool = True) -> Iterator[dict[str, int]]:
         """`prune` one short step at a time, yielding the counts so far after each: the tape recorder runs its
-        hourly prune between its own writes. In one transaction it held the write lock for as long as the deletes took
+        hourly prune between its own writes. `walks` False leaves out the tables read whole (seen_sigs, no index on
+        ts: every prune of it reads all of it, old rows or none); the recorder walks those once a day. In one transaction it held the write lock for as long as the deletes took
         and its event loop waited with it: on a 2.4M-trade copy (7 Nov) another writer waited 2.0 s while the oldest
         hour went (89k trades), 12.4 s for six hours; in batches of 500, 0.05 and 0.08 s at most.
 
@@ -1237,6 +1243,8 @@ class Store:
         counts = {"trades": 0, "launches": 0, "protected_addresses": protected}
         yield counts
         for table, by, where in self._PRUNED:
+            if by == "rowid" and not walks:
+                continue
             found = self._prune_scan(table, by, where, before_ts)
             doomed: list[int] = []
             more = True

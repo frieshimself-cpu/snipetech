@@ -34,9 +34,9 @@ def test_tape_store_prefers_a_fresh_copy_and_ignores_a_stale_one(tmp_path):
     try:
         assert svc.tape_store.path == str(ro) and svc.tape_store is not live
         svc.reset_tape_store()
-        old = time.time() - 3 * 3600
+        old = time.time() - 6 * 3600
         os.utime(ro, (old, old))
-        assert svc.tape_store is live  # older than two hours: not the tape we want
+        assert svc.tape_store is live  # older than five hours (a copy every three, since 11 Nov): not the tape we want
     finally:
         svc.reset_tape_store()
         live.close()

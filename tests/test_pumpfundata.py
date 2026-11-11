@@ -131,3 +131,19 @@ def test_the_files_trade_order_is_checked_against_the_tapes_place_in_the_block()
     assert out["chain"]["pairs"] == 3 and out["chain"]["ok"] == 0  # c after a, b after c, d after b: none continues
     assert out["chain_in_tape_order"]["pairs"] == 3 and out["chain_in_tape_order"]["ok"] == 3  # a, b, c, d does
     assert out["sell_fits"]["amount_plus_fee"] == 1 and out["buy_fits"]["amount"] == 2
+
+
+def test_two_trades_of_one_transaction_are_not_counted_as_out_of_order():
+    """11 Nov: after ordering, 87.7 % of the same-coin neighbours inside a block came in our tape's order, which read
+    as one neighbour in eight misplaced. A bundle buys for several wallets in one transaction (the crew of twelve: four
+    transactions of three or four buys each); its trades share a signature, and so a place in the tape, and "is the
+    first before the second" was false for every such pair. Our tape's own order follows the token reserves on every
+    pair (9,440 of 9,440 in 20 minutes of 9 Nov). Pairs inside one transaction are counted apart."""
+    rows = [
+        _swap("a", 10, "COIN", "buy", 100, 1100),
+        _swap("a", 10, "COIN", "buy", 100, 1200),  # the same transaction's second buy
+        _swap("b", 10, "COIN", "buy", 50, 1250),
+    ]
+    out = pfd.order_report(rows, {"a": (10, 3, 0), "b": (10, 5, 0)})
+    assert out["same_tx_pairs"] == 1
+    assert out["same_slot_pairs"] == 1 and out["same_slot_in_order"] == 1  # a then b: in order, and the only pair

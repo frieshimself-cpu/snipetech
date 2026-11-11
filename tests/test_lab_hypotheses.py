@@ -409,3 +409,25 @@ def test_the_analysts_freeze_command_freezes_a_copy_hypothesis_where_copies_land
     assert [(s["trigger"], s["latency"], s["position"], s["lab"]["landing"]) for s in rep["frozen"]] == [
         (KOL.__dict__, 0, "+7", "+7@0")
     ]
+
+
+def test_the_lab_command_reads_wallet_groups_from_the_live_database_not_the_hourly_copy(tmp_path, capsys):
+    """11 Nov: twelve wallets were labelled `bundler` at 01:10 and the lab of their rule, started at 01:12, fired on
+    nothing: a lab reads the hourly copy of the database (written 00:47), which held none of the labels, and said so
+    nowhere. The trades come from the copy; who is in a wallet group is read from the live database, as the qualify lab
+    does."""
+    from snipetech import cli
+    from snipetech.infra.snapshot_db import snapshot_db
+
+    db = _tape_db(tmp_path)
+    snapshot_db(str(db), disk_free=lambda _d: 1e15)  # the hourly copy, taken before the wallets were labelled
+    st = Store(db)
+    try:
+        for i in range(80):
+            st.set_label(addr(f"lab-whale-{i}"), "crew", "bundler")
+    finally:
+        st.close()
+    spec = '{"kind": "hunt", "sol": 2, "window": 2, "bots": "bundler"}'
+    assert cli.main(["--db", str(db), "lab", "--trigger", spec, "--hours", "1", "--json"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["triggers"][0]["moments"] == 56  # every coin of the newest hour: its whale is in the group

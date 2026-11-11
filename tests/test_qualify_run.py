@@ -123,6 +123,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
 
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         assert seen["wallets"] == ["BAD", "GOOD", "WEAK"] and seen["pos"] == "+3x"  # banned never measured
+        assert out.pop("secs").keys() == {"lab", "gates"}  # where the run's time went (11 Nov)
         assert out == {
             "evaluated": 3,
             "qualified": 0,
@@ -932,5 +933,28 @@ def test_pick_times_are_the_first_pick_and_the_start_of_the_latest_run_of_picks(
         assert pick_times(st, "W") == (100, 500)
         put(600, "candidate")  # too few copies: no forward check
         assert pick_times(st, "W") == (100, None)
+    finally:
+        st.close()
+
+
+def test_a_run_says_where_its_time_went(tmp_path):
+    """11 Nov: a run of 300 wallets took 2 h 18 min at about one processor, back to back all day, and its output did
+    not say whether the lab or the gates read wallet by wallet took the time, nor how many processes the lab ran on.
+    Each run now says both, so the slow part is known from the next run on."""
+    from snipetech.qualify.run import default_lab_runner
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W1"], coins=12)
+        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        svc.cfg.verdict.bootstrap_samples = 50
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        assert out["evaluated"] == 1 and set(out["secs"]) == {"lab", "gates"}
+        assert all(v >= 0 for v in out["secs"].values())
+        assert out["lab"]["workers"] >= 1 and out["lab"]["moments"] == 12
+        assert set(out["lab"]["secs"]) == {"collect", "rank"}
+        run = default_lab_runner(svc, svc.cfg)
+        run(["W1"], "+6")
+        assert run.info["moments"] == 12
     finally:
         st.close()

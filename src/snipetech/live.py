@@ -93,6 +93,13 @@ STALL_WINDOW_SECS = 60.0
 SLOW_CALL_SECS = 5.0
 SLOW_LOG_EVERY_SECS = 60.0
 AMM_SEEN_MAX = 50_000  # signatures recorded on the PumpSwap side, so a replay or a second pool records nothing twice
+# The hourly prune (`_prune`): the tables read whole are walked once a day (`PRUNE_KEY` in the coverage table keeps the
+# day across restarts), and after each step the loop gets PRUNE_REST times the step's own time, so the prune never
+# takes more than a quarter of it.
+PRUNE_KEY = "prune"
+PRUNE_WALK_SECS = 86_400.0
+PRUNE_REST = 3.0
+PRUNE_REST_MIN_SECS = 0.001
 
 ACTIONS = {
     "SNIPE": "snipe",
@@ -1234,13 +1241,22 @@ class LiveWatcher:
         from there, and the recorder never stops for it (a failed prune used to end the maintenance task, and with it
         the recorder)."""
         try:
-            steps = self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400))
+            # the tables read whole (seen_sigs, no index on ts) once a day, the day kept in the database: every hour
+            # and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention keeps 30 days)
+            walked = float((self.store.coverage(PRUNE_KEY) or {}).get("walked") or 0)
+            walks = now - walked >= PRUNE_WALK_SECS
+            steps = self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400), walks=walks)
             while True:
+                t0 = time.perf_counter()
                 with self.meter.timed("prune"):
                     step = next(steps, None)
                 if step is None:
                     break
-                await asyncio.sleep(0)
+                # the loop's turn: with one turn between steps the streams were served once a step for as long as the
+                # prune ran (11 Nov: 47-50 s an hour, PumpSwap dropped with "client could not keep up")
+                await asyncio.sleep(max(PRUNE_REST_MIN_SECS, PRUNE_REST * (time.perf_counter() - t0)))
+            if walks:
+                self.store.set_coverage(PRUNE_KEY, {"walked": int(now)})
         except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
 

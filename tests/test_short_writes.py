@@ -430,13 +430,17 @@ def test_the_recorder_goes_on_between_the_batches_of_its_prune(tmp_path):
     seen: list[int] = []
 
     async def go():
+        done = asyncio.Event()
+
         async def streams():  # the rest of the recorder while the prune runs: what it sees of the old trades
-            for _ in range(200):
+            while not done.is_set():
                 seen.append(_old_trades(st, cut))
                 await asyncio.sleep(0)
+            seen.append(_old_trades(st, cut))
 
         task = asyncio.create_task(streams())
         await w._prune(cut + 86400)
+        done.set()
         await task
 
     asyncio.run(go())
@@ -450,7 +454,7 @@ def test_a_refused_prune_does_not_stop_the_recorder(tmp_path, monkeypatch, caplo
     st = Store(tmp_path / "t.db")
     w = watcher(store=st)
 
-    def refused(before_ts):
+    def refused(before_ts, walks=True):
         raise sqlite3.OperationalError("database is locked")
         yield  # pragma: no cover - a generator, as prune_steps is
 
@@ -615,4 +619,61 @@ def test_dev_transfers_hold_no_lock_across_the_network(tmp_path):
         out = asyncio.run(dev_transfers(Svc(), T0 - 86400, now=T0))
     assert out == {"launches": 3, "events": 9, "edges": 9} and len(calls) == 6 and all(c is True for c in calls)
     assert st.coverage("events:dev_cursor")["ts"] == T0 - 3600 + 2
+    st.close()
+
+
+def _old_seen(st: Store, cut: int) -> int:
+    return st._q("SELECT COUNT(*) FROM seen_sigs WHERE ts<?", (cut,))[0][0]
+
+
+def test_the_table_with_no_time_index_is_walked_once_a_day_whatever_restarts_the_recorder(tmp_path):
+    """11 Nov, the server: seen_sigs (2.4M rows, no index on ts) was read whole by every hourly prune and by the prune
+    ten seconds after every restart of the recorder (a deploy), 472 reads of 0.1-0.4 s, while retention keeps 30 days
+    and the oldest row was six days old: 47-50 s of the recorder's loop an hour to find nothing. The tables read by
+    their ts index are still pruned every hour (finding nothing there is one read); the one read whole is walked once a
+    day, and the day is kept in the database, so a restart does not start it over."""
+    from tests.test_live_amm import watcher
+
+    st = Store(tmp_path / "t.db")
+    _old_tape(st)
+    retain = 86400.0
+    cut = T0 + 2 * 3600
+    now = float(cut) + retain
+
+    def recorder():
+        w = watcher(store=st)
+        w.cfg.storage.retain_days = retain / 86400
+        return w
+
+    assert _old_seen(st, cut) > 0 and _old_trades(st, cut) > 0
+    asyncio.run(recorder()._prune(now))  # the first prune walks it
+    assert _old_seen(st, cut) == 0 and _old_trades(st, cut) == 0
+    st.mark_seen([("late-old-sig", 1, T0 + 5)])  # a backfill stores an old signature after the walk
+    st.add_trades([replace(_trade(9_000_001), ts=T0 + 5, mint="M1", user="U1")])
+    asyncio.run(recorder()._prune(now + 3600))  # an hour on, a recorder that has just started: no walk
+    assert _old_seen(st, cut) == 1  # the late one stays until the next walk
+    assert _old_trades(st, cut + 3600) == 0  # the tables with a ts index are pruned every hour, as before
+    asyncio.run(recorder()._prune(now + 86400 + 60))  # a day after the walk: it is walked again
+    assert _old_seen(st, cut + 86400) == 0
+    st.close()
+
+
+def test_the_prune_rests_between_its_steps_three_times_as_long_as_each_took(tmp_path, monkeypatch):
+    """11 Nov, the server: between two reads of the prune the loop got one turn, so for the 47-50 s of an hourly prune
+    the streams were served once every 0.1-0.4 s (the PumpSwap stream dropped: DATA_LOSS, "client could not keep up").
+    After each step the prune now leaves the loop three times the step's own time: a quarter of the loop at the most."""
+    from tests.test_live_amm import watcher
+
+    st = Store(tmp_path / "t.db")
+    w = watcher(store=st)
+
+    def slow_steps(before_ts, walks=True):
+        for _ in range(5):
+            time.sleep(0.02)  # a step's database work, on the loop
+            yield {}
+
+    monkeypatch.setattr(st, "prune_steps", slow_steps)
+    t0 = time.perf_counter()
+    asyncio.run(w._prune(float(T0)))
+    assert time.perf_counter() - t0 >= 5 * 0.02 * 4 * 0.9  # five steps, and three times as long again for the loop
     st.close()

@@ -44,7 +44,9 @@ marks a wallet the book copied before these rules (7 Nov): kept qualified while 
 least at the score it was armed on, its reason saying whether it still qualifies; whether it goes is the owner's
 call. The snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from read_verdicts, not
 from raw lab logs, and treat a newly qualified wallet as the decision-level event it is. The book copies qualified
-wallets whose verdict scores at least the owner's bar, one sniper per wallet.
+wallets whose verdict scores at least the owner's bar, one sniper per wallet. A wallet a study picked by hand (the
+bought month, an idea's list) goes to the front of qualify's queue with the job `label <wallet> "<why>" --kind cand`;
+it keeps the label it already has, and its verdict comes from the next qualify run like any other.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
 wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper

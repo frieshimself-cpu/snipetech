@@ -17,13 +17,15 @@ def test_inactive_timers_get_their_stage_started():
     due = due_standins({}, [], NOW)
     argvs = [tuple(a) for a in due]
     assert ("measure", "run") in argvs and ("book", "run") in argvs and ("discover", "run") in argvs
-    assert ("qualify", "run") in argvs and ("events", "poll", "--once") in argvs and ("snapshot-db",) in argvs
+    assert ("qualify", "run") in argvs and ("events", "poll", "--once") in argvs
+    assert ("snapshot-db", "--limit-secs", "7200") in argvs
     assert ("strategist", "run") in argvs  # every day after 05:10 UTC, not only on Sundays
 
 
 def test_active_timers_are_left_to_systemd():
     services = {unit: "active" for _, unit, _ in STANDIN if unit}
     assert due_standins(services, [], NOW) == [
+        ["snapshot-db", "--limit-secs", "7200"],  # the copy is the round's job since 11 Nov, whatever its timer does
         ["events", "scan"],
         ["paper", "run"],
         ["research", "next"],
@@ -230,3 +232,17 @@ def test_research_units_are_loop_stages_so_their_end_calls_no_claude():
     assert loop_stage(["qualify", "run", "--max", "900"]) == "qualify run"
     assert loop_stage(["discover", "run", "--sources", "coinfirst"]) == "discover run"
     assert loop_stage(["paper", "freeze"]) is None and loop_stage(["lab", "--latency", "0"]) is None
+
+
+def test_the_round_writes_the_database_copy_whatever_the_timer_does():
+    """11 Nov: the snapshot timer's unit is killed after 20 minutes and a copy took 13.7, more every day of tape. The
+    round starts the copy as a job with two hours (the command itself leaves a young copy alone, and one copy is
+    written at a time), so the copy is still written when the unit can no longer finish one."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS
+
+    copy = ("snapshot-db", "--limit-secs", "7200")
+    services = {unit: "active" for _, unit, _ in STANDIN if unit}
+    assert copy in [tuple(a) for a in due_standins(services, [], NOW)]
+    assert STAGE_LIMIT_SECS[" ".join(copy)] >= 7200
+    assert copy not in [tuple(a) for a in due_standins(services, [_meta(copy, NOW - 20 * 60)], NOW)]
+    assert copy in [tuple(a) for a in due_standins(services, [_meta(copy, NOW - 31 * 60)], NOW)]

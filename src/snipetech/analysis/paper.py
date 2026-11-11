@@ -338,8 +338,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
 
                 source = recent_tape(source, hours)
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
+            # (the wallet groups from the live database: the copy has none of the labels written since it was taken)
             data = collect(source, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
-                           triggers=triggers)  # fmt: skip
+                           triggers=triggers, kols=label_groups(store))  # fmt: skip
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)

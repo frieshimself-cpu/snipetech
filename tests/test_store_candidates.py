@@ -172,3 +172,51 @@ def test_old_lab_verdicts_are_due_again_qualified_first():
     due = [c["wallet"] for c in st.candidates(due_before=now)]
     assert due == ["OLDQ", "NEW", "OLDC"]
     st.close()
+
+
+def test_a_wallet_picked_by_hand_is_queued_for_qualify_ahead_of_the_backlog(tmp_path, monkeypatch):
+    """11 Nov: the server's analyst ran `label <wallet> "month-study pick" --kind cand` to hand qualify a wallet the
+    bought month had picked, and the command refused the kind (exit 2). Nothing else took a hand-picked wallet either:
+    the queue's priority named a source no command could write. `label --kind cand` queues the wallet for qualify ahead
+    of the discovery backlog, and keeps the label a wallet already has (a wallet has one label: a KOL stays a KOL)."""
+    from snipetech import cli
+
+    from .synth import addr
+
+    pick, kol, old = addr("cand-pick"), addr("cand-kol"), [addr("cand-old-1"), addr("cand-old-2")]
+    monkeypatch.setenv("SNIPETECH_DB", str(tmp_path / "t.db"))
+    monkeypatch.chdir(tmp_path)
+    st = _store(tmp_path)
+    for w in old:  # the backlog, queued first
+        st.upsert_candidate(w, "tape", {}, NOW)
+    st.set_label(kol, "a KOL", "kol")
+    st.close()
+    assert cli.main(["label", pick, "month-study pick", "--kind", "cand"]) in (0, None)
+    assert cli.main(["label", kol, "month-study pick", "--kind", "cand"]) in (0, None)
+    st = _store(tmp_path)
+    try:
+        due = st.candidates(due_before=NOW + 10**9)
+        assert {c["wallet"] for c in due[:2]} == {pick, kol} and {c["wallet"] for c in due[2:]} == set(old)
+        assert st.labels("cand") == {pick: "month-study pick"} and st.labels("kol") == {kol: "a KOL"}
+        mine = next(c for c in due if c["wallet"] == pick)
+        assert mine["sources"] == ["picked"] and mine["stats"]["picked"] == {"note": "month-study pick"}
+    finally:
+        st.close()
+
+
+def test_a_file_of_picked_wallets_is_queued_the_same_way(tmp_path, monkeypatch):
+    from snipetech import cli
+
+    from .synth import addr
+
+    a, b = addr("cand-file-a"), addr("cand-file-b")
+    monkeypatch.setenv("SNIPETECH_DB", str(tmp_path / "t.db"))
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "picks.txt").write_text(f"{a} month pick one\n# a comment\n{b}\n")
+    assert cli.main(["label", "--file", str(tmp_path / "picks.txt"), "--kind", "cand"]) in (0, None)
+    st = _store(tmp_path)
+    try:
+        assert {c["wallet"] for c in st.candidates()} == {a, b}
+        assert st.labels("cand") == {a: "month pick one", b: "cand"}
+    finally:
+        st.close()

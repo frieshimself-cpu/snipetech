@@ -30,6 +30,7 @@ from .solana.rpc import SolanaRpc
 from .store import Store
 
 Progress = Callable[[str], None]
+PICKED_KIND = "cand"  # `label --kind cand`: a copy candidate picked by hand, queued for qualify (`Service._pick`)
 
 
 class OverlapError(ValueError):
@@ -102,12 +103,13 @@ class Service:
         self._tape_store: Store | None = None
         self._tape_lock = threading.Lock()
 
-    TAPE_COPY_MAX_AGE_SECS = 2 * 3600
+    # a copy every three hours (snapshot_db.SNAPSHOT_EVERY_SECS), its own writing and a missed round on top
+    TAPE_COPY_MAX_AGE_SECS = 5 * 3600
 
     @property
     def tape_store(self) -> Store:
         """The store the heavy tape readers (labs, discovery, the events scan) should read: the hourly read-only copy
-        next to the database (`snipetech.ro.db`, written by `snapshot-db`) when it exists, is under two hours old and
+        next to the database (`snipetech.ro.db`, written by `snapshot-db`) when it exists, is under five hours old and
         holds this code's whole schema, else the live store. Writes (verdicts, coverage, fills) always go to
         `self.store`. A long read of the live file keeps its WAL from being checkpointed or starting over (7 Nov: 2 GB
         of WAL an hour while they ran). Chosen once, under a lock: discover's sources ask from their own threads at the
@@ -544,8 +546,20 @@ class Service:
         return report
 
     def label(self, address: str, label: str, kind: str = "service") -> dict:
+        if kind == PICKED_KIND:
+            return self._pick(self._check(address), label, "user")
         self.store.set_label(self._check(address), label, kind)
         return {"address": address, "label": label, "kind": kind}
+
+    def _pick(self, address: str, note: str, source: str) -> dict:
+        """A wallet picked by hand as a copy candidate (`label --kind cand`): queued for qualify ahead of the discovery
+        backlog (source "picked"), and labelled `cand` unless it already has a label (a wallet has one: a KOL stays a
+        KOL, and the qualify lab reads every due wallet whatever its label)."""
+        had = self.store.label_kind(address)
+        if had in (None, PICKED_KIND):
+            self.store.set_label(address, note, PICKED_KIND, source)
+        self.store.upsert_candidate(address, "picked", {"note": note}, int(time.time()))
+        return {"address": address, "label": note, "kind": had or PICKED_KIND, "queued_for_qualify": True}
 
     # -- research ------------------------------------------------------------------------------
 
@@ -1391,7 +1405,10 @@ class Service:
             if not line:
                 continue
             parts = line.replace(",", " ").split()
-            self.store.set_label(self._check(parts[0]), " ".join(parts[1:]) or kind, kind, "file")
+            if kind == PICKED_KIND:
+                self._pick(self._check(parts[0]), " ".join(parts[1:]) or kind, "file")
+            else:
+                self.store.set_label(self._check(parts[0]), " ".join(parts[1:]) or kind, kind, "file")
             n += 1
         return {"labeled": n, "kind": kind}
 

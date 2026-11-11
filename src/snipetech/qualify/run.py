@@ -99,11 +99,18 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         kols = L.label_groups(svc.store)
         kols["cand"] = kols["cand"] | set(wallets)
         menu = L.menu_exits(cfg)
+        t0 = time.monotonic()
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
                          groups=("cand",), exits=list(menu.values()), kols=kols)  # fmt: skip
-        return L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
+        t1 = time.monotonic()
+        rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
                               gate=menu["lab"], with_moments=True)  # fmt: skip
+        # where the lab's time went and on how many processes (the run's output carries it: `run_qualify`)
+        run.info = {"workers": data.get("workers"), "moments": len(data["rows"]),
+                    "secs": {"collect": round(t1 - t0, 1), "rank": round(time.monotonic() - t1, 1)}}  # fmt: skip
+        return rows
 
+    run.info = None
     return run
 
 
@@ -254,12 +261,18 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
     landing = qualify_landing(store, q, now=now)
+    t_lab = time.monotonic()
     try:
         with lab_lock(Path(jobs_dir).parent, wait=False):
             rows = {r["wallet"]: r for r in runner(wallets, landing) if r.get("wallet")}
     except LabBusy as exc:
         out["deferred"], out["reason"] = True, f"lab lock held ({exc}); retry next tick"
         return out
+    t_gates = time.monotonic()
+    # where the run's time goes (11 Nov: 2 h 18 min for 300 wallets at one processor, and nothing said which part)
+    out["secs"] = {"lab": round(t_gates - t_lab, 1), "gates": 0.0}
+    if getattr(runner, "info", None):
+        out["lab"] = runner.info
     store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
     out["lab_wallets"] = len(wallets)
     q_eff = replace(q, landing_pos=landing)
@@ -305,6 +318,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         fwd = (v.get("forward") or {}).get("status")
         out["forward_pending"] += fwd == "pending"
         out["forward_failed"] += fwd == "failed"
+    out["secs"]["gates"] = round(time.monotonic() - t_gates, 1)
     return out
 
 

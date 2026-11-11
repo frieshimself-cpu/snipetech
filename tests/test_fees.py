@@ -208,10 +208,13 @@ def test_sell_fee_sol_is_a_deprecated_alias_for_the_sell_tip_only_and_logs(tmp_p
     assert cfg.oktech.sell_fee_sol == 0.002  # readable: the bid
     p = tmp_path / "snipetech.toml"
     p.write_text("[oktech]\nsell_fee_sol = 0.001\n")
-    with caplog.at_level(logging.WARNING, logger="snipetech.config"):
+    with caplog.at_level(logging.INFO, logger="snipetech.config"):
         loaded = Config.load(p)
     assert loaded.oktech.sell_tip_sol == 0.001 and loaded.oktech.sell_priority_sol == 0.0001
-    assert any("sell_fee_sol" in r.message and "deprecated" in r.message for r in caplog.records)
+    said = [r for r in caplog.records if "sell_fee_sol" in r.message and "deprecated" in r.message]
+    # said for whoever asks (--verbose), no warning: the alias is supported as it is, and as a warning it opened the
+    # log of every job on the server for three days (11 Nov), where a warning should mean something is wrong
+    assert said and all(r.levelno == logging.INFO for r in said)
     loaded.save(p)  # written back under the new names
     text = p.read_text()
     assert "sell_tip_sol = 0.001" in text and "sell_priority_sol = 0.0001" in text and "sell_fee_sol" not in text

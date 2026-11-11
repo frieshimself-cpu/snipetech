@@ -402,3 +402,29 @@ def test_the_bundler_label_kind_reaches_the_lab_and_the_command_takes_it(tmp_pat
     monkeypatch.chdir(tmp_path)
     assert cli.main(["label", addr("crew-b"), "crew 7j4u", "--kind", "bundler"]) in (0, None)
     assert Store(tmp_path / "t.db").labels("bundler") == {addr("crew-b"): "crew 7j4u"}
+
+
+def test_a_hunt_on_a_wallet_group_scores_the_groups_launches_serial_crew_or_not():
+    """11 Nov: the first lab of the crew rule fired on 2 launches in 137 hours of tape; the tape held 31 launches the
+    crew bundled, each with about 41 SOL in its create block. The crew launches from fresh creators on one metadata
+    uri, which is what marks a serial crew (`store.crew_uris`), and launch-type rules pass over those coins. A rule on
+    a wallet group buys what the group's wallets bought, as OKTech's known-bot gate does (it cannot tell a crew's
+    coin): the uri never skips a coin for it. Crew "only" still limits it to the crews' coins."""
+    from snipetech.analysis.lab import crew_skips
+
+    store = Store(":memory:")
+    theirs = _coin(store, "hunt-serial-crew", 0.0)
+    theirs.buy(addr("crew-a"), 3.0, 0)
+    theirs.commit()
+    store._exec("UPDATE launches SET uri=? WHERE mint=?", ("ipfs://crew", theirs.mint))
+    other = _coin(store, "hunt-not-serial", 0.5)
+    other.commit()
+    crews = {"ipfs://crew"}
+    plain = Trigger("hunt", sol=2.0, window=1.0)
+    group = Trigger("hunt", sol=2.0, window=1.0, bots="bundler")
+    assert crew_skips(plain, store.launch(theirs.mint), crews)  # a plain hunt still passes over a serial crew's coin
+    assert not crew_skips(group, store.launch(theirs.mint), crews)  # the group's wallets decide, not the uri
+    assert not crew_skips(group, store.launch(other.mint), crews)
+    only = Trigger("hunt", sol=2.0, window=1.0, bots="bundler", crew="only")
+    assert crew_skips(only, store.launch(other.mint), crews) and not crew_skips(only, store.launch(theirs.mint), crews)
+    store.close()

@@ -124,7 +124,8 @@ def order_report(rows: list[dict[str, Any]], tape_pos: dict[str, tuple]) -> dict
     block, event). Per coin, each trade and the file's next trade of that coin: how often the tape has them in that
     order (inside one block and across blocks), how often the second continues the first's reserves (`chain`: a buy
     adds its amount, a sell takes out its amount plus the fee), the same in the tape's order (`chain_in_tape_order`),
-    and which reading of the amounts fits there (`buy_fits`, `sell_fits`)."""
+    and which reading of the amounts fits there (`buy_fits`, `sell_fits`). Two trades of one transaction have one
+    place in the tape and are counted apart (`same_tx_pairs`)."""
     coins: dict[str, list[dict[str, Any]]] = {}
     for r in rows:
         if r.get("event_type") == "swap" and r.get("virtual_lamports_reserve"):
@@ -140,8 +141,8 @@ def order_report(rows: list[dict[str, Any]], tape_pos: dict[str, tuple]) -> dict
             delta = int(b["virtual_lamports_reserve"]) - int(a["virtual_lamports_reserve"])
             into["ok"] += abs(delta - moved(b)) <= 2
 
-    out: dict[str, Any] = {"pairs": 0, "same_slot_pairs": 0, "same_slot_in_order": 0, "cross_slot_pairs": 0,
-                           "cross_slot_in_order": 0, "chain": {"pairs": 0, "ok": 0},
+    out: dict[str, Any] = {"pairs": 0, "same_slot_pairs": 0, "same_slot_in_order": 0, "same_tx_pairs": 0,
+                           "cross_slot_pairs": 0, "cross_slot_in_order": 0, "chain": {"pairs": 0, "ok": 0},
                            "chain_in_tape_order": {"pairs": 0, "ok": 0},
                            "buy_fits": {"amount": 0, "amount_minus_fee": 0, "amount_plus_fee": 0, "none": 0},
                            "sell_fits": {"amount": 0, "amount_plus_fee": 0, "amount_minus_fee": 0, "none": 0}}  # fmt: skip
@@ -150,6 +151,11 @@ def order_report(rows: list[dict[str, Any]], tape_pos: dict[str, tuple]) -> dict
         for a, b in pairwise(seq):
             pa, pb = tape_pos.get(a["signature"]), tape_pos.get(b["signature"])
             if pa is None or pb is None:
+                continue
+            if a["signature"] == b["signature"]:
+                # two trades of one transaction (a bundle buying for several wallets) share its place in the tape: the
+                # tape says nothing of their order, and counting them made one neighbour in eight look misplaced
+                out["same_tx_pairs"] += 1
                 continue
             out["pairs"] += 1
             if int(a["slot_number"]) == int(b["slot_number"]):

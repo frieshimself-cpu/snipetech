@@ -16,7 +16,10 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("events", "poll", "--once"), "snipetech-events", 10 * 60),
     (("discover", "run"), "snipetech-discover.timer", 60 * 60),
     (("qualify", "run"), "snipetech-qualify.timer", 30 * 60),
-    (("snapshot-db",), "snipetech-snapshot.timer", 60 * 60),
+    # the copy of the database the heavy readers use: the round's job whatever the timer does, since the timer's unit
+    # is killed after 20 minutes and a copy took 13.7 on 11 Nov, more every day of tape. The command leaves a copy
+    # under three hours old alone and one copy is written at a time (infra/snapshot_db.py), so this only asks.
+    (("snapshot-db", "--limit-secs", "7200"), None, 30 * 60),
     (("events", "scan"), None, 3 * 3600),  # snipetech-events only polls the feeds; no unit runs the scan
     (("paper", "run"), None, 30 * 60),  # the forward paper test: free learning on live prices, around the clock
     # once a day after 05:10 UTC (_strategist_due); its own guard calls Claude only on 20 new live round trips
@@ -32,7 +35,8 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
 # its slot, since the round never starts a stage that is still running
 STAGE_LIMIT_SECS: dict[str, int] = {
     "measure run": 20 * 60, "book run": 10 * 60, "events poll --once": 10 * 60, "discover run": 60 * 60,
-    "qualify run": 2 * 3600, "snapshot-db": 60 * 60, "events scan": 60 * 60, "strategist run": 60 * 60,
+    "qualify run": 2 * 3600, "snapshot-db --limit-secs 7200": 7200 + 300, "events scan": 60 * 60,
+    "strategist run": 60 * 60,
     "paper run": 30 * 60, "research next": 10 * 60, "research digest": 10 * 60,
 }  # fmt: skip
 

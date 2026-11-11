@@ -1153,8 +1153,13 @@ CREW_LOOKBACK_SECS = 6 * 3600  # a crew's earlier coins, launched before the tap
 
 def crew_skips(trig: Trigger, launch, crews) -> bool:
     """True when a launch-type trigger passes over this coin: a serial crew's coin by default, any other coin when the
-    trigger is crew "only". Copy, momentum and MIG triggers, and coins with no launch on the tape, are never skipped."""
+    trigger is crew "only". Copy, momentum and MIG triggers, and coins with no launch on the tape, are never skipped.
+    Nor is any coin for a hunt on a wallet group (`bots`): the group's wallets pick its coins, as OKTech's known-bot
+    gate does, which cannot tell a crew's coin (11 Nov: the crew of twelve launches on one uri from fresh creators, so
+    the first lab of its rule passed over 29 of its 31 launches). Crew "only" still limits such a rule."""
     if trig.kind not in LAUNCH_KINDS or launch is None:
+        return False
+    if trig.bots and trig.crew != "only":
         return False
     return (launch.uri in crews) != (trig.crew == "only")
 

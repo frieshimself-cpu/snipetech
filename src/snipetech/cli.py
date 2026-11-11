@@ -411,7 +411,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd("label", "name an address (router, tip/fee destination, wallet, KOL) in reports and studies")
     sp.add_argument("address", nargs="?")
     sp.add_argument("name", nargs="?")
-    sp.add_argument("--kind", choices=["service", "router", "wallet", "kol", "smart", "dev", "own", "bundler"], default="service")
+    sp.add_argument(
+        "--kind",
+        choices=["service", "router", "wallet", "kol", "smart", "dev", "own", "bundler", "cand"],
+        default="service",
+        help="cand: a wallet picked by hand as a copy candidate; it is queued for qualify ahead of the backlog",
+    )
     sp.add_argument(
         "--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)"
     )
@@ -746,11 +751,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
     sp.add_argument("--early", action="store_true",
                     help="run the lab before [qualify] lab_interval_h (the rotation, when the lab has been idle)")  # fmt: skip
-    cmd(
+    sp = cmd(
         "snapshot-db",
-        "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst",
+        "write a consistent read-only copy of the database next to it (snipetech.ro.db) for labs and the analyst: "
+        "every three hours, by a run with the time for it",
         json_flag=False,
     )
+    sp.add_argument("--limit-secs", type=float, default=None,
+                    help="the time this run may take (default 1200, the timer's unit); it copies only if the last "
+                         "copy's time fits")  # fmt: skip
+    sp.add_argument("--force", action="store_true", help="copy now, however young the last copy is")
     sp = cmd("db", "check the live database (quick_check) or rebuild one table's indexes (reindex)", json_flag=False)
     sp.add_argument("action", choices=["check", "reindex", "salvage", "swap", "backfill", "forget"])
     sp.add_argument("--table", default="trades")
@@ -855,16 +865,23 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--max-files", type=int, default=24, help="fetch: credits this run may spend (one a file)")
     sp.add_argument("--x-max", type=int, default=0, help="scan/table: look up at most this many X accounts the organised "
                     "launches link to (twitterapi.io, paid; kept, so never twice); 0 = none")  # fmt: skip
-    sp.add_argument("--min-sol", type=float, default=0.5, help="follow: the smallest first buy that is scored as a copy")
-    sp.add_argument("--test-weeks", type=int, default=1, help="follow: the last weeks, on which picked wallets are judged")
+    sp.add_argument(
+        "--min-sol", type=float, default=0.5, help="follow: the smallest first buy that is scored as a copy"
+    )
+    sp.add_argument(
+        "--test-weeks", type=int, default=1, help="follow: the last weeks, on which picked wallets are judged"
+    )
     sp.add_argument("--min-pick", type=int, default=30, help="follow: first buys a wallet needs in the picking weeks")
     sp.add_argument("--top", type=int, default=50, help="follow: picked wallets listed one by one")
     sp.add_argument("--max-create-share", type=float, default=1.0, help="follow: leave out wallets with a larger share "
                     "of their buys in the create slot (a copy cannot land there)")  # fmt: skip
     sp.add_argument("--rescan", action="store_true", help="follow: read the files again even if a run was kept")
     sp.add_argument("--walk", action="store_true", help="follow: also pick and judge week by week at rising bars")
-    sp.add_argument("--cross", help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
-                    "block_wallets, block_sol, dev_sol, team, hunt, x_badge, x_followers, x_age); each cell is shown per half of the days")
+    sp.add_argument(
+        "--cross",
+        help="scan/table: splits to combine, comma-separated (website, x_link, telegram, "
+        "block_wallets, block_sol, dev_sol, team, hunt, x_badge, x_followers, x_age); each cell is shown per half of the days",
+    )
     sp.add_argument("--min-cell", type=int, default=50, help="scan/table: launches a combined cell needs to be shown")
     sp.add_argument("--wallets", help="scan/table: comma-separated wallets; the split `wallets` is launches with one "
                     "of them in the create block (a hand-picked Hunt list)")  # fmt: skip
@@ -1223,6 +1240,7 @@ async def _run(args, cfg: Config) -> int:
 
             from .analysis import paper
             from .analysis.lab import collect as lab_collect
+            from .analysis.lab import label_groups as lab_groups
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
             from .analysis.lab_lock import lab_lock
@@ -1249,8 +1267,11 @@ async def _run(args, cfg: Config) -> int:
                     tape = svc.tape_store if args.hours is None else recent_tape(svc.tape_store, args.hours)
                     # launch-window rules (launch, hunt, whale, burst) run live through OKTech hunt: scored where its
                     # buy lands, wherever --position puts the others, as `paper freeze` and the strategy search do
+                    # the trades from the hourly copy, the wallet groups from the live database: the copy has none of
+                    # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
+                    # nothing and said so nowhere)
                     return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
-                                       triggers=args.trigger)  # fmt: skip
+                                       triggers=args.trigger, kols=lab_groups(svc.store))  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
@@ -1699,6 +1720,7 @@ BATCH_COMMANDS = frozenset(
     }
 )
 BATCH_NICE = 10
+SNAPSHOT_NICE = 15  # deploy/systemd/snipetech-snapshot.service: Nice=15
 
 
 def _history(args, cfg: Config) -> int:
@@ -1728,8 +1750,12 @@ def _history(args, cfg: Config) -> int:
             if not paths:
                 print(f"history follow: no files on disk for {lo}..{hi}", file=sys.stderr)
                 return 2
-            first, last = (calendar.timegm(time.strptime(p.name.split("_")[-2], "%Y-%m-%d")) for p in (paths[0], paths[-1]))
-            weeks = -(-(last + 86400 - first) // (7 * 86400))  # weeks are counted back from the last day: the last is whole
+            first, last = (
+                calendar.timegm(time.strptime(p.name.split("_")[-2], "%Y-%m-%d")) for p in (paths[0], paths[-1])
+            )
+            weeks = -(
+                -(last + 86400 - first) // (7 * 86400)
+            )  # weeks are counted back from the last day: the last is whole
             agg = Follow(start_ts=last + 86400 - weeks * 7 * 86400)
             stats: dict = {}
             follow_files(paths, agg.add, min_sol=args.min_sol, stats=stats)
@@ -1806,7 +1832,9 @@ def _history(args, cfg: Config) -> int:
         start = calendar.timegm(time.strptime(f"{args.date} {args.hour:02d}", "%Y-%m-%d %H"))
         store = Store(cfg.storage.db_path)
         try:
-            places = store.trade_places_between(start - 60, start + 3660, "curve" if args.exchange == "pump_fun" else "amm")
+            places = store.trade_places_between(
+                start - 60, start + 3660, "curve" if args.exchange == "pump_fun" else "amm"
+            )
         finally:
             store.close()
         from .analysis.history_scan import Orderer
@@ -1965,9 +1993,16 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(out))
         return 0 if out.get("ok", (out.get("after") or {}).get("ok")) else 1
     if args.cmd == "snapshot-db":
-        from .infra.snapshot_db import snapshot_db
+        from .infra.snapshot_db import SNAPSHOT_EVERY_SECS, UNIT_LIMIT_SECS, snapshot_db
 
-        print(json.dumps(snapshot_db(cfg.storage.db_path)))
+        try:  # the unit's Nice=15 for the operator's job too, which starts at the ops service's priority
+            os.nice(max(0, SNAPSHOT_NICE - os.nice(0)))
+        except OSError:
+            pass
+        # the bare command is the timer's unit, which systemd kills after UNIT_LIMIT_SECS
+        limit = args.limit_secs if args.limit_secs else (None if args.force else UNIT_LIMIT_SECS)
+        every = 0.0 if args.force else SNAPSHOT_EVERY_SECS
+        print(json.dumps(snapshot_db(cfg.storage.db_path, every_secs=every, limit_secs=limit)))
         return 0
     if args.cmd == "events":
         return _events(args, cfg)
