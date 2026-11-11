@@ -2,7 +2,7 @@
 
 A buy on pump.fun's curve is paid whole in plain SOL; the wallet's SOL turns into wrapped SOL by itself (PumpSwap
 sales pay wrapped SOL) and nothing turned it back: on 11 Nov the first copy of the one qualified wallet failed beside
-0.47 wrapped SOL. Design: docs/superpowers/specs/2026-11-11-unwrap-design.md."""
+0.47 wrapped SOL, and three more after it. Design: docs/superpowers/specs/2026-11-11-unwrap-design.md."""
 
 import asyncio
 import base64
@@ -14,77 +14,67 @@ import pytest
 
 from snipetech.solana import unwrap as U
 from snipetech.solana.base58 import b58decode
-from snipetech.solana.programs import TOKEN_PROGRAM
-from snipetech.solana.sell import SYSTEM_PROGRAM, WSOL_MINT, ata
+from snipetech.solana.programs import TOKEN_2022_PROGRAM, TOKEN_PROGRAM
+from snipetech.solana.sell import ATA_PROGRAM, SYSTEM_PROGRAM, WSOL_MINT, ata
 
 LANDED = json.loads((Path(__file__).parent / "fixtures" / "pumpswap_buy_landed_10nov.json").read_text())
 OURS = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"  # the sniper wallet (public), signer of the landed buy
-RENT = 2_039_280
+RENT = 1_488_440  # what a wrapped-SOL account holds beside its wrapped SOL
 SOL = 1_000_000_000
-
-
-def _landed_token_instructions():
-    """(program, data, accounts) of every inner instruction of the landed buy, addresses spelled out."""
-    msg, meta = LANDED["transaction"]["message"], LANDED["meta"]
-    keys = [k["pubkey"] if isinstance(k, dict) else k for k in msg["accountKeys"]]
-    out = []
-    for grp in meta["innerInstructions"]:
-        for ix in grp["instructions"]:
-            out.append((keys[ix["programIdIndex"]], b58decode(ix["data"]), [keys[a] for a in ix["accounts"]]))
-    return out
 
 
 def _spell(ix):
     return str(ix.program_id), bytes(ix.data), [str(a.pubkey) for a in ix.accounts]
 
 
-def test_the_transfer_is_built_as_the_one_landed_from_our_own_wrapped_sol_account():
-    """10 Nov 22:19:33: our buy on PumpSwap moved 0.19995 wrapped SOL out of the wallet's wrapped-SOL account with the
-    token program's TransferChecked, signed by the wallet. The conversion moves wrapped SOL the same way."""
-    wsol = ata(OURS, WSOL_MINT, TOKEN_PROGRAM)
-    landed = [t for t in _landed_token_instructions() if t[0] == TOKEN_PROGRAM and t[1][0] == 12 and t[2][0] == wsol]
-    assert landed, "the fixture holds no transfer out of our wrapped-SOL account"
-    program, data, accounts = landed[0]
-    amount = struct.unpack("<Q", data[1:9])[0]
-    built = U.transfer_checked(accounts[0], accounts[1], accounts[2], accounts[3], amount)
-    assert _spell(built) == (program, data, accounts)
-    assert accounts[1] == WSOL_MINT and accounts[3] == OURS and data[9] == 9  # the mint, the wallet signs, 9 decimals
-    signer = {str(a.pubkey): (a.is_signer, a.is_writable) for a in built.accounts}
-    assert signer[OURS] == (True, False) and signer[wsol] == (False, True) and signer[WSOL_MINT] == (False, False)
+def test_the_account_is_made_again_as_oktechs_buy_from_our_wallet_made_one():
+    """10 Nov 22:19:33: our buy made the coin's token account with the associated-token program's CreateIdempotent
+    (data 01; the payer, the account, its owner, the coin, the system program, the coin's token program). The wallet's
+    wrapped-SOL account is made again with the same instruction."""
+    msg = LANDED["transaction"]["message"]
+    keys = [k["pubkey"] if isinstance(k, dict) else k for k in msg["accountKeys"]]
+    landed = [ix for ix in msg["instructions"] if keys[ix["programIdIndex"]] == ATA_PROGRAM]
+    assert len(landed) == 1
+    data, accounts = b58decode(landed[0]["data"]), [keys[a] for a in landed[0]["accounts"]]
+    payer, account, owner, mint, system, program = accounts
+    assert (payer, owner, system, program) == (OURS, OURS, SYSTEM_PROGRAM, TOKEN_2022_PROGRAM)
+    assert account == ata(OURS, mint, TOKEN_2022_PROGRAM)  # the coin's account of our wallet
+    built = U.create_account_idempotent(payer, owner, mint, program)
+    assert _spell(built) == (ATA_PROGRAM, data, accounts) and data == bytes([1])
+    flags = [(a.is_signer, a.is_writable) for a in built.accounts]
+    assert flags == [(True, True), (False, True), (False, False), (False, False), (False, False), (False, False)]
+    # ours: the same instruction for wrapped SOL, whose program is the token program
+    wrapped = U.create_account_idempotent(OURS, OURS, WSOL_MINT)
+    assert [str(a.pubkey) for a in wrapped.accounts] == [OURS, ata(OURS, WSOL_MINT, TOKEN_PROGRAM), OURS, WSOL_MINT,
+                                                         SYSTEM_PROGRAM, TOKEN_PROGRAM]  # fmt: skip
 
 
-def test_a_token_account_is_made_ready_as_the_landed_one_was():
-    """The same buy made the coin's token account ready with InitializeAccount3 (the account, the coin; the owner in
-    the data). The token program and its 2022 twin share the layout; the temporary account is made ready the same."""
-    landed = [t for t in _landed_token_instructions() if t[1][0] == 18]
-    assert landed, "the fixture holds no InitializeAccount3"
-    _program, data, accounts = landed[0]
-    built = U.initialize_account3(accounts[0], accounts[1], OURS)
-    assert bytes(built.data) == data and [str(a.pubkey) for a in built.accounts] == accounts
-    assert data[1:] == b58decode(OURS)  # the owner is our wallet
-    assert str(built.program_id) == TOKEN_PROGRAM  # wrapped SOL lives in the token program, not its 2022 twin
+def test_one_conversion_closes_the_account_to_the_wallet_makes_it_again_and_puts_the_rest_back():
+    account = ata(OURS, WSOL_MINT, TOKEN_PROGRAM)
+    steps = U.unwrap_instructions(OURS, 50_000_000, 471_817_213)
+    assert [str(ix.program_id) for ix in steps] == [TOKEN_PROGRAM, ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM]
+    close, again, back, sync = steps
+    # 1. the wrapped-SOL account, closed to the wallet, signed by the wallet: all of it arrives as plain SOL
+    assert _spell(close) == (TOKEN_PROGRAM, bytes([9]), [account, OURS, OURS])
+    # 2. made again in the same transaction: the wallet is never left without it
+    assert _spell(again)[2][:4] == [OURS, account, OURS, WSOL_MINT]
+    # 3. what stays wrapped goes back in: a plain transfer of everything but the amount, then SyncNative
+    assert [str(a.pubkey) for a in back.accounts] == [OURS, account]
+    assert bytes(back.data) == struct.pack("<IQ", 2, 471_817_213 - 50_000_000)
+    assert _spell(sync) == (TOKEN_PROGRAM, bytes([17]), [account])
+    writable = {str(a.pubkey) for ix in steps for a in ix.accounts if a.is_writable}
+    signers = {str(a.pubkey) for ix in steps for a in ix.accounts if a.is_signer}
+    assert writable == {OURS, account} and signers == {OURS}  # the SOL can only be in the wallet or its own account
+    assert U.steps_named(50_000_000, 471_817_213) == ("CloseAccount", "CreateIdempotent", "SyncNative")
 
 
-def test_one_conversion_is_four_steps_and_the_sol_can_only_come_back_to_the_wallet():
-    seed = "unwrap0123456789"
-    temp = U.temp_address(OURS, seed)
-    wsol = ata(OURS, WSOL_MINT, TOKEN_PROGRAM)
-    ixs = U.unwrap_instructions(OURS, 50_000_000, seed, RENT)
-    assert [str(ix.program_id) for ix in ixs] == [SYSTEM_PROGRAM, TOKEN_PROGRAM, TOKEN_PROGRAM, TOKEN_PROGRAM]
-    make, ready, move, close = ixs
-    # 1. the temporary account: paid for by the wallet, 165 bytes, owned by the token program
-    assert [str(a.pubkey) for a in make.accounts][:2] == [OURS, temp]
-    # 2. a wrapped-SOL account of the wallet's
-    assert _spell(ready) == (TOKEN_PROGRAM, bytes([18]) + b58decode(OURS), [temp, WSOL_MINT])
-    # 3. the amount, from the wallet's own wrapped-SOL account
-    assert _spell(move) == (TOKEN_PROGRAM, bytes([12]) + struct.pack("<Q", 50_000_000) + bytes([9]),
-                            [wsol, WSOL_MINT, temp, OURS])  # fmt: skip
-    # 4. closed to the wallet: the amount and the rent arrive as plain SOL
-    assert _spell(close) == (TOKEN_PROGRAM, bytes([9]), [temp, OURS, OURS])
-    writable = {str(a.pubkey) for ix in ixs for a in ix.accounts if a.is_writable}
-    signers = {str(a.pubkey) for ix in ixs for a in ix.accounts if a.is_signer}
-    assert writable == {OURS, wsol, temp} and signers == {OURS}
-    assert temp not in (OURS, wsol) and U.temp_address(OURS, "another-seed-0000") != temp
+def test_converting_all_of_it_puts_nothing_back():
+    steps = U.unwrap_instructions(OURS, 471_817_213, 471_817_213)
+    assert [str(ix.program_id) for ix in steps] == [TOKEN_PROGRAM, ATA_PROGRAM]  # closed, made again, left empty
+    assert U.steps_named(471_817_213, 471_817_213) == ("CloseAccount", "CreateIdempotent")
+    for amount in (0, -1, 471_817_214):
+        with pytest.raises(ValueError, match="at most what is wrapped"):
+            U.unwrap_instructions(OURS, amount, 471_817_213)
 
 
 def test_how_much_is_converted():
@@ -126,8 +116,11 @@ class Chain:
         from solders.transaction import Transaction
 
         tx = Transaction.from_bytes(raw)
-        move = [ix for ix in tx.message.instructions if bytes(ix.data)[:1] == bytes([12])]
-        return struct.unpack("<Q", bytes(move[0].data)[1:9])[0]
+        keys = [str(k) for k in tx.message.account_keys]
+        back = [ix for ix in tx.message.instructions
+                if keys[ix.program_id_index] == SYSTEM_PROGRAM and bytes(ix.data)[:4] == struct.pack("<I", 2)]  # fmt: skip
+        stays = struct.unpack("<Q", bytes(back[0].data)[4:12])[0] if back else 0
+        return self.wsol - stays
 
     async def call(self, method, params=None):
         self.calls.append(method)
@@ -135,16 +128,14 @@ class Chain:
             return {"value": self.native}
         if method == "getAccountInfo":
             return {"value": None if self.wsol is None else self._wsol_account(self.wsol)}
-        if method == "getMinimumBalanceForRentExemption":
-            return RENT
         if method == "getLatestBlockhash":
             return {"value": {"blockhash": "CdSs3nhUW2L4i9rDT8DnyGYA3b6fqHk9D4Ryv9bEQNPp"}}
         if method == "simulateTransaction":
             amount = self._amount(base64.b64decode(params[0]))
             assert params[1]["accounts"]["addresses"] == [self.user, ata(self.user, WSOL_MINT, TOKEN_PROGRAM)]
             value = {"err": None, "unitsConsumed": 9_500,
-                     "logs": ["Program log: Instruction: InitializeAccount3", "Program log: Instruction: TransferChecked",
-                              "Program log: Instruction: CloseAccount"],
+                     "logs": ["Program log: Instruction: CloseAccount", "Program log: CreateIdempotent",
+                              "Program log: Instruction: SyncNative"],
                      "accounts": [{"lamports": self.native - U.FEE_LAMPORTS + amount},
                                   self._wsol_account(self.wsol - amount)]}  # fmt: skip
             if self.sim_patch is not None:
@@ -183,7 +174,7 @@ def test_a_conversion_is_simulated_first_and_sent_when_the_chain_shows_exactly_i
     tx = Transaction.from_bytes(chain.sent[0])
     assert str(tx.message.account_keys[0]) == user and len(tx.signatures) == 1  # the wallet pays, alone
     programs = [str(tx.message.account_keys[ix.program_id_index]) for ix in tx.message.instructions]
-    assert programs[2:] == [SYSTEM_PROGRAM, TOKEN_PROGRAM, TOKEN_PROGRAM, TOKEN_PROGRAM]  # after the compute budget
+    assert programs[2:] == [TOKEN_PROGRAM, ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM]  # after the compute budget
 
 
 def test_a_dry_run_simulates_and_sends_nothing(key):
@@ -202,7 +193,7 @@ def test_a_dry_run_simulates_and_sends_nothing(key):
         (lambda v: v.update(err={"InstructionError": [3, {"Custom": 1}]}), "the chain refused it"),
         (lambda v: v["accounts"][0].update(lamports=v["accounts"][0]["lamports"] - 1_000_000), "plain SOL"),
         (lambda v: v["accounts"].__setitem__(1, None), "wrapped"),
-        (lambda v: v.update(logs=["Program log: Instruction: TransferChecked"]), "CloseAccount"),
+        (lambda v: v.update(logs=["Program log: CreateIdempotent"]), "CloseAccount"),
     ],
 )
 def test_a_simulation_that_shows_anything_but_this_conversion_sends_nothing(key, patch, why):
@@ -220,9 +211,11 @@ def test_refusals_before_anything_is_built(key):
     assert "under 0.01 SOL" in small["refused"]
     none = asyncio.run(U.Unwrapper(Chain(user, 4_239_377, None), secret).convert(50_000_000))
     assert "no wrapped-SOL account" in none["refused"]
-    # the wallet fronts the temporary account's rent and the fee out of plain SOL: with less, nothing can be done
-    broke = asyncio.run(U.Unwrapper(Chain(user, 1_000_000, 471_817_213), secret).convert(50_000_000))
-    assert "plain SOL for the temporary account" in broke["refused"]
+    # a conversion needs no plain SOL beyond its own fee: the wallet of 11 Nov (0.0012 plain SOL) converts
+    low = Chain(user, 1_224_377, 471_817_213)
+    assert asyncio.run(U.Unwrapper(low, secret).convert(50_000_000))["signature"] == "SIG-UNWRAP"
+    broke = asyncio.run(U.Unwrapper(Chain(user, 5_000, 471_817_213), secret).convert(50_000_000))
+    assert "under the" in broke["refused"] and "own fee" in broke["refused"]
     for out in (more, small, none, broke):
         assert "signature" not in out
 

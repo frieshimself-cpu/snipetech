@@ -3,25 +3,29 @@
 Why this exists (11 Nov 2026): a buy on pump.fun's curve is paid whole in plain SOL (a transfer from the wallet to the
 curve); only a coin that has left its curve is paid in wrapped SOL. The wallet's SOL turns into wrapped SOL by itself
 (a sale on PumpSwap pays wrapped SOL; a plain transfer out of the wallet moves only the plain part) and nothing turned
-it back: with 0.47 wrapped SOL and 0.005 plain SOL the first copy of the one qualified wallet landed and failed. The
-owner said yes to this on 11 Nov (docs/live-recipe.md); the design is docs/superpowers/specs/2026-11-11-unwrap-design.md.
+it back: with 0.47 wrapped SOL and 0.005 plain SOL the first copy of the one qualified wallet landed and failed, and
+three more after it. The owner said yes to this on 11 Nov (docs/live-recipe.md); the design is
+docs/superpowers/specs/2026-11-11-unwrap-design.md.
 
-One conversion is one transaction signed by the wallet alone:
+One conversion is one transaction signed by the wallet alone, and it needs no plain SOL beyond its own fee (the first
+design made a temporary account and needed its rent, 0.0015 SOL, up front: the wallet it was built for held 0.0012):
 
-1. a temporary token account at an address derived from the wallet and a random seed, paid for by the wallet;
-2. made a wrapped-SOL account of the wallet's (InitializeAccount3);
-3. the amount moved into it from the wallet's own wrapped-SOL account (TransferChecked);
-4. closed to the wallet (CloseAccount): the amount and the rent of step 1 arrive as plain SOL.
+1. the wallet's wrapped-SOL account is closed to the wallet (CloseAccount): all of it arrives as plain SOL;
+2. the same account is made again, empty (the associated-token program's CreateIdempotent), in the same transaction:
+   OKTech buys on PumpSwap from it and our own sale pays into it, so the wallet is never left without it;
+3. what is to stay wrapped is put back: a plain transfer into the account and SyncNative.
 
-The wallet's own wrapped-SOL account is never closed: OKTech buys on PumpSwap from it and our own sale pays into it.
+A transaction lands whole or not at all, so nothing can see the account missing.
 
-Steps 2 and 3 are built as the instructions landed from our own wallet on 10 Nov (tests/test_unwrap.py holds the bytes
-against that transaction). Step 4 has no landed copy from our wallet, so nothing is sent on trust: every conversion is
-simulated on the chain first, and sent only when the chain's own log names the steps and the simulated wallet shows
-exactly this conversion: plain SOL up by the amount less the fee, wrapped SOL down by the amount. The SOL can only come
-back to the signing wallet: the destination of step 4 is taken from the key, never from an argument.
+Step 2 is built as the instruction landed from our own wallet on 10 Nov (tests/test_unwrap.py holds it against that
+transaction) and the transfer of step 3 is the library's. Step 1 and the SyncNative of step 3 have no landed copy from
+our wallet, so nothing is sent on trust: every conversion is simulated on the chain first, and sent only when the
+chain's own log names the steps and the simulated wallet shows exactly this conversion: plain SOL up by the amount less
+the fee, wrapped SOL down by the amount. The SOL can only come back to the signing wallet: every destination is the
+wallet or its own wrapped-SOL account, derived from the key, never taken from an argument.
 
-The secret key is read from SNIPER_SECRET (base58, 64 bytes) in the environment and never logged.
+With the wallet's key (SNIPER_SECRET, base58, 64 bytes, in the environment, never logged) it signs and sends; with the
+wallet's address alone it can only show on the chain what a conversion would do.
 """
 
 from __future__ import annotations
@@ -29,50 +33,21 @@ from __future__ import annotations
 import asyncio
 import base64
 import os
-import struct
 from typing import Any
 
 from .programs import TOKEN_PROGRAM
-from .sell import LAMPORTS, WSOL_MINT, _pk, _refused, ata
+from .sell import ATA_PROGRAM, LAMPORTS, SYSTEM_PROGRAM, WSOL_MINT, _pk, _refused, ata
 
-TOKEN_ACCOUNT_SPACE = 165
 MIN_UNWRAP_LAMPORTS = 10_000_000  # 0.01 SOL: a smaller conversion is not worth a transaction
-CU_LIMIT = 40_000  # the four steps use about 10,000 units
-CU_PRICE_MICRO = 100_000  # no hurry: 0.000004 SOL of priority fee at the full limit
+CU_LIMIT = 60_000  # the steps use about 30,000 units
+CU_PRICE_MICRO = 100_000  # no hurry: 0.000006 SOL of priority fee at the full limit
 FEE_LAMPORTS = 5_000 + CU_LIMIT * CU_PRICE_MICRO // 1_000_000  # one signature and the priority fee
 CONFIRM_SECS = 60.0
-STEPS = ("InitializeAccount3", "TransferChecked", "CloseAccount")  # what the chain's log must name
-
-
-def temp_address(wallet: str, seed: str) -> str:
-    """The temporary account's address: derived from the wallet and the seed, owned by the token program."""
-    from solders.pubkey import Pubkey
-
-    return str(Pubkey.create_with_seed(_pk(wallet), seed, _pk(TOKEN_PROGRAM)))
-
-
-def initialize_account3(account: str, mint: str, owner: str):
-    """Make `account` a token account of `mint` owned by `owner` (the token program's instruction 18)."""
-    from solders.instruction import AccountMeta, Instruction
-
-    metas = [AccountMeta(_pk(account), is_signer=False, is_writable=True),
-             AccountMeta(_pk(mint), is_signer=False, is_writable=False)]  # fmt: skip
-    return Instruction(_pk(TOKEN_PROGRAM), bytes([18]) + bytes(_pk(owner)), metas)
-
-
-def transfer_checked(source: str, mint: str, destination: str, authority: str, amount: int, decimals: int = 9):
-    """Move `amount` of `mint` from `source` to `destination`, signed by `authority` (instruction 12)."""
-    from solders.instruction import AccountMeta, Instruction
-
-    metas = [AccountMeta(_pk(source), is_signer=False, is_writable=True),
-             AccountMeta(_pk(mint), is_signer=False, is_writable=False),
-             AccountMeta(_pk(destination), is_signer=False, is_writable=True),
-             AccountMeta(_pk(authority), is_signer=True, is_writable=False)]  # fmt: skip
-    return Instruction(_pk(TOKEN_PROGRAM), bytes([12]) + struct.pack("<Q", int(amount)) + bytes([decimals]), metas)
 
 
 def close_account(account: str, destination: str, authority: str):
-    """Close the token account `account`: all its SOL goes to `destination`, signed by `authority` (instruction 9)."""
+    """Close the token account `account`: all its SOL goes to `destination`, signed by `authority` (the token
+    program's instruction 9). A wrapped-SOL account may be closed with SOL in it: that is what unwraps it."""
     from solders.instruction import AccountMeta, Instruction
 
     metas = [AccountMeta(_pk(account), is_signer=False, is_writable=True),
@@ -81,18 +56,47 @@ def close_account(account: str, destination: str, authority: str):
     return Instruction(_pk(TOKEN_PROGRAM), bytes([9]), metas)
 
 
-def unwrap_instructions(wallet: str, amount: int, seed: str, rent: int) -> list:
-    """The four steps of one conversion of `amount` lamports of `wallet`'s wrapped SOL (module docstring). Every
-    account they may write is the wallet, its wrapped-SOL account or the temporary account; the wallet alone signs."""
-    from solders.system_program import CreateAccountWithSeedParams, create_account_with_seed
+def create_account_idempotent(payer: str, owner: str, mint: str, token_program: str = TOKEN_PROGRAM):
+    """Make `owner`'s token account of `mint` if it does not exist, paid for by `payer` (the associated-token
+    program's instruction 1, as OKTech's buys from our wallet make a coin's account)."""
+    from solders.instruction import AccountMeta, Instruction
 
-    temp = temp_address(wallet, seed)
-    make = create_account_with_seed(CreateAccountWithSeedParams(
-        from_pubkey=_pk(wallet), to_pubkey=_pk(temp), base=_pk(wallet), seed=seed, lamports=int(rent),
-        space=TOKEN_ACCOUNT_SPACE, owner=_pk(TOKEN_PROGRAM)))  # fmt: skip
-    return [make, initialize_account3(temp, WSOL_MINT, wallet),
-            transfer_checked(ata(wallet, WSOL_MINT, TOKEN_PROGRAM), WSOL_MINT, temp, wallet, amount),
-            close_account(temp, wallet, wallet)]  # fmt: skip
+    metas = [AccountMeta(_pk(payer), is_signer=True, is_writable=True),
+             AccountMeta(_pk(ata(owner, mint, token_program)), is_signer=False, is_writable=True),
+             AccountMeta(_pk(owner), is_signer=False, is_writable=False),
+             AccountMeta(_pk(mint), is_signer=False, is_writable=False),
+             AccountMeta(_pk(SYSTEM_PROGRAM), is_signer=False, is_writable=False),
+             AccountMeta(_pk(token_program), is_signer=False, is_writable=False)]  # fmt: skip
+    return Instruction(_pk(ATA_PROGRAM), bytes([1]), metas)
+
+
+def sync_native(account: str):
+    """Count the plain SOL sent into the wrapped-SOL account `account` as wrapped SOL (the token program's 17)."""
+    from solders.instruction import AccountMeta, Instruction
+
+    return Instruction(_pk(TOKEN_PROGRAM), bytes([17]), [AccountMeta(_pk(account), is_signer=False, is_writable=True)])
+
+
+def unwrap_instructions(wallet: str, amount: int, wrapped: int) -> list:
+    """The steps of one conversion of `amount` lamports of `wallet`'s `wrapped` lamports of wrapped SOL (module
+    docstring): close the account to the wallet, make it again, put back what stays wrapped. Every account they may
+    write is the wallet or its own wrapped-SOL account; the wallet alone signs."""
+    from solders.system_program import TransferParams, transfer
+
+    if not 0 < int(amount) <= int(wrapped):
+        raise ValueError("the amount must be more than nothing and at most what is wrapped")
+    account = ata(wallet, WSOL_MINT, TOKEN_PROGRAM)
+    steps = [close_account(account, wallet, wallet), create_account_idempotent(wallet, wallet, WSOL_MINT)]
+    stays = int(wrapped) - int(amount)
+    if stays > 0:
+        steps.append(transfer(TransferParams(from_pubkey=_pk(wallet), to_pubkey=_pk(account), lamports=stays)))
+        steps.append(sync_native(account))
+    return steps
+
+
+def steps_named(amount: int, wrapped: int) -> tuple[str, ...]:
+    """What the chain's log must name for this conversion."""
+    return ("CloseAccount", "CreateIdempotent") + (("SyncNative",) if wrapped - amount > 0 else ())
 
 
 def plan_amount(native: int, wsol: int, need_per_buy: int, keep_buys: int) -> int:
@@ -143,15 +147,15 @@ class Unwrapper:
         )
         return native, _wrapped(res.get("value") if isinstance(res, dict) else None, self.user)
 
-    def build(self, amount: int, seed: str, rent: int, blockhash: str):
-        """The transaction of one conversion: compute budget, then the four steps; signed when the key is here."""
+    def build(self, amount: int, wrapped: int, blockhash: str):
+        """The transaction of one conversion: compute budget, then the steps; signed when the key is here."""
         from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
         from solders.hash import Hash
         from solders.message import Message
         from solders.transaction import Transaction
 
         ixs = [set_compute_unit_limit(CU_LIMIT), set_compute_unit_price(CU_PRICE_MICRO)]
-        ixs += unwrap_instructions(self.user, amount, seed, rent)
+        ixs += unwrap_instructions(self.user, amount, wrapped)
         msg = Message.new_with_blockhash(ixs, _pk(self.user), Hash.from_string(blockhash))
         if self.kp is None:  # no key: for the chain's simulation only, it could never land
             return Transaction.new_unsigned(msg)
@@ -175,10 +179,10 @@ class Unwrapper:
                 "plain_sol_after": None if wallet_after is None else _sol(int(wallet_after)),
                 "wrapped_sol_after": None if wrapped_after is None else _sol(wrapped_after)}  # fmt: skip
         if value.get("err") is not None:
-            return seen, f"the chain refused it in simulation: {value.get('err')}"
-        missing = [step for step in STEPS if not any(f"Instruction: {step}" in line for line in logs)]
+            return seen | {"log": logs[-8:]}, f"the chain refused it in simulation: {value.get('err')}"
+        missing = [step for step in steps_named(amount, wsol) if not any(line.endswith(step) for line in logs)]
         if missing:
-            return seen, f"the simulation's log does not name {', '.join(missing)}"
+            return seen | {"log": logs[-14:]}, f"the simulation's log does not name {', '.join(missing)}"
         if wallet_after is None or int(wallet_after) != native - FEE_LAMPORTS + amount:
             return seen, (f"the simulated plain SOL is {seen['plain_sol_after']}, not the "
                           f"{_sol(native - FEE_LAMPORTS + amount)} this conversion gives")  # fmt: skip
@@ -201,12 +205,11 @@ class Unwrapper:
             return row | {"refused": f"{_sol(amount)} SOL is under 0.01 SOL, the least worth a transaction"}
         if amount > wsol:
             return row | {"refused": f"{_sol(amount)} SOL is more than is wrapped ({_sol(wsol)})"}
-        rent = int(await self.rpc.call("getMinimumBalanceForRentExemption", [TOKEN_ACCOUNT_SPACE]))
-        if native < rent + FEE_LAMPORTS:
-            return row | {"refused": f"the wallet needs {_sol(rent + FEE_LAMPORTS)} plain SOL for the temporary account "
-                                     f"and the fee (it comes back in the same transaction) and holds {_sol(native)}"}  # fmt: skip
+        if native < FEE_LAMPORTS:
+            return row | {"refused": f"the wallet holds {_sol(native)} plain SOL, under the {_sol(FEE_LAMPORTS)} of the "
+                                     "transaction's own fee"}  # fmt: skip
         blockhash = (await self.rpc.call("getLatestBlockhash", [{"commitment": "confirmed"}]))["value"]["blockhash"]
-        tx = self.build(amount, os.urandom(8).hex(), rent, blockhash)
+        tx = self.build(amount, wsol, blockhash)
         seen, why = await self._simulate(tx, amount, native, wsol)
         row["simulated"] = seen
         if why is not None:
