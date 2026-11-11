@@ -97,7 +97,9 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
 
         tape = getattr(svc, "tape_store", svc.store)  # the hourly read-only copy when fresh, else the live database
         kols = L.label_groups(svc.store)
-        kols["cand"] = kols["cand"] | set(wallets)
+        # the wallets asked about, and no others: with the whole `cand` label group beside them (every wallet qualify
+        # ever measured: 22,204 on 11 Nov) a lab found and scored the coins of all of them to keep these rows
+        kols["cand"] = set(wallets)
         menu = L.menu_exits(cfg)
         t0 = time.monotonic()
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),

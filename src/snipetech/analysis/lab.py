@@ -28,6 +28,7 @@ them were scored on (`pick_exit`), and says on how many moments the pick was sco
 
 from __future__ import annotations
 
+import bisect
 import json
 import math
 import multiprocessing
@@ -1018,6 +1019,56 @@ def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[
     return out
 
 
+def _mints_by_span(store: Store, wallets: set[str], spans) -> list[set[str]]:
+    """For each span, the coins any of `wallets` bought in it (what `_mints_with_buys_by` answers for one span), from
+    one walk of the wallets' trades, WALLETS_PER_READ wallets a read. Asked span by span, every span walked every trade
+    the wallets ever made again (the wallet index has no time in it): 193 walks on 11 Nov's tape. A read returns each
+    coin once with its first and last buy by these wallets; the few coins whose two lie in different spans are read
+    again buy by buy."""
+    bounds = [(int(a), int(b)) for a, b in spans]
+    out: list[set[str]] = [set() for _ in bounds]
+    if not bounds or not wallets:
+        return out
+    order = sorted(range(len(bounds)), key=lambda k: bounds[k])
+    starts = [bounds[k][0] for k in order]
+
+    def span_of(ts: int) -> int | None:
+        j = bisect.bisect_right(starts, ts) - 1
+        if j < 0:
+            return None
+        k = order[j]
+        return k if ts <= bounds[k][1] else None
+
+    lo, hi = min(a for a, _ in bounds), max(b for _, b in bounds)
+    ws = sorted(wallets)
+    for i in range(0, len(ws), WALLETS_PER_READ):
+        chunk = ws[i : i + WALLETS_PER_READ]
+        marks = ",".join("?" * len(chunk))
+        split: list[str] = []
+        for mint, first, last in store._q(
+            f"SELECT mint, MIN(ts), MAX(ts) FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks}) "
+            "GROUP BY mint",
+            [lo, hi, *chunk],
+        ):
+            a, b = span_of(first), span_of(last)
+            if a == b:
+                if a is not None:
+                    out[a].add(mint)
+            else:
+                split.append(mint)
+        for j in range(0, len(split), 400):
+            part = split[j : j + 400]
+            for mint, ts in store._q(
+                f"SELECT DISTINCT mint, ts FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks}) "
+                f"AND mint IN ({','.join('?' * len(part))})",
+                [lo, hi, *chunk, *part],
+            ):
+                k = span_of(ts)
+                if k is not None:
+                    out[k].add(mint)
+    return out
+
+
 def _trades_by_user(path: MarketPath) -> dict[str, list[int]]:
     """Each wallet's trade indices in the path, in order: one pass over the coin for all of its moments."""
     out: dict[str, list[int]] = {}
@@ -1129,11 +1180,11 @@ class _Run:
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
     """The lab's work, span by span: (start, end, the span's measured seconds per slot, its coins in the store's order).
     A span under ten minutes is skipped; with a wallet group, so is every coin none of its wallets bought."""
+    spans = [(a, b) for a, b in spans if b - a >= 600]
+    bought = None if group_wallets is None else _mints_by_span(store, group_wallets, spans)
     plan = []
-    for a, b in spans:
-        if b - a < 600:
-            continue
-        wanted = _mints_with_buys_by(store, group_wallets, int(a), int(b)) if group_wallets is not None else None
+    for k, (a, b) in enumerate(spans):
+        wanted = None if bought is None else bought[k]
         if wanted is not None and not wanted:
             continue
         slot_secs = span_slot_secs(store, int(a), int(b))
