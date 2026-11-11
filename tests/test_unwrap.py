@@ -290,3 +290,37 @@ def test_a_key_for_another_wallet_than_the_books_is_refused(key):
     with pytest.raises(RuntimeError, match="not the sniper wallet"):
         U.Unwrapper(Chain(user, 1, 1), secret, wallet=other)
     assert U.Unwrapper(Chain(user, 1, 1), secret, wallet=user).user == user
+
+
+# -- the wallet's key, as the owner puts it in /etc/snipetech/env by hand ----------------------------------------------
+
+
+def test_the_key_is_read_in_both_forms_wallets_export_it_in(key):
+    """Base58 text of the 64 bytes (Phantom, OKTech) or the list of 64 numbers (solana-keygen, Solflare), with the
+    quotes and spaces a paste brings along: one reader for the sell path and the conversion."""
+    from solders.keypair import Keypair
+
+    from snipetech.solana.sell import Seller, keypair_from_secret
+
+    user, secret = key
+    as_list = json.dumps(list(bytes(Keypair.from_base58_string(secret))))
+    for form in (secret, f'  "{secret}" ', as_list, as_list.replace(" ", ""), f"'{as_list}'"):
+        assert str(keypair_from_secret(form).pubkey()) == user
+        assert U.Unwrapper(Chain(user, 1, 1), form, wallet=user).user == user
+        assert Seller(object(), form).user == user
+
+
+@pytest.mark.parametrize(
+    "bad", ["this-is-no-secret-key", "[1, 2, 3]", "[not json", "5J" * 20, "[" + "256," * 63 + "1]"]
+)
+def test_a_key_that_is_no_key_is_refused_in_words_and_nothing_of_it_is_repeated(key, bad):
+    """A slip of the paste is said in plain words, never as a crash, and neither the error nor anything chained to it
+    carries what was pasted (a log keeps what an error says)."""
+    from snipetech.solana.sell import Seller, keypair_from_secret
+
+    user, _secret = key
+    for make in (lambda: keypair_from_secret(bad), lambda: U.Unwrapper(Chain(user, 1, 1), bad, wallet=user),
+                 lambda: Seller(object(), bad)):  # fmt: skip
+        with pytest.raises(RuntimeError, match="not a valid secret key") as e:
+            make()
+        assert bad not in str(e.value) and e.value.__cause__ is None and e.value.__context__ is None

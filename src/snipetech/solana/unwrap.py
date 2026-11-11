@@ -37,7 +37,17 @@ import os
 from typing import Any
 
 from .programs import TOKEN_PROGRAM
-from .sell import ATA_PROGRAM, COMPUTE_BUDGET, LAMPORTS, SYSTEM_PROGRAM, WSOL_MINT, _pk, _refused, ata
+from .sell import (
+    ATA_PROGRAM,
+    COMPUTE_BUDGET,
+    LAMPORTS,
+    SYSTEM_PROGRAM,
+    WSOL_MINT,
+    _pk,
+    _refused,
+    ata,
+    keypair_from_secret,
+)
 
 MIN_UNWRAP_LAMPORTS = 10_000_000  # 0.01 SOL: a smaller conversion is not worth a transaction
 CU_LIMIT = 60_000  # the steps use about 30,000 units
@@ -139,10 +149,8 @@ class Unwrapper:
     what a conversion would do (an unsigned transaction, simulated without the signature check)."""
 
     def __init__(self, rpc, secret_b58: str | None = None, wallet: str | None = None):
-        from solders.keypair import Keypair
-
         secret = (secret_b58 or os.environ.get("SNIPER_SECRET", "")).strip()
-        self.kp = Keypair.from_base58_string(secret) if secret else None
+        self.kp = keypair_from_secret(secret) if secret else None
         if self.kp is None and not wallet:
             raise RuntimeError(
                 "SNIPER_SECRET is not set (base58 secret key of the sniper wallet, in /etc/snipetech/env)"

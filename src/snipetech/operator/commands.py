@@ -250,9 +250,9 @@ def _sell_key(cfg: Config) -> tuple[str | None, str | None]:
             "the sell key (SNIPER_SECRET) is not on the server. Put it in /etc/snipetech/env over SSH (never send it in chat)"
         )
     try:
-        from solders.keypair import Keypair
+        from ..solana.sell import keypair_from_secret
 
-        wallet = str(Keypair.from_base58_string(secret).pubkey())
+        wallet = str(keypair_from_secret(secret).pubkey())
     except Exception:  # noqa: BLE001 - whatever is wrong with it, its error text is not passed on
         return None, "the sell key (SNIPER_SECRET) in /etc/snipetech/env is not a valid secret key. Fix it over SSH"
     want = (cfg.operator.wallet or "").strip()

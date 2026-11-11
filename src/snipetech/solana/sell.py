@@ -40,6 +40,7 @@ The secret key is read from SNIPER_SECRET (base58, 64 bytes) in the environment 
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 from dataclasses import dataclass, field
@@ -335,6 +336,27 @@ def _token_amount(acc: dict | None, mint: str, owner: str) -> int | None:
         return None
 
 
+def keypair_from_secret(secret: str):
+    """The keypair of a secret key in either form wallets export it in: base58 text of the 64 bytes (Phantom, OKTech)
+    or the list of 64 numbers (solana-keygen, Solflare); the quotes and spaces a paste brings along are dropped. The
+    owner types it into /etc/snipetech/env by hand: anything else is a RuntimeError in plain words that carries
+    nothing of what was given, and no chained error either (a log keeps what an error says)."""
+    from solders.keypair import Keypair
+
+    text = str(secret).strip().strip("'\"").strip()
+    kp = None
+    try:
+        kp = Keypair.from_bytes(bytes(json.loads(text))) if text.startswith("[") else Keypair.from_base58_string(text)
+    except Exception:  # noqa: BLE001, S110 - whatever is wrong with it, its error's words are not passed on
+        pass
+    if kp is None:
+        raise RuntimeError(
+            "the key in SNIPER_SECRET is not a valid secret key (base58 text of 64 bytes, or a list of 64 numbers). "
+            "Fix it in /etc/snipetech/env over SSH"
+        )
+    return kp
+
+
 @dataclass
 class Holding:
     mint: str
@@ -349,14 +371,12 @@ class Seller:
     it, on its PumpSwap pool. `store`: the tape, for the migration record (none: the coin's own pool address alone)."""
 
     def __init__(self, rpc, secret_b58: str | None = None, store=None):
-        from solders.keypair import Keypair
-
-        secret = secret_b58 or os.environ.get("SNIPER_SECRET", "")
+        secret = (secret_b58 or os.environ.get("SNIPER_SECRET", "")).strip()
         if not secret:
             raise RuntimeError(
                 "SNIPER_SECRET is not set (base58 secret key of the selling wallet, in /etc/snipetech/env)"
             )
-        self.kp = Keypair.from_base58_string(secret.strip())
+        self.kp = keypair_from_secret(secret)
         self.user = str(self.kp.pubkey())
         self.rpc = rpc
         self.store = store

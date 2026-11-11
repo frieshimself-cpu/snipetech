@@ -563,6 +563,12 @@ def test_sell_refuses_a_key_that_is_not_the_sniper_wallets(tmp_path, monkeypatch
     ctx["cfg"].operator.wallet = ""  # no wallet in the config: the key's wallet is the one
     asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
     assert sweep.calls == [(RPC, [MINT], 0.5)]
+    # the same key as the list of 64 numbers some wallets export: read like the base58 text
+    from solders.keypair import Keypair
+
+    monkeypatch.setenv("SNIPER_SECRET", json.dumps(list(bytes(Keypair.from_base58_string(secret)))))
+    asyncio.run(handle_command(_cmd("sell", MINT), **ctx))
+    assert sweep.calls == [(RPC, [MINT], 0.5)] * 2
 
 
 def test_a_coin_sold_on_pumpswap_is_said_so_with_where_the_sol_lands(tmp_path, sell_key):
