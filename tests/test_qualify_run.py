@@ -137,7 +137,7 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             "deferred": False,
             "no_tape": 0,
             "too_few": 0,
-            "labelled": 2,
+            "unlabelled": 0,
             "lab_wallets": 3,
             "chunks": 1,
             "left_due": 0,
@@ -157,12 +157,8 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             and by["GOOD"]["venue_share"] == 1.0
             and by["GOOD"]["n_tape"] == 12
         )
-        labels = st._q("SELECT address, kind, label FROM labels ORDER BY address")
-        assert (
-            ("GOOD", "kol", "kol one") in labels
-            and ("WEAK", "cand", "cand:WEAK") in labels
-            and ("BAD", "cand", "cand:BAD") in labels
-        )
+        # the stage labels nobody (11 Nov: it labelled every wallet it measured `cand`; the lab is told its wallets)
+        assert st._q("SELECT address, kind, label FROM labels ORDER BY address") == [("GOOD", "kol", "kol one")]
         assert st.verdict_counts() == {"banned": 1, "candidate": 2, "retired": 1}
         assert st.coverage("qualify:last_lab") == {"ts": NOW, "wallets": 3}
         # a second run right away: nothing due (reviews are in the future) → no lab, nothing evaluated

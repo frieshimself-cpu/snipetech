@@ -29,6 +29,7 @@ def test_active_timers_are_left_to_systemd():
         ["events", "scan"],
         ["paper", "run"],
         ["rescore"],
+        ["exitrun", "run", "--minutes", "345"],
         ["research", "next"],
         ["research", "digest"],
     ]  # no unit runs these: always stood in for
@@ -263,3 +264,20 @@ def test_the_round_scores_deployers_from_the_copy_now_that_the_recorder_does_not
     assert stage not in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 50 * 60)], NOW)]
     assert stage in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 61 * 60)], NOW)]
     assert stage not in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 2 * 3600, running=True)], NOW)]
+
+
+def test_the_shadow_exit_recorder_is_kept_running_by_the_round():
+    """`exitrun run` watches the coins our snipers buy and writes down when our own exits would sell them (it sends
+    nothing). A job is ended after six hours at the latest, and this one was started again by hand each time: on
+    11 Nov nothing recorded from 05:52 to 06:19 while a new copy sniper was armed. The round keeps one running."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS, loop_stage
+    from snipetech.ops import ALLOWED
+
+    stage = ("exitrun", "run", "--minutes", "345")
+    assert stage in [tuple(a) for a in due_standins({}, [], NOW)]
+    assert "exitrun" in ALLOWED and loop_stage(list(stage)) == " ".join(stage)
+    assert 345 * 60 + 60 <= STAGE_LIMIT_SECS[" ".join(stage)] < 6 * 3600  # it ends by itself, inside the six hours
+    running = _meta(stage, NOW - 3 * 3600, running=True)
+    assert stage not in [tuple(a) for a in due_standins({}, [running], NOW)]  # one at a time
+    ended = _meta(stage, NOW - 346 * 60)
+    assert stage in [tuple(a) for a in due_standins({}, [ended], NOW)]  # started again at the next round

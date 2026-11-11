@@ -1090,6 +1090,16 @@ class Store:
             (address, label, kind, source, int(time.time())),
         )
 
+    def forget_labels(self, kind: str, source: str) -> int:
+        """Delete the labels of one kind that one source wrote, WRITE_BATCH a transaction; returns how many."""
+        gone = 0
+        while True:
+            rows = self._q("SELECT address FROM labels WHERE kind=? AND source=? LIMIT ?", (kind, source, self.WRITE_BATCH))
+            if not rows:
+                return gone
+            self._many("DELETE FROM labels WHERE address=? AND kind=? AND source=?", [(a, kind, source) for (a,) in rows])
+            gone += len(rows)
+
     def label_kind(self, address: str) -> str | None:
         """The kind of the one label an address has, or None."""
         row = self._q("SELECT kind FROM labels WHERE address=?", (address,))

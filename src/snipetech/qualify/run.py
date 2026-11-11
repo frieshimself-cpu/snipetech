@@ -237,7 +237,11 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     max_wallets = max_wallets or q.max_wallets
     out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
                            "forward_failed": 0, "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0,
-                           "too_few": 0, "labelled": 0, "lab_wallets": 0}  # fmt: skip
+                           "too_few": 0, "unlabelled": 0, "lab_wallets": 0}  # fmt: skip
+    # Until 11 Nov the stage labelled every wallet it measured `cand`, for the lab to find them by: 22,204 labels named
+    # "cand:<address>", in every list of names and in the group a default lab fires its `cand` rule on. The lab is told
+    # its wallets now; the labels this stage wrote go (a hand pick's, a research job's and every other kind stay).
+    out["unlabelled"] = store.forget_labels("cand", "qualify")
     take = max_wallets * SCREEN_FACTOR
     due = [c for c in store.candidates(due_before=int(now), limit=take + max_wallets) if c["status"] != "banned"][:take]
     if not due:
@@ -282,12 +286,6 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         mins = int((now - float(last["ts"])) / 60)
         out["deferred"], out["reason"] = True, f"last qualify lab {mins} min ago; interval {q.lab_interval_h:g} h"
         return out
-    labelled = store.labels()
-    for c in measurable:
-        w = c["wallet"]
-        if w not in labelled:
-            store.set_label(w, f"cand:{w}", "cand", "qualify")
-            out["labelled"] += 1
     runner = lab_runner or default_lab_runner(svc, cfg)
     landing = qualify_landing(store, q, now=now)
     q_eff = replace(q, landing_pos=landing)

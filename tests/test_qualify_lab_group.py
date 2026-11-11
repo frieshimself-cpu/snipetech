@@ -121,3 +121,44 @@ def test_a_group_that_bought_nothing_plans_no_coin(tmp_path, wallets):
         assert L._plan(st, st.tape_spans(), wallets, 1) == []
     finally:
         st.close()
+
+
+def test_the_stage_labels_no_wallet_it_measures(tmp_path):
+    """It labelled every wallet it measured `cand`, for the lab to find them by: 22,204 labels on 11 Nov, each named
+    "cand:<address>", in every list of names and in the `cand` group every default lab fires a rule on."""
+    from snipetech.qualify.run import run_qualify
+    from tests.test_qualify_run import _svc as svc_
+
+    svc, st, data = svc_(tmp_path)
+    try:
+        _tape(st, ["NEW"], coins=12)
+        st.upsert_candidate("NEW", "tape", {"positions": 12}, NOW - 3600)
+        svc.cfg.verdict.bootstrap_samples = 50
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        assert out["evaluated"] == 1 and st.latest_verdicts()[0]["n_tape"] == 12
+        assert st.labels("cand") == {} and "labelled" not in out
+    finally:
+        st.close()
+
+
+def test_the_labels_the_stage_wrote_before_are_removed_and_nobody_elses(tmp_path):
+    from snipetech.qualify.run import run_qualify
+    from tests.test_qualify_run import _svc as svc_
+
+    svc, st, data = svc_(tmp_path)
+    try:
+        _tape(st, ["NEW"], coins=12)
+        st.upsert_candidate("NEW", "tape", {"positions": 12}, NOW - 3600)
+        for k in range(1200):  # more than one batch
+            st.set_label(f"OLD{k}", f"cand:OLD{k}", "cand", "qualify")
+        st.set_label("PICK", "picked by hand", "cand", "user")
+        st.set_label("FOMO", "fomo 12 buys 3 SOL", "cand", "fomo")
+        st.set_label("K", "a kol", "kol", "file")
+        svc.cfg.verdict.bootstrap_samples = 50
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW)
+        assert out["unlabelled"] == 1200
+        assert st.labels("cand") == {"PICK": "picked by hand", "FOMO": "fomo 12 buys 3 SOL"}
+        assert st.labels("kol") == {"K": "a kol"}
+        assert run_qualify(svc, svc.cfg, data / "jobs", NOW + 60, early=True)["unlabelled"] == 0
+    finally:
+        st.close()

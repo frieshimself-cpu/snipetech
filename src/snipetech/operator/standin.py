@@ -26,6 +26,10 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     # streams until 11 Nov (each of its writes waited for an analysis's read). With the copy it read last, nothing is
     # due and the job ends in seconds.
     (("rescore",), None, 60 * 60),
+    # our own exits in shadow: watches the coins our snipers buy and writes down when our rules would sell, sending
+    # nothing. A job is ended after six hours at the latest, so this one ends itself before that and the next round
+    # starts another (11 Nov: started by hand until then; nothing recorded for 27 minutes after one had ended).
+    (("exitrun", "run", "--minutes", "345"), None, 60),
     # once a day after 05:10 UTC (_strategist_due); its own guard calls Claude only on 20 new live round trips
     (("strategist", "run"), "snipetech-strategist.timer", 3600),
     # idle-time research (operator/research.py): at every round, the most valuable research unit when nothing heavy
@@ -42,6 +46,7 @@ STAGE_LIMIT_SECS: dict[str, int] = {
     "qualify run": 2 * 3600, "snapshot-db --limit-secs 7200": 7200 + 300, "events scan": 60 * 60,
     "strategist run": 60 * 60,
     "paper run": 30 * 60, "rescore": 25 * 60, "research next": 10 * 60, "research digest": 10 * 60,
+    "exitrun run --minutes 345": 345 * 60 + 300,
 }  # fmt: skip
 
 
