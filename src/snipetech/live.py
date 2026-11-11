@@ -63,6 +63,10 @@ RECENT_MAX_COINS = 10_000
 VALVE_LAG_SECS = 20.0
 VALVE_SUSTAIN_SECS = 30.0
 VALVE_REOPEN_SECS = 10.0
+# A lag that shrinks this many seconds a second or more (the recorder running at twice the chain's pace) is a replay
+# catching up, not a recorder that cannot keep up: the valve sheds nothing. 11 Nov 07:23: 660 s behind after the
+# machine's standstill and gaining minutes a minute, it closed and the PumpSwap side's own replay was thrown away.
+VALVE_CATCHUP_GAIN = 1.0
 # The window counts on the chain clock (the block times being recorded, not the wall clock), and a coin stays watched a
 # minute past it, so neither a lagging recorder nor a resubscription cuts its last seconds.
 EXPIRY_GRACE_SECS = 60
@@ -347,13 +351,18 @@ class StallMeter:
 
 
 class LagValve:
-    """Closes when the recorder has run more than `lag_secs` behind the chain for `sustain_secs` straight, and opens
-    once it is back within `reopen_secs`. While it is closed the PumpSwap side records nothing and lists the chain time
-    of what it let go, so the recorder spends its time on pump.fun and LaunchLab, the tape everything else reads."""
+    """Closes when the recorder has run more than `lag_secs` behind the chain for `sustain_secs` straight without
+    catching up (its lag shrinking less than `catchup_gain` seconds a second over that time), and opens once it is back
+    within `reopen_secs`. While it is closed the PumpSwap side records nothing and lists the chain time of what it let
+    go, so the recorder spends its time on pump.fun and LaunchLab, the tape everything else reads. A recorder that is
+    behind and gaining fast is replaying what an outage made it miss: it is looked at again a window later."""
 
-    def __init__(self, lag_secs: float, sustain_secs: float, reopen_secs: float):
+    def __init__(self, lag_secs: float, sustain_secs: float, reopen_secs: float,
+                 catchup_gain: float = VALVE_CATCHUP_GAIN):  # fmt: skip
         self.lag_secs, self.sustain_secs, self.reopen_secs = lag_secs, sustain_secs, reopen_secs
+        self.catchup_gain = catchup_gain
         self.behind_since: float | None = None
+        self.behind_lag = 0.0  # the lag when the window `behind_since` opens began
         self.closed_at: float | None = None
 
     @property
@@ -364,8 +373,11 @@ class LagValve:
         """One measured lag; returns "closed" or "opened" when that changes the valve."""
         if lag > self.lag_secs:
             if self.behind_since is None:
-                self.behind_since = now
+                self.behind_since, self.behind_lag = now, lag
             if self.closed_at is None and now - self.behind_since >= self.sustain_secs:
+                if (self.behind_lag - lag) / (now - self.behind_since) >= self.catchup_gain:
+                    self.behind_since, self.behind_lag = now, lag  # catching up: judged again a window from now
+                    return None
                 self.closed_at = now
                 return "closed"
             return None

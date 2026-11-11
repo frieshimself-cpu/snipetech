@@ -477,3 +477,39 @@ def test_the_recorder_measures_how_far_back_a_replay_starts_before_its_first_tra
         await stop(task)
 
     asyncio.run(go())
+
+
+# -- the valve during a catch-up ---------------------------------------------------------------------------------------
+
+
+def test_the_valve_stays_open_while_a_replay_catches_up():
+    """11 Nov 07:23 UTC: after an 11-minute standstill the tape's stream replayed what it had missed, 660 s behind the
+    chain and gaining minutes a minute. The valve read "behind for 30 s" as "too slow", closed, and the PumpSwap side
+    threw away its own replay of the same stretch: a 12-minute hole there (07:12:49-07:25:27), the only one the
+    standstill left. A lag that shrinks faster than the clock runs is a recorder catching up, not one that cannot
+    keep up: nothing is shed."""
+    from snipetech.live import LagValve
+
+    v = LagValve(lag_secs=20, sustain_secs=30, reopen_secs=10)
+    t, lag, changes = 1000.0, 660.0, []
+    while lag > 0:  # the replay runs at five times the chain's pace: the lag falls four seconds a second
+        changes.append(v.observe(lag, t))
+        t, lag = t + 1, lag - 4
+    assert changes.count(None) == len(changes) and v.is_open
+
+
+def test_the_valve_still_closes_on_a_recorder_that_gains_too_slowly_or_not_at_all():
+    from snipetech.live import LagValve
+
+    v = LagValve(lag_secs=20, sustain_secs=30, reopen_secs=10)
+    seen = [v.observe(300 - 0.2 * k, 1000 + k) for k in range(31)]  # a fifth of a second a second: overloaded
+    assert seen[-1] == "closed" and not v.is_open
+    v = LagValve(lag_secs=20, sustain_secs=30, reopen_secs=10)
+    seen = [v.observe(25 + k, 1000 + k) for k in range(31)]  # falling further behind
+    assert seen[-1] == "closed"
+    # a catch-up that stalls half-way closes it one sustain window after it stalled
+    v = LagValve(lag_secs=20, sustain_secs=30, reopen_secs=10)
+    for k in range(60):
+        assert v.observe(660 - 4 * k, 1000 + k) is None
+    stalled = [v.observe(420, 1060 + k) for k in range(61)]
+    assert "closed" in stalled and stalled.index("closed") <= 60
