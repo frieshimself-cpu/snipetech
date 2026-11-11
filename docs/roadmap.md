@@ -28,7 +28,7 @@ first on the server's recording and only then run live in capped batches.
   true of two runs in three. Every third run another source (the first buyers of new coins) brings 400 to 800 new
   wallets; it still looks at every run, so nothing is lost. The two slowed sources bring 0 to 2 a run.
 - What is left, with numbers, and why each waits: [audit-2026-11-11.md](audit-2026-11-11.md) (rows 46-47, open
-  items 5 and 10-13). The agents still cost about 40 $ a day; that is the model and the half-hour cadence.
+  items 5 and 10-13). The agents cost 42.87 $ yesterday and 24.70 $ by 12:20 today; that is the model and the half-hour cadence.
 - **Still with the owner** (asked 08:30, no answer yet): preconfirmations on copy snipers, and the crew sniper. And
   the one root command on the server (`sudo bash /opt/snipetech/deploy/setup.sh`).
 
