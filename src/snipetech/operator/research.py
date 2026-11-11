@@ -74,7 +74,8 @@ MAX_CHARS = 2400  # the research lines (about 1500 at most) and what was learned
 
 # what the loop's stages are called in the digest; stages missing here (measure, book, feeds, copies) are not research
 STAGE_NAMES = {"qualify run": "wallet checks", "research search": "strategy search", "paper run": "forward paper test",
-               "discover run": "wallet discovery", "events scan": "event scan", "strategist run": "strategist"}  # fmt: skip
+               "discover run": "wallet discovery", "events scan": "event scan", "strategist run": "strategist",
+               "rescore": "deployer scores"}  # fmt: skip
 # a verdict's status in words: (one wallet, several wallets)
 STATUS_WORDS = {"qualified": ("passes every check", "passed every check"),
                 "candidate": ("needs more evidence", "need more evidence"), "retired": ("dropped", "dropped")}  # fmt: skip

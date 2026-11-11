@@ -28,8 +28,11 @@ def deployer_report(
     funder: dict | None = None,
     label: str | None = None,
     optimize: bool = True,
+    now: float | None = None,
 ) -> dict:
-    now = time.time()
+    """`now`: where the store's data ends (default: the clock, for the live database). A launch whose window ends after
+    it has only part of its trades there and counts as pending: the tape's copy ends where it was taken."""
+    now = time.time() if now is None else float(now)
     window = cfg.snipe.analysis_window_secs
     launches = sorted(launches, key=lambda l: (l.ts, l.slot))
     closed = [l for l in launches if l.ts + window <= now]

@@ -49,7 +49,7 @@ ALLOWED = frozenset({
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
     "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "db", "tx", "strategist",
     "research", "early-leaders", "fomo-wallets", "exitrun", "winners", "leaders-of", "copy-context", "playbook", "launch-tools",
-    "history",
+    "history", "rescore",
 })  # fmt: skip
 UNITS = (
     "snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily",

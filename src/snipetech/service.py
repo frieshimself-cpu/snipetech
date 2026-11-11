@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import sqlite3
 import threading
 import time
@@ -52,6 +53,9 @@ def _planned_leaders(p) -> set[str]:
 def _refused(p, leader: str, sid: str) -> dict:
     return {"action": "refused (overlap)", "name": p.name, "id": sid,
             "error": f"sniper {sid} already copies {leader[:6]}…: {OVERLAP_HINT}"}  # fmt: skip
+
+
+log = logging.getLogger(__name__)
 
 
 def compact_deployer(report: dict) -> dict:
@@ -214,39 +218,100 @@ class Service:
         max_launches: int | None = None,
         family: bool = False,
         optimize: bool = True,
+        reader: Store | None = None,
+        now: float | None = None,
     ) -> dict:
+        """`reader` and `now` (with `refresh=False`): analyse what another store holds, the tape's copy, whose data
+        ends at `now`; the score still goes to the live database, with the time its data ended (`data_until`)."""
         address = self._check(address)
+        store = reader or self.store
         limit = max_launches or self.cfg.snipe.max_launches
         window = self.cfg.snipe.analysis_window_secs
         if refresh:
             await self.ingestor.backfill_deployer(address, limit, window)
         funder = None
         if self.cfg.live.funder_lookup:
-            funder = self.store.funder(address)
+            funder = store.funder(address)
             if refresh and funder is None:
                 try:
                     funder = await self.ingestor.find_funder(address)
                 except Exception as exc:  # funding lookups are best-effort
                     self.progress(f"funder lookup failed: {exc}")
-        closed_before = int(time.time()) - window
-        launches = self.store.launches_by_deployer(address, limit, before_ts=closed_before)
+        closed_before = int(time.time() if now is None else now) - window
+        launches = store.launches_by_deployer(address, limit, before_ts=closed_before)
         if refresh:
             await self.fingerprint_early_trades(launches)
-        launches += [l for l in self.store.launches_by_deployer(address) if l.ts > closed_before]
+        launches += [l for l in store.launches_by_deployer(address) if l.ts > closed_before]
         label = None
         if family and funder and funder.get("funder"):
-            siblings = [w for w in self.store.wallets_funded_by(funder["funder"]) if w != address]
+            siblings = [w for w in store.wallets_funded_by(funder["funder"]) if w != address]
             for sib in siblings:
                 if refresh:
                     await self.ingestor.backfill_deployer(sib, limit, window)
-                launches += self.store.launches_by_deployer(sib, limit, before_ts=closed_before)
+                launches += store.launches_by_deployer(sib, limit, before_ts=closed_before)
             launches = list({l.mint: l for l in launches}.values())
             label = f"family of {funder['funder']} ({len(siblings) + 1} wallets)"
         report = await asyncio.to_thread(
-            deployer_report, self.store, self.cfg, address, launches, funder, label, optimize
+            deployer_report, store, self.cfg, address, launches, funder, label, optimize, now
         )
-        self.store.put_score("deployer", address, compact_deployer(report))
+        score = compact_deployer(report)
+        if now is not None:
+            score["data_until"] = int(now)
+        self.store.put_score("deployer", address, score)
         return report
+
+    async def rescore_deployers(
+        self, budget_secs: float = 900.0, lookback_secs: float = 86_400.0, now: float | None = None
+    ) -> dict:
+        """Score again every deployer a launch of whom closed after the data their last score was computed on, the
+        newest launch first, and the watch list. Read from the tape's copy (the live database when there is none), in
+        this process; the scores go to the live database. The tape recorder did this on a thread beside its event
+        loop, reading through its own connection (11 Nov: each of its writes waited for the analysis's read).
+
+        `now`: where the data ends (default: the newest trade the reader holds). A launch is closed when its analysis
+        window ended before that; one that closed more than `lookback_secs` before it makes nobody due. No cursor is
+        kept: a run that stops at `budget_secs`, fails or never starts leaves the rest due for the next one."""
+        t0 = time.monotonic()
+        tape = self.tape_store
+        window = self.cfg.snipe.analysis_window_secs
+        if now is None:
+            now = float(tape._q("SELECT MAX(ts) FROM trades")[0][0] or 0)
+        horizon = int(now)
+        closed_to = horizon - window
+        last = dict(
+            tape._q(
+                "SELECT user, MAX(ts) FROM launches WHERE ts > ? AND ts <= ? GROUP BY user",
+                (closed_to - int(lookback_secs), closed_to),
+            )
+        )
+        # the data each score was computed on: what this job wrote down, else when an older writer computed it (the
+        # recorder, a command on the live database: their data ended at that moment)
+        scored = {
+            key: at if until is None else until
+            for key, at, until in self.store._q(
+                "SELECT key, computed_at, json_extract(data, '$.data_until') FROM scores WHERE kind='deployer'"
+            )
+        }
+        fresh = sorted((d for d, ts in last.items() if scored.get(d, -1) < ts + window), key=lambda d: -last[d])
+        watch = [m["address"] for m in self.store.list_members("watch_deployer")]
+        counts = tape.launch_counts(fresh + watch)
+        due = [d for d in fresh if counts.get(d, 0) >= 2]
+        todo = due + [w for w in watch if w not in set(due) and counts.get(w, 0) >= 2]
+        rescored = failed = 0
+        for dep in todo:
+            if time.monotonic() - t0 >= budget_secs:
+                break
+            try:
+                await self.analyze_deployer(dep, refresh=False, optimize=False, reader=tape, now=horizon)
+                rescored += 1
+            except Exception as exc:  # noqa: BLE001 - one deployer's analysis never costs the others theirs
+                failed += 1
+                log.warning("rescore %s failed: %s", dep[:8], exc)
+        return {
+            "store": "live" if tape is self.store else "copy", "data_until": horizon, "due": len(due),
+            "single": len(fresh) - len(due), "rescored": rescored, "failed": failed,
+            "left": len(todo) - rescored - failed, "secs": round(time.monotonic() - t0, 1),
+        }  # fmt: skip
 
     def _known_between(self, mint: str, start_ts: int, end_ts: int) -> bool:
         """Is every trade on `mint` between the two times in the store?"""

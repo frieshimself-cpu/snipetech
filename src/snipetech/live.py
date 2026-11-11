@@ -39,7 +39,7 @@ import websockets
 
 # the coverage record this recorder writes; its reader stays importable from here (the lab reads amm_tape)
 from .amm_tape import AMM_RECENT_KEY, amm_recent_covers  # noqa: F401
-from .models import Launch, Normalized, Trade
+from .models import Completion, Launch, Migration, Normalized, Trade
 from .service import Service
 from .solana.base58 import b58decode
 from .solana.laserstream import account_keys
@@ -67,6 +67,7 @@ EXPIRY_GRACE_SECS = 60
 # the database refusing the recorder's writes (7 Nov 14:07-15:48): how long one write waits for the lock (its event loop
 # waits with it), after how long a new connection is opened, after how long the recorder exits for systemd to restart it
 WRITE_PATIENCE_SECS = 20.0
+FLUSH_ROWS = 500  # rows waiting in memory at which a transaction of the stream flushes them (else: the 10 s tick)
 REOPEN_AFTER_SECS = 180.0
 RESTART_AFTER_SECS = 600.0
 # A slot is placed on the chain clock at the slot time the recorder measures on its own stream (`fit_slot_secs`): the
@@ -111,6 +112,11 @@ ACTIONS = {
     "UNKNOWN": "unknown",
     None: "unknown",
 }
+
+
+def _refused(exc: sqlite3.OperationalError) -> bool:
+    """The database turned a write away because another writer has it (waited out next tick), nothing else."""
+    return "locked" in str(exc) or "busy" in str(exc)
 
 
 def fit_slot_secs(heads: Iterable[tuple[int, int]]) -> tuple[float, float] | None:
@@ -359,9 +365,17 @@ class LiveWatcher:
         self.poll = poll
         self.firehose = firehose
         self.recent: OrderedDict[str, int] = OrderedDict()  # mint -> launch ts (live window)
+        self.launched: dict[str, Launch] = {}  # the launches of `recent`, kept until their windows close
         self.slot_pos: dict[int, int] = defaultdict(int)
+        # What the streams handed over since the last flush. Nothing is written inside a stream's handler: the flush
+        # (each tick, or FLUSH_ROWS rows) writes it all, a table a transaction (11 Nov: a transaction a launch, and a
+        # read or two, held the handler while research jobs kept the database busy; 24-30 s behind the chain).
         self.buffer: list[Trade] = []
         self.fbuffer: list[Trade] = []  # foreign-quoted trades (tape mode)
+        self.lbuffer: list[Launch] = []
+        self.pbuffer: dict[str, tuple[str, str]] = {}  # pools: pool -> (base mint, quote mint)
+        self.cbuffer: list[Completion] = []
+        self.mbuffer: list[Migration] = []
         self.parked: dict[str, list[tuple[TxEvents, int]]] = {}  # pool -> transactions waiting for its mints
         self.pools = self.store.pools()
         self.gaps: list[tuple[float, float]] = []
@@ -953,17 +967,17 @@ class LiveWatcher:
                 self._park(norm.unresolved_pools, tx, pos)
         if norm.pools:
             self.pools.update(norm.pools)
-            with self.meter.timed("tx writes"):
-                self.store.add_pools(norm.pools)
+            self.pbuffer.update(norm.pools)
         window = self.cfg.storage.live_window_secs
         for launch in norm.launches:
             self.stats["launches"] += 1
-            with self.meter.timed("tx writes"):
-                self.store.add_launches([launch])
+            self.lbuffer.append(launch)
             self.recent[launch.mint] = launch.ts
-            task = asyncio.get_running_loop().create_task(self._on_launch(launch))
-            self.tasks.add(task)
-            task.add_done_callback(self.tasks.discard)
+            self.launched[launch.mint] = launch
+            if self.signals != "none":  # the tape sends none: no verdict is looked up for a signal nobody gets
+                task = asyncio.get_running_loop().create_task(self._on_launch(launch))
+                self.tasks.add(task)
+                task.add_done_callback(self.tasks.discard)
         for t in norm.trades:
             lts = self.recent.get(t.mint)
             if self.tape or (lts is not None and t.ts - lts <= window):
@@ -972,25 +986,25 @@ class LiveWatcher:
         if norm.foreign:
             self.fbuffer.extend(norm.foreign)
             self.stats["foreign_trades"] += len(norm.foreign)
-        if norm.completions:
-            with self.meter.timed("tx writes"):
-                self.store.add_completions(norm.completions)
-        if norm.migrations:
-            with self.meter.timed("tx writes"):
-                self.store.add_migrations(norm.migrations)
+        self.cbuffer.extend(norm.completions)
+        self.mbuffer.extend(norm.migrations)
         if self.migrated is not None and (norm.completions or norm.migrations):
             try:
                 self._note_departures(norm)
             except Exception as exc:  # noqa: BLE001 — never at the cost of the pump.fun transaction it came in
                 self._amm_failed("record", exc)
         while self.recent and next(iter(self.recent.values())) < time.time() - window - 60:
-            mint, ts = self.recent.popitem(last=False)
-            with self.meter.timed("tx writes"):
-                launch = self.store.launch(mint)
+            mint, _ts = self.recent.popitem(last=False)
+            launch = self.launched.pop(mint, None)  # the one the stream handed over: never read back
             if launch:
                 self.closed_launches.append(launch)
-        if len(self.buffer) + len(self.fbuffer) >= 500:
+        if self._buffered() >= FLUSH_ROWS or (norm.launches and self.signals != "none"):
+            # a full buffer; or a launch whose signal is on its way: its row is there before the signal's reader looks
             self._flush(hot=True)
+
+    def _buffered(self) -> int:
+        return (len(self.buffer) + len(self.fbuffer) + len(self.lbuffer) + len(self.pbuffer) + len(self.cbuffer)
+                + len(self.mbuffer))  # fmt: skip
 
     def _note_departures(self, norm: Normalized) -> None:
         """Coins that left their curve in this transaction join the recent-migrations record with their pool and the
@@ -1059,14 +1073,28 @@ class LiveWatcher:
             self.stats["unresolved_pool_events"] += len(waiting)
 
     def _flush(self, hot: bool = False) -> None:
-        """Write the buffered trades. A database that refuses them (locked) keeps them in memory for the next tick, and
-        the hot path (`hot`: the 500-trade flush on a transaction) leaves a failing database to the maintenance tick.
-        After REOPEN_AFTER_SECS of refusals the recorder opens a new connection; after RESTART_AFTER_SECS it exits so
-        systemd starts it afresh (7 Nov 14:07-15:48: it recorded nothing for 1 h 45 min until a deploy restarted it)."""
+        """Write what the streams handed over since the last flush: pools, launches, completions, migrations, trades,
+        a table a transaction, a coin's launch before its trades. Each table's rows leave memory once they are written:
+        a database that refuses them (locked) keeps the rest for the next tick, and the hot path (`hot`: the flush on a
+        transaction) leaves a failing database to the maintenance tick. After REOPEN_AFTER_SECS of refusals the recorder
+        opens a new connection; after RESTART_AFTER_SECS it exits so systemd starts it afresh (7 Nov 14:07-15:48: it
+        recorded nothing for 1 h 45 min until a deploy restarted it)."""
         if hot and self.write_fail_since is not None:
             return
         try:
             with self.meter.timed("flush"):
+                if self.pbuffer:
+                    self.store.add_pools(self.pbuffer)
+                    self.pbuffer = {}
+                if self.lbuffer:
+                    self.store.add_launches(self.lbuffer)
+                    self.lbuffer = []
+                if self.cbuffer:
+                    self.store.add_completions(self.cbuffer)
+                    self.cbuffer = []
+                if self.mbuffer:
+                    self.store.add_migrations(self.mbuffer)
+                    self.mbuffer = []
                 if self.buffer:
                     self.store.add_trades(self.buffer)
                     self.buffer = []
@@ -1074,7 +1102,7 @@ class LiveWatcher:
                     self.store.add_ftrades(self.fbuffer)
                     self.fbuffer = []
         except sqlite3.OperationalError as exc:
-            if "locked" not in str(exc) and "busy" not in str(exc):
+            if not _refused(exc):
                 raise
             self._write_failed(exc)
             return
@@ -1087,8 +1115,8 @@ class LiveWatcher:
         now = self.clock()
         if self.write_fail_since is None:
             self.write_fail_since = now
-            log.warning("tape: the database refused the recorder's writes (%s); %d trades wait in memory", exc,
-                        len(self.buffer) + len(self.fbuffer))  # fmt: skip
+            log.warning("tape: the database refused the recorder's writes (%s); %d rows wait in memory", exc,
+                        self._buffered())  # fmt: skip
             return
         failing = now - self.write_fail_since
         if failing >= RESTART_AFTER_SECS:
@@ -1213,16 +1241,26 @@ class LiveWatcher:
             await asyncio.sleep(min(10, self.cfg.live.rescore_interval_secs))
             self.meter.tick()
             self._flush()
-            with self.meter.timed("coverage"):
-                self._mark_coverage()
-                if self.tape:
-                    self._mark_tape()
+            # The coverage records say what the database holds: nothing new while it refuses the recorder's rows (they
+            # wait in memory, and a recorder that then exits never wrote them). A refusal of the records themselves is
+            # the flush's refusal, never the end of this task: it ended the recorder (a hole in the tape).
+            if self.write_fail_since is None:
+                try:
+                    with self.meter.timed("coverage"):
+                        self._mark_coverage()
+                        if self.tape:
+                            self._mark_tape()
+                except sqlite3.OperationalError as exc:
+                    if not _refused(exc):
+                        raise
+                    self._write_failed(exc)
             if self.migrated is not None:
                 self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
                 self.stats["amm_recent_coins"] = len(self.migrated)
                 self.amm_wake.set()  # the PumpSwap side looks again (expired pools leave, a stalled stream restarts)
-                with self.meter.timed("coverage"):
-                    self._mark_amm_recent()
+                if self.write_fail_since is None:
+                    with self.meter.timed("coverage"):
+                        self._mark_amm_recent()
             now = time.time()
             if now - last_prune > 3600 and (pruning is None or pruning.done()):
                 # a task of its own: this tick (flush, tape coverage, rescore) goes on while it runs
@@ -1308,24 +1346,43 @@ class LiveWatcher:
             self._amm_failed("coverage", exc)
 
     def _mark_coverage(self) -> None:
-        """A launch's window counts as indexed only if the firehose had no gap during it."""
+        """A launch's window counts as indexed only if the firehose had no gap during it. The windows that closed since
+        the last tick are marked in one read and one write (a read and a transaction a launch before: 35,000 a day).
+        A write the database refuses leaves them for the next tick."""
         window = self.cfg.storage.live_window_secs
         done, self.closed_launches = self.closed_launches, []
-        for l in done:
-            lo, hi = l.ts - 1, l.ts + window
-            gaps = self.gaps + ([(self.disconnected_at, time.time())] if self.disconnected_at else [])
-            if any(g0 < hi and g1 > lo for g0, g1 in gaps):
-                continue
-            cov = self.store.coverage(f"mint:{l.mint}")
-            cov["from_ts"] = min(cov.get("from_ts", lo), lo)
-            cov["to_ts"] = max(cov.get("to_ts", 0), hi)
-            cov["live"] = True
-            self.store.set_coverage(f"mint:{l.mint}", cov)
-            self.stats["windows_closed"] += 1
-            self.due.add(l.user)
+        if not done:
+            return
+        gaps = self.gaps + ([(self.disconnected_at, time.time())] if self.disconnected_at else [])
+        whole = {f"mint:{l.mint}": l for l in done if not any(g0 < l.ts + window and g1 > l.ts - 1 for g0, g1 in gaps)}
+        if not whole:
+            return
+        try:
+            have = self.store.coverages(list(whole))
+            records = {}
+            for key, l in whole.items():
+                lo, hi = l.ts - 1, l.ts + window
+                cov = have.get(key, {})
+                cov["from_ts"] = min(cov.get("from_ts", lo), lo)
+                cov["to_ts"] = max(cov.get("to_ts", 0), hi)
+                cov["live"] = True
+                records[key] = cov
+            self.store.set_coverages(records)
+        except sqlite3.OperationalError:
+            self.closed_launches = list(whole.values()) + self.closed_launches
+            raise
+        self.stats["windows_closed"] += len(records)
+        if self.signals != "none":
+            self.due.update(l.user for l in whole.values())
 
     async def _rescore(self) -> None:
-        """Re-score deployers whose launch windows just closed, from local data only."""
+        """Re-score deployers whose launch windows just closed, from local data only: for a recorder that sends
+        signals. The tape (--signals none) scores nobody: an analysis read through the recorder's own connection, on a
+        thread beside its event loop, and each of the loop's writes waited for that read to end (11 Nov: 2,731 analyses
+        a day; "tx writes" 22-26 s of a minute while research jobs kept the disk busy). `snipetech rescore` does it
+        from the tape's copy, in a process of its own."""
+        if self.signals == "none":
+            return
         watch = {m["address"] for m in self.store.list_members("watch_deployer")}
         due, self.due = self.due, set()
         for dep in due | watch:

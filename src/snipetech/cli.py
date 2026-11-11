@@ -388,6 +388,13 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--min-snipes", type=int, default=5)
     sp.add_argument("--limit", type=int, default=30)
 
+    sp = cmd(
+        "rescore",
+        "score again the deployers a launch of whom closed since their last score, from the tape's copy (the recorder "
+        "did this beside its streams until 11 Nov)",
+    )
+    sp.add_argument("--limit-secs", type=float, default=900.0, help="stop starting analyses after this long")
+    sp.add_argument("--hours", type=float, default=24.0, help="a launch that closed longer ago makes nobody due")
     sp = cmd("profitable-devs", "dev wallets that are profitable to snipe, with the bribe needed to land early")
     sp.add_argument("--min-launches", type=int, default=3)
     sp.add_argument("--days", type=float, default=7.0)
@@ -1210,6 +1217,8 @@ async def _run(args, cfg: Config) -> int:
             _out(
                 args, await asyncio.to_thread(svc.top_snipers, args.days, args.min_snipes, args.limit), R.render_snipers
             )
+        elif c == "rescore":
+            print(json.dumps(await svc.rescore_deployers(args.limit_secs, args.hours * 3600)))
         elif c == "profitable-devs":
             _out(
                 args,
@@ -1717,6 +1726,7 @@ BATCH_COMMANDS = frozenset(
         "copy-context",
         "playbook",
         "launch-tools",
+        "rescore",
     }
 )
 BATCH_NICE = 10

@@ -28,6 +28,7 @@ def test_active_timers_are_left_to_systemd():
         ["snapshot-db", "--limit-secs", "7200"],  # the copy is the round's job since 11 Nov, whatever its timer does
         ["events", "scan"],
         ["paper", "run"],
+        ["rescore"],
         ["research", "next"],
         ["research", "digest"],
     ]  # no unit runs these: always stood in for
@@ -246,3 +247,19 @@ def test_the_round_writes_the_database_copy_whatever_the_timer_does():
     assert STAGE_LIMIT_SECS[" ".join(copy)] >= 7200
     assert copy not in [tuple(a) for a in due_standins(services, [_meta(copy, NOW - 20 * 60)], NOW)]
     assert copy in [tuple(a) for a in due_standins(services, [_meta(copy, NOW - 31 * 60)], NOW)]
+
+
+def test_the_round_scores_deployers_from_the_copy_now_that_the_recorder_does_not():
+    """11 Nov: the recorder scored deployers beside its streams, and each of its writes waited for an analysis's read.
+    The round starts `rescore` every hour instead: a job of its own on the tape's copy, never two at once, which finds
+    nothing due while the copy is the one it read last."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS, loop_stage
+    from snipetech.ops import ALLOWED
+
+    stage = ("rescore",)
+    assert stage in [tuple(a) for a in due_standins({}, [], NOW)]
+    assert "rescore" in ALLOWED and loop_stage(["rescore"]) == "rescore"
+    assert STAGE_LIMIT_SECS["rescore"] <= 30 * 60
+    assert stage not in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 50 * 60)], NOW)]
+    assert stage in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 61 * 60)], NOW)]
+    assert stage not in [tuple(a) for a in due_standins({}, [_meta(stage, NOW - 2 * 3600, running=True)], NOW)]

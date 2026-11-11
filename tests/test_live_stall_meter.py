@@ -85,9 +85,10 @@ def test_a_database_call_that_holds_the_loop_for_seconds_is_logged_at_most_once_
     assert sum("held the recorder's event loop" in r.getMessage() for r in caplog.records) == 2
 
 
-def test_the_hot_paths_writes_are_timed_too(monkeypatch):
-    """A migration's row is written on the hot path, inside the stream's handler: while the database is locked the write
-    waits there, and the stream with it (7 Nov 14:16-15:37: 'LaserStream dropped (database is locked)')."""
+def test_a_migrations_row_is_written_and_timed_with_the_flush(monkeypatch):
+    """A migration's row was written on the hot path, inside the stream's handler: while the database was locked the
+    write waited there, and the stream with it (7 Nov 14:16-15:37: 'LaserStream dropped (database is locked)'). Since
+    11 Nov the handler writes nothing: the row goes with the flush, and its time is the flush's."""
     st = Store(":memory:")
     w = watcher(store=st)
     wall = Clock(1_000.0)
@@ -100,4 +101,6 @@ def test_the_hot_paths_writes_are_timed_too(monkeypatch):
 
     monkeypatch.setattr(st, "add_migrations", slow)
     w._on_tx(migration(A1_MINT, A1_POOL, A1_TS - 60), 0)
-    assert w.meter.summary()["db"] == {"tx writes": 2.0}
+    assert w.meter.summary()["db"] == {}
+    w._flush()
+    assert w.meter.summary()["db"] == {"flush": 2.0}

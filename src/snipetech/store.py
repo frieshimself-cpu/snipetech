@@ -339,6 +339,9 @@ class Store:
             conn = sqlite3.connect(uri, uri=True, check_same_thread=False, timeout=30)
         else:
             conn = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
+            # the connection's own setting, not the file's: the schema step sets it on the first connection only, and
+            # one opened by reopen() went back to sqlite's default (FULL: a disk sync on every commit of the recorder)
+            conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(f"PRAGMA journal_size_limit = {int(self.JOURNAL_SIZE_LIMIT)}")
         return conn
 
@@ -676,6 +679,22 @@ class Store:
             (since_ts, min_launches),
         )
 
+    def launch_counts(self, addresses: Iterable[str]) -> dict[str, int]:
+        """How many launches each address deployed, as signer or as creator (what `launches_by_deployer` lists), for the
+        addresses that have any: 450 addresses a read, over the two indexes."""
+        addresses = list(dict.fromkeys(addresses))
+        out: dict[str, int] = {}
+        for i in range(0, len(addresses), 450):
+            chunk = addresses[i : i + 450]
+            marks = ",".join("?" * len(chunk))
+            rows = self._q(
+                f"SELECT a, COUNT(*) FROM (SELECT user AS a, mint FROM launches WHERE user IN ({marks}) "
+                f"UNION SELECT creator AS a, mint FROM launches WHERE creator IN ({marks})) GROUP BY a",
+                chunk + chunk,
+            )
+            out.update(rows)
+        return out
+
     def signer_creators(self, user: str) -> int:
         """How many distinct creators this signer launched for (>2 suggests a launch platform)."""
         return self._q("SELECT COUNT(DISTINCT creator) FROM launches WHERE user=?", (user,))[0][0]
@@ -746,6 +765,15 @@ class Store:
     def coverage(self, key: str) -> dict[str, Any]:
         rows = self._q("SELECT data FROM coverage WHERE key=?", (key,))
         return json.loads(rows[0][0]) if rows else {}
+
+    def coverages(self, keys: list[str]) -> dict[str, dict[str, Any]]:
+        """The records under `keys` that exist, 900 keys a read (the recorder's closed windows of a tick: one read)."""
+        out: dict[str, dict[str, Any]] = {}
+        for i in range(0, len(keys), 900):
+            chunk = keys[i : i + 900]
+            rows = self._q(f"SELECT key, data FROM coverage WHERE key IN ({','.join('?' * len(chunk))})", chunk)
+            out.update((key, json.loads(data)) for key, data in rows)
+        return out
 
     def usage_add(self, provider: str, n: int = 1, now: float | None = None) -> int:
         """Monthly request/credit counter per data provider, shared by every process (coverage key api_usage:<p>:<YYYY-MM>)."""
@@ -981,6 +1009,14 @@ class Store:
         self._exec(
             "INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
             (key, json.dumps(data), int(time.time())),
+        )
+
+    def set_coverages(self, records: dict[str, dict[str, Any]]) -> None:
+        """Several records in one transaction (WRITE_BATCH a transaction): each stands alone, as `set_coverage`'s."""
+        now = int(time.time())
+        self._many(
+            "INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
+            [(key, json.dumps(data), now) for key, data in records.items()],
         )
 
     def put_score(self, kind: str, key: str, data: dict[str, Any]) -> None:

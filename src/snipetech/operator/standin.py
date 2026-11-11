@@ -22,6 +22,10 @@ STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("snapshot-db", "--limit-secs", "7200"), None, 30 * 60),
     (("events", "scan"), None, 3 * 3600),  # snipetech-events only polls the feeds; no unit runs the scan
     (("paper", "run"), None, 30 * 60),  # the forward paper test: free learning on live prices, around the clock
+    # deployers whose launches closed since their last score, from the tape's copy: the recorder did this beside its
+    # streams until 11 Nov (each of its writes waited for an analysis's read). With the copy it read last, nothing is
+    # due and the job ends in seconds.
+    (("rescore",), None, 60 * 60),
     # once a day after 05:10 UTC (_strategist_due); its own guard calls Claude only on 20 new live round trips
     (("strategist", "run"), "snipetech-strategist.timer", 3600),
     # idle-time research (operator/research.py): at every round, the most valuable research unit when nothing heavy
@@ -37,7 +41,7 @@ STAGE_LIMIT_SECS: dict[str, int] = {
     "measure run": 20 * 60, "book run": 10 * 60, "events poll --once": 10 * 60, "discover run": 60 * 60,
     "qualify run": 2 * 3600, "snapshot-db --limit-secs 7200": 7200 + 300, "events scan": 60 * 60,
     "strategist run": 60 * 60,
-    "paper run": 30 * 60, "research next": 10 * 60, "research digest": 10 * 60,
+    "paper run": 30 * 60, "rescore": 25 * 60, "research next": 10 * 60, "research digest": 10 * 60,
 }  # fmt: skip
 
 

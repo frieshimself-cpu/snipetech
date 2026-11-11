@@ -990,6 +990,7 @@ def test_a_failure_inside_the_mode_never_costs_the_stream_or_pump_fun(monkeypatc
 
     monkeypatch.setattr("snipetech.live.pump_pool", broken)
     w._on_tx(completion(addr("a coin"), A1_TS), 0)  # the pump.fun transaction is recorded as always
+    w._flush()
     assert w.store.completion(addr("a coin")) is not None and w.stats["amm_record_errors"] == 1
     monkeypatch.setattr(w.valve, "observe", lambda lag, now: 1 / 0)
     w.lag_due = 0
