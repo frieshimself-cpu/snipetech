@@ -15,6 +15,7 @@ from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import (
     armed_before_rules,
+    companions,
     create_slot_share,
     crowding,
     forward_gate,
@@ -90,7 +91,8 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     sends by default (`live_exits(cfg)["lab"]`, book/run.py); the menu only picks the wallet's own exit for its copy plan
     (rank_wallets with a gate). Only the trades come from the hourly copy: the wallets come from the live database plus
     the due list, since the copy has none of the `cand` labels this run just wrote, and a due wallet with another label
-    (a KOL) is never labelled `cand`."""
+    (a KOL) is never labelled `cand`. Each wallet's copies are scored behind its companions, the wallets its operator
+    buys with in the next transactions (gates.companions; 11 Nov: "+3x" counted them as the buyers ahead of us)."""
 
     def run(wallets: list[str], position: str) -> list[dict]:
         from ..analysis import lab as L
@@ -101,15 +103,19 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         # ever measured: 22,204 on 11 Nov) a lab found and scored the coins of all of them to keep these rows
         kols["cand"] = set(wallets)
         menu = L.menu_exits(cfg)
+        tc = time.monotonic()
+        since = _tape_start(tape, time.time())
+        mates = {w: m for w in wallets if (m := companions(tape, w, since))}
         t0 = time.monotonic()
         data = L.collect(tape, cfg, cfg.book.fill_min_sol, 0, position, per_tx_sol=lab_tx_cost(svc.store, cfg),
-                         groups=("cand",), exits=list(menu.values()), kols=kols)  # fmt: skip
+                         groups=("cand",), exits=list(menu.values()), kols=kols, mates=mates)  # fmt: skip
         t1 = time.monotonic()
         rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
                               gate=menu["lab"], with_moments=True)  # fmt: skip
         # where the lab's time went and on how many processes (the run's output carries it: `run_qualify`)
-        run.info = {"workers": data.get("workers"), "moments": len(data["rows"]),
-                    "secs": {"collect": round(t1 - t0, 1), "rank": round(time.monotonic() - t1, 1)}}  # fmt: skip
+        run.info = {"workers": data.get("workers"), "moments": len(data["rows"]), "mates": len(mates),
+                    "secs": {"companions": round(t0 - tc, 1), "collect": round(t1 - t0, 1),
+                             "rank": round(time.monotonic() - t1, 1)}}  # fmt: skip
         return rows
 
     run.info = None
@@ -371,6 +377,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
                 if info:  # the lab's processes, its moments and where its own time went, summed over the chunks
                     lab_info["workers"] = max(lab_info.get("workers") or 0, info.get("workers") or 0)
                     lab_info["moments"] = lab_info.get("moments", 0) + int(info.get("moments") or 0)
+                    lab_info["mates"] = lab_info.get("mates", 0) + int(info.get("mates") or 0)
                     for k, t in (info.get("secs") or {}).items():
                         lab_info.setdefault("secs", {})[k] = round(lab_info.get("secs", {}).get(k, 0.0) + float(t), 1)
     except LabBusy as exc:

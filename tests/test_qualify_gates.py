@@ -569,3 +569,74 @@ def test_a_read_of_the_creator_links_that_fails_is_not_a_pass(monkeypatch):
             relationship_gate(st, addr("paid"))
     finally:
         st.close()
+
+
+# -- companions: the wallets a copied wallet's operator buys with in the next transactions (11 Nov) -------------------
+
+
+def _set_world(st, wallet, coins, mates=("m1", "m2"), every=None, slot0=SLOT):
+    """`wallet` buys `coins` coins. In each, the same block: its companions in the next places (`every`: {name: on
+    how many of the coins}, default all), a bot far behind in the block on every coin, and a wallet in the next block."""
+    dev = addr("set-dev")
+    every = every or {}
+    for k in range(coins):
+        m = Market(st, addr(f"{wallet}:coin{k}"), dev, NOW - 5000 + 60 * k, slot0 + 500 * k)
+        m.buy(dev, 1.0, 0, sig=m.create_sig)
+        lead = m.buy(addr(wallet), 1.5, 5)
+        lead.pos = 200
+        for j, name in enumerate(mates):
+            if k < every.get(name, coins):
+                m.buy(addr(name), 1.5, 5).pos = 201 + j
+        m.buy(addr("far-bot"), 0.2, 5).pos = 260  # in its block on every buy, 60 places behind: a copier, no companion
+        if k == 1:
+            m.buy(addr("once-bot"), 4.0, 5).pos = 204  # a fast bot right behind the set, once
+        m.buy(addr("next-block"), 0.3, 6).pos = 1  # the next block, first place: not the wallet's block
+        m.commit()
+
+
+def test_companions_are_the_wallets_that_habitually_buy_in_the_next_places():
+    from snipetech.qualify.gates import COMPANION_MIN, COMPANION_PLACES, COMPANION_SHARE, companions
+
+    assert (COMPANION_PLACES, COMPANION_SHARE, COMPANION_MIN) == (5, 0.5, 5)
+    st = Store(":memory:")
+    # m1 on all 8 of its buys, m2 on 5 of 8 (63 %), m3 on 3 of 8 (38 %: under half)
+    _set_world(st, "W", 8, mates=("m1", "m2", "m3"), every={"m2": 5, "m3": 3})
+    got = companions(st, addr("W"), NOW - 10_000)
+    assert got == frozenset({addr("m1"), addr("m2")})
+    # the copier 60 places behind on every buy, the bot next to it once, the wallet in the next block: none of them
+    assert not {addr("far-bot"), addr("once-bot"), addr("next-block"), addr("m3")} & got
+    assert companions(st, addr("nobody"), NOW - 10_000) == frozenset()
+    st.close()
+
+
+def test_a_wallet_with_too_few_buys_has_no_companions_by_the_rule():
+    """Under COMPANION_MIN shared buys nothing is habit: two wallets that met in four coins are not called a set."""
+    from snipetech.qualify.gates import companions
+
+    st = Store(":memory:")
+    _set_world(st, "W", 4, mates=("m1",))
+    assert companions(st, addr("W"), NOW - 10_000) == frozenset()
+    st.close()
+
+
+def test_companions_count_first_buys_on_the_tape_asked_for():
+    """Only the wallet's first buy of a coin is a moment a copy follows, and only buys since `since` count."""
+    from snipetech.qualify.gates import companions
+
+    st = Store(":memory:")
+    _set_world(st, "W", 6, mates=("m1",))
+    assert companions(st, addr("W"), NOW - 10_000) == frozenset({addr("m1")})
+    assert companions(st, addr("W"), NOW - 5000 + 60 * 3) == frozenset()  # three of its six buys are older: too few
+    st.close()
+
+
+def test_a_verdict_says_when_its_copies_were_scored_behind_companions(cfg):
+    row = {"n": 30, "mean": 0.01, "ev_lower": 0.004, "exit": "lab", "mates": 3}
+    crowd = {"followers_1s": 0.0, "gap3_pct": 4.0, "n": 30}
+    v = verdict_for("W", {"trades": None}, row, 1.0, crowd, True, [], cfg, NOW)
+    assert v["status"] == "qualified"
+    assert any("3 wallets of its own" in r and "behind them" in r for r in v["reasons"])
+    plain = verdict_for("W", {"trades": None}, dict(row, mates=0), 1.0, crowd, True, [], cfg, NOW)
+    assert plain["reasons"] == ["no history from any source"]  # as before: nothing is said of a wallet that buys alone
+    assert verdict_for("W", {"trades": None}, {k: v for k, v in row.items() if k != "mates"}, 1.0, crowd, True, [],
+                       cfg, NOW)["reasons"] == ["no history from any source"]  # fmt: skip

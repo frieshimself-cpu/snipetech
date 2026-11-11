@@ -99,6 +99,7 @@ def _pool(rows: list[dict[str, Any]], conf: float, samples: int) -> dict[str, An
     st = summarize(pool, conf, samples) if pool else {}
     return {
         "wallets": len(rows), "with_copies": sum(1 for r in rows if r["pnls"]),
+        "wallets_with_mates": sum(1 for r in rows if r.get("mates")),
         "copies": sum(len(r["pnls"]) for r in rows), "moments": len(pool),
         "mean_sol": st.get("mean"), "lower_sol": st.get("ev_lower"), "win_rate": st.get("win_rate"),
         "total_sol": st.get("total"),
@@ -141,6 +142,7 @@ def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: La
     runner = lab_runner or default_lab_runner(svc, cfg)
     spans = getattr(svc, "tape_store", store).tape_spans()
     moments: dict[str, list] = {}
+    mates: dict[str, int] = {}  # how many companions each wallet's copies were scored behind (lab.copy_entry)
     started = time.monotonic()
     try:
         with lab_lock(Path(jobs_dir).parent, wait=wait):
@@ -149,6 +151,7 @@ def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: La
                 for row in runner(chunk, landing):
                     if row.get("wallet"):
                         moments[row["wallet"]] = row.get("moments") or []
+                        mates[row["wallet"]] = int(row.get("mates") or 0)
     except LabBusy as exc:
         return out | {"deferred": True, "reason": f"lab slot: {exc}"}
     out["lab_secs"] = round(time.monotonic() - started, 1)
@@ -161,7 +164,7 @@ def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: La
         after = ({"n": len(pnls), "mean_sol": st["mean"], "lower_sol": st["ev_lower"], "win_rate": st["win_rate"],
                   "total_sol": st["total"]} if pnls else {"n": 0})  # fmt: skip
         rows.append(r | {"after": after, "tape_hours": round(tape_hours_after(spans, r["since"], now), 1),
-                         "pnls": pnls, "copies": copies})  # fmt: skip
+                         "mates": mates.get(r["wallet"], 0), "pnls": pnls, "copies": copies})  # fmt: skip
     out["groups"] = {g: _pool([r for r in rows if r["group"] == g], conf, samples)
                      for g in GROUPS if any(r["group"] == g for r in rows)}  # fmt: skip
     out["rows"] = [{k: v for k, v in r.items() if k not in ("pnls", "copies")} for r in rows]

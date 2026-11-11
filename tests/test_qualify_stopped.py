@@ -48,7 +48,8 @@ def _lab(copies):
 
     def run(wallets, position):
         calls.append((list(wallets), position))
-        return [{"wallet": w, "n": len(copies[w]), "mean": 0.0, "ev_lower": 0.0, "moments": [list(c) for c in copies[w]]}
+        return [{"wallet": w, "n": len(copies[w]), "mean": 0.0, "ev_lower": 0.0, "moments": [list(c) for c in copies[w]],
+                 "mates": 3 if w.startswith("SET") else 0}
                 for w in wallets if w in copies]  # fmt: skip
 
     run.calls = calls
@@ -283,6 +284,20 @@ def test_a_landing_further_back_can_be_asked_for_and_none_closer(tmp_path):
             with pytest.raises(ValueError):
                 _study(svc, data, lab, landing=closer)
         assert len(lab.calls) == 1  # refused before any lab
+    finally:
+        st.close()
+
+
+def test_each_wallet_says_how_many_companions_its_copies_were_scored_behind(tmp_path):
+    """The qualify lab scores a copy behind the copied wallet's own companion wallets (11 Nov). The study's rows carry
+    the count, so a wallet's number can be read for what it is."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _verdict(st, "SET1", T0, "candidate", CROWDED, gap3=23.7)
+        _verdict(st, "ALONE", T0, "candidate", CROWDED, gap3=23.7)
+        out = _study(svc, data, _lab({"SET1": [[T0 + 60, 0.01]], "ALONE": [[T0 + 90, 0.01]]}))
+        assert {r["wallet"]: r["mates"] for r in out["rows"]} == {"SET1": 3, "ALONE": 0}
+        assert out["groups"]["crowding"]["wallets_with_mates"] == 1
     finally:
         st.close()
 

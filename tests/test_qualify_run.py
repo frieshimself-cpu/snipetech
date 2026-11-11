@@ -952,7 +952,8 @@ def test_a_run_says_where_its_time_went(tmp_path):
         assert out["evaluated"] == 1 and set(out["secs"]) == {"lab", "gates"}
         assert all(v >= 0 for v in out["secs"].values())
         assert out["lab"]["workers"] >= 1 and out["lab"]["moments"] == 12
-        assert set(out["lab"]["secs"]) == {"collect", "rank"}
+        assert set(out["lab"]["secs"]) == {"companions", "collect", "rank"}
+        assert out["lab"]["mates"] == 0  # how many of the measured wallets were scored behind companions
         run = default_lab_runner(svc, svc.cfg)
         run(["W1"], "+6")
         assert run.info["moments"] == 12
@@ -1114,5 +1115,61 @@ def test_a_run_out_of_time_starts_no_new_chunk_and_leaves_the_rest_due(tmp_path,
         assert calls == [["W0", "W1"]]  # the first chunk always runs
         assert out["evaluated"] == 2 and out["left_due"] == 3 and out["chunks"] == 1
         assert [c["wallet"] for c in st.candidates(due_before=NOW + 60)] == ["W2", "W3", "W4"]
+    finally:
+        st.close()
+
+
+def _set_tape(st, wallet, mates, coins=12):
+    """`wallet` buys a dozen coins, each time with its companions in the next transactions of its block, then a small
+    crowd in the blocks after."""
+    D = addr("dev")
+    for k in range(coins):
+        m = Market(st, addr(f"{wallet}:{k}"), D, NOW - 7000 + k * (3000 // coins), SLOT + k * (7500 // coins))
+        m.buy(D, 1.0, 0)
+        m.buy(wallet, 0.5, 5)
+        for mate in mates:
+            m.buy(mate, 0.5, 5)  # the same block, the next places
+        for j in range(4):
+            m.buy(addr(f"s{k}{j}"), 0.3 + 0.1 * j, 6 + j)
+        m.sell(wallet, 1.0, 30)
+        m.sell(addr(f"s{k}0"), 1.0, 40)
+        m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
+
+
+def test_the_qualify_lab_scores_a_wallet_behind_its_own_companions(tmp_path, monkeypatch):
+    """11 Nov: the wallets with the best paper numbers were the first of one operator's wallets, and "+3x" counted the
+    operator's own next buys as the buyers ahead of us. The qualify lab finds each measured wallet's companions and
+    scores its copies behind them; the verdict says so."""
+    from snipetech.qualify.run import default_lab_runner
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _set_tape(st, "W1", ["M1", "M2"])
+        _tape(st, ["W2"], coins=12)  # buys alone
+        cfg = svc.cfg
+        cfg.verdict.bootstrap_samples = 50
+        seen = {}
+        real = L.collect
+
+        def spy(*args, **kw):
+            seen["kw"] = kw
+            return real(*args, **kw)
+
+        monkeypatch.setattr(L, "collect", spy)
+        runner = default_lab_runner(svc, cfg)
+        rows = {r["wallet"]: r for r in runner(["W1", "W2"], "+3x")}
+        assert seen["kw"]["mates"] == {"W1": frozenset({"M1", "M2"})}  # W2 has none: not in the table
+        assert rows["W1"]["mates"] == 2 and rows["W2"]["mates"] == 0
+        assert runner.info["mates"] == 1 and "companions" in runner.info["secs"]
+        # the same copies without the companions named: entered two buys earlier, so they made something else
+        monkeypatch.setattr("snipetech.qualify.run.companions", lambda *a, **k: frozenset())
+        before = {r["wallet"]: r for r in default_lab_runner(svc, cfg)(["W1", "W2"], "+3x")}
+        assert before["W1"]["mean"] != rows["W1"]["mean"] and before["W2"]["mean"] == rows["W2"]["mean"]
+        monkeypatch.undo()
+        st.upsert_candidate("W1", "tape", {"positions": 12}, NOW - 3600)
+        run_qualify(svc, cfg, data / "jobs", NOW)
+        (v,) = [x for x in st.latest_verdicts() if x["wallet"] == "W1"]
+        assert any("2 wallets of its own" in r for r in v["reasons"])
     finally:
         st.close()

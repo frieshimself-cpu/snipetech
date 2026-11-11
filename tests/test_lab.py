@@ -905,3 +905,119 @@ def test_label_groups_carry_each_tracked_wallets_team_and_a_group_without_bots_a
     teams = groups[TEAMS]
     assert teams[addr("a")] == teams[addr("b")] != teams[addr("c")] and teams[addr("k")] == "gake"
     store.close()
+
+
+def _set_block(st, name, slot0=32_000_000):
+    """A coin where a leader buys with three wallets of its own in the next transactions of its block, then outsiders:
+    state 2 the leader, 3-5 its companions (the same slot), 6 an outsider later in that block, 7-9 outsiders in the
+    next three slots."""
+    lead, dev = addr("set-lead"), addr("set-dev")
+    mates = [addr(f"set-mate{j}") for j in range(3)]
+    m = Market(st, addr(name), dev, NOW - 4000, slot0)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    m.buy(lead, 1.5, 5)  # state 2
+    for mate in mates:  # states 3-5: one operator's four wallets, 6 SOL in four transactions
+        m.buy(mate, 1.5, 5)
+    m.buy(addr("set-bot"), 4.0, 5)  # state 6: the first outsider, in the leader's block
+    for j in range(3):  # states 7-9
+        m.buy(addr(f"set-out{j}"), 0.3, 6 + j)
+    m.commit()
+    return m, lead, frozenset(mates)
+
+
+def test_a_copy_lands_behind_the_copied_wallets_own_companions():
+    """11 Nov: the wallets that look best to copy are the first of one operator's three or four wallets, bought with
+    in consecutive transactions. "+3x" counted those companions as the three buyers ahead of us, so the paper copy sat
+    in the first place behind the operator, ahead of every outside bot (BNnN2M: +0.043 SOL a copy there, +0.0007 three
+    outsiders further back). No copy lands between transactions sent together: the companions' buys in the leader's
+    block are part of its own entry, never counted and never landed ahead of."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    m, lead, mates = _set_block(st, "set-coin")
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[2] == lead and {path.users[j] for j in (3, 4, 5)} == set(mates)
+    assert copy_entry(path, 2, 3) == 5  # as it was: behind its own three wallets, ahead of the 4 SOL bot
+    assert copy_entry(path, 2, 3, mates=mates) == 8  # behind the bot and two more: three buys by others
+    assert copy_entry(path, 2, 1, mates=mates) == 6  # behind the first outsider
+    assert copy_entry(path, 2, 0, mates=mates) == 5  # the closest a copy lands: right behind the operator's buys
+    assert copy_entry(path, 2, 3, mates=frozenset()) == 5 and copy_entry(path, 2, 3, mates=None) == 5
+    st.close()
+
+
+def test_a_companions_buy_in_a_later_block_counts_like_anyone_elses():
+    """Only the buys in the copied wallet's own block are its entry. A companion that buys again later is a buyer the
+    copy can land behind, like any other."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    lead, dev, mate = addr("lb-lead"), addr("lb-dev"), addr("lb-mate")
+    m = Market(st, addr("lb-coin"), dev, NOW - 4000, 33_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    m.buy(lead, 1.0, 5)  # state 2
+    m.buy(mate, 1.0, 5)  # state 3: its companion, the same block
+    m.buy(addr("lb-a"), 0.3, 6)  # state 4
+    m.buy(mate, 0.5, 7)  # state 5: the companion again, two blocks later
+    m.buy(addr("lb-b"), 0.3, 8)  # state 6
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert copy_entry(path, 2, 3, mates=frozenset({mate})) == 6  # behind a, the companion's later buy and b
+    assert copy_entry(path, 2, 2, mates=frozenset({mate})) == 5
+    st.close()
+
+
+def test_a_copy_never_lands_cheaper_than_right_behind_the_companions():
+    """The floor of 7 Nov (never cheaper than the closest a live copy lands) moves with the entry: the closest a copy
+    lands is behind the operator's last wallet, not behind its first. Where holders dump after the set's buys, the
+    copy pays the price the set left, never the cheaper one between the operator's own transactions."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    lead, dev = addr("fl-lead"), addr("fl-dev")
+    mates = frozenset({addr("fl-m0"), addr("fl-m1")})
+    holders = [addr(f"fl-h{j}") for j in range(3)]
+    m = Market(st, addr("fl-coin"), dev, NOW - 4000, 34_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    for j, h in enumerate(holders):  # states 2-4
+        m.buy(h, 1.0, 1 + j)
+    m.buy(lead, 1.0, 5)  # state 5
+    for mate in sorted(mates):  # states 6-7: its two companions, the same block
+        m.buy(mate, 1.0, 5)
+    for j, h in enumerate(holders):  # states 8-10: the dump
+        m.sell(h, 1.0, 6 + j)
+    for j in range(3):  # states 11-13: three small buys under the set's price
+        m.buy(addr(f"fl-b{j}"), 0.2, 10 + 2 * j)
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.q[13] / path.b[13] < path.q[5] / path.b[5] < path.q[7] / path.b[7]
+    assert copy_entry(path, 5, 3) == 5  # as it was: right behind the leader, between the operator's transactions
+    assert copy_entry(path, 5, 3, mates=mates) == 7  # behind the operator's last wallet, at the price the set left
+    st.close()
+
+
+def test_the_lab_scores_a_wallet_behind_its_companions_when_told_them():
+    """`collect(..., mates=...)`: a wallet scored at "+3x" with its companions named enters where "+6x" enters without
+    them (three companions and three outsiders), and its row says how many companions it was scored behind."""
+    from snipetech.analysis.lab import rank_wallets
+    from snipetech.sim.exits import ExitParams
+
+    st = Store(":memory:")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    lead, mates = None, None
+    for k in range(10):  # a trigger is ranked from 10 moments on
+        _, lead, mates = _set_block(st, f"set-coin{k}", slot0=35_000_000 + 5000 * k)
+    st.set_coverage("tape", {"spans": [[NOW - 9000, NOW]]})
+    kols = {"cand": {lead}}
+    kw = {"groups": ("cand",), "kols": kols, "exits": [ExitParams(max_hold_secs=30.0)], "workers": 1}
+    plain = collect(st, cfg, 0.2, 0, "+3x", **kw)
+    told = collect(st, cfg, 0.2, 0, "+3x", mates={lead: mates}, **kw)
+    back = collect(st, cfg, 0.2, 0, "+6x", **kw)
+    made = lambda data: sorted((r["mint"], r["pnl"]) for r in data["rows"])
+    assert len(told["rows"]) == 10 and made(told) == made(back) != made(plain)  # the same entries as "+6x"
+    assert {r["landing"] for r in told["rows"]} == {"+3x@0"} and {r["mates"] for r in told["rows"]} == {3}
+    (row,) = rank_wallets(told, cfg, top=5, min_n=1, wallets=[lead], gate=told["exits"][0])
+    assert row["mates"] == 3 and row["n"] == 10
+    (row,) = rank_wallets(plain, cfg, top=5, min_n=1, wallets=[lead], gate=plain["exits"][0])
+    assert row["mates"] == 0
+    st.close()
