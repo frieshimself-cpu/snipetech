@@ -640,3 +640,17 @@ def test_a_verdict_says_when_its_copies_were_scored_behind_companions(cfg):
     assert plain["reasons"] == ["no history from any source"]  # as before: nothing is said of a wallet that buys alone
     assert verdict_for("W", {"trades": None}, {k: v for k, v in row.items() if k != "mates"}, 1.0, crowd, True, [],
                        cfg, NOW)["reasons"] == ["no history from any source"]  # fmt: skip
+
+
+def test_the_companions_rule_lives_with_the_lab_and_the_gates_still_name_it():
+    """The lab finds companions itself (11 Nov), so the rule sits beside it; qualify's gates keep the names."""
+    from snipetech.analysis import companions as C
+    from snipetech.qualify import gates as G
+
+    assert G.companions is C.companions and G.COMPANION_PLACES == C.COMPANION_PLACES == 5
+    st = Store(":memory:")
+    _set_world(st, "W", 6, mates=("m1",))
+    _set_world(st, "X", 6, mates=(), slot0=SLOT + 100_000)
+    got = C.companions_of(st, [addr("W"), addr("X"), addr("nobody")], NOW - 10_000)
+    assert got == {addr("W"): frozenset({addr("m1")})}  # only the wallets that have any
+    st.close()

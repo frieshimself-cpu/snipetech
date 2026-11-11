@@ -57,6 +57,7 @@ from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
+from .companions import companions_of
 from .names import category, entity
 from .stats import summarize
 
@@ -536,6 +537,20 @@ def across_slots(position: Any) -> int | None:
     return int(p[1:-1]) if p.startswith("+") and p.endswith(ACROSS) and p[1:-1].isdigit() else None
 
 
+def own_entry_end(path: MarketPath, i: int, mates: Collection[str] | None) -> int:
+    """The last state of a copied wallet's own entry, its buy at state i: its last companion's buy in the same slot
+    (`mates`: analysis.companions), or i when it bought alone. No copy lands ahead of it."""
+    if not mates:
+        return i
+    s, last = int(path.slot[i]), i
+    for j in range(i + 1, path.n):
+        if int(path.slot[j]) != s:
+            break
+        if path.is_buy[j] and path.users[j] in mates:
+            last = j
+    return last
+
+
 def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collection[str] | None = None) -> int:
     """The state a copy enters at, its leader's buy at state i ("+Nx"): behind the n-th buy after it, counted across
     slots, so every trade before that buy (a sell too) lands ahead of the copy; only buys within COPY_LAND_SLOTS of the
@@ -553,12 +568,9 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     s = int(path.slot[i])
     hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
     buys = i + 1 + np.flatnonzero(path.is_buy[i + 1 : hi])
-    last_own = i  # the last buy of the leader's own entry: its own, or its last companion's in its slot
-    if mates:
-        own = [int(j) for j in buys if int(path.slot[j]) == s and path.users[int(j)] in mates]
-        if own:
-            last_own = own[-1]
-            buys = np.array([j for j in buys if int(j) not in set(own)], dtype=int)
+    last_own = own_entry_end(path, i, mates)  # the leader's own buy, or its last companion's in its slot
+    if last_own > i:  # the companions' buys in the leader's slot are not buyers ahead of us
+        buys = np.array([j for j in buys if not (int(path.slot[j]) == s and path.users[int(j)] in mates)], dtype=int)
     e = last_own if n <= 0 or not len(buys) else max(last_own, int(buys[min(n, len(buys)) - 1]))
     floor = int(path.landing_index(s + int(latency), "start", i)) if latency else i  # the closest a live copy lands
     floor = max(floor, last_own)
@@ -1323,8 +1335,14 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
                     continue
-            elif (across := across_slots(pos)) is not None:  # a copy counted across slots (the qualify lab)
-                e = copy_entry(path, i, across, lat, run.mates.get(path.users[i]))
+            elif trig.kind == "kol":  # a copy: it lands behind the wallet's own companions (analysis.companions)
+                own_mates = run.mates.get(path.users[i])
+                if (across := across_slots(pos)) is not None:  # counted across slots (the qualify lab)
+                    e = copy_entry(path, i, across, lat, own_mates)
+                else:  # "+N" inside the wallet's block counts from behind its last companion there
+                    e = int(path.landing_index(t_slot + lat, pos, own_entry_end(path, i, own_mates)))
+            elif (across := across_slots(pos)) is not None:
+                e = copy_entry(path, i, across, lat)
             else:
                 e = int(path.landing_index(t_slot + lat, pos, i))
             if t_ts > b - 60:
@@ -1363,7 +1381,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                    "landing": f"{pos}@{int(lat)}"}  # fmt: skip
             if gaps:  # the exits left out on this moment (None in `pnl`), and why
                 row["gaps"] = gaps
-            if trig.kind == "kol" and across_slots(pos) is not None:  # the companions the copy was scored behind
+            if trig.kind == "kol":  # how many companions of the wallet the copy was scored behind
                 row["mates"] = len(run.mates.get(path.users[i]) or ())
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
@@ -1507,9 +1525,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     other trigger lands at `latency_slots` / `position`. A position "+Nx" lands behind the N-th buy after the trigger's,
     counted across slots (`copy_entry`: where the qualify lab copies a wallet since 7 Nov); "+N" stays inside the
     trigger's slot. Each row records the landing it was scored at. `mates`: each copied wallet's companions (the
-    wallets its operator buys with in the next transactions, qualify.gates.companions): a "+Nx" copy of that wallet
-    lands behind their buys in its block and then behind N buys by others, and its rows say how many companions that
-    was (`mates`); without it every buy counts, also the operator's own (a lab started by hand on a whole group).
+    wallets its operator buys with in the next transactions, analysis.companions): a copy of that wallet lands behind
+    their buys in its block ("+Nx": then behind N buys by others; "+N": N trades of the block further), and its rows
+    say how many companions that was (`mates`). Not given, the lab finds them itself on the tape it reads, for every
+    wallet its wallet rules follow; {} scores without any, every buy counted. The result says how many wallets had
+    some and who found them (`mates`: {"wallets", "found_by"}).
     `triggers`: run
     only these (an agent's own hypotheses, `parse_trigger`) instead of the search grid `TRIGGERS`; rows index them.
     A trigger that buys on PumpSwap (MIG) fires on the migrations the tape recorded in the span, and its buy lands
@@ -1560,6 +1580,14 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         ):
             events_by_mint.setdefault(mint, []).append((kind, ts, slot, q_after))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
+    found_by = "caller"
+    if mates is None:  # the companions of every wallet a wallet rule of this lab follows, on the tape it reads
+        found_by = "lab"
+        followed: set[str] = set()
+        for _, t in triggers:
+            if t.kind == "kol":
+                followed |= set((kols.get(t.group) or ()) if isinstance(kols, dict) else kols)
+        mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0))) if followed else {}
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
@@ -1586,7 +1614,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "tape_hours": sum(b - a for a, b in spans) / 3600,
            "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
-           "workers": n, "unscored": unscored, "mig_exits": mig_exits}  # fmt: skip
+           "workers": n, "unscored": unscored, "mig_exits": mig_exits,
+           "mates": {"wallets": len(run.mates), "found_by": found_by}}  # fmt: skip
     if amm_runs or mig_sell:
         horizon = run.mig_horizon if amm_runs else run.horizon
         out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)

@@ -918,7 +918,7 @@ def _set_block(st, name, slot0=32_000_000):
     m.buy(lead, 1.5, 5)  # state 2
     for mate in mates:  # states 3-5: one operator's four wallets, 6 SOL in four transactions
         m.buy(mate, 1.5, 5)
-    m.buy(addr("set-bot"), 4.0, 5)  # state 6: the first outsider, in the leader's block
+    m.buy(addr("set-bot"), 4.0, 5).pos = 60  # state 6: the first outsider, in the leader's block, 50 places behind
     for j in range(3):  # states 7-9
         m.buy(addr(f"set-out{j}"), 0.3, 6 + j)
     m.commit()
@@ -1010,9 +1010,9 @@ def test_the_lab_scores_a_wallet_behind_its_companions_when_told_them():
     st.set_coverage("tape", {"spans": [[NOW - 9000, NOW]]})
     kols = {"cand": {lead}}
     kw = {"groups": ("cand",), "kols": kols, "exits": [ExitParams(max_hold_secs=30.0)], "workers": 1}
-    plain = collect(st, cfg, 0.2, 0, "+3x", **kw)
+    plain = collect(st, cfg, 0.2, 0, "+3x", mates={}, **kw)  # no companions: every buy counts, as before 11 Nov
     told = collect(st, cfg, 0.2, 0, "+3x", mates={lead: mates}, **kw)
-    back = collect(st, cfg, 0.2, 0, "+6x", **kw)
+    back = collect(st, cfg, 0.2, 0, "+6x", mates={}, **kw)
     made = lambda data: sorted((r["mint"], r["pnl"]) for r in data["rows"])
     assert len(told["rows"]) == 10 and made(told) == made(back) != made(plain)  # the same entries as "+6x"
     assert {r["landing"] for r in told["rows"]} == {"+3x@0"} and {r["mates"] for r in told["rows"]} == {3}
@@ -1021,3 +1021,52 @@ def test_the_lab_scores_a_wallet_behind_its_companions_when_told_them():
     (row,) = rank_wallets(plain, cfg, top=5, min_n=1, wallets=[lead], gate=plain["exits"][0])
     assert row["mates"] == 0
     st.close()
+
+
+def test_a_copy_lab_finds_the_companions_itself():
+    """11 Nov: the agents' labs on "a paid place right behind a known wallet" (idea I51: +0.063 SOL a 1 SOL copy at
+    "+0") scored the copy right behind a wallet that buys with companions: between one operator's own transactions.
+    Only the qualify lab was told the companions. Every lab with a wallet rule now finds them on the tape it reads,
+    for the wallets its rules follow, and says how many it found."""
+    st = Store(":memory:")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 50
+    lead, mates = None, None
+    for k in range(10):
+        _, lead, mates = _set_block(st, f"set-coin{k}", slot0=36_000_000 + 5000 * k)
+    st.set_coverage("tape", {"spans": [[NOW - 9000, NOW]]})
+    from snipetech.sim.exits import ExitParams
+
+    kw = {"groups": ("cand",), "kols": {"cand": {lead}}, "exits": [ExitParams(max_hold_secs=30.0)], "workers": 1}
+    made = lambda data: sorted((r["mint"], r["pnl"]) for r in data["rows"])
+    told = collect(st, cfg, 0.2, 0, "+3x", mates={lead: mates}, **kw)
+    found = collect(st, cfg, 0.2, 0, "+3x", **kw)  # nobody tells it
+    assert made(found) == made(told) and {r["mates"] for r in found["rows"]} == {3}
+    assert found["mates"] == {"wallets": 1, "found_by": "lab"} and told["mates"] == {"wallets": 1, "found_by": "caller"}
+    none = collect(st, cfg, 0.2, 0, "+3x", mates={}, **kw)
+    assert none["mates"] == {"wallets": 0, "found_by": "caller"} and made(none) != made(found)
+
+
+def test_a_copy_inside_the_leaders_block_starts_behind_its_companions():
+    """The positions "+0" and "+1" count trades inside the copied wallet's own block (the agents' "--copy-position
+    +0": right behind the wallet at the bid that buys the place). Right behind a wallet that buys with three of its
+    own is behind the fourth transaction, and "+1" is one outsider further."""
+    st = Store(":memory:")
+    cfg = Config()
+    lead = None
+    for k in range(10):
+        _, lead, _ = _set_block(st, f"set-coin{k}", slot0=37_000_000 + 5000 * k)
+    st.set_coverage("tape", {"spans": [[NOW - 9000, NOW]]})
+    from snipetech.sim.exits import ExitParams
+
+    kw = {"groups": ("cand",), "kols": {"cand": {lead}}, "exits": [ExitParams(max_hold_secs=30.0)], "workers": 1}
+    made = lambda data: sorted((r["mint"], r["pnl"]) for r in data["rows"])
+    # without companions: "+3" inside the block is behind the three next buys (the wallet's own)
+    behind_three = collect(st, cfg, 0.2, 0, "+3", mates={}, **kw)
+    right_behind = collect(st, cfg, 0.2, 0, "+0", **kw)  # with them: right behind the set, the same place
+    assert made(right_behind) == made(behind_three)
+    between = collect(st, cfg, 0.2, 0, "+0", mates={}, **kw)  # as it was: between the wallet and its companions
+    assert made(between) != made(right_behind)
+    one_back = collect(st, cfg, 0.2, 0, "+1", **kw)  # one outsider (the 4 SOL bot) ahead
+    assert made(one_back) == made(collect(st, cfg, 0.2, 0, "+4", mates={}, **kw))
+    assert {r["mates"] for r in right_behind["rows"]} == {3}

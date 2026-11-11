@@ -1337,6 +1337,8 @@ async def _run(args, cfg: Config) -> int:
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
+            if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of
+                res["copy_companions"] = data["mates"]
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
             if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired

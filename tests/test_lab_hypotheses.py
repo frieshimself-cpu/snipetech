@@ -243,6 +243,9 @@ def test_the_lab_command_scores_every_hypothesis_where_it_trades_live(tmp_path, 
     assert cli.main(argv) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["copy_landing"] == "+7"
+    # how many of the wallets its wallet rules follow buy with companions (a copy is scored behind them): said, so a
+    # copy result is read for the place it stands for
+    assert out["copy_companions"] == {"wallets": 0, "found_by": "lab"}
     rows = {r["trigger_spec"]["kind"]: (r["landing"], r["live_landing"]) for r in out["strategies"]}
     assert rows == {"kol": ("+7@0", True), "whale": ("+3@1", True), "launch": ("start@1", True)}
     assert [(t["landing"], t["live_landing"]) for t in out["triggers"]] == [
