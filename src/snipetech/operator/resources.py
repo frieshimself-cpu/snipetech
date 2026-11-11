@@ -220,17 +220,58 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
                 sells = 0
         # the measure stage may not have written this hour's sells yet: half the landed transactions are sells too
         landed_sells = (snap.ok_tx_1h or 0) // 2 if getattr(snap, "ok_tx_1h", None) is not None else 0
-        excess = f - 2 * max(sells, landed_sells)
+        unpaid, unread = _failed_by_the_wallets_sol(cfg, store, snap, f, now)
+        excess = f - 2 * max(sells, landed_sells) - unpaid - unread
         status = "crit" if excess >= rc.oktech_fail_alert else ("warn" if f > 0 else "ok")
+        known = []
+        if unpaid:
+            known.append(f"{unpaid} buy{'' if unpaid == 1 else 's'} the wallet could not pay")
+        if unread:
+            known.append(f"{unread} not read by the measure stage yet")
+        if sells:
+            known.append(f"{sells} sells landed (OKTech's sell twins account for up to {2 * sells})")
         if status == "ok":
             msg = "no failed transactions in the last hour"
-        elif sells:
-            msg = (f"{f} failed transactions in the last hour, {sells} sells landed (OKTech's sell twins account for up to {2 * sells})"
-                   + ("; the rest needs a look: check OKTech sells and the send count" if status == "crit" else ""))  # fmt: skip
+        elif known:
+            msg = (f"{f} failed transactions in the last hour: " + ", ".join(known) if unpaid or unread else
+                   f"{f} failed transactions in the last hour, {known[0]}")  # fmt: skip
+            msg += "; the rest needs a look: check OKTech sells and the send count" if status == "crit" else ""
         else:
             msg = f"{f} failed transactions in the last hour; check OKTech sells and the send count"
         out.append(Resource("oktech_failures", f, "tx", rc.oktech_fail_alert, status, msg))
     return out
+
+
+MEASURE_FRESH_SECS = 900.0  # the measure stage runs every five minutes: a last run older than this reads nothing
+
+
+def _failed_by_the_wallets_sol(cfg: Config, store: Store, snap: Snapshot, failed: int, now: float) -> tuple[int, int]:
+    """Of the wallet's `failed` transactions in the last hour: (how many are buys the wallet's own SOL could not pay,
+    by the cause the measure stage wrote in fills; how many the measure stage has not read yet and are most likely
+    more of the same). Neither raises the alert.
+
+    11 Nov 22:15 UTC: three copies had failed within the hour because a curve buy is paid whole in plain SOL and the
+    wallet's SOL was wrapped; this check paged the owner to "check OKTech sells and the send count". Nothing was
+    wrong with either, and what the wallet holds is the owner's (9 Nov: never flagged). The second number is for a
+    leader's burst (five buys in four minutes): the sends are on the chain before the measure stage, which starts on
+    the round's own minute, has written their causes. They wait one round, and only while the round's snapshot says
+    the wallet cannot pay a buy on a venue and the measure stage is running; once read, they count for what they are."""
+    if not cfg.operator.wallet:
+        return 0, 0
+    from ..measure.run import LAST_KEY, is_unpaid
+    from .prompts import buys_payable
+
+    try:
+        rows = store.fills(wallet=cfg.operator.wallet, since_ts=int(now - 3600), side="failed", limit=10_000)
+        unpaid = min(int(failed), sum(1 for r in rows if is_unpaid(r.get("exit_reason"))))
+        payable = buys_payable(snap.native_sol, snap.wsol, getattr(snap, "book_fill_sol", None))
+        short = payable is not None and min(payable["curve"], payable["pumpswap"]) == 0
+        last = float(store.coverage(LAST_KEY).get("ts") or 0)
+        reading = now - last <= MEASURE_FRESH_SECS
+        unread = max(0, int(failed) - len(rows)) if short and reading else 0
+    except Exception:  # noqa: BLE001 - a read that fails explains nothing: the alert stands as it was
+        return 0, 0
+    return unpaid, unread
 
 
 def alert_lines(resources: list[Resource]) -> list[str]:

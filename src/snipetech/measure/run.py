@@ -207,6 +207,14 @@ def twin_fees_by_sell(
 
 FAILED_WHY_CHARS = 160  # a failed send's reason in fills: our words, then the chain's own error
 INSUFFICIENT = 1  # the system and the token program's "insufficient funds" (pump.fun's own errors start at 6000)
+NOT_PAID = "buy not paid"  # how a failed buy the wallet's own SOL could not pay begins in fills.exit_reason
+NO_RENT = "no plain SOL left for an account's rent"
+
+
+def is_unpaid(reason: Any) -> bool:
+    """Whether a failed send's reason, as `failed_cause` words it in fills, is the wallet's own SOL: a buy it could
+    not pay, or an account's rent it could not pay. The resource check names these and never pages for them."""
+    return str(reason or "").startswith((NOT_PAID, NO_RENT))
 
 
 def failed_cause(err: Any, pump_ixs) -> str | None:
@@ -220,7 +228,7 @@ def failed_cause(err: Any, pump_ixs) -> str | None:
     if not isinstance(err, dict):
         return None
     if "InsufficientFundsForRent" in err:
-        return "no plain SOL left for an account's rent"
+        return NO_RENT
     ie = err.get("InstructionError")
     inner = ie[1] if isinstance(ie, (list, tuple)) and len(ie) == 2 else None
     if not isinstance(inner, dict) or inner.get("Custom") != INSUFFICIENT:
@@ -231,8 +239,8 @@ def failed_cause(err: Any, pump_ixs) -> str | None:
     if not buys:
         return None
     if buys[0].program == PUMP_AMM_PROGRAM:
-        return "buy not paid: a PumpSwap buy takes the buy from wrapped SOL, its fees from plain SOL"
-    return "buy not paid: a curve buy takes the whole buy from plain SOL"
+        return f"{NOT_PAID}: a PumpSwap buy takes the buy from wrapped SOL, its fees from plain SOL"
+    return f"{NOT_PAID}: a curve buy takes the whole buy from plain SOL"
 
 
 def _sells_a_coin(meta) -> bool:

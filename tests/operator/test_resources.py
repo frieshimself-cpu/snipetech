@@ -333,3 +333,89 @@ def test_the_owner_records_the_credit_by_telegram_and_the_count_starts_there(tmp
                                              birdeye_credits=None, now=later)}["anthropic_credit"]  # fmt: skip
     assert r.value == 150.0 and "150 $ of 180 $ left" in r.message  # what was spent before the record does not count
     assert "150 $ of 180 $" in tell()  # /credit alone says the count
+
+
+# -- failed sends whose cause is known: buys the wallet could not pay (11 Nov 2026) ---------------------------------
+
+
+def _failed_buy(store, i, ago, why="buy not paid: a curve buy takes the whole buy from plain SOL: {'InstructionError': [4, {'Custom': 1}]}"):  # fmt: skip
+    store.put_fill({"sig": f"f{i}", "ts": NOW - ago, "slot": 1, "wallet": "W", "side": "failed", "sol": 0.0, "tokens": 0.0,
+                    "exit_reason": why})  # fmt: skip
+
+
+def _failures(store, ledger, s):
+    cfg = Config()
+    cfg.operator.wallet = "W"
+    rs = check_resources(cfg, store, s, ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    return next(r for r in rs if r.name == "oktech_failures")
+
+
+def test_buys_the_wallet_could_not_pay_are_named_and_never_page_the_owner(tmp_store, ledger):
+    """11 Nov 22:15 UTC: three copies had failed within the hour because a curve buy is paid in plain SOL and the
+    wallet's SOL was wrapped (fills said so: "buy not paid"). The check paged the owner: "3 failed transactions in the
+    last hour; check OKTech sells and the send count". Nothing was wrong with OKTech's sells or the send count, and
+    what the wallet holds is the owner's (9 Nov: no flag). A failed send whose measured cause is the wallet's SOL is
+    named, counted apart and never raises the alert."""
+    _failed_buy(tmp_store, 1, 540)
+    _failed_buy(tmp_store, 2, 1900)
+    _failed_buy(
+        tmp_store, 3, 2800, "buy not paid: a PumpSwap buy takes the buy from wrapped SOL, its fees from plain SOL: x"
+    )
+    r = _failures(tmp_store, ledger, snap(failed_tx_1h=3, native_sol=0.0012, wsol=0.47))
+    assert r.status == "warn" and alert_lines([r]) == []
+    assert "3 buys the wallet could not pay" in r.message and "OKTech sells" not in r.message
+    _failed_buy(
+        tmp_store, 4, 100, "no plain SOL left for an account's rent: {'InsufficientFundsForRent': {'account_index': 0}}"
+    )
+    r = _failures(tmp_store, ledger, snap(failed_tx_1h=4, native_sol=0.0012, wsol=0.47))
+    assert r.status == "warn" and "4 buys the wallet could not pay" in r.message
+    one = _failures(tmp_store, ledger, snap(failed_tx_1h=1, native_sol=0.0012, wsol=0.47))
+    assert "1 buy the wallet could not pay" in one.message  # never more than the chain counted in the hour
+
+
+def test_failures_nobody_can_explain_still_raise_the_alert_beside_unpaid_buys(tmp_store, ledger):
+    for i in range(3):
+        _failed_buy(tmp_store, i, 600 + i)
+    for i in range(4):  # measured, and the chain's error names no cause we know
+        _failed_buy(tmp_store, 10 + i, 300 + i, "{'InstructionError': [3, {'Custom': 6042}]}")
+    r = _failures(tmp_store, ledger, snap(failed_tx_1h=7, native_sol=0.0012, wsol=0.47))
+    assert r.status == "crit" and "3 buys the wallet could not pay" in r.message
+    assert "the rest needs a look: check OKTech sells and the send count" in r.message
+    _failed_buy(tmp_store, 99, 3700)  # an unpaid buy of over an hour ago explains nothing now
+    assert "3 buys" in _failures(tmp_store, ledger, snap(failed_tx_1h=7, native_sol=0.0012, wsol=0.47)).message
+
+
+def test_failed_sends_the_measure_stage_has_not_read_yet_wait_a_round_while_the_wallet_cannot_pay(tmp_store, ledger):
+    """The measure stage reads a failed send within five minutes and the round starts on the same minute: a leader's
+    burst (74xVT9 bought five times in four minutes on 11 Nov) is on the chain before its causes are in fills. While
+    the round's own snapshot says the wallet cannot pay a buy on a venue and the measure stage is running, such sends
+    are most likely more of the same: they are named as not read yet and counted once they are. A wallet that can pay
+    on both venues gets no such benefit, and neither does a measure stage that has stopped."""
+    poor = snap(failed_tx_1h=5, native_sol=0.0012, wsol=0.47)  # curve 0, PumpSwap 0
+    assert _failures(tmp_store, ledger, poor).status == "crit"  # the measure stage has never run: nobody is reading
+    tmp_store.set_coverage("measure:last_ts", {"ts": NOW - 3600})
+    assert _failures(tmp_store, ledger, poor).status == "crit"  # ... or it stopped an hour ago
+    tmp_store.set_coverage("measure:last_ts", {"ts": NOW - 200})
+    r = _failures(tmp_store, ledger, poor)
+    assert r.status == "warn" and "5 not read by the measure stage yet" in r.message and alert_lines([r]) == []
+    rich = snap(failed_tx_1h=5, native_sol=1.0, wsol=1.0)
+    assert _failures(tmp_store, ledger, rich).status == "crit"
+    for i in range(5):  # read, and not explained: the next round raises it
+        _failed_buy(tmp_store, i, 400 + i, "{'InstructionError': [3, {'Custom': 6042}]}")
+    assert _failures(tmp_store, ledger, poor).status == "crit"
+
+
+def test_the_causes_the_measure_stage_writes_are_the_ones_the_check_reads():
+    from types import SimpleNamespace
+
+    from snipetech.measure.run import failed_cause, is_unpaid
+    from snipetech.solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
+
+    not_paid = {"InstructionError": [4, {"Custom": 1}]}
+    curve = [SimpleNamespace(name="buy_exact_quote_in_v3", program=PUMP_PROGRAM)]
+    amm = [SimpleNamespace(name="buy_exact_quote_in_v2", program=PUMP_AMM_PROGRAM)]
+    sell = [SimpleNamespace(name="sell_v3", program=PUMP_PROGRAM)]
+    assert is_unpaid(failed_cause(not_paid, curve)) and is_unpaid(failed_cause(not_paid, amm))
+    assert is_unpaid(failed_cause({"InsufficientFundsForRent": {"account_index": 0}}, curve))
+    assert not is_unpaid(failed_cause(not_paid, sell))  # a twin's sell: allowed for by the landed sells
+    assert not is_unpaid(None) and not is_unpaid("") and not is_unpaid("{'InstructionError': [3, {'Custom': 6042}]}")
