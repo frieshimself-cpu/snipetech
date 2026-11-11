@@ -76,6 +76,12 @@ class Trade:
     r_base_after: int = 0  # real token reserves left on the curve (0 for AMM)
     ix: str = ""
     quote_mint: str = ""  # "" = SOL; otherwise amounts are in this token's base units (kept apart from SOL trades)
+    # The transaction's fee record, written with the trade and not read back with it (a lab needs none of it; a study
+    # asks for the columns): who paid its fee when that was not the trader ("" when it was), its priority fee and what
+    # it sent to a landing service, in lamports. None: not known. A transaction's values repeat on each of its trades.
+    payer: str = ""
+    priority: int | None = None
+    tip: int | None = None
 
     @property
     def order(self) -> tuple[int, int, int]:

@@ -8,7 +8,8 @@ I28, the study of 6Z91). For one wallet, every coin it bought in the window:
   window, so a wallet on its copy list (most of its coins followed) stands apart from one that happened to be there;
 - **its filters**: the size of the buy it followed, the coin's age, the SOL in the curve and the buyers before it;
 - **its size**: what it pays a buy (fee included, so the round numbers it types show), against the buy it followed;
-- **its bid**: priority fee plus tip of its first buy, where the tape holds the transaction's fee record;
+- **its bid**: priority fee plus tip of its first buy, from the trade's own row (the recorder writes them since
+  11 Nov) or, for an older row, from the fee record of a transaction some study fetched;
 - **its exit**: slots to the first and the last sell, the pieces, the share sold first, the gain at the first sell,
   and whether the wallet it followed sold before it did.
 
@@ -149,11 +150,16 @@ def playbook(store, wallet: str, now: float, *, hours: float = 72, top: int = 60
             rows.append(row)
     sigs = [r["sig"] for r in rows]
     fees: dict[str, float] = {}
-    for k in range(0, len(sigs), 900):
-        chunk = sigs[k : k + 900]
-        for sig, priority, tip in store._q(
-            f"SELECT sig, priority, tip FROM tx_meta WHERE sig IN ({','.join('?' * len(chunk))})", chunk):  # fmt: skip
-            fees[sig] = (int(priority or 0) + int(tip or 0)) / LAMPORTS
+    # the bid the recorder wrote with the trade (since 11 Nov), and for a row without one the fee record of a
+    # transaction some study fetched; a copy taken before the columns existed has only the second
+    sources = ["tx_meta"] + (["trades"] if store.has_columns("trades", ("priority", "tip")) else [])
+    for table in sources:  # the trade's own row last: it wins where both know the transaction
+        for k in range(0, len(sigs), 900):
+            chunk = sigs[k : k + 900]
+            for sig, priority, tip in store._q(
+                f"SELECT sig, priority, tip FROM {table} WHERE priority IS NOT NULL AND sig IN "
+                f"({','.join('?' * len(chunk))})", chunk):  # fmt: skip
+                fees[sig] = (int(priority or 0) + int(tip or 0)) / LAMPORTS
     for r in rows:
         r["bid_sol"] = fees.get(r["sig"])
     total = len(rows) or 1

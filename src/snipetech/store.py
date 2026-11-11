@@ -194,7 +194,17 @@ _ADDED_COLUMNS = (
     ("fills", "leader_progress", "REAL"),
     # JSON: a wallet the book copied before the 7 Nov verdict rules, kept while copied (qualify/gates.keep_armed)
     ("verdicts", "kept_armed", "TEXT"),
+    # a trade's transaction, as the recorder read it (11 Nov; docs/superpowers/specs/2026-11-11-fee-records-design.md):
+    # who paid its fee when that was not the trader, its priority fee and its tip to a landing service, in lamports.
+    # NULL: not known (a row written before, or read from a log subscription). Written by `add_trades`, never read
+    # with a trade (`_TRADE_COLS`): a study asks for them.
+    ("trades", "payer", "TEXT"),
+    ("trades", "priority", "INTEGER"),
+    ("trades", "tip", "INTEGER"),
 )
+# Columns a reader of the tape does not need: a copy taken before they existed still serves the labs (`schema_gaps`),
+# and a study that wants them asks `has_columns` first.
+OPTIONAL_COLUMNS = frozenset({("trades", "payer"), ("trades", "priority"), ("trades", "tip")})
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
@@ -348,9 +358,16 @@ class Store:
             fresh.close()
         with self.lock:
             have = _tables(self.conn)
+        missing = [(t, c) for t, cols in want.items() if t in have for c in cols - have[t]]
         return sorted(t for t in want if t not in have) + sorted(
-            f"{t}.{c}" for t, cols in want.items() if t in have for c in cols - have[t]
+            f"{t}.{c}" for t, c in missing if (t, c) not in OPTIONAL_COLUMNS
         )
+
+    def has_columns(self, table: str, columns: Iterable[str]) -> bool:
+        """Whether this file's `table` holds every one of `columns` (a copy taken before a column existed does not)."""
+        with self.lock:
+            have = {r[1] for r in self.conn.execute(f'PRAGMA table_info("{table}")')}
+        return all(c in have for c in columns)
 
     def _connect(self) -> sqlite3.Connection:
         """A connection to this store's file (read-only, by URI, for a `readonly` store, immutable too for the hourly
@@ -613,10 +630,11 @@ class Store:
 
     def add_trades(self, trades: Iterable[Trade]) -> None:
         self._many(
-            f"INSERT OR IGNORE INTO trades ({_TRADE_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT OR IGNORE INTO trades ({_TRADE_COLS}, payer, priority, tip) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (t.sig, t.ev, t.slot, t.pos, t.ts, t.mint, t.venue, t.user, int(t.is_buy), t.quote, t.base, t.fee,
-                 t.fee_bps, t.q_after, t.b_after, t.r_base_after, t.ix)
+                 t.fee_bps, t.q_after, t.b_after, t.r_base_after, t.ix, t.payer or None, t.priority, t.tip)
                 for t in trades
             ],
         )  # fmt: skip

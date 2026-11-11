@@ -168,3 +168,30 @@ def test_a_buy_right_after_the_migration_is_classed_as_one():
     assert by["after the migration"]["n"] == 3 and by["same block as a buy"]["n"] == 1
     assert [t["wallet"] for t in out["triggers"]] == [addr("pb-other-bot")] and out["triggers"][0]["coins"] == 1
     assert out["filters"]["after the migration"]["slots_after_migration"]["p50"] == 1
+
+
+def test_a_bots_bid_is_read_from_its_trade_row():
+    """11 Nov: the tape kept no fee record with a trade, so a bot's bid was known only where a study had fetched its
+    transaction: for most bots nowhere. The recorder writes the priority fee and the tip with each trade now; the
+    playbook reads them there, and the old fee records where a row has none."""
+    st = Store(":memory:")
+    try:
+        firsts = []
+        for i in range(3):
+            m = Market(st, addr(f"pb-bid-{i}"), addr(f"pb-bdev-{i}"), NOW - 3000 + i * 100, 82_000_000 + i * 1000)
+            m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+            m.buy(KOL, 2.0, 10)
+            first = m.buy(BOT, 3.0, 10)
+            if i < 2:  # the recorder read this transaction's bid: 0.03 SOL of priority fee, 0.003 SOL to a relay
+                first.priority, first.tip = 30_000_000, 3_000_000
+            m.sell(BOT, 1.0, 30)
+            m.commit()
+            firsts.append(first)
+        # the third buy's row holds no bid; a study fetched its transaction earlier
+        st._exec("INSERT INTO tx_meta (sig, slot, fee_payer, priority, tip, data) VALUES (?,?,?,?,?,?)",
+                 (firsts[2].sig, firsts[2].slot, BOT, 10_000_000, 1_000_000, "{}"))  # fmt: skip
+        out = playbook(st, BOT, NOW, hours=2)
+    finally:
+        st.close()
+    assert out["bids"]["known"] == 3 and out["bids"]["of"] == 3
+    assert out["bids"]["sol"]["p50"] == 0.033 and out["bids"]["sol"]["p5"] == 0.011

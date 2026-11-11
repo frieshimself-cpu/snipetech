@@ -88,3 +88,32 @@ def test_screened_wallets_jump_qualifys_queue_ahead_of_older_discovery_candidate
         assert first3 == {addr("fomo-new"), addr("early-new"), addr("owner-pick")}
     finally:
         st.close()
+
+
+def test_fomo_users_are_read_from_the_payer_the_recorder_writes_with_each_trade():
+    """11 Nov: FOMO's users were found through fee records a study had fetched for another reason: about 20 active
+    users in three days, where the owner asked for all (8 Nov). The recorder writes who paid each transaction with
+    the trade; every FOMO trade on the tape counts, and a trade known both ways counts once."""
+    from snipetech.analysis.fomo_wallets import FOMO_FEE_PAYER, fomo_wallets
+
+    st = Store(":memory:")
+    try:
+        m = Market(st, addr("fomo-new-coin"), addr("fomo-new-dev"), NOW - 3000, 90_000_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        relayed = []
+        for k in range(12):  # twelve buys of one FOMO user, the payer written with each trade
+            t = m.buy(addr("fomo-user-new"), 0.1, 5 + k)
+            t.payer = FOMO_FEE_PAYER
+            relayed.append(t)
+        for k in range(12):  # a trader who pays for itself
+            m.buy(addr("own-payer"), 0.1, 40 + k)
+        m.commit()
+        # a study also fetched two of those transactions: they must not count twice
+        for t in relayed[:2]:
+            st._exec("INSERT INTO tx_meta (sig, slot, fee_payer, priority, tip, data) VALUES (?,?,?,0,0,'{}')",
+                     (t.sig, t.slot, FOMO_FEE_PAYER))  # fmt: skip
+        rows = fomo_wallets(st, NOW, days=1, min_buys=10)
+    finally:
+        st.close()
+    assert [(r["wallet"], r["buys"], r["coins"]) for r in rows] == [(addr("fomo-user-new"), 12, 1)]
+    assert rows[0]["buy_sol"] == 1.2

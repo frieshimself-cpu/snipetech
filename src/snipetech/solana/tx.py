@@ -15,6 +15,9 @@ from typing import Any
 
 from .base58 import b58decode
 from .programs import EVENT_IX_TAG, LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM, decode_event, instruction_info
+from .tips import BASE_FEE_PER_SIGNATURE, RELAY_TIP_ACCOUNTS, SYSTEM
+
+_TRANSFER = (2).to_bytes(4, "little")  # the System program's transfer: this tag, then the lamports as a u64
 
 WATCHED = (PUMP_PROGRAM, PUMP_AMM_PROGRAM, LAUNCHLAB_PROGRAM)
 AMM_TRADE_IXS = {"buy", "sell", "buy_v2", "sell_v2", "buy_exact_quote_in", "buy_exact_quote_in_v2"}
@@ -42,6 +45,11 @@ class TxEvents:
     # LaunchLab pool_state -> (base mint, quote mint, payer) from ix accounts; its events name neither
     ll_pools: dict[str, tuple[str, str, str]] = field(default_factory=dict)
     failed: bool = False
+    # What the transaction bid for its place, in lamports: its priority fee (the fee paid less the base fee of every
+    # signature) and what it sent to a landing service (its System transfers to a known tip account). None: not known
+    # (events read from a log subscription come without their transaction), never 0.
+    priority: int | None = None
+    tip: int | None = None
 
 
 def ix_data(ix: dict) -> bytes:
@@ -86,9 +94,21 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
     invoked: set[str] = set()  # the watched programs among the instructions
     last_ix_name: dict[str, str] = {}
 
+    tip = 0
+
     def visit(ix: dict) -> None:
+        nonlocal tip
         program = keys[ix["programIdIndex"]]
         if program not in WATCHED:
+            if program == SYSTEM:  # a transfer (instruction 2: u32 tag, u64 lamports) to a landing service's account
+                accs = ix.get("accounts", [])
+                if len(accs) >= 2 and keys[accs[1]] in RELAY_TIP_ACCOUNTS:
+                    try:
+                        data = ix_data(ix)
+                    except ValueError:
+                        return
+                    if len(data) >= 12 and data[:4] == _TRANSFER:
+                        tip += int.from_bytes(data[4:12], "little")
             return
         invoked.add(program)
         try:
@@ -121,6 +141,10 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
         visit(ix)
         for inner in inner_by_outer.get(i, []):
             visit(inner)
+    fee = meta.get("fee")
+    if fee is not None:
+        out.priority = max(0, int(fee) - BASE_FEE_PER_SIGNATURE * len(tx["transaction"]["signatures"]))
+    out.tip = tip
 
     # Prefer CPI events; use log events only for programs that had no CPI copy. A program with one is not read from
     # the logs at all (its lines were decoded and dropped: the recorder's second-largest cost on a pump.fun trade),

@@ -36,7 +36,9 @@ SQL_TABLES: dict[str, str] = {
     "trades": "one row per trade on a pump.fun or LaunchLab curve or a PumpSwap pool. user = the wallet that traded; "
     "quote = lamports of SOL before fees (quote / 1e9 = SOL); base = raw token units; fee = lamports; ts = unix "
     "seconds; slot = the block, pos = the transaction's place in it; venue = 'curve' (pump.fun), 'amm' (PumpSwap) or "
-    "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction",
+    "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction; "
+    "priority, tip = what the transaction bid for its place, in lamports (the same on each trade of one sig), and "
+    "payer = who paid its fee when that was not the trader: all three NULL (not known) on rows before 11 Nov 2026",
     "launches": "one row per coin. mint = the coin; user = the wallet that signed the create, creator = the wallet "
     "its creator fees go to (the deployer); slot, ts = the create (unix seconds); sig = the create transaction",
     "labels": "address = a wallet; label = its name; kind = its group (kol, cand, wallet, bundler, own, dev, ...); "
