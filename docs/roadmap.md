@@ -28,8 +28,16 @@ first on the server's recording and only then run live in capped batches.
   itself, so four tries at passing were three too many. No limit on new rules (the owner's 9 Nov instruction; the
   old "4 a day" sentence is gone from the analyst's instructions, row 58).
 - **Fixed:** two studies read a venue name the tape never writes (row 60).
-- **Open:** whether the analyst now tests ideas shows in the next turns. The two owner ideas need either a lab the
-  analyst can start or a small study built here.
+- **The owner's two ideas of 10 Nov are tested, and both lose where our buys land** (they had waited a day: the
+  agents had no tool for one and were never told of the tool for the other, row 62). Buying a hot coin's 60 % fall
+  loses a quarter of the buy in 30 seconds (1,355 falls in six days). Waiting for the price to turn finds a real
+  bounce, about 2 %, against a round trip that costs 6.7 %: it loses too, also at a perfect landing and at 1 SOL.
+  Buying coins that migrate within a minute of their launch loses 7 % a trade (367 unseen trades).
+  docs/research/2026-11-11-dip-and-instant-bond.md.
+- **Seen on the server after the deploys:** three analyst turns, 12 database queries, none failed (4 in 10 before);
+  the 15:01 turn started the test of the owner's migration idea by itself and the 15:30 turn read and closed it. The
+  turns did not get cheaper (about 1.20 $ against 0.97 $): they did more.
+- **Open:** whether that holds over a day; the first strategy search that picks another exit for a rule under test.
 
 ## 11 Nov, 13:00 UTC: the nightly job worked three hours for nothing; a quarter of the "worth sniping" deployers lose where we land
 
