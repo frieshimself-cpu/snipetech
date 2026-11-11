@@ -72,6 +72,37 @@ Traded on every one it would lose about 3 SOL a day at 0.2 SOL a buy. Nearly all
 create (870 of 916 within 20 s): the curve is bought out by its own launcher's bundle, which then sells into whoever
 bought the pool.
 
+### Who bonds a coin at once, and the "boost bot" (16:10 UTC)
+
+1,738 coins migrated within 60 s of their create in the six days, 1,571 of them within 2 s: the curve is bought out
+in the create itself. A coin's curve is bought by 16 wallets on average, 90 SOL in all; 1,604 of the 1,738 have one
+buy of 10 SOL or more. The buyers are fixed sets of wallets that buy together: six wallets appear on exactly 176 of
+these coins each (810 to 6,662 SOL a wallet), another six on 118 each, five on 94, six on 69. None of them is the
+coin's creator wallet: an operator launches from a fresh wallet and bonds the coin with its own set. That is who the
+"boost" is. No outside bot buys strangers' coins up to the migration.
+
+What the pool price does after the third pool trade, before any fee, by who bought the curve (coins the tape holds
+pool trades for):
+
+| curve bought by | coins | after 30 s | after 2 min | after 10 min |
+|---|---|---|---|---|
+| set A (176 coins) | 126 | -1.6 % (29 % of coins up) | -0.7 % | +1.3 % |
+| set B (118) | 79 | +0.3 % | -0.3 % | -2.4 % |
+| set C (94) | 79 | -1.0 % | -1.2 % | +3.2 % |
+| set D (69) | 45 | +1.1 % | -11.4 % | -28.0 % |
+| two sniper bots also in (haqq6q, 5tztZw: 39 coins shared) | 52 and 51 | +22 % mean, **+3 % median** | +38 to +49 % mean, +1 to +10 % median | +24 to +30 % mean, **-9 to -14 % median** |
+
+The operators' own coins go nowhere, and one set's fall 28 %. The last row looked like the owner's idea until its
+coins were read one by one: 28 of 52 are up after 30 s, the typical one by 3 % (the fees are 6.7 %), a quarter fall
+13 % or more, and three coins that went up 8 to 18 times in two minutes make the whole average (without them: +2.5 %
+at 30 s, -4.5 % at 2 minutes). The three are real moves, 1,300 to 5,300 pool trades each. 5tztZw is a sniper the
+`winners` study had picked (+105 SOL over 3,217 round trips); the two bots buy 0.5 to 1.3 SOL of the curve in the
+create block. Three coins in 52 over six days is a lottery ticket, not evidence.
+
+Other bots buy 0.2 to 0.5 SOL in the first two blocks after 93 to 137 of the 1,137 fast migrations the tape holds
+(2mRNRi, M3rror, 5nFhHr, 33NW9Z): they pick about one migration in ten. Whether they profit and what they pick on is
+with the server's analyst (their playbooks).
+
 ## Lessons
 
 - A hot coin that has fallen 60 % from its high within 10 minutes keeps falling: bought 3 trades later it loses 0.054 SOL a 0.2 SOL trade in 30 s (n 1,355, bound -0.058, 25 % win); every split by size, wallets and speed is negative.
@@ -79,11 +110,14 @@ bought the pool.
 - Neither speed nor size rescues the bounce: right behind the turn's trade it loses 0.0042 SOL a 0.2 SOL trade (n 920, bound -0.008), and at 1 SOL it loses 0.014 at 30 s and 0.163 at 10 min (n 920).
 - A buy at the migration of a coin that migrated within 60 s of its create loses 0.0151 SOL a 0.2 SOL trade on unseen trades (n 367, bound -0.0194, 43 % win); within 20 s the same (n 348, -0.0141).
 - 870 of 916 fast migrations happen within 20 s of the create: an instant bond is a launcher's own bundle, not a crowd.
+- Instant bonds are made by a few operators, each with a fixed set of five or six wallets (176, 118, 94 and 69 coins a set in six days); after the migration their coins' pool price is flat to down (-1.6 % to +1.1 % at 30 s, n 45-126 a set).
+- Instant-bond coins two sniper bots also bought (n 52): +22 % on average 30 s after the third pool trade but +3 % at the median; three coins make the average (without them +2.5 %). Not evidence.
 
 ## What was not tested
 
 - The fall after the migration. `dip-buys` reads the curve; a coin that completed its curve and fell on its PumpSwap
   pool is not in it.
-- The instant-bond coins one known wallet bought the last SOL of (the owner's "boost bot"). The lab scores all 916
-  alike; the split by who filled the curve is the analyst's next step (SQL on the trades before each migration).
+- The instant-bond coins the two sniper bots bought into, at the real migration landing with the lab's exits and a
+  forward paper record: the lab's migration rule takes no wallet list yet. At about nine such coins a day a paper
+  record would need two weeks for 100 trades.
 - A live executor. No OKTech mode buys a fall, so even a positive table would have needed a way to trade it.
