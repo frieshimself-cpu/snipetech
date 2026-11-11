@@ -86,7 +86,17 @@ MIG_LANDING = (1, "+3")
 # landing a 1 SOL first-second rule "made" +11 SOL inside three 22-wallet create bundles that no live buy can reach);
 # a MIG rule is scored where a MIG buy lands
 LAUNCH_LANDINGS = {"launch": LAUNCH_LANDING, "hunt": HUNT_LANDING, "whale": HUNT_LANDING, "burst": HUNT_LANDING,
-                   "mig": MIG_LANDING}  # fmt: skip
+                   "mig": MIG_LANDING,
+                   # a rule on deployer verdicts (analysis/dev_forward.py): the deployer analysis's own landing
+                   # ([snipe] entry_slot_offset 1, entry_position +3), where a sniper armed on a deployer lands
+                   "dev": HUNT_LANDING}  # fmt: skip
+# A frozen strategy whose trades another job writes names that job here: `run` never scores it (its trigger is no lab
+# trigger), `to_live_landing` leaves it as it is, and it is reported, refuted and shown like any other.
+FED = "fed_by"
+
+
+def fed(strategy: dict) -> bool:
+    return bool(strategy.get(FED))
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
@@ -238,14 +248,14 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
     have: set[str] = set()
     for s in strategies:  # first the ones already at the live landing: they keep their id and their start
         lat, pos = live_landing((s.get("trigger") or {}).get("kind"), copy_pos)
-        if (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos) and s["id"] not in have:
+        if (fed(s) or (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos)) and s["id"] not in have:
             live.append(s)
             have.add(s["id"])
     moved: list[dict] = []
     for s in strategies:
         lat, pos = live_landing((s.get("trigger") or {}).get("kind"), copy_pos)
-        if (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos):
-            continue
+        if fed(s) or (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos):
+            continue  # a fed rule lands where its feeder puts it: never re-keyed
         moved.append(s | {"superseded_at": int(now)})
         sid = strategy_id(s["trigger"], s["exit"], pos, lat, s["buy_sol"])
         if sid in have:
@@ -388,8 +398,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     state = store.coverage("paper")
     strategies = to_live_landing(store, strategies, copy_pos, state.get("done_until"), now)
     strategies, retired = retire_refuted(store, strategies, now)
+    # the rules another job feeds (deployer verdicts, analysis/dev_forward.py) are judged above like any other and
+    # scored by their feeder, never here: their trigger is no lab trigger
+    strategies = [s for s in strategies if not fed(s)]
     if not strategies:
-        return {"new_trades": 0, "retired": retired, "note": "every frozen strategy is refuted: freeze new ones"}
+        report(store, cfg, now)  # the fed rules' numbers still follow their trades
+        return {"new_trades": 0, "retired": retired, "note": "nothing left for the run to score: freeze new ones"}
     tag_venues(store)  # the rows scored before the venue knob, once: each new row is tagged as it is written
     since = max(int(state.get("done_until", 0)), min(s["from_ts"] for s in strategies))
     until = int(now - SETTLE_SECS)

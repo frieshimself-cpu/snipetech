@@ -256,11 +256,18 @@ class Service:
             launches = list({l.mint: l for l in launches}.values())
             label = f"family of {funder['funder']} ({len(siblings) + 1} wallets)"
         cfg, cost = self._live_cost_cfg()
+        prior = self.store.get_score("deployer", address)  # the verdict in force until now
         report = await asyncio.to_thread(deployer_report, store, cfg, address, launches, funder, label, optimize, now)
         score = compact_deployer(report)
         score["per_tx_sol"], score["per_tx_source"] = cost["per_tx_sol"], cost["per_tx_source"]
         if now is not None:
             score["data_until"] = int(now)
+        if not family:
+            # the launches that began after `prior` was made are its forward test (analysis/dev_forward.py). Written
+            # before the new score: if it fails, the old score stands and the next scoring finds the same launches
+            from .analysis import dev_forward
+
+            dev_forward.record(self.store, cfg, prior, report, cost["per_tx_sol"], time.time() if now is None else now)
         self.store.put_score("deployer", address, score)
         return report
 

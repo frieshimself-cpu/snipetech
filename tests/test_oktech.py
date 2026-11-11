@@ -1717,3 +1717,21 @@ def test_a_market_cap_cap_is_sent_at_a_sol_price_an_hour_old_at_most(monkeypatch
         assert asked == []
     finally:
         store.close()
+
+
+def test_a_rule_no_sniper_runs_as_scored_is_refused_not_sent_as_every_launch():
+    """`strategy_sniper` knew whale, burst, hunt, MIG, KOL and launch rules, and built every other kind as a plain launch
+    sniper: "every new pump.fun launch". A momentum rule, an event rule or the record of deployer verdicts
+    (analysis/dev_forward.py, kind dev) asked for with `oktech strategy` would have come out as a sniper that buys
+    every launch. No live test could start one (hunt rules only), a plan or a hand-made sniper could."""
+    from snipetech.oktech import strategy_sniper
+
+    exit_params = {"stop_loss": 0.2, "max_hold_secs": 30}
+    for trig in ({"kind": "dev", "verdict": "SNIPE", "basis": "1@+3:v4"},
+                 {"kind": "momentum", "ret": 0.2, "window": 5.0},
+                 {"kind": "event", "event": "trending"}):  # fmt: skip
+        with pytest.raises(ValueError, match="every launch"):
+            strategy_sniper({"id": "x", "label": "l", "buy_sol": 0.2, "exit": exit_params, "trigger": trig}, 10)
+    plain = strategy_sniper({"id": "x", "label": "l", "buy_sol": 0.2, "exit": exit_params,
+                             "trigger": {"kind": "launch"}}, 10)  # fmt: skip
+    assert plain.config["mode"] == "normal" and plain.config["monitorProgram"] is True

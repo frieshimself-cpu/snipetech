@@ -350,6 +350,8 @@ def _compact(f: dict) -> dict:
         "ts": f["ts"],
         "outcome": f["outcome"],
         "pnl_sol": sim.get("pnl_sol"),
+        "roi": sim.get("roi"),
+        "hold_secs": sim.get("hold_secs"),
         "exit_reason": sim.get("exit_reason"),
         "max_multiple": round(f.get("max_multiple", 0.0), 3),
         "peak_mcap_sol": round(f.get("peak_mcap_sol", 0.0), 1),

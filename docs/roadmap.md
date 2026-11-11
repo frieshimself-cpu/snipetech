@@ -23,6 +23,8 @@ first on the server's recording and only then run live in capped batches.
 - **Found on the way, not built yet:** the deployer verdicts are made every hour and nothing uses them. 82 deployers
   marked "worth sniping" launched 2,096 coins in a day. A forward paper record of exactly those launches would say
   within days whether the verdicts are worth money. It is the next thing to build (audit open item 14).
+- **Hourly discovery is confirmed faster**: the 13:07 run took 8.9 seconds of processor where every run took over
+  six minutes; five runs in six are like that now.
 - Every timer and stage was checked against its schedule: all run when they should. Record:
   [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-50.
 

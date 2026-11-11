@@ -984,6 +984,11 @@ def strategy_sniper(
                      "stage and the unsold-coin watch read, and it is the only tape a MIG rule is scored on")  # fmt: skip
     elif kind == "kol":
         raise ValueError("a KOL trigger is a copy (ctbot) sniper, not a launch sniper")
+    elif kind != "launch":
+        # momentum, an event, the record of deployer verdicts (kind dev), anything new: no OKTech sniper runs it as
+        # scored. Until 11 Nov such a rule fell through to the plain launch sniper below
+        raise ValueError(f"a {kind} rule has no OKTech sniper that runs it as scored: sent as a launch sniper it would "
+                         "buy every launch")  # fmt: skip
     elif kind == "launch" and trig.get("creators"):
         # the lab's dev-wallet filter (analysis/lab.py `creators`): OKTech's dev sniping buys launches signed by the
         # wallets in `devWallets`, so one deployer's address is sent as it was scored. A label group ("dev") names no
