@@ -545,3 +545,27 @@ def test_a_wallet_picked_again_is_judged_on_its_copies_since_that_pick_and_must_
     assert off["forward"]["off_tape"] == 0
     carried = forward_gate(v, _copies(5, 0.03, again - 3000) + holds, again - 7200, [[again, NOW]], cfg, NOW)
     assert carried["forward"]["off_tape"] == 5 and carried["forward"]["n"] == 30
+
+
+def test_a_read_of_the_creator_links_that_fails_is_not_a_pass(monkeypatch):
+    """The read of who a creator pays was wrapped in `except Exception: pass`: when the database refused it, a wallet a
+    creator pays passed the check. Every other reading of a verdict lets the error out: the run ends there and the
+    wallet stays due for the next one."""
+    import sqlite3
+
+    st = Store(":memory:")
+    try:
+        st.upsert_edge(addr("dev"), addr("paid"), "paid_by_dev", NOW)
+        assert relationship_gate(st, addr("paid"))[0] is False
+        real = st._q
+
+        def q(sql, params=()):
+            if "FROM edges" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return real(sql, params)
+
+        monkeypatch.setattr(st, "_q", q)
+        with pytest.raises(sqlite3.OperationalError):
+            relationship_gate(st, addr("paid"))
+    finally:
+        st.close()

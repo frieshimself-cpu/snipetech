@@ -162,3 +162,110 @@ def test_the_scan_clears_the_old_transfer_events_a_bounded_number_at_a_time(tmp_
         assert out["cleared"] == 300 and st.events(kind="dev_transfer") == []
     finally:
         st.close()
+
+
+class RefusingRpc(FakeRpc):
+    """An RPC that refuses the history of some creators (every one of them when `refuse` is None)."""
+
+    def __init__(self, sigs, refuse=None):
+        super().__init__(sigs)
+        self.refuse = refuse
+
+    async def get_signatures(self, address, before=None, until=None, limit=1000):
+        self.calls.append((address, before, until, limit))
+        if self.refuse is None or address in self.refuse:
+            raise RuntimeError("429 too many requests")
+        return list(self.sigs.get(address, []))
+
+
+def _four_coins(st):
+    """Four coins past 20 SOL, a creator each, ten minutes apart; each creator pays one wallet."""
+    sigs, metas = {}, {}
+    for k in range(4):
+        dev, lts = addr(f"dev{k}"), NOW - 3600 + k * 600
+        m = Market(st, addr(f"coin{k}"), dev, lts, SLOT + k * 1500)
+        m.buy(dev, 1.0, 0)
+        for i in range(5):
+            m.buy(addr(f"b{k}{i}"), 5.0, 2 + i)
+        m.commit()
+        sigs[dev] = [{"signature": f"P{k}", "slot": SLOT + k * 1500 + 1, "blockTime": lts + 5, "err": None}]
+        metas[f"P{k}"] = TxMeta(sig=f"P{k}", slot=SLOT, block_time=lts + 5, version=0, fee_payer=dev, signers=[dev], n_signatures=1,
+                                fee=5000, priority_lamports=0, cu_limit=None, cu_price=None, cu_consumed=None,
+                                transfers=[{"src": dev, "dst": addr(f"paid{k}"), "lamports": 7}])  # fmt: skip
+    return sigs, metas
+
+
+def test_a_scan_the_rpc_refused_says_so_and_reads_those_launches_again(tmp_path):
+    """A creator whose history could not be read was passed over without a word and the scan's place moved on: a scan
+    while the RPC refused lost every creator of that scan for good, and its summary read like a quiet three hours.
+    The links it writes are what stops a wallet a creator pays from being copied (`relationship_gate`)."""
+    st = Store(tmp_path / "t.db")
+    try:
+        sigs, metas = _four_coins(st)
+        down = FakeSvc(st, RefusingRpc(sigs), FakeIngestor(st, metas))
+        out = asyncio.run(dev_transfers(down, NOW - 7200, now=NOW, min_curve_sol=20))
+        assert out["launches"] == 4 and out["failed"] == 4 and out["edges"] == 0
+        # its place has not moved past the first launch it could not read
+        assert st.coverage("events:dev_cursor").get("ts", 0) < NOW - 3600
+        up = FakeSvc(st, FakeRpc(sigs), FakeIngestor(st, metas))
+        out = asyncio.run(dev_transfers(up, NOW - 7200, now=NOW + 60, min_curve_sol=20))
+        assert out["launches"] == 4 and out["failed"] == 0 and out["edges"] == 4
+        assert all(st.edges_to(addr(f"paid{k}"), kind="paid_by_dev") for k in range(4))
+    finally:
+        st.close()
+
+
+def test_one_creator_that_cannot_be_read_is_counted_and_does_not_hold_the_scan(tmp_path):
+    """Refused for one creator in four, the scan goes on and its place moves: one history that never answers must not
+    stop every scan after it. The summary says how many were not read."""
+    st = Store(tmp_path / "t.db")
+    try:
+        sigs, metas = _four_coins(st)
+        svc = FakeSvc(st, RefusingRpc(sigs, refuse={addr("dev1")}), FakeIngestor(st, metas))
+        out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, min_curve_sol=20))
+        assert out["launches"] == 4 and out["failed"] == 1 and out["edges"] == 3
+        assert st.coverage("events:dev_cursor")["ts"] == NOW - 3600 + 3 * 600
+    finally:
+        st.close()
+
+
+def test_transactions_that_cannot_be_fetched_count_as_not_read(tmp_path):
+    st = Store(tmp_path / "t.db")
+    try:
+        sigs, metas = _four_coins(st)
+
+        class Down(FakeIngestor):
+            async def ensure_tx_meta(self, sigs, include_failed=False):
+                raise RuntimeError("timeout")
+
+        svc = FakeSvc(st, FakeRpc(sigs), Down(st, metas))
+        out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, min_curve_sol=20))
+        assert out["failed"] == 4 and out["edges"] == 0 and st.coverage("events:dev_cursor").get("ts", 0) < NOW - 3600
+    finally:
+        st.close()
+
+
+def test_a_scan_cut_by_its_limit_does_not_skip_a_launch_of_the_last_second(tmp_path):
+    """The scan's place is a launch time in seconds and the next scan starts a second later: two launches in one second,
+    the limit falling between them, and the second was never scanned."""
+    st = Store(tmp_path / "t.db")
+    try:
+        sigs, metas = {}, {}
+        for k, lts in enumerate((NOW - 3600, NOW - 3000, NOW - 3000)):  # the last two in the same second
+            dev = addr(f"dev{k}")
+            m = Market(st, addr(f"coin{k}"), dev, lts, SLOT + k * 1500)
+            m.buy(dev, 1.0, 0)
+            for i in range(5):
+                m.buy(addr(f"b{k}{i}"), 5.0, 2 + i)
+            m.commit()
+            sigs[dev] = [{"signature": f"P{k}", "slot": SLOT + k * 1500 + 1, "blockTime": lts + 5, "err": None}]
+            metas[f"P{k}"] = _meta(f"P{k}", lts + 5, [{"src": dev, "dst": addr(f"paid{k}"), "lamports": 7}])
+        svc = FakeSvc(st, FakeRpc(sigs), FakeIngestor(st, metas))
+        first = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, max_launches=2, min_curve_sol=20))
+        second = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW + 60, max_launches=2, min_curve_sol=20))
+        assert first["launches"] == 2 and second["launches"] == 2  # the last second is read again, whole
+        assert all(st.edges_to(addr(f"paid{k}"), kind="paid_by_dev") for k in range(3))
+        third = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW + 120, max_launches=2, min_curve_sol=20))
+        assert third["launches"] == 0  # and not for ever
+    finally:
+        st.close()

@@ -170,15 +170,14 @@ def bundle_launch_count(store: Store, wallet: str, limit: int = 50) -> int:
 
 
 def relationship_gate(store: Store, wallet: str) -> tuple[bool, list[str]]:
-    """False when the wallet is tied to dev teams: paid by a dev (edges table, phase 5) or a bundle member in >= 2 launches."""
+    """False when the wallet is tied to dev teams: paid by a dev (edges table, phase 5) or a bundle member in >= 2
+    launches. A read that fails goes out to the caller, as the other readings of a verdict do: the run ends there and
+    the wallet stays due (until 11 Nov a failed read of the links was passed over, and the wallet passed)."""
     reasons: list[str] = []
     if _has_table(store, "edges"):
-        try:
-            rows = store._q("SELECT count(*) FROM edges WHERE dst=? AND kind='paid_by_dev'", (wallet,))
-            if rows and rows[0][0]:
-                reasons.append(f"paid_by_dev edge(s): {rows[0][0]}")
-        except Exception:  # noqa: BLE001
-            pass
+        rows = store._q("SELECT count(*) FROM edges WHERE dst=? AND kind='paid_by_dev'", (wallet,))
+        if rows and rows[0][0]:
+            reasons.append(f"paid_by_dev edge(s): {rows[0][0]}")
     n = bundle_launch_count(store, wallet)
     if n >= 2:
         reasons.append(f"bundle member in {n} launches")

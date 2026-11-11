@@ -618,7 +618,7 @@ def test_dev_transfers_hold_no_lock_across_the_network(tmp_path):
 
         out = asyncio.run(dev_transfers(Svc(), T0 - 86400, now=T0))
     # nine transfers, nine links; no event row for a transfer (the link is the edge)
-    assert out == {"launches": 3, "events": 0, "edges": 9, "cleared": 0}
+    assert out == {"launches": 3, "events": 0, "edges": 9, "cleared": 0, "failed": 0}
     assert len(calls) == 6 and all(c is True for c in calls)
     assert st.coverage("events:dev_cursor")["ts"] == T0 - 3600 + 2
     st.close()

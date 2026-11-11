@@ -18,6 +18,12 @@ from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES
 CURSOR_KEY = "events:dev_cursor"
 WINDOW_SECS = 24 * 3600
 OLD_EVENTS_A_SCAN = 400_000  # of the 6.4 million old dev_transfer rows, in short transactions: gone in two days
+# A creator whose history or transactions the RPC would not give is counted (`failed`) and passed over: one that never
+# answers must not hold every scan after it. With this share of a scan's launches refused the RPC is down or limiting,
+# and the scan's place stays before the first one refused, so the next scan reads them again. Until 11 Nov a refusal
+# was passed over without a word and the place moved on: a scan during an outage lost its creators' links for good,
+# and those links are what stops a wallet a creator pays from being copied (qualify.gates.relationship_gate).
+OUTAGE_SHARE = 0.5
 
 
 async def dev_transfers(
@@ -43,13 +49,13 @@ async def dev_transfers(
     # a transfer counts once, whichever of its creator's coins brought the scan to it: a creator's transfers lie in
     # the window of each of its launches (one creator's 1,918 were counted again for every coin)
     counted: set[tuple[str, str]] = set()
-    last_ts = None
+    failed, first_failed = 0, None
     for mint, creator, lts in launches:
-        last_ts = int(lts)
         lo, hi = int(lts) - WINDOW_SECS, int(lts) + WINDOW_SECS
         try:
             sigs = await svc.rpc.get_signatures(creator, limit=1000)
         except Exception:  # noqa: BLE001 - one creator's history failing must not stop the scan
+            failed, first_failed = failed + 1, int(lts) if first_failed is None else first_failed
             continue
         wanted = [
             s["signature"]
@@ -60,8 +66,8 @@ async def dev_transfers(
             continue
         try:
             await svc.ingestor.ensure_tx_meta(wanted)
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception:  # noqa: BLE001 - what the store already holds of them is still read
+            failed, first_failed = failed + 1, int(lts) if first_failed is None else first_failed
         metas = store.tx_meta(wanted)
         for sig in wanted:
             m = metas.get(sig)
@@ -80,7 +86,14 @@ async def dev_transfers(
                 edges.append((creator, tr["dst"], "paid_by_dev", ts, int(tr.get("lamports") or 0)))
     added = store.add_events(events) if events else 0
     store.upsert_edges(edges)  # together, in short transactions (they were one transaction each: 95,298 in a scan)
-    if last_ts is not None:
+    if launches:
+        last_ts = int(launches[-1][2])
+        if failed >= OUTAGE_SHARE * len(launches):
+            last_ts = int(first_failed) - 1  # read again from the first one refused
+        elif len(launches) >= int(max_launches) and int(launches[0][2]) < last_ts:
+            # cut by the limit: other launches of its last second may lie beyond the cut, and the next scan starts a
+            # second after its place. That second is read again, whole (a link added twice is the same link).
+            last_ts -= 1
         store.set_coverage(CURSOR_KEY, {"ts": last_ts, "scanned_at": int(now)})
     cleared = store.prune_events("dev_transfer", OLD_EVENTS_A_SCAN)
-    return {"launches": len(launches), "events": added, "edges": len(edges), "cleared": cleared}
+    return {"launches": len(launches), "events": added, "edges": len(edges), "cleared": cleared, "failed": failed}
