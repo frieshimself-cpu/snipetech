@@ -967,6 +967,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--fall", type=float, default=0.6, help="how far under its high the price must be (0.6: 60 %%)")
     sp.add_argument("--within", type=float, default=600.0, help="seconds from the high to that price, at most")
     sp.add_argument("--behind", type=int, default=3, help="trades that land between the fall's trade and our buy")
+    sp.add_argument("--rebound", type=float, default=0.0,
+                    help="wait for the bounce to start: buy only once the price is this far above its lowest since "
+                         "the fall (0.1: 10 %%); 0: buy the fall itself")  # fmt: skip
+    sp.add_argument("--rebound-within", type=float, default=300.0, help="seconds after the fall the turn may take")
     sp.add_argument("--buy", type=float, default=None, help="SOL a buy (default: the book's size)")
     sp.add_argument("--min-n", type=int, default=30, help="events a split needs to be shown")
     sp = cmd(
@@ -2410,7 +2414,8 @@ def _main(args) -> int:
             buy = float(args.buy if args.buy is not None else cfg.book.fill_min_sol)
             out = dip_buys(svc.tape_store, time.time(), hours=args.hours, min_peak_sol=args.min_peak_sol,
                            min_buyers=args.min_buyers, fall=args.fall, within=args.within, behind=args.behind,
-                           buy_sol=buy, per_tx_sol=cost["per_tx_sol"], min_n=args.min_n)  # fmt: skip
+                           buy_sol=buy, per_tx_sol=cost["per_tx_sol"], min_n=args.min_n, rebound=args.rebound,
+                           rebound_within=args.rebound_within)  # fmt: skip
         finally:
             svc.store.close()
         rows = out.pop("rows")

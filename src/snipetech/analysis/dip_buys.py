@@ -13,6 +13,10 @@ to), or at the last trade when fewer follow: every event counts, also the coin n
 sold in the lab's simulator (our own size moves the price, pump.fun's fee both ways, two transactions at the measured
 cost, a sell landing a slot after its timer) on timers of `horizons` seconds.
 
+With `rebound` the buy waits for the bounce to start (the owner's words: "bought for the bounce"): the first trade
+at which the price is that far above its lowest since the fall, at most `rebound_within` seconds after the fall, and
+it lands `behind` trades after that trade. A coin that never turns is no trade (`no_rebound` counts them).
+
 Which coins were hot comes from the events the server's scan writes every three hours (`events/curve.py`: the first
 trade that lifts a coin's curve past 10, 30 and 60 SOL), so the newest hours of a tape can be missing. Read the tape
 copy, never the live file. Research only: no OKTech mode buys a fall."""
@@ -61,6 +65,22 @@ def _dip(path: MarketPath, dev: set[str], *, min_peak_sol: float, min_buyers: in
     return None
 
 
+def _turn(path: MarketPath, i: int, rebound: float, within: float) -> int | None:
+    """The first state after the fall's (state `i`) at which the price is `rebound` above its lowest since the fall,
+    at most `within` seconds after the fall and while the coin is on its curve; None when it never turns in time."""
+    q, b, ts = path.q, path.b, path.ts
+    off = path.off_curve
+    low = float(q[i]) / float(b[i])
+    for j in range(i + 1, path.n):
+        if float(ts[j] - ts[i]) > within or path.amm[j] or (off is not None and off[j]) or b[j] <= 0:
+            return None
+        p = float(q[j]) / float(b[j])
+        if p >= (1.0 + rebound) * low:
+            return j
+        low = min(low, p)
+    return None
+
+
 def _stats(pnl: list[float]) -> dict[str, Any]:
     """n, mean SOL a trade, a one-sided 95 % lower bound, the share that won, the total, and the share of everything
     won that the TOP best events made (a table three trades carry is no edge)."""
@@ -86,10 +106,11 @@ def _split(rows: list[dict], key: str, edges: list[tuple[str, float, float]], ke
 def dip_buys(store, now: float, *, hours: float = 72.0, min_peak_sol: float = 40.0, min_buyers: int = 100,
              fall: float = 0.6, within: float = 600.0, behind: int = 3, horizons: tuple[float, ...] = HORIZONS,
              buy_sol: float = 0.2, per_tx_sol: float = 0.0045, max_age: float = MAX_AGE_SECS,
-             min_n: int = 30) -> dict[str, Any]:  # fmt: skip
-    """Every hot fall of the last `hours` bought `behind` trades later for `buy_sol` and sold on each timer: the
-    table over all events (`all`) and split by the SOL in the curve at the high, the wallets by then and how fast the
-    price fell (groups of `min_n` events or more), and every event (`rows`)."""
+             min_n: int = 30, rebound: float = 0.0, rebound_within: float = 300.0) -> dict[str, Any]:  # fmt: skip
+    """Every hot fall of the last `hours` bought `behind` trades later for `buy_sol` (with `rebound`: `behind` trades
+    after the price has turned that far up from its low) and sold on each timer: the table over all trades (`all`) and
+    split by the SOL in the curve at the high, the wallets by then and how fast the price fell (groups of `min_n` or
+    more), and every trade (`rows`)."""
     levels = [lv for lv in LEVELS_SOL if lv <= min_peak_sol]
     if not levels:
         raise ValueError(f"min_peak_sol is {min_peak_sol:g}: the tape marks hot coins from {min(LEVELS_SOL)} SOL up")
@@ -100,6 +121,8 @@ def dip_buys(store, now: float, *, hours: float = 72.0, min_peak_sol: float = 40
     keys = [f"{int(h)}" for h in horizons]
     rows: list[dict[str, Any]] = []
     left = 0  # events whose buy would have landed after the coin left its curve: no position
+    events = 0  # every hot fall found, bought or not
+    waited = 0  # with `rebound`: the falls whose price never turned in time, so nothing was bought
     for mint in hot:
         launch = store.launch(mint)
         if launch is None:
@@ -113,7 +136,15 @@ def dip_buys(store, now: float, *, hours: float = 72.0, min_peak_sol: float = 40
         if found is None:
             continue
         i, what = found
-        e = min(i + int(behind), path.n - 1)
+        events += 1
+        at = i  # the trade our buy reacts to: the fall's, or the one that says the bounce has begun
+        if rebound > 0:
+            turn = _turn(path, i, rebound, rebound_within)
+            if turn is None:
+                waited += 1
+                continue
+            at = turn
+        e = min(at + int(behind), path.n - 1)
         if path.amm[e] or (path.off_curve is not None and path.off_curve[e]):
             left += 1
             continue
@@ -125,14 +156,17 @@ def dip_buys(store, now: float, *, hours: float = 72.0, min_peak_sol: float = 40
             ex = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=float(h), sell_on_dev_sell=False)
             pnl[k] = float(run_exit(prep, ex, costs).pnl_sol)
         rows.append({"mint": mint, "ts": int(path.ts[i]), "peak_sol": round(what["peak_sol"], 3),
-                     "buyers": int(what["buyers"]), "fall_secs": what["fall_secs"], "behind": e - i,
+                     "buyers": int(what["buyers"]), "fall_secs": what["fall_secs"], "behind": e - at,
+                     "rebound_secs": float(path.ts[at] - path.ts[i]),
                      "entry_mcap_sol": float(path.mcap_sol(e)), "pnl": pnl})  # fmt: skip
     rows.sort(key=lambda r: r["ts"])
     inf = float("inf")
     return {
-        "hours": hours, "hot_coins": len(hot), "events": len(rows), "left_curve": left, "buy_sol": buy_sol,
+        "hours": hours, "hot_coins": len(hot), "events": events, "no_rebound": waited, "left_curve": left,
+        "buy_sol": buy_sol,
         "per_tx_sol": per_tx_sol, "landing": f"+{int(behind)}x", "horizons_secs": [int(h) for h in horizons],
-        "rule": {"min_peak_sol": min_peak_sol, "min_buyers": min_buyers, "fall": fall, "within_secs": within},
+        "rule": {"min_peak_sol": min_peak_sol, "min_buyers": min_buyers, "fall": fall, "within_secs": within,
+                 "rebound": rebound, "rebound_within_secs": rebound_within},
         "all": {k: _stats([r["pnl"][k] for r in rows]) for k in keys} if rows else {},
         "by_peak_sol": _split(rows, "peak_sol", [(f"{min_peak_sol:g}-59", min_peak_sol, 60.0), ("60+", 60.0, inf)],
                               keys, min_n),

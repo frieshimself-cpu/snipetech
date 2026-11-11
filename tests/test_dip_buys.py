@@ -222,3 +222,28 @@ def test_cli_dip_buys_prints_the_table_as_json(tmp_path, capsys, monkeypatch):
     out = json.loads(capsys.readouterr().out)
     assert out["events"] == 3 and out["buy_sol"] == 0.2 and out["per_tx_source"] and "rows" not in out
     assert out["all"]["30"]["n"] == 3 and out["best"] and out["worst"]
+
+
+def test_waiting_for_the_bounce_to_start_buys_only_the_coins_that_turn():
+    """The owner's words are "bought for the bounce". Buying the fall itself lost 27 % of the buy in 30 s on the
+    server's tape (11 Nov, 1,355 events). With `rebound` the buy waits until the price is that far above its lowest
+    since the fall, at most `rebound_within` seconds after it, and lands 3 trades after that trade. A coin that never
+    turns is no trade, and is counted."""
+    st = Store(":memory:")
+    turns, event = _hot_coin(st, "turns", bounce=10)
+    _hot_coin(st, "bleeds", bounce=0, at=600)
+    _mark_hot(st)
+    out = _study(st, min_n=1, rebound=0.10)
+    assert out["events"] == 2 and out["no_rebound"] == 1 and out["all"]["30"]["n"] == 1
+    (row,) = out["rows"]
+    assert row["mint"] == turns.mint
+    # the lowest price since the fall is after the two sales that follow it; the first trade 10 % above that low
+    path = _path(st, turns)
+    price = [float(q) / float(b) for q, b in zip(path.q, path.b)]
+    i = 1 + event
+    j = next(k for k in range(i + 1, path.n) if price[k] >= 1.10 * min(price[i:k]))
+    assert row["rebound_secs"] == float(path.ts[j] - path.ts[i]) and row["behind"] == 3
+    assert row["entry_mcap_sol"] == pytest.approx(path.mcap_sol(j + 3))
+    late = _study(st, min_n=1, rebound=0.10, rebound_within=0.5)  # the turn came later than half a second
+    assert late["no_rebound"] == 2 and late["rows"] == []
+    assert _study(st, min_n=1)["no_rebound"] == 0  # without it every fall is bought

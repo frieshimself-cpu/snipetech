@@ -359,7 +359,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         its high within 10 minutes, bought 3 trades later and sold after 30 s, 2 min and 10 min in the lab's simulator at
         the measured cost; the table over all events and split by the size of the high, the wallets and the speed of the
         fall, with what the five best events carry ("--min-peak-sol", "--min-buyers", "--fall", "--within", "--behind",
-        "--buy" change the rule; research only, no OKTech mode buys a fall). ["playbook", "<wallet>", "--json"] reads a bot's
+        "--buy" change the rule; "--rebound", "0.1" waits until the price is 10 % above its lowest since the fall and
+        buys 3 trades after that; research only, no OKTech mode buys a fall). ["playbook", "<wallet>", "--json"] reads a bot's
         rules off the tape: what each first buy came right after, who it follows and how often, its filters, sizes,
         bids and exits (6Z91). ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's
