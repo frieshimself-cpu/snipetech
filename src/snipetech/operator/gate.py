@@ -165,7 +165,7 @@ def nothing_for_the_cadence(snap, paths: OperatorPaths, now: float, new_trips: i
     if not any(loop_stage(j.get("argv")) is None for j in snap.jobs_running or []):
         return False
     return not any(loop_stage(m.get("argv")) is None and not m.get("running") and float(m.get("ended") or 0) >= last
-                   for m in _read_metas(paths.jobs))  # fmt: skip
+                   for m in _read_metas(paths.jobs, last))  # fmt: skip
 
 
 def _analyst_due(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_today: float = 0.0) -> bool:

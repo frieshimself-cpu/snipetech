@@ -33,7 +33,7 @@ from ..store import _LATEST_VERDICT, Store
 from .learning import digest_lines as learning_lines
 from .paths import OperatorPaths
 from .snapshot import systemd_services
-from .standin import job_metas, loop_stage
+from .standin import STAGE_MEMORY_SECS, job_metas, loop_stage
 
 # what counts as a heavy job: anything that runs a lab or replays the tape at length (CLAUDE.md rule 3: one at a time)
 HEAVY_COMMANDS = frozenset({
@@ -593,7 +593,7 @@ def research_cli(args, cfg: Config) -> int:
         return 0
     repo = Path(__file__).resolve().parents[3]
     jobs = OperatorJobs(repo=repo, data=data, db=Path(cfg.storage.db_path), branch="-")  # creates <data>/jobs
-    metas = job_metas(jobs.ops)
+    metas = job_metas(jobs.ops, now - STAGE_MEMORY_SECS)  # every wait and window here is under two days
     store = Store(cfg.storage.db_path)
     try:
         if args.action == "digest":

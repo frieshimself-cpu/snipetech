@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import time
@@ -12,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import Config
+from ..jobfiles import jobs_since
 from .budget import Ledger
 from .paths import OperatorPaths
 
@@ -95,11 +97,13 @@ def _pid_alive(pid: int | None) -> bool:
     return True
 
 
-def _read_metas(jobs_dir: Path) -> list[dict]:
+def _read_metas(jobs_dir: Path, since: float | None = None) -> list[dict]:
+    """The job records, the oldest job first. With `since`, only those that can matter to a reader of what happened
+    since then: the others are not opened (`jobfiles.jobs_since`; 11 Nov: every reader opened all 1,656)."""
     out = []
-    for p in sorted(jobs_dir.glob("*.json")) if jobs_dir.is_dir() else []:
+    for jid in jobs_since(jobs_dir, since):
         try:
-            out.append(json.loads(p.read_text()))
+            out.append(json.loads((jobs_dir / f"{jid}.json").read_text()))
         except (OSError, json.JSONDecodeError):
             continue
     return out
@@ -107,10 +111,12 @@ def _read_metas(jobs_dir: Path) -> list[dict]:
 
 def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float | None = None) -> list[dict]:
     """Jobs that ended at or after `since_ts`. A 'running' meta whose process is gone is reconciled and written back
-    (ended = now, exit_code None) so it is reported once and then retires like any other ended job."""
+    (ended = now, exit_code None) so it is reported once and then retires like any other ended job. An ended job with
+    no exit file (killed with its wrapper, or from before jobs wrote one) gets one, so that no reader opens its record
+    again to learn that it does not run."""
     now = time.time() if now is None else now
     out = []
-    for m in _read_metas(jobs_dir):
+    for m in _read_metas(jobs_dir, since_ts):
         jid = m.get("id")
         if not jid or jid in already:
             continue
@@ -130,6 +136,13 @@ def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float |
                 (jobs_dir / f"{jid}.json").write_text(json.dumps(m))
             except OSError:
                 pass
+        if not exit_file.exists():
+            try:
+                exit_file.write_text("" if m.get("exit_code") is None else f"{m['exit_code']}\n")
+                if m.get("ended"):  # dated when the job ended, as the wrapper's own would be
+                    os.utime(exit_file, (float(m["ended"]), float(m["ended"])))
+            except OSError:
+                pass
         ended = m.get("ended")
         if ended is None or ended >= since_ts:
             out.append({"id": jid, "argv": m.get("argv", []), "exit_code": m.get("exit_code"), "ended": ended,
@@ -143,7 +156,7 @@ def recent_jobs(jobs_dir: Path, now: float, hours: float = 24.0) -> list[dict]:
     from .jobs import RESEARCH_COMMANDS
 
     out = []
-    for m in _read_metas(jobs_dir):
+    for m in _read_metas(jobs_dir, now - hours * 3600):
         argv = m.get("argv") or []
         ended = m.get("ended")
         if (
@@ -161,7 +174,7 @@ def recent_jobs(jobs_dir: Path, now: float, hours: float = 24.0) -> list[dict]:
 
 def running_jobs(jobs_dir: Path) -> list[dict]:
     out = []
-    for m in _read_metas(jobs_dir):
+    for m in _read_metas(jobs_dir, math.inf):  # a job that runs has no exit file: only those records are opened
         jid = m.get("id")
         if m.get("running") and jid and not (jobs_dir / f"{jid}.exit").exists() and _pid_alive(m.get("pid")):
             out.append({"id": jid, "argv": m.get("argv", []), "started": m.get("started")})

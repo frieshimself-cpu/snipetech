@@ -9,6 +9,8 @@ import json
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
+from ..jobfiles import jobs_since
+
 # (argv, the systemd unit that normally runs it or None when no unit does, minimum seconds between starts)
 STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
     (("measure", "run"), "snipetech-measure.timer", 5 * 60),
@@ -97,16 +99,26 @@ def loop_stage(argv) -> str | None:
     return None
 
 
-def job_metas(ops) -> list[dict]:
+def job_metas(ops, since: float | None = None) -> list[dict]:
     """Every job file the ops runner keeps, `running` only while the job has not written its exit file. One file that
-    cannot be read is skipped, never fatal."""
+    cannot be read is skipped, never fatal. With `since`, only the jobs that can matter to a reader of what happened
+    since then (`jobfiles.jobs_since`): the others are not opened."""
     metas = []
-    for p in sorted((ops.data / "jobs").glob("*.json")):
-        meta = ops._meta(p.stem)
+    for jid in jobs_since(ops.data / "jobs", since):
+        meta = ops._meta(jid)
         if meta:
-            alive = meta.get("running") and not (ops.data / "jobs" / f"{p.stem}.exit").exists()
+            alive = meta.get("running") and not (ops.data / "jobs" / f"{jid}.exit").exists()
             metas.append(meta | {"running": bool(alive)})
     return metas
+
+
+# What the round has to know of a stage to say whether it is due: whether one runs, and when the last one started.
+# The longest wait between two starts is the strategist's day.
+STAGE_MEMORY_SECS = 2 * 86400
+# Old stage files are looked for in the first round of each six hours, not in every round: the search opens every
+# record there is (prune_jobs).
+PRUNE_EVERY_SECS = 6 * 3600
+ROUND_SECS = 15 * 60
 
 
 KEEP_STAGE_JOBS_DAYS = 3
@@ -140,11 +152,12 @@ def start_standins(
 ) -> list[list[str]]:
     """Start the due stages with the operator's job runner; returns what was started."""
     try:
-        prune_jobs(jobs.ops.data / "jobs", now)
+        if now % PRUNE_EVERY_SECS < ROUND_SECS:
+            prune_jobs(jobs.ops.data / "jobs", now)
     except OSError as exc:
         if log:
             log(f"stand-in: pruning old job files failed: {exc}")
-    metas = job_metas(jobs.ops)
+    metas = job_metas(jobs.ops, now - STAGE_MEMORY_SECS)
     started = []
     for argv in due_standins(services, metas, now):
         try:

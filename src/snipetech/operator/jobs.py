@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 import time
 from pathlib import Path
 
 from ..analysis.lab_lock import lab_slots
+from ..jobfiles import jobs_since
 from ..ops import Ops, OpsError, _pid_alive
 from .standin import loop_stage
 
@@ -51,8 +53,9 @@ class OperatorJobs:
     def running(self) -> list[dict]:
         """Jobs whose process is alive, read from the shared metadata files (not from this process's memory)."""
         out = []
-        for p in sorted((self.ops.data / "jobs").glob("*.json")):
-            meta = self.ops._meta(p.stem)
+        # a running job has no exit file: only those records are opened
+        for jid in jobs_since(self.ops.data / "jobs", math.inf):
+            meta = self.ops._meta(jid)
             if meta and meta.get("running") and _pid_alive(meta.get("pid")):
                 out.append(meta)
         return out
@@ -91,8 +94,8 @@ class OperatorJobs:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
-        for p in (self.ops.data / "jobs").glob("*.json"):
-            meta = self.ops._meta(p.stem)
+        for jid in jobs_since(self.ops.data / "jobs", now - REPEAT_AFTER_SECS):
+            meta = self.ops._meta(jid)
             if (meta and list(meta.get("argv") or []) == list(argv) and not meta.get("running")
                     and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - REPEAT_AFTER_SECS):  # fmt: skip
                 return meta

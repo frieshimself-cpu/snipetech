@@ -300,7 +300,7 @@ def test_a_job_enforces_its_own_time_limit(tmp_path):
 
 def test_op_jobs_survives_a_job_file_pruned_mid_listing(tmp_path, monkeypatch):
     import json
-    import pathlib
+    import os
 
     data = tmp_path / "d"
     jobs = data / "jobs"
@@ -316,14 +316,23 @@ def test_op_jobs_survives_a_job_file_pruned_mid_listing(tmp_path, monkeypatch):
     (jobs / "a.json").write_text(
         json.dumps({"id": "a", "argv": ["measure", "run"], "started": 1, "ended": 2, "exit_code": 0, "running": False})
     )
-    real_glob = pathlib.Path.glob
+    (jobs / "gone.json").write_text("{}")
+    real_scandir = os.scandir
 
-    def glob(self, pattern):
-        yield from real_glob(self, pattern)
-        if pattern == "*.json":
-            yield self / "gone.json"  # deleted by the round's prune between the listing and the stat
+    class Listing:  # the directory as it was listed, each file deleted before it is looked at again
+        def __init__(self, path):
+            self.entries = list(real_scandir(path))
 
-    monkeypatch.setattr(pathlib.Path, "glob", glob)
+        def __enter__(self):
+            for entry in self.entries:
+                if entry.name == "gone.json":
+                    os.unlink(entry.path)  # deleted by the round's prune between the listing and the stat
+            return iter(self.entries)
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(os, "scandir", Listing)
     assert [j["id"] for j in ops.op_jobs()["jobs"]] == ["a"]
 
 

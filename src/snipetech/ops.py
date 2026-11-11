@@ -37,6 +37,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
+from .jobfiles import job_files
+
 SKEW_SECS = 300
 MAX_BODY = 6 << 20
 MAX_WRITE = 5 << 20
@@ -347,19 +349,15 @@ class Ops:
 
     def op_jobs(self) -> dict[str, Any]:
         """Every running job first, however old (a session checks this list before a deploy kills running jobs: a
-        live test's guard must never drop off it), then the 30 newest ended ones."""
-
-        def _mtime(p: Path) -> float | None:
-            try:
-                return p.stat().st_mtime
-            except OSError:  # pruned by the round between the listing and here
-                return None
-
-        found = [(m, p) for p in (self.data / "jobs").glob("*.json") if (m := _mtime(p)) is not None]
-        paths = [p for _m, p in sorted(found, key=lambda x: x[0], reverse=True)]
+        live test's guard must never drop off it), then the 30 newest ended ones. A record is opened when its job may
+        still run (no exit file) or is among those 30 (`jobfiles`): the live page asks for this list every 10 s."""
+        files = job_files(self.data / "jobs")
         running, ended = [], []
-        for p in paths:
-            jid = p.stem
+        # newest first, by the later of its record and its exit file: a job that has just ended leads the ended ones
+        # even while its record still says it runs
+        for jid in sorted(files, key=lambda j: max(files[j][0], files[j][1] or 0.0), reverse=True):
+            if files[jid][1] is not None and len(ended) >= 30:
+                continue  # ended (its exit file says so) and older than the 30 listed
             d = self._job_dict(self.jobs[jid]) if jid in self.jobs else self._meta(jid)
             if d is None:
                 continue
