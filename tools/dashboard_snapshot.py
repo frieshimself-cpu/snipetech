@@ -128,7 +128,13 @@ lag = max(0, sql(f"SELECT {NOW} - MAX(ts) AS lag FROM trades WHERE ts > {NOW - 6
 jobs = call(URL, KEY, "jobs")
 jl = jobs.get("jobs", jobs) if isinstance(jobs, dict) else jobs
 running = [" ".join(j["argv"][:2]) for j in jl if j.get("running")]
-snipers = sql("SELECT count(*) AS n FROM oktech_snipers WHERE removed_at IS NULL")[0]["n"]
+# snipers that can still buy, as the operator last read them from OKTech (the local table also keeps the finished
+# ones: 11 Nov the page said 9 where three were running)
+try:
+    _seen = json.loads(read("operator/snapshot.json")).get("snipers") or []
+    snipers = sum(1 for x in _seen if str(x.get("status")) in ("running", "starting", "stopping"))
+except (ValueError, KeyError, TypeError, AttributeError):
+    snipers = None
 dump("status", [{"snapshot_at": iso(NOW), "tape_lag_s": lag, "jobs_running": len(running),
                  "jobs": ", ".join(running), "snipers_armed": snipers,
                  "agent_spend_today_usd": round(spend.get(time.strftime("%Y-%m-%d", time.gmtime(NOW)), 0.0), 2),

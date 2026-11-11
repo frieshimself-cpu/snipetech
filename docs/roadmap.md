@@ -6,6 +6,22 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 03:10 UTC: the whole system audited; why nothing ever qualified; the crew rule holds on our own tape
+
+- **Still nothing profitable live** (three copy snipers, -0.2494 SOL over 24 round trips in three days).
+- **Copying was blocked by our own queue, not by the wallets.** Qualify judged only never-seen candidates (41,450
+  waiting, 10-16 thousand more a day), so it never looked twice at anyone: 25 wallets that pay on paper at our real
+  landing (+0.02 to +0.06 SOL a 0.2 SOL copy, lower bound above zero) waited one to two days for the second look
+  that qualifies them. Fixed at 02:50: they are first in the queue now. The first verdicts come from the run after
+  03:50.
+  A qualified wallet is armed by the book under the owner's standing settings; most will fail the second look.
+- **The crew rule is positive on our own tape too** (exact block order, real hunt landing, measured costs): 27 launches
+  with 30+ SOL in the first 1.5 s and a crew wallet among the buyers; on the 11 newer ones +0.048 SOL a 0.2 SOL trade,
+  11 of 11 up. The crew has not bundled a launch since 8 Nov 12:20. One yes/no is with the owner (0.2 SOL, 10 buys).
+- **Thirteen defects fixed and deployed** (recorder stalls of 50 s an hour and 16-36 s after each copy; the copy job
+  days from failing; labs blind to fresh labels; the agents re-paying for the same text every half hour; more):
+  [audit-2026-11-11.md](audit-2026-11-11.md), with what is still open (tape holes on restarts, disk in late November).
+
 ## 11 Nov, 00:00 UTC: one crew's launches are the first candidate for a live test
 
 - **Still nothing profitable live.** The first rule that looks runnable: twelve wallets that bundle together launched

@@ -817,3 +817,22 @@ stay candidates, 27 retired. No mid or late swing trader from that list is worth
 - Running: `copy-context --any-buyer --taken-by <the three bots>` (every wallet's 1 SOL buy, with the share the bots
   followed, by SOL in the curve, buyers, last 30 s of volume) and `study` on each bot (about 50 factors at what it
   bought against what it passed on: socials, creator's history, holders, market activity, time of day).
+
+## The crew rule on our own tape (11 Nov, 02:38 UTC)
+
+The month's crew (twelve wallets, labelled `bundler` on the server) scored by the lab on our own recording: exact
+block order, a 0.2 SOL buy where a hunt buy really lands (three trades behind, a block after the trigger), the
+measured 0.00421 SOL a transaction, 137 hours of tape. Job 20261111-023316-565ae2. The first run of this lab had
+matched 2 launches: labs skip coins whose image file many creators reuse, which is what this crew's launches are
+(fixed: a rule on a wallet list buys what those wallets bought). "Newer" is the part the exit was not chosen on.
+
+| In the first 1.5 s at least | Launches | Exit the older part chose | Newer | Mean a trade | Lower bound | Up |
+|---|---|---|---|---|---|---|
+| 30 SOL bought | 27 | +30 % / -20 % / 30 s | 11 | +0.0483 SOL | +0.0447 | 100 % |
+| 15 SOL bought | 32 | 30 s | 13 | +0.0290 SOL | +0.0087 | 85 % |
+| 5 SOL bought | 55 | 30 s | 22 | +0.0633 SOL | +0.0353 | 82 % |
+
+The same sign and size as the bought month (median +21 % a minute later, before fees). What it does not settle: every
+one of these launches is from 6-8 Nov (31 create-block bundles, about 41 SOL each, 15-21 buyers); on 9 and 10 Nov the
+crew's wallets bought 8 and 3 coins and none in a create block, so the rule would not have fired since 8 Nov 12:20;
+and OKTech's `requireKnownBot` over our own wallet list has never run live.
