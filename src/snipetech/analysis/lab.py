@@ -862,13 +862,18 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
 def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
           paid: bool | None = None) -> int | None:  # fmt: skip
     if trig.kind == "event":
-        # events: [(kind, ts, slot)] for this coin; fire on the first trade at or after the earliest event of the kind
-        hits = sorted((ts, slot or 0) for kind, ts, slot in (events or []) if kind == trig.event)
+        # events: [(kind, ts, slot, q_after)] for this coin; fire on the earliest event of the kind. An event a trade
+        # made (a curve crossing: `q_after`, the reserves that trade left) fires at that trade, the first one at or
+        # after the event's block with the reserves at least there; any other (a list a feed showed) at the first
+        # trade at or after it. 11 Nov: every event fired at the first trade of its block, so a crossing fired ahead
+        # of the buy that made it and the paper buy was filled before that buy's price impact.
+        hits = sorted(((ts, slot or 0, q) for kind, ts, slot, q in (events or []) if kind == trig.event),
+                      key=lambda h: h[:2])  # fmt: skip
         if not hits:
             return None
-        ev_ts, ev_slot = hits[0]
+        ev_ts, ev_slot, q_after = hits[0]
         for i in range(1, path.n):
-            if path.ts[i] >= ev_ts and path.slot[i] >= ev_slot:
+            if path.ts[i] >= ev_ts and path.slot[i] >= ev_slot and (q_after is None or path.q[i] >= q_after):
                 return i
         return None
     """Index of the trade at which `trig` fires on this token (first time only).
@@ -1526,10 +1531,11 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     events_by_mint: dict[str, list[tuple]] = {}
     if event_kinds:
         marks = ",".join("?" * len(event_kinds))
-        for kind, ts, slot, mint in store._q(
-            f"SELECT kind, ts, slot, mint FROM events WHERE kind IN ({marks})", list(event_kinds)
+        for kind, ts, slot, mint, q_after in store._q(
+            f"SELECT kind, ts, slot, mint, json_extract(data, '$.q_after') FROM events WHERE kind IN ({marks})",
+            list(event_kinds),
         ):
-            events_by_mint.setdefault(mint, []).append((kind, ts, slot))
+            events_by_mint.setdefault(mint, []).append((kind, ts, slot, q_after))
     group_wallets = set().union(*(kols.get(g, set()) for g in groups)) if groups else None
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,

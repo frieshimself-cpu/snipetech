@@ -135,11 +135,10 @@ def _events(args, cfg) -> int:
         if args.action == "edge":
             from .analysis.lab_lock import lab_lock
             from .events.run import event_edge
-            from .qualify.run import effective_landing_pos
 
-            landing = args.landing or effective_landing_pos(svc.store, cfg.qualify)
+            # where in the block after the event the buy lands (the hunt landing unless --landing says another)
             with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
-                out = event_edge(svc.store, cfg, time.time(), landing=landing, tape=svc.tape_store)
+                out = event_edge(svc.store, cfg, time.time(), landing=args.landing, tape=svc.tape_store)
             print(json.dumps(out, indent=1, default=str))
             return 0
         if args.action == "scan":
@@ -795,7 +794,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--landing",
         default=None,
-        help="edge: the landing position (default: the measured one, else [qualify] landing_pos)",
+        help="edge: how many trades into the block after the event the buy lands (default: the hunt landing, +3)",
     )
     sp.add_argument("--once", action="store_true", help="poll: one pass instead of the service loop")
     sp.add_argument("--interval", type=float, default=60, help="poll: seconds between passes (service: 60)")

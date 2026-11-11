@@ -12,6 +12,9 @@ from .feeds import FeedState, poll_once
 
 FEEDS_KEY = "events:feeds"
 EDGE_KEY = "events:edge"
+# The event kinds the edge table scores as triggers. Not `dev_transfer`: those events are recorded only for coins whose
+# curve went on to 60 SOL (events/dev.py), dated when the creator moved the SOL, often at the launch: a trigger chosen
+# by how the coin ended (11 Nov: the table gave it +0.311 SOL a 0.2 SOL trade, lower bound +0.298 over 4,648 trades).
 DEFAULT_EDGE_KINDS = (
     "trending",
     "graduating",
@@ -19,7 +22,6 @@ DEFAULT_EDGE_KINDS = (
     "curve_cross:10",
     "curve_cross:30",
     "curve_cross:60",
-    "dev_transfer",
 )
 LAST_POLL_KEY = "events:last_poll"
 LAST_SCAN_KEY = "events:last_scan"
@@ -94,17 +96,23 @@ def poll_loop(store: Store, clients: dict[str, Any], interval: float = 60.0, onc
         sleep(interval)
 
 
-def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = None, landing: str = "+6",
+def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = None, landing: str | None = None,
                min_train: int = 15, tape: Store | None = None) -> dict[str, Any]:  # fmt: skip
-    """The lab with each event kind as a trigger at the measured landing: which kinds carry edge for us.
+    """The lab with each event kind as a trigger: which kinds carry edge for us, where a buy on an event could land.
+    That is a block after the event, `landing` trades into it (the hunt landing, `paper.HUNT_LANDING`, unless given):
+    an event read off the chain or a feed is known when its block is. A copy lands inside the copied buy's own block
+    only because OKTech sees that buy before it confirms; until 11 Nov this table was scored there (CLAUDE.md rule 2:
+    a result at a better landing than can be had is not evidence).
     Read from `tape` (the hourly read-only copy when fresh) and written to `store`'s coverage events:edge; the analyst
     reads it, the strategist may propose a sniper for a kind with a positive lower bound over enough moments."""
     from ..analysis import lab as L
+    from ..analysis.paper import HUNT_LANDING, landing_key
     from ..qualify.run import lab_tx_cost
 
     kinds = tuple(kinds or DEFAULT_EDGE_KINDS)
+    latency, position = HUNT_LANDING[0], landing or HUNT_LANDING[1]
     # the measured cost of a transaction, as the qualify lab and the strategy search charge it
-    data = L.collect(tape or store, cfg, cfg.book.fill_min_sol, 0, landing, lab_tx_cost(store, cfg), groups=(),
+    data = L.collect(tape or store, cfg, cfg.book.fill_min_sol, latency, position, lab_tx_cost(store, cfg), groups=(),
                      event_kinds=kinds)  # fmt: skip
     ranked = L.rank(data, cfg, top=200, min_train=min_train)
     rows = []
@@ -116,6 +124,6 @@ def event_edge(store: Store, cfg, now: float, kinds: tuple[str, ...] | None = No
         rows.append({"kind": spec.get("event"), "moments": r.get("moments"), "per_hour": r.get("per_hour"), "exit": r.get("exit"),
                      "n": t.get("n"), "mean": t.get("mean"), "ev_lower": t.get("ev_lower"), "win_rate": t.get("win_rate"),
                      "total": t.get("total"), "sol_per_day": r.get("test_sol_per_day")})  # fmt: skip
-    out = {"ts": int(now), "landing": landing, "tape_hours": data["tape_hours"], "rows": rows}
+    out = {"ts": int(now), "landing": landing_key(latency, position), "tape_hours": data["tape_hours"], "rows": rows}
     store.set_coverage(EDGE_KEY, out)
     return out
