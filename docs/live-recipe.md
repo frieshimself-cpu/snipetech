@@ -23,6 +23,14 @@ since 6 Nov; 0.2 SOL fills on the low-fee arm).
   because the book already copies them (the owner may say "stop them"; until then they stay).
 - This is paper evidence plus one clean forward window, not a live result. The live result is the next thing written
   here: its first copies, what they made after costs, and how far behind the leader they landed.
+- **05:09-05:51 UTC: its first three signals came and none was bought.** 74xVT9 made three first buys over the
+  0.558 SOL floor (Fq1Mcq 1.33 SOL at 05:09:31, Diq2CR 1.18 at 05:11:48, YiDqey 0.99 at 05:51:25). OKTech counted
+  three snipes and the sniper finished (3 buys a sniper), but no transaction of ours reached the chain, landed or
+  failed: at the time the wallet held 0.0009 SOL beside 0.47 wrapped SOL, and a buy needs SOL for its fees. (The
+  wallet's balance is the owner's to move and is not flagged; it is written here only because it is why there is no
+  live result.) The book made the next sniper at 06:00:09 (`6af404692721696190446e2e`), as it does while the wallet
+  stays qualified. 74xVT9's own result on the three coins: -0.27, -0.30 and +0.25 SOL on 2.1, 1.9 and 1.3 SOL bought;
+  what a copy at our landing would have made is in its next verdict (they count as copies after the pick).
 
 ## The owner, 7 Nov 2026 about 22:05 UTC: "pnl matters but dont stop the bot"
 
