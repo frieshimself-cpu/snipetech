@@ -273,7 +273,13 @@ DEFAULT_OPERATOR_PRICES: dict[str, float] = {
 # changes here would never reach the server. A value in the file that equals one of these retired defaults is not a
 # choice and follows the new default; any other value is the owner's and stays. 10 Nov: the analyst moved from
 # claude-opus-5-5 (owner: "ok do it"), and the price table of 6 Nov overstated every line of the spend ledger.
-RETIRED_OPERATOR_DEFAULTS: dict[str, tuple] = {"analyst_model": ("claude-opus-5-5",)}
+# 11 Nov: `[snipe] entry_position` "middle" (the middle of the block after the create) was never measured; a launch-
+# triggered buy lands behind that block's first three buys (`paper.HUNT_LANDING`). The server's file said "middle", so
+# the deployer verdicts stayed there after the default moved (3,208 scores written at "1@middle").
+RETIRED_DEFAULTS: dict[str, tuple] = {
+    "operator.analyst_model": ("claude-opus-5-5",),
+    "snipe.entry_position": ("middle",),
+}
 RETIRED_OPERATOR_PRICES: dict[str, tuple] = {
     "in": (3.0,),
     "out": (15.0,),
@@ -743,13 +749,14 @@ def _merge_fee_table(current: dict[str, dict], value: dict[str, Any]) -> None:
                 slot[number] = {**slot.get(number, {}), **{k: float(v) for k, v in rule.items()}}
 
 
-def _apply(obj: Any, data: dict[str, Any]) -> None:
+def _apply(obj: Any, data: dict[str, Any], prefix: str = "") -> None:
     for key, value in data.items():
         if not hasattr(obj, key):
             continue
         current = getattr(obj, key)
+        dotted = f"{prefix}.{key}" if prefix else key
         if dataclasses.is_dataclass(current) and isinstance(value, dict):
-            _apply(current, value)
+            _apply(current, value, dotted)
         elif isinstance(current, dict) and isinstance(value, dict):
             if isinstance(obj, AutotuneConfig) and key == "bounds":
                 # per rule: a partial rule keeps the default's other limits; `off = true` (or an empty table) removes it
@@ -768,10 +775,66 @@ def _apply(obj: Any, data: dict[str, Any]) -> None:
                 current.update({k: v for k, v in value.items() if v not in RETIRED_OPERATOR_PRICES.get(k, ())})
             else:
                 current.update(value)  # a dict field (e.g. operator.prices) is merged over its defaults
-        elif isinstance(obj, OperatorConfig) and value in RETIRED_OPERATOR_DEFAULTS.get(key, ()):
+        elif value in RETIRED_DEFAULTS.get(dotted, ()):
             continue  # the file's dump of an old default, not the owner's choice
         else:
             setattr(obj, key, _coerce(value, type(current)))
+
+
+# a setting whose name has one of these words may hold a key or an address: the drift says it differs, never its value
+HIDDEN_WORDS = frozenset({"key", "keys", "token", "secret", "url", "urls", "password", "wallet", "wallets", "keypair",
+                          "webhook", "endpoint"})  # fmt: skip
+
+
+def _hidden(dotted: str) -> bool:
+    return any(word in HIDDEN_WORDS for part in dotted.lower().split(".") for word in part.split("_"))
+
+
+def settings_drift(path: str | Path) -> dict[str, Any]:
+    """What the settings file sets, against today's defaults (`doctor --settings`). The server's file is `init`'s dump
+    of every default of its day, so each line of `differs` is either somebody's choice or a default that changed in the
+    code and never reached this machine; a line of `retired` is one of the latter that the loader already replaces.
+
+    `differs`: {setting: {"file": its value, "default": today's}}, or {"hidden": True} where the name could hold a
+    key. `retired`: {setting: {"file": the old default, "now": the value in force}}. `unknown`: settings no code reads.
+    `same`: how many settings the file sets to today's default."""
+    p = Path(path)
+    out: dict[str, Any] = {"path": str(p), "differs": {}, "retired": {}, "unknown": [], "same": 0}
+    if not p.exists():
+        return out
+    with p.open("rb") as fh:
+        _drift(Config(), tomllib.load(fh), "", out)
+    out["differs"], out["retired"] = dict(sorted(out["differs"].items())), dict(sorted(out["retired"].items()))
+    out["unknown"].sort()
+    return out
+
+
+def _drift(obj: Any, data: dict[str, Any], prefix: str, out: dict[str, Any]) -> None:
+    for key, value in data.items():
+        dotted = f"{prefix}.{key}" if prefix else key
+        free = isinstance(obj, dict)  # a table of the file's own keys (operator.prices, the fee and autotune bounds)
+        if not free and not hasattr(obj, key):
+            out["unknown"] += [leaf for leaf, _ in _leaves(value, dotted)] if isinstance(value, dict) else [dotted]
+            continue
+        current = obj.get(key) if free else getattr(obj, key)
+        if isinstance(value, dict):
+            table = current if dataclasses.is_dataclass(current) or isinstance(current, dict) else {}
+            _drift(table, value, dotted, out)
+        elif value in RETIRED_DEFAULTS.get(dotted, ()) or (
+            prefix == "operator.prices" and value in RETIRED_OPERATOR_PRICES.get(key, ())
+        ):
+            out["retired"][dotted] = {"file": value, "now": current}
+        elif current is not None and _same(value, current):
+            out["same"] += 1
+        else:
+            out["differs"][dotted] = {"hidden": True} if _hidden(dotted) else {"file": value, "default": current}
+
+
+def _same(value: Any, current: Any) -> bool:
+    try:
+        return bool(_coerce(value, type(current)) == current)
+    except (TypeError, ValueError):
+        return False
 
 
 _ENV = {

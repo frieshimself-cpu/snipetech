@@ -304,6 +304,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="instead: subscribe the tape's stream this many slots back and print the order its "
                          "transactions, slot ticks and block summaries came in (how a recorder may resume)")  # fmt: skip
     sp.add_argument("--secs", type=float, default=20.0, help="how long --stream-replay listens")
+    sp.add_argument("--settings", action="store_true",
+                    help="instead: what the settings file sets differently from today's defaults (a file written by "
+                         "`init` pins the defaults of its day; values that could hold a key are not shown)")  # fmt: skip
 
     sp = cmd("config", "show / get / set configuration", json_flag=False)
     sp.add_argument("action", choices=["show", "get", "set"])
@@ -1958,6 +1961,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.rpc:
         cfg.rpc.http_url = args.rpc
     _apply_overrides(cfg, args)
+    if args.cmd == "doctor" and args.settings:
+        from .config import settings_drift
+
+        print(json.dumps(settings_drift(cfg.path)))
+        return 0
     if args.cmd == "config":
         if args.action == "show":
             print(dump_toml(cfg.to_dict()))
