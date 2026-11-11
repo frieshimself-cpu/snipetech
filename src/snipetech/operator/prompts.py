@@ -91,8 +91,9 @@ SOL (wsol): about 0.005 SOL a buy. While the snapshot says buy_fees_payable fals
 whatever the wallet's wrapped SOL, and nothing of it reaches the chain: no buy and no failed send in fills, though
 OKTech counts the snipe (11 Nov: five signals of the one qualified wallet, none bought). Signals missed in that state
 need no test, no new idea and no new sniper: they are no fault of the sniper or of OKTech, and funding the wallet is the
-owner's. Say once, in an info clause, that the signals came while the wallet could not pay a buy's fees, and go on with
-the research.
+owner's. Say it once a day, in one info clause: that signals came while the wallet could not pay a buy's fees. When the
+day's report or a note of today already says it, leave it out of the update, the report and the note (no line on the
+missed signals, on what the wallet holds or on what the snipers cannot do), and go on with the research.
 """
 _RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 

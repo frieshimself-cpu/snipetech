@@ -8,6 +8,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
+from typing import Any
 
 from ..config import OperatorConfig
 from ..measure.attribution import known_result_sol, trip_result_sol
@@ -86,6 +87,111 @@ def sql_hint(query: str, error: str) -> str:
     named = dict.fromkeys(m.lower() for m in _SQL_NAMED.findall(query))
     layout = sql_layout(named)
     return "\n" + (layout or sql_layout())
+
+
+# Reading a job's output. A job run with --json prints one JSON object: its results first, long bookkeeping after
+# (a lab: 150 lines of numbers, strategies and triggers, then 700-870 lines on the PumpSwap tape's holes). The agents
+# read the last 15 to 60 lines to keep a turn short, so they read the bookkeeping: on 11 Nov four turns wrote that a
+# result went unread and 17 jobs were read two to five times in one turn. A JSON result is read from the top instead.
+JSON_LEAD_LINES = 50  # lines a job may print before its JSON (a lab's note on its error stream), still read as one
+JSON_TRAIL_LINES = 20  # and after it (the shell's "Terminated")
+OUTLINE_NAMES = 12  # keys named for a part that does not fit, so the next read can ask for the one wanted
+
+
+def json_log(text: str) -> tuple[Any, list[str], list[str]] | None:
+    """(the object, the lines before it, the lines after it) for a log that is one JSON object or list with at most a
+    few lines printed around it; None for any other log."""
+    lines = text.splitlines()
+    start = next((i for i, line in enumerate(lines[:JSON_LEAD_LINES]) if line[:1] in ("{", "[")), None)
+    if start is None:
+        return None
+    for end in range(len(lines), max(start, len(lines) - JSON_TRAIL_LINES), -1):
+        if lines[end - 1].strip() not in ("}", "]"):
+            continue
+        try:
+            return json.loads("\n".join(lines[start:end])), lines[:start], lines[end:]
+        except ValueError:
+            continue
+    return None
+
+
+def _holds(v: Any) -> str:
+    if isinstance(v, dict):
+        return "it holds: " + ", ".join(str(k) for k in v) if v else "it is empty"
+    if isinstance(v, list):
+        return f"it has {len(v)} items (0-{len(v) - 1})" if v else "it is empty"
+    return "it is one value"
+
+
+def json_part(obj: Any, key: str) -> Any:
+    """The part of a JSON result at a dotted key ("strategies.0.test"); a KeyError that says what the place holds
+    when there is no such part."""
+    at, walked = obj, []
+    for step in str(key).split("."):
+        try:
+            at = at[int(step)] if isinstance(at, list) else at[step]
+        except (KeyError, IndexError, ValueError, TypeError):
+            where = f'"{".".join(walked)}"' if walked else "the result"
+            raise KeyError(f'no "{step}" in {where}; {_holds(at)}') from None
+        walked.append(step)
+    return at
+
+
+def json_outline(obj: Any, budget: int) -> list[str]:
+    """A JSON result too long for `budget` lines, as what it holds, in its own order: each plain value; each larger
+    part whole while the lines last, taken from the top; each part that does not fit as one line with its size and the
+    key that reads it."""
+    items = list(obj.items()) if isinstance(obj, dict) else [(str(i), v) for i, v in enumerate(obj)]
+    printed = [(k, v, json.dumps(v, indent=1, default=str).splitlines()) for k, v in items]
+    total = sum(len(r) for _, _, r in printed) + 2
+    kind = "object" if isinstance(obj, dict) else "list"
+    head = f'one JSON {kind}, {total} lines; a part that does not fit below is read with key (key="a", "a.0", "a.b"):'
+    out = [head]
+    left = int(budget) - 1 - len(printed)  # a line for each part at the least
+    whole: set[str] = set()
+    for k, _, r in printed:  # from the top: the results come before the bookkeeping
+        if 1 < len(r) <= left + 1:
+            whole.add(k)
+            left -= len(r) - 1
+    for k, v, r in printed:
+        if len(r) == 1:
+            out.append(f'"{k}": {r[0]}')
+        elif k in whole:
+            out.append(f'"{k}": {r[0]}')
+            out.extend(r[1:])
+        else:
+            size = f"{len(v)} items" if isinstance(v, list) else f"{len(v)} keys"
+            inside = v if isinstance(v, dict) else v[0] if v and isinstance(v[0], dict) else None
+            names = ", ".join(str(x) for x in list(inside)[:OUTLINE_NAMES]) if inside else ""
+            more = "" if not inside or len(inside) <= OUTLINE_NAMES else ", ..."
+            holds = f" ({'each' if isinstance(v, list) else 'it'} holds: {names}{more})" if names else ""
+            out.append(f'"{k}": {size}, {len(r)} lines: key="{k}"{holds}')
+    return out
+
+
+def read_job_output(text: str, tail: int = 200, key: str | None = None) -> str:
+    """What `read_job_log` returns for a log's text: see its docstring."""
+    tail = max(1, int(tail))
+    found = json_log(text)
+    if found is None:
+        if key:
+            return "error: this log is not one JSON object: read its last lines, without key"
+        return "\n".join(text.splitlines()[-tail:])
+    obj, before, after = found
+    if key:
+        try:
+            part = json_part(obj, key)
+        except KeyError as exc:
+            return f"error: {exc.args[0]}"
+        lines = json.dumps(part, indent=1, default=str).splitlines()
+        if len(lines) <= tail:
+            return "\n".join(lines)
+        left = f'… {len(lines) - tail} more lines of "{key}": a longer tail, or a key inside it ({_holds(part)})'
+        return "\n".join([*lines[:tail], left])
+    body = json.dumps(obj, indent=1, default=str).splitlines()
+    if len(body) > tail and isinstance(obj, (dict, list)) and obj:
+        body = json_outline(obj, tail)
+    return "\n".join([*before, *body, *after])
 
 
 class NoteSink:
@@ -276,20 +382,24 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     from anthropic import beta_async_tool
 
     @beta_async_tool
-    async def read_job_log(id: str, tail: int = 200) -> str:
-        """Last lines of a research job's log.
+    async def read_job_log(id: str, tail: int = 200, key: str | None = None) -> str:
+        """A research job's output. A job run with --json prints one JSON object, its results first and its long
+        bookkeeping after: you get it from the top, each plain value, each part that fits in `tail` lines whole, and for
+        a part that does not fit one line with its size and the key that reads it. Any other log: its last `tail` lines.
 
         Args:
             id: The job id as listed in the snapshot (e.g. 20261106-053520-7b96d8).
-            tail: How many lines from the end to return.
+            tail: How many lines to return (of a plain log, the last ones).
+            key: One part of a JSON result, dotted for a part inside a part: "strategies", "strategies.0",
+                "groups.crowding", "amm_tape.unscored". A part longer than `tail` lines comes as its top with what is
+                left and what it holds.
         """
         if "/" in id or "\\" in id or ".." in id:
             return "error: bad job id"
         p = paths.jobs / f"{id}.log"
         if not p.exists():
             return f"error: no log for job {id}"
-        lines = p.read_text(errors="replace").splitlines()
-        return redact("\n".join(lines[-max(1, int(tail)) :]))
+        return redact(read_job_output(p.read_text(errors="replace"), tail, key))
 
     @beta_async_tool
     async def read_file(path: str, tail: int = 0) -> str:

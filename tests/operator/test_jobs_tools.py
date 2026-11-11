@@ -372,6 +372,87 @@ def test_read_job_log_tail(toolbox):
     assert _call(tools["read_job_log"], id="../x").startswith("error")
 
 
+def _lab_log(paths, jid="lab1", before="", after=""):
+    """A lab job's output as the server writes it: the numbers first, the results next, a long bookkeeping part last
+    (20261111-150116-1d6c2e: 1,020 lines, the last 869 of them `amm_tape`)."""
+    out = {
+        "tape_hours": 137.1, "moments": 1786, "per_tx_sol": 0.00421,
+        "strategies": [{"trigger": f"mig w{w}", "exit": "stop -20 %", "test": {"n": 367 - w, "mean": -0.0151, "ev_lower": -0.0194}}
+                       for w in (60, 20)],
+        "triggers": [{"label": "mig w60", "moments": 916, "ranked": True}],
+        "amm_tape": {"holes": [{"mint": f"coin{i}", "from": i, "to": i + 1} for i in range(200)]},
+    }  # fmt: skip
+    text = json.dumps(out, indent=1)
+    (paths.jobs / f"{jid}.log").write_text(before + text + after)
+    return out, text
+
+
+def test_a_json_jobs_result_is_read_from_the_top_not_from_its_last_lines(toolbox):
+    """11 Nov: four times in a day an agent wrote that a job's result went unread, and 17 jobs were read two to five
+    times in one turn. A job run with --json prints its results first and its bookkeeping last; the reader returned the
+    last lines. It now returns the object's outline and, from the top, every part that fits."""
+    tools, paths, _ = toolbox
+    _, text = _lab_log(paths)
+    assert len(text.splitlines()) > 800
+    got = _call(tools["read_job_log"], id="lab1")  # the default length
+    assert '"ev_lower": -0.0194' in got and '"mean": -0.0151' in got  # the results, whole
+    assert '"tape_hours": 137.1' in got and '"label": "mig w60"' in got
+    assert "coin150" not in got  # not the bookkeeping the old reader ended on
+    assert "amm_tape" in got and 'key="amm_tape"' in got  # named, with its size and how to read it
+    assert len(got.splitlines()) <= 200 + 5
+
+
+def test_one_part_of_a_json_result_can_be_asked_for(toolbox):
+    tools, paths, _ = toolbox
+    out, _ = _lab_log(paths)
+    assert json.loads(_call(tools["read_job_log"], id="lab1", key="strategies.1")) == out["strategies"][1]
+    assert json.loads(_call(tools["read_job_log"], id="lab1", key="strategies.0.test.mean")) == -0.0151
+    assert json.loads(_call(tools["read_job_log"], id="lab1", key="triggers")) == out["triggers"]
+    # a part longer than asked for: its top, and what is left
+    part = _call(tools["read_job_log"], id="lab1", key="amm_tape", tail=30)
+    assert part.splitlines()[0] == "{" and "coin0" in part and "more lines" in part.splitlines()[-1]
+    assert len(part.splitlines()) == 31
+    miss = _call(tools["read_job_log"], id="lab1", key="strategy")
+    assert miss.startswith("error") and "strategies" in miss and "amm_tape" in miss  # says what there is
+    assert _call(tools["read_job_log"], id="lab1", key="strategies.7").startswith("error")
+
+
+def test_a_short_read_of_a_json_result_is_its_outline(toolbox):
+    """Asked for 15 or 40 lines (what the agents ask for most), a long result comes back as what it holds: the plain
+    values, each larger part with its size and the key that reads it, then the parts that still fit."""
+    tools, paths, _ = toolbox
+    _lab_log(paths)
+    got = _call(tools["read_job_log"], id="lab1", tail=15)
+    lines = got.splitlines()
+    assert len(lines) <= 15 + 5
+    assert any("moments" in line and "1786" in line for line in lines)
+    assert any("strategies" in line and "2 items" in line and 'key="strategies"' in line for line in lines)
+    # what a part that does not fit holds, so the next read can go straight to the number wanted
+    assert any("strategies" in line and "each holds: trigger, exit, test" in line for line in lines)
+    assert any("amm_tape" in line and 'key="amm_tape"' in line and "it holds: holes" in line for line in lines)
+    assert "coin150" not in got
+
+
+def test_a_small_json_result_and_a_plain_log_read_as_before(toolbox):
+    tools, paths, _ = toolbox
+    (paths.jobs / "small.log").write_text(json.dumps({"evaluated": 3, "qualified": 0}, indent=1))
+    assert json.loads(_call(tools["read_job_log"], id="small")) == {"evaluated": 3, "qualified": 0}
+    (paths.jobs / "plain.log").write_text("\n".join(f"line {i}" for i in range(300)))
+    assert _call(tools["read_job_log"], id="plain", tail=3).splitlines() == ["line 297", "line 298", "line 299"]
+    asked = _call(tools["read_job_log"], id="plain", key="rows")
+    assert asked.startswith("error") and "not one JSON" in asked
+
+
+def test_lines_a_job_printed_around_its_json_are_kept(toolbox):
+    """A lab says on its error stream when it fell back to one process, a killed job ends on the shell's line: both
+    land in the same log. The result is still read, and those lines are shown."""
+    tools, paths, _ = toolbox
+    _lab_log(paths, before="lab: one process: the code changed under it\n", after="\nTerminated\n")
+    got = _call(tools["read_job_log"], id="lab1")
+    assert "lab: one process" in got and "Terminated" in got and '"ev_lower": -0.0194' in got
+    assert json.loads(_call(tools["read_job_log"], id="lab1", key="moments")) == 1786
+
+
 def test_read_verdicts_tool(toolbox):
     tools, paths, _ = toolbox
     st = Store(paths.data / "snipetech.db")

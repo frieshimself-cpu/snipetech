@@ -28,6 +28,19 @@ def test_the_agents_know_a_buy_pays_its_fees_in_plain_sol():
         assert "Never ask the owner for SOL" in text  # the owner's rule stands
 
 
+def test_the_wallets_fees_are_said_once_a_day_not_in_every_update():
+    """11 Nov, 15:00-17:30 UTC: told to "say once" that the wallet cannot pay a buy's fees, the analyst said it once in
+    each half-hourly update, report entry and note: five notes in an afternoon on the owner's live page, about a balance
+    the owner asked never to be flagged on (9 Nov). Once a day, and not at all when the day's report already says it."""
+    from snipetech.operator.prompts import ANALYST_SYSTEM
+
+    for system in (OPERATOR_SYSTEM, ANALYST_SYSTEM):
+        text = " ".join(system.split())
+        assert "once a day" in text and "already says it" in text
+        assert "leave it out of the update, the report and the note" in text
+        assert "Say once, in an info clause" not in text
+
+
 def test_the_snapshot_says_whether_a_buy_can_pay_its_fees():
     """The agents read the wallet's SOL and wrapped SOL side by side and did not draw the conclusion; the snapshot
     draws it: under one buy's fees in plain SOL nothing can be sent, whatever the wrapped SOL."""
