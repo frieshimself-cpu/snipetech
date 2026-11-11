@@ -22,7 +22,8 @@ VERDICTS = ("SNIPE", "MARGINAL", "AVOID", "INSUFFICIENT_DATA", "UNKNOWN")
 
 # The version of what a deployer score rests on. 2 (11 Nov 2026): a LaunchLab coin's path starts at its own curve's
 # first state (it started at pump.fun's: a sevenfold jump no buyer rode), and only pump.fun launches count.
-SCORE_VERSION = 2
+# 3 (11 Nov 2026): the bribe sweep makes no verdict (`_decide`): it places the buy a slot earlier than ours land.
+SCORE_VERSION = 3
 
 
 def score_basis(cfg: Config) -> str:
@@ -267,17 +268,19 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
     if basis.get("top_win_share", 0) > 0.6 and basis.get("total", 0) > 0:
         warnings.append("most of the profit comes from a single launch — fragile")
 
-    # Paying to get in ahead of the other snipers: only trusted when it held up on unseen launches.
+    # Paying to get in ahead of the other snipers. The sweep puts the buy in the snipers' own slot (its `assumes`),
+    # right behind the insiders when nobody else bids; our launch buys land a slot later (CLAUDE.md rule 2). What it
+    # found is said, with where it lands, and makes no verdict. Until 11 Nov it made one: a deployer that loses where
+    # we land became SNIPE on it (26 of the server's 110 SNIPE verdicts; GWHLLfLr with EV -0.0226 and 23 % wins).
     sweep = report.get("tip_sweep") or {}
     bribe = None
     sw_wf = sweep.get("walk_forward")
     if sw_wf and sw_wf["test"].get("n", 0) >= 4:
         bribe = sw_wf["picked_bribe_sol"]
         if sw_wf["test"].get("ev_lower", -1e9) > cfg.verdict.min_ev_sol and verdict in ("MARGINAL", "AVOID") and n >= cfg.snipe.min_launches:
-            if report["recent"]["dump_rate"] < 0.8:
-                verdict = "SNIPE"
-                reasons.append(f"profitable if you pay ~{bribe:g} SOL (priority + tip) to land ahead of the other snipers: "
-                               f"{sw_wf['test']['mean']:+.4f} SOL/snipe on unseen launches")  # fmt: skip
+            reasons.append(f"a buy in the snipers' own slot for ~{bribe:g} SOL (priority + tip) made "
+                           f"{sw_wf['test']['mean']:+.4f} SOL/snipe on unseen launches; ours land a slot later, so "
+                           "this changes no verdict")  # fmt: skip
     elif sweep.get("rows"):
         bribe = sweep.get("recommended_bribe_sol")
     comp = report.get("competition") or {}

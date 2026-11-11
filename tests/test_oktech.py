@@ -15,7 +15,7 @@ TARGET = "Tar9etWa11etXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
 DEV_SCORE = {
     "address": DEV, "verdict": "SNIPE", "ev_sol": 0.05, "ev_lower_sol": 0.01, "launches": 12,
-    "basis": "1@+3:v2",  # computed the way it is now (analysis.deployer.score_basis): another basis is not planned from
+    "basis": "1@+3:v3",  # computed the way it is now (analysis.deployer.score_basis): another basis is not planned from
     "recommended": {"buy_sol": 0.25, "bribe_sol": 0.01,
                     "exit": {"take_profit": 0.5, "tp_sell_fraction": 1.0, "stop_loss": 0.3, "trailing_stop": 0.18,
                              "trailing_activation": 0.6, "max_hold_secs": 120.0, "sell_on_dev_sell": True}},
@@ -1676,3 +1676,44 @@ def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_
     assert "below $12,000 market cap" in " ".join(capped.summary)
     plain = list_copy_sniper(lead, "book", 0.3, 0.2, 3)
     assert "maxMcapUsd" not in plain.config["ctbotWallets"][0]
+
+
+def test_a_market_cap_cap_is_sent_at_a_sol_price_an_hour_old_at_most(monkeypatch):
+    """The owner's cap is in SOL and OKTech takes dollars: the stored SOL price converts it. Until 11 Nov that price
+    was refreshed only as a side effect of the nightly job's last step (`oktech plan`): a cap went out at a price up to
+    a day old, two days when the nightly job died before that step (7 Nov). The sniper list asks for the price itself;
+    when the RPC will not give one, the stored price is used and that is said."""
+    from snipetech import meta
+    from snipetech.service import Service
+
+    said: list[str] = []
+    store = Store(":memory:")
+    svc = Service(Config(), store=store, progress=said.append)
+    try:
+        store.put_asset(meta.WSOL, "SOL", 9, 80.0)
+        store._exec("UPDATE assets SET updated = updated - 7200 WHERE mint = ?", (meta.WSOL,))  # two hours old
+        asked: list[int] = []
+
+        async def fresh(st, rpc_url, mints, max_age=3600):
+            asked.append(max_age)
+            st.put_asset(meta.WSOL, "SOL", 9, 100.0)
+
+        monkeypatch.setattr(meta, "ensure_assets", fresh)
+        rep = asyncio.run(svc.oktech_copylist([f"{TARGET}:book:0.6"], "SNIPER", max_mcap_sol=75.0))
+        assert asked == [3600]
+        assert rep["snipers"][0]["config"]["ctbotWallets"][0]["maxMcapUsd"] == 7_500  # 75 SOL at 100 $, not at 80
+
+        async def down(st, rpc_url, mints, max_age=3600):
+            raise RuntimeError("rpc down")
+
+        monkeypatch.setattr(meta, "ensure_assets", down)
+        rep = asyncio.run(svc.oktech_copylist([f"{TARGET}:book:0.6"], "SNIPER", max_mcap_sol=75.0))
+        assert rep["snipers"][0]["config"]["ctbotWallets"][0]["maxMcapUsd"] == 7_500  # the stored price
+        assert any("SOL price" in s for s in said)
+        # a sniper without a cap asks for no price
+        asked.clear()
+        monkeypatch.setattr(meta, "ensure_assets", fresh)
+        asyncio.run(svc.oktech_copylist([f"{TARGET}:book:0.6"], "SNIPER"))
+        assert asked == []
+    finally:
+        store.close()

@@ -300,6 +300,9 @@ class Ops:
             "branch": self.branch,
             "code": self._git("log", "-1", "--format=%h %s %cI"),
         }
+        from .infra import nightly
+
+        out["unit"] = nightly.current_unit()  # the unit this service runs in, as a job would read its own
         out["services"] = {u: self._run([SYSTEMCTL, "is-active", u]).strip() or "unknown" for u in UNITS}
         du = shutil.disk_usage(self.data)
         out["disk_gb"] = {"free": round(du.free / 1e9, 1), "total": round(du.total / 1e9, 1)}

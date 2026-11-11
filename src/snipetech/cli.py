@@ -1997,6 +1997,13 @@ def _profiled(args, argv: list[str] | None) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from .infra import nightly
+
+    # a step of the nightly unit that fed nothing ends here, on a server whose unit file still runs it
+    retired = nightly.retired_reason(list(sys.argv[1:] if argv is None else argv), nightly.current_unit())
+    if retired:
+        print(retired)
+        return 0
     args = build_parser().parse_args(argv)
     if args.profile:
         return _profiled(args, argv)

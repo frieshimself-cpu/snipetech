@@ -1328,14 +1328,20 @@ class Service:
         (the book's per-wallet exit, book/policy.exit_for), for every spec. Each sniper's fees are the fee policy's for
         a copy of its leader over the measure stage's fills (fees.choose), `fee_floor` (the book's arm) as the floor;
         `priority_fee` / `tip` given by hand win over the policy's buy bid. `max_mcap_sol`: copy only the leaders' buys
-        below this market cap, sent as OKTech's maxMcapUsd at the tape's SOL price (refused without a price, so a cap
-        the owner set is never silently dropped)."""
+        below this market cap, sent as OKTech's maxMcapUsd at the SOL price, asked for here when the stored one is over
+        an hour old (until 11 Nov only the nightly job's `oktech plan` refreshed it: a day old, two when that job
+        died). An RPC that gives none leaves the stored price in use; with no price at all the sniper is refused, so
+        a cap the owner set is never silently dropped."""
         from . import fees as fee_policy
-        from .meta import WSOL
+        from .meta import WSOL, ensure_assets
         from .oktech import _bucket_usd, list_copy_sniper
 
         max_mcap_usd = None
         if max_mcap_sol:
+            try:
+                await ensure_assets(self.store, self.cfg.rpc.http_url, [])
+            except Exception as exc:  # noqa: BLE001 - the stored price converts the cap; no price at all refuses below
+                self.progress(f"SOL price lookup failed ({exc}): the market-cap cap uses the stored price")
             sol_usd = (self.store.asset(WSOL) or {}).get("price_usd")
             if not sol_usd:
                 raise ValueError("a market-cap cap needs the SOL price, and the tape has none: no sniper was made")

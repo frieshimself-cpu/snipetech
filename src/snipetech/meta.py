@@ -121,9 +121,12 @@ WSOL = "So11111111111111111111111111111111111111112"
 
 async def ensure_assets(store: Store, rpc_url: str, mints: list[str], max_age: int = 3600) -> None:
     """Symbol, decimals and USD price of quote assets (and SOL), via the DAS `getAsset` method
-    (Helius and other DAS-enabled RPCs). Used to value trades quoted in tokens other than SOL."""
+    (Helius and other DAS-enabled RPCs). Used to value trades quoted in tokens other than SOL, and to send the owner's
+    market-cap cap in dollars. An answer without a price leaves a price we already have as it is, still due: it used
+    to be written over it, and the next capped sniper was refused for want of a price (11 Nov)."""
     now = time.time()
-    todo = [m for m in dict.fromkeys([WSOL, *mints]) if not (a := store.asset(m)) or now - (a.get("updated") or 0) > max_age]
+    have = {m: store.asset(m) for m in dict.fromkeys([WSOL, *mints])}
+    todo = [m for m, a in have.items() if not a or now - (a.get("updated") or 0) > max_age]
     if not todo:
         return
     async with httpx.AsyncClient(timeout=20) as http:
@@ -135,5 +138,7 @@ async def ensure_assets(store: Store, rpc_url: str, mints: list[str], max_age: i
                 continue
             info = res.get("token_info") or {}
             md = (res.get("content") or {}).get("metadata") or {}
-            store.put_asset(m, info.get("symbol") or md.get("symbol") or "", info.get("decimals"),
-                            (info.get("price_info") or {}).get("price_per_token"))  # fmt: skip
+            price = (info.get("price_info") or {}).get("price_per_token")
+            if price is None and (have[m] or {}).get("price_usd") is not None:
+                continue
+            store.put_asset(m, info.get("symbol") or md.get("symbol") or "", info.get("decimals"), price)

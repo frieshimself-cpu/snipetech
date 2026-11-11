@@ -46,9 +46,11 @@ def test_discover_and_qualify_units():
     assert "snipetech-discover.timer" in setup and "snipetech-qualify.timer" in setup
 
 
-def test_daily_job_runs_one_lab_not_six():
+def test_daily_job_runs_no_lab_of_its_own():
+    """Six labs a night until 7 Nov, one until 11 Nov, none since: the strategy search of the operator's round ranks
+    every rule where our buys land, every two hours, and nothing read the nightly lab's file (tests/test_nightly.py)."""
     service = (UNITS / "snipetech-daily.service").read_text()
-    assert service.count("$S $DB lab ") == 1 and "for lat in" not in service and "--position +1" in service
+    assert "$S $DB lab " not in service and "for lat in" not in service
 
 
 def test_measure_unit_and_timer():

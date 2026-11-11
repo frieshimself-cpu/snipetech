@@ -218,8 +218,9 @@ only in `/etc/snipetech/env`, mode 600, and checked against both APIs), and star
 
 * `snipetech-tape` — records every trade of every token (several GB/day: give it 500 GB of NVMe);
   on PumpSwap, each coin's first 30 min after its curve (`[live] amm_recent_secs`, coverage `tape:amm_recent`);
-* `snipetech-daily` — refreshes dev verdicts, ranks KOLs to follow, runs the strategy lab at several
-  latencies and writes the OKTech plan to `/var/lib/snipetech/reports/<date>/`;
+* `snipetech-daily` — fetches the history of the best deployers and scores each kind of market event as a buy
+  signal, with a report of each in `/var/lib/snipetech/reports/<date>/` (the strategy lab and the wallet checks
+  run around the clock from the operator's round, not from here);
 * `snipetech-ops` — remote operations at `https://snipetech.<your-ip>.sslip.io` (Caddy, automatic TLS).
 
 Re-running the command updates the code and keeps keys and data (`SNIPETECH_REKEY=1` asks for the keys
@@ -360,7 +361,7 @@ snipetech remote keygen ~/.snipetech/ops_key            # prints the line for de
 export SNIPETECH_OPS_URL=https://snipetech.1-2-3-4.sslip.io SNIPETECH_OPS_KEY=~/.snipetech/ops_key
 snipetech remote status
 snipetech remote --wait run lab --latency 0 --position start
-snipetech remote ls reports && snipetech remote read reports/2026-11-05/oktech-plan.txt
+snipetech remote ls reports && snipetech remote read reports/2026-11-05/event-edge.txt
 snipetech remote sql "SELECT count(*) FROM trades"
 snipetech remote put kols.txt && snipetech remote --wait run label --file /var/lib/snipetech/inputs/kols.txt --kind kol
 snipetech remote update                                    # pull, reinstall, restart
