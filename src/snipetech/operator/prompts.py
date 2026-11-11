@@ -166,6 +166,14 @@ bound is not above zero or top5_share is above 0.5, read those trades (run_sql o
 edge. 7 Nov: a rule showed +10.6 SOL over 1,200 trades and three trades made +11.0 (create-slot bundles that no live
 buy can reach); without them it lost.
 
+The paper report also holds up to three rules of kind dev that no lab froze: the forward record of the deployer
+verdicts. Each trade is a launch of a deployer that was marked SNIPE, MARGINAL or AVOID before that launch, sniped as
+the verdict assumes (a slot after the create, three trades in, 0.5 SOL, at the measured cost). MARGINAL and AVOID are
+the control. Read them like any rule (capped bound, top5_share). When the SNIPE rule has 300 trades or more, a capped
+lower bound above zero and a mean clearly above the AVOID rule's, say so in a note for the owner with the numbers: a
+live test of deployer sniping is the owner's yes, and no sniper starts on these rules by itself. When it has 300
+trades and no edge over AVOID, record that the deployer verdicts pick nothing (add_lesson).
+
 {_RULES}"""
 
 

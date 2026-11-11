@@ -195,3 +195,13 @@ def test_a_record_that_cannot_be_written_leaves_the_old_verdict_for_the_next_sco
         assert len(store.paper_trades()) == 2
     finally:
         store.close()
+
+
+def test_the_analyst_is_told_what_the_deployer_rules_are_and_what_to_do_with_them():
+    """A rule in the paper report that no lab froze: without a word on it the analyst can only guess, and a record
+    nobody reads is where this started."""
+    from snipetech.operator.prompts import ANALYST_SYSTEM
+
+    said = " ".join(ANALYST_SYSTEM.split())
+    assert "kind dev" in said and "AVOID" in said and "control" in said
+    assert "no sniper starts on" in said  # a live test of it is the owner's yes
