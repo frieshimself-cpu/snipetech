@@ -1,0 +1,464 @@
+# The server's settings file (/etc/snipetech/snipetech.toml) as `snipetech doctor --settings` showed it on
+# 11 Nov 2026 07:28 UTC: `init`'s dump of every default of its day plus the owner's limits. Where it differs
+# from the code of that day it holds the server's value; the wallet is a placeholder. Never regenerate it from
+# today's defaults: tests/test_config_drift.py uses it to prove that a default changed in the code reaches the
+# server.
+
+[rpc]
+http_url = "https://api.mainnet-beta.solana.com"
+ws_url = ""
+max_rps = 8.0
+max_concurrency = 8
+timeout_secs = 30.0
+max_retries = 6
+commitment = "confirmed"
+
+[costs]
+priority_fee_sol = 0.0002
+tip_sol = 0.001
+platform_fee_bps = 0
+default_pump_fee_bps = 125
+monthly_fixed_cost_sol = 0.0
+
+[snipe]
+buy_sol = 0.5
+entry_slot_offset = 1
+entry_position = "middle"
+exit_latency_slots = 1
+analysis_window_secs = 900
+max_launches = 150
+min_launches = 5
+rinse_window_secs = 30
+rinse_dump_fraction = 0.5
+runner_multiple = 2.0
+competition_slots = 3
+
+[snipe.exit]
+take_profit = 1.0
+tp_sell_fraction = 1.0
+stop_loss = 0.35
+trailing_stop = 0.0
+trailing_activation = 0.0
+max_hold_secs = 120.0
+sell_on_dev_sell = true
+
+[copy]
+size_sol = 0.5
+size_mode = "fixed"
+proportional_ratio = 0.1
+max_size_sol = 5.0
+buy_latency_slots = 1
+sell_latency_slots = 1
+landing_position = "middle"
+lookback_days = 14.0
+max_signatures = 5000
+min_positions = 10
+crowd_window_slots = 3
+
+[verdict]
+confidence = 0.8
+min_ev_sol = 0.0
+recent_launches = 5
+bootstrap_samples = 2000
+
+[storage]
+db_path = "snipetech.db"
+live_window_secs = 900
+retain_days = 30.0
+
+[api]
+host = "127.0.0.1"
+port = 8787
+api_key = ""
+
+[live]
+webhook_url = ""
+index_amm = false
+amm_recent_secs = 1800
+rescore_interval_secs = 120
+funder_lookup = true
+source = "auto"
+laserstream_endpoint = "laserstream-mainnet-fra.helius-rpc.com:443"
+
+[copier]
+executor = "paper"
+webhook_url = ""
+keypair_path = ""
+size_sol = 0.1
+size_mode = "fixed"
+proportional_ratio = 0.1
+min_size_sol = 0.01
+max_size_sol = 1.0
+min_leader_sol = 0.05
+slippage_bps = 1500
+priority_fee_sol = 0.0005
+tip_sol = 0.0
+venues = "curve,amm"
+mirror_sells = true
+take_profit = 0.0
+stop_loss = 0.5
+trailing_stop = 0.0
+max_hold_secs = 0.0
+max_open_positions = 5
+max_total_sol = 2.0
+daily_loss_limit_sol = 1.0
+cooldown_secs = 600
+skip_deployer_verdicts = "AVOID,BLOCK"
+paper_latency_ms = 400
+commitment = "processed"
+
+[oktech]
+base_url = "https://oktech.me/api/sniper-api/v1"
+wallet = ""
+tip_share = 0.7
+copy_exit_threshold_percent = 50.0
+copy_min_wallets = 1
+copy_time_window_ms = 10000
+jetstream = true
+preconf = false
+max_snipers = 20
+verdict_max_buys = 5
+max_buy_sol = 1.0
+sell_tip_sol = 0.002
+sell_priority_sol = 0.0001
+
+[agent]
+model = "claude-opus-5-5"
+effort = "high"
+max_tokens = 16000
+
+[operator]
+wallet = "OwnerWa11etPlaceho1der1111111111111111111111"
+ignore_mints = []
+daily_usd = 15.0
+turn_usd = 2.0
+max_jobs = 3
+max_tool_calls = 20
+equity_alert_sol = 0.1
+tape_stale_secs = 300
+analyst_after_utc = "06:00"
+analyst_every_h = 2.0
+digest_hour_utc = 7
+model = "claude-sonnet-5-5"
+analyst_model = "claude-opus-5-5"
+strategist_model = "claude-opus-5-5"
+max_tokens = 8000
+analyst_max_tokens = 16000
+effort = "medium"
+
+[operator.prices]
+in = 3.0
+out = 15.0
+cache_read = 0.3
+cache_write = 3.75
+cache_write_1h = 4.0
+analyst_in = 5.0
+analyst_out = 25.0
+analyst_cache_read = 0.5
+analyst_cache_write = 6.25
+analyst_cache_write_1h = 16.0
+strategist_in = 4.0
+strategist_out = 20.0
+strategist_cache_read = 0.2
+strategist_cache_write = 5.0
+strategist_cache_write_1h = 8.0
+
+[birdeye]
+daily_cu = 250000
+top_coins = 30
+pnl_top = 100
+gainers_periods = ["1W", "30d"]
+top_trader_frame = "7d"
+min_trades = 5
+
+[solanatracker]
+daily_requests = 6000
+pages = 5
+days = 90
+max_trades = 3000
+min_win_rate = 35.0
+max_single_share = 0.6
+min_realized_usd = 500.0
+max_single_token_pct = 60.0
+
+[resources]
+anthropic_credit_usd = 100.0
+anthropic_alert_pct = 20.0
+anthropic_min_days = 3.0
+birdeye_alert_pct = 15.0
+solanatracker_month_requests = 200000
+solanatracker_alert_pct = 15.0
+vybe_month_credits = 25000
+vybe_alert_pct = 15.0
+disk_alert_gb = 30.0
+sol_float_margin = 0.2
+oktech_fail_alert = 3
+
+[qualify]
+landing_pos = "+6"
+min_hist_trades = 20
+max_hist_trades = 3000
+min_win_rate = 35.0
+min_realized_usd = 500.0
+max_single_share = 0.6
+min_venue_share = 0.5
+min_n_tape = 20
+min_n_tape_strong = 10
+strong_win_rate = 60.0
+strong_coins = 50
+max_gap3_pct = 15.0
+review_qualified_h = 24
+review_candidate_h = 72
+review_retired_h = 168
+lab_interval_h = 2.0
+max_wallets = 300
+
+[measure]
+half_life_days = 7.0
+min_arm_fills = 30
+overlap_secs = 600
+lookback_days = 7
+
+[book]
+enabled = false
+daily_risk_sol = 1000.0
+fill_min_sol = 0.2
+fill_max_sol = 1.0
+max_wallets = 6
+equity_floor_sol = 0.5
+day_stop_sol = 1000.0
+min_score = 0.005
+explore_share = 0.2
+send_count = 1
+max_fee_share = 0.03
+live_n = 10
+live_kill_n = 5
+max_buys_per_sniper = 3
+retire_after_buys = 1
+min_copy_sol = 0.3
+exit_mode = "fixed"
+verified_exits = ["lab", "hold60"]
+
+[book.bid_arms.control]
+priority = 0.001
+tip = 0.002
+
+[book.bid_arms.paid]
+priority = 0.02
+tip = 0.02
+retired = true
+
+[autotune]
+enabled = true
+turn_usd = 10.0
+overlay = ""
+
+[autotune.bounds."book.fill_max_sol"]
+min = 0.1
+max = 1.0
+
+[autotune.bounds."book.min_score"]
+rel_min = 0.5
+rel_max = 2.0
+
+[autotune.bounds."book.explore_share"]
+min = 0.0
+max = 0.3
+
+[autotune.bounds."book.bid_arms.control.tip"]
+min = 0.002
+max = 0.05
+
+[autotune.bounds."book.live_kill_n"]
+min = 5
+max = 15
+
+[autotune.bounds."book.min_copy_sol"]
+min = 0.1
+max = 2.0
+
+[autotune.bounds."qualify.max_gap3_pct"]
+min = 5
+max = 30
+
+[autotune.bounds."qualify.min_n_tape"]
+min = 10
+max = 40
+
+[autotune.bounds."qualify.landing_pos"]
+choices = ["+3", "+6", "+9"]
+
+[autotune.bounds."book.bid_arms.control.priority"]
+min = 0.001
+max = 0.05
+
+[autotune.bounds."book.bid_arms.paid.priority"]
+min = 0.001
+max = 0.05
+
+[autotune.bounds."book.bid_arms.paid.tip"]
+min = 0.002
+max = 0.05
+
+[lab]
+workers = 0
+
+[fees.bounds.copy.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.bounds.copy.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.copy.sell_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.copy.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.bounds.hunt.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.bounds.hunt.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.hunt.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.bounds.hunt.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.bounds.launch.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.bounds.launch.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.launch.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.bounds.launch.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.bounds.mig.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.bounds.mig.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.mig.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.bounds.mig.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.bounds.probe.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.bounds.probe.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.bounds.probe.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.bounds.probe.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.tune.copy.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.tune.copy.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.copy.sell_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.copy.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.tune.hunt.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.tune.hunt.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.hunt.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.tune.hunt.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.tune.launch.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.tune.launch.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.launch.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.tune.launch.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.tune.mig.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.tune.mig.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.mig.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.tune.mig.sell_priority]
+min = 0.0001
+max = 0.002
+
+[fees.tune.probe.buy_priority]
+min = 0.001
+max = 0.001
+
+[fees.tune.probe.buy_tip]
+min = 0.002
+max = 0.005
+
+[fees.tune.probe.sell_tip]
+min = 0.001
+max = 0.005
+
+[fees.tune.probe.sell_priority]
+min = 0.0001
+max = 0.002

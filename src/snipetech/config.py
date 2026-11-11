@@ -279,6 +279,18 @@ DEFAULT_OPERATOR_PRICES: dict[str, float] = {
 RETIRED_DEFAULTS: dict[str, tuple] = {
     "operator.analyst_model": ("claude-opus-5-5",),
     "snipe.entry_position": ("middle",),
+    # 6 Nov 19:04 (2e399af): the paid bid arm is retired and nothing explores
+    "book.explore_share": (0.2,),
+}
+# The strategist's bounds, rule by rule: a rule in the file that equals one of these is the dump of an old default and
+# follows today's (or none). 6 Nov 21:02 (09477d9): the control arm's tip may go to 0.005 SOL, not 0.05 (the fill is
+# the arm's fee over max_fee_share, so a higher tip makes every buy bigger); the priority fee is never the
+# strategist's and the paid arm is retired, so their rules went. The server's file kept all four until 11 Nov.
+RETIRED_BOUNDS: dict[str, tuple[dict, ...]] = {
+    "book.bid_arms.control.tip": ({"min": 0.002, "max": 0.05}, {"min": 0.002, "max": 0.02}),
+    "book.bid_arms.control.priority": ({"min": 0.001, "max": 0.05},),
+    "book.bid_arms.paid.priority": ({"min": 0.001, "max": 0.05},),
+    "book.bid_arms.paid.tip": ({"min": 0.002, "max": 0.05},),
 }
 RETIRED_OPERATOR_PRICES: dict[str, tuple] = {
     "in": (3.0,),
@@ -761,6 +773,8 @@ def _apply(obj: Any, data: dict[str, Any], prefix: str = "") -> None:
             if isinstance(obj, AutotuneConfig) and key == "bounds":
                 # per rule: a partial rule keeps the default's other limits; `off = true` (or an empty table) removes it
                 for k, rule in value.items():
+                    if rule in RETIRED_BOUNDS.get(k, ()):
+                        continue  # the file's dump of an old default rule, not the owner's choice
                     if not isinstance(rule, dict) or not rule or rule.get("off"):
                         current.pop(k, None)
                     else:
@@ -817,7 +831,9 @@ def _drift(obj: Any, data: dict[str, Any], prefix: str, out: dict[str, Any]) -> 
             out["unknown"] += [leaf for leaf, _ in _leaves(value, dotted)] if isinstance(value, dict) else [dotted]
             continue
         current = obj.get(key) if free else getattr(obj, key)
-        if isinstance(value, dict):
+        if prefix == "autotune.bounds" and value in RETIRED_BOUNDS.get(key, ()):
+            out["retired"][dotted] = {"file": value, "now": current}
+        elif isinstance(value, dict):
             table = current if dataclasses.is_dataclass(current) or isinstance(current, dict) else {}
             _drift(table, value, dotted, out)
         elif value in RETIRED_DEFAULTS.get(dotted, ()) or (
