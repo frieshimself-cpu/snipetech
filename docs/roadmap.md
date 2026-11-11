@@ -30,10 +30,14 @@ first on the server's recording and only then run live in capped batches.
   (which would be a yes/no for the owner) or whether the verdicts pick nothing. No sniper can start on it by itself.
 - **A sniper builder would have turned an unknown rule into "buy every launch"**: `oktech strategy` now refuses a
   rule of a kind no sniper runs. No live test could have started one; a hand-made sniper could.
+- **Four research tables counted a copy as a winner above +2.5 %; a copy of ours breaks even at +6.7 %.** They took
+  off pump.fun's fees and forgot the two transactions (4.2 % of a 0.2 SOL copy), or the other way round. The agents
+  ran one of them five times on 11 Nov. All four now take the whole cost off and say what it is. No decision had
+  been taken on those tables alone: every rule from them went through the paper test at real cost, and none passed.
 - **Hourly discovery is confirmed faster**: the 13:07 run took 8.9 seconds of processor where every run took over
   six minutes; five runs in six are like that now.
 - Every timer and stage was checked against its schedule: all run when they should. Record:
-  [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-54.
+  [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-55.
 
 ## 11 Nov, 12:10 UTC: the live page's events took over 30 seconds to read; two safety checks could fail silently
 
