@@ -128,7 +128,7 @@ def params_key(cfg: Config) -> str:
             "buy": s.buy_sol, "off": s.entry_slot_offset, "pos": s.entry_position, "lat": s.exit_latency_slots,
             "win": s.analysis_window_secs, "rw": s.rinse_window_secs, "rf": s.rinse_dump_fraction,
             "rm": s.runner_multiple, "exit": ExitParams.from_config(s.exit).to_dict(),
-            "costs": [cfg.costs.priority_fee_sol, cfg.costs.tip_sol, cfg.costs.platform_fee_bps], "v": 5,
+            "costs": [cfg.costs.priority_fee_sol, cfg.costs.tip_sol, cfg.costs.platform_fee_bps], "v": 6,
         },
         sort_keys=True,
     )  # fmt: skip

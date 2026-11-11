@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from ..models import AMM, CURVE, PUMPFUN, Launch, Trade, coin_venue
+from ..models import AMM, CURVE, LAUNCHLAB, PUMPFUN, Launch, Trade, coin_venue
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
@@ -52,6 +52,19 @@ def slot_secs_from(slots, ts, min_span_secs: float = 600.0) -> float:
 # the tape's smallest curve b_after, the reserve every completing trade leaves (7 Nov: 59 completions in two hours)
 PUMP_CURVE_DONE_B = 279_900_000_000_000.0
 
+
+
+def _first_state(trades: list[Trade]) -> tuple[float, float]:
+    """The reserves a launched coin's curve starts at. pump.fun's are one pair for every coin. A LaunchLab coin starts
+    where its platform set it (BUidVuuv..., 11 Nov: 227.6 SOL against 1.154e15 tokens, seven times pump.fun's price),
+    so its first state is the one before its first trade: with pump.fun's pair a buy placed before that trade rode a
+    sevenfold jump that never happened (+2.94 SOL on 0.5 SOL, on seven launches of one deployer alike)."""
+    first = trades[0] if trades else None
+    if first is None or first.venue != LAUNCHLAB:
+        return float(INITIAL_VIRTUAL_SOL_RESERVES), float(INITIAL_VIRTUAL_TOKEN_RESERVES)
+    if first.is_buy:
+        return float(first.q_after - first.quote), float(first.b_after + first.base)
+    return float(first.q_after + first.quote), float(first.b_after - first.base)
 
 @dataclass
 class MarketPath:
@@ -90,12 +103,10 @@ class MarketPath:
         genesis = False
         if launch is not None:
             genesis = True
-            rows.append(
-                (launch.slot, launch.ts, float(INITIAL_VIRTUAL_SOL_RESERVES), float(INITIAL_VIRTUAL_TOKEN_RESERVES),
-                 0, False, 0.0, 0.0, False, "", launch.sig)
-            )  # fmt: skip
-            off.append(False)
             trades = [t for t in trades if t.slot >= launch.slot]
+            q0, b0 = _first_state(trades)
+            rows.append((launch.slot, launch.ts, q0, b0, 0, False, 0.0, 0.0, False, "", launch.sig))
+            off.append(False)
         for t in trades:
             rows.append(
                 (t.slot, t.ts, float(t.q_after), float(t.b_after), t.fee_bps, t.is_buy, float(t.quote),

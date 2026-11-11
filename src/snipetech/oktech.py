@@ -28,6 +28,7 @@ from typing import Any
 import httpx
 
 from . import fees as fee_policy
+from .analysis.deployer import score_basis
 from .config import Config
 from .exits_menu import MENU
 from .fees import FeeChoice
@@ -576,7 +577,10 @@ def build_plan(
             if p:
                 out.append((float(s.get("ev_lower_sol") or 0), p))
     if "dev" in kinds:
+        basis = score_basis(cfg)
         for s in store.scores("deployer"):
+            if s.get("basis") != basis:
+                continue  # scored another way (another landing, or before 11 Nov's fixes): nothing to plan from
             if "block" in store.lists_for(s["address"]):
                 continue
             p = dev_sniper(s, cfg)

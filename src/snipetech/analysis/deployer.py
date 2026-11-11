@@ -8,7 +8,7 @@ from collections import Counter
 import numpy as np
 
 from ..config import Config
-from ..models import Launch
+from ..models import PUMPFUN, Launch
 from ..sim.exits import ExitParams
 from ..store import Store
 from .launches import LABELS, build_context, launch_features
@@ -18,6 +18,18 @@ from .optimize import best_size, optimize_exits, sweep_latency, sweep_sizes
 from .stats import summarize, wilson
 
 VERDICTS = ("SNIPE", "MARGINAL", "AVOID", "INSUFFICIENT_DATA", "UNKNOWN")
+
+
+# The version of what a deployer score rests on. 2 (11 Nov 2026): a LaunchLab coin's path starts at its own curve's
+# first state (it started at pump.fun's: a sevenfold jump no buyer rode), and only pump.fun launches count.
+SCORE_VERSION = 2
+
+
+def score_basis(cfg: Config) -> str:
+    """How a deployer score is computed now: where its simulated buy lands and the version of the analysis. A stored
+    score with another basis is another landing's numbers, or the inflated ones of before 11 Nov: it is not planned
+    from, not answered as a verdict, and scored again when the deployer launches."""
+    return f"{cfg.snipe.entry_slot_offset}@{cfg.snipe.entry_position}:v{SCORE_VERSION}"
 
 
 def deployer_report(
@@ -38,6 +50,13 @@ def deployer_report(
     closed = [l for l in launches if l.ts + window <= now]
     pending = [l for l in launches if l.ts + window > now]
     contexts = [build_context(store, l, cfg) for l in closed]
+    # The verdict is for a dev sniper on the deployer's pump.fun launches (`oktech.dev_sniper`: platforms pumpfun):
+    # a launch on another launchpad (LaunchLab) is no evidence for it (11 Nov: HjyZn6... scored SNIPE on eight
+    # LaunchLab launches that sniper would never buy).
+    on_pump = [ctx.path.venue == PUMPFUN for ctx in contexts]
+    other_launchpads = len(contexts) - sum(on_pump)
+    closed = [l for l, keep in zip(closed, on_pump) if keep]
+    contexts = [ctx for ctx, keep in zip(contexts, on_pump) if keep]
     feats = [launch_features(ctx, cfg) for ctx in contexts]
     n = len(feats)
 
@@ -48,6 +67,7 @@ def deployer_report(
         "launches_total": len(launches),
         "launches_analyzed": n,
         "launches_pending_window": len(pending),
+        "launches_other_launchpads": other_launchpads,
         "settings": {
             "buy_sol": cfg.snipe.buy_sol,
             "entry_slot_offset": cfg.snipe.entry_slot_offset,

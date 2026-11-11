@@ -15,7 +15,8 @@ from typing import Any
 
 from .analysis.audit import audit_report
 from .analysis.copytrade import copy_report
-from .analysis.deployer import deployer_report
+from .analysis.deployer import SCORE_VERSION, deployer_report
+from .analysis.deployer import score_basis as deployer_basis
 from .analysis.launches import build_context
 from .analysis.optimize import optimize_exits, sweep_latency, sweep_sizes
 from .analysis.policy import analyzable_launches, discover_wallets, policy_backtest, top_deployers
@@ -60,8 +61,11 @@ log = logging.getLogger(__name__)
 
 def compact_deployer(report: dict) -> dict:
     v = report.get("verdict", {})
+    st = report.get("settings") or {}
     return {
         "address": report["address"],
+        # what the numbers rest on (`deployer_basis`): the landing of the simulated buy and the analysis's version
+        "basis": f"{st.get('entry_slot_offset')}@{st.get('entry_position')}:v{SCORE_VERSION}" if st else None,
         "verdict": v.get("verdict"),
         "score": v.get("score"),
         "ev_sol": v.get("ev_sol"),
@@ -286,11 +290,14 @@ class Service:
         )
         # the data each score was computed on: what this job wrote down, else when an older writer computed it (the
         # recorder, a command on the live database: their data ended at that moment)
+        basis = deployer_basis(self.cfg)
         scored = {
             key: at if until is None else until
-            for key, at, until in self.store._q(
-                "SELECT key, computed_at, json_extract(data, '$.data_until') FROM scores WHERE kind='deployer'"
+            for key, at, until, how in self.store._q(
+                "SELECT key, computed_at, json_extract(data, '$.data_until'), json_extract(data, '$.basis') "
+                "FROM scores WHERE kind='deployer'"
             )
+            if how == basis  # a score computed another way does not count: its deployer is due at their next launch
         }
         fresh = sorted((d for d, ts in last.items() if scored.get(d, -1) < ts + window), key=lambda d: -last[d])
         watch = [m["address"] for m in self.store.list_members("watch_deployer")]
@@ -335,6 +342,9 @@ class Service:
         address = self._check(address)
         lists = self.store.lists_for(address)
         cached = self.store.get_score("deployer", address) or {"address": address, "verdict": "UNKNOWN"}
+        if cached.get("verdict") not in (None, "UNKNOWN") and cached.get("basis") != deployer_basis(self.cfg):
+            # computed another way (another landing, or before 11 Nov's fixes): no verdict until it is scored again
+            cached = {"address": address, "verdict": "UNKNOWN", "stale": cached.get("basis") or "before 11 Nov 2026"}
         if "block" in lists:
             cached = cached | {"verdict": "BLOCK", "override": "block list"}
         elif "allow" in lists:
@@ -356,6 +366,8 @@ class Service:
             if w == exclude:
                 continue
             s = self.store.get_score("deployer", w)
+            if s and s.get("basis") != deployer_basis(self.cfg):
+                continue  # a sibling scored another way says nothing now
             if s and s.get("verdict") not in (None, "UNKNOWN", "INSUFFICIENT_DATA"):
                 if best is None or (s.get("launches") or 0) > (best.get("launches") or 0):
                     best = s | {"sibling": w}

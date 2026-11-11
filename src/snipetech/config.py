@@ -62,7 +62,7 @@ class ExitConfig:
 class SnipeConfig:
     buy_sol: float = 0.5
     entry_slot_offset: int = 1  # slots after the create tx your buy lands (0 = same slot)
-    entry_position: str = "middle"  # start | middle | end of the landing slot
+    entry_position: str = "+3"  # start | middle | end of the landing slot, or +N: N trades of that slot ahead of you
     exit_latency_slots: int = 1  # slots between seeing a trigger and your sell landing
     analysis_window_secs: int = 900
     max_launches: int = 150  # launches per deployer to analyze
