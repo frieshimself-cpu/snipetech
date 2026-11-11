@@ -270,9 +270,27 @@ def test_with_every_lab_slot_held_it_says_so_and_measures_nothing(tmp_path, monk
         st.close()
 
 
+def test_a_landing_further_back_can_be_asked_for_and_none_closer(tmp_path):
+    """How much is left when more buys land between the wallet and us: the same study two or five buys further back.
+    Never closer than the qualify lab lands: paper at a better place than ours is not evidence (CLAUDE.md rule 2)."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _verdict(st, "W1", T0, "candidate", CROWDED, gap3=23.7)
+        lab = _lab({"W1": [[T0 + 60, 0.01]]})
+        out = _study(svc, data, lab, landing="+5x")
+        assert out["landing"] == "+5x" and [pos for _, pos in lab.calls] == ["+5x"]
+        for closer in ("+2x", "+0x", "+3", "first", ""):
+            with pytest.raises(ValueError):
+                _study(svc, data, lab, landing=closer)
+        assert len(lab.calls) == 1  # refused before any lab
+    finally:
+        st.close()
+
+
 def test_the_command_is_wired_as_a_research_job():
     args = build_parser().parse_args(["stopped-wallets", "--max", "40", "--json"])
-    assert args.cmd == "stopped-wallets" and args.max == 40 and args.json is True
+    assert args.cmd == "stopped-wallets" and args.max == 40 and args.json is True and args.landing is None
+    assert build_parser().parse_args(["stopped-wallets", "--landing", "+5x"]).landing == "+5x"
     assert "stopped-wallets" in ops.ALLOWED and "stopped-wallets" in RESEARCH_COMMANDS
     assert "stopped-wallets" in BATCH_COMMANDS  # it runs a lab: below the recorder
 

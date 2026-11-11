@@ -23,6 +23,7 @@ Research only: it takes a lab slot, writes no verdict and changes none."""
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -108,16 +109,30 @@ def _pool(rows: list[dict[str, Any]], conf: float, samples: int) -> dict[str, An
     }  # fmt: skip
 
 
+def _landing(asked: str | None, qualify: str) -> str:
+    """The landing the lab scores at: the qualify lab's, or `asked` ("+Nx": behind the N-th buy after the wallet's,
+    across slots) when that is no closer. A closer one is refused: paper at a better place than ours is not evidence."""
+    if asked is None:
+        return qualify
+    m = re.fullmatch(r"\+(\d+)x", asked)
+    if not m or int(m.group(1)) < int(qualify.strip("+x")):
+        raise ValueError(f"landing {asked!r}: write +Nx with N at least {qualify.strip('+x')} (the qualify lab's "
+                         f"{qualify}; nothing is scored closer than our buys land)")  # fmt: skip
+    return asked
+
+
 def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRunner | None = None,
-                    max_wallets: int = MAX_WALLETS, wait: bool = True) -> dict[str, Any]:  # fmt: skip
+                    max_wallets: int = MAX_WALLETS, wait: bool = True, landing: str | None = None) -> dict[str, Any]:  # fmt: skip
     """The study: `groups` (each of GROUPS pooled), `rows` (each wallet: its verdict's numbers and its copies since)
     and what the lab was (`landing`, `per_tx_sol`). `max_wallets`: how many the lab measures, the reference cut first
-    (`left_out` says how many). `wait` False: with every lab slot held, {"deferred": True, "reason"} instead."""
+    (`left_out` says how many). `wait` False: with every lab slot held, {"deferred": True, "reason"} instead.
+    `landing`: score further back than the qualify lab does ("+5x": two more buys between the wallet and us), to see
+    what is left when faster bots land ahead; the verdicts' own numbers (`at_verdict`) stay the qualify landing's."""
     store, q = svc.store, cfg.qualify
+    landing = _landing(landing, qualify_landing(store, q, now=now))
     found = find(store, q)
     asked, left_out = found[: max(0, int(max_wallets))], max(0, len(found) - max(0, int(max_wallets)))
     cost = lab_tx_cost_info(store, cfg)
-    landing = qualify_landing(store, q, now=now)
     out: dict[str, Any] = {"now": int(now), "landing": landing, "per_tx_sol": cost["per_tx_sol"],
                            "per_tx_source": cost["per_tx_source"], "wallets": len(asked), "left_out": left_out,
                            "min_wallet_copies": MIN_WALLET_COPIES}  # fmt: skip
@@ -153,11 +168,11 @@ def stopped_wallets(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: La
     return out
 
 
-def stopped_wallets_cli(cfg: Config, max_wallets: int, jobs_dir: Path) -> dict[str, Any]:
+def stopped_wallets_cli(cfg: Config, max_wallets: int, jobs_dir: Path, landing: str | None = None) -> dict[str, Any]:
     from ..service import Service
 
     svc = Service(cfg)
     try:
-        return stopped_wallets(svc, cfg, jobs_dir, time.time(), max_wallets=max_wallets)
+        return stopped_wallets(svc, cfg, jobs_dir, time.time(), max_wallets=max_wallets, landing=landing)
     finally:
         svc.store.close()

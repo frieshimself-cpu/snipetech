@@ -988,6 +988,9 @@ def build_parser() -> argparse.ArgumentParser:
         "to the wallets that were picked (takes a lab slot, writes no verdict; a research job the agents may start)",
     )
     sp.add_argument("--max", type=int, default=150, help="wallets the lab measures (the picked ones are cut first)")
+    sp.add_argument("--landing", default=None, metavar="+Nx",
+                    help="score further back than the qualify lab: behind the N-th buy after the wallet's (+5x: two "
+                         "more buys land between it and us); never closer than the qualify landing")  # fmt: skip
     sp = cmd(
         "fomo-wallets",
         "FOMO app traders on our tape (FOMO pays their gas from one wallet), busiest first; --label N "
@@ -2473,7 +2476,8 @@ def _main(args) -> int:
     if args.cmd == "stopped-wallets":
         from .qualify.stopped import GROUPS, stopped_wallets_cli
 
-        out = stopped_wallets_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs")
+        out = stopped_wallets_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs",
+                                  landing=args.landing)  # fmt: skip
         if args.json:
             print(json.dumps(out, indent=1, default=str))
             return 0
