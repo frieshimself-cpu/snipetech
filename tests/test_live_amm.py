@@ -202,13 +202,15 @@ def test_the_tapes_own_subscription_is_the_same_with_the_mode_on_or_off():
 
 
 @needs_grpc
-def test_the_tape_starts_its_own_stream_as_before_and_the_pumpswap_side_beside_it(monkeypatch):
+def test_the_tape_starts_its_own_stream_and_the_pumpswap_side_beside_it(monkeypatch):
+    """The tape's own subscription carries its two programs and nothing of PumpSwap; since 11 Nov it asks for slot
+    ticks too (its own request), so a new subscription can replay from where the last one stopped."""
     monkeypatch.setenv("HELIUS_API_KEY", "test")
-    opened: list[tuple[list[str], bool, bool]] = []
+    opened: list[tuple[list[str], list[str], list[str]]] = []
 
     async def stream(programs, on_tx, endpoint="", token=None, commitment="confirmed", on_connect=None, route=None,
                      request=None, on_slot=None):  # fmt: skip
-        opened.append((list(programs), request is None, route is None))
+        opened.append((list(programs), sorted(request.transactions), sorted(request.slots)))
         await asyncio.Event().wait()
 
     monkeypatch.setattr(LS, "stream", stream)
@@ -227,8 +229,8 @@ def test_the_tape_starts_its_own_stream_as_before_and_the_pumpswap_side_beside_i
         return w
 
     w = asyncio.run(go())
-    assert sorted(opened) == [([], False, False), ([PUMP_PROGRAM, LAUNCHLAB_PROGRAM], True, True)]
-    assert w.amm_source == "laserstream"  # the tape's own subscription as before, the recent pools' beside it
+    assert sorted(opened) == [([], ["amm"], ["amm"]), ([PUMP_PROGRAM, LAUNCHLAB_PROGRAM], ["tape"], ["tape"])]
+    assert w.amm_source == "laserstream"  # the tape's own subscription, the recent pools' beside it
 
 
 @needs_grpc
@@ -1025,7 +1027,8 @@ def test_amm_recent_secs_0_is_the_recorder_as_before(monkeypatch):
 
     asyncio.run(go())
     w._flush()
-    assert not [k for k in w.stats if k.startswith("amm")] and w.head is None  # not even the lag measured
+    # nothing of the PumpSwap side; the lag is measured (since 11 Nov: the tape's record says where its stream stands)
+    assert not [k for k in w.stats if k.startswith("amm")] and w.head is not None
     assert w.stats["laserstream_txs"] == 6  # a2.bin carries no event
     running(w, 1_000)
     w._mark_amm_recent()

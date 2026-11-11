@@ -27,6 +27,7 @@ import json
 import logging
 import math
 import os
+import re
 import sqlite3
 import time
 from collections import OrderedDict, defaultdict, deque
@@ -68,6 +69,22 @@ EXPIRY_GRACE_SECS = 60
 # waits with it), after how long a new connection is opened, after how long the recorder exits for systemd to restart it
 WRITE_PATIENCE_SECS = 20.0
 FLUSH_ROWS = 500  # rows waiting in memory at which a transaction of the stream flushes them (else: the 10 s tick)
+# The tape's own stream replays what a drop or a restart made it miss (11 Nov; measured on LaserStream that day: a
+# replay begins exactly at the slot asked for, in slot order, 20 minutes of chain in 28 s, a slot's tick never before
+# its transactions, two days back, an older slot refused with "older than the oldest available slot N").
+RESUME_BACK_SLOTS = 2  # a new subscription starts this many slots before the last one handed over whole
+REPLAY_MAX_AGE_SECS = 40 * 3600  # a position older than this is not replayed from: LaserStream keeps 48 hours
+REPLAY_FLOOR_MARGIN_SLOTS = 1500  # after a refusal: this far past the oldest slot it named (five minutes: it moves)
+REPLAY_SLACK_SLOTS = 50  # a replay whose first message lies further past the slot asked for began late: a hole
+# what the server says when it cannot replay from a slot (LaserStream, 11 Nov: OUT_OF_RANGE "Requested slot N is older
+# than the oldest available slot M"; its docs: "Operation was attempted past the valid range"). Anything else that
+# fails before a first message (the network, "Unable to verify project" for 33 minutes on 10 Nov) is tried again from
+# the same slot.
+REPLAY_REFUSALS = ("OUT_OF_RANGE", "oldest available slot", "past the valid range")
+TAPE_STALL_SECS = 30.0  # a tape stream that sent no slot for this long is dropped and subscribed again
+TAPE_STALL_CHECK_SECS = 5.0
+TAPE_BACKOFF_SECS = 1.0  # the first wait before a new subscription; doubled up to a minute while they fail
+SLOT_SECS_GUESS = 0.2142  # a slot's time before the recorder has measured it (5-7 Nov 2026)
 REOPEN_AFTER_SECS = 180.0
 RESTART_AFTER_SECS = 600.0
 # A slot is placed on the chain clock at the slot time the recorder measures on its own stream (`fit_slot_secs`): the
@@ -405,6 +422,18 @@ class LiveWatcher:
         self.heads: deque[tuple[int, int]] = deque(maxlen=SLOT_FIT_KEEP)  # every head, one a second: fitted on
         self.slot_fit: tuple[float, float] | None = None  # (seconds a slot, the fit's largest miss) measured on them
         self.slot_fit_due = 0.0  # when to fit it again
+        # the tape's own stream over LaserStream: where it stands, so a new subscription replays from there
+        self.tape_slot: int | None = None  # the newest slot handed over whole (its tick came)
+        self.tape_at: float | None = None  # when its stream last sent anything (clock)
+        self.tape_up = False  # its subscription has handed over its first message
+        self.tape_floor: int | None = None  # after a refusal: the oldest slot the server still has, plus a margin
+        self.dup_until: int | None = None  # a replaying subscription hands slots up to here over again
+        self.replay_from: int | None = None  # the slot a replaying subscription asked for, until its first message
+        self.amm_from: int | None = None  # where this process's own recording began inside a stretch it goes on with
+        self.open_sigs: dict[int, set[bytes]] = {}  # signatures of the slots whose tick has not come
+        self.resume_span: list[int] | None = None  # the record's last stretch, which a replaying start goes on with
+        self.span_end = 0  # the current stretch's end as last written: never taken back
+        self.span_wait = False  # the next stretch starts at the first block time measured (after a refused replay)
         self.amm_source: str | None = None  # "laserstream" or "logs": how run() started the PumpSwap side
         self.amm_wake = asyncio.Event()  # something changed for the PumpSwap side (a coin joined, a tick)
         self.amm_pools: tuple[str, ...] = ()  # the pools of its subscription
@@ -443,6 +472,8 @@ class LiveWatcher:
                 t.cancel()
             try:
                 self._flush()
+                if self.tape and self.write_fail_since is None:
+                    self._mark_tape()  # where the stream stood: the next start replays from here
             except Exception as exc:  # noqa: BLE001 - leaving anyway: the restart writes nothing twice (INSERT OR IGNORE)
                 log.warning("tape: last flush failed (%s)", exc)
             await self.sink.close()
@@ -500,29 +531,161 @@ class LiveWatcher:
         return ok and (src == "laserstream" or self.tape)
 
     async def _laserstream(self) -> None:
-        """The whole firehose over one LaserStream subscription: exact block order, every trader."""
+        """The whole firehose over one LaserStream subscription: exact block order, every trader. It asks for slot
+        ticks; a new subscription replays from the last slot handed over whole (`_tape_start`), so a drop or a restart
+        leaves no hole; one that sends nothing for TAPE_STALL_SECS is dropped."""
         from .solana import laserstream as LS
 
         programs, on_tx = self._stream_plan()
-        backoff = [1.0]
-
-        def on_connect() -> None:
-            self._connected()
-            backoff[0] = 1.0
-            log.info("LaserStream subscribed (%s)", ", ".join(p[:8] for p in programs))
-
+        self._load_position()
+        backoff = TAPE_BACKOFF_SECS
         while True:
+            start = self._tape_start()
+            # a replay hands the slots up to the last whole one over again; one from the server's oldest slot does not
+            self.tape_up, self.dup_until, self.replay_from = False, self.tape_slot if start is not None else None, start
+
+            def on_connect(start: int | None = start) -> None:
+                nonlocal backoff
+                self.tape_up, self.tape_at, self.tape_floor, backoff = True, self.clock(), None, TAPE_BACKOFF_SECS
+                if start is not None and self.head is not None:
+                    # how far back the replay starts, before its first transaction is looked at (a launch of the
+                    # outage must not seem long closed because the lag still says two seconds)
+                    self.lag = max(self.lag, self.clock() - self._block_time(start))
+                self._connected(replayed=start is not None)
+                log.info("LaserStream subscribed (%s)%s", ", ".join(p[:8] for p in programs),
+                         "" if start is None else f", from slot {start}")  # fmt: skip
+
+            request = LS.subscribe_request(programs, self.cfg.rpc.commitment, from_slot=start, slots=True, name="tape")
+            task = asyncio.create_task(LS.stream(programs, on_tx, endpoint=self.cfg.live.laserstream_endpoint,
+                                                 on_connect=on_connect, route=self._tape_route, request=request,
+                                                 on_slot=self._tape_tick))  # fmt: skip
             try:
-                await LS.stream(programs, on_tx, endpoint=self.cfg.live.laserstream_endpoint, commitment=self.cfg.rpc.commitment,
-                                on_connect=on_connect)  # fmt: skip
-                raise RuntimeError("stream ended")
+                await self._tape_until_it_ends(task)
+                failed: Exception = RuntimeError("stream ended")
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # reconnect on anything
-                self._disconnected()
-                log.warning("LaserStream dropped (%s); reconnecting in %.0fs", str(exc)[:200], backoff[0])
-                await asyncio.sleep(backoff[0])
-                backoff[0] = min(backoff[0] * 2, 60)
+                failed = exc
+            finally:
+                task.cancel()
+                await asyncio.wait({task})
+                if not task.cancelled():
+                    task.exception()  # retrieved: how a stream given up on ended is of no interest
+            self._disconnected()
+            if start is not None and not self.tape_up and any(word in str(failed) for word in REPLAY_REFUSALS):
+                self._replay_refused(start, failed)
+            log.warning("LaserStream dropped (%s); reconnecting in %.0fs", str(failed)[:200], backoff)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+
+    async def _tape_until_it_ends(self, task: asyncio.Task) -> None:
+        """Wait while the tape's subscription runs; raises what it failed with, or that it went silent: no message for
+        TAPE_STALL_SECS at two checks in a row (after the loop itself stood still, the first check may run before the
+        messages that waited meanwhile)."""
+        suspect: float | None = None
+        while True:
+            await asyncio.wait({task}, timeout=TAPE_STALL_CHECK_SECS)
+            if task.done():
+                task.result()
+                return
+            silent = self.tape_up and self.tape_at is not None and self.clock() - self.tape_at > TAPE_STALL_SECS
+            if silent and suspect == self.tape_at:
+                self.stats["tape_stalls"] += 1
+                raise RuntimeError(f"no slot for {TAPE_STALL_SECS:.0f} s")
+            suspect = self.tape_at if silent else None
+
+    def _replays(self) -> bool:
+        """Whether the tape's stream replays what it missed: the recorder only. A recorder that sends signals starts
+        live every time (a replayed launch is minutes old, and its signal would be acted on as new)."""
+        return self.tape and self.signals == "none"
+
+    def _load_position(self) -> None:
+        """Where the last process's stream stood, from the tape's record: its slot, the chain clock there, and the
+        stretch it was writing, when that ended recently enough to replay from."""
+        if not self._replays() or self.tape_slot is not None:
+            return
+        try:
+            cov = self.store.coverage("tape")
+            slot, head, spans = cov.get("slot"), cov.get("head"), cov.get("spans") or []
+            if not isinstance(slot, int) or not spans or self.clock() - spans[-1][1] > REPLAY_MAX_AGE_SECS:
+                return
+            self.tape_slot, self.resume_span = slot, [int(spans[-1][0]), int(spans[-1][1])]
+            if isinstance(head, list) and len(head) == 2:
+                self.head = (int(head[0]), int(head[1]))
+                self.lag = max(0.0, self.clock() - self.head[1])
+        except Exception as exc:  # noqa: BLE001 - a start without the last position is a start with a hole
+            log.warning("tape: the last position could not be read (%s): starting live", exc)
+
+    def _tape_start(self) -> int | None:
+        """The slot a new subscription of the tape's stream replays from: a little before the last one handed over
+        whole; None (live) without one, or for a recorder that does not replay."""
+        if not self._replays():
+            return None
+        if self.tape_slot is None:
+            return self.tape_floor  # after a refusal: the oldest slot the server has; else None, live
+        return self.tape_slot - RESUME_BACK_SLOTS
+
+    def _replay_refused(self, start: int, exc: Exception) -> None:
+        """A replaying subscription failed before its first message. When the server names the oldest slot it still
+        has, the next one starts a margin past it; a second failure, or any other refusal, starts live. Either way
+        the stretch before is a hole: the tape's stretch ends, and a new one starts where the stream begins."""
+        self.stats["tape_replay_refused"] += 1
+        m = re.search(r"oldest available slot (\d+)", str(exc))
+        if m and self.tape_floor is None:
+            self.tape_floor = int(m.group(1)) + REPLAY_FLOOR_MARGIN_SLOTS
+            log.warning("tape: the replay from slot %d was refused; the next one starts at slot %d, the oldest the "
+                        "server has: a hole before it", start, self.tape_floor)  # fmt: skip
+        else:
+            self.tape_floor = None
+            log.warning("tape: the replay from slot %d was refused (%s): starting live, with a hole", start,
+                        str(exc)[:120])  # fmt: skip
+        self.tape_slot, self.resume_span, self.span_start, self.span_wait = None, None, None, True
+
+    def _replay_began(self, slot: int) -> None:
+        """The first message of a replaying subscription, at `slot`. Measured (11 Nov) it is the slot asked for; one
+        further on than REPLAY_SLACK_SLOTS means the server began late: what lies between was never handed over, so
+        the tape's stretch ends and a new one starts with the first block time measured."""
+        asked, self.replay_from = self.replay_from, None
+        if asked is None or slot <= asked + REPLAY_SLACK_SLOTS:
+            return
+        self.stats["tape_replay_short"] += 1
+        log.warning("tape: a replay asked from slot %d began at slot %d: a hole between them", asked, slot)
+        self.gaps.append((self._block_time(asked) if self.head is not None else self.clock(), self.clock()))
+        self.dup_until, self.resume_span, self.amm_from = None, None, None
+        self.span_start, self.span_end, self.span_wait = None, 0, True
+
+    def _tape_tick(self, slot: int) -> None:
+        """A slot of the tape's subscription: everything of it has been handed over (11 Nov, measured: a tick never
+        comes before its slot's transactions, in a replay or live)."""
+        self.tape_at = self.clock()
+        if self.replay_from is not None:
+            self._replay_began(slot)
+        if self.tape_slot is None or slot > self.tape_slot:
+            self.tape_slot = slot
+        if self.open_sigs:
+            for done in [k for k in self.open_sigs if k <= slot]:
+                del self.open_sigs[done]
+
+    def _tape_route(self, info: Any, slot: int) -> Callable[[dict[str, Any], int], None] | None:
+        """Whether a transaction of the tape's subscription is recorded, before anything is converted: not one a
+        replay hands over again (a slot the last subscription handed over whole, or a transaction it had sent of a
+        slot still open)."""
+        self.tape_at = self.clock()
+        if self.replay_from is not None:
+            self._replay_began(slot)
+        if self.dup_until is not None and slot <= self.dup_until:
+            self.stats["tape_replay_dups"] += 1
+            return None
+        sig = bytes(info.signature)
+        seen = self.open_sigs.setdefault(slot, set())
+        if sig in seen:
+            self.stats["tape_replay_dups"] += 1
+            return None
+        seen.add(sig)
+        if len(self.open_sigs) > 256:  # ticks clear it; without them (never seen) it stays small anyway
+            for old in sorted(self.open_sigs)[:128]:
+                del self.open_sigs[old]
+        return self._ls_tx
 
     def _stream_plan(self) -> tuple[list[str], Callable[[dict[str, Any], int], None]]:
         """The tape's own LaserStream subscription: its programs and the handler of a transaction. The recent-migrations
@@ -531,13 +694,23 @@ class LiveWatcher:
         return programs, self._ls_tx
 
     def _ls_tx(self, txj: dict[str, Any], index: int) -> None:
+        if self.head is not None:
+            # the block's time for events that carry none (LaunchLab's): the stream's own is the moment it was
+            # received, minutes or hours after the block in a replay
+            txj["blockTime"] = self._block_time(int(txj["slot"]))
         ev = extract_from_transaction(txj)
         if ev.failed or not ev.events:
             return
         self.stats["laserstream_txs"] += 1
-        if self.migrated is not None:
+        if self.migrated is not None or self.tape:
             self._observe_lag(ev)
         self._on_tx(ev, index)
+
+    def _block_time(self, slot: int) -> int:
+        """Where a slot lies on the chain clock: the last block time measured, a slot's time for each slot since."""
+        assert self.head is not None
+        secs = self.slot_fit[0] if self.slot_fit else SLOT_SECS_GUESS
+        return round(self.head[1] + (slot - self.head[0]) * secs)
 
     # -- recent-migrations mode: the PumpSwap side ------------------------------------------------------------------
 
@@ -879,11 +1052,15 @@ class LiveWatcher:
                 return
             ts, first = int(ts), self.head is None
             self.lag_due, self.lag = now + 1.0, max(0.0, now - ts)
+            if self.span_wait and self.span_start is None and self.disconnected_at is None:
+                self.span_start, self.span_end, self.span_wait = ts + 1, 0, False  # the stretch after a refused replay
+                self.amm_from = None
             self.meter.tick()
             if first or tx.slot >= self.head[0]:
                 self.head = (tx.slot, ts)
                 self.heads.append(self.head)
-            change = self.valve.observe(now - ts, now)
+            # the valve sheds the PumpSwap side: without that side there is nothing to shed, and nothing to say
+            change = self.valve.observe(now - ts, now) if self.migrated is not None else None
             if now >= self.slot_fit_due:
                 self.slot_fit_due, self.slot_fit = now + SLOT_REFIT_SECS, fit_slot_secs(self.heads)
         except Exception as exc:  # noqa: BLE001 — it runs on the tape's own transactions: never at their cost
@@ -928,15 +1105,29 @@ class LiveWatcher:
         per_slot = (long if d < 0 else short) if side < 0 else (short if d < 0 else long)
         return head_ts + d * per_slot + side * (SKIP_MARGIN_SECS + miss)
 
-    def _connected(self) -> None:
-        if self.disconnected_at is not None:
-            self.gaps.append((self.disconnected_at, time.time()))
+    def _connected(self, replayed: bool = False) -> None:
+        """A subscription of the firehose handed over its first message. `replayed`: it began where the last one
+        stopped (the tape's stream over LaserStream), so nothing is missing: the stretch of the tape goes on, the last
+        process's when this one has none yet. Otherwise what came between is a hole and a new stretch starts."""
+        if self.disconnected_at is None:
+            return
+        if replayed and (self.span_start is not None or self.resume_span is not None):
+            if self.span_start is None:
+                self.span_start, self.span_end = self.resume_span[0], self.resume_span[1]
+                self.amm_from = self.resume_span[1] + 1  # the PumpSwap side has nothing from before this process
             self.disconnected_at = None
-            self.span_start = int(time.time()) + 1
+            return
+        now = self.clock()
+        self.gaps.append((self.disconnected_at, now))
+        self.disconnected_at = None
+        if replayed and self.span_wait:  # a replay from the oldest slot the server has: the stretch starts there
+            self.span_start = None
+        else:
+            self.span_start, self.span_end, self.span_wait, self.amm_from = int(now) + 1, 0, False, None
 
     def _disconnected(self) -> None:
         if self.disconnected_at is None:
-            self.disconnected_at = time.time()
+            self.disconnected_at = self.clock()
 
     def _on_logs(self, slot: int, value: dict[str, Any], amm_only: bool = False) -> None:
         if value.get("err") is not None:
@@ -993,7 +1184,10 @@ class LiveWatcher:
                 self._note_departures(norm)
             except Exception as exc:  # noqa: BLE001 — never at the cost of the pump.fun transaction it came in
                 self._amm_failed("record", exc)
-        while self.recent and next(iter(self.recent.values())) < time.time() - window - 60:
+        # closed on the chain clock of the stream (the wall clock less its lag: the same while it keeps up): in a
+        # replay a launch of ten minutes ago is new, its window open until the stream has handed that window over
+        closed_before = self.clock() - self.lag - window - 60
+        while self.recent and next(iter(self.recent.values())) < closed_before:
             mint, _ts = self.recent.popitem(last=False)
             launch = self.launched.pop(mint, None)  # the one the stream handed over: never read back
             if launch:
@@ -1303,11 +1497,24 @@ class LiveWatcher:
         if self.disconnected_at is not None or self.span_start is None:
             return
         cov = self.store.coverage("tape")
-        now = time.time()
-        # earlier connections' spans end before this one started; this span is clipped to what retention keeps
+        now = self.clock()
+        # Up to where the stream stands on the chain, never past it: two seconds behind the clock while it keeps up
+        # (as before), its measured lag behind while it catches up on a replay, and no further than its last message
+        # while it is silent. Never taken back within a stretch.
+        stands = min(now, self.tape_at) if self.tape_at is not None else now
+        self.span_end = max(self.span_end, int(stands - max(2.0, self.lag + 1.0)))
+        start = max(self.span_start, int(now - self.cfg.storage.retain_days * 86400))
+        if self.span_end < start:
+            return
+        # earlier connections' spans end before this one started (the one a replaying start goes on with is this one);
+        # this span is clipped to what retention keeps
         spans = [s for s in cov.get("spans", []) if s[1] < self.span_start]
-        spans.append([max(self.span_start, int(now - self.cfg.storage.retain_days * 86400)), int(now) - 2])
+        spans.append([start, self.span_end])
         cov["spans"] = sorted(spans)[-500:]
+        if self.tape_slot is not None:  # where the stream stands, for the next subscription of the next process
+            cov["slot"] = self.tape_slot
+            if self.head is not None:
+                cov["head"] = [self.head[0], self.head[1]]
         self.store.set_coverage("tape", cov)
 
     def _mark_amm_recent(self) -> None:
@@ -1326,8 +1533,11 @@ class LiveWatcher:
             return
         try:
             chain = self._chain_now()
-            if self.disconnected_at is None and self.span_start is not None and int(chain) - 2 > self.span_start:
-                self.amm_runs[f"{int(self.started)}-{self.span_start}"] = [self.span_start, int(chain) - 2]
+            # where this process's stretch began: the tape's own, or, in a stretch it goes on with after a restart (the
+            # tape's stream replays; the PumpSwap side of the coins that left before it does not), where it took over
+            began = None if self.span_start is None else max(self.span_start, self.amm_from or self.span_start)
+            if self.disconnected_at is None and began is not None and int(chain) - 2 > began:
+                self.amm_runs[f"{int(self.started)}-{began}"] = [began, int(chain) - 2]
                 while len(self.amm_runs) > 500:
                     del self.amm_runs[next(iter(self.amm_runs))]
             if not self.amm_runs:

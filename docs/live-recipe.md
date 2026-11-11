@@ -4,6 +4,26 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The first wallet to pass the forward check is copied live; 2Tp9sc's sniper stopped (11 Nov 2026, 04:55 UTC, the book)
+
+Nobody switched anything: the book did this on its own run, under the owner's standing settings (the live book, on
+since 6 Nov; 0.2 SOL fills on the low-fee arm).
+
+- **New copy sniper on 74xVT9** (`74xVT9FWhn5fGNgHAGmipmUU4W5nUvskEotcDhEuwJqC`), OKTech id
+  `6af3f52e272169619042314f`. It copies that wallet's buys of 0.558 SOL or more with 0.2 SOL, sells when the wallet has
+  sold half or after 300 s, and stops after 3 buys (the book makes a new one while the wallet stays qualified).
+  At most 0.6 SOL in play.
+- **Why this wallet:** it is the first one ever to pass the forward check. On paper at our real landing: +0.0145 SOL
+  a 0.2 SOL copy over 57 copies, lower bound +0.0102. It was picked on 9 Nov 07:16 UTC; the 26 copies it gave in the
+  40 hours *after* that made +0.0095 SOL each (lower bound +0.0058, 62 % up). Seven other wallets that looked as good
+  on paper lost on their copies after the pick and were retired in the same run (docs/audit-2026-11-11.md).
+- **Stopped: the copy sniper on 2Tp9sc** (`6af19d312721696190dff619`). Its paper turned negative (-0.0032 SOL a copy
+  over 81) and its 5 live copies had lost 0.007 SOL each. The wallet held no coin when it stopped: nothing stranded.
+- Running after it: 74xVT9, 7aPo3n, AG89fn. The last two no longer qualify under the 7 Nov rules and are kept only
+  because the book already copies them (the owner may say "stop them"; until then they stay).
+- This is paper evidence plus one clean forward window, not a live result. The live result is the next thing written
+  here: its first copies, what they made after costs, and how far behind the leader they landed.
+
 ## The owner, 7 Nov 2026 about 22:05 UTC: "pnl matters but dont stop the bot"
 
 In their words: "no there's no sol checks idc ab it", then "no as in pnl matters but dont stop the bot", then "just make
