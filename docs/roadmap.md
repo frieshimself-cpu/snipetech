@@ -6,6 +6,26 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 13:00 UTC: the nightly job worked three hours for nothing; a quarter of the "worth sniping" deployers lose where we land
+
+- **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.
+- **The nightly job** used three to four processor-hours every night (more than any other regular job) and three of
+  its five steps fed nothing: a strategy lab scored at a place our buys do not reach (its report's first line read
+  "+360 SOL a day"; nobody ever read the file), a ranking nothing reads, a plan never sent. While it ran, three to
+  four hours a night, the real research loop stood still. Those three steps are retired; the server needs no root
+  step for it. First night with it: 12 Nov 04:17 UTC.
+- **The owner's market-cap limit** on a copied wallet (75 SOL on AG89fn) was turned into dollars at a SOL price that
+  was only refreshed once a night, as a side effect of that nightly job. It is now refreshed when it is used, at
+  most an hour old.
+- **Deployers marked "worth sniping": 26 of 110 lose where our buys land.** A second rule marked a deployer "worth
+  sniping" if a buy one block earlier than ours would have paid. That rule no longer decides anything, and every
+  verdict is being made again. Nothing was trading on these verdicts.
+- **Found on the way, not built yet:** the deployer verdicts are made every hour and nothing uses them. 82 deployers
+  marked "worth sniping" launched 2,096 coins in a day. A forward paper record of exactly those launches would say
+  within days whether the verdicts are worth money. It is the next thing to build (audit open item 14).
+- Every timer and stage was checked against its schedule: all run when they should. Record:
+  [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-50.
+
 ## 11 Nov, 12:10 UTC: the live page's events took over 30 seconds to read; two safety checks could fail silently
 
 - **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.
