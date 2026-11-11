@@ -19,7 +19,7 @@ from .jobs import OperatorJobs
 from .learning import context as learning_context
 from .notify import Notifier
 from .paths import OperatorPaths, research_dir
-from .prompts import ANALYST_SYSTEM, OPERATOR_SYSTEM, user_message
+from .prompts import ANALYST_SYSTEM, HOUR_CACHE, OPERATOR_SYSTEM, message_content, user_message
 from .snapshot import Snapshot
 from .tools import NoteSink, make_operator_tools
 from .turnlog import TurnLog
@@ -51,6 +51,16 @@ def _restore_analyst_last(paths: OperatorPaths, text: str | None) -> None:
             tmp = paths.analyst_last.with_name(paths.analyst_last.name + ".tmp")
             tmp.write_text(text)
             tmp.replace(paths.analyst_last)
+
+
+def _report_text(paths: OperatorPaths, name: str | None) -> str | None:
+    """The report an update turn adds to, as it stands (None when the turn updates none or it cannot be read)."""
+    if not name:
+        return None
+    try:
+        return paths.report(name).read_text(errors="replace")
+    except (OSError, ValueError):
+        return None
 
 
 def _read_inbox(paths: OperatorPaths) -> str:
@@ -95,11 +105,18 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     # reports. No agent read them before 8 Nov: 7 Nov 21:16-23:16 the analyst froze two creator-0 hunts that round 3
     # (8 Nov 00:00) showed lose on unseen tape
     learned = learning_context(paths, book=cfg.book, research=research_dir(jobs.repo))
-    content = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
+    text = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
+    # an update turn carries the day's report itself, in blocks the hour's cache serves (prompts.message_content)
+    content = message_content(text, update_of, _report_text(paths, update_of))
     runner = client.beta.messages.tool_runner(
         model=op.analyst_model if analyst else op.model,
         max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,
-        system=ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM,
+        # the tools and the instructions are the same from turn to turn and turns come 15-30 minutes apart: in the
+        # five-minute cache every turn wrote them again at the write price; in the hour's the next turn reads them
+        # (11 Nov, the pricing page: a read is a fortieth of the input price on the analyst's model)
+        system=[
+            {"type": "text", "text": ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM, "cache_control": dict(HOUR_CACHE)}
+        ],
         tools=tools,
         messages=[{"role": "user", "content": content}],
         # the current models return empty thinking text unless asked for its summary; the owner's live page shows it

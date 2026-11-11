@@ -441,3 +441,13 @@ def test_read_fee_policy_tool_says_each_kinds_fee_and_why(toolbox):
     lead = next(r for r in out["copy_leaders"] if r["leader"] == "LEAD")
     assert lead["buy_tip"] == 0.002 and "12 fills" in lead["why"]["buy_tip"]
     assert out["bounds"]["copy"]["buy_tip"] == [0.002, 0.005] and "10" in out["rule"]
+
+
+def test_read_file_can_read_only_the_end_of_a_file_that_only_grows(toolbox):
+    """11 Nov: operator/notes.md was 139,000 characters and a turn that wanted the last notes read all of it (three
+    reads that day, a dollar each on the analyst's model). `tail` gives the last lines; without it the whole file, as
+    before."""
+    tools, paths, _ = toolbox
+    paths.notes.write_text("".join(f"- note {i}\n" for i in range(500)))
+    assert _call(tools["read_file"], path="operator/notes.md", tail=3) == "- note 497\n- note 498\n- note 499"
+    assert _call(tools["read_file"], path="operator/notes.md").count("\n") == 500

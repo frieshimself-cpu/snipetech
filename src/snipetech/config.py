@@ -249,19 +249,24 @@ class AgentConfig:
     max_tokens: int = 16000
 
 
-DEFAULT_OPERATOR_PRICES: dict[str, float] = {  # USD per million tokens (cache_write: the 5-minute cache)
+# USD per million tokens (cache_write: the 5-minute cache; cache_write_1h: the hour's, which the tools and the
+# instructions of the operator's and the analyst's turns are written to). Checked against the pricing page on 11 Nov.
+DEFAULT_OPERATOR_PRICES: dict[str, float] = {
     "in": 2.0,
     "out": 10.0,
     "cache_read": 0.1,
-    "cache_write": 2.5,  # the operator's model, claude-sonnet-5-5
+    "cache_write": 2.5,
+    "cache_write_1h": 4.0,  # the operator's model, claude-sonnet-5-5
     "analyst_in": 8.0,
     "analyst_out": 40.0,
     "analyst_cache_read": 0.2,
-    "analyst_cache_write": 10.0,  # the analyst's model, claude-fable-5-2
+    "analyst_cache_write": 10.0,
+    "analyst_cache_write_1h": 16.0,  # the analyst's model, claude-fable-5-2
     "strategist_in": 4.0,
     "strategist_out": 20.0,
     "strategist_cache_read": 0.2,
-    "strategist_cache_write": 5.0,  # the strategist's model, claude-opus-5-5
+    "strategist_cache_write": 5.0,
+    "strategist_cache_write_1h": 8.0,  # the strategist's model, claude-opus-5-5
 }
 
 # The server's file is `init`'s dump of every default of its day and the owner does not edit it, so a default that

@@ -23,9 +23,9 @@ Hard rules (the tools enforce them too):
   switch either stop off) is the owner's too. To suggest a test, name the strategy and the evidence in a note;
   never write those files.
 - Research jobs: start_job accepts only lab, follow, discover-wallets, label, copy-rank, paper, study, copy. One lab at a
-  time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the outputs of the
-  last 24 h are there with their log paths — read them with read_job_log (the JSON is the last part of the log) instead
-  of running the same job again. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
+  time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
+  that ended in the last 24 h, one line each (id, how it ended, when, what ran) — read one with read_job_log and its id
+  (the JSON is the last part of the log) instead of running the same job again. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
   worth of time is available.
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
@@ -76,7 +76,8 @@ Notes: every turn ends with at least one write_note. level "decision" only for: 
 sniper is selling, a sniper running or a coin held when none should be, equity moved by our own trades more than the alert threshold,
 the tape stalled, a service down, the budget reached. Everything else is "info". Write for the owner: plain words, the numbers that matter,
 no jargon, two sentences where two will do. News is what changed since the last round: a wallet already reported as
-qualified in an earlier note (read_file operator/notes.md) is not news again unless its numbers changed; timers the
+qualified in an earlier note (read_file operator/notes.md with tail 60: the file is long, its last lines are the
+recent notes) is not news again unless its numbers changed; timers the
 owner has not enabled yet are reported once a day, not every round.
 Money in and out: the owner moves SOL in and out of the sniper wallet often and on purpose (owner, 9 Nov). A change
 in the wallet's SOL that no trade of ours explains is the owner's deposit or withdrawal: never a decision note, never a
@@ -132,7 +133,7 @@ one research job (start_job) to test the top research idea. A postmortem round w
 named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
 
 Between the daily analyses today's report already exists (before the day's analysis, yesterday's does), and the
-round's message names it. Read it first and never replace it: add this turn's update at its end with write_report
+round's message carries it whole: never replace it and do not read it again. Add this turn's update at its end with write_report
 (that name, append=true), headed "## Update HH:MM UTC": what changed since the last analysis, the hypothesis this turn
 tested and the result, and the next test. A turn that tested nothing new says so in one line.
 
@@ -166,6 +167,28 @@ buy can reach); without them it lost.
 {_RULES}"""
 
 
+JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file
+
+
+def _job_lines(jobs: list[dict]) -> list[str]:
+    """The day's ended research jobs, one short line each: the id read_job_log takes, how it ended, when (UTC), what
+    ran. 11 Nov: as JSON with every argument on its own line and each job's log path the list was 42,000 characters of
+    every turn's message, a quarter of it the forward paper test's half-hourly runs. The loop's own stages are left
+    out (the round starts them; the paper test's numbers are in `paper_top`)."""
+    from .standin import loop_stage
+
+    out = []
+    for j in jobs or []:
+        argv = [str(a) for a in (j.get("argv") or [])]
+        if loop_stage(argv) is not None:
+            continue
+        ran = " ".join(argv)
+        ran = ran if len(ran) <= JOB_ARGV_CHARS else ran[: JOB_ARGV_CHARS - 3] + "..."
+        when = time.strftime("%H:%M", time.gmtime(j["ended"])) if j.get("ended") else "?"
+        out.append(f"{j.get('id')} exit {j.get('exit_code')} at {when}: {ran}")
+    return out
+
+
 def _compact_snapshot(snap: Snapshot) -> dict:
     d = {
         "time_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(snap.ts)),
@@ -173,7 +196,7 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "tape_lag_s": None if snap.tape_last_ts is None else int(snap.ts - snap.tape_last_ts),
         "jobs_running": snap.jobs_running,
         "jobs_ended": snap.jobs_ended,
-        "jobs_recent": snap.jobs_recent,
+        "jobs_recent": _job_lines(snap.jobs_recent),
         "wallet": snap.wallet,
         "native_sol": snap.native_sol, "wsol": snap.wsol, "equity_sol": snap.equity, "held": snap.held,
         "book_live": getattr(snap, "book_live", False),
@@ -200,12 +223,40 @@ _CLOSING = {
 
 
 def _update_closing(report: str) -> str:
-    return (f"An earlier analysis stands in operator/{report}.md: read it first (read_file operator/{report}.md) "
-            f"and never replace it. Add this turn's update at its end with write_report(name \"{report}\", "
+    return (f"An earlier analysis stands in operator/{report}.md and is in this message, whole, as it stands now: "
+            f"never replace it and do not read it again. Add this turn's update at its end with write_report(name \"{report}\", "
             "append=true), headed \"## Update HH:MM UTC\": what changed since the last analysis, the post-mortem of "
             "any new round trips (the causes ranked by SOL, the change that would have saved the most), the "
             "hypothesis you tested and its result, the next test. Then add_lesson (or say why there is none), update "
             "the ideas, then write_note.")  # fmt: skip
+
+
+# The day's report in an update turn's message (`message_content`). It only grows at its end, so it is cut into blocks
+# of this many characters from its start: a full block is the same bytes turn after turn and is read from the hour's
+# cache, where the tool that read the whole report each turn wrote it to the cache again every time (11 Nov: 39 of 49
+# analyst turns, 48,700 characters each).
+REPORT_BLOCK_CHARS = 8000
+HOUR_CACHE = {"type": "ephemeral", "ttl": "1h"}
+
+
+def message_content(text: str, report_name: str | None = None, report: str | None = None) -> str | list[dict]:
+    """What the turn's first message holds: `text` (`user_message`), behind the day's report when the turn updates one.
+    A report shorter than one block goes in front of the text as it is; a longer one in blocks of REPORT_BLOCK_CHARS,
+    the last full block marked for the hour's cache, its unfinished end with the text behind it."""
+    if not report_name or report is None:
+        return text
+    head = f"The day's report so far (operator/{report_name}.md), whole:\n\n"
+    foot = "\n\n[the report ends here]\n\n"
+    n = len(report) // REPORT_BLOCK_CHARS
+    if n == 0:
+        return head + report + foot + text
+    blocks: list[dict] = []
+    for i in range(n):
+        chunk = report[i * REPORT_BLOCK_CHARS : (i + 1) * REPORT_BLOCK_CHARS]
+        blocks.append({"type": "text", "text": (head if i == 0 else "") + chunk})
+    blocks[-1]["cache_control"] = dict(HOUR_CACHE)
+    blocks.append({"type": "text", "text": report[n * REPORT_BLOCK_CHARS :] + foot + text})
+    return blocks
 
 
 def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = "", update_of: str | None = None,

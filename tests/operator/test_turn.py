@@ -358,8 +358,8 @@ def ADD_UPDATE(name):  # the model's call that appends this turn's update to `na
 
 
 def test_an_analysis_after_the_days_report_appends_a_dated_update_to_it(env):
-    """The day's report holds the morning's analysis: a later analyst turn is told to read it and append its update,
-    and the report keeps the morning's text."""
+    """The day's report holds the morning's analysis: a later analyst turn has it in its message (11 Nov: no longer
+    read through a tool every turn) and appends its update, and the report keeps the morning's text."""
     report = env["paths"].report("analyst-2026-11-06")
     report.write_text("# analyst 2026-11-06\n\nThe morning's shortlist.\n")
     handler, requests = _scripted(
@@ -367,7 +367,8 @@ def test_an_analysis_after_the_days_report_appends_a_dated_update_to_it(env):
     )
     out = _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
     content = requests[0]["messages"][0]["content"]
-    assert out["stopped"] == "end_turn" and "read_file operator/analyst-2026-11-06.md" in content
+    assert out["stopped"] == "end_turn" and "operator/analyst-2026-11-06.md" in content
+    assert "The morning's shortlist." in content and "do not read it again" in content
     assert "append=true" in content and "Write the day's report" not in content
     assert (
         report.read_text()
@@ -383,7 +384,9 @@ def test_before_the_days_analysis_the_update_goes_to_yesterdays_report(env):
         (ADD_UPDATE("analyst-2026-11-05"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
     )
     _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), handler)
-    assert "read_file operator/analyst-2026-11-05.md" in requests[0]["messages"][0]["content"]
+    assert (
+        "operator/analyst-2026-11-05.md" in requests[0]["messages"][0]["content"]
+    )  # the report it carries and updates
     assert env["paths"].report("analyst-2026-11-05").read_text().endswith("Nothing new since the morning.\n")
     assert not env["paths"].report("analyst-2026-11-06").exists() and env["paths"].analyst_last.exists()
 
@@ -548,3 +551,98 @@ def test_the_cadence_counts_from_a_turn_the_round_never_finished(env):
     mark_analyst_ran(env["paths"], NOW - 2 * 3600)
     _run(env, Decision(True, "analyst", ["analysis due: every 2 h, the last one 2.0 h ago"]), refused)
     assert last_analyst_ts(env["paths"], NOW) == NOW - 2 * 3600
+
+
+# --- 11 Nov: what an agent's turn cost, read off its own usage lines ------------------------------------------------
+# The analyst (every half hour, the dearest model) cost $42.87 on 10 Nov and ran at $70 a day on the 11th; 81 % of a
+# turn was cache writes. Each turn wrote the same tools and instructions again (the 5-minute cache had expired), sent
+# a 42,000-character list of the day's routine jobs, and in 39 of 49 turns read its own day's report through a tool
+# (48,700 characters each time, written to the cache at the full write price).
+
+
+def _texts(req) -> list[str]:
+    content = req["messages"][0]["content"]
+    return [content] if isinstance(content, str) else [b["text"] for b in content]
+
+
+def test_the_tools_and_the_instructions_are_cached_for_an_hour_not_five_minutes(env):
+    """Turns come 15 to 30 minutes apart: a five-minute entry is always gone, so every turn paid the write price for
+    the same tools and instructions. With the hour's duration the next turn reads them (a read renews the hour). The
+    growing tail of the turn keeps the automatic five-minute entry."""
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    system = requests[0]["system"]
+    assert isinstance(system, list) and system[-1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert requests[0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_an_update_turn_carries_the_days_report_in_blocks_that_stay_the_same_as_it_grows(env):
+    """The report only grows at its end, so it is sent in fixed-size blocks: every full block is the same bytes turn
+    after turn and is read from the hour's cache; only the unfinished end and the turn's own message are new. The turn
+    is told the report is in front of it, not to read it again."""
+    from snipetech.operator.prompts import REPORT_BLOCK_CHARS
+
+    report = env["paths"].report("analyst-2026-11-06")
+    body = "# analyst 2026-11-06\n\n" + "".join(f"line {i:05d} of the morning's analysis\n" for i in range(550))
+    report.write_text(body)
+    assert 2 * REPORT_BLOCK_CHARS < len(body) < 3 * REPORT_BLOCK_CHARS
+    handler, requests = _scripted(
+        (ADD_UPDATE("analyst-2026-11-06"), "tool_use"), ([{"type": "text", "text": "ok"}], "end_turn")
+    )
+    _run(env, Decision(True, "analyst", ["analysis due: every 0.5 h, the last one 0.5 h ago"]), handler)
+    first = requests[0]["messages"][0]["content"]
+    assert isinstance(first, list) and len(first) == 3
+    assert "".join(b["text"] for b in first).count(body) == 1  # the whole report, once
+    assert "cache_control" not in first[0] and first[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert "cache_control" not in first[2]  # the unfinished end and the turn's message: the automatic entry's
+    closing = first[2]["text"]
+    assert "append=true" in closing and "read_file operator/analyst-2026-11-06.md" not in closing
+    assert "is in this message" in closing and "Snapshot:" in closing
+    # the next turn, after this one appended its update: the full blocks are the same bytes
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["analysis due: every 0.5 h, the last one 0.5 h ago"]), handler)
+    second = requests[0]["messages"][0]["content"]
+    assert second[0] == first[0] and second[1] == first[1]
+    assert "Nothing new since the morning." in second[2]["text"]
+
+
+def test_a_short_report_and_every_other_turn_send_one_plain_message(env):
+    report = env["paths"].report("analyst-2026-11-06")
+    report.write_text("# analyst 2026-11-06\n\nThe morning's shortlist.\n")
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["analysis due: every 0.5 h, the last one 0.5 h ago"]), handler)
+    content = requests[0]["messages"][0]["content"]
+    assert isinstance(content, str) and "The morning's shortlist." in content and "append=true" in content
+    handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+    _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    assert isinstance(requests[0]["messages"][0]["content"], str)
+
+
+def test_the_days_jobs_are_listed_one_short_line_each_without_the_loops_own_stages(env):
+    """The list of the day's ended jobs was 42,000 characters in every turn's message (11 Nov): the forward paper
+    test's run every half hour, every argument on a line of its own, each job's whole log path. A turn needs what
+    ran, when and how it ended, and the id read_job_log takes."""
+    from dataclasses import replace
+
+    lab = [
+        "lab",
+        "--trigger",
+        '{"kind": "hunt", "sol": 15, "window": 1.5, "bots": "bundler"}',
+        "--buy",
+        "0.2",
+        "--json",
+    ]
+    jobs = [
+        {"id": "20261111-023316-565ae2", "argv": lab, "exit_code": 0, "ended": NOW - 600,
+         "log": "/var/lib/snipetech/jobs/20261111-023316-565ae2.log"},
+        {"id": "20261111-020000-aaaaaa", "argv": ["paper", "run"], "exit_code": 0, "ended": NOW - 900, "log": "/x.log"},
+        {"id": "20261111-010000-bbbbbb", "argv": ["paper", "freeze", "--trigger", "{}"], "exit_code": 1,
+         "ended": NOW - 4000, "log": "/y.log"},
+        {"id": "20261111-000000-cccccc", "argv": ["follow", "--file", "w" * 900], "exit_code": 0, "ended": NOW - 5000,
+         "log": "/z.log"},
+    ]  # fmt: skip
+    text = user_message(replace(env["snap"], jobs_recent=jobs), Decision(True, "operator", ["job ended: j1"]), "")
+    assert '20261111-023316-565ae2 exit 0 at 00:50: lab --trigger {\\"kind\\": \\"hunt\\"' in text
+    assert "20261111-010000-bbbbbb exit 1" in text and "paper freeze" in text
+    assert "20261111-020000-aaaaaa" not in text  # the loop's own stage, every half hour: its result is in paper_top
+    assert "/var/lib/snipetech/jobs" not in text and "w" * 400 not in text and "www..." in text

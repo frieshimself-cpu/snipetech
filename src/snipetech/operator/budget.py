@@ -16,14 +16,31 @@ def cost_usd(usage: dict, prices: dict, analyst: bool = False, tier: str = "") -
     """Dollars for one response's token counts; missing counts are 0. Each agent runs on its own model, so each has
     its own rows in the price table: plain names for the operator, analyst_* and strategist_* for the other two."""
     tier = tier or ("analyst" if analyst else "")
-    p = lambda k: float(prices.get(f"{tier}_{k}" if tier else k, 0.0))
+    key = lambda k: f"{tier}_{k}" if tier else k
+    p = lambda k: float(prices.get(key(k), 0.0))
     n = lambda k: int(usage.get(k) or 0)  # the SDK reports unused counters as None
+    written, hour = n("cache_creation_input_tokens"), hour_writes(usage)
+    # the hour's cache is written at twice the input price, the five-minute one at 1.25 times it: 1.6 times the
+    # five-minute row where a price table has no row for the hour
+    hour_price = float(prices.get(key("cache_write_1h"), p("cache_write") * HOUR_OVER_FIVE_MINUTES))
     return (
         n("input_tokens") * p("in")
         + n("output_tokens") * p("out")
         + n("cache_read_input_tokens") * p("cache_read")
-        + n("cache_creation_input_tokens") * p("cache_write")
+        + max(0, written - hour) * p("cache_write")
+        + hour * hour_price
     ) / _MILLION
+
+
+HOUR_OVER_FIVE_MINUTES = 2.0 / 1.25
+
+
+def hour_writes(usage: dict) -> int:
+    """Tokens a response wrote to the hour's cache (`usage.cache_creation.ephemeral_1h_input_tokens`), never more than
+    it wrote in all; 0 when the usage does not split its writes."""
+    split = usage.get("cache_creation")
+    hour = int((split or {}).get("ephemeral_1h_input_tokens") or 0) if isinstance(split, dict) else 0
+    return min(hour, int(usage.get("cache_creation_input_tokens") or 0))
 
 
 def _utc_day(ts: float) -> str:
@@ -39,7 +56,7 @@ class Ledger:
         usd = cost_usd(usage, self.prices, tier=TIERS.get(mode, ""))
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
-                "usd": round(usd, 6)}  # fmt: skip
+                "cache_write_1h": hour_writes(usage), "usd": round(usd, 6)}  # fmt: skip
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a") as f:
             f.write(json.dumps(line) + "\n")

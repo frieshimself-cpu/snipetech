@@ -224,7 +224,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         return redact("\n".join(lines[-max(1, int(tail)) :]))
 
     @beta_async_tool
-    async def read_file(path: str) -> str:
+    async def read_file(path: str, tail: int = 0) -> str:
         """Read a file under reports/, operator/ or jobs/ (paths relative to the data directory), or a whole report of
         the cloud session's research rounds: docs/research/<name>.md in the checkout (docs/research/README.md is their
         index).
@@ -232,6 +232,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         Args:
             path: e.g. reports/2026-11-06/lab-0-start.txt, operator/candidates.json or
                 docs/research/2026-11-07-round-3.md.
+            tail: Only the last this many lines (0: the whole file). For a file that only grows, such as
+                operator/notes.md, the last 60 lines are what was written lately.
         """
         if str(path).startswith("docs/"):  # the checkout's research rounds: read here, no tool writes there
             research = research_dir(jobs.repo)  # looked up at each call: a deploy may bring it in mid-turn
@@ -248,6 +250,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.is_file():
             return f"error: no such file {path}"
         text = p.read_text(errors="replace")
+        if int(tail or 0) > 0:
+            text = "\n".join(text.splitlines()[-int(tail) :])
         return redact(text if len(text) <= 200_000 else text[-200_000:])
 
     @beta_async_tool
