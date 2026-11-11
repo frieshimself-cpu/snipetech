@@ -21,11 +21,16 @@ first on the server's recording and only then run live in capped batches.
   count nobody could update; it now says "not known" quietly, and one Telegram message (`/credit <dollars>`) sets it.
 - **Commands run on the server from outside no longer wake the paid agent** (8 turns for nothing that morning), and a
   "dry run" of the round no longer uses up what the next real round should be told.
+- **A table that said "this pays" was wrong, and is now right.** The nightly "event edge" table (on the live page, in
+  the strategist's evidence) showed +0.12 SOL a 0.2 SOL trade for buying when a curve passes 60 SOL, and +0.31 for
+  "the creator paid out". Both came from the paper buy being placed ahead of the trade that made the event, inside a
+  block we cannot land in, and from a signal picked by hindsight. Measured again where a buy could really land (a
+  block later): every kind loses about 0.014 SOL a trade. Nothing had been traded on it.
 - **Smaller ones**: the wallet-check lab loads 0.9 coins a scored buy, not 7.4 (205 ms a buy became 34 ms); one
   statistics routine no longer takes 2.3 GB for a single rule and is 2.6 times faster with identical results; the
   1,656 job records are no longer all re-read several times every 15 minutes; the analyst's opening message is
   shorter. What each one was, how it was measured and what is left: [audit-2026-11-11.md](audit-2026-11-11.md)
-  (rows 35-43, open items 5 and 10-12).
+  (rows 35-45, open items 5 and 10-13).
 - **Still with the owner** (asked 08:30, no answer yet): preconfirmations on copy snipers, and the crew sniper.
   And the one root command on the server (`sudo bash /opt/snipetech/deploy/setup.sh`): Ubuntu's updater killed our
   nightly job on three of seven mornings and froze the machine twice; the fix is in that script.

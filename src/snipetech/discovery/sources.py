@@ -25,9 +25,15 @@ class DiscoverContext:
 
 
 class Source(Protocol):
+    """`every_secs` (optional): how often the source is worth asking. One without it is asked at every run; one that
+    reads days of tape for a list that barely moves in an hour says six hours (`run_discover` keeps when it looked)."""
+
     name: str
 
     def fetch(self, ctx: DiscoverContext) -> list[dict]: ...
+
+
+SLOW_SOURCE_SECS = 6 * 3600
 
 
 def _run(coro):
@@ -41,9 +47,11 @@ def _tape(ctx: DiscoverContext):
 
 
 class TapeSource:
-    """Wallets with consistently profitable round trips in our own tape (no network)."""
+    """Wallets with consistently profitable round trips in our own tape (no network). It counts every wallet's buys
+    over `days` of tape and reads every trade of the 2,000 busiest: 312 s of an hourly run's 444 (11 Nov)."""
 
     name = "tape"
+    every_secs = SLOW_SOURCE_SECS
 
     def __init__(self, days: float = 2.0, min_positions: int = 5, limit: int = 300):
         self.days, self.min_positions, self.limit = days, min_positions, limit
@@ -77,9 +85,11 @@ class SolanaTrackerSource:
 
 
 class BirdeyeSource:
-    """Birdeye's weekly/monthly gainers plus the top traders of the hottest tape coins."""
+    """Birdeye's weekly/monthly gainers plus the top traders of the hottest tape coins. Ranking `days` of coins by
+    their curve's peak is one read of all those trades: 88 s of an hourly run's 444 (11 Nov)."""
 
     name = "birdeye"
+    every_secs = SLOW_SOURCE_SECS
 
     def __init__(self, days: float = 2.0, top_coins: int | None = None, pnl_top: int | None = 0):
         self.days, self.top_coins, self.pnl_top = days, top_coins, pnl_top

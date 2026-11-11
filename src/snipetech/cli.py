@@ -75,7 +75,7 @@ def _discover(args, cfg) -> int:
             sources = [table[n.strip()]() for n in args.sources.split(",") if n.strip()]
         else:
             sources = default_sources(ctx)
-        out = run_discover(ctx, sources)
+        out = run_discover(ctx, sources, pace=not args.sources)  # sources asked for by name look now
         out["sources"] = [s.name for s in sources]
         print(json.dumps(out, indent=1, default=str))
         return 0

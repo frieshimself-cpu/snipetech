@@ -161,3 +161,79 @@ def test_cli_discover_run_parses():
     assert a.cmd == "discover" and a.action == "run" and a.sources == "tape,owner" and a.json
     a = p.parse_args(["discover", "run"])
     assert a.sources is None
+
+
+class SlowSource(ListSource):
+    """A source that reads two days of the tape: asked every six hours."""
+
+    every_secs = 6 * 3600
+
+    def __init__(self, name, rows=None, exc=None):
+        super().__init__(name, rows, exc)
+        self.asked = 0
+
+    def fetch(self, ctx):
+        self.asked += 1
+        return super().fetch(ctx)
+
+
+def test_a_source_that_reads_days_of_tape_is_asked_every_six_hours_not_every_hour(tmp_path):
+    """11 Nov, profiled on the server with the sources run in turn: of the hourly run's 444 s, 312 are the tape's own
+    source (it counts every wallet's buys over two days, then reads all 3.8 million trades of the 1,600 busiest) and 88
+    are the ranking of two days of coins for the Birdeye source. Both lists barely move in an hour, and a run finds 0
+    to 2 new wallets. A source says how often it is worth asking; the others are asked every run."""
+    from dataclasses import replace
+
+    ctx, st = _ctx(tmp_path)
+    try:
+        slow = SlowSource("tape", [{"wallet": "T1", "stats": {}}])
+        fast = ListSource("coinfirst", [{"wallet": "C1", "stats": {}}])
+        out = run_discover(ctx, [slow, fast])
+        assert slow.asked == 1 and out["by_source"] == {"tape": 1, "coinfirst": 1} and out["skipped"] == {}
+        for hours in (1, 2, 5):  # the hourly runs in between: only the quick sources
+            out = run_discover(replace(ctx, now=NOW + hours * 3600 + 20), [slow, fast])
+            assert slow.asked == 1 and out["by_source"] == {"coinfirst": 1}
+            assert out["skipped"] == {"tape": f"looked {hours} h ago, looks every 6 h"}
+        # the timer fires a little early or late
+        out = run_discover(replace(ctx, now=NOW + 6 * 3600 - 30), [slow, fast])
+        assert slow.asked == 2 and out["skipped"] == {}
+        assert {c["wallet"] for c in st.candidates()} == {"T1", "C1"}
+    finally:
+        st.close()
+
+
+def test_a_source_asked_for_by_name_looks_now(tmp_path):
+    """`discover run --sources tape` is someone asking for it: it looks, whenever it last did."""
+    from dataclasses import replace
+
+    ctx, st = _ctx(tmp_path)
+    try:
+        slow = SlowSource("tape", [{"wallet": "T1", "stats": {}}])
+        run_discover(ctx, [slow])
+        out = run_discover(replace(ctx, now=NOW + 600), [slow], pace=False)
+        assert slow.asked == 2 and out["skipped"] == {} and out["by_source"] == {"tape": 1}
+        assert build_parser().parse_args(["discover", "run", "--sources", "tape"]).sources == "tape"
+    finally:
+        st.close()
+
+
+def test_a_slow_source_that_failed_is_asked_again_at_the_next_run(tmp_path):
+    from dataclasses import replace
+
+    ctx, st = _ctx(tmp_path)
+    try:
+        slow = SlowSource("tape", exc=RuntimeError("database is locked"))
+        out = run_discover(ctx, [slow])
+        assert out["errors"] == {"tape": "RuntimeError: database is locked"}
+        slow.exc, slow.rows = None, [{"wallet": "T1", "stats": {}}]
+        out = run_discover(replace(ctx, now=NOW + 3600), [slow])
+        assert slow.asked == 2 and out["by_source"] == {"tape": 1}
+    finally:
+        st.close()
+
+
+def test_the_two_sources_that_read_two_days_of_tape_say_six_hours():
+    from snipetech.discovery.sources import BirdeyeSource
+
+    assert TapeSource.every_secs == 6 * 3600 == BirdeyeSource.every_secs
+    assert not getattr(CoinFirstBuyersSource, "every_secs", 0)  # the coins that ran in the last six hours: every run
