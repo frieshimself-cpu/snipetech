@@ -649,6 +649,16 @@ class Store:
         rows = self._q(f"SELECT {_LAUNCH_COLS} FROM launches WHERE mint=?", (mint,))
         return _launch(rows[0]) if rows else None
 
+    def launch_times(self, mints: Iterable[str]) -> dict[str, int]:
+        """When each coin was launched, for the coins the tape saw launch: 900 names a read, where asking `launch` for
+        each is a read a coin (11 Nov: 672,656 of them in one hourly discovery, 293 of its 440 s)."""
+        names = list(dict.fromkeys(mints))
+        out: dict[str, int] = {}
+        for i in range(0, len(names), 900):
+            chunk = names[i : i + 900]
+            out.update(self._q(f"SELECT mint, ts FROM launches WHERE mint IN ({','.join('?' * len(chunk))})", chunk))
+        return out
+
     def launches_by_deployer(
         self, address: str, limit: int | None = None, before_ts: int | None = None
     ) -> list[Launch]:

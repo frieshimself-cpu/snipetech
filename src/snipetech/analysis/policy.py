@@ -209,24 +209,31 @@ def discover_wallets(store: Store, cfg: Config, since_ts: int, min_positions: in
         (since_ts, min_positions),
     )
     out = []
+    launched: dict[str, int | None] = {}  # coin -> when it was launched; None: the tape did not see it launch
     for user, _ in cands:
         if user in PROTOCOL_WALLETS or store.launches_by_deployer(user, 1):
             continue  # deployers are not copy targets
         positions = [p for p in group_positions(store.trades_for_user(user, since_ts)) if p.closed]
         if len(positions) < min_positions:
             continue
-        pnl, holds, early = [], [], 0
+        pnl, holds = [], []
         for p in positions:
             spent = sum(t.quote + t.fee for t in p.trades if t.is_buy)
             recv = sum(t.quote - t.fee for t in p.trades if not t.is_buy)
             pnl.append((recv - spent) / 1e9)
             holds.append(p.last_ts - p.first_ts)
-            launch = store.launch(p.mint)
-            if launch and p.first_ts - launch.ts <= 10:
-                early += 1
+        if float(np.asarray(pnl, dtype=np.float64).mean()) <= 0:
+            continue  # the mean `summarize` gives, before its bootstrap: a wallet that loses is not listed
         s = summarize(pnl, cfg.verdict.confidence, 500)
-        if s["mean"] <= 0:
-            continue
+        # How many round trips it bought in a launch's first ten seconds: asked of a wallet that is kept, the launch
+        # times of its coins read together and once a coin. 11 Nov, profiled on the server: one read of a launch for
+        # every round trip of each of the 2,000 busiest wallets, kept or not, was 672,656 reads and 293 of the hourly
+        # discovery's 440 s.
+        new = [m for m in dict.fromkeys(p.mint for p in positions) if m not in launched]
+        if new:
+            found = store.launch_times(new)
+            launched.update({m: found.get(m) for m in new})
+        early = sum(1 for p in positions if launched[p.mint] is not None and p.first_ts - launched[p.mint] <= 10)
         out.append({
             "wallet": user, "positions": len(positions), "total_pnl": s["total"], "mean_pnl": s["mean"],
             "ev_lower": s["ev_lower"], "win_rate": s["win_rate"], "median_hold_secs": float(np.median(holds)),
