@@ -220,22 +220,31 @@ def _fills(con: sqlite3.Connection | None, tables: set[str]) -> list[dict]:
         return []
 
 
+EVENTS_NOT_SHOWN = ("dev_transfer",)  # no longer written (events/dev.py); millions of old rows until they are cleared
+
+
 def _events(con: sqlite3.Connection | None, tables: set[str], now: float) -> dict:
+    """The day's events by kind and the newest 20, each kind read off its own index (`store.EVENT_*_SQL`). 11 Nov: the
+    newest 20 were found by reading all 6.6 million rows and sorting, over 30 seconds on every 10-second refresh, and
+    the day's counts took 9.7 s."""
     out: dict[str, Any] = {"counts_24h": {}, "recent": [], "last_poll": None, "edge": None}
     if con is None or "events" not in tables:
         return out
     try:
+        from .store import EVENT_COUNT_SQL, EVENT_KINDS_SQL, EVENT_NEWEST_SQL
+
         since = int(now - 86400)
-        out["counts_24h"] = {
-            str(k): int(n)
-            for k, n in con.execute("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (since,))
-        }
-        out["recent"] = [
-            {"ts": ts, "kind": k, "mint": m, "wallet": w, "source": src}
-            for ts, k, m, w, src in con.execute(
-                "SELECT ts, kind, mint, wallet, source FROM events ORDER BY ts DESC, id DESC LIMIT 20"
-            )
-        ]
+        recent: list[tuple] = []
+        for (kind,) in con.execute(EVENT_KINDS_SQL).fetchall():
+            if kind in EVENTS_NOT_SHOWN:
+                continue
+            n = con.execute(EVENT_COUNT_SQL, (kind, since)).fetchone()[0]
+            if n:
+                out["counts_24h"][str(kind)] = int(n)
+            newest = f"SELECT ts, id, kind, mint, wallet, source {EVENT_NEWEST_SQL}"
+            recent += con.execute(newest, (kind, 0, 20)).fetchall()
+        out["recent"] = [{"ts": ts, "kind": k, "mint": m, "wallet": w, "source": src}
+                         for ts, _id, k, m, w, src in sorted(recent, key=lambda r: (r[0], r[1]), reverse=True)[:20]]  # fmt: skip
         for key, field_name in (("events:last_poll", "last_poll"), ("events:edge", "edge")):
             row = con.execute("SELECT data FROM coverage WHERE key = ?", (key,)).fetchone()
             if row:

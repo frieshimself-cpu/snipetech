@@ -1452,18 +1452,41 @@ def _add_events(self, rows: list[dict]) -> int:
     )
 
 
+# The kinds of event there are, found by index seeks (one a kind) instead of reading the rows. 11 Nov, the server: 6.6
+# million events (6.4 million `dev_transfer`, never pruned): the newest events of all kinds were found by reading every
+# row and sorting (over 30 s; the live page asked every 10 s) and the day's counts took 9.7 s. Everything below goes
+# through the (kind, ts) index, a kind at a time.
+EVENT_KINDS_SQL = (
+    "WITH RECURSIVE k(kind) AS (SELECT MIN(kind) FROM events UNION ALL "
+    "SELECT (SELECT MIN(kind) FROM events WHERE kind > k.kind) FROM k WHERE k.kind IS NOT NULL) "
+    "SELECT kind FROM k WHERE kind IS NOT NULL"
+)
+EVENT_NEWEST_SQL = "FROM events WHERE kind = ? AND ts >= ? ORDER BY ts DESC, id DESC LIMIT ?"
+EVENT_COUNT_SQL = "SELECT count(*) FROM events WHERE kind = ? AND ts >= ?"
+
+
+def _event_kinds(self) -> list[str]:
+    return [str(k) for (k,) in self._q(EVENT_KINDS_SQL)]
+
+
 def _events(self, kind: str | None = None, mint: str | None = None, wallet: str | None = None, since_ts: int = 0,
             limit: int = 1000) -> list[dict[str, Any]]:  # fmt: skip
-    where, params = ["ts >= ?"], [int(since_ts)]
-    for col, val in (("kind", kind), ("mint", mint), ("wallet", wallet)):
-        if val is not None:
-            where.append(f"{col} = ?")
-            params.append(val)
-    params.append(int(limit))
-    rows = self._q(
-        f"SELECT {', '.join(_EVENT_COLS)} FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?",
-        params,
-    )
+    """Events, newest first. With no kind, coin or wallet named: each kind's newest rows off its index, merged."""
+    cols = ", ".join(_EVENT_COLS)
+    if kind is None and mint is None and wallet is None:
+        rows = []
+        for k in self.event_kinds():
+            rows += self._q(f"SELECT {cols} {EVENT_NEWEST_SQL}", (k, int(since_ts), int(limit)))
+        rows = sorted(rows, key=lambda r: (r[1], r[0]), reverse=True)[: int(limit)]  # (ts, id), newest first
+    else:
+        where, params = ["ts >= ?"], [int(since_ts)]
+        for col, val in (("kind", kind), ("mint", mint), ("wallet", wallet)):
+            if val is not None:
+                where.append(f"{col} = ?")
+                params.append(val)
+        params.append(int(limit))
+        sql = f"SELECT {cols} FROM events WHERE {' AND '.join(where)} ORDER BY ts DESC, id DESC LIMIT ?"
+        rows = self._q(sql, params)
     out = []
     for r in rows:
         d = dict(zip(_EVENT_COLS, r))
@@ -1476,19 +1499,51 @@ def _events(self, kind: str | None = None, mint: str | None = None, wallet: str 
 
 
 def _event_counts(self, since_ts: int = 0) -> dict[str, int]:
-    return {
-        str(k): int(n)
-        for k, n in self._q("SELECT kind, count(*) FROM events WHERE ts >= ? GROUP BY kind", (int(since_ts),))
-    }
+    """How many events of each kind since `since_ts` (kinds with none are left out)."""
+    counts = {k: int(self._q(EVENT_COUNT_SQL, (k, int(since_ts)))[0][0]) for k in self.event_kinds()}
+    return {k: n for k, n in counts.items() if n}
+
+
+def _prune_events(self, kind: str, limit: int) -> int:
+    """Delete up to `limit` events of one kind, the oldest first, WRITE_BATCH rows a transaction (the recorder writes
+    between them). Returns how many went."""
+    done = 0
+    while done < limit:
+        n = min(self.WRITE_BATCH, int(limit) - done)
+        out: dict[str, int] = {}
+
+        def do(n=n, out=out):
+            out["n"] = self.conn.execute(
+                "DELETE FROM events WHERE id IN (SELECT id FROM events WHERE kind = ? ORDER BY ts LIMIT ?)", (kind, n)
+            ).rowcount
+
+        self._write(do)
+        done += out["n"]
+        if out["n"] < n:
+            break
+    return done
+
+
+_EDGE_UPSERT = (
+    "INSERT INTO edges (src, dst, kind, first_ts, last_ts, lamports, n) VALUES (?,?,?,?,?,?,1) "
+    "ON CONFLICT(src, dst, kind) DO UPDATE SET first_ts = min(first_ts, excluded.first_ts), last_ts = max(last_ts, excluded.last_ts), "
+    "lamports = lamports + excluded.lamports, n = n + 1"
+)
+
+
+def _upsert_edges(self, rows: list[tuple[str, str, str, int, int]]) -> int:
+    """Several (src, dst, kind, ts, lamports) at once, each added up as `upsert_edge` adds one, WRITE_BATCH rows a
+    transaction (11 Nov: a scan of creators' transfers wrote 95,298 edges in as many transactions). A call that fails
+    half way and is made again adds its first batches twice to `n` and `lamports`; the readers (the lab's dev-paid
+    filter, the wallet check) ask whether a link exists and since when, which a second add does not change."""
+    if not rows:
+        return 0
+    self._many(_EDGE_UPSERT, [(src, dst, kind, int(ts), int(ts), int(n)) for src, dst, kind, ts, n in rows])
+    return len(rows)
 
 
 def _upsert_edge(self, src: str, dst: str, kind: str, ts: int, lamports: int = 0) -> None:
-    self._exec(
-        "INSERT INTO edges (src, dst, kind, first_ts, last_ts, lamports, n) VALUES (?,?,?,?,?,?,1) "
-        "ON CONFLICT(src, dst, kind) DO UPDATE SET first_ts = min(first_ts, excluded.first_ts), last_ts = max(last_ts, excluded.last_ts), "
-        "lamports = lamports + excluded.lamports, n = n + 1",
-        (src, dst, kind, int(ts), int(ts), int(lamports)),
-    )
+    self._exec(_EDGE_UPSERT, (src, dst, kind, int(ts), int(ts), int(lamports)))
 
 
 def _edges_to(self, dst: str, kind: str | None = None) -> list[dict[str, Any]]:
@@ -1503,6 +1558,9 @@ def _edges_to(self, dst: str, kind: str | None = None) -> list[dict[str, Any]]:
 
 Store.add_events = _add_events
 Store.events = _events
+Store.event_kinds = _event_kinds
 Store.event_counts = _event_counts
+Store.prune_events = _prune_events
 Store.upsert_edge = _upsert_edge
+Store.upsert_edges = _upsert_edges
 Store.edges_to = _edges_to

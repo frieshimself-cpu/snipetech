@@ -437,8 +437,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
     @beta_async_tool
     async def read_events(kind: str | None = None, hours: int = 24, limit: int = 50) -> str:
-        """The events stage: trending / graduating / curve_cross:<sol> / dev_transfer rows of the last `hours`, counts by
-        kind, and the nightly event-expectancy table (which event kinds carried edge at the measured landing).
+        """The events stage: trending / graduating / curve_cross:<sol> / fee_claim rows of the last `hours`, counts by
+        kind, and the event-expectancy table (each event kind as a buy signal, bought a block after the event: its
+        `landing`). What a creator paid out is in the paid_by_dev links the wallet checks read, not an event.
 
         Args:
             kind: One event kind, or omit for all.

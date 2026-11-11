@@ -339,3 +339,39 @@ def test_the_page_script_marks_stopped_rules_and_picks_the_best_among_running_on
     html = dash_html()
     assert "x.refuted" in html and "stopped" in html
     assert "!p.refuted && p.trades > 0" in html  # the "Best paper rule" card: a rule still running
+
+
+def test_the_pages_events_come_off_an_index_and_leave_out_the_old_transfer_rows(ops):
+    """11 Nov: the page found its 20 newest events by reading all 6.6 million rows and sorting them, over 30 seconds on
+    every 10-second refresh, and counted the day's events in 9.7 s. 6.4 million of the rows were `dev_transfer`, which
+    is no longer written and never belonged in a feed of market events."""
+    from snipetech import dash
+    from snipetech.store import Store
+
+    st = Store(ops.db)
+    try:
+        rows = [{"ts": NOW - 10 * i, "slot": i, "kind": "trending", "mint": f"T{i}", "wallet": None, "data": {}, "source": "feed"}
+                for i in range(30)]  # fmt: skip
+        rows += [{"ts": NOW - 5 - 10 * i, "slot": i, "kind": "curve_cross:60", "mint": f"C{i}", "wallet": f"W{i}",
+                  "data": {}, "source": "tape"} for i in range(30)]  # fmt: skip
+        rows += [{"ts": NOW - i, "slot": i, "kind": "dev_transfer", "mint": "D", "wallet": f"P{i}", "data": {}, "source": "rpc"}
+                 for i in range(200)]  # fmt: skip
+        st.add_events(rows)
+    finally:
+        st.close()
+    con = sqlite3.connect(ops.db)
+    try:
+        asked: list[str] = []
+        con.set_trace_callback(asked.append)
+        out = dash._events(con, dash._tables(con), NOW)
+        con.set_trace_callback(None)
+        assert [(e["kind"], e["mint"]) for e in out["recent"][:4]] == [("trending", "T0"), ("curve_cross:60", "C0"),
+                                                                       ("trending", "T1"), ("curve_cross:60", "C1")]  # fmt: skip
+        assert len(out["recent"]) == 20 and out["counts_24h"] == {"curve_cross:60": 30, "trending": 30}
+        on_events = [q for q in asked if " events" in q and "sqlite_master" not in q]
+        assert on_events
+        for q in on_events:
+            plan = " | ".join(r[3] for r in con.execute("EXPLAIN QUERY PLAN " + q))
+            assert "SCAN events" not in plan.replace("SCAN events USING", "") and "TEMP B-TREE" not in plan, (q, plan)
+    finally:
+        con.close()

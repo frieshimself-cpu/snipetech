@@ -1,5 +1,10 @@
-"""Dev transfers: the creator's outgoing SOL around a launch that reached 20 SOL become dev_transfer events and
-paid_by_dev edges; the relationship gate then vetoes the paid wallet; the scan is bounded and resumable."""
+"""Dev transfers: the creator's outgoing SOL around a launch that reached 20 SOL become paid_by_dev edges; the
+relationship gate then vetoes the paid wallet; the scan is bounded and resumable.
+
+Until 11 Nov each transfer also became a `dev_transfer` event, once for every coin of its creator: 6.4 million rows in
+a week (979,075 in a day for 124,524 transfers to 2,333 wallets), never pruned, read by nothing but the event-edge
+table (which they misled, tests/test_events_edge.py), and the reason the live page's newest-events query took over 30
+seconds. The link is the edge. The old rows are cleared a bounded number a scan."""
 
 import asyncio
 
@@ -67,14 +72,8 @@ def test_paid_by_dev_edge_vetoes_in_relationship_gate(tmp_path):
                  "OLD": _meta("OLD", NOW - 50 * 3600, [{"src": DEV, "dst": addr("x"), "lamports": 9}])}  # fmt: skip
         svc = FakeSvc(st, FakeRpc(sigs), FakeIngestor(st, metas))
         out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, max_launches=400, min_curve_sol=20))
-        assert out["launches"] == 1 and out["events"] == 1 and out["edges"] == 1  # only the big coin, only S1
-        ev = st.events(kind="dev_transfer")
-        assert (
-            len(ev) == 1
-            and ev[0]["mint"] == addr("big")
-            and ev[0]["wallet"] == PAID
-            and ev[0]["data"]["lamports"] == 500_000_000
-        )
+        assert out["launches"] == 1 and out["events"] == 0 and out["edges"] == 1  # only the big coin, only S1
+        assert st.events(kind="dev_transfer") == []  # the link is the edge; no row for each transfer and coin
         edge = st.edges_to(PAID, kind="paid_by_dev")[0]
         assert edge["src"] == DEV and edge["lamports"] == 500_000_000 and edge["n"] == 1
         ok, why = relationship_gate(st, PAID)
@@ -117,5 +116,49 @@ def test_fee_claims_in_the_launch_window_become_events():
         ev = st.events(kind="fee_claim")
         assert out["events"] >= 1 and len(ev) == 1 and ev[0]["wallet"] == DEV and ev[0]["mint"] == addr("fee")
         assert ev[0]["data"]["lamports"] == 450_000_000 and ev[0]["data"]["program"] == "pump"
+    finally:
+        st.close()
+
+
+def _two_coins_one_creator(st):
+    for k in range(2):
+        m = Market(st, addr(f"twin{k}"), DEV, NOW - 3600 + k * 600, SLOT + k * 3000)
+        m.buy(DEV, 1.0, 0)
+        for i in range(5):
+            m.buy(addr(f"tw{k}{i}"), 5.0, 2 + i)
+        m.commit()
+
+
+def test_a_transfer_counts_once_however_many_coins_its_creator_launched(tmp_path):
+    """Each coin of a creator brings the scan to the same transfers (a day either side of its launch): one creator's
+    1,918 transfers were written again for each of its coins, and the edge's count and SOL added up as many times."""
+    st = Store(tmp_path / "t.db")
+    try:
+        _two_coins_one_creator(st)
+        sigs = {DEV: [{"signature": "S1", "slot": SLOT + 1, "blockTime": NOW - 3500, "err": None}]}
+        metas = {"S1": _meta("S1", NOW - 3500, [{"src": DEV, "dst": PAID, "lamports": 500_000_000}])}
+        svc = FakeSvc(st, FakeRpc(sigs), FakeIngestor(st, metas))
+        out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, max_launches=400, min_curve_sol=20))
+        assert out["launches"] == 2 and out["edges"] == 1
+        edge = st.edges_to(PAID, kind="paid_by_dev")[0]
+        assert edge["n"] == 1 and edge["lamports"] == 500_000_000
+    finally:
+        st.close()
+
+
+def test_the_scan_clears_the_old_transfer_events_a_bounded_number_at_a_time(tmp_path, monkeypatch):
+    from snipetech.events import dev
+
+    st = Store(tmp_path / "t.db")
+    try:
+        _world(st)
+        st.add_events([{"ts": NOW - 90000 + i, "slot": i, "kind": "dev_transfer", "mint": "OLD", "wallet": f"W{i}",
+                        "data": {}, "source": "rpc"} for i in range(900)])  # fmt: skip
+        monkeypatch.setattr(dev, "OLD_EVENTS_A_SCAN", 600)
+        svc = FakeSvc(st, FakeRpc({}), FakeIngestor(st, {}))
+        out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW, min_curve_sol=20))
+        assert out["cleared"] == 600 and len(st.events(kind="dev_transfer", limit=2000)) == 300
+        out = asyncio.run(dev_transfers(svc, NOW - 7200, now=NOW + 60, min_curve_sol=20))
+        assert out["cleared"] == 300 and st.events(kind="dev_transfer") == []
     finally:
         st.close()

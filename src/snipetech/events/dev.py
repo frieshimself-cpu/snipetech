@@ -1,7 +1,12 @@
-"""Dev transfers: for launches whose curve reached `min_curve_sol` (60 SOL, about a hundred coins an hour), the creator's outgoing SOL in the day around the
-launch. Each becomes a dev_transfer event and a paid_by_dev edge, which the relationship gate reads; the creator's fee
-claims in the same window (TxMeta.claims) become fee_claim events.
-Bounded (launches per scan, 24 h window) and resumable (cursor on the launch time)."""
+"""Dev transfers: for launches whose curve reached `min_curve_sol` (60 SOL, about a hundred coins an hour), the creator's
+outgoing SOL in the day around the launch. Each adds to a paid_by_dev edge (creator -> wallet), which the relationship
+gate and the lab's dev-paid filter read; the creator's fee claims in the same window (TxMeta.claims) become fee_claim
+events. Bounded (launches per scan, 24 h window) and resumable (cursor on the launch time).
+
+Until 11 Nov each transfer was also written as a `dev_transfer` event, once for every coin of its creator: 6.4 million
+rows in a week (979,075 in a day for 124,524 transfers to 2,333 wallets), never pruned. Nothing reads them but the
+event-edge table, which they misled (a signal chosen by how the coin ended), and they made the newest-events read of
+the live page take over 30 seconds. They are no longer written, and the old ones are cleared OLD_EVENTS_A_SCAN a scan."""
 
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES
 
 CURSOR_KEY = "events:dev_cursor"
 WINDOW_SECS = 24 * 3600
+OLD_EVENTS_A_SCAN = 400_000  # of the 6.4 million old dev_transfer rows, in short transactions: gone in two days
 
 
 async def dev_transfers(
@@ -33,7 +39,10 @@ async def dev_transfers(
         (start, int(now), threshold, int(max_launches)),
     )
     events: list[dict] = []
-    edges = 0
+    edges: list[tuple[str, str, str, int, int]] = []
+    # a transfer counts once, whichever of its creator's coins brought the scan to it: a creator's transfers lie in
+    # the window of each of its launches (one creator's 1,918 were counted again for every coin)
+    counted: set[tuple[str, str]] = set()
     last_ts = None
     for mint, creator, lts in launches:
         last_ts = int(lts)
@@ -65,12 +74,13 @@ async def dev_transfers(
             for tr in m.transfers or []:
                 if tr.get("src") != creator or not tr.get("dst") or tr.get("dst") == creator:
                     continue
-                lamports = int(tr.get("lamports") or 0)
-                events.append({"ts": ts, "slot": int(m.slot), "kind": "dev_transfer", "mint": mint, "wallet": tr["dst"],
-                               "data": {"lamports": lamports, "sig": sig, "creator": creator}, "source": "rpc"})  # fmt: skip
-                store.upsert_edge(creator, tr["dst"], "paid_by_dev", ts, lamports)
-                edges += 1
+                if (sig, tr["dst"]) in counted:
+                    continue
+                counted.add((sig, tr["dst"]))
+                edges.append((creator, tr["dst"], "paid_by_dev", ts, int(tr.get("lamports") or 0)))
     added = store.add_events(events) if events else 0
+    store.upsert_edges(edges)  # together, in short transactions (they were one transaction each: 95,298 in a scan)
     if last_ts is not None:
         store.set_coverage(CURSOR_KEY, {"ts": last_ts, "scanned_at": int(now)})
-    return {"launches": len(launches), "events": added, "edges": edges}
+    cleared = store.prune_events("dev_transfer", OLD_EVENTS_A_SCAN)
+    return {"launches": len(launches), "events": added, "edges": len(edges), "cleared": cleared}
