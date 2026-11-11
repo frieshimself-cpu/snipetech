@@ -19,6 +19,12 @@ LAMPORTS = 1e9
 _FIRST = {"take_profit": 0, "copy_exit": 1, "stop_loss": 2, "trailing_stop": 3, "dev_sell": 4, "stale": 5}
 
 
+# How far past its entry a position's displacement is walked when it is prepared (`MarketPath.displacement`: a loop
+# over the trades after the entry). Longer than any exit holds (the longest live one: 600 s); an exit that does hold
+# longer walks on by itself (`_reach`). Later states keep the horizon's value and are never sold at.
+DISPLACEMENT_SECS = 900.0
+
+
 @dataclass(frozen=True)
 class ExitParams:
     take_profit: float = 1.0
@@ -137,6 +143,10 @@ class Prepared:
     latency: int = 1  # slots between an exit firing and its sell landing
     off_curve: np.ndarray | None = None  # states e..n-1: True once off the pump.fun curve (None = unknown)
     migration_slot: int | None = None  # the slot of the coin's migration to PumpSwap the tape records (None = unknown)
+    # states e..n-1: the tokens the pool is short of the recorded one because of this position, exact up to the state
+    # `horizon` (None: a position made by hand, priced as short of exactly what it holds)
+    disp: np.ndarray | None = None
+    horizon: int = -1
 
     @property
     def entry_ts(self) -> float:
@@ -157,10 +167,12 @@ def prepare(
     insider_sell_mask: np.ndarray | None = None,
     leader_frac: np.ndarray | None = None,
     migration_slot: int | None = None,
+    horizon_secs: float | None = DISPLACEMENT_SECS,
 ) -> Prepared | None:
     """A position bought at state `entry_idx` for `spend_sol`. `migration_slot`: the slot of the coin's migration to
     PumpSwap as the tape records it (`migrations`), which a migration sell reacts to; without it the sale is timed
-    from where the path leaves its curve."""
+    from where the path leaves its curve. `horizon_secs`: how far past the entry the later trades are replayed with
+    the position in the pool (None: to the end of the path)."""
     if path.n == 0 or entry_idx < 0 or entry_idx >= path.n or spend_sol <= 0:
         return None
     e = int(entry_idx)
@@ -170,7 +182,12 @@ def prepare(
     held = path.buy_tokens(e, net_in)
     if not np.isfinite(held) or held <= 0:
         return None
-    v = path.value_series(e, held)
+    until = path.n - 1
+    if horizon_secs is not None:
+        until = int(np.searchsorted(path.ts, float(path.ts[e]) + float(horizon_secs), side="right")) - 1
+        until = max(e, min(until, path.n - 1))
+    disp = path.displacement(e, held, until=until)
+    v = path.value_series(e, held, disp=disp)
     target = path.slot[e:] + exit_latency_slots
     exec_idx = path.landing_index(target, exit_position, np.arange(e, path.n))
     if exit_latency_slots == 0:
@@ -194,7 +211,20 @@ def prepare(
         latency=int(exit_latency_slots),
         off_curve=oc[e:] if oc is not None and len(oc) == path.n else None,
         migration_slot=None if migration_slot is None else int(migration_slot),
+        disp=disp,
+        horizon=until,
     )
+
+
+def _reach(p: Prepared, upto: int) -> None:
+    """Replay the trades after the position on to state `upto`: an exit that holds past the horizon it was prepared
+    with. The position's value path follows."""
+    if p.disp is None or upto <= p.horizon:
+        return
+    p.horizon = min(int(upto), p.path.n - 1)
+    p.disp = p.path.displacement(p.e, p.held, until=p.horizon)
+    p.v = p.path.value_series(p.e, p.held, disp=p.disp)
+    p.peak = np.maximum.accumulate(p.v)
 
 
 def _quiet_secs(p: Prepared, deadline: float) -> np.ndarray:
@@ -275,6 +305,7 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         deadline = min(deadline, end_ts)
     last_rel = int(np.searchsorted(p.ts, deadline, side="right")) - 1
     last_rel = max(0, min(last_rel, n_rel - 1))
+    _reach(p, max(p.e + last_rel, int(p.exec_idx[last_rel])))  # no sale is priced past this state
     rt = _rel_secs(p)
     watch = max(0.0, float(ex.watch_secs))
     lo = max(1, int(np.searchsorted(rt, watch, side="right")) - 1) if watch > 0 else 1
@@ -322,8 +353,18 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     def fires_at(why: str, t_rel: int) -> float:
         return float(rt[t_rel]) + ex.stale_secs if why == "stale" else max(float(rt[t_rel]), watch)
 
+    sold: list[tuple[int, float]] = []  # our own sales so far: (state, tokens)
+
     def sell(abs_idx: int, amount: float, held_now: float) -> float:
-        gross = float(path.sell_gross(abs_idx, amount, held_now))
+        # into the pool as the replay leaves it: short of `p.disp` because of us, less what we have sold back
+        if p.disp is None:
+            short = held_now
+        elif not sold:
+            short = float(p.disp[abs_idx - p.e])
+        else:
+            short = float(path.displacement(p.e, p.held, until=abs_idx, own_sells=tuple(sold))[abs_idx - p.e])
+        gross = path.sell_at(abs_idx, amount, short)
+        sold.append((abs_idx, amount))
         net = gross * (1 - path.fee_bps[abs_idx] / 10_000.0)
         return net - net * costs.platform_fee_bps / 10_000.0
 
@@ -340,7 +381,11 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
             # The remainder rides: trailing / stop / dev-exit / time, valued on what is left.
             rest_basis = basis * (rest / p.held)
             start_rel = exec_abs - p.e
-            v2 = path.value_series(p.e, rest)
+            disp2 = None
+            if p.disp is not None:  # the pool after our first sale: the remainder is valued in it
+                first_sale = ((exec_abs, p.held * ex.tp_sell_fraction),)
+                disp2 = path.displacement(p.e, p.held, until=p.horizon, own_sells=first_sale)
+            v2 = path.value_series(p.e, rest, disp=disp2)
             peak2 = np.maximum.accumulate(np.where(np.arange(n_rel) >= start_rel, v2, 0.0))
             more: dict[str, int] = {}
             if ex.stop_loss > 0:

@@ -33,8 +33,12 @@ def test_value_matches_sell_quote_and_is_monotone_in_price():
     path = real_path("EzHRAWk4UBVyyztmeCk2EgBx7BBKEeRWMsaXSWZhpump")
     prep = prepare(path, 1, 0.5, NO_COSTS)
     for j in range(prep.e, path.n):
-        gross = float(path.sell_gross(j, prep.held, prep.held))
-        assert prep.v[j - prep.e] == pytest.approx(gross * (1 - path.fee_bps[j] / 1e4))
+        # selling everything into the pool as the replay of the later trades leaves it: short of `disp` because of us
+        net = 1 - path.fee_bps[j] / 1e4
+        gross = float(path.sell_gross(j, prep.held, prep.disp[j - prep.e]))
+        assert prep.v[j - prep.e] == pytest.approx(gross * net)
+        # never more than in a pool short of everything we hold (the model until 11 Nov 2026)
+        assert prep.v[j - prep.e] <= float(path.sell_gross(j, prep.held, prep.held)) * net * (1 + 1e-12)
     # later buys by others raised the price, so the position is worth more there
     assert prep.v[3 - prep.e] > prep.v[0]
 

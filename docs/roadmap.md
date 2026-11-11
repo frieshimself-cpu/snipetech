@@ -6,6 +6,23 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 23:30 UTC: every paper result at size is too good; a wrong alert went to the owner
+
+- **The paper test overstates winning trades, more the bigger the buy** (audit row 75). The server's analyst saw two
+  rules return the same on the same 7 coins at 2 and at 5 SOL and handed the question over. Confirmed in the code and
+  on the tape: after our buy the simulator assumed every later buyer still got the same coins and paid more for
+  them. On the tape over half the buys spend a fixed amount of SOL and would get fewer coins instead. On a +44 %
+  move the simulator showed +45.2 % at 2 SOL and +46.9 % at 5 SOL where the replay gives +41.1 % and +37.4 %; at
+  0.2 SOL the difference is 0.4 points. Losing trades were priced right.
+- **What that touches:** the KOL paper rules at 2 to 20 SOL on the owner's page (5 SOL: +22 SOL over 460 trades,
+  about zero without its three best), every size lab, and the "1 to 5 SOL right behind a known wallet" lab, which was
+  the nearest thing to a live proposal. All of them are upper bounds until re-scored. The 0.2 SOL results barely move.
+- **Fixed in the simulator, not yet re-scored.** The model now replays each later trade in the terms it was made in,
+  checked against a brute-force pool. Still to do: its cost in lab time on the server, then the re-score.
+- **A wrong alert went to the owner at 22:15 UTC** (audit row 74): "3 failed transactions in the last hour; check
+  OKTech sells and the send count". They were the three buys the wallet could not pay. The check now names such
+  buys and does not page for them.
+
 ## 11 Nov, 22:40 UTC: the owner said yes three times; one of the three is waiting for a key only the owner has
 
 - **Still nothing profitable live, and nothing bought on 11 Nov.** Four copies of 74xVT9 were sent and failed for

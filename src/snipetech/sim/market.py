@@ -1,16 +1,25 @@
 """Market paths: a token's recorded reserve states, ready for counterfactual pricing.
 
-Counterfactual model ("k-preserving, tokens held out of the pool")
--------------------------------------------------------------------
-Each recorded trade i leaves effective reserves (Q_i, B_i) with k_i = Q_i * B_i. If we
-hold h tokens bought from this pool, the pool has h fewer tokens than recorded:
-    Qc = k_i / (B_i - h),  Bc = B_i - h
-Selling x of our h tokens therefore returns
-    gross = k_i * (1 / (B_i - h) - 1 / (B_i - h + x))
-and selling everything returns Q_i * h / (B_i - h). An immediate round trip returns
-exactly what was paid (minus fees), and because only k_i is used the model stays valid
-through reserve jumps that are not explained by trade sizes (pump.fun mayhem-mode agent,
-PumpSwap boost / virtual quote reserves) and through migration to PumpSwap.
+Counterfactual model ("the others do what they did, in the terms they did it in")
+----------------------------------------------------------------------------------
+Each recorded trade i leaves effective reserves (Q_i, B_i) with k_i = Q_i * B_i. A position of ours changes the pool
+the later traders meet. One number says how: E_i, the tokens the pool is short of what the tape recorded,
+    Bc = B_i - E_i,  Qc = k_i / (B_i - E_i)
+Selling x of our tokens at state i therefore returns
+    gross = k_i * (1 / (B_i - E_i) - 1 / (B_i - E_i + x))
+Right after our buy E is the tokens we took. It stays there while the others deal in tokens: a sale of tokens somebody
+holds, a buy of an exact number of tokens (the buyer pays more because of us). It shrinks at a buy that spends an exact
+amount of SOL (`EXACT_IN`: the buyer gets fewer tokens than recorded, the pool keeps them), and that buyer's later
+sales give the shortfall back in the share of its holdings it sells (`MarketPath.displacement`).
+
+Until 11 Nov 2026 E was the tokens we hold, always. That prices a path with no exact-SOL buy after the entry exactly
+(and every path built by hand: no instruction kinds), and it is the upper bound of everything else: with half to two
+thirds of pump.fun's buy volume spending exact SOL, a 5 SOL buy before a +44 % move showed +46.9 % where the replay
+gives +37.4 %; at 0.2 SOL the difference is 0.4 points (docs/superpowers/specs/2026-11-11-fill-model-at-size-design.md).
+
+An immediate round trip returns exactly what was paid (minus fees), and because each step is read from the trade's own
+amount and the reserves it left, the model stays valid through reserve jumps that are not explained by trade sizes
+(pump.fun mayhem-mode agent, PumpSwap boost / virtual quote reserves) and through migration to PumpSwap.
 """
 
 from __future__ import annotations
@@ -23,6 +32,13 @@ from ..models import AMM, CURVE, LAUNCHLAB, PUMPFUN, Launch, Trade, coin_venue
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
+# Buys that spend an exact amount of SOL and take the tokens it buys (pump.fun's curve, PumpSwap, LaunchLab, and a
+# router's swap into the coin). Every other kind deals in tokens: `buy` / `buy_v2` / `buy_exact_out` ask for an exact
+# number and pay what it costs, a sale sells tokens. On the tape, 5-11 Nov 2026: 53-62 % of curve buys, 85-98 % of
+# PumpSwap buys.
+EXACT_IN = frozenset({
+    "buy_exact_quote_in", "buy_exact_sol_in", "buy_exact_quote_in_v2", "buy_exact_in", "multi_hop_swap",
+})  # fmt: skip
 # Seconds per slot when nobody measured it. The chain ran at 0.214 s a slot on 5-6 Nov 2026 (least squares over the
 # tape); every lab measures its own tape with `slot_secs_from` and passes the result to `MarketPath.build`.
 DEFAULT_SLOT_SECS = 0.4
@@ -90,6 +106,10 @@ class MarketPath:
     off_curve: np.ndarray | None = None
     # the launchpad the coin trades on (models.coin_venue): a launch-type lab rule fires only on its own venue's coins
     venue: str = PUMPFUN
+    # per state: the trade was a buy that spent an exact amount of SOL (`EXACT_IN`). None on a path built by hand: no
+    # trade is, and a position is priced as it always was.
+    exact_in: np.ndarray | None = None
+    _walk: tuple | None = field(default=None, repr=False, compare=False)  # `displacement`'s per-path lists, made once
 
     # -- construction -----------------------------------------------------------
 
@@ -113,6 +133,7 @@ class MarketPath:
                  float(t.base), t.venue == AMM, t.user, t.sig)
             )  # fmt: skip
             off.append(t.venue == AMM or (t.venue == CURVE and float(t.b_after) <= PUMP_CURVE_DONE_B))
+        exact = [False] * (1 if genesis else 0) + [bool(t.is_buy) and t.ix in EXACT_IN for t in trades]
         n = len(rows)
         cols = list(zip(*rows)) if rows else [[] for _ in range(11)]
         fee = np.array(cols[4], dtype=np.float64)
@@ -142,6 +163,7 @@ class MarketPath:
             slot_secs=float(slot_secs) if slot_secs else DEFAULT_SLOT_SECS,
             off_curve=np.maximum.accumulate(np.array(off, dtype=bool)) if off else np.zeros(0, dtype=bool),
             venue=coin_venue(t.venue for t in trades),
+            exact_in=np.array(exact, dtype=bool),
         )
 
     # -- landing model -----------------------------------------------------------
@@ -179,14 +201,17 @@ class MarketPath:
         qc = k / bc
         return bc - k / (qc + quote_in)
 
-    # Our tokens are modeled as taken out of the recorded reserves (the curve the others traded on, minus what we
-    # hold). That breaks down once we would hold a large share of what is left — e.g. a pool or curve whose recorded
-    # reserves later fall towards our position — and the shifted price explodes. There the value falls back to
-    # selling into the recorded reserves as they are, which can never exceed the SOL in them.
+    # Our tokens are modeled as taken out of the recorded reserves (the curve the others traded on, minus what the
+    # pool is short of because of us). That breaks down once the shortfall would be a large share of what is left —
+    # e.g. a pool or curve whose recorded reserves later fall towards our position — and the shifted price explodes.
+    # There the value falls back to selling into the recorded reserves as they are, which can never exceed the SOL in
+    # them.
     MAX_SHARE = 0.5
 
     def sell_gross(self, i: int | np.ndarray, sell: float | np.ndarray, held: float | np.ndarray):
-        """Gross lamports for selling `sell` of `held` tokens at state(s) i (before fees)."""
+        """Gross lamports for selling `sell` tokens at state(s) i (before fees) into a pool that is `held` tokens
+        short of the recorded one: the position's displacement at that state (`displacement`), which is the tokens we
+        hold while no later buyer has spent exact SOL."""
         b = self.b[i]
         k = self.q[i] * b
         shifted = b - held
@@ -194,12 +219,123 @@ class MarketPath:
         rest = np.where(ok, np.maximum(shifted, 1.0), b)
         return k * (1.0 / rest - 1.0 / (rest + sell))
 
-    def value_series(self, start: int, held: float) -> np.ndarray:
-        """Net (after sell fees) value of `held` tokens at every state from `start` on."""
+    def sell_at(self, i: int, sell: float, disp: float) -> float:
+        """Gross lamports for selling `sell` of our tokens at state i, the pool being `disp` tokens short there."""
+        return float(self.sell_gross(i, sell, disp))
+
+    def _walk_lists(self) -> tuple:
+        """What `displacement` reads, as plain lists, made once a path: the reserves, each trade's SOL, the states it
+        has to stop at (a buy that spends exact SOL; a sale by a wallet that makes such a buy somewhere on the path),
+        each sale's share of its wallet's recorded balance, and the wallets as numbers."""
+        w = getattr(self, "_walk", None)
+        if w is None:
+            n = len(self.q)
+            kinds = getattr(self, "exact_in", None)
+            exact = kinds if kinds is not None and len(kinds) == n else np.zeros(n, dtype=bool)
+            ids: dict[str, int] = {}
+            uid = [ids.setdefault(u, len(ids)) for u in self.users]
+            is_buy, base = self.is_buy.tolist(), self.base.tolist()
+            buyers = {uid[j] for j in np.flatnonzero(exact).tolist()}
+            share = [0.0] * n
+            stop = exact.copy()
+            bal: dict[int, float] = {}
+            for j in range(n):
+                x = base[j]
+                if x <= 0:
+                    continue
+                u = uid[j]
+                if is_buy[j]:
+                    bal[u] = bal.get(u, 0.0) + x
+                    continue
+                have = bal.get(u, 0.0)
+                if have > 0:  # a wallet whose tokens the path never saw bought gives nothing back
+                    bal[u] = max(0.0, have - x)
+                    if u in buyers:
+                        share[j] = min(1.0, x / have)
+                        stop[j] = True
+            w = self._walk = (self.q.tolist(), self.b.tolist(), self.quote.tolist(), exact.tolist(), share, uid,
+                              np.flatnonzero(stop), np.flatnonzero(exact))  # fmt: skip
+        return w
+
+    def displacement(self, start: int, held: float, until: int | None = None,
+                     own_sells: tuple[tuple[int, float], ...] = ()) -> np.ndarray:  # fmt: skip
+        """How many tokens the pool is short of the recorded one at every state from `start` on, for a position of
+        `held` tokens bought at `start` (see the module's account of the model). `until`: the last state to walk to;
+        later states keep its value (an exit that cannot hold that long never reads them). `own_sells`: (state, tokens)
+        sales of our own on the way; the value at such a state is the one after the sale, so a sale is priced on a
+        series made without it."""
+        n = len(self.q)
+        out = np.full(n - start, float(held))
+        if getattr(self, "exact_in", None) is None and not own_sells:
+            return out  # a path built by hand names no kinds: every later trade deals in tokens
+        last = n - 1 if until is None else max(start, min(int(until), n - 1))
+        q, b, quote, exact, share, uid, stops, exact_at = self._walk_lists()
+        own = sorted((int(i), float(x)) for i, x in own_sells if start <= int(i))
+        lo = int(np.searchsorted(exact_at, start, side="right"))
+        if (lo >= len(exact_at) or exact_at[lo] > last) and not own:
+            return out  # nobody spends exact SOL after us: the pool stays short of exactly what we hold
+        first = int(exact_at[lo]) if lo < len(exact_at) else n
+        todo = stops[np.searchsorted(stops, first, side="left") : np.searchsorted(stops, last, side="right")].tolist()
+        e = float(held)
+        short: dict[int, float] = {}  # wallet -> the tokens it holds less than on the tape
+        at: list[int] = []  # the states the shortfall changes at, and its value from there on
+        vals: list[float] = []
+        k_own = 0
+        for j in todo:
+            while k_own < len(own) and own[k_own][0] < j:
+                e = max(0.0, e - own[k_own][1])
+                at.append(own[k_own][0])
+                vals.append(e)
+                k_own += 1
+            if exact[j]:
+                qj, sj = q[j], quote[j]
+                if e <= 0.0 or not 0.0 < sj < qj:
+                    continue
+                kj = qj * b[j]
+                ours_before = kj / (qj - sj) - e  # the pool's tokens before this buy, with us
+                if ours_before <= 0.0:
+                    continue
+                now = max(b[j] - kj / (kj / ours_before + sj), 0.0)
+                if now < e:
+                    short[uid[j]] = short.get(uid[j], 0.0) + (e - now)
+                    e = now
+            else:
+                owed = short.get(uid[j])
+                if not owed:
+                    continue
+                back = owed * share[j]
+                short[uid[j]] = owed - back
+                e += back
+            at.append(j)
+            vals.append(e)
+        for i, x in own[k_own:]:
+            if i > last:
+                break
+            e = max(0.0, e - x)
+            at.append(i)
+            vals.append(e)
+        if at:
+            idx = np.searchsorted(np.asarray(at), np.arange(start, n), side="right") - 1
+            out = np.where(idx >= 0, np.asarray(vals)[np.maximum(idx, 0)], out)
+        return out
+
+    def value_series(self, start: int, held: float, disp: np.ndarray | None = None) -> np.ndarray:
+        """Net (after sell fees) value of `held` tokens at every state from `start` on. `disp`: the pool's shortfall
+        at those states (`displacement`), for a position that has sold part of itself or was walked to a horizon;
+        without it, a position of `held` tokens bought at `start`."""
         q, b, fee = self.q[start:], self.b[start:], self.fee_bps[start:]
-        shifted = b - held
+        if disp is not None:
+            e = np.asarray(disp, dtype=np.float64)
+        elif getattr(self, "exact_in", None) is None:
+            e = held  # a path built by hand: the pool is short of exactly what we hold, at every state
+        else:
+            e = self.displacement(start, held)
+        shifted = b - e
         ok = shifted >= b * (1.0 - self.MAX_SHARE)
-        gross = np.where(ok, q * held / np.maximum(shifted, 1.0), q * held / (b + held))
+        rest = np.maximum(shifted, 1.0)
+        # where the pool is short of exactly what we hold this is the formula of every result before 11 Nov 2026
+        whole = np.where(e == held, q * held / rest, q * b * (1.0 / rest - 1.0 / (rest + held)))
+        gross = np.where(ok, whole, q * held / (b + held))
         return gross * (1.0 - fee / 10_000.0)
 
     def mcap_sol(self, i: int) -> float:
