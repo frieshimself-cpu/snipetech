@@ -1378,7 +1378,7 @@ async def _run(args, cfg: Config) -> int:
             from .solana.unwrap import LAMPORTS, Unwrapper, plan_amount
 
             try:
-                u = Unwrapper(svc.rpc)
+                u = Unwrapper(svc.rpc, wallet=cfg.operator.wallet or None)  # no key here: a dry run still simulates
                 if args.sol is not None:
                     amount = round(args.sol * LAMPORTS)
                 else:  # the book's rule: plain SOL for N curve buys, when the wallet cannot pay one

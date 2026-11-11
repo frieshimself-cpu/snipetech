@@ -910,7 +910,8 @@ def render_unwrap(r: dict) -> str:
     if r.get("refused"):
         out.append(f"  refused, nothing sent: {r['refused']}")
     elif r.get("dry_run"):
-        out.append("  dry run: nothing sent")
+        unsigned = "" if r.get("signed", True) else " (no wallet key here: simulated unsigned)"
+        out.append("  dry run: nothing sent" + unsigned)
     else:
         a = r.get("after") or {}
         state = {True: "confirmed", False: "FAILED on the chain", None: "not seen yet"}[r.get("confirmed")]

@@ -112,18 +112,25 @@ def _sol(lamports: int) -> float:
 
 
 class Unwrapper:
-    """The wallet of SNIPER_SECRET and one thing it can do: turn its own wrapped SOL into its own plain SOL."""
+    """The sniper wallet and one thing it can do: turn its own wrapped SOL into its own plain SOL. With the wallet's
+    key (SNIPER_SECRET) it signs and sends; with the wallet's address alone (`wallet`) it can only show on the chain
+    what a conversion would do (an unsigned transaction, simulated without the signature check)."""
 
-    def __init__(self, rpc, secret_b58: str | None = None):
+    def __init__(self, rpc, secret_b58: str | None = None, wallet: str | None = None):
         from solders.keypair import Keypair
 
-        secret = secret_b58 or os.environ.get("SNIPER_SECRET", "")
-        if not secret:
+        secret = (secret_b58 or os.environ.get("SNIPER_SECRET", "")).strip()
+        self.kp = Keypair.from_base58_string(secret) if secret else None
+        if self.kp is None and not wallet:
             raise RuntimeError(
                 "SNIPER_SECRET is not set (base58 secret key of the sniper wallet, in /etc/snipetech/env)"
             )
-        self.kp = Keypair.from_base58_string(secret.strip())
-        self.user = str(self.kp.pubkey())
+        if self.kp is not None and wallet and str(self.kp.pubkey()) != wallet:
+            raise RuntimeError(
+                f"the key in SNIPER_SECRET is for wallet {str(self.kp.pubkey())[:6]}…, not the sniper wallet "
+                f"{wallet[:6]}…"
+            )
+        self.user = str(self.kp.pubkey()) if self.kp is not None else str(wallet)
         self.wsol_account = ata(self.user, WSOL_MINT, TOKEN_PROGRAM)
         self.rpc = rpc
 
@@ -137,7 +144,7 @@ class Unwrapper:
         return native, _wrapped(res.get("value") if isinstance(res, dict) else None, self.user)
 
     def build(self, amount: int, seed: str, rent: int, blockhash: str):
-        """The signed transaction of one conversion: compute budget, then the four steps."""
+        """The transaction of one conversion: compute budget, then the four steps; signed when the key is here."""
         from solders.compute_budget import set_compute_unit_limit, set_compute_unit_price
         from solders.hash import Hash
         from solders.message import Message
@@ -145,14 +152,19 @@ class Unwrapper:
 
         ixs = [set_compute_unit_limit(CU_LIMIT), set_compute_unit_price(CU_PRICE_MICRO)]
         ixs += unwrap_instructions(self.user, amount, seed, rent)
-        msg = Message.new_with_blockhash(ixs, self.kp.pubkey(), Hash.from_string(blockhash))
+        msg = Message.new_with_blockhash(ixs, _pk(self.user), Hash.from_string(blockhash))
+        if self.kp is None:  # no key: for the chain's simulation only, it could never land
+            return Transaction.new_unsigned(msg)
         return Transaction([self.kp], msg, Hash.from_string(blockhash))
 
     async def _simulate(self, tx, amount: int, native: int, wsol: int) -> tuple[dict[str, Any], str | None]:
         """What the chain says the transaction would do, and why that is not exactly this conversion (None: it is)."""
+        # with the key: the signed transaction as it would be sent. Without: the signature is not checked and the
+        # chain puts in a blockhash of its own
+        how = {"sigVerify": True} if self.kp is not None else {"sigVerify": False, "replaceRecentBlockhash": True}
         res = await self.rpc.call("simulateTransaction", [
             base64.b64encode(bytes(tx)).decode(),
-            {"encoding": "base64", "commitment": "confirmed", "sigVerify": True,
+            {"encoding": "base64", "commitment": "confirmed", **how,
              "accounts": {"encoding": "jsonParsed", "addresses": [self.user, self.wsol_account]}}])  # fmt: skip
         value = (res or {}).get("value") or {}
         logs = [str(line) for line in value.get("logs") or []]
@@ -200,7 +212,10 @@ class Unwrapper:
         if why is not None:
             return row | {"refused": why}
         if dry_run:
-            return row | {"dry_run": True}
+            return row | {"dry_run": True, "signed": self.kp is not None}
+        if self.kp is None:
+            return row | {"refused": "the wallet's key (SNIPER_SECRET) is not on the server: nothing here can sign for "
+                                     "the wallet. The owner puts it in /etc/snipetech/env over SSH, never in chat"}  # fmt: skip
         try:
             sig = await self.rpc.call("sendTransaction", [
                 base64.b64encode(bytes(tx)).decode(),
@@ -247,6 +262,7 @@ def _wrapped(account: dict | None, owner: str) -> int | None:
     return int(amount) if str(amount or "").isdigit() else None
 
 
-async def unwrap(rpc, amount: int, dry_run: bool = False, secret_b58: str | None = None) -> dict[str, Any]:
-    """One conversion by the wallet of SNIPER_SECRET (`Unwrapper.convert`)."""
-    return await Unwrapper(rpc, secret_b58).convert(amount, dry_run)
+async def unwrap(rpc, amount: int, dry_run: bool = False, secret_b58: str | None = None,
+                 wallet: str | None = None) -> dict[str, Any]:  # fmt: skip
+    """One conversion by the sniper wallet (`Unwrapper.convert`)."""
+    return await Unwrapper(rpc, secret_b58, wallet).convert(amount, dry_run)

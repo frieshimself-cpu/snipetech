@@ -236,3 +236,43 @@ def test_the_command_is_the_owners_and_never_an_agents():
     a = build_parser().parse_args(["unwrap", "--sol", "0.05", "--dry-run", "--json"])
     assert a.sol == 0.05 and a.dry_run is True and a.json is True
     assert build_parser().parse_args(["unwrap"]).sol is None  # no amount: what the rule would convert
+
+
+def test_without_the_key_the_chain_still_simulates_it_for_the_wallet_and_nothing_can_be_sent(monkeypatch):
+    """11 Nov: the server holds no wallet key (SNIPER_SECRET was never put in /etc/snipetech/env), so nothing there can
+    sign. The conversion can still be shown on the chain for the wallet's address: an unsigned transaction, simulated
+    without the signature check. Sending without the key is refused in words."""
+    from solders.keypair import Keypair
+
+    monkeypatch.delenv("SNIPER_SECRET", raising=False)
+    user = str(Keypair().pubkey())
+    chain = Chain(user, native=4_239_377, wsol=471_817_213)
+    asked = []
+    real = chain.call
+
+    async def call(method, params=None):
+        if method == "simulateTransaction":
+            asked.append(params[1])
+        return await real(method, params)
+
+    chain.call = call
+    u = U.Unwrapper(chain, wallet=user)
+    assert u.user == user and u.kp is None
+    out = asyncio.run(u.convert(50_000_000, dry_run=True))
+    assert out["dry_run"] is True and out["signed"] is False and chain.sent == []
+    assert asked[0]["sigVerify"] is False and asked[0]["replaceRecentBlockhash"] is True
+    assert out["simulated"]["wrapped_sol_after"] == 0.421817213
+    sent = asyncio.run(u.convert(50_000_000))
+    assert "SNIPER_SECRET" in sent["refused"] and "not on the server" in sent["refused"] and chain.sent == []
+    with pytest.raises(RuntimeError, match="SNIPER_SECRET"):
+        U.Unwrapper(chain)  # neither a key nor an address: nothing to work for
+
+
+def test_a_key_for_another_wallet_than_the_books_is_refused(key):
+    user, secret = key
+    from solders.keypair import Keypair
+
+    other = str(Keypair().pubkey())
+    with pytest.raises(RuntimeError, match="not the sniper wallet"):
+        U.Unwrapper(Chain(user, 1, 1), secret, wallet=other)
+    assert U.Unwrapper(Chain(user, 1, 1), secret, wallet=user).user == user
