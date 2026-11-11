@@ -958,7 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd(
         "dip-buys",
         "buy the dip of a hot coin (owner, 10 Nov): coins that reached 40+ SOL in the curve with 100+ wallets and fell "
-        "60 %% from their high within 10 minutes, bought 3 trades later and sold on timers in the lab's simulator "
+        "60 percent from their high within 10 minutes, bought 3 trades later and sold on timers in the lab's simulator "
         "(reads the tape copy; a research job the agents may start)",
     )
     sp.add_argument("--hours", type=float, default=72.0)
@@ -981,6 +981,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("action", choices=["run", "report"])
     sp.add_argument("--minutes", type=float, default=60.0, help="run: how long to watch")
+    sp = cmd(
+        "stopped-wallets",
+        "what the wallets one rule stops have made since: every wallet whose paper numbers pass and that only the "
+        "crowding rule or the history rule stops, measured in one qualify lab on its copies after that verdict, next "
+        "to the wallets that were picked (takes a lab slot, writes no verdict; a research job the agents may start)",
+    )
+    sp.add_argument("--max", type=int, default=150, help="wallets the lab measures (the picked ones are cut first)")
     sp = cmd(
         "fomo-wallets",
         "FOMO app traders on our tape (FOMO pays their gas from one wallet), busiest first; --label N "
@@ -1761,6 +1768,7 @@ BATCH_COMMANDS = frozenset(
         "early-leaders",
         "dip-buys",
         "fomo-wallets",
+        "stopped-wallets",
         "winners",
         "leaders-of",
         "copy-context",
@@ -2462,6 +2470,29 @@ def _main(args) -> int:
         from .operator.research import research_cli
 
         return research_cli(args, cfg)
+    if args.cmd == "stopped-wallets":
+        from .qualify.stopped import GROUPS, stopped_wallets_cli
+
+        out = stopped_wallets_cli(cfg, args.max, Path(cfg.storage.db_path).resolve().parent / "jobs")
+        if args.json:
+            print(json.dumps(out, indent=1, default=str))
+            return 0
+        if out.get("deferred"):
+            print(out["reason"])
+            return 0
+        print(f"{out['wallets']} wallets at {out['landing']}, {out['per_tx_sol']:g} SOL a transaction "
+              f"({out['per_tx_source']}); copies since each wallet's first such verdict")  # fmt: skip
+        for g in GROUPS:
+            st = out["groups"].get(g)
+            if not st:
+                continue
+            if not st["copies"]:
+                print(f"  {g}: {st['wallets']} wallets, no copy since")
+                continue
+            print(f"  {g}: {st['wallets']} wallets, {st['copies']} copies since  mean {st['mean_sol']:+.4f}  "
+                  f"lower {st['lower_sol']:+.4f}  win {st['win_rate']:.0%}  {st['wallets_up']} of "
+                  f"{st['wallets_judged']} wallets up  (at the verdict: {st['at_verdict_mean_sol']:+.4f})")  # fmt: skip
+        return 0
     if args.cmd == "qualify":
         from .qualify.run import run_qualify_cli
 

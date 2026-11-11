@@ -26,4 +26,8 @@ def test_there_are_commands_to_check():
 
 @pytest.mark.parametrize("name", sorted(PARSERS))
 def test_help_prints(name):
-    assert PARSERS[name].format_help().startswith("usage:")
+    text = PARSERS[name].format_help()
+    assert text.startswith("usage:")
+    # a command's help line is also its own description, which argparse does not format: an escaped "%%" there
+    # prints as two signs. Write "percent".
+    assert "%%" not in text

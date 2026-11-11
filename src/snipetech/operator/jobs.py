@@ -24,6 +24,7 @@ RESEARCH_COMMANDS = frozenset(
         "early-leaders",
         "dip-buys",
         "fomo-wallets",
+        "stopped-wallets",
         "winners",
         "leaders-of",
         "copy-context",

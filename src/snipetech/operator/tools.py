@@ -355,8 +355,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """Start a research job in the background; returns the job id.
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
-        winners, leaders-of, copy-context, playbook and launch-tools are allowed; one lab at a time on a machine under
-        24 GB, two on a bigger one (the refusal names the limit). ["dip-buys", "--hours", "144", "--json"] buys the dip
+        stopped-wallets, winners, leaders-of, copy-context, playbook and launch-tools are allowed; one lab at a time on
+        a machine under 24 GB, two on a bigger one (the refusal names the limit). ["stopped-wallets", "--json"] says
+        whether two verdict rules cost money: every wallet whose paper numbers pass and that only the crowding rule
+        (gap to the 3rd follower over 15 %) or the history rule (its own win rate, mostly) stops, measured in one
+        qualify lab on its copies AFTER the verdict that stopped it, pooled by rule ("crowding", "history",
+        "history+crowding") next to the wallets that were picked; it takes a lab slot and writes no verdict. A crowded
+        group that loses there is settled; one that wins there still needs live fills (the paper sale does not see the
+        other copiers selling with us), so it is a question for the owner, never a setting to change. ["dip-buys", "--hours", "144", "--json"] buys the dip
         of a hot coin (owner, 10 Nov): every coin that reached 40+ SOL in its curve with 100+ wallets and fell 60 % from
         its high within 10 minutes, bought 3 trades later and sold after 30 s, 2 min and 10 min in the lab's simulator at
         the measured cost; the table over all events and split by the size of the high, the wallets and the speed of the
