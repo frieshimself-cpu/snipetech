@@ -285,3 +285,71 @@ def test_the_report_says_when_a_few_trades_carry_the_whole_result():
     from snipetech import report as R
 
     assert "capped" in R.render_paper("report", paper.report(store, Config(), now=NOW))
+
+
+def _set_coin(store: Store, k: int, ts: int) -> str:
+    """A leader's 2.5 SOL buy with two wallets of its own in the next two transactions of its block, then eight
+    outsiders in that block (other wallets on every coin), a quiet climb and sells."""
+    m = Market(store, addr(f"pl-set-{k}"), addr(f"pl-sdev-{k}"), ts, SLOT0 + 100_000 + k * 10_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("pl-set-leader"), 2.5, 3)
+    for j in range(2):
+        m.buy(addr(f"pl-set-mate-{j}"), 1.0, 3)
+    for j in range(8):
+        m.buy(addr(f"pl-set-crowd-{k}-{j}"), 0.3, 3)
+    for j in range(4):
+        m.buy(addr(f"pl-set-late-{k}-{j}"), 0.2, 20 + j)
+    for j in range(8):
+        m.sell(addr(f"pl-set-crowd-{k}-{j}"), 1.0, 60 + j)
+    m.commit()
+    return m.mint
+
+
+def _set_world(store: Store) -> list[str]:
+    mints = [_set_coin(store, k, T0 + 600 + k * 300) for k in range(6)]  # the companions rule wants five first buys
+    store.set_label(addr("pl-set-leader"), "set-leader", kind="kol")
+    store.set_coverage("tape", {"spans": [[T0, NOW]]})
+    return mints
+
+
+def test_a_copy_is_scored_behind_the_copied_wallets_own_companions():
+    """11 Nov: every copy lab lands a copy behind the copied wallet's companions (the wallets its operator buys with in
+    the next transactions of its block: analysis.companions). The paper run still counted them among the trades ahead
+    of us, so a rule was judged forward at a better place than the lab had scored it at."""
+    store = Store(":memory:")
+    _set_world(store)
+    s = _freeze(store, COPY, "+6", 0, T0)
+    assert paper.run(store, Config(), now=NOW)["new_trades"] == 6
+    rows = store.paper_trades(s["id"])
+    assert len(rows) == 6
+    for r in rows:
+        # genesis 0, the dev 1, the leader 2, its two wallets 3-4, the crowd 5..12: six outsiders land before us
+        assert _entry_index(store, r["mint"], r["data"]["entry_mcap_sol"]) == 10
+        assert r["data"]["behind"] == 8 and r["data"]["mates"] == 2
+
+
+def test_a_copied_wallet_that_buys_alone_is_scored_as_before():
+    store = Store(":memory:")
+    _world(store)  # three leaders, one coin each: nobody buys with them often enough to be a companion
+    s = _freeze(store, COPY, "+6", 0, T0)
+    paper.run(store, Config(), now=NOW)
+    rows = store.paper_trades(s["id"])
+    assert {r["data"]["behind"] for r in rows} == {6} and {r["data"]["mates"] for r in rows} == {0}
+
+
+def test_the_paper_run_enters_a_copy_where_the_lab_enters_it():
+    """One function places every curve entry for both (`lab.entry_at`): the forward record of a rule and the lab that
+    froze it disagree about no trade's place."""
+    from snipetech.analysis.lab import collect
+
+    store = Store(":memory:")
+    _set_world(store)
+    s = _freeze(store, COPY, "+6", 0, T0)
+    paper.run(store, Config(), now=NOW)
+    forward = {r["mint"]: r["pnl"] for r in store.paper_trades(s["id"])}
+    data = collect(store, Config(), 0.2, 0, "+6", per_tx_sol=0.0035, triggers=[COPY], exits=[EXIT], workers=1)
+    lab_rows = {r["mint"]: r["pnl"][0] for r in data["rows"]}
+    assert data["mates"] == {"wallets": 1, "found_by": "lab"} and len(lab_rows) == 6
+    assert forward.keys() == lab_rows.keys()
+    for mint, pnl in forward.items():
+        assert abs(pnl - lab_rows[mint]) < 1e-12

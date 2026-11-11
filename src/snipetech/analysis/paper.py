@@ -38,6 +38,7 @@ from ..models import PUMPFUN
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import MarketPath
 from ..store import Store
+from .companions import companions
 from .lab import (
     AMM_KINDS,
     EXIT_LATENCY_SLOTS,
@@ -57,6 +58,7 @@ from .lab import (
     crew_skips,
     curve_done,
     dev_paid_earlier,
+    entry_at,
     exit_gap,
     fired_at,
     implausible_coin,
@@ -71,6 +73,7 @@ from .lab import (
 from .stats import summarize
 
 SETTLE_SECS = 420  # a trigger is scored once its longest exit (300 s) has played out on the tape
+MATES_HOURS = 72  # the stretch of tape a copied wallet's companions are found on (the labs' usual window)
 LAUNCH_LANDING = (1, "start")  # (slots after the trigger, position): a launch snipe lands a slot after the create
 # OKTech hunt sends its buy once it has seen the trigger: it lands in a later slot, behind that slot's first buys
 # (5 Nov live hunt fills: 1-2 slots after the create with 2-7 buys ahead of us)
@@ -535,6 +538,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     amm_cov = store.coverage(AMM_RECENT_KEY) if mig_runs or sell_runs else {}
     crews = _crew_uris(store, store.tape_spans())  # serial crews' metadata uris: no launch-type moment on their coins
     skipped: dict[str, dict[str, int]] = {}  # strategy -> {why: trades} the PumpSwap tape does not hold whole
+    # each copied wallet's companions (analysis.companions), read once a run when a rule first fires on its buy, on
+    # the last MATES_HOURS of tape: the wallets a lab of that stretch finds
+    mates_of: dict[str, frozenset[str]] = {}
+    mates_since = int(now - MATES_HOURS * 3600)
     added = 0
     for a, b in store.tape_spans():
         lo, hi = max(a, since), min(b, until)
@@ -570,6 +577,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     continue
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger; a PumpSwap
                 # buy behind PumpSwap trades, only where the tape holds them whole (`lab.mig_moment`)
+                own = None  # a copied wallet's companions, for a copy
                 if trig.kind in AMM_KINDS:
                     e, why = mig_moment(amm_cov, path, i, migs.get(mint), s["latency"], s["position"], ex.max_hold_secs)
                     if why is not None:
@@ -577,7 +585,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                         skipped[s["id"]][why] = skipped[s["id"]].get(why, 0) + 1
                         continue
                 else:
-                    e = int(path.landing_index(t_slot + s["latency"], s["position"], i))
+                    if trig.kind == "kol":  # a copy lands behind the copied wallet's own companions, as in the lab
+                        who = path.users[i]
+                        if who not in mates_of:
+                            mates_of[who] = companions(store, who, mates_since)
+                        own = mates_of[who]
+                    e = entry_at(trig.kind, path, i, t_slot, s["latency"], s["position"], own)
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 mig = migs.get(mint)
@@ -606,7 +619,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i,
-                             "venue": path.venue},
+                             "venue": path.venue,
+                             # a copy: how many companions of the copied wallet it was scored behind (rows
+                             # without the field were entered before 11 Nov 2026, companions counted as outsiders)
+                             **({"mates": len(own or ())} if trig.kind == "kol" else {})},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
     # the numbers of the strategies that traded, made now: the operator's report and the live page read them kept

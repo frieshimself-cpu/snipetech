@@ -581,6 +581,24 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     return e if float(path.q[e]) * float(path.b[floor]) >= float(path.q[floor]) * float(path.b[e]) else floor
 
 
+def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, position: str,
+             mates: Collection[str] | None = None) -> int:  # fmt: skip
+    """The state a buy enters at on the curve tape, its trigger fired at state i in slot `t_slot`: `position` behind
+    the trigger in the slot `latency` slots after it, or counted across slots ("+Nx", `copy_entry`). A copy (kind
+    "kol") lands behind the copied wallet's own companions at both (`mates`: analysis.companions; `own_entry_end`):
+    "+N" inside the wallet's block counts from behind its last companion there. The lab and the forward paper test
+    place every curve entry with this one function, so a rule's forward record and the lab that froze it agree on
+    every trade's place (11 Nov: the paper run had kept counting companions among the trades ahead of us)."""
+    across = across_slots(position)
+    if kind == "kol":
+        if across is not None:
+            return copy_entry(path, i, across, latency, mates)
+        return int(path.landing_index(t_slot + latency, position, own_entry_end(path, i, mates)))
+    if across is not None:
+        return copy_entry(path, i, across, latency)
+    return int(path.landing_index(t_slot + latency, position, i))
+
+
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:
     """Why a MIG buy entered at state e cannot be scored on the PumpSwap tape (a key of amm_tape.GAP_WORDS), or None
     when it can: the coverage record `cov` must hold the coin's PumpSwap trades from the migration to the buy plus the
@@ -1335,16 +1353,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
                     continue
-            elif trig.kind == "kol":  # a copy: it lands behind the wallet's own companions (analysis.companions)
-                own_mates = run.mates.get(path.users[i])
-                if (across := across_slots(pos)) is not None:  # counted across slots (the qualify lab)
-                    e = copy_entry(path, i, across, lat, own_mates)
-                else:  # "+N" inside the wallet's block counts from behind its last companion there
-                    e = int(path.landing_index(t_slot + lat, pos, own_entry_end(path, i, own_mates)))
-            elif (across := across_slots(pos)) is not None:
-                e = copy_entry(path, i, across, lat)
-            else:
-                e = int(path.landing_index(t_slot + lat, pos, i))
+            else:  # a copy lands behind the wallet's own companions (analysis.companions)
+                e = entry_at(trig.kind, path, i, t_slot, lat, pos, run.mates.get(path.users[i]))
             if t_ts > b - 60:
                 continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
