@@ -13,7 +13,9 @@ BAN_LABEL_KINDS = ("service", "platform", "router")
 # When each source that says how often it is worth asking (`every_secs`) last looked. 11 Nov, profiled on the server
 # with the sources run in turn: of the hourly run's 444 s, 312 were the tape's own source (every wallet's buys counted
 # over two days, then all 3.8 million trades of the 1,600 busiest read) and 88 the ranking of two days of coins for the
-# Birdeye source; both lists barely move in an hour, and a run found 0 to 2 new wallets.
+# Birdeye source; both lists barely move in an hour: between them they brought 0 to 2 new wallets a run. (First written
+# as "a run found 0 to 2 new wallets": true of two runs in three. Every third run the first-buyers source, which
+# refreshes every three hours and still looks at every run, brings 400 to 800.)
 LAST_KEY = "discover:last"
 EARLY_SECS = 600  # the hourly timer fires a little early or late: a source is due this long before its interval is up
 

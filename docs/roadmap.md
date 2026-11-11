@@ -6,6 +6,32 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 12:10 UTC: the live page's events took over 30 seconds to read; two safety checks could fail silently
+
+- **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.
+- **The live page's "events" part read 6.6 million rows every 10 seconds.** 97 % of them were the same payments
+  written again and again (a coin creator's payment, once more for every coin of that creator; nothing ever deleted
+  them). One read took over 30 seconds, so the database was never left alone. Those rows are no longer written, the
+  old ones are deleted 400,000 every three hours (gone in two days), and the page reads through an index: each read
+  now comes back as fast as an empty query. The first scan after the change wrote 2,451 rows where the one before
+  wrote 95,746.
+- **Two safety checks could fail without a word.** The scan that records which wallets a coin's creator pays skipped
+  a creator whenever the RPC refused, never said so, and never went back. The wallet check that reads those records
+  passed a wallet when its own read failed. Both now say so and try again. No whole scan was lost in the last two
+  days; the first scan after the change read all 312 creators.
+- **Every place the code catches an error was read** (42 places): these three hid something, the other 39 report it
+  or guard something harmless. The server's logs since 06:00 hold nothing new: the 07:12 freeze and Ubuntu's updater
+  killing three of our jobs at 06:04, both waiting on the owner's one root command.
+- **Hourly discovery**: the change of 11:30 (the two slow sources look every six hours) is in place; the 12:08 run
+  was the full one that starts the clock (6 min 10 s of processor), the 13:07 run is the first short one and its
+  time goes into the audit. One earlier statement is corrected: "a discovery run finds 0 to 2 new wallets" was
+  true of two runs in three. Every third run another source (the first buyers of new coins) brings 400 to 800 new
+  wallets; it still looks at every run, so nothing is lost. The two slowed sources bring 0 to 2 a run.
+- What is left, with numbers, and why each waits: [audit-2026-11-11.md](audit-2026-11-11.md) (rows 46-47, open
+  items 5 and 10-13). The agents still cost about 40 $ a day; that is the model and the half-hour cadence.
+- **Still with the owner** (asked 08:30, no answer yet): preconfirmations on copy snipers, and the crew sniper. And
+  the one root command on the server (`sudo bash /opt/snipetech/deploy/setup.sh`).
+
 ## 11 Nov, 10:30 UTC: the agents' round takes 2.5 s, not 42; the live page's paper table was wrong; two daily alerts were false
 
 - **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.

@@ -1,11 +1,17 @@
 """The tape's own wallet discovery looks launch times up once, for the wallets it keeps (11 Nov).
 
-`discover run` takes six to seven minutes of processor every hour and finds zero to two new wallets. Profiled on the
-server (10:34 UTC): 433 of 440 s in `discover_wallets`, and 293 s of those in 672,656 single lookups of a launch, one
-for every round trip of each of the 2,000 busiest wallets, to count how many it bought within 10 s of the launch.
-Most of those wallets are then dropped because their average round trip loses, and the count is never used.
+`discover run` takes six to seven minutes of processor every hour, and the two sources that take the time bring zero
+to two new wallets a run between them (the 400 to 800 of every third run come from another source). The tape's source
+made 672,656 single lookups of a launch a run, one for every round trip of each of the 2,000 busiest wallets, to count
+how many it bought within 10 s of the launch. Most of those wallets are then dropped because their average round trip
+loses, and the count is never used.
 
 The answer is the same list as before: the launch times of a kept wallet's coins are read together, once a coin.
+
+What this did NOT do is make the run faster. The first profile (10:34 UTC) seemed to say 293 of 440 s went into those
+lookups; the sources run side by side on one database connection and the profile had counted each one's waiting for
+the others as its own work. The next scheduled run took as long as before. The time is in reading two days of trades
+(the last test here; `discovery/run.py` paces the two sources that do it).
 """
 
 import numpy as np
