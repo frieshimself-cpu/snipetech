@@ -12,8 +12,8 @@ first on the server's recording and only then run live in capped batches.
   (docs/live-recipe.md), so there is still no live result for it.
 - **A setting changed in the code never reached the server**: its settings file is a copy of every default of install
   day. Found because the deployer verdicts, moved to our real landing at 06:48, were still written at the old one.
-  A new check lists every such setting. Fixed: the verdict landing (3,350 deployers re-scored at it: 58 "snipe" with
-  +0.05 SOL a 0.5 SOL snipe on average, +0.22 at most; before the two fixes 322 with up to +2.6), the limit the daily
+  A new check lists every such setting. Fixed: the verdict landing (3,350 deployers re-scored at it: 98 "snipe" with
+  +0.07 SOL a 0.5 SOL snipe on average, +0.38 at most; before the two fixes 322 with up to +2.6), the limit the daily
   settings review had on the buy tip (ten times the intended one), a leftover "explore" share. A test now fails for
   any default changed later until the server follows it.
 - **One of them is the owner's call: preconfirmations.** The code asks OKTech for them on every copy sniper since
