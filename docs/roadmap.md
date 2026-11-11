@@ -23,11 +23,13 @@ first on the server's recording and only then run live in capped batches.
   update job held 15.6 GB. The tape lost nothing: its stream replayed the 11 minutes, the first real outage since
   that was built. The install script now makes the update job gentle; that needs the owner's one command as root and
   nothing breaks without it.
-- **The recorder** uses half the processor per trade it did this morning (2.9 ms, 5.5 before; 771 to 105 microseconds
-  for the handling itself on the test machine) and writes down what it does every minute.
+- **The recorder** uses a sixth of the processor per trade it did this morning: 0.95 ms a row written, 5.5 at 06:00,
+  8.4 yesterday; 0.06 of one core. Two causes: text conversions done in plain Python and thrown away again, and its
+  whole table of 48,340 known pools copied for every single transaction (a cost that grew with every new pool; found
+  by letting the recorder profile itself on the server). It now writes down what it does every minute.
 - **The strategy search ran for the first time since 9 Nov 19:16**: the wallet checks, which took every lab slot at
   2 h 18 min a run, take 12 minutes now.
-- What is fixed, measured and open: [audit-2026-11-11.md](audit-2026-11-11.md) (rows 26-30, open items 7-9).
+- What is fixed, measured and open: [audit-2026-11-11.md](audit-2026-11-11.md) (rows 26-31, open items 7-8).
 
 ## 11 Nov, 05:10 UTC: the first wallet passed the forward check and is copied live; the audit's second round
 
