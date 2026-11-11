@@ -165,3 +165,32 @@ def test_the_slice_lets_snipetech_use_the_machine():
     high, top = sl[("Slice", "MemoryHigh")], sl[("Slice", "MemoryMax")]
     assert high.endswith("%") and top.endswith("%")
     assert 70 <= float(high[:-1]) < float(top[:-1]) <= 90
+
+
+# -- other jobs on the machine ---------------------------------------------------------------------------------------
+# 11 Nov 07:12-07:23 UTC the whole machine stood still: load 71 on 8 cores, the recorder 667 s inside one flush, the
+# slice's page cache down from 26 GB to 0.3 GB, the ops channel unreachable. No snipetech job ran. Ubuntu's own
+# update job (apt-daily-upgrade.service) held 15.6 GB when the machine answered again and was gone three minutes
+# later; 7 Nov has the same 13-minute hole at 07:10. The tape replayed what it missed; the PumpSwap side has a hole.
+
+
+def test_ubuntus_update_jobs_run_gently():
+    """setup.sh gives both update jobs a drop-in: the lowest priority for processor and disk, and their page cache
+    given back above 3 GB. No MemoryMax: an update killed half-way leaves packages half installed."""
+    setup = (UNITS.parent / "setup.sh").read_text()
+    start = setup.index("for unit in apt-daily.service apt-daily-upgrade.service")
+    block = setup[start : setup.index("\ndone", start)]
+    assert "/etc/systemd/system/$unit.d/snipetech.conf" in block
+    for line in ("[Service]", "Nice=19", "CPUWeight=10", "IOWeight=10", "IOSchedulingClass=idle", "MemoryHigh=3G"):
+        assert f"\n{line}\n" in block, line
+    assert "MemoryMax" not in block
+    assert start < setup.index("\nsystemctl daemon-reload")  # the command itself: systemd reads them in the same run
+
+
+def test_the_slices_memory_is_not_the_first_to_go():
+    """MemoryLow: while another job on the machine has memory to give back, the kernel takes it there before it takes
+    the slice's below this share (the database's pages the recorder writes into). Best effort: nothing is refused."""
+    sl = _unit("snipetech.slice")
+    low = sl[("Slice", "MemoryLow")]
+    assert low.endswith("%") and 30 <= float(low[:-1]) <= 60
+    assert float(low[:-1]) < float(sl[("Slice", "MemoryHigh")][:-1])

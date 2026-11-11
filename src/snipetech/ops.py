@@ -317,6 +317,7 @@ class Ops:
         out["slice"] = _slice_limits(CGROUP_ROOT / SLICE)
         out["tape_pressure"] = _pressure(CGROUP_ROOT / SLICE / "snipetech-tape.service")
         out["units_cpu_secs"] = _units_cpu_secs(CGROUP_ROOT / SLICE)
+        out["units_mem_gb"] = _units_mem_gb(CGROUP_ROOT / SLICE)
         out["machine"] = _machine(CGROUP_ROOT)
         return out
 
@@ -584,6 +585,7 @@ def _read_only_authorizer(action, arg1, arg2, dbname, source):
 
 
 CGROUP_ROOT = Path("/sys/fs/cgroup")
+PROC = Path("/proc")
 SLICE = "snipetech.slice"  # deploy/systemd/snipetech.slice: every snipetech unit runs in it
 
 
@@ -662,10 +664,27 @@ def _units_cpu_secs(slice_dir: Path) -> dict[str, float]:
     return out
 
 
+def _units_mem_gb(slice_dir: Path) -> dict[str, dict[str, float | None]]:
+    """The memory each running unit of the slice holds now and the most it has held since it started (GB, page cache
+    included; a job the ops service started counts with the ops service; `peak` None on a kernel before 5.19)."""
+    out: dict[str, dict[str, float | None]] = {}
+    for unit in sorted(slice_dir.iterdir()) if slice_dir.is_dir() else []:
+        if not (unit.name.endswith((".service", ".scope")) and unit.is_dir()):
+            continue
+        now, peak = _cgroup_file(unit, "memory.current"), _cgroup_file(unit, "memory.peak")
+        if now and now.isdigit():
+            out[unit.name] = {"now": round(int(now) / 1e9, 2),
+                              "peak": round(int(peak) / 1e9, 2) if peak and peak.isdigit() else None}  # fmt: skip
+    return out
+
+
 def _machine(root: Path) -> dict[str, Any] | None:
     """What else runs on the machine (the 4 Nov slice capped snipetech to share it with a trading server): the CPU
-    seconds the whole machine used since boot next to snipetech's, and the other services holding 100 MB or more
-    (GB, largest first). None without cgroup v2."""
+    seconds the whole machine used since boot next to snipetech's, and the other services holding 100 MB or more of
+    memory (`other_units`: GB, largest first). And how close the machine itself is to running out (11 Nov 07:12 UTC:
+    it stood still for 11 minutes): `memory` (GB available, waiting to be written, swap and free swap), `pressure`
+    (the share, %, of the last minute its tasks waited for processor, memory and disk) and `stalled_secs` (the seconds
+    they have waited since boot: two readings bracket a stall). None without cgroup v2."""
     if not (root / "cpu.stat").is_file():
         return None
     others: list[tuple[str, float]] = []
@@ -674,19 +693,48 @@ def _machine(root: Path) -> dict[str, Any] | None:
         mem = _cgroup_file(unit, "memory.current") if unit.is_dir() else None
         if mem and mem.isdigit() and int(mem) >= OTHER_UNIT_MIN_BYTES:
             others.append((unit.name, round(int(mem) / 1e9, 2)))
-    return {"cpu_secs": _cpu_secs(root), "snipetech_cpu_secs": _cpu_secs(root / SLICE),
-            "other_units": dict(sorted(others, key=lambda kv: -kv[1]))}  # fmt: skip
+    out: dict[str, Any] = {"cpu_secs": _cpu_secs(root), "snipetech_cpu_secs": _cpu_secs(root / SLICE),
+                           "other_units": dict(sorted(others, key=lambda kv: -kv[1]))}  # fmt: skip
+    kb = _meminfo()
+    if "MemAvailable" in kb:
+        out["memory"] = {"available_gb": round(kb["MemAvailable"] / 1e6, 1),
+                         "dirty_gb": round((kb.get("Dirty", 0) + kb.get("Writeback", 0)) / 1e6, 1),
+                         "swap_gb": round(kb.get("SwapTotal", 0) / 1e6, 1),
+                         "swap_free_gb": round(kb.get("SwapFree", 0) / 1e6, 1)}  # fmt: skip
+    pressure, stalled = {}, {}
+    for kind in ("cpu", "memory", "io"):
+        try:
+            lines = (PROC / "pressure" / kind).read_text().splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            if line.startswith("some "):
+                fields = dict(f.split("=", 1) for f in line.split()[1:] if "=" in f)
+                if "avg60" in fields and "total" in fields:
+                    pressure[kind], stalled[kind] = float(fields["avg60"]), round(int(fields["total"]) / 1e6, 1)
+    if pressure:
+        out["pressure"], out["stalled_secs"] = pressure, stalled
+    return out
+
+
+def _meminfo() -> dict[str, int]:
+    """/proc/meminfo's numbers (kB) by name; empty where there is none."""
+    out: dict[str, int] = {}
+    try:
+        for line in (PROC / "meminfo").read_text().splitlines():
+            name, _, rest = line.partition(":")
+            value = rest.split()
+            if value and value[0].isdigit():
+                out[name.strip()] = int(value[0])
+    except OSError:
+        pass
+    return out
 
 
 def _mem_gb() -> float | None:
     """Total memory in GB from /proc/meminfo (Linux), or None where there is none."""
-    try:
-        for line in Path("/proc/meminfo").read_text().splitlines():
-            if line.startswith("MemTotal:"):
-                return round(int(line.split()[1]) / 1e6, 1)
-    except (OSError, ValueError, IndexError):
-        pass
-    return None
+    total = _meminfo().get("MemTotal")
+    return round(total / 1e6, 1) if total else None
 
 
 def make_server(ops: Ops, host: str = "127.0.0.1", port: int = 8788) -> ThreadingHTTPServer:

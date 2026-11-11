@@ -86,6 +86,10 @@ TAPE_STALL_SECS = 30.0  # a tape stream that sent no slot for this long is dropp
 TAPE_STALL_CHECK_SECS = 5.0
 TAPE_BACKOFF_SECS = 1.0  # the first wait before a new subscription; doubled up to a minute while they fail
 SLOT_SECS_GUESS = 0.2142  # a slot's time before the recorder has measured it (5-7 Nov 2026)
+# the recorder's own account of its work (coverage `tape:work`): what each stream handed over, what was written, the
+# seconds in database calls and its processor seconds, since the process started; written once a minute
+WORK_KEY = "tape:work"
+WORK_EVERY_SECS = 60.0
 REOPEN_AFTER_SECS = 180.0
 RESTART_AFTER_SECS = 600.0
 # A slot is placed on the chain clock at the slot time the recorder measures on its own stream (`fit_slot_secs`): the
@@ -262,6 +266,7 @@ class StallMeter:
         self.load = load if load is not None else (lambda: os.getloadavg()[0])
         self.cores = cores or os.cpu_count() or 1
         self.buckets: deque[list[Any]] = deque()  # [second, {site: secs}, (site, secs) of its longest call]
+        self.totals: dict[str, float] = {}  # site -> seconds since the process started (the work record)
         self.marks: deque[tuple[float, float]] = deque()  # (wall, CPU), from tick()
         self.slow_at = -math.inf  # when a slow call was last logged
 
@@ -280,6 +285,7 @@ class StallMeter:
             self.buckets.append([second, {}, ("", 0.0)])
         bucket = self.buckets[-1]
         bucket[1][site] = bucket[1].get(site, 0.0) + secs
+        self.totals[site] = self.totals.get(site, 0.0) + secs
         if secs > bucket[2][1]:
             bucket[2] = (site, secs)
         self._trim(t1)
@@ -449,6 +455,8 @@ class LiveWatcher:
         self.amm_backoff = 1.0
         self.amm_seen: OrderedDict[Any, None] = OrderedDict()  # signatures recorded on the PumpSwap side
         self.amm_skipped: list[list[int]] = []  # stretches of chain time it missed (coverage)
+        self.started_at = self.clock()
+        self.work_at = -math.inf  # when the work record was last written
         self.amm_runs: dict[str, list[int]] = {}  # this process's runs of the coverage record: tag -> [from, to]
 
     # -- entry point --------------------------------------------------------------------------
@@ -661,6 +669,7 @@ class LiveWatcher:
     def _tape_tick(self, slot: int) -> None:
         """A slot of the tape's subscription: everything of it has been handed over (11 Nov, measured: a tick never
         comes before its slot's transactions, in a replay or live)."""
+        self.stats["tape_slots"] += 1
         self.tape_at = self.clock()
         if self.replay_from is not None:
             self._replay_began(slot)
@@ -674,6 +683,7 @@ class LiveWatcher:
         """Whether a transaction of the tape's subscription is recorded, before anything is converted: not one a
         replay hands over again (a slot the last subscription handed over whole, or a transaction it had sent of a
         slot still open)."""
+        self.stats["tape_updates"] += 1
         self.tape_at = self.clock()
         if self.replay_from is not None:
             self._replay_began(slot)
@@ -847,6 +857,7 @@ class LiveWatcher:
 
     def _amm_slot(self, slot: int) -> None:
         """A slot of the PumpSwap subscription: everything before it has been handed over."""
+        self.stats["amm_slots"] += 1
         self.amm_slot_at = self.clock()
         if self.amm_resume is None or slot > self.amm_resume:
             self.amm_resume = slot
@@ -857,6 +868,7 @@ class LiveWatcher:
         over again), not one the tape's own subscription carries (pump.fun or LaunchLab: the filter excludes them, this
         makes sure), and none while the valve is closed. About 5 us an update let go, 1 us a duplicate (dev box)."""
         assert self.migrated is not None
+        self.stats["amm_updates"] += 1
         if self.amm_resume is None or slot > self.amm_resume:
             self.amm_resume = slot
         sig = bytes(info.signature)
@@ -1295,9 +1307,11 @@ class LiveWatcher:
                     self.mbuffer = []
                 if self.buffer:
                     self.store.add_trades(self.buffer)
+                    self.stats["rows_written"] += len(self.buffer)
                     self.buffer = []
                 if self.fbuffer:
                     self.store.add_ftrades(self.fbuffer)
+                    self.stats["rows_written"] += len(self.fbuffer)
                     self.fbuffer = []
         except sqlite3.OperationalError as exc:
             if not _refused(exc):
@@ -1448,6 +1462,7 @@ class LiveWatcher:
                         self._mark_coverage()
                         if self.tape:
                             self._mark_tape()
+                            self._mark_work()
                 except sqlite3.OperationalError as exc:
                     if not _refused(exc):
                         raise
@@ -1524,6 +1539,23 @@ class LiveWatcher:
             if self.head is not None:
                 cov["head"] = [self.head[0], self.head[1]]
         self.store.set_coverage("tape", cov)
+
+    def _mark_work(self) -> None:
+        """Coverage `tape:work`, once a minute: what this process has done since it started. `counts`: the updates and
+        slots each stream handed over (`tape_updates`, `amm_updates`, `tape_slots`, `amm_slots`), what became of them
+        (kept, dropped, duplicates) and the rows written; `db_secs`: the seconds its event loop sat in each kind of
+        database call; `cpu_secs`: its processor seconds, all threads. Two readings give the rates and the processor
+        time an update costs (11 Nov: 2.9 ms a trade recorded with 0.1 ms of it in the handling measured on the dev
+        box; the rest could not be seen from outside)."""
+        now = self.clock()
+        if now - self.work_at < WORK_EVERY_SECS:
+            return
+        self.work_at = now
+        self.store.set_coverage(WORK_KEY, {
+            "at": int(now), "up_secs": round(now - self.started_at), "cpu_secs": round(self.meter.cpu(), 1),
+            "db_secs": {site: round(secs, 1) for site, secs in sorted(self.meter.totals.items())},
+            "counts": dict(sorted(self.stats.items())),
+        })  # fmt: skip
 
     def _mark_amm_recent(self) -> None:
         """Coverage `tape:amm_recent`: one run per gap-free stretch of the tape's own stream (its spans) with the mode

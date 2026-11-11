@@ -56,5 +56,21 @@ getent group systemd-journal >/dev/null && usermod -aG systemd-journal "$USER_NA
 for unit in "$REPO"/deploy/systemd/*; do
   sed -e "s#@REPO@#$REPO#g" -e "s#@USER@#$USER_NAME#g" -e "s#@DATA@#$DATA#g" "$unit" > "/etc/systemd/system/$(basename "$unit")"
 done
+
+# Ubuntu's own update jobs run gently. 11 Nov 2026 07:12 UTC (and 7 Nov 07:10): the upgrade job held 15.6 GB, the
+# machine stood still for 11 minutes and the tape recorder with it. They keep running: at the lowest priority for
+# processor and disk, their page cache given back above 3 GB. No MemoryMax (an update killed half-way leaves packages
+# half installed). To undo: rm /etc/systemd/system/apt-daily*.service.d/snipetech.conf && systemctl daemon-reload
+for unit in apt-daily.service apt-daily-upgrade.service; do
+  install -d "/etc/systemd/system/$unit.d"
+  cat > "/etc/systemd/system/$unit.d/snipetech.conf" <<'EOF'
+[Service]
+Nice=19
+CPUWeight=10
+IOWeight=10
+IOSchedulingClass=idle
+MemoryHigh=3G
+EOF
+done
 systemctl daemon-reload
 echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer snipetech-events snipetech-snapshot.timer snipetech-strategist.timer snipetech-commands.timer"

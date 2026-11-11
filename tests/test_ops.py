@@ -387,10 +387,70 @@ def test_status_says_what_else_runs_on_the_machine(env, tmp_path, monkeypatch):
         (root / "system.slice" / name).mkdir(parents=True)
         (root / "system.slice" / name / "memory.current").write_text(f"{mem}\n")
     monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    monkeypatch.setattr(O, "PROC", tmp_path / "no-proc")
     ops, key = env
     st = req(ops, key, "status")
     assert st["machine"] == {"cpu_secs": 9000.0, "snipetech_cpu_secs": 6000.0,
                              "other_units": {"trader.service": 1.5, "big.service": 0.9}}  # fmt: skip
+
+
+def test_status_says_how_close_the_machine_is_to_running_out(env, tmp_path, monkeypatch):
+    """11 Nov 07:12-07:23 UTC the whole machine stood still: load 71 on 8 cores, the recorder 667 s in one flush, the
+    services' page cache down from 26 GB to 0.3 GB, nothing answering. The status had the one clue (Ubuntu's update
+    job holding 15.6 GB) and nothing about the machine itself. Now it says what memory is left, whether there is swap,
+    how much waits to be written, the share of the last minute the machine's tasks waited for processor, memory and
+    disk, and the seconds they have waited since boot (two readings bracket a stall after it is over)."""
+    root = tmp_path / "cg"
+    (root / "snipetech.slice").mkdir(parents=True)
+    (root / "cpu.stat").write_text("usage_usec 9000000000\n")
+    (root / "snipetech.slice" / "cpu.stat").write_text("usage_usec 6000000000\n")
+    proc = tmp_path / "proc"
+    (proc / "pressure").mkdir(parents=True)
+    (proc / "meminfo").write_text(
+        "MemTotal:       32900000 kB\nMemFree:          300000 kB\nMemAvailable:    1200000 kB\n"
+        "Dirty:           2500000 kB\nWriteback:        500000 kB\nSwapTotal:             0 kB\nSwapFree:              0 kB\n"
+    )
+    for name, avg, total in (
+        ("cpu", "8.25", 1_000_000),
+        ("memory", "42.00", 667_000_000),
+        ("io", "64.94", 1_200_500_000),
+    ):
+        (proc / "pressure" / name).write_text(
+            f"some avg10=1.00 avg60={avg} avg300=3.10 total={total}\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=5\n"
+        )
+    monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    monkeypatch.setattr(O, "PROC", proc)
+    ops, key = env
+    st = req(ops, key, "status")
+    assert st["mem_gb"] == 32.9
+    assert st["machine"]["memory"] == {"available_gb": 1.2, "dirty_gb": 3.0, "swap_gb": 0.0, "swap_free_gb": 0.0}
+    assert st["machine"]["pressure"] == {"cpu": 8.25, "memory": 42.0, "io": 64.94}
+    assert st["machine"]["stalled_secs"] == {"cpu": 1.0, "memory": 667.0, "io": 1200.5}
+
+
+def test_status_says_the_memory_each_service_holds_and_the_most_it_held(env, tmp_path, monkeypatch):
+    """The most a service held since it started (a job the ops service started counts with it): what a lab really
+    needs, and which service grew before a stall. A kernel without memory.peak (before 5.19) gives None."""
+    root = tmp_path / "cg"
+    sl = root / "snipetech.slice"
+    for name, now, peak in (
+        ("snipetech-tape.service", 310_000_000, 2_400_000_000),
+        ("snipetech-ops.service", 12_000_000_000, 27_500_000_000),
+        ("snipetech-events.service", 55_000_000, None),
+    ):
+        (sl / name).mkdir(parents=True)
+        (sl / name / "memory.current").write_text(f"{now}\n")
+        if peak is not None:
+            (sl / name / "memory.peak").write_text(f"{peak}\n")
+    (sl / "not-a-unit").mkdir()
+    monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    ops, key = env
+    st = req(ops, key, "status")
+    assert st["units_mem_gb"] == {
+        "snipetech-events.service": {"now": 0.06, "peak": None},
+        "snipetech-ops.service": {"now": 12.0, "peak": 27.5},
+        "snipetech-tape.service": {"now": 0.31, "peak": 2.4},
+    }
 
 
 def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
@@ -400,6 +460,6 @@ def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
     ops, key = env
     st = req(ops, key, "status")
     assert st["slice"] == {"cpu_cores": None} and st["tape_pressure"] is None and st["wal_gb"] == 0.0
-    assert st["units_cpu_secs"] == {}
+    assert st["units_cpu_secs"] == {} == st["units_mem_gb"]
     monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "nothing")
     assert req(ops, key, "status")["slice"] is None

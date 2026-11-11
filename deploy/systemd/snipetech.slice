@@ -14,3 +14,7 @@ IOWeight=20
 # MemoryMax=88%` as root, or the owner's `deploy/setup.sh` run.
 MemoryHigh=80%
 MemoryMax=88%
+# While another job on the machine has memory to give back, the kernel takes it there before it takes the slice's
+# below this share. 11 Nov 07:12 UTC Ubuntu's update job grew to 15.6 GB and the slice's page cache went from 26 GB
+# to 0.3 GB: the recorder sat 667 s in one flush, reading every database page from the disk.
+MemoryLow=50%
