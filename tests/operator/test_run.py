@@ -91,6 +91,36 @@ def test_dry_run_prints_and_never_calls(tmp_env, capsys):
     assert '"equity"' in out and '"reasons"' in out and tmp_env["calls"] == []
 
 
+def test_a_dry_round_keeps_nothing_and_the_next_round_is_still_told(tmp_env, capsys):
+    """11 Nov: `operate --dry-run` saved its snapshot like a real round, so what it saw (a job that ended, a balance
+    that moved, a fill) counted as seen and the next real round was never told: two profiling runs swallowed the events
+    of 09:24 and 09:54 UTC. It also wrote "call operator" in the round's log with nobody called."""
+    _op(tmp_env)
+    capsys.readouterr()
+    kept = tmp_env["paths"].snapshot.read_text()
+    meta = {"id": "lab1", "argv": ["lab"], "running": False, "started": NOW - 60, "ended": NOW, "exit_code": 0}
+    (tmp_env["paths"].jobs / "lab1.json").write_text(json.dumps(meta))
+    _op(tmp_env, dry_run=True)
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"]["call"] is True and out["decision"]["reasons"] == ["job ended: lab1 (lab, exit 0)"]
+    assert tmp_env["paths"].snapshot.read_text() == kept and tmp_env["calls"] == []
+    log = tmp_env["paths"].log.read_text().splitlines()
+    assert log[-1].endswith("dry run: would call operator: job ended: lab1 (lab, exit 0)")
+    _op(tmp_env)  # the real round
+    assert len(tmp_env["calls"]) == 1 and tmp_env["paths"].log.read_text().splitlines()[-2].endswith(
+        " call operator: job ended: lab1 (lab, exit 0)"
+    )
+
+
+def test_a_dry_round_prints_what_it_sees_when_the_round_would_stay_quiet(tmp_env, capsys):
+    _op(tmp_env)
+    capsys.readouterr()
+    _op(tmp_env, dry_run=True)
+    out = json.loads(capsys.readouterr().out)
+    assert out["decision"]["call"] is False and out["snapshot"]["wallet"] == "W"
+    assert tmp_env["paths"].log.read_text().splitlines()[-1].endswith("dry run: would stay quiet")
+
+
 def test_analyst_flag_forces_analyst_mode(tmp_env):
     _op(tmp_env, analyst=True)
     assert tmp_env["calls"] and tmp_env["calls"][0][0][4].mode == "analyst"

@@ -585,3 +585,15 @@ def test_new_live_trades_or_three_quiet_hours_still_bring_the_analysis(paths):
     later = AT_0630 + 3 * 3600
     assert _at(paths, later - 600, jobs_running=[lab]).mode == "none"
     assert _at(paths, later, jobs_running=[lab]).mode == "analyst"  # a long job never silences it for good
+
+
+def test_a_job_a_remote_session_started_wakes_no_agent(paths):
+    """11 Nov: 8 operator turns that morning were called for nothing but "job ended: (update, exit 0)" and the like:
+    the deploys, settings checks and profiles a session ran through the ops endpoint. Whoever started such a job reads
+    it; the agents are called for the jobs the server's own side started (their research, a live test's cycler)."""
+    remote = {"id": "u", "argv": ["update"], "exit_code": 0, "by": "remote"}
+    lab = {"id": "r", "argv": ["lab", "--latency", "0"], "exit_code": 0, "by": "remote"}
+    assert not decide(snap(jobs_ended=[remote, lab]), snap(), NOW, CFG, paths).call
+    own = {"id": "x", "argv": ["lab"], "exit_code": 0}
+    d = decide(snap(jobs_ended=[remote, own]), snap(), NOW, CFG, paths)
+    assert d.call and d.reasons == ["job ended: x (lab, exit 0)"]

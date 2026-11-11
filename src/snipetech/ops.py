@@ -231,6 +231,7 @@ class Job:
     proc: subprocess.Popen | None = None
     ended: float | None = None
     code: int | None = None
+    by: str = ""  # "remote": started through the ops endpoint by a session; "": by the server's own code
 
 
 @dataclass
@@ -245,6 +246,7 @@ class Ops:
     jobs: dict[str, Job] = field(default_factory=dict)
     _nonces: dict[str, float] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
+    _asked: threading.local = field(default_factory=threading.local, repr=False)  # .remote: inside a signed request
 
     def __post_init__(self):
         self.repo, self.data, self.db = Path(self.repo), Path(self.data).resolve(), Path(self.db)
@@ -275,7 +277,11 @@ class Ops:
         fn = getattr(self, f"op_{op}", None) if isinstance(op, str) and op.isidentifier() else None
         if fn is None:
             raise OpsError(400, f"unknown op {op!r}")
-        return self.scrub(fn(**args))
+        self._asked.remote = True  # a job this request starts says so in its record (`Job.by`)
+        try:
+            return self.scrub(fn(**args))
+        finally:
+            self._asked.remote = False
 
     def scrub(self, obj: Any) -> Any:
         vals = [os.environ[k] for k in SECRET_ENV if len(os.environ.get(k, "")) >= 8]
@@ -466,7 +472,11 @@ class Ops:
     def _start(self, cmd: list[str], argv: list[str], timeout: int) -> dict[str, Any]:
         jid = time.strftime("%Y%m%d-%H%M%S-") + secrets.token_hex(3)
         log = self.data / "jobs" / f"{jid}.log"
-        job = Job(id=jid, argv=argv, log=log, started=time.time())
+        # who asked: a session through the endpoint (`handle`), or the server's own code calling op_run. The round's
+        # gate calls an agent for a job that ended only when the server's side started it (operator/gate.py): until
+        # 11 Nov every deploy, settings check and profile a session ran woke the paid operator a round later.
+        by = "remote" if getattr(self._asked, "remote", False) else ""
+        job = Job(id=jid, argv=argv, log=log, started=time.time(), by=by)
         fh = log.open("wb")
         # A wrapper shell writes the exit code to <id>.exit so the outcome survives the starting process going away
         # (the operator is a short-lived timer run; the ops service may restart): _meta() reconciles from that file.
@@ -502,7 +512,8 @@ class Ops:
 
     def _job_dict(self, job: Job) -> dict[str, Any]:
         return {"id": job.id, "argv": job.argv, "started": int(job.started), "ended": int(job.ended) if job.ended else None,
-                "exit_code": job.code, "running": job.code is None, "pid": job.proc.pid if job.proc else None}  # fmt: skip
+                "exit_code": job.code, "running": job.code is None, "pid": job.proc.pid if job.proc else None,
+                **({"by": job.by} if job.by else {})}  # fmt: skip
 
     def _save_meta(self, job: Job) -> None:
         """Atomic: a reader never sees a half-written file (write a temp file, then rename it over the old one)."""

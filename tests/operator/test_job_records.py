@@ -187,3 +187,27 @@ def test_old_stage_files_are_looked_for_four_times_a_day(tmp_path, monkeypatch):
     assert pruned == [start + 20]
     assert not list(jobs.glob("20261102-000000-old.*"))  # a measure run that ended nine days ago: its files are gone
     assert (jobs / "20261102-000001-old.json").exists()  # a lab's are kept
+
+
+def test_a_job_says_who_started_it(tmp_path):
+    """Through the ops endpoint (a session far away): `remote`. By the server's own code (the round's stages, an agent's
+    research, a live test): nothing. The round's gate reads it (`gate.decide`)."""
+    import time
+
+    key = tmp_path / "key"
+    (tmp_path / "authorized").write_text(O.keygen(key) + "\n")
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "authorized", branch="main",
+                command=[sys.executable, "-c", "pass"])  # fmt: skip
+    body, headers = O.sign(key, "run", {"argv": ["lab"]})
+    far = ops.handle(body, headers["X-Ops-Signature"])
+    near = ops.op_run(["lab"])
+    for _ in range(100):
+        if all((data / "jobs" / f"{j['id']}.exit").exists() for j in (far, near)):
+            break
+        time.sleep(0.05)
+    assert json.loads((data / "jobs" / f"{far['id']}.json").read_text())["by"] == "remote"
+    assert "by" not in json.loads((data / "jobs" / f"{near['id']}.json").read_text())
+    ended = {j["id"]: j for j in ended_since(data / "jobs", since_ts=time.time() - 60, already=set())}
+    assert ended[far["id"]]["by"] == "remote" and "by" not in ended[near["id"]]

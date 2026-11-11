@@ -224,7 +224,9 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         return Decision(False, "none", ["budget"])
     events: list[str] = []
     states: list[str] = []
-    ended = [j for j in snap.jobs_ended if loop_stage(j.get("argv")) is None]
+    # a job a session started through the ops endpoint (a deploy, a check, a profile, its own lab) is read by whoever
+    # started it; an analysis still finds a research job among the day's (snapshot.recent_jobs)
+    ended = [j for j in snap.jobs_ended if loop_stage(j.get("argv")) is None and j.get("by") != "remote"]
     if ended:
         events.append(
             "job ended: "

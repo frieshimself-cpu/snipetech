@@ -145,8 +145,9 @@ def ended_since(jobs_dir: Path, since_ts: float, already: set[str], now: float |
                 pass
         ended = m.get("ended")
         if ended is None or ended >= since_ts:
+            # `by`: who started it (ops.Job.by); the gate reads it
             out.append({"id": jid, "argv": m.get("argv", []), "exit_code": m.get("exit_code"), "ended": ended,
-                        "log": str(jobs_dir / f"{jid}.log")} | ({"note": m["note"]} if m.get("note") else {}))  # fmt: skip
+                        "log": str(jobs_dir / f"{jid}.log")} | {k: m[k] for k in ("note", "by") if m.get(k)})  # fmt: skip
     return out
 
 

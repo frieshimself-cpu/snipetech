@@ -289,6 +289,18 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         decision = decide(snap, prev, t0, cfg.operator, paths, new_trips=trips["n"], trips_since=trips["since_ts"])
         if analyst and decision.reasons != ["budget"]:
             decision = Decision(True, "analyst", decision.reasons + ["forced by --analyst"], decision.state_reasons)
+        if dry_run:
+            # what a round would see and decide, and nothing kept: a saved snapshot is what the next round compares
+            # with, so everything this one saw (a job that ended, a fill, a balance that moved) would count as told
+            # (11 Nov: two profiling runs swallowed the events of 09:24 and 09:54 UTC)
+            would = f"call {decision.mode}: " + "; ".join(decision.reasons) if decision.call else "stay quiet"
+            _log(paths, t0, f"dry run: would {would}")
+            print(
+                json.dumps(
+                    {"snapshot": json.loads(snap.to_json()), "decision": asdict(decision)}, indent=1, default=str
+                )
+            )
+            return 0
         prev_ts = dict(getattr(prev, "reason_ts", {}) or {}) if prev is not None else {}
         snap.reason_ts = carry_reason_ts(prev_ts, decision, t0)
         save(snap, paths)
@@ -311,13 +323,6 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             _log(paths, t0, "quiet")
             return 0
         _log(paths, t0, f"call {decision.mode}: " + "; ".join(decision.reasons))
-        if dry_run:
-            print(
-                json.dumps(
-                    {"snapshot": json.loads(snap.to_json()), "decision": asdict(decision)}, indent=1, default=str
-                )
-            )
-            return 0
         if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
             _log(paths, t0, "no ANTHROPIC_API_KEY in the environment")
             if not notes.has_today("ANTHROPIC_API_KEY", t0):
