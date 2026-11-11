@@ -351,7 +351,9 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
            "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],
                            "landing": paper.landing_key(*(r.get("landing") or (0, copy_pos))), **r["test"]} for r in ranked[:8]],
            "wallets": [{k: w.get(k) for k in ("wallet", "label", "n", "mean", "ev_lower", "win_rate")} for w in wallets[:8]],
-           "frozen": [{"id": s["id"], "label": s["label"]} for s in frozen["frozen"]]}  # fmt: skip
+           "frozen": [{"id": s["id"], "label": s["label"]} for s in frozen["frozen"]],
+           # the rows the freeze left out and why: a rule already under test, its twin, one refuted in the last week
+           "skipped": list(frozen.get("skipped") or [])}  # fmt: skip
     store.set_coverage(SEARCH_KEY, out)
     return out
 

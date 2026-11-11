@@ -6,6 +6,27 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 14:30 UTC: are the agents doing the work? The scheduled jobs yes; the paid analyst only in part
+
+- **Still nothing profitable live.** 74xVT9 is still the one qualified wallet; no strategy passes on paper.
+- **The scheduled jobs do their work**: the tape, the wallet checks every 30 minutes, the strategy search every two
+  hours, the paper test every 30 minutes, the hourly re-scoring. All on time, the server nearly idle.
+- **The paid analyst** ran 25 times on 11 Nov for 24.14 $. When something was new it did real work: it found that
+  one operator's bundles carried the 5 SOL launch rule's paper profit (+0.12 SOL became -0.31 SOL an hour later), and
+  that the search kept adding that rule again. But it started five jobs all day, none after 10:30, while 14 ideas
+  that need no yes from the owner waited untested, two of them the owner's own (the dip buy, the instant-bond
+  migration snipe). And four in ten of its database queries were guesses at column names.
+- **Fixed:** the query tool now tells it the tables' columns (audit row 56). Every turn's message lists the ideas
+  nobody tested, and a turn with nothing new tests the first one or hands it to the cloud session (row 59). The
+  cadence and the budget are the owner's and unchanged.
+- **Fixed: one paper record a rule** (row 57). The search had put the 5 SOL launch rule into the paper test four
+  times in 2.5 hours, each time with another exit or a twin setting. A launch rule that passes on paper goes live by
+  itself, so four tries at passing were three too many. No limit on new rules (the owner's 9 Nov instruction; the
+  old "4 a day" sentence is gone from the analyst's instructions, row 58).
+- **Fixed:** two studies read a venue name the tape never writes (row 60).
+- **Open:** whether the analyst now tests ideas shows in the next turns. The two owner ideas need either a lab the
+  analyst can start or a small study built here.
+
 ## 11 Nov, 13:00 UTC: the nightly job worked three hours for nothing; a quarter of the "worth sniping" deployers lose where we land
 
 - **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.

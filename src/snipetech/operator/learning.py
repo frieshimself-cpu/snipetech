@@ -43,7 +43,13 @@ MAX_IDEAS = 100
 CONTEXT_LESSONS = 10
 CONTEXT_IDEAS = 5
 CONTEXT_LINE = 240  # each lesson or idea line is cut to this many characters
-CONTEXT_MAX_CHARS = 4000
+# The open ideas no job has tested yet, shown apart from the best ones. 11 Nov: 14 open ideas needed no yes from the
+# owner and had never been tested, two of them the owner's own of the day before; the five best ideas the message
+# carried were the ones already under test, the same five turn after turn, and 20 of the day's 25 analyses started no
+# experiment. What a turn needs of one is its test, so the line has room for the longest test (IDEA_TEXT).
+UNTESTED_IDEAS = 3
+UNTESTED_LINE = 560
+CONTEXT_MAX_CHARS = 4000 + UNTESTED_IDEAS * UNTESTED_LINE + 200
 # the research record every turn sees after the lessons and ideas, on its own cap so neither crowds out the other: the
 # newest round's outcome and lessons, then a line for each older round (research_record)
 RESEARCH_MAX_CHARS = 2500
@@ -309,6 +315,15 @@ def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | N
     return out[: max(0, int(limit))] if limit is not None else out
 
 
+def untested(paths: OperatorPaths, limit: int = UNTESTED_IDEAS) -> list[dict[str, Any]]:
+    """The open ideas no job has tested yet and that need no yes from the owner: the highest priority first, then the
+    one that has waited longest."""
+    ideas, _ = _load_ideas(paths)
+    rows = [i for i in ideas if i.get("status") == "open" and not i.get("owner_needed")]
+    rows.sort(key=lambda i: (-_priority(i), _epoch(i.get("created"))))
+    return rows[: max(0, int(limit))]
+
+
 def ideas_since(paths: OperatorPaths, since_ts: float) -> list[dict[str, Any]]:
     """The open ideas added or changed at or after `since_ts`: what a turn that started then came up with (the owner's
     post-mortem summary names the top one). The ideas it added come first, best first, then the older ones it only
@@ -362,6 +377,13 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
     lines += [_cut(f"- {i.get('id')} [{i.get('kind', '?')}, {i.get('status')}, priority {_priority(i)}"
                    f"{', needs the owner' if i.get('owner_needed') else ''}] {_title(i)}. Why: {i.get('why', '?')} "
                    f"Test: {i.get('test', '?')}", CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
+    waiting = untested(paths)
+    if waiting:
+        lines.append(
+            "Not tested yet (open, no yes from the owner needed; the highest priority, then the longest wait):"
+        )
+        lines += [_cut(f"- {i.get('id')} [priority {_priority(i)}, open since {str(i.get('created') or '?')[:10]}] "
+                       f"{_title(i)}. Test: {i.get('test', '?')}", UNTESTED_LINE) for i in waiting]  # fmt: skip
     memory = _cut("\n".join(lines), max_chars)
     record = research_record(research)
     return f"{memory}\n{record}" if record else memory

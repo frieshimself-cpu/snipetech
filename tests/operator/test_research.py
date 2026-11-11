@@ -265,6 +265,14 @@ def test_the_search_ranks_at_the_live_copy_landing_and_paper_tests_what_pays_the
     for s in frozen:
         assert (s["latency"], s["position"]) == paper.live_landing(s["trigger"]["kind"], "+6")
     assert [f["id"] for f in cov["frozen"]] == [s["id"] for s in frozen]
+    # the search's record says which rows were left out and why: here the grid's settings that fire on the very
+    # moments of a better row (a burst within 2 s and within 5 s), each of them one rule
+    assert cov["skipped"] and all("the same moments" in x["why"] for x in cov["skipped"])
+    assert not {x["label"] for x in cov["skipped"]} & {f["label"] for f in cov["frozen"]}
+    # the next search finds the same rules: nothing is frozen a second time, whatever exit the lab picks (11 Nov: the
+    # 5 SOL hunt went in four times in 2.5 hours)
+    again = RS.search(Service(cfg, store=st), cfg, data, NOW + 2 * H)
+    assert again["frozen"] == [] and len(st.coverage("paper_strategies")["strategies"]) == len(frozen)
 
 
 def test_the_search_reads_only_the_newest_tape_so_its_cost_stays_flat(env):

@@ -422,12 +422,44 @@ def test_the_analyst_is_told_to_append_its_update_when_the_days_report_exists():
 def test_the_analyst_tests_one_hypothesis_of_its_own_each_turn():
     """The hypothesis protocol: one idea a turn, stated with what would refute it, a lab on the newest day (one lab at
     a time), frozen into the forward paper test only with a positive lower bound at its live landing; the paper test,
-    never the lab, is the evidence, and at most 4 new frozen strategies a day."""
+    never the lab, is the evidence, and a rule has one forward record."""
     text = " ".join(ANALYST_SYSTEM.split())
     for words in ("ONE hypothesis", "operator/ideas.json", "refute", '["lab", "--trigger", "<json>", "--hours", "24", "--json"]',
                   "One lab at a time", "live_landing", '["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]',
-                  "never the lab, is the evidence", "4 new frozen strategies a day", "Hunt triggers are the ones OKTech can run exactly"):  # fmt: skip
+                  "never the lab, is the evidence", "One forward record a rule", "Hunt triggers are the ones OKTech can run exactly"):  # fmt: skip
         assert words in text, words
+
+
+def test_the_analyst_is_told_one_record_a_rule_and_no_daily_limit():
+    """Owner, 9 Nov: paper-test whatever, at any size, until something pays; the "4 new frozen strategies a day" was
+    our own rule and stayed in the instructions two days longer. What limits the paper test is that a rule has one
+    record: the freeze leaves out a rule already under test, its twin on the same moments and one refuted in the last
+    week, and says so under `skipped` (paper.freeze), so the analyst reads the reason and does not try again."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    assert "4 new frozen strategies a day" not in text and "Never more than 4" not in text
+    for words in ("no limit on new rules a day", "`skipped`", "the exit it was frozen with", "the same moments",
+                  "refuted forward in the last week", "another size (--buy) is its own record"):  # fmt: skip
+        assert words in text, words
+
+
+def test_the_analyst_is_told_when_a_hunt_fires():
+    """11 Nov 12:30: the analyst found five buyers in the create slot of coins a "max 2 wallets" hunt fired on, could
+    not explain it, and carried the question through three turns. The rule fires at the first buy where every
+    threshold holds; the rest of a bundle in the same block comes after."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    assert "fires at the first buy at which every threshold holds" in text and "more buyers in its create slot" in text
+
+
+def test_an_analyst_turn_with_nothing_new_tests_an_idea_nobody_tested():
+    """11 Nov: 20 of the day's 25 analyses started no experiment, while 14 open ideas that need no yes from the owner
+    waited untested, two of them the owner's own. A turn with nothing new tests the first one the message lists, or
+    hands it to the cloud session when its tools cannot run the test."""
+    text = " ".join(ANALYST_SYSTEM.split())
+    for words in ('"Not tested yet"', "When nothing changed since the last update", "set its kind to code"):
+        assert words in text, words
+    from snipetech.operator.prompts import _update_closing
+
+    assert '"Not tested yet"' in _update_closing("analyst-2026-11-11")
 
 
 def test_the_analyst_is_told_launch_window_hypotheses_land_where_a_hunt_buy_lands():
@@ -446,7 +478,7 @@ def test_the_analyst_reads_an_unmeasured_hypothesis_as_not_refuted():
     says so instead of calling it refuted, reads where our copies land from the lab (copy_landing), and gives the lab
     no landing of its own to get wrong."""
     text = " ".join(ANALYST_SYSTEM.split())
-    protocol = text[text.index("Hypotheses:") : text.index("4 new frozen strategies a day")]
+    protocol = text[text.index("Hypotheses:") : text.index("One forward record a rule")]
     for words in ("live_landing false", "ranked false", "not measured, not refuted", "copy_landing"):
         assert words in protocol, words
     assert '"--position"' not in protocol

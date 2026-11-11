@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
@@ -248,6 +249,18 @@ def _tables(conn: sqlite3.Connection) -> dict[str, set[str]]:
     """Every table of the database on `conn`, with its columns."""
     names = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
     return {name: {r[1] for r in conn.execute(f'PRAGMA table_info("{name}")')} for name in names}
+
+
+@functools.lru_cache(maxsize=1)
+def table_columns() -> dict[str, tuple[str, ...]]:
+    """Every table's columns in their order, as a database this code opens has them (the schema, then the columns added
+    since): read off an empty in-memory one, so whatever names a column to a reader cannot fall behind the schema."""
+    fresh = Store(":memory:")
+    try:
+        names = [r[0] for r in fresh.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")]
+        return {n: tuple(r[1] for r in fresh.conn.execute(f'PRAGMA table_info("{n}")')) for n in names}
+    finally:
+        fresh.close()
 
 
 def _caller() -> str:

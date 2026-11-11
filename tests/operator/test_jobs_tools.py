@@ -183,6 +183,66 @@ def test_sql_refuses_writes_and_returns_rows(toolbox):
     assert out["columns"] == ["n"] and out["rows"] == [[0]]
 
 
+def _layout(text: str) -> dict[str, list[str]]:
+    """The tables a description lists, each with its columns: the lines shaped `table(col, col, ...)`."""
+    out = {}
+    for m in re.finditer(r"^([a-z_]+)\(([a-z0-9_, ]+)\)", text, re.MULTILINE):
+        out[m.group(1)] = [c.strip() for c in m.group(2).split(",")]
+    return out
+
+
+def test_sql_tool_lists_each_tables_columns_as_the_database_has_them(toolbox):
+    """11 Nov: the tool named six tables and no column. Of the 238 queries the agents ran in two days, 37 failed on a
+    column that is not there (`wallet` for trades.user 17 times, `strategy_id` for paper_trades.strategy 12 times) and
+    53 only asked what a table holds (`SELECT * FROM trades LIMIT 1`): four in ten, in every turn again. The
+    description lists every table it names with its columns, read off the schema itself (a column added to a table is
+    in the description from the same deploy), and no table it does not explain."""
+    from snipetech.operator.tools import SQL_TABLES
+
+    tools, _, _ = toolbox
+    text = tools["sql"].to_dict()["description"]
+    listed = _layout(text)
+    assert (
+        set(listed)
+        == set(SQL_TABLES)
+        >= {"trades", "launches", "labels", "paper_trades", "scores", "fills", "verdicts"}
+    )
+    con = Store(":memory:")
+    try:
+        for table, cols in listed.items():
+            assert cols == [r[1] for r in con.conn.execute(f"PRAGMA table_info({table})")], table
+    finally:
+        con.close()
+    assert "leader_progress" in listed["fills"] and "kept_armed" in listed["verdicts"]  # columns added since 6 Nov
+
+
+def test_sql_tool_says_what_a_query_got_wrong(toolbox):
+    """The wallet of a trade is `user`, its size `quote` in lamports, a paper trade's rule `strategy`: said next to the
+    table, in the words the failed queries used (wallet, SOL, strategy id)."""
+    tools, _, _ = toolbox
+    text = tools["sql"].to_dict()["description"]
+    lines = {line.split("(")[0]: line for line in text.splitlines() if re.match(r"^[a-z_]+\(", line)}
+    assert re.search(r"user = the wallet", lines["trades"]) and "lamports" in lines["trades"]
+    assert re.search(r"'curve'.*'amm'.*'launchlab'", lines["trades"])  # the venue names the tape uses
+    assert "strategy = " in lines["paper_trades"] and "SOL" in lines["paper_trades"]
+    assert tools["sql"].to_dict()["input_schema"]["properties"]["query"]["description"]  # the argument still explained
+
+
+def test_sql_answers_a_wrong_column_with_the_tables_columns(toolbox):
+    """A query on a column that is not there is answered with the layout of the tables it named, so the next query is
+    right without one more to look the table up (`SELECT * FROM x LIMIT 1` was a third of the wasted queries)."""
+    tools, _, _ = toolbox
+    out = _call(tools["sql"], query="select wallet, sum(sol) from trades t join launches l on l.mint = t.mint")
+    assert out.startswith("error: sql: no such column: wallet")
+    listed = _layout(out)
+    assert set(listed) == {"trades", "launches"} and "user" in listed["trades"] and "creator" in listed["launches"]
+    plain = _call(tools["sql"], query="select count(*) from nowhere")
+    assert (
+        plain.startswith("error: sql: no such table: nowhere") and "trades(" in plain
+    )  # an unknown table: all of them
+    assert not _layout(_call(tools["sql"], query="select nope("))  # a syntax error names no table: nothing added
+
+
 def test_start_job_tool_reports_refusals_as_text(toolbox):
     tools, _, _ = toolbox
     assert _call(tools["start_job"], argv=["oktech", "start"]).startswith("error")

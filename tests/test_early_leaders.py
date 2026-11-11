@@ -101,3 +101,31 @@ def test_a_copy_is_charged_pump_funs_fees_and_two_transactions(tmp_path, capsys)
     assert out["cost_sol"] == pytest.approx(want) and want == pytest.approx(0.014)
     assert out["buy_sol"] == buy and out["per_tx_source"] == "estimate"
     assert out["wallets"][0]["mean_sol"] == pytest.approx(cheap - (want - 0.009), abs=1e-5)
+
+
+def test_pumpswap_trades_are_left_out_of_an_early_buys_result():
+    """The copy is entered and marked on the curve. 11 Nov: the tape names a PumpSwap trade's venue "amm" and the study
+    filtered on "pumpswap", so nothing was ever left out: a coin that migrated inside the mark's 30 s was marked at a
+    pool trade."""
+    from types import SimpleNamespace as N
+
+    t0 = NOW - 600
+
+    def tr(user, slot, ts, q_after, b_after, venue="curve", quote=1_000_000_000):
+        return N(user=user, slot=slot, ts=ts, quote=quote, is_buy=True, venue=venue, q_after=q_after, b_after=b_after)
+
+    launch = N(mint="M", user="dev", creator="dev", slot=100, ts=t0)
+    trades = [
+        tr("dev", 100, t0, 30e9, 1000e9, quote=500_000_000),
+        tr("lead", 102, t0 + 1, 31e9, 990e9),
+        tr("c1", 102, t0 + 1, 31.3e9, 987e9),
+        tr("c2", 102, t0 + 1, 31.6e9, 984e9),
+        tr("c3", 102, t0 + 1, 31.9e9, 981e9),
+        tr("c4", 103, t0 + 2, 32.2e9, 978e9),
+        tr("pool", 150, t0 + 20, 320e9, 978e9, venue="amm"),
+    ]  # a pool trade at ten times the price, 19 s later
+    store = N(launches_between=lambda a, b: [launch], trades_for_mint=lambda m, a, b: trades)
+    by = {r["wallet"]: r for r in early_leaders(store, NOW, hours=1, min_n=1)}
+    # entered behind c3, marked at c4, the last curve trade in the 30 s: +1.3 % on 0.2 SOL, less the 0.009 cost
+    assert abs(by["lead"]["mean_sol"] - (0.2 * ((32.2 / 978) / (31.9 / 981) - 1) - 0.009)) < 1e-5
+    assert "pool" not in by

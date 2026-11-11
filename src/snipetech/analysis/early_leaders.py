@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 from typing import Any
 
+from ..models import AMM
+
 LAMPORTS = 1_000_000_000
 
 
@@ -34,7 +36,9 @@ def early_leaders(store, now: float, *, hours: float = 72, min_sol: float = 0.3,
     slots_after: dict[str, list[int]] = {}
     for launch in store.launches_between(start, int(now)):
         trades = store.trades_for_mint(launch.mint, int(launch.ts), int(launch.ts + 600))
-        trades = [t for t in trades if t.venue != "pumpswap"] if trades else []
+        # the copy is entered and marked on the curve (the tape's name for a PumpSwap trade is models.AMM; until 11 Nov
+        # this asked for "pumpswap", which no trade carries, and left nothing out)
+        trades = [t for t in trades if t.venue != AMM] if trades else []
         if len(trades) < behind + 2:
             continue
         slot0 = sum(int(t.quote) for t in trades if t.is_buy and t.slot == launch.slot)

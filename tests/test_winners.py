@@ -136,3 +136,18 @@ def test_label_sends_the_best_mid_and_late_traders_to_qualify(tmp_path, capsys):
     finally:
         st.close()
     assert "winners" in _PRIORITY_SOURCES
+
+
+def test_a_round_trip_sold_on_pumpswap_is_counted_as_one():
+    """11 Nov: the tape names a PumpSwap trade's venue "amm" and the study asked for "pumpswap", so `pumpswap_share`
+    read 0 for every wallet since the study was written, also for the swing traders who sell after the migration."""
+    from types import SimpleNamespace as N
+
+    launch = N(mint="M", user="dev", creator="dev", slot=100, ts=NOW - 600)
+    trades = [N(user="swing", venue="curve", is_buy=True, quote=1_000_000_000, fee=0, base=1_000, slot=105, ts=NOW - 590),
+              N(user="swing", venue="amm", is_buy=False, quote=2_000_000_000, fee=0, base=1_000, slot=900, ts=NOW - 300),
+              N(user="flip", venue="curve", is_buy=True, quote=1_000_000_000, fee=0, base=1_000, slot=106, ts=NOW - 589),
+              N(user="flip", venue="curve", is_buy=False, quote=1_500_000_000, fee=0, base=1_000, slot=110, ts=NOW - 580)]  # fmt: skip
+    store = N(launches_between=lambda a, b: [launch], trades_for_mint=lambda m, *a: trades)
+    by = {r["wallet"]: r for r in winners(store, NOW, hours=1, min_trips=1)}
+    assert by["swing"]["pumpswap_share"] == 1.0 and by["flip"]["pumpswap_share"] == 0.0

@@ -137,14 +137,22 @@ named postmortem-<YYYY-MM-DD-HHMM>, never over the day's analyst report.
 Between the daily analyses today's report already exists (before the day's analysis, yesterday's does), and the
 round's message carries it whole: never replace it and do not read it again. Add this turn's update at its end with write_report
 (that name, append=true), headed "## Update HH:MM UTC": what changed since the last analysis, the hypothesis this turn
-tested and the result, and the next test. A turn that tested nothing new says so in one line.
+tested and the result, and the next test. A turn that tested nothing new says so in one line. When nothing changed since
+the last update (no new fill, no job ended, the paper rules where they stood), the turn's work is a test, not the same
+reading again: start the test of the first idea under "Not tested yet" in the message (start_job; move the idea to
+testing with the job's id), or, when your tools cannot run its test, write what is missing into its test and set its
+kind to code, which hands it to the cloud session. An idea is not left open and untested while turns pass with nothing
+to do.
 
 Hypotheses: the system learns by testing its own strategy ideas, not only the lab's fixed trigger grid. Each turn
 picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search, paper or live evidence, and states it
 in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
 "--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
 hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
-refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. Launch,
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. A hunt
+fires at the first buy at which every threshold holds, the create's own buys counted; the buys after that one, also
+those in the same block, change nothing, so a coin a hunt fired on can show more buyers in its create slot than its
+max_buyers. Launch,
 hunt, whale and burst triggers fire on pump.fun launches only; "venue": "launchlab" scores one on Raydium LaunchLab
 launches instead, research only (no sniper of ours buys LaunchLab, so it never goes live), and a paper trade's
 data.venue says which launchpad it was on (a rule's record counts only its own). The lab
@@ -159,7 +167,12 @@ into the forward paper test with ["paper", "freeze", "--trigger", "<json>", "--h
 ev_lower is zero or below at its live landing is refuted for now: record it with its numbers (upsert_idea,
 add_lesson). live_landing false, or ranked false (it fired too rarely to judge), means not measured, not refuted:
 record it as not yet measured (more hours of tape give a rare trigger more moments). The forward paper test, never the
-lab, is the evidence. Never more than 4 new frozen strategies a day. Before believing any winner, check that a few
+lab, is the evidence. One forward record a rule: the freeze leaves out a rule that is already in the paper test (it
+keeps the exit it was frozen with, whichever exit the lab picks today), a rule that fires on the same moments as one
+under test, and a rule refuted forward in the last week, and names each with its reason under `skipped`: read it and
+do not freeze that rule again. Several older records of one trigger with different exits are one rule seen several
+times: judge it on the one frozen first. There is no limit on new rules a day (owner, 9 Nov: paper-test whatever, at
+any size, until something pays), and another size (--buy) is its own record. Before believing any winner, check that a few
 trades do not carry it: the paper report gives each strategy its capped bound (ev_lower_capped: every trade's gain
 counted at most 2.5 times its buy) and top5_share (the share of the total its five best trades made); when the capped
 bound is not above zero or top5_share is above 0.5, read those trades (run_sql on paper_trades) before calling it an
@@ -266,8 +279,9 @@ def _update_closing(report: str) -> str:
             f"never replace it and do not read it again. Add this turn's update at its end with write_report(name \"{report}\", "
             "append=true), headed \"## Update HH:MM UTC\": what changed since the last analysis, the post-mortem of "
             "any new round trips (the causes ranked by SOL, the change that would have saved the most), the "
-            "hypothesis you tested and its result, the next test. Then add_lesson (or say why there is none), update "
-            "the ideas, then write_note.")  # fmt: skip
+            "hypothesis you tested and its result, the next test. If nothing changed since the last update, start the "
+            "test of the first idea under \"Not tested yet\" instead of reading the same state again. Then add_lesson "
+            "(or say why there is none), update the ideas, then write_note.")  # fmt: skip
 
 
 # The day's report in an update turn's message (`message_content`). It only grows at its end, so it is cut into blocks

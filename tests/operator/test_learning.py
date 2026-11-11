@@ -217,6 +217,46 @@ def test_every_turn_sees_the_last_ten_lessons_and_the_top_five_open_ideas(paths)
     assert "plan-A" not in text and "plan-F" not in text and "plan-X" not in text
 
 
+def test_every_turn_is_shown_the_ideas_no_job_has_tested_yet(paths):
+    """11 Nov: 14 open ideas needed no yes from the owner and no job had ever tested them, two of them the owner's own
+    from the day before (the dip buy, the migration snipe on coins that bond at once). The message's five best ideas
+    were the ones already under test, the newest first, the same five turn after turn, and 20 of the day's 25
+    analyses started no experiment. The untested ones are listed apart: the highest priority first, then the one that
+    has waited longest, each with its test."""
+    L.upsert_idea(paths, IDEA | {"title": "under test", "priority": 5, "status": "testing"}, source="analyst", now=NOW)
+    L.upsert_idea(paths, IDEA | {"title": "dip buy", "priority": 2, "test": "lab momentum on the fall"}, source="cloud",
+                  now=NOW - 30 * H)  # fmt: skip
+    L.upsert_idea(paths, IDEA | {"title": "instant bond", "priority": 2}, source="cloud", now=NOW - 20 * H)
+    L.upsert_idea(paths, IDEA | {"title": "newer and better", "priority": 4}, source="analyst", now=NOW - H)
+    L.upsert_idea(paths, IDEA | {"title": "owner decides", "priority": 5, "kind": "live-test"}, source="analyst",
+                  now=NOW - 40 * H)  # fmt: skip
+    L.upsert_idea(paths, IDEA | {"title": "closed", "status": "rejected"}, source="analyst", now=NOW - 50 * H)
+    L.upsert_idea(paths, IDEA | {"title": "fourth in line", "priority": 1}, source="analyst", now=NOW - 60 * H)
+    assert [i["title"] for i in L.untested(paths)] == ["newer and better", "dip buy", "instant bond"]  # three at most
+    text = L.context(paths)
+    block = text[text.index("Not tested yet") :]
+    assert block.index("newer and better") < block.index("dip buy") < block.index("instant bond")
+    assert "lab momentum on the fall" in block and "open since 2026-11-05" in block  # the dip buy: its test, its wait
+    for other in ("under test", "owner decides", "closed", "fourth in line"):
+        assert other not in block, other
+
+
+def test_the_untested_ideas_show_their_tests_whole(paths):
+    """What the turn needs from an untested idea is its test: the line has room for the longest one (400 characters),
+    where the best-ideas lines above are cut at 240."""
+    test = "start_job lab with " + "a kol trigger on the group " * 13 + "END"
+    assert 350 < len(test) <= 400
+    L.upsert_idea(paths, IDEA | {"title": "long test", "test": test}, source="cloud", now=NOW)
+    text = L.context(paths)
+    assert test in text[text.index("Not tested yet") :]
+
+
+def test_with_every_idea_tested_or_the_owners_nothing_is_listed_as_untested(paths):
+    L.upsert_idea(paths, IDEA | {"title": "under test", "status": "testing"}, source="analyst", now=NOW)
+    L.upsert_idea(paths, IDEA | {"title": "owner decides", "kind": "code"}, source="analyst", now=NOW)
+    assert L.untested(paths) == [] and "Not tested yet" not in L.context(paths)
+
+
 def test_what_every_turn_sees_stays_small(paths):
     for i in range(12):  # words, not one long run of letters (that reads as a key to the secret check)
         L.add_lesson(paths, f"{i:02d} " + "tx " * 96, "ev " * 133, 3, source="analyst", now=NOW + i)

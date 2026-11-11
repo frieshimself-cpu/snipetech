@@ -47,6 +47,9 @@ from .lab import (
     MIG_CAP,
     MIG_LAND_SLOTS,
     SKIP_WORDS,
+    TRIGGERS,
+    WATCH_SECS,
+    WATCHED_KINDS,
     Trigger,
     _crew_uris,
     _fire,
@@ -314,6 +317,54 @@ def live_id(strategy: dict) -> str:
     )
 
 
+# One forward record a rule. 11 Nov: the strategy search (every two hours) froze its four best rows whatever was under
+# test. The lab picks a trigger's exit on the older part of its moments, and two hours later the pick is another: the
+# 5 SOL hunt went in holding 10 s at 10:15 and holding 60 s at 12:45, both times twice (its 1 s and 2 s window fire on
+# the same buys, 44 and 44 moments), the 1 SOL KOL copy twice. Every copy is one more chance for a rule to pass forward
+# by luck (a hunt that passes goes live by itself) and one more strategy for each paper run to score.
+TWIN_SHARE = 0.8  # two triggers are one rule when this share of the moments of the one with more are the other's too
+RETEST_AFTER_SECS = 7 * 86400  # a rule refuted forward is not frozen again, with any exit, for this long
+
+
+def rule_key(trigger: dict, position: str, latency: int, buy_sol: float) -> str:
+    """A frozen strategy's rule: its trigger at a landing and size, whatever exit it sells with. A trigger stored
+    before a field existed is read with that field's default, so it is the same rule as today's."""
+    try:
+        trig = Trigger(**trigger).__dict__
+    except TypeError:  # no lab trigger (a rule another job feeds), or a field this code no longer has
+        trig = dict(trigger)
+    return json.dumps([trig, str(position), int(latency), float(buy_sol)], sort_keys=True, default=str)
+
+
+def _spec_key(spec: dict) -> str:
+    return json.dumps(spec, sort_keys=True, default=str)
+
+
+def _moments(data: dict) -> dict[str, set[tuple]]:
+    """Each trigger of a collected lab (by `_spec_key` of its fields) with the moments it fired on: (coin, second)."""
+    by_index: dict[int, set[tuple]] = {}
+    for r in data.get("rows") or []:
+        by_index.setdefault(int(r["trigger"]), set()).add((r.get("mint"), r.get("ts")))
+    return {_spec_key(t.__dict__): by_index.get(ti, set()) for ti, t in enumerate(data.get("triggers") or TRIGGERS)}
+
+
+def _twins(a: set, b: set) -> bool:
+    return bool(a) and bool(b) and len(a & b) >= TWIN_SHARE * max(len(a), len(b))
+
+
+def _sells_as_live(strategy: dict) -> bool:
+    """Whether a frozen strategy's exit acts as its live sniper's would. A launch-type rule frozen before 7 Nov
+    evening was scored with exits acting from the buy, before OKTech watches a coin: it keeps its id and its trades and
+    never goes live (`strategy_id`, live_test), and the same rule frozen again, with the watch delay, is a strategy of
+    its own. So it does not stand for its rule: the watched one is the rule's record."""
+    if (strategy.get("trigger") or {}).get("kind") not in WATCHED_KINDS:
+        return True
+    try:
+        return float((strategy.get("exit") or {}).get("watch_secs") or 0.0) >= WATCH_SECS - 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0, buy_sol: float = 0.2,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
@@ -330,7 +381,15 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     strategy it freezes, so a cost that was not measured is never read as one that was. `tape`: gives the store the
     lab reads the tape from, asked once the lab lock is held (the CLI's gives `Service.tape_store`, the hourly copy,
     as `lab` and the strategy search read theirs: a lab's reads held the live WAL back for as long as they took); the
-    frozen strategies are written to `store`."""
+    frozen strategies are written to `store`.
+
+    One forward record a rule (`rule_key`: a trigger at a landing and size). The `top` are the lab's best distinct
+    rules: a rule already under test keeps the exit it was frozen with and counts among them; a row that fires on the
+    moments of a better row or of a rule under test (`TWIN_SHARE`, among rules of its kind at its landing and size) is
+    that rule under another setting and takes no place; a rule refuted forward is not frozen again for
+    RETEST_AFTER_SECS and takes no place either. `skipped` names each row left out and why. No limit on new rules a
+    day (owner, 9 Nov), another size is another rule, and a launch-type rule scored before the watch delay does not
+    stand for its rule (`_sells_as_live`)."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
     if data is None:
@@ -363,23 +422,76 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     cov = store.coverage("paper_strategies")
     old = [] if replace else cov.get("strategies", [])
     have = {s["id"] for s in old}
-    new = []
-    for r in ranked[:top]:
-        lat, pos = live_landing(r["trigger_spec"].get("kind"), copy_pos)
-        sid = strategy_id(r["trigger_spec"], r["exit_params"], pos, lat, buy_sol)
-        if sid in have:
+    fired = _moments(data)
+    records: dict[str, list[dict]] = {}  # rule -> the strategies frozen on it, oldest first
+    for s in old:
+        if not fed(s) and _sells_as_live(s):  # a rule another job feeds carries no lab trigger
+            records.setdefault(rule_key(s["trigger"], s["position"], s["latency"], s["buy_sol"]), []).append(s)
+    # the rules that hold a place (under test, or frozen by this call): name, moments, and kind, landing and size.
+    # Twins are looked for among rules of one kind at one landing and size: a whale rule on a hunt's moments is the
+    # research twin of the rule OKTech runs as scored, and must not take the hunt's place
+    taken: list[tuple[str, set, tuple]] = []
+    for rs in records.values():
+        under = next((s for s in rs if not s.get("refuted")), None)
+        if under is not None:
+            try:
+                seen = fired.get(_spec_key(Trigger(**under["trigger"]).__dict__), set())
+            except TypeError:
+                seen = set()
+            at = ((under.get("trigger") or {}).get("kind"), str(under["position"]), int(under["latency"]),
+                  float(under["buy_sol"]))  # fmt: skip
+            taken.append((f"{under.get('label', under['id'])} ({under['id']})", seen, at))
+    new: list[dict] = []
+    skipped: list[dict] = []
+    places = 0
+    for r in ranked:
+        if places >= top:
+            break
+        spec = r["trigger_spec"]
+        lat, pos = live_landing(spec.get("kind"), copy_pos)
+        sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol)
+        label = f"{r['trigger']} | {r['exit']}"
+        mine = fired.get(_spec_key(spec), set())
+        rs = records.get(rule_key(spec, pos, lat, buy_sol), [])
+        under = next((s for s in rs if not s.get("refuted")), None)
+        if under is not None:  # its forward record runs, with the exit it was frozen with
+            places += 1
+            if sid != under["id"] and sid not in have:
+                skipped.append({"label": label, "why": f"this rule is already in the paper test as {under['id']} "
+                                f"({under.get('label', '?')}): one forward record a rule, whichever exit the lab picks "
+                                "today"})  # fmt: skip
             continue
+        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol))
+        twin = next((name for name, theirs, where in taken if where == at and _twins(mine, theirs)), None)
+        if twin is not None:
+            skipped.append({"label": label, "why": f"fires on the same moments as {twin}: the same rule under another "
+                            "setting"})  # fmt: skip
+            continue
+        if rs:  # every record of this rule was refuted forward
+            last = max(rs, key=lambda s: int((s.get("refuted") or {}).get("at") or 0))
+            mark = last.get("refuted") or {}
+            if now - int(mark.get("at") or 0) < RETEST_AFTER_SECS:
+                skipped.append({"label": label, "why": f"refuted in the paper test as {last['id']} on "
+                                f"{mark.get('trades', '?')} trades ({float(mark.get('mean_sol') or 0):+.4f} SOL a trade): "
+                                f"not frozen again for {RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
+                continue
+        if sid in have:  # refuted long ago with this very exit: the same strategy cannot be frozen twice
+            continue
+        places += 1
         have.add(sid)
+        taken.append((label, mine, at))
         # the lab's record, with on how many of the trigger's moments its exit was scored (an exit still holding a coin
         # that left its curve where the PumpSwap tape lacks the migration is left out there, lab.exit_pnls)
         counts = {key: r[key] for key in ("moments", "exit_moments") if key in r}
-        new.append({"id": sid, "label": f"{r['trigger']} | {r['exit']}", "trigger": r["trigger_spec"], "exit": r["exit_params"],
+        new.append({"id": sid, "label": label, "trigger": spec, "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
                     "per_tx_source": per_tx_source, "from_ts": int(now),
                     "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **counts,
                             **r["test"]}})  # fmt: skip
+        records.setdefault(rule_key(spec, pos, lat, buy_sol), []).append(new[-1])
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
-    return {"frozen": new, "kept": old, "tape_hours": data["tape_hours"], "landing": landings(copy_pos)}
+    return {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
+            "landing": landings(copy_pos)}  # fmt: skip
 
 
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:

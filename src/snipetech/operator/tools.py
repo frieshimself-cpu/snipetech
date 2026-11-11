@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 from ..config import OperatorConfig
 from ..measure.attribution import known_result_sol, trip_result_sol
 from ..ops import _read_only_authorizer, redact
+from ..store import table_columns
 from . import learning
 from .jobs import OperatorJobs
 from .paths import OperatorPaths, research_dir
@@ -24,6 +26,64 @@ RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the resear
 
 def _iso(ts: float) -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ts))
+
+
+# The tables the sql tool explains, each with what a row is and what a query gets wrong; the columns come from the
+# schema itself (store.table_columns). 11 Nov: the tool named six tables and no column, and of the 238 queries the
+# agents ran in two days 37 failed on a column that is not there (`wallet` for trades.user, `strategy_id` for
+# paper_trades.strategy, `sol` for trades.quote) and 53 only asked what a table holds: four in ten, every turn again.
+SQL_TABLES: dict[str, str] = {
+    "trades": "one row per trade on a pump.fun or LaunchLab curve or a PumpSwap pool. user = the wallet that traded; "
+    "quote = lamports of SOL before fees (quote / 1e9 = SOL); base = raw token units; fee = lamports; ts = unix "
+    "seconds; slot = the block, pos = the transaction's place in it; venue = 'curve' (pump.fun), 'amm' (PumpSwap) or "
+    "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction",
+    "launches": "one row per coin. mint = the coin; user = the wallet that signed the create, creator = the wallet "
+    "its creator fees go to (the deployer); slot, ts = the create (unix seconds); sig = the create transaction",
+    "labels": "address = a wallet; label = its name; kind = its group (kol, cand, wallet, bundler, own, dev, ...); "
+    "source = what wrote it",
+    "paper_trades": "the forward paper test, one row per strategy and coin. strategy = the frozen strategy's id; "
+    "pnl = SOL the trade made after costs, roi = its share of the buy; trigger_ts, entry_ts, exit_ts = unix seconds; "
+    "reason = why it sold; data = JSON (venue, landing, entry_mcap_sol, hold_secs; deployer on a rule of kind dev)",
+    "scores": "one row per kind and key. kind = deployer, qualify, follow, copy or study; key = the wallet; "
+    "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis)",
+    "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
+    "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
+    "trades_behind = trades between the copied buy and ours; pnl_sol = on the sell; ts = unix seconds",
+    "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
+    "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
+    "copy_plan, forward, create_slot, kept_armed = JSON",
+    "oktech_snipers": "the snipers this code created at OKTech. kind = copy (source = the copied wallet), strategy "
+    "(source = the frozen strategy's id) or probe; payload = JSON as sent; created_at, removed_at = unix seconds",
+}
+SQL_DESCRIPTION = (
+    "Run one read-only SELECT against the tape database (30 s cap, 200 rows). A JSON column is read with "
+    "json_extract(data, '$.key'). trades holds every trade of the last two weeks: narrow it by mint, by user or by a "
+    "ts range (each has an index), never with LIKE. The tables and their columns:\n"
+)
+_SQL_NAMED = re.compile(r"\b(?:from|join)\s+\"?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+
+def sql_layout(tables: Iterable[str] | None = None) -> str:
+    """One line a table, `table(column, column, ...): what a row is`: the explained tables, or the ones named (a table
+    the database has and SQL_TABLES does not explain is listed with its columns alone)."""
+    cols = table_columns()
+    out = []
+    for t in SQL_TABLES if tables is None else tables:
+        if t in cols:
+            out.append(f"{t}({', '.join(cols[t])})" + (f": {SQL_TABLES[t]}" if t in SQL_TABLES else ""))
+    return "\n".join(out)
+
+
+def sql_hint(query: str, error: str) -> str:
+    """What a failed query is answered with behind its error: the layout of the tables it named when a column is not
+    there, of every explained table when a table is not, nothing for any other error."""
+    if "no such table" in error:
+        return "\n" + sql_layout()
+    if "no such column" not in error:
+        return ""
+    named = dict.fromkeys(m.lower() for m in _SQL_NAMED.findall(query))
+    layout = sql_layout(named)
+    return "\n" + (layout or sql_layout())
 
 
 class NoteSink:
@@ -260,12 +320,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             text = "\n".join(text.splitlines()[-int(tail) :])
         return redact(text if len(text) <= 200_000 else text[-200_000:])
 
-    @beta_async_tool
+    @beta_async_tool(description=SQL_DESCRIPTION + sql_layout())
     async def sql(query: str) -> str:
-        """Run one read-only SELECT against the tape database (30 s cap, 200 rows).
+        """Run one read-only SELECT against the tape database.
 
         Args:
-            query: A SELECT statement. Tables: trades, launches, labels, paper_trades, scores, oktech_snipers.
+            query: A SELECT statement.
         """
         try:
             con = sqlite3.connect(f"file:{svc.store.path}?mode=ro", uri=True, timeout=5)
@@ -279,7 +339,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             cols = [d[0] for d in cur.description or []]
             rows = cur.fetchmany(201)
         except sqlite3.Error as exc:
-            return f"error: sql: {exc}"
+            return f"error: sql: {exc}" + sql_hint(query, str(exc))
         finally:
             con.close()
         return redact(

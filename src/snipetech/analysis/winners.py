@@ -15,6 +15,8 @@ from __future__ import annotations
 from statistics import median
 from typing import Any
 
+from ..models import AMM
+
 LAMPORTS = 1_000_000_000
 
 
@@ -50,7 +52,7 @@ def winners(store, now: float, *, hours: float = 72, min_trips: int = 30, top: i
                 continue
             p = pos.setdefault(t.user, {"out": 0, "in": 0, "bought": 0, "sold": 0, "first": None, "last_sell": None,
                                         "sells": 0, "amm": False})  # fmt: skip
-            if t.venue == "pumpswap":
+            if t.venue == AMM:  # until 11 Nov this asked for "pumpswap", a name no trade carries: the share read 0
                 p["amm"] = True
             if t.is_buy:
                 p["out"] += int(t.quote) + int(t.fee or 0)
