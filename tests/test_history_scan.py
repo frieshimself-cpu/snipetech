@@ -508,3 +508,44 @@ def test_a_teams_record_can_be_clipped_and_pulled_to_the_average_and_rows_show_e
     robust = team_records(lucky + steady + crowd + nxt, min_prior=3, clip=60.0, shrink=5)
     assert robust["LX"] == "-10-0" and robust["SX"] == "10-25"  # clipped to +60 and pulled toward the average
     assert plain["L0"] == "no record" and robust["L0"] == "no record"
+
+
+def test_a_buy_can_leave_when_the_bundle_wallets_start_selling(tmp_path):
+    """The twelve-wallet crew, 11 Nov: three launches in four pay +20 to +30 % and the fourth is dumped for -65 %
+    inside the minute. The dump is the crew's own sells, and they are in the files: the scan keeps the block of the
+    first sell by a create-block wallet, and an exit rule can leave there (filled a block later, like a stop)."""
+    from snipetech.analysis.history_scan import exit_return
+
+    path = [[1, 1.10], [5, 1.30], [20, 1.25], [21, 0.90], [22, 0.50], [100, 0.20]]
+    assert exit_return(path, {"slots": 150}) == -80.0
+    assert exit_return(path, {"team_sell": 1, "slots": 150}, team_sell=20) == -10.0  # seen in block 20, sold in 21
+    assert (
+        exit_return(path, {"team_sell": 1, "slots": 150}, team_sell=None) == -80.0
+    )  # they never sold: the time ends it
+    assert exit_return(path, {"team_sell": 1, "slots": 10}, team_sell=20) == 30.0  # the time came first
+
+    rows: list[dict] = []
+    coin = Coin(rows, "DUMPED", "dev", S0 + 100)
+    bags = [coin.buy(f"team-{k}", 4.0, 0) for k in range(4)]
+    coin.buy("crowd", 10.0, 30)
+    coin.sell("team-2", bags[2], 41)  # the first of them to sell, 40 blocks after the entry block
+    coin.sell("team-0", bags[0], 42)
+    coin.sell("crowd", coin.vt // 500, 43)
+    coin.buy("late", 0.1, 400)
+    held = Coin(rows, "HELD", "dev2", S0 + 5000)
+    for k in range(4):
+        held.buy(f"holder-{k}", 4.0, 0)
+    held.buy("late", 0.1, 400)
+    recs = {
+        r["mint"]: r for r in scan_files([_write(tmp_path / "pump_fun_2026-10-27_00.parquet", rows)], min_block_sol=15)
+    }
+    assert recs["DUMPED"]["team_sell"] == 40 and recs["HELD"]["team_sell"] is None
+    st = Store(":memory:")
+    try:
+        out = history_table(list(recs.values()), st.token_meta, min_block_sol=15, stats={}, exits=True)
+        assert (
+            out["exits"]["teamsell_t60s"]["n"] == 2
+            and out["exits"]["teamsell_t60s"]["ret"] > out["exits"]["t60s"]["ret"]
+        )
+    finally:
+        st.close()

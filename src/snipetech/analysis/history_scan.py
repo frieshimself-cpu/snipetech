@@ -65,6 +65,11 @@ EXITS: dict[str, dict[str, float]] = {
     "stop20_take100_t10m": {"stop": 0.20, "take": 1.0, "slots": 1500},
     "stop15_trail30_t10m": {"stop": 0.15, "trail": 0.30, "slots": 1500},
     "stop15_take50_t60s": {"stop": 0.15, "take": 0.5, "slots": 150},
+    # out when a create-block wallet starts selling
+    "teamsell_t60s": {"team_sell": 1, "slots": 150},
+    "teamsell_t2m": {"team_sell": 1, "slots": 300},
+    "teamsell_take50_t60s": {"team_sell": 1, "take": 0.5, "slots": 150},
+    "teamsell_t10m": {"team_sell": 1, "slots": 1500},
     "stop25_take50_t60s": {"stop": 0.25, "take": 0.5, "slots": 150},
     "take30_t60s": {"take": 0.3, "slots": 150},
     # the same buy landing later than the block after the create
@@ -175,6 +180,16 @@ def _columns(path: Path, orderer: Orderer | None = None) -> dict[str, list]:
     return cols
 
 
+def _team_sell(st: dict, team: list[str]) -> int | None:
+    """Blocks after the entry block at which a create-block wallet (the dev included) first sold, inside the window."""
+    launch = st["launch"]
+    crew = {*team, launch.creator}
+    for t in st["trades"]:
+        if not t.is_buy and t.user in crew and t.slot > launch.slot:
+            return max(0, t.slot - (launch.slot + 1))
+    return None
+
+
 def _path(st: dict) -> list[list[float]]:
     """The price at the end of every block after the entry block (the one after the create) in which the coin traded,
     as [blocks after the entry, price / entry price]; empty when nobody traded by the entry block."""
@@ -196,14 +211,17 @@ def _path(st: dict) -> list[list[float]]:
     return out
 
 
-def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
+def exit_return(path: list[list[float]], rule: dict[str, float], team_sell: int | None = None) -> float:
     """What a buy at the entry price returns in percent (before fees) when it is sold by `rule`: at the first block
     that closes `stop` under the entry, `take` above it or `trail` under the highest close so far, else at the last
     close inside `slots`. A stop, take or trail is seen at a block's close and sold in the next block: the fill is the
     close of the next block the coin traded in when that is within `FILL_BLOCKS` (`fill`: 0 turns that off), else the
-    close it was seen at. `enter`: the buy lands that many blocks after the entry block, at that block's close."""
+    close it was seen at. `enter`: the buy lands that many blocks after the entry block, at that block's close.
+    `team_sell` (with the rule's `team_sell` set): the block in which a create-block wallet first sold; the buy leaves
+    there like a stop does."""
     limit, stop, take, trail = rule.get("slots", WINDOW_SLOTS), rule.get("stop"), rule.get("take"), rule.get("trail")
     late, fill = rule.get("enter", 0), rule.get("fill", 1)
+    sold_at = team_sell if rule.get("team_sell") else None
     entry = peak = last = 1.0
     for i, (d, r) in enumerate(path):
         if d <= late:
@@ -213,7 +231,8 @@ def exit_return(path: list[list[float]], rule: dict[str, float]) -> float:
             break
         r = r / entry
         last, peak = r, max(peak, r)
-        if (stop and r <= 1 - stop) or (take and r >= 1 + take) or (trail and r <= peak * (1 - trail)):
+        hit = (stop and r <= 1 - stop) or (take and r >= 1 + take) or (trail and r <= peak * (1 - trail))
+        if hit or (sold_at is not None and d >= sold_at):
             if fill and i + 1 < len(path) and path[i + 1][0] - d <= FILL_BLOCKS:
                 last = path[i + 1][1] / entry
             break
@@ -233,7 +252,7 @@ def _record(st: dict, horizons: tuple[int, ...], last_slot: int) -> dict[str, An
             "block_wallets": o["block_wallets"], "block_sol": round(o["block_sol"], 3),
             "peak_sol": round(max(st["peak"], o["peak"]), 2), "rets": o["rets"],
             "bonded_at_once": at_entry >= BONDED_SOL, "partial": last_slot < launch.slot + TRACK_SLOTS,
-            "block_users": team}  # fmt: skip
+            "block_users": team, "team_sell": _team_sell(st, team)}  # fmt: skip
 
 
 def scan_files(paths: list[Path], *, min_block_sol: float = 5.0, stats: dict | None = None,
@@ -434,11 +453,12 @@ def history_table(records: list[dict], meta_of: Callable[[str], dict | None], *,
     all_days = sorted(set(day_of.values()))
     first_days = set(all_days[: (len(all_days) + 1) // 2])
     path_of = {r["mint"]: r.get("path") for r in organised if r["rets"]}
+    sell_of = {r["mint"]: r.get("team_sell") for r in organised}
 
     def exit_rows(mints: list[str]) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         for name, rule in EXITS.items():
-            vals = [(exit_return(path_of[m], rule), m) for m in mints if path_of.get(m) is not None]
+            vals = [(exit_return(path_of[m], rule, sell_of.get(m)), m) for m in mints if path_of.get(m) is not None]
             rets = [v for v, _ in vals]
             out[name] = {"n": len(rets), "ret": _mean(rets), "med": round(median(rets), 2) if rets else None,
                          "win": round(sum(v > fee_pct for v in rets) / len(rets), 3) if rets else None,
