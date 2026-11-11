@@ -6,6 +6,30 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 10:30 UTC: the agents' round takes 2.5 s, not 42; the live page's paper table was wrong; two daily alerts were false
+
+- **Still nothing profitable live.** No new live result: 74xVT9 is still the one qualified wallet.
+- **The agents' round** spent 40 of its 42 seconds redoing the paper-test report from all 511,124 paper trades. A
+  rule's numbers are now made when its trades change. The round takes 2.5 s (measured on the server with the same
+  profile); the report took 2.3 GB of memory at its peak, and a whole round now peaks at 260 MB.
+- **The live page's "Paper trading" table was wrong for launch-type rules**: it counted trades on a launchpad our
+  snipers never buy on. Hunt rule bbe92cca81 showed 23 trades and +0.264 SOL; its record is 20 and +0.169. 18 of the
+  36 rules listed had been dropped by the paper test and looked running. The page now shows the same numbers as the
+  agents' report, marks dropped rules, and no longer re-reads every paper trade every 10 seconds.
+- **Two alerts the server sent the owner every midnight were wrong.** One asked for SOL in the wallet, after the
+  owner had said on 9 Nov not to flag that; it is gone for good. The other said "Anthropic credit: 0 $ left" from a
+  count nobody could update; it now says "not known" quietly, and one Telegram message (`/credit <dollars>`) sets it.
+- **Commands run on the server from outside no longer wake the paid agent** (8 turns for nothing that morning), and a
+  "dry run" of the round no longer uses up what the next real round should be told.
+- **Smaller ones**: the wallet-check lab loads 0.9 coins a scored buy, not 7.4 (205 ms a buy became 34 ms); one
+  statistics routine no longer takes 2.3 GB for a single rule and is 2.6 times faster with identical results; the
+  1,656 job records are no longer all re-read several times every 15 minutes; the analyst's opening message is
+  shorter. What each one was, how it was measured and what is left: [audit-2026-11-11.md](audit-2026-11-11.md)
+  (rows 35-43, open items 5 and 10-12).
+- **Still with the owner** (asked 08:30, no answer yet): preconfirmations on copy snipers, and the crew sniper.
+  And the one root command on the server (`sudo bash /opt/snipetech/deploy/setup.sh`): Ubuntu's updater killed our
+  nightly job on three of seven mornings and froze the machine twice; the fix is in that script.
+
 ## 11 Nov, 08:00 UTC: the server never got settings changed in the code; the machine stood still for 11 minutes
 
 - **Still nothing profitable live.** 74xVT9 stays the one qualified wallet; its first three signals were not bought
