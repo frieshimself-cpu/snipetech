@@ -50,6 +50,12 @@ STAGE_LIMIT_SECS: dict[str, int] = {
 }  # fmt: skip
 
 
+# A stage starts some seconds into its round, so N rounds later its last start is some seconds under N rounds old: with
+# an interval of exactly N rounds it was "not due" and waited one more (11 Nov: the half-hourly stages ran every 45
+# minutes, the hourly one every 75). Due this much before the interval is up: a third of the 15-minute round, and
+# never more than a sixth of the stage's own interval (a 5-minute stage that ran two minutes ago is not due).
+ROUND_SLACK_SECS = 5 * 60
+
 STRATEGIST_AT_SECS = 5 * 3600 + 10 * 60  # 05:10 UTC, as snipetech-strategist.timer: after the daily job's night
 
 
@@ -70,7 +76,7 @@ def due_standins(services: dict[str, str], metas: Iterable[dict], now: float) ->
         if any(m.get("running") for m in same):
             continue
         last = max((float(m.get("started") or 0) for m in same), default=0.0)
-        if now - last < every:
+        if now - last < every - min(ROUND_SLACK_SECS, every // 6):
             continue
         if argv[0] == "strategist" and not _strategist_due(now, last):
             continue

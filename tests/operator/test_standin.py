@@ -281,3 +281,17 @@ def test_the_shadow_exit_recorder_is_kept_running_by_the_round():
     assert stage not in [tuple(a) for a in due_standins({}, [running], NOW)]  # one at a time
     ended = _meta(stage, NOW - 346 * 60)
     assert stage in [tuple(a) for a in due_standins({}, [ended], NOW)]  # started again at the next round
+
+
+def test_a_stage_due_every_half_hour_runs_every_second_round_not_every_third():
+    """The round runs every 15 minutes and starts a stage a few seconds into itself. Two rounds later the stage's last
+    start is a few seconds under 30 minutes old: "not due", and it waited a third round. 11 Nov: the forward paper test
+    and the copy's check ran every 45 minutes (03:16, 04:00, 04:46, 05:30), the hourly scoring every 75."""
+    paper = ("paper", "run")
+    two_rounds_ago = NOW - 2 * 15 * 60 + 40  # started 40 s into the round that began 30 minutes before this one
+    assert paper in [tuple(a) for a in due_standins({}, [_meta(paper, two_rounds_ago)], NOW)]
+    one_round_ago = NOW - 15 * 60 + 40
+    assert paper not in [tuple(a) for a in due_standins({}, [_meta(paper, one_round_ago)], NOW)]
+    score = ("rescore",)
+    assert score in [tuple(a) for a in due_standins({}, [_meta(score, NOW - 4 * 15 * 60 + 40)], NOW)]
+    assert score not in [tuple(a) for a in due_standins({}, [_meta(score, NOW - 3 * 15 * 60 + 40)], NOW)]
