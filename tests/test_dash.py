@@ -258,3 +258,84 @@ def test_the_live_page_shows_the_agents_thinking_ideas_paper_tests_job_logs_and_
 def test_the_page_password_is_scrubbed_like_every_other_secret(monkeypatch):
     monkeypatch.setenv("DASH_TOKEN", "pagepassword12345")
     assert "pagepassword12345" not in O.redact("the password is pagepassword12345")
+
+
+def _paper_world(ops):
+    """A hunt rule with trades on its own launchpad and on another one, a copy rule, a refuted rule; the report read."""
+    from snipetech.analysis import paper
+    from snipetech.config import Config
+    from snipetech.store import Store
+
+    def strategy(sid, kind, **more):
+        return {"id": sid, "label": sid, "trigger": {"kind": kind}, "exit": {}, "position": "+3x", "latency": 0,
+                "buy_sol": 0.2, "from_ts": NOW - 86400, "lab": {}} | more  # fmt: skip
+
+    st = Store(ops.db)
+    try:
+        st.set_coverage("paper_strategies", {"strategies": [
+            strategy("gone", "whale", refuted={"at": NOW - 3600, "trades": 40, "mean_sol": -0.02}),
+            strategy("hunt1", "hunt"), strategy("copy1", "kol")], "superseded": []})  # fmt: skip
+        rows = [("hunt1", f"p{i}", 0.01, "pumpfun") for i in range(17)]
+        rows += [("hunt1", f"l{i}", 0.5, "launchlab") for i in range(3)]
+        rows += [("copy1", f"c{i}", -0.004, None) for i in range(5)]
+        rows += [("gone", f"g{i}", -0.02, "pumpfun") for i in range(40)]
+        for i, (sid, mint, pnl, venue) in enumerate(rows):
+            st.put_paper_trade({"strategy": sid, "mint": mint, "trigger_ts": NOW - 5000 + i, "entry_ts": NOW - 5000 + i + 0.5,
+                                "exit_ts": NOW - 4000 + i, "pnl": pnl, "roi": pnl / 0.2, "reason": "timer",
+                                "data": {"venue": venue} if venue else {}})  # fmt: skip
+        st.set_coverage("paper:venues", {"done": True, "tagged": 0, "untold": 0})
+        return paper.report(st, Config(), now=NOW)
+    finally:
+        st.close()
+
+
+def test_the_page_shows_each_rules_record_as_the_agents_report_does(ops):
+    """11 Nov: the page summed every row of a rule. A launch-type rule's trades on Raydium LaunchLab never count (no
+    sniper of ours buys there; `paper.record`): hunt rule bbe92cca81 showed 23 trades and +0.264 SOL where its record
+    is 20 and +0.169, and the launch rule 1974dc22d6 -724 SOL where it is -770. The page shows the report's numbers."""
+    rep = {s["id"]: s for s in _paper_world(ops)["strategies"]}
+    assert rep["hunt1"]["n"] == 17 and rep["hunt1"]["other_venue"] == 3
+    page = {p["id"]: p for p in dash_state(ops, now=NOW)["paper"]["strategies"]}
+    h = page["hunt1"]
+    assert h["trades"] == 17 and h["total_sol"] == round(rep["hunt1"]["total"], 4) == 0.17
+    assert h["mean_pct"] == 5.0 and h["last_trade"] == NOW - 5000 + 16 + 0.5  # of the 17, not of the 20
+    assert page["copy1"]["trades"] == 5 and page["copy1"]["total_sol"] == -0.02
+
+
+def test_a_rule_the_paper_test_dropped_is_said_to_be_stopped_and_listed_last(ops):
+    """18 of the 36 rules on the page were refuted (losing with enough trades; scored no more) and looked running."""
+    _paper_world(ops)
+    rows = dash_state(ops, now=NOW)["paper"]["strategies"]
+    assert [r["id"] for r in rows][-1] == "gone"
+    assert rows[-1]["refuted"] == {"at": NOW - 3600, "trades": 40, "mean_sol": -0.02}
+    assert all(r["refuted"] is None for r in rows[:-1])
+
+
+def test_the_page_reads_no_paper_trade_to_show_rules_the_report_has_read(ops):
+    """Open, the page asks every 10 s; each time it walked all 511,124 paper trades twice (the sums, the newest 25)."""
+    from snipetech import dash
+
+    _paper_world(ops)
+    con = sqlite3.connect(ops.db)
+    try:
+        asked: list[str] = []
+        con.set_trace_callback(asked.append)
+        out = dash._paper(con, dash._tables(con))
+        con.set_trace_callback(None)
+        on_trades = [q for q in asked if "paper_trades" in q and "sqlite_master" not in q]
+        assert len(on_trades) == 1 and "ORDER BY entry_ts DESC LIMIT" in on_trades[0], on_trades
+        plan = " ".join(r[3] for r in con.execute("EXPLAIN QUERY PLAN " + on_trades[0]))
+        assert "USING INDEX paper_trades_entry" in plan and "SCAN paper_trades USING" not in plan.replace(
+            "SCAN paper_trades USING INDEX paper_trades_entry", ""
+        ), plan
+        assert len(out["strategies"]) == 3 and len(out["recent"]) == 25
+    finally:
+        con.close()
+
+
+def test_the_page_script_marks_stopped_rules_and_picks_the_best_among_running_ones():
+    from snipetech.dash import dash_html
+
+    html = dash_html()
+    assert "x.refuted" in html and "stopped" in html
+    assert "!p.refuted && p.trades > 0" in html  # the "Best paper rule" card: a rule still running

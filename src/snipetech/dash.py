@@ -107,23 +107,36 @@ def _latest_report(paths: OperatorPaths) -> str:
 
 
 def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
-    """Every paper strategy still running, with its trades so far, and the newest paper trades across them."""
+    """Every frozen paper strategy with its record so far, the running ones first, and the newest paper trades.
+
+    A rule's numbers are the ones the paper report made and kept (`analysis.paper.report`, coverage `paper:report`;
+    the paper run makes them again when it has written trades): its record, in which a launch-type rule's trades on
+    another launchpad never count. Until 11 Nov the page summed every row of every rule, walking all 511,124 paper
+    trades on each 10-second refresh: hunt rule bbe92cca81 showed 23 trades and +0.264 SOL (record: 20, +0.169). A rule
+    the report has not read yet (frozen a moment ago) shows the sums of its own rows."""
     out: dict[str, Any] = {"strategies": [], "recent": []}
     if con is None or not {"paper_trades", "coverage"} <= tables:
         return out
     try:
         row = con.execute("SELECT data FROM coverage WHERE key = 'paper_strategies'").fetchone()
         strategies = (json.loads(row[0]) or {}).get("strategies", []) if row else []
-        stats = {sid: (n, tot, mean, last) for sid, n, tot, mean, last in con.execute(
-            "SELECT strategy, count(*), sum(pnl), avg(roi), max(entry_ts) FROM paper_trades GROUP BY strategy")}  # fmt: skip
+        row = con.execute("SELECT data FROM coverage WHERE key = 'paper:report'").fetchone()
+        kept = (json.loads(row[0]) or {}).get("rows") or {} if row else {}
         for st in strategies:
-            n, tot, mean, last = stats.get(st.get("id"), (0, 0.0, None, None))
+            nums = (kept.get(st.get("id")) or {}).get("numbers") or {}
+            if "last_entry" in nums:
+                n, tot, mean, last = nums.get("n"), nums.get("total"), nums.get("mean_roi"), nums.get("last_entry")
+            else:
+                n, tot, mean, last = con.execute("SELECT count(*), sum(pnl), avg(roi), max(entry_ts) FROM paper_trades "
+                                                 "WHERE strategy = ?", (st.get("id"),)).fetchone()  # fmt: skip
             out["strategies"].append({"id": st.get("id"), "label": st.get("label"), "buy_sol": st.get("buy_sol"),
                                       "frozen_at": st.get("frozen_at"), "trades": int(n or 0),
                                       "total_sol": round(float(tot or 0.0), 4),
                                       "mean_pct": None if mean is None else round(float(mean) * 100, 2),
-                                      "last_trade": last})  # fmt: skip
-        out["strategies"].sort(key=lambda r: r["last_trade"] or 0, reverse=True)
+                                      "last_trade": last,
+                                      # dropped by the paper test (losing, with enough trades): scored no more
+                                      "refuted": st.get("refuted") or None})  # fmt: skip
+        out["strategies"].sort(key=lambda r: (r["refuted"] is None, r["last_trade"] or 0), reverse=True)
         out["recent"] = [{"strategy": sid, "mint": m, "entry_ts": e, "exit_ts": x, "pnl": p, "roi": r, "reason": why}
                          for sid, m, e, x, p, r, why in con.execute(
                              "SELECT strategy, mint, entry_ts, exit_ts, pnl, roi, reason FROM paper_trades "

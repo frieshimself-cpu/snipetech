@@ -90,7 +90,8 @@
   </section>
   <section data-panel="paper" hidden>
     <p class="what">Rules that passed the lab, trading with pretend money on new trades as they happen. A rule needs 20 trades,
-      still in profit with its 3 luckiest coins removed, before it is put to you for a live test.</p>
+      still in profit with its 3 luckiest coins removed, before it is put to you for a live test. A rule that keeps losing
+      over enough trades is stopped and listed last.</p>
     <div id="paper"></div>
   </section>
   <section data-panel="live" hidden>
@@ -148,7 +149,7 @@
     const lastTurn = (s.turns || []).slice(-1)[0];
     const lastSay = lastTurn ? (lastTurn.steps || []).filter((x) => x.kind === "say").slice(-1)[0] : null;
     const paper = (s.paper && s.paper.strategies) || [];
-    const best = paper.filter((p) => p.trades > 0).sort((a, b) => b.total_sol - a.total_sol)[0];
+    const best = paper.filter((p) => !p.refuted && p.trades > 0).sort((a, b) => b.total_sol - a.total_sol)[0];
     const svcs = Object.values(s.services || {}); const down = svcs.filter((v) => v === "failed").length;  // timer jobs sit inactive between runs
     return `${s.book && s.book.stopped ? '<div class="banner">Stopped by you (/stop). No new sniper starts until /resume.</div>' : ""}
     <div class="grid">
@@ -212,11 +213,13 @@
   function paper(s, now) {
     const p = s.paper || {strategies: [], recent: []};
     const names = Object.fromEntries((p.strategies || []).map((x) => [x.id, x.label || x.id]));
-    return `<div class="card wrap"><h2>Rules on paper (${(p.strategies || []).length})</h2><table>
+    const stopped = (p.strategies || []).filter((x) => x.refuted).length;
+    return `<div class="card wrap"><h2>Rules on paper (${(p.strategies || []).length - stopped} running${stopped ? ", " + stopped + " stopped" : ""})</h2><table>
       <tr><th>Rule</th><th class="r">Buy</th><th class="r">Trades</th><th class="r">Total SOL</th><th class="r">Mean</th><th>Last trade</th></tr>
-      ${(p.strategies || []).map((x) => `<tr><td>${esc(x.label || x.id)} <span class="dim mono">${esc(x.id)}</span></td><td class="r">${num(x.buy_sol, 2)}</td>
-        <td class="r">${x.trades}${x.trades >= 20 ? "" : '<span class="dim"> /20</span>'}</td><td class="r">${signed(x.total_sol, 3)}</td>
-        <td class="r">${x.mean_pct == null ? "—" : signed(x.mean_pct, 1) + " %"}</td><td class="dim">${x.last_trade ? ago(x.last_trade, now) : "none yet"}</td></tr>`).join("") || '<tr><td class="dim" colspan="6">none</td></tr>'}
+      ${(p.strategies || []).map((x) => `<tr${x.refuted ? ' class="dim"' : ""}><td>${esc(x.label || x.id)} <span class="dim mono">${esc(x.id)}</span></td><td class="r">${num(x.buy_sol, 2)}</td>
+        <td class="r">${x.trades}${x.refuted || x.trades >= 20 ? "" : '<span class="dim"> /20</span>'}</td><td class="r">${signed(x.total_sol, 3)}</td>
+        <td class="r">${x.mean_pct == null ? "—" : signed(x.mean_pct, 1) + " %"}</td>
+        <td class="dim">${x.refuted ? "stopped " + ago(x.refuted.at, now) + ": losing after " + x.refuted.trades + " trades" : x.last_trade ? ago(x.last_trade, now) : "none yet"}</td></tr>`).join("") || '<tr><td class="dim" colspan="6">none</td></tr>'}
       </table></div>
       <div class="card wrap" style="margin-top:12px"><h2>Newest paper trades</h2><table><tr><th>When</th><th>Rule</th><th>Coin</th><th class="r">SOL</th><th class="r">Return</th><th>Exit</th></tr>
       ${(p.recent || []).map((t) => `<tr><td class="dim">${ago(t.entry_ts, now)}</td><td>${esc(names[t.strategy] || t.strategy)}</td><td class="mono">${short(t.mint)}</td>
