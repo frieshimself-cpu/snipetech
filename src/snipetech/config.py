@@ -281,6 +281,10 @@ RETIRED_DEFAULTS: dict[str, tuple] = {
     "snipe.entry_position": ("middle",),
     # 6 Nov 19:04 (2e399af): the paid bid arm is retired and nothing explores
     "book.explore_share": (0.2,),
+    # preconfirmations: off in the server's file since the 4 Nov install, asked for by the code since 6 Nov. The owner
+    # said yes on 11 Nov 21:50 UTC (it changes how live buys are placed). To switch them off again change the default
+    # in OKTechConfig: a `false` in the server's file is this old dump and is not read.
+    "oktech.preconf": (False,),
 }
 # The strategist's bounds, rule by rule: a rule in the file that equals one of these is the dump of an old default and
 # follows today's (or none). 6 Nov 21:02 (09477d9): the control arm's tip may go to 0.005 SOL, not 0.05 (the fill is

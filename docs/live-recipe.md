@@ -4,6 +4,31 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The owner's three answers (11 Nov 2026, about 21:50 UTC): yes, yes, yes
+
+Asked in chat as three yes/no questions, each with its wallet, size and limit; the owner's answers, in their words of
+choice:
+
+1. **Wrapped SOL: "Yes, convert as needed."** The bot may turn its own wrapped SOL back into plain SOL when a
+   pump.fun curve buy needs it. Nothing leaves the sniper wallet. As asked and answered: it is built first, the first
+   conversion is a test of 0.05 SOL, and after that the bot keeps plain SOL for up to two 0.2 SOL curve buys (0.41 SOL)
+   whenever the wallet has it in wrapped form and leaves the rest wrapped for PumpSwap buys.
+2. **The crew sniper: "Yes, start it."** An OKTech sniper on pump.fun from the copy snipers' wallet: 0.2 SOL when one
+   of the twelve crew wallets is among a new launch's buyers and 30+ SOL was bought in the first 1.5 s; it sells at
+   +30 %, at -20 % or after 30 s and stops by itself after 10 buys. Worst case if OKTech ignores our wallet list: about
+   0.2 to 0.4 SOL. Each buy is a curve buy (0.205 plain SOL), so it is started once the wallet can pay one: started
+   earlier, OKTech would count ten unpaid snipes and the sniper would finish without a buy.
+3. **Preconfirmations: "Yes, switch it on."** For the book's next copy snipers (0.2 SOL a buy, 3 buys a sniper, the
+   same wallet). The next 20 copies are compared with the 24 before (how far behind the leader, at what price) and it
+   is switched back if they are not better. Known risk: a copy of a leader's buy that then fails.
+
+What was done about each is written below this entry as it happens.
+
+- **3, preconfirmations: in the code the same evening.** The server's file had held `preconf = false` since the
+  4 Nov install; that old value is retired, so the server follows the code and every copy sniper the book makes from
+  the next deploy on asks OKTech for preconfirmations (`"preconf": true` in its payload). Nothing else in a sniper
+  changes with it (the send count stays 1).
+
 ## The first copy of 74xVT9 was sent and failed: a curve buy takes the whole buy from plain SOL (11 Nov 2026, 18:52 UTC)
 
 **Correction first.** The two entries of 11 Nov below, the agents' instructions and the owner were told that "a buy

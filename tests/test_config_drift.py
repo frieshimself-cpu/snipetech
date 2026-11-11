@@ -87,9 +87,6 @@ OWNERS = {
     "book.day_stop_sol",  # 1000: the same
     "book.equity_floor_sol",  # 0.5
     "operator.wallet",
-    # False since the 4 Nov install; the code asks for preconfirmations since 6 Nov. It changes how live buys are
-    # placed, so it waits for the owner's yes (asked 11 Nov) and is not retired here.
-    "oktech.preconf",
 }
 
 
@@ -140,7 +137,15 @@ def test_nothing_explores_on_the_server_either():
     assert settings_drift(SERVER_FILE)["retired"]["book.explore_share"] == {"file": 0.2, "now": 0.0}
 
 
-def test_the_owners_limits_and_the_preconfirmation_switch_stay_as_the_server_has_them():
+def test_the_owners_limits_stay_as_the_server_has_them():
     cfg = Config.load(SERVER_FILE, overlay=False)
     assert (cfg.book.daily_risk_sol, cfg.book.day_stop_sol, cfg.book.equity_floor_sol) == (1000.0, 1000.0, 0.5)
-    assert cfg.oktech.preconf is False
+
+
+def test_preconfirmations_are_on_since_the_owners_yes():
+    """The server's file held `preconf = false` since the 4 Nov install; the code has asked OKTech for
+    preconfirmations since 6 Nov, so no live sniper ever asked. It changes how live buys are placed, so it waited
+    for the owner: asked 11 Nov 08:30 UTC, answered yes at 21:50 UTC (the book's next copy snipers, 0.2 SOL a buy, the
+    next 20 copies compared with the 24 before). To switch it back: the default in config.py, not the server's file."""
+    assert Config.load(SERVER_FILE, overlay=False).oktech.preconf is True
+    assert settings_drift(SERVER_FILE)["retired"]["oktech.preconf"] == {"file": False, "now": True}
