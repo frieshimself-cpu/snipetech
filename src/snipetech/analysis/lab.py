@@ -1019,12 +1019,24 @@ def _mints_with_buys_by(store: Store, wallets: set[str], a: int, b: int) -> set[
     return out
 
 
-def _mints_by_span(store: Store, wallets: set[str], spans) -> list[set[str]]:
+def group_floor(triggers) -> int:
+    """The smallest buy, in lamports, that can give a moment under these (index, trigger) rules: the lowest size any of
+    them asks of a group wallet's buy. 0 (no size asked) when a rule of another kind is among them: an event rule
+    takes a coin whatever the group paid for it."""
+    floors = [round((t.sol or KOL_MIN_SOL) * LAMPORTS) if t.kind == "kol" else 0 for _ti, t in triggers]
+    return min(floors, default=0)
+
+
+def _mints_by_span(store: Store, wallets: set[str], spans, min_quote: int = 0) -> list[set[str]]:
     """For each span, the coins any of `wallets` bought in it (what `_mints_with_buys_by` answers for one span), from
     one walk of the wallets' trades, WALLETS_PER_READ wallets a read. Asked span by span, every span walked every trade
     the wallets ever made again (the wallet index has no time in it): 193 walks on 11 Nov's tape. A read returns each
     coin once with its first and last buy by these wallets; the few coins whose two lie in different spans are read
-    again buy by buy."""
+    again buy by buy. `min_quote` (lamports): only buys of at least that much count. A group's moment is a wallet's
+    first buy of the rule's size, so a coin its wallets only bought dust of gives none (11 Nov, a profiled lab of 50
+    wallets: 16,335 coins loaded, 10 million trades, for 2,206 moments)."""
+    sized = " AND quote>=?" if min_quote > 0 else ""
+    size = [int(min_quote)] if min_quote > 0 else []
     bounds = [(int(a), int(b)) for a, b in spans]
     out: list[set[str]] = [set() for _ in bounds]
     if not bounds or not wallets:
@@ -1046,9 +1058,9 @@ def _mints_by_span(store: Store, wallets: set[str], spans) -> list[set[str]]:
         marks = ",".join("?" * len(chunk))
         split: list[str] = []
         for mint, first, last in store._q(
-            f"SELECT mint, MIN(ts), MAX(ts) FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks}) "
-            "GROUP BY mint",
-            [lo, hi, *chunk],
+            f"SELECT mint, MIN(ts), MAX(ts) FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks})"
+            f"{sized} GROUP BY mint",
+            [lo, hi, *chunk, *size],
         ):
             a, b = span_of(first), span_of(last)
             if a == b:
@@ -1059,9 +1071,9 @@ def _mints_by_span(store: Store, wallets: set[str], spans) -> list[set[str]]:
         for j in range(0, len(split), 400):
             part = split[j : j + 400]
             for mint, ts in store._q(
-                f"SELECT DISTINCT mint, ts FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks}) "
-                f"AND mint IN ({','.join('?' * len(part))})",
-                [lo, hi, *chunk, *part],
+                f"SELECT DISTINCT mint, ts FROM trades WHERE is_buy=1 AND ts BETWEEN ? AND ? AND user IN ({marks})"
+                f"{sized} AND mint IN ({','.join('?' * len(part))})",
+                [lo, hi, *chunk, *size, *part],
             ):
                 k = span_of(ts)
                 if k is not None:
@@ -1179,18 +1191,24 @@ class _Run:
     mig_horizon: float = 0.0
 
 
-def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int) -> list[tuple]:
+def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
     """The lab's work, span by span: (start, end, the span's measured seconds per slot, its coins in the store's order).
-    A span under ten minutes is skipped; with a wallet group, so is every coin none of its wallets bought."""
+    A span under ten minutes is skipped; with a wallet group, so is every coin none of its wallets bought (with
+    `min_quote`: bought for at least that many lamports at once). A group's coins are the plan as they are found: the
+    span's every trade is not counted to list them again (`active_mints`: 113 walks and 75 s of a 50-wallet lab on
+    11 Nov), and a coin with fewer than `min_trades` trades gives no row when it is read (`_coin_rows`)."""
     spans = [(a, b) for a, b in spans if b - a >= 600]
-    bought = None if group_wallets is None else _mints_by_span(store, group_wallets, spans)
+    bought = None if group_wallets is None else _mints_by_span(store, group_wallets, spans, min_quote)
     plan = []
     for k, (a, b) in enumerate(spans):
         wanted = None if bought is None else bought[k]
         if wanted is not None and not wanted:
             continue
         slot_secs = span_slot_secs(store, int(a), int(b))
-        mints = [mint for mint, _count in store.active_mints(a, b, min_trades) if wanted is None or mint in wanted]
+        if wanted is None:
+            mints = [mint for mint, _count in store.active_mints(a, b, min_trades)]
+        else:
+            mints = sorted(wanted)  # the store's order: by mint
         plan.append((a, b, slot_secs, mints))
     return plan
 
@@ -1518,7 +1536,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)))  # fmt: skip
-    plan = _plan(store, spans, group_wallets, min_trades)
+    plan = _plan(store, spans, group_wallets, min_trades, group_floor(triggers) if groups else 0)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
     shared = _shared_file(store) if n > 1 and len(items) >= MIN_PARALLEL_COINS else None

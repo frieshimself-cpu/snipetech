@@ -162,3 +162,92 @@ def test_the_labels_the_stage_wrote_before_are_removed_and_nobody_elses(tmp_path
         assert run_qualify(svc, svc.cfg, data / "jobs", NOW + 60, early=True)["unlabelled"] == 0
     finally:
         st.close()
+
+
+# -- only the coins that can give a moment are loaded (11 Nov, from the lab's own profile on the server) ---------------
+# A qualify lab of 50 wallets, profiled: 453 s on one process, half of it database reads. It loaded 16,335 coins
+# (10 million trades, each row made into an object, each coin's path built) and scored 2,206 buys. A group's moment is
+# a wallet's first buy in a coin of at least the rule's size (0.1 SOL), and the plan took every coin a wallet had
+# bought in at any size: a bot's thousands of dust buys. And to list a stretch's coins it first counted every trade of
+# the whole stretch (`active_mints`: 113 walks, 75 s), though the group's coins were already known.
+
+from tests.synth import Market, addr
+from tests.test_qualify_run import SLOT
+
+
+def _coin(st, name, buys, at=3500):
+    """One more coin on the tape: the dev's buy, then (wallet, SOL, seconds after the launch) buys, a crowd and sells."""
+    D = addr("dev")
+    m = Market(st, addr(name), D, NOW - at, SLOT + 9000 + (hash(name) % 5000))
+    m.buy(D, 1.0, 0)
+    for w, sol, t in buys:
+        m.buy(w, sol, t)
+    for j in range(4):
+        m.buy(addr(f"crowd:{name}:{j}"), 0.3 + 0.1 * j, 20 + j)
+    m.sell(addr(f"crowd:{name}:0"), 1.0, 40)
+    m.commit()
+    return addr(name)
+
+
+def _loads(st, monkeypatch):
+    """Counts the coins a lab loads and the walks of a whole stretch it makes."""
+    seen = {"coins": [], "walks": 0}
+    real_trades, real_active = st.trades_for_mint, st.active_mints
+
+    def trades_for_mint(mint, *a, **k):
+        seen["coins"].append(mint)
+        return real_trades(mint, *a, **k)
+
+    def active_mints(*a, **k):
+        seen["walks"] += 1
+        return real_active(*a, **k)
+
+    monkeypatch.setattr(st, "trades_for_mint", trades_for_mint)
+    monkeypatch.setattr(st, "active_mints", active_mints)
+    return seen
+
+
+def test_a_coin_no_wallet_of_the_group_bought_at_the_rules_size_is_never_loaded(tmp_path, monkeypatch):
+    svc, st = _lab(tmp_path, ["A"])
+    try:
+        run = default_lab_runner(svc, svc.cfg)
+        (before,) = run(["A"], "+6")
+        dust = [_coin(st, f"dust{k}", [("A", 0.05, 5)]) for k in range(30)]  # a bot's dust: never a moment
+        late = _coin(st, "late", [("A", 0.05, 5), ("A", 0.5, 8)])  # its first buy is dust: no moment, but it is read
+        seen = _loads(st, monkeypatch)
+        (after,) = run(["A"], "+6")
+        assert {k: after[k] for k in GATE} == {k: before[k] for k in GATE} and after["n"] == 12
+        assert not set(dust) & set(seen["coins"]), "coins bought only in dust were loaded"
+        assert late in seen["coins"] and len(set(seen["coins"])) == 13
+    finally:
+        st.close()
+
+
+def test_a_group_lab_does_not_count_every_trade_of_a_stretch_to_list_coins_it_knows(tmp_path, monkeypatch):
+    svc, st = _lab(tmp_path, ["A", "B"])
+    try:
+        seen = _loads(st, monkeypatch)
+        rows = default_lab_runner(svc, svc.cfg)(["A", "B"], "+6")
+        assert sorted(r["wallet"] for r in rows) == ["A", "B"] and seen["walks"] == 0
+        plan = L._plan(st, st.tape_spans(), {"A", "B"}, 1)
+        assert [mints for _a, _b, _s, mints in plan] == [sorted(L._mints_with_buys_by(st, {"A", "B"}, NOW - 7200, NOW))]
+        L._plan(st, st.tape_spans(), None, 1)  # the whole market: its coins are whatever traded, counted as before
+        assert seen["walks"] == 1
+    finally:
+        st.close()
+
+
+def test_the_size_asked_of_a_groups_buys_is_the_smallest_any_of_its_rules_takes(tmp_path):
+    _, st = _lab(tmp_path, ["A"])
+    try:
+        small = _coin(st, "small", [("A", 0.2, 5)])
+        spans = st.tape_spans()
+        assert small in L._plan(st, spans, {"A"}, 1, min_quote=int(0.1 * 1e9))[0][3]
+        assert small not in L._plan(st, spans, {"A"}, 1, min_quote=int(0.3 * 1e9))[0][3]
+        assert small in L._plan(st, spans, {"A"}, 1)[0][3]  # no size asked: every coin a wallet bought in
+        kol = [(0, L.Trigger("kol", sol=1.0, group="cand")), (1, L.Trigger("kol", sol=0.25, group="cand"))]
+        assert L.group_floor(kol) == int(0.25 * 1e9)
+        assert L.group_floor([*kol, (2, L.Trigger("kol", group="cand"))]) == int(L.KOL_MIN_SOL * 1e9)
+        assert L.group_floor([*kol, (3, L.Trigger("event", event="trending"))]) == 0  # an event rule takes any coin
+    finally:
+        st.close()
