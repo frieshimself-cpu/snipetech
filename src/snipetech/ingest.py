@@ -20,11 +20,10 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .models import Launch
-from .solana.base58 import b58decode
 from .solana.normalize import normalize
 from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, WSOL_MINT, decode_account
 from .solana.rpc import RpcError, SolanaRpc
-from .solana.tx import _account_keys, extract_from_transaction
+from .solana.tx import _account_keys, extract_from_transaction, ix_data
 from .solana.txmeta import extract_tx_meta
 from .store import Store
 
@@ -368,7 +367,7 @@ def incoming_sol_transfer(tx: dict[str, Any], wallet: str) -> tuple[str, int] | 
         if keys[ix["programIdIndex"]] != SYSTEM_PROGRAM:
             continue
         try:
-            data = b58decode(ix.get("data", ""))
+            data = ix_data(ix)
         except ValueError:
             continue
         accs = ix.get("accounts", [])

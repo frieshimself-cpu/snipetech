@@ -34,12 +34,15 @@ def available() -> bool:
     return True
 
 
-def _ix(ix) -> dict[str, Any]:
-    return {"programIdIndex": ix.program_id_index, "accounts": list(ix.accounts), "data": b58encode(ix.data)}
+def _ix(ix, raw: bool = False) -> dict[str, Any]:
+    return {"programIdIndex": ix.program_id_index, "accounts": list(ix.accounts),
+            "data": ix.data if raw else b58encode(ix.data)}  # fmt: skip
 
 
-def to_rpc_json(info, slot: int, block_time: int | None) -> dict[str, Any]:
-    """A SubscribeUpdateTransactionInfo as `getTransaction(encoding="json")` would return it."""
+def to_rpc_json(info, slot: int, block_time: int | None, raw: bool = False) -> dict[str, Any]:
+    """A SubscribeUpdateTransactionInfo as `getTransaction(encoding="json")` would return it. `raw`: the stream's form,
+    each instruction's data as the bytes received (`tx.ix_data` reads both); base58 for them was a fifth of the
+    recorder's work on a transaction and the reader decoded it straight back."""
     tx, meta = info.transaction, info.meta
     msg = tx.message
     return {
@@ -47,12 +50,14 @@ def to_rpc_json(info, slot: int, block_time: int | None) -> dict[str, Any]:
         "blockTime": block_time,
         "transaction": {
             "signatures": [b58encode(s) for s in tx.signatures],
-            "message": {"accountKeys": [b58encode(k) for k in msg.account_keys], "instructions": [_ix(i) for i in msg.instructions]},
+            "message": {"accountKeys": [b58encode(k) for k in msg.account_keys],
+                        "instructions": [_ix(i, raw) for i in msg.instructions]},
         },
         "meta": {
             "err": {"raw": bytes(meta.err.err).hex()} if meta.HasField("err") else None,
             "fee": meta.fee,
-            "innerInstructions": [{"index": g.index, "instructions": [_ix(i) for i in g.instructions]} for g in meta.inner_instructions],
+            "innerInstructions": [{"index": g.index, "instructions": [_ix(i, raw) for i in g.instructions]}
+                                  for g in meta.inner_instructions],
             "logMessages": list(meta.log_messages),
             "loadedAddresses": {"writable": [b58encode(k) for k in meta.loaded_writable_addresses],
                                 "readonly": [b58encode(k) for k in meta.loaded_readonly_addresses]},
@@ -74,7 +79,8 @@ Route = Callable[[Any, int], Handler | None]
 def dispatch(update, on_tx: Handler, route: Route | None = None, on_slot: Callable[[int], None] | None = None):
     """One stream update: its transaction goes to `on_tx(tx_json, index_in_block)`. A `route`, when given, sees the raw
     transaction info and its slot first and returns the handler to use, or None to drop the transaction unconverted
-    (the conversion, base58 for every key, is two thirds of the decoding: a1.bin 614 of 917 us, 7 Nov). A slot update
+    (the conversion was two thirds of the decoding until 11 Nov: a1.bin 614 of 917 us, 7 Nov). The handler gets the
+    stream's form: instruction data as bytes (`to_rpc_json(raw=True)`). A slot update
     goes to `on_slot(slot)`, when given, if it is the commitment's (processed, confirmed or finalized)."""
     if on_slot is not None and update.HasField("slot"):
         if update.slot.status <= SLOT_FINALIZED:
@@ -86,7 +92,7 @@ def dispatch(update, on_tx: Handler, route: Route | None = None, on_slot: Callab
     handler = on_tx if route is None else route(info, slot)
     if handler is None:
         return None
-    return handler(to_rpc_json(info, slot, int(time.time())), int(info.index))
+    return handler(to_rpc_json(info, slot, int(time.time()), raw=True), int(info.index))
 
 
 def subscribe_request(programs: list[str], commitment: str = "confirmed", failed: bool = False,

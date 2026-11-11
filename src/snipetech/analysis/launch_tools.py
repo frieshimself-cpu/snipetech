@@ -29,9 +29,8 @@ from collections.abc import Callable, Iterable
 from statistics import median
 from typing import Any
 
-from ..solana.base58 import b58decode
 from ..solana.normalize import normalize
-from ..solana.tx import extract_from_transaction
+from ..solana.tx import extract_from_transaction, ix_data
 from ..solana.txmeta import PROGRAM_LABELS, _account_keys, extract_tx_meta
 
 log = logging.getLogger(__name__)
@@ -71,7 +70,7 @@ def funding_mark(tx: dict) -> str | None:
     limits: list[int] = []
     transfers = 0
     for ix in tx["transaction"]["message"].get("instructions", []):
-        program, data = keys[ix["programIdIndex"]], b58decode(ix["data"])
+        program, data = keys[ix["programIdIndex"]], ix_data(ix)
         if program == COMPUTE_BUDGET and data[:1] == b"\x02":
             limits.append(int.from_bytes(data[1:5], "little"))
         elif program == SYSTEM and int.from_bytes(data[:4], "little") == 2:

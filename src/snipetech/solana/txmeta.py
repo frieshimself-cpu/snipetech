@@ -19,9 +19,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .base58 import b58decode
 from .programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM, decode_instruction
-from .tx import _account_keys
+from .tx import _account_keys, ix_data
 
 COMPUTE_BUDGET = "ComputeBudget111111111111111111111111111111"
 SYSTEM = "11111111111111111111111111111111"
@@ -253,7 +252,7 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
 
     def handle(ix: dict, program: str, ancestors: list[str], outer_program: str) -> None:
         try:
-            data = b58decode(ix.get("data", ""))
+            data = ix_data(ix)
         except ValueError:
             return
         accs = [keys[a] for a in ix.get("accounts", []) if a < len(keys)]
@@ -308,7 +307,7 @@ def extract_tx_meta(tx: dict, signature: str | None = None, services: dict[str, 
     for i, ix in enumerate(msg["instructions"]):
         program = keys[ix["programIdIndex"]]
         try:
-            data = b58decode(ix.get("data", ""))
+            data = ix_data(ix)
         except ValueError:
             data = b""
         label = _ix_label(program, data)

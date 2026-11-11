@@ -44,6 +44,14 @@ class TxEvents:
     failed: bool = False
 
 
+def ix_data(ix: dict) -> bytes:
+    """An instruction's data: base58 text in `getTransaction`'s JSON, the bytes themselves in the stream's form
+    (`laserstream.dispatch`). Encoding every instruction for the reader to decode it again was a fifth of the tape
+    recorder's work on a transaction (11 Nov), the pump.fun event's 250 bytes above all."""
+    data = ix.get("data") or b""
+    return data if isinstance(data, bytes) else b58decode(data)
+
+
 def _account_keys(tx: dict) -> list[str]:
     msg = tx["transaction"]["message"]
     keys = list(msg["accountKeys"])
@@ -75,14 +83,16 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
 
     cpi_events: list[RawEvent] = []
     cpi_programs: set[str] = set()
+    invoked: set[str] = set()  # the watched programs among the instructions
     last_ix_name: dict[str, str] = {}
 
     def visit(ix: dict) -> None:
         program = keys[ix["programIdIndex"]]
         if program not in WATCHED:
             return
+        invoked.add(program)
         try:
-            data = b58decode(ix.get("data", ""))
+            data = ix_data(ix)
         except ValueError:
             return
         if data[:8] == EVENT_IX_TAG:
@@ -112,20 +122,22 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
         for inner in inner_by_outer.get(i, []):
             visit(inner)
 
-    log_events = extract_from_logs(meta.get("logMessages") or [])
-    # Prefer CPI events; use log events only for programs that had no CPI copy.
+    # Prefer CPI events; use log events only for programs that had no CPI copy. A program with one is not read from
+    # the logs at all (its lines were decoded and dropped: the recorder's second-largest cost on a pump.fun trade),
+    # and the logs are not walked when every watched program among the instructions has its copies. Without any
+    # among them (no inner instructions kept, a notification's logs) the logs decide, as before.
     merged = list(cpi_events)
-    for ev in log_events:
-        if ev.program not in cpi_programs:
-            merged.append(ev)
+    if not invoked or not invoked <= cpi_programs:
+        merged += extract_from_logs(meta.get("logMessages") or [], skip=cpi_programs)
     for i, ev in enumerate(merged):
         ev.index = i
     out.events = merged
     return out
 
 
-def extract_from_logs(logs: list[str]) -> list[RawEvent]:
-    """Decode `Program data:` events, attributing each to the program on top of the invoke stack."""
+def extract_from_logs(logs: list[str], skip: set[str] | frozenset[str] = frozenset()) -> list[RawEvent]:
+    """Decode `Program data:` events, attributing each to the program on top of the invoke stack. The events of a
+    program in `skip` are left undecoded (the caller has them from the instructions)."""
     stack: list[str] = []
     events: list[RawEvent] = []
     current_ix: dict[str, str] = {}
@@ -139,7 +151,7 @@ def extract_from_logs(logs: list[str]) -> list[RawEvent]:
             current_ix[stack[-1]] = _snake(line[len("Program log: Instruction: ") :].strip())
         elif line.startswith("Program data: ") and stack:
             program = stack[-1]
-            if program not in WATCHED:
+            if program not in WATCHED or program in skip:
                 continue
             try:
                 payload = base64.b64decode(line[len("Program data: ") :])

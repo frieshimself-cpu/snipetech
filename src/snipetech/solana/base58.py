@@ -5,8 +5,28 @@ from __future__ import annotations
 ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
 _INDEX = {c: i for i, c in enumerate(ALPHABET)}
 
+try:  # solders (Rust): 0.3 us a key and 0.5 us a signature, against 6 and 11 us for the loop below (11 Nov, dev box)
+    from solders.pubkey import Pubkey as _Pubkey
+    from solders.signature import Signature as _Signature
+
+    NATIVE = True
+except ImportError:  # pragma: no cover - solders is a dependency; without it the loop below does all the work
+    NATIVE = False
+
 
 def b58encode(data: bytes) -> str:
+    """Keys (32 bytes) and signatures (64) through solders when it is there: the tape recorder encodes some thirty a
+    transaction. Any other length, and everything without solders, through `b58encode_py`: the same text."""
+    if NATIVE:
+        size = len(data)
+        if size == 32:
+            return str(_Pubkey.from_bytes(data if type(data) is bytes else bytes(data)))
+        if size == 64:
+            return str(_Signature.from_bytes(data if type(data) is bytes else bytes(data)))
+    return b58encode_py(data)
+
+
+def b58encode_py(data: bytes) -> str:
     n = int.from_bytes(data, "big")
     out = []
     while n:
