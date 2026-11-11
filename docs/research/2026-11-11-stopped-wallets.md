@@ -87,6 +87,21 @@ SOL before pump.fun's fees of about 30 SOL and its own bids). It buys right behi
 9xoWzo, 9eczFC, 9LXWa7, 8MaVa9's set and DEdEW3's. The `winners` study had already listed it (+65 SOL over 178 round
 trips).
 
+### After the landing was corrected (17:50 UTC)
+
+The qualify lab now lands a copy behind the copied wallet's own companions and then behind three buys by others
+(docs/superpowers/specs/2026-11-11-companion-landing-design.md). The same job, the same copies:
+
+| wallet | companions | before | after |
+|---|---|---|---|
+| BNnN2M | 3 | +0.0432 | +0.0007 |
+| DEdEW3 | 3 | +0.0172 | -0.0158 |
+| 8MaVa9 | 3 | +0.0190 | -0.0086 |
+| 74xVT9 | 0 | +0.0081 | +0.0081 |
+
+13 of the 20 crowded wallets and 10 of the 55 picked ones buy with companions. No wallet qualifies any more on a
+place we do not reach; 74xVT9's number is the same because it was measured behind outsiders all along.
+
 ## Lessons
 
 - The copy edge sits in one place: the first place behind a multi-wallet operator's own buys. One buy further back it is gone (DEdEW3 +0.0172 a 0.2 SOL copy at the 3rd next buy, -0.0105 at the 4th, n 51; BNnN2M +0.0432, +0.0109, +0.0020, n 27).

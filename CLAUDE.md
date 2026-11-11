@@ -37,7 +37,8 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 2. **Measure at the real landing.** Live copies land in the leader's own block (20 of 24 since 7 Nov); the place
    inside it is a fee auction. At a 0.003 SOL bid: 0.3 trades behind at +1 % behind a quiet leader, 2–4 trades behind
    at +18–43 % behind a crowded one (the "+6 regime"). Launch snipes land a slot after the create. A paper result
-   names its landing and the bid that buys it; one at a better landing than its bid buys is not evidence.
+   names its landing and the bid that buys it; one at a better landing than its bid buys is not evidence. No copy
+   lands between one operator's own wallets: buys by a copied wallet's companions are never "buyers ahead of us".
 3. **At most two `lab` jobs at a time** on the 32 GB server (one on a machine under 24 GB); the lab lock
    (`analysis/lab_lock.py`) enforces it, and `qualify` takes a slot too.
 4. **Do not touch `/home/user/velo`** or any other repository the owner has not pointed you at.

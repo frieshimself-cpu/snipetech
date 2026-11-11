@@ -82,3 +82,20 @@ companions: it stays as strict as it was).
   landing record (`trades_behind`) is what will say.
 - A persistent fast bot that lands within five places on half a wallet's buys would be taken for a companion and the
   copy scored behind it. That errs to the cautious side.
+
+## Result (11 Nov, deployed 17:50 UTC as 8d31214)
+
+`stopped-wallets` at the qualify landing, the copies after each wallet's verdict, before and after:
+
+| wallet | companions found | before | after | its old `+6x` |
+|---|---|---|---|---|
+| BNnN2M | 3 | +0.0432 | +0.0007 | +0.0007 |
+| 2pLuge | 2 | +0.0109 | +0.0007 | +0.0007 |
+| DEdEW3 | 3 | +0.0172 | -0.0158 | -0.0154 |
+| 8MaVa9 | 3 | +0.0190 | -0.0086 | -0.0086 |
+| 9kXTVj | 1 | +0.0056 | +0.0012 | -0.0003 |
+| 74xVT9 | 0 | +0.0081 | +0.0081 | +0.0003 |
+
+13 of the 20 wallets only the crowding rule stops have companions, 10 of the 55 picked ones. Pooled: crowding -0.0020
+before, -0.0088 after; picked -0.0069 before, -0.0091 after. The lab of 78 wallets took 43 s, as before the change
+(the companions read is in the run's `secs`).
