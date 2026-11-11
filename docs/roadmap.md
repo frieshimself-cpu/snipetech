@@ -20,13 +20,20 @@ first on the server's recording and only then run live in capped batches.
 - **Deployers marked "worth sniping": 26 of 110 lose where our buys land.** A second rule marked a deployer "worth
   sniping" if a buy one block earlier than ours would have paid. That rule no longer decides anything, and every
   verdict is being made again. Nothing was trading on these verdicts.
-- **Found on the way, not built yet:** the deployer verdicts are made every hour and nothing uses them. 82 deployers
-  marked "worth sniping" launched 2,096 coins in a day. A forward paper record of exactly those launches would say
-  within days whether the verdicts are worth money. It is the next thing to build (audit open item 14).
+- **Every deployer verdict was also about 0.006 SOL a snipe too kind**: it charged 0.0012 SOL a transaction where a
+  live one costs 0.0042. It now charges the measured cost, as the labs do. Of 110 "worth sniping" about 65 should
+  remain; the exact number comes with the re-scoring.
+- **Built: a forward record of the deployer verdicts.** They were made every hour and nothing used them, while 82
+  deployers marked "worth sniping" launched 2,096 coins in a day. Now every launch of a deployer that was marked
+  before that launch is one paper trade, at our landing and real cost, with "avoid" and "marginal" as the control.
+  It shows in the paper table on the live page. Within days it says whether deployer sniping is worth a live test
+  (which would be a yes/no for the owner) or whether the verdicts pick nothing. No sniper can start on it by itself.
+- **A sniper builder would have turned an unknown rule into "buy every launch"**: `oktech strategy` now refuses a
+  rule of a kind no sniper runs. No live test could have started one; a hand-made sniper could.
 - **Hourly discovery is confirmed faster**: the 13:07 run took 8.9 seconds of processor where every run took over
   six minutes; five runs in six are like that now.
 - Every timer and stage was checked against its schedule: all run when they should. Record:
-  [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-50.
+  [audit-2026-11-11.md](audit-2026-11-11.md) rows 48-54.
 
 ## 11 Nov, 12:10 UTC: the live page's events took over 30 seconds to read; two safety checks could fail silently
 

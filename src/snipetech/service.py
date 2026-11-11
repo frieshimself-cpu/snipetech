@@ -435,8 +435,11 @@ class Service:
         since = int(time.time() - days * 86400)
         if refresh:
             await self.ingestor.backfill_wallet_trades(wallet, since, self.cfg.copy.max_signatures)
-        report = await asyncio.to_thread(copy_report, self.store, self.cfg, wallet, since)
-        self.store.put_score("copy", wallet, compact_copy(report))
+        cfg, cost = self._live_cost_cfg()  # what a transaction costs live, not the settings' 0.0012 (11 Nov)
+        report = await asyncio.to_thread(copy_report, self.store, cfg, wallet, since)
+        score = compact_copy(report)
+        score["per_tx_sol"], score["per_tx_source"] = cost["per_tx_sol"], cost["per_tx_source"]
+        self.store.put_score("copy", wallet, score)
         return report
 
     async def follow(self, wallets: list[str], days: float = 2.0, refresh: bool = True,
@@ -460,7 +463,7 @@ class Service:
                     self.progress(f"{w[:8]}: fetch capped at {max_secs_per_wallet:.0f}s, scoring what was fetched")
                 except Exception as exc:  # one wallet's history failing shouldn't stop the ranking
                     self.progress(f"{w[:8]}: {exc}")
-            row = (await asyncio.to_thread(follow_rank, self.store, self.cfg, [w], since, labels))[0]
+            row = (await asyncio.to_thread(follow_rank, self.store, self._live_cost_cfg()[0], [w], since, labels))[0]
             self.store.put_score("follow", w, row)
             rows.append(row)
         rows.sort(
@@ -632,10 +635,11 @@ class Service:
         )
         if refresh:
             await self.fingerprint_early_trades(launches)
-        contexts = [build_context(self.store, l, self.cfg) for l in launches]
+        cfg = self._live_cost_cfg()[0]  # each bribe level's result at what a sell costs live
+        contexts = [build_context(self.store, l, cfg) for l in launches]
         report = {
             "scope": deployer or f"all indexed launches, last {days:g} days",
-            "competition": competition_report(self.store, self.cfg, contexts),
+            "competition": competition_report(self.store, cfg, contexts),
         }
         full = [
             c
@@ -643,7 +647,7 @@ class Service:
             if c.window_end <= now and self.store.coverage(f"mint:{c.launch.mint}").get("to_ts", 0) >= c.window_end - 1
         ]
         if len(full) >= 3:
-            report["tip_sweep"] = tip_sweep(self.store, self.cfg, full, ExitParams.from_config(self.cfg.snipe.exit))
+            report["tip_sweep"] = tip_sweep(self.store, cfg, full, ExitParams.from_config(cfg.snipe.exit))
             report["tip_sweep_launches"] = len(full)
         return report
 
