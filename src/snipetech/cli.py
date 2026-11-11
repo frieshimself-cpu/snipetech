@@ -773,8 +773,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "copy's time fits")  # fmt: skip
     sp.add_argument("--force", action="store_true", help="copy now, however young the last copy is")
     sp = cmd("db", "check the live database (quick_check) or rebuild one table's indexes (reindex)", json_flag=False)
-    sp.add_argument("action", choices=["check", "reindex", "salvage", "swap", "backfill", "forget"])
+    sp.add_argument("action", choices=["check", "reindex", "salvage", "swap", "backfill", "forget", "retain"])
     sp.add_argument("--table", default="trades")
+    sp.add_argument("--days", type=float, default=None,
+                    help="retain: the days of tape to keep, when more than the configured ones (never more than the "
+                         "disk fits; 0: back to the configured days). Without it: only show the state")  # fmt: skip
     sp = cmd("tx", "print one transaction as the RPC returns it (fixture capture for decoder work)", json_flag=False)
     sp.add_argument("signature")
     sp = cmd(
@@ -2002,6 +2005,18 @@ def main(argv: list[str] | None = None) -> int:
                 svc.store.close()
 
         print(asyncio.run(go()))
+        return 0
+    if args.cmd == "db" and args.action == "retain":
+        from .infra import retention
+        from .store import Store
+
+        store = Store(cfg.storage.db_path)
+        try:
+            if args.days is not None:
+                retention.ask(store, args.days if args.days > 0 else None, time.time(), "db retain")
+            print(json.dumps(retention.current(store, cfg.storage.retain_days, time.time())))
+        finally:
+            store.close()
         return 0
     if args.cmd == "db":
         from .infra.db_repair import backfill, check, forget, reindex, salvage, swap

@@ -40,6 +40,7 @@ import websockets
 
 # the coverage record this recorder writes; its reader stays importable from here (the lab reads amm_tape)
 from .amm_tape import AMM_RECENT_KEY, amm_recent_covers  # noqa: F401
+from .infra import retention
 from .models import Completion, Launch, Migration, Normalized, Trade
 from .service import Service
 from .solana.base58 import b58decode
@@ -400,6 +401,9 @@ class LiveWatcher:
         self.disconnected_at: float | None = time.time()
         self.closed_launches: list[Launch] = []
         self.due: set[str] = set()
+        # the days of tape kept: the configured ones until a prune has looked at what was asked for in the database
+        # and at the disk (infra/retention.py)
+        self.retain_days = float(self.cfg.storage.retain_days)
         self.stats: defaultdict[str, int] = defaultdict(int)
         self.span_start: int | None = None  # current gap-free stretch of the firehose
         self.tasks: set[asyncio.Task] = set()  # strong refs so fire-and-forget tasks aren't collected
@@ -1477,7 +1481,11 @@ class LiveWatcher:
             # and after every restart it was 472 reads of 0.1-0.4 s to find nothing (11 Nov; retention keeps 30 days)
             walked = float((self.store.coverage(PRUNE_KEY) or {}).get("walked") or 0)
             walks = now - walked >= PRUNE_WALK_SECS
-            steps = self.store.prune_steps(int(now - self.cfg.storage.retain_days * 86400), walks=walks)
+            try:
+                self.retain_days = float(retention.current(self.store, self.cfg.storage.retain_days, now)["effective"])
+            except Exception as exc:  # noqa: BLE001 - the days in force stay; never a prune at a number not understood
+                log.warning("tape: the days to keep could not be worked out (%s); keeping %.1f", exc, self.retain_days)
+            steps = self.store.prune_steps(int(now - self.retain_days * 86400), walks=walks)
             while True:
                 t0 = time.perf_counter()
                 with self.meter.timed("prune"):
@@ -1503,7 +1511,7 @@ class LiveWatcher:
         # while it is silent. Never taken back within a stretch.
         stands = min(now, self.tape_at) if self.tape_at is not None else now
         self.span_end = max(self.span_end, int(stands - max(2.0, self.lag + 1.0)))
-        start = max(self.span_start, int(now - self.cfg.storage.retain_days * 86400))
+        start = max(self.span_start, int(now - self.retain_days * 86400))
         if self.span_end < start:
             return
         # earlier connections' spans end before this one started (the one a replaying start goes on with is this one);

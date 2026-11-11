@@ -303,8 +303,10 @@ class Ops:
             row = con.execute("SELECT data FROM coverage WHERE key='tape'").fetchone()
             con.close()
             spans = json.loads(row[0]).get("spans", []) if row else []
+            # `days`: how far back the tape reaches (it grows to the days the recorder keeps: `snipetech db retain`)
             out["tape"] = {"spans": len(spans), "hours": round(sum(b - a for a, b in spans) / 3600, 2),
-                           "last_end": spans[-1][1] if spans else None}  # fmt: skip
+                           "last_end": spans[-1][1] if spans else None,
+                           "days": round((time.time() - spans[0][0]) / 86400, 2) if spans else 0.0}  # fmt: skip
         except sqlite3.Error as exc:
             out["tape"] = {"error": str(exc)}
         out["jobs_running"] = sum(1 for j in self.jobs.values() if j.code is None)
