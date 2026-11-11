@@ -6,6 +6,18 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 00:00 UTC: one crew's launches are the first candidate for a live test
+
+- **Still nothing profitable live.** The first rule that looks runnable: twelve wallets that bundle together launched
+  266 coins in 36 days (7 a day); a buy a block after the create, sold a minute later, has a median of +21 % and pays
+  77 % of the time before 2.5 % of fees (mean +7.5 %: one launch in four is dumped for about -65 %). Week by week the
+  median is +32, +23, +27, +8, +30 %. Landing eight blocks late changes nothing. OKTech's Hunt takes a wallet list.
+- **Why it is not a result yet:** the crew was found on the same 36 days; about +5 % a trade after fees on 7 trades a
+  day is 0.3-0.4 SOL a day at 1 SOL; the crew can change wallets.
+- **Before the owner is asked:** our own tape at the exact landing with an exit on the crew's own sell; a paper day.
+- The owner asked about 100 SOL a day and was told plainly it is not in reach of sniping launches at 1-2 SOL a
+  trade; a proven 1-5 SOL a day is the first target.
+
 ## 10 Nov, 23:10 UTC: the month re-read on ordered rows; one thing confirmed, nothing ready to trade
 
 - **Nothing is profitable live and nothing is ready for a live test.** On ordered rows (36 days, 20,387 bundled

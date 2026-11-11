@@ -516,6 +516,58 @@ Read:
 Next: a steadier team score (earlier returns clipped, and pulled toward the average when there are few), judged week
 by week; the copy check re-read on ordered rows (running); and more months only if a score holds.
 
+### The good rows are mostly one crew of twelve wallets (00:00 UTC, 11 Nov)
+
+A steadier team score (`--team-clip 60 --team-shrink 5`: each earlier return capped at plus/minus 60 %, a short record
+pulled toward the average of all launches) leaves 410 launches at a record of 0 % or better: median +13 to +21 %, 70 to
+76 % up after fees, by week +20 / +16 / +13 / +0.4 / +6 %. Their bundle wallets are few (795 and 110), and one wallet
+is in 46 % and 71 % of them: twelve wallets that buy together in the create block,
+
+`7j4uWuDdZnJFKMwQK4TezBhipVCugdUW3NzCW7CGecvC`, `5JTvwLFy1EPWoSWbVqjp4x9rfg961P9iKV3vsSubDFXd`,
+`J4iit8MmXd2P46DzQxk7dj3qjY3m9G3Ck5zrPkBV54JV`, `2vPYViLtu4E3p4xtw62oZNdKMXDgGTaqD2yaACgC6pZh`,
+`4mwKAjYjXHwxqMBxFQFukg3bQDs9yCCXHeiysBhotkuS`, `93KSYSLoPveaHnpjaYnDcSsjjpfNom9dQpBpw1mM2smR`,
+`G9GRbSsy99s5gtjSTSnaPiTsv48WrDR4tKrSbnKEQ3a7`, `MFQKMm2NPcVtnmBZFouvQpowvD4EJDWjWs238NdXL9P`,
+`sR4QwzCRt7yJ14x6oxqcAWLXTN8Q7feS4CkiVYhdX7F`, `85UBEbc8ThHMQzzjGCwzjgou1jnw7zaBx97TyJJn5wsq`,
+`9Pcwta7pwpeUk36NtqEQJiFyuVK15xJaagVmuvATihCr`, `cS4gyYGPz6RrcuJ2HA5iCTrerSn5HArBiHjksY3Auqx`.
+
+`history table ... --wallets <the first four> --cross wallets --exits` (the split `wallets`: launches with one of the
+listed wallets in the create block, which is what OKTech's Hunt does with `knownBotWallets` and `requireKnownBot`):
+266 bundled launches in 36 days (7 a day), 86 creators, all reach 30 SOL, 23 % graduate. A buy at the end of the block
+after the create, before 2.5 % of fees:
+
+| exit | mean | median | up after fees | first half | second half |
+|---|---|---|---|---|---|
+| hold 10 s | +3.4 | +8.8 | 76 % | +4.5 | +2.8 |
+| hold 30 s | +4.4 | +14.0 | 77 % | +6.1 | +3.3 |
+| hold 60 s | +7.6 | +20.8 | 77 % | +10.5 | +5.9 |
+| hold 90 s | +7.1 | +24.2 | 70 % | +8.3 | +6.4 |
+| hold 2 minutes | +1.5 | +18.6 | 60 % | +4.0 | 0.0 |
+| stop -15 %, take +50 %, 60 s | +8.3 | +22.0 | 79 % | +11.2 | +6.6 |
+| one / three / eight blocks late, 60 s | +7.4 / +7.2 / +7.8 | +20.3 / +20.3 / +19.0 | 77 / 77 / 76 % | | |
+
+By week (launches: mean, median, up after fees): 5 Oct 31: +29.2, +31.9, 94 %; 12 Oct 45: +2.0, +23.4, 73 %; 19 Oct 47:
++14.6, +27.0, 83 %; 26 Oct 88: -7.7, +7.6, 69 %; 2 Nov 55: +17.8, +30.1, 78 %. Every other bundled launch: -6.7 %,
+median -11.7 %, 33 % up.
+
+On our own tape the first of the twelve traded 62, 4, 26, 19, 3 and 3 coins on 5-10 Nov: active, in bursts.
+
+Read:
+
+1. Three trades in four pay about +20 to +30 %; the fourth loses about 65 % (the mean of +7.5 % with a 77 % win rate
+   says so): the crew dumps some launches inside the minute. The stop at a block's close catches little of it. An
+   exit on the crew's own first sell is the test that matters, and the bought files hold the sells.
+2. The landing does not matter between one and eight blocks late. No bid war: a trigger of our own would do, and so
+   would Hunt.
+3. This crew was found because its launches did well in these 36 days. The walked-forward team score put it in the
+   good rows before each launch, and the last week (which holds the days never used) is as good as the first ones,
+   but the list itself is hindsight until it pays on days after today.
+4. Size: about +5 % a trade after fees, 7 a day: 0.3 to 0.4 SOL a day at 1 SOL a trade. The curve is at 45-60 SOL
+   when we buy; our own buy starts to cost above 1-2 SOL.
+
+Next: (a) the same on our own tape at an exact landing (`lab`, about 110 crew coins on 5-10 Nov), with an exit when
+any of the twelve sells; (b) a day of forward paper; (c) one yes/no to the owner: Hunt sniper with the twelve wallets,
+0.2-0.5 SOL a buy, sold at 60 s or +50 %, a daily loss cap. Nothing live before that yes.
+
 > **Correction, 22:10 UTC, for the three sections that follow** (the bought month; copying on it; the team record).
 > Their numbers were read with a wrong assumption of mine: that every hourly file holds a coin's trades in block
 > order. Some October files do not. `path_check` (the table's one-minute return against the same hold walked along the
