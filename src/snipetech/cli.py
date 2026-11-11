@@ -299,7 +299,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--force", action="store_true")
 
     cmd("status", "database and RPC status")
-    cmd("doctor", "check RPC speed, websocket support and agent credentials")
+    sp = cmd("doctor", "check RPC speed, websocket support and agent credentials")
+    sp.add_argument("--stream-replay", type=int, default=0, metavar="SLOTS",
+                    help="instead: subscribe the tape's stream this many slots back and print the order its "
+                         "transactions, slot ticks and block summaries came in (how a recorder may resume)")  # fmt: skip
+    sp.add_argument("--secs", type=float, default=20.0, help="how long --stream-replay listens")
 
     sp = cmd("config", "show / get / set configuration", json_flag=False)
     sp.add_argument("action", choices=["show", "get", "set"])
@@ -1136,6 +1140,14 @@ async def _run(args, cfg: Config) -> int:
         c = args.cmd
         if c == "status":
             _out(args, svc.status(), lambda d: "\n".join(f"{k}: {v}" for k, v in d.items()))
+        elif c == "doctor" and args.stream_replay:
+            from .solana import laserstream as LS
+            from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_PROGRAM
+
+            head = await svc.rpc.get_slot()
+            out = await LS.probe_replay([PUMP_PROGRAM, LAUNCHLAB_PROGRAM], head, args.stream_replay, args.secs,
+                                        endpoint=cfg.live.laserstream_endpoint, commitment=cfg.rpc.commitment)  # fmt: skip
+            print(json.dumps(out))
         elif c == "doctor":
             _out(
                 args,

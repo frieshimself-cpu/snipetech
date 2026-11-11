@@ -356,10 +356,18 @@ def test_status_says_what_the_kernel_allows_snipetech_and_how_often_it_held_it_b
         (tape / f"{name}.pressure").write_text(
             f"some avg10=12.50 avg60={some} avg300=3.10 total=123\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
         )
+    (tape / "cpu.stat").write_text("usage_usec 123400000\nuser_usec 100000000\nsystem_usec 23400000\n")
+    (sl / "snipetech-qualify.service").mkdir()
+    (sl / "snipetech-qualify.service" / "cpu.stat").write_text("usage_usec 7000000000\n")
+    (sl / "not-a-unit").mkdir()
     monkeypatch.setattr(O, "CGROUP_ROOT", root)
     ops, key = env
     (ops.db.parent / "snipetech.db-wal").write_bytes(b"\0" * 20_000_000)
     st = req(ops, key, "status")
+    # each unit's processor seconds since it started: two readings a while apart give its share of the cores (11 Nov:
+    # the recorder's only figure was in the warning it logs once it is behind the chain, and nothing said whether a
+    # lab ran on one core or six)
+    assert st["units_cpu_secs"] == {"snipetech-qualify.service": 7000.0, "snipetech-tape.service": 123.4}
     assert st["slice"] == {"cpu_cores": 2.0, "memory_high_gb": 2.73, "memory_max_gb": 3.22, "memory_gb": 2.6,
                            "cpu_periods": 1000, "cpu_throttled_periods": 250, "cpu_throttled_secs": 31.4,
                            "memory_high_events": 5120, "memory_max_events": 3, "oom_kills": 0}  # fmt: skip
@@ -392,5 +400,6 @@ def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
     ops, key = env
     st = req(ops, key, "status")
     assert st["slice"] == {"cpu_cores": None} and st["tape_pressure"] is None and st["wal_gb"] == 0.0
+    assert st["units_cpu_secs"] == {}
     monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "nothing")
     assert req(ops, key, "status")["slice"] is None

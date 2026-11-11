@@ -314,6 +314,7 @@ class Ops:
         out["wal_gb"] = round(wal.stat().st_size / 1e9, 2) if wal.is_file() else 0.0
         out["slice"] = _slice_limits(CGROUP_ROOT / SLICE)
         out["tape_pressure"] = _pressure(CGROUP_ROOT / SLICE / "snipetech-tape.service")
+        out["units_cpu_secs"] = _units_cpu_secs(CGROUP_ROOT / SLICE)
         out["machine"] = _machine(CGROUP_ROOT)
         return out
 
@@ -645,6 +646,18 @@ OTHER_UNIT_MIN_BYTES = 100_000_000  # an other service holding this much memory 
 def _cpu_secs(d: Path) -> float | None:
     usage = _pairs(_cgroup_file(d, "cpu.stat")).get("usage_usec")
     return round(int(usage) / 1e6, 1) if usage is not None else None
+
+
+def _units_cpu_secs(slice_dir: Path) -> dict[str, float]:
+    """The processor seconds each running unit of the slice has used since it started (a job the ops service started
+    counts with the ops service). Two readings a while apart give each unit's share of the cores."""
+    out: dict[str, float] = {}
+    for unit in sorted(slice_dir.iterdir()) if slice_dir.is_dir() else []:
+        if unit.name.endswith((".service", ".scope")) and unit.is_dir():
+            secs = _cpu_secs(unit)
+            if secs is not None:
+                out[unit.name] = secs
+    return out
 
 
 def _machine(root: Path) -> dict[str, Any] | None:
