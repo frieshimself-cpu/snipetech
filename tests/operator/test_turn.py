@@ -646,3 +646,29 @@ def test_the_days_jobs_are_listed_one_short_line_each_without_the_loops_own_stag
     assert "20261111-010000-bbbbbb exit 1" in text and "paper freeze" in text
     assert "20261111-020000-aaaaaa" not in text  # the loop's own stage, every half hour: its result is in paper_top
     assert "/var/lib/snipetech/jobs" not in text and "w" * 400 not in text and "www..." in text
+
+
+def test_a_job_line_names_an_address_by_its_start_and_counts_a_flag_given_many_times(env):
+    """11 Nov, measured on the server: the list of the day's jobs was 17,020 of the 33,000 characters each analyst turn
+    opens with, at about two characters a token: 91 lines of commands made of 44-character wallet and coin addresses
+    (`launch-tools --mint <address>` thirteen times in one line). Half of what a turn's first request writes to the
+    cache, a quarter of what a turn costs, every half hour. An address is named by its first eight characters, as the
+    notes and reports name it; a flag given more than twice is shown twice and counted."""
+    from dataclasses import replace
+
+    from snipetech.operator.prompts import _job_lines
+
+    mints = [f"{i}9sFEkrSikTjqE8WWcMw1kdpuGMF7kPf2rmwrMn9NvR{i}"[:44] for i in range(1, 10)]
+    tools = ["launch-tools"] + [a for m in mints for a in ("--mint", m)] + ["--json"]
+    study = ["study", "6Z91Dgiz9E44bMW11rQuMBjt1NwwPoQGXFNZieGfVtAb", "--days", "3"]
+    lab = ["lab", "--trigger", '{"kind": "kol", "wallets": ["Fhbh1Yq3wkaXJ2tW6QUBFbxbfWfDHqfvjtFVNNKmEQbr"], "sol": 0.5}',
+           "--hours", "48"]  # fmt: skip
+    jobs = [{"id": f"20261111-0{k}0000-aaaaaa", "argv": argv, "exit_code": 0, "ended": NOW - 600 - k}
+            for k, argv in enumerate((tools, study, lab))]  # fmt: skip
+    lines = _job_lines(jobs)
+    assert lines[0].endswith(": launch-tools --mint 19sFEkrS… --mint 29sFEkrS… (+7 more --mint) --json")
+    assert lines[1].endswith(": study 6Z91Dgiz… --days 3")
+    assert lines[2].endswith(': lab --trigger {"kind": "kol", "wallets": ["Fhbh1Yq3…"], "sol": 0.5} --hours 48')
+    assert all(line.startswith("20261111-0") for line in lines)  # the id read_job_log takes stays whole
+    text = user_message(replace(env["snap"], jobs_recent=jobs), Decision(True, "operator", ["job ended: j1"]), "")
+    assert "6Z91Dgiz9E44" not in text and "(+7 more --mint)" in text

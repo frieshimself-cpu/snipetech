@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from ..playbook import OKTECH_PLAYBOOK
@@ -25,7 +26,8 @@ Hard rules (the tools enforce them too):
 - Research jobs: start_job accepts only lab, follow, discover-wallets, label, copy-rank, paper, study, copy. One lab at a
   time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
   that ended in the last 24 h, one line each (id, how it ended, when, what ran) — read one with read_job_log and its id
-  (the JSON is the last part of the log) instead of running the same job again. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
+  (the JSON is the last part of the log) instead of running the same job again. A wallet or coin address in a line
+  is cut to its first 8 characters and a flag given many times is counted; the job's log has them whole. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
   worth of time is available.
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
 - Secrets never appear in notes or reports.
@@ -168,6 +170,36 @@ buy can reach); without them it lost.
 
 
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file
+JOB_FLAG_SHOWN = 2  # a flag given more often in one command is shown this many times and the rest counted
+ADDRESS = re.compile(r"\b([1-9A-HJ-NP-Za-km-z]{8})[1-9A-HJ-NP-Za-km-z]{24,36}\b")  # a wallet or a coin: 32-44 base58
+
+
+def _ran(argv: list[str]) -> str:
+    """What a job ran, short: an address by its first eight characters (as notes and reports name it), a flag given
+    more than JOB_FLAG_SHOWN times shown that often with the rest counted. 11 Nov: at about two characters a token the
+    job list was half of what every analyst turn's first request wrote to the cache, most of it 44-character addresses
+    (`launch-tools --mint <address>` thirteen times in a line)."""
+    out: list[str] = []
+    count: dict[str, int] = {}
+    slot: dict[str, int] = {}  # where a flag's "(+N more)" goes: the place of the first one left out
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a.startswith("--") and i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            count[a] = count.get(a, 0) + 1
+            if count[a] <= JOB_FLAG_SHOWN:
+                out += [a, argv[i + 1]]
+            elif a not in slot:
+                slot[a] = len(out)
+                out.append("")
+            i += 2
+        else:
+            out.append(a)
+            i += 1
+    for a, k in slot.items():
+        out[k] = f"(+{count[a] - JOB_FLAG_SHOWN} more {a})"
+    ran = ADDRESS.sub(lambda m: m.group(1) + "…", " ".join(out))
+    return ran if len(ran) <= JOB_ARGV_CHARS else ran[: JOB_ARGV_CHARS - 3] + "..."
 
 
 def _job_lines(jobs: list[dict]) -> list[str]:
@@ -182,8 +214,7 @@ def _job_lines(jobs: list[dict]) -> list[str]:
         argv = [str(a) for a in (j.get("argv") or [])]
         if loop_stage(argv) is not None:
             continue
-        ran = " ".join(argv)
-        ran = ran if len(ran) <= JOB_ARGV_CHARS else ran[: JOB_ARGV_CHARS - 3] + "..."
+        ran = _ran(argv)
         when = time.strftime("%H:%M", time.gmtime(j["ended"])) if j.get("ended") else "?"
         out.append(f"{j.get('id')} exit {j.get('exit_code')} at {when}: {ran}")
     return out
