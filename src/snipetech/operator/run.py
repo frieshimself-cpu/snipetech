@@ -29,12 +29,19 @@ from .resources import alert_lines, check_resources, disk_free_gb_at, status_lin
 from .snapshot import load_current, save, take_snapshot
 from .standin import start_standins
 from .tools import NoteSink
-from .turn import run_turn
 
 STALE_LOCK_SECS = 2 * 3600
 # the one-minute pass waits this long for the watch (the wallet's holdings, OKTech's tasks), then moves on: the RPC
 # client's own retries run for minutes, past the unit's 2-minute limit, and a pass still running eats the next one
 WATCH_TIMEOUT_SECS = 20
+
+
+async def run_turn(*args, **kwargs):
+    """A Claude turn (operator/turn.py), loaded when one runs. That module loads the Anthropic SDK: 3.3 s of processor
+    on the server, which the commands pass (once a minute, "no Claude") and every quiet round paid for nothing."""
+    from .turn import run_turn as real
+
+    return await real(*args, **kwargs)
 
 
 def _log(paths: OperatorPaths, now: float, text: str) -> None:

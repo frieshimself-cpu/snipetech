@@ -8,8 +8,6 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from anthropic import beta_async_tool
-
 from ..config import OperatorConfig
 from ..measure.attribution import known_result_sol, trip_result_sol
 from ..ops import _read_only_authorizer, redact
@@ -87,6 +85,10 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
                         svc=None, wallet: str = "") -> list:  # fmt: skip
     """The shared memory as tools: read_lessons, add_lesson, list_ideas, and (when `ideas`) upsert_idea; with a
     service, read_round_trips for the post-mortem. They read and write operator/ files only: no trade, no setting."""
+
+    # the SDK is loaded where a model's tools are made: this module is imported by every stage for NoteSink, and
+    # loading the SDK took 3.3 s of processor on the server, once a minute in the commands pass alone (11 Nov)
+    from anthropic import beta_async_tool
 
     @beta_async_tool
     async def read_lessons(n: int = 10) -> str:
@@ -206,6 +208,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
                         source: str = "operator") -> list:  # fmt: skip
     roots = [paths.reports, paths.root, paths.jobs]
     now_fn = notes.now
+
+    # the SDK is loaded where a model's tools are made: this module is imported by every stage for NoteSink, and
+    # loading the SDK took 3.3 s of processor on the server, once a minute in the commands pass alone (11 Nov)
+    from anthropic import beta_async_tool
 
     @beta_async_tool
     async def read_job_log(id: str, tail: int = 200) -> str:

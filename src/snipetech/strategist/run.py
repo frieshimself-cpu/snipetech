@@ -19,7 +19,6 @@ from ..store import Store
 from .apply import apply_patch
 from .bounds import check_patch
 from .evidence import week_evidence
-from .turn import run_strategist_turn
 
 LAST_KEY = "strategist:last"
 PROPOSAL_KEY = "strategist:proposal"
@@ -28,6 +27,14 @@ DAY = 86400
 MIN_GAP_SECS = DAY - 3600  # at most one turn a day; an hour of slack so the timer's jitter never skips a day
 MIN_NEW_TRIPS = 20  # live round trips since the last turn or applied change before a turn is worth its cost
 WINDOW_DAYS = 7  # the evidence window; with nothing on record the count covers it too
+
+
+async def run_strategist_turn(*args, **kwargs):
+    """The strategist's Claude turn (strategist/turn.py), loaded when one runs: it loads the Anthropic SDK, and a run
+    that finds too few new trades (most days) calls no model."""
+    from .turn import run_strategist_turn as real
+
+    return await real(*args, **kwargs)
 
 
 def new_round_trips(store: Store, cfg: Config, now: float) -> dict[str, Any]:
