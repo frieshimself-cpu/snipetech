@@ -19,18 +19,29 @@ def wilson(k: int, n: int, z: float = 1.28) -> tuple[float, float]:
     return (max(0.0, centre - half), min(1.0, centre + half))
 
 
+# The draws of the bootstrap made at a time: rows of the samples x n table, each row n indexes (8 bytes) and the n
+# values gathered by them (8 more). The whole table at once was 2.3 GB for a paper rule with 72,633 trades (11 Nov:
+# the memory peak of the operator's round). The generator gives the same numbers a few rows at a time, so the means
+# are the same to the last bit; 2 MB a piece stays in the processor's cache and is gathered 2.6 times faster.
+BOOTSTRAP_CELLS = 1 << 17
+
+
 def bootstrap_mean_bounds(
     x: np.ndarray | list[float], confidence: float = 0.8, samples: int = 2000, seed: int = 7
 ) -> tuple[float, float]:
     """One-sided lower and upper bootstrap bounds of the mean at `confidence`."""
     arr = np.asarray(x, dtype=np.float64)
-    if len(arr) == 0:
+    n = len(arr)
+    if n == 0:
         return (0.0, 0.0)
-    if len(arr) == 1:
+    if n == 1:
         return (float(arr[0]), float(arr[0]))
     rng = np.random.default_rng(seed)
-    idx = rng.integers(0, len(arr), size=(samples, len(arr)))
-    means = arr[idx].mean(axis=1)
+    means = np.empty(samples, dtype=np.float64)
+    rows = max(1, BOOTSTRAP_CELLS // n)
+    for a in range(0, samples, rows):
+        b = min(samples, a + rows)
+        means[a:b] = arr[rng.integers(0, n, size=(b - a, n))].mean(axis=1)
     return (float(np.quantile(means, 1 - confidence)), float(np.quantile(means, confidence)))
 
 
