@@ -226,6 +226,55 @@ class NoteSink:
             return False
 
 
+# What the wallet can pay is the owner's business (9 Nov: "Don't flag, I constantly take out and put money on there").
+# The agents are told to say it once a day; on 11 Nov the operator agent wrote "the wallet still can't pay a buy's fees"
+# into three notes within an hour (19:15, 19:45, 20:16 UTC), on the page the owner reads. The tool keeps the rule.
+WALLET_SUBJECT = re.compile(r"\bwallet\b|plain SOL|native SOL|SOL native|\bnative\b", re.IGNORECASE)
+WALLET_PAY = re.compile(
+    r"\b(?:can(?:'|\u2019|no)?t|can not|could not|couldn(?:'|\u2019)t|unable to|can|could) pay\b"
+    r"|not enough|too little|buys_payable|\bpayable\b",
+    re.IGNORECASE,
+)
+WALLET_SAID = "wallet_said.json"  # operator/: the day and the wallet's state when a note last spoke of it
+
+
+def wallet_line(text: str) -> bool:
+    """Whether a note speaks of what the wallet can pay (its subject and a word on paying)."""
+    return bool(WALLET_SUBJECT.search(text) and WALLET_PAY.search(text))
+
+
+def wallet_state(paths: OperatorPaths) -> str | None:
+    """What the wallet can pay by the round's snapshot, in a few words; None when it was not read."""
+    from .prompts import buys_payable
+    from .snapshot import load_current
+
+    snap = load_current(paths)
+    if snap is None:
+        return None
+    can = buys_payable(snap.native_sol, snap.wsol, getattr(snap, "book_fill_sol", None))
+    return None if can is None else f"curve {can['curve']}, pumpswap {can['pumpswap']}"
+
+
+def wallet_said(paths: OperatorPaths, now: float) -> str | None:
+    """When a note of today already said what the wallet can pay and that has not changed since: the time it was said
+    ("19:15"); None when a note may say it (a new day, or the wallet's state changed: a deposit, a buy)."""
+    try:
+        was = json.loads((paths.root / WALLET_SAID).read_text())
+    except (OSError, ValueError):
+        return None
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    if not isinstance(was, dict) or was.get("day") != day or was.get("state") != wallet_state(paths):
+        return None
+    return str(was.get("at") or "earlier")
+
+
+def mark_wallet_said(paths: OperatorPaths, now: float) -> None:
+    paths.ensure()
+    rec = {"day": time.strftime("%Y-%m-%d", time.gmtime(now)), "state": wallet_state(paths),
+           "at": time.strftime("%H:%M", time.gmtime(now))}  # fmt: skip
+    (paths.root / WALLET_SAID).write_text(json.dumps(rec))
+
+
 def _inside(path: Path, roots: list[Path]) -> bool:
     try:
         r = path.resolve()
@@ -528,10 +577,19 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             text: One or two plain sentences.
             level: "info" or "decision".
         """
+        speaks = level == "info" and wallet_line(str(text))
+        if speaks:
+            at = wallet_said(paths, now_fn())
+            if at:  # the owner's rule, kept by the tool: once a day, and again only when it has changed
+                return (f"error: today's notes already say what the wallet can pay ({at} UTC) and it has not changed. "
+                        "Leave every line about the wallet's SOL out and write the note again.")  # fmt: skip
         try:
-            return notes.write(text, level)
+            line = notes.write(text, level)
         except ValueError as exc:
             return f"error: {exc}"
+        if speaks:
+            mark_wallet_said(paths, now_fn())
+        return line
 
     @beta_async_tool
     async def set_candidates(items: list[dict]) -> str:

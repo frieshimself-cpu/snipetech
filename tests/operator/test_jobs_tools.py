@@ -617,3 +617,56 @@ def test_the_agents_are_told_the_two_tests_they_could_not_run(toolbox):
     analyst = " ".join(ANALYST_SYSTEM.split())
     assert "momentum, hunt or mig" in analyst and '{"kind": "mig", "window": 60}' in analyst
     assert "where a MIG buy lands" in analyst
+
+
+def _snapshot(paths, native, wsol, ts=1_793_923_200):
+    from snipetech.operator.snapshot import Snapshot, save
+
+    save(Snapshot(ts=ts, wallet="W", native_sol=native, wsol=wsol, snipers=[], book_fill_sol=0.2), paths)
+
+
+def test_an_agents_note_says_what_the_wallet_can_pay_once_a_day_unless_it_changed(toolbox):
+    """The owner, 9 Nov: "Don't flag, I constantly take out and put money on there." The agents are told to say once a
+    day that the wallet cannot pay a buy. The analyst did; the operator agent wrote it into three notes in an hour
+    (11 Nov 19:15, 19:45, 20:16 UTC: "the wallet still can't pay a buy's fees"), on the page the owner reads. The
+    tool keeps the rule: one such line a day, and again only when what the wallet can pay has changed."""
+    tools, paths, _ = toolbox
+    _snapshot(paths, 0.0042, 0.4718)  # no buy payable on either venue
+    said = "Playbook finished. The wallet still can't pay a buy's fees (0.004 SOL native)."
+    first = _call(tools["write_note"], text=said)
+    assert first.startswith("- 2026-11-06") and "can't pay" in first
+    repeat = "Leaders study finished. The wallet holds 0.004 SOL native, so it can't pay a buy."
+    again = _call(tools["write_note"], text=repeat)
+    assert again.startswith("error:") and "already say" in again and "Leave every line about the wallet" in again
+    assert paths.notes.read_text().count("\n") == 1  # nothing was written
+    # the same news without the line goes through, and so does research that only names a kind of SOL
+    assert _call(tools["write_note"], text="Leaders study finished: no single leader stands out.").startswith("- 2026")
+    research = "PumpSwap pays a sale in wrapped SOL; the study counts it as SOL."
+    assert _call(tools["write_note"], text=research).startswith("- 2026")
+    # the wallet changed (a deposit: two curve buys are payable now): that is news once
+    _snapshot(paths, 0.5, 0.4718)
+    news = _call(tools["write_note"], text="The wallet can pay two curve buys now (0.5 plain SOL).")
+    assert news.startswith("- 2026")
+    assert _call(tools["write_note"], text="The wallet can pay curve buys, as said.").startswith("error:")
+    # a decision note is never held back: an alert is the owner's to get
+    alert = _call(tools["write_note"], text="equity fell; the wallet cannot pay a buy", level="decision")
+    assert alert.startswith("- 2026")
+
+
+def test_the_wallet_line_is_allowed_again_on_a_new_day(tmp_path, jobs):
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+
+    class Svc:
+        store = st
+
+    clock = [1_793_923_200]
+    sink = NoteSink(paths, now=lambda: clock[0])
+    tools = {t.name: t for t in make_operator_tools(Svc(), paths, jobs, OperatorConfig(), sink)}
+    _snapshot(paths, 0.0042, 0.4718)
+    line = "The wallet cannot pay a buy on the curve."
+    assert _call(tools["write_note"], text=line).startswith("- 2026-11-06")
+    assert _call(tools["write_note"], text=line).startswith("error:")
+    clock[0] += 86400
+    assert _call(tools["write_note"], text=line).startswith("- 2026-11-07")
+    st.close()
