@@ -6,6 +6,25 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 05:10 UTC: the first wallet passed the forward check and is copied live; the audit's second round
+
+- **Still nothing profitable live.** What changed: at 04:55 the book started copying **74xVT9**, the first wallet ever
+  to pass the forward check (paper +0.0145 SOL a 0.2 SOL copy over 57 copies; the 26 copies it gave in the 40 hours
+  after it was picked made +0.0095 SOL each). 0.2 SOL a buy, 3 buys, under the owner's standing settings. Seven
+  wallets that looked as good on paper lost after their pick and were retired; that check is why they were not armed.
+  The book stopped its sniper on 2Tp9sc (paper turned negative; nothing stranded). Its first live copies decide.
+- **Why it took until today:** the queue never looked at a wallet twice (fixed 02:50), and the lab that does the
+  looking scored all 22,204 wallets it had ever seen to answer for 50 (found 04:40, fixed 04:48). A run now takes
+  12 minutes for 2,428 wallets (300 measured on six processes); it took 2 h 18 min for 300. The backlog of 41,000
+  never-judged wallets clears in about a day.
+- **The recorder** no longer does database work for every new coin or scores deployers beside its streams (a job of
+  its own does, hourly). And it **replays what a restart or a stream drop made it miss**: the tape had 190 holes in six
+  days (12 s at each deploy; twice half an hour and more, the server's resize and Helius turning our key away).
+  Measured on Helius's stream first: a replay starts exactly where asked, in order, 20 minutes in 28 seconds.
+- **Open:** the crew rule's yes/no is still with the owner; the crew has not bundled a launch since 8 Nov 12:20.
+  Disk fills in late November without a retention change. What is fixed, measured and open:
+  [audit-2026-11-11.md](audit-2026-11-11.md).
+
 ## 11 Nov, 03:10 UTC: the whole system audited; why nothing ever qualified; the crew rule holds on our own tape
 
 - **Still nothing profitable live** (three copy snipers, -0.2494 SOL over 24 round trips in three days).
