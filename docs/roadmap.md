@@ -6,6 +6,29 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 08:00 UTC: the server never got settings changed in the code; the machine stood still for 11 minutes
+
+- **Still nothing profitable live.** 74xVT9 stays the one qualified wallet; its first three signals were not bought
+  (docs/live-recipe.md), so there is still no live result for it.
+- **A setting changed in the code never reached the server**: its settings file is a copy of every default of install
+  day. Found because the deployer verdicts, moved to our real landing at 06:48, were still written at the old one.
+  A new check lists every such setting. Fixed: the verdict landing (3,350 deployers re-scored at it: 58 "snipe" with
+  +0.05 SOL a 0.5 SOL snipe on average, +0.22 at most; before the two fixes 322 with up to +2.6), the limit the daily
+  settings review had on the buy tip (ten times the intended one), a leftover "explore" share. A test now fails for
+  any default changed later until the server follows it.
+- **One of them is the owner's call: preconfirmations.** The code asks OKTech for them on every copy sniper since
+  6 Nov (the copied wallet's buy is seen before it confirms; the account is approved). The server never asked. It
+  changes how live buys are placed, so it stays off until the owner says yes.
+- **The machine stood still from 07:12 to 07:23 UTC** (the same on 7 Nov, 07:10). No job of ours ran; Ubuntu's own
+  update job held 15.6 GB. The tape lost nothing: its stream replayed the 11 minutes, the first real outage since
+  that was built. The install script now makes the update job gentle; that needs the owner's one command as root and
+  nothing breaks without it.
+- **The recorder** uses half the processor per trade it did this morning (2.9 ms, 5.5 before; 771 to 105 microseconds
+  for the handling itself on the test machine) and writes down what it does every minute.
+- **The strategy search ran for the first time since 9 Nov 19:16**: the wallet checks, which took every lab slot at
+  2 h 18 min a run, take 12 minutes now.
+- What is fixed, measured and open: [audit-2026-11-11.md](audit-2026-11-11.md) (rows 26-30, open items 7-9).
+
 ## 11 Nov, 05:10 UTC: the first wallet passed the forward check and is copied live; the audit's second round
 
 - **Still nothing profitable live.** What changed: at 04:55 the book started copying **74xVT9**, the first wallet ever
@@ -22,7 +45,8 @@ first on the server's recording and only then run live in capped batches.
   days (12 s at each deploy; twice half an hour and more, the server's resize and Helius turning our key away).
   Measured on Helius's stream first: a replay starts exactly where asked, in order, 20 minutes in 28 seconds.
 - **Open:** the crew rule's yes/no is still with the owner; the crew has not bundled a launch since 8 Nov 12:20.
-  Disk fills in late November without a retention change. What is fixed, measured and open:
+  (This line said the disk fills in late November: wrong. The server kept 6 days of tape; it keeps 14 since
+  06:25, sized to the disk.) What is fixed, measured and open:
   [audit-2026-11-11.md](audit-2026-11-11.md).
 
 ## 11 Nov, 03:10 UTC: the whole system audited; why nothing ever qualified; the crew rule holds on our own tape
