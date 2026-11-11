@@ -23,6 +23,17 @@ first on the server's recording and only then run live in capped batches.
   "avoid" lose 0.020. Too few to judge: 300 are needed, about a day more. So far "worth sniping" is not better than
   "avoid".
 - **Found and fixed on the way:** `snipetech --help` had crashed since the morning's `dip-buys` command (row 65).
+- **17:35 UTC: the wallets our rules stop were checked, and the check found where the copy money is** (audit row
+  66, docs/research/2026-11-11-stopped-wallets.md). The crowding rule and the history rule cost nothing: the wallets
+  they stop lose after their verdicts. The wallets that look best to copy are each the first of one operator's three
+  or four wallets, bought with in consecutive transactions. Our paper copy "three buys behind" counted the
+  operator's own wallets as those three buys, so it sat in the first place behind the operator. That place pays
+  (BNnN2M: +0.043 SOL a 0.2 SOL copy, 96 % winners) and is taken in every block by bots that buy 2 to 7 SOL and bid
+  0.03 to 0.3 SOL for it. One place further back the profit is gone. Our copies bid 0.003 SOL.
+- **What follows from it.** (1) The paper landing is being corrected so no wallet qualifies on a place we do not
+  reach; one such wallet was hours from being armed. (2) The trade that works there is larger and bids more (the
+  second bot wallet: +117 SOL in five days before fees and bids). Whether it pays for us is a lab question for the
+  next days, with the bids now on the tape; if it does, it is one yes/no for the owner.
 - **Open:** the 14:30 list below; the bid table (a few days of rows); who the two other large fee payers are.
 
 ## 11 Nov, 14:30 UTC: are the agents doing the work? The scheduled jobs yes; the paid analyst only in part
