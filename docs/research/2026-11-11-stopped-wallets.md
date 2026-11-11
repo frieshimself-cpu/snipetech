@@ -102,6 +102,26 @@ The qualify lab now lands a copy behind the copied wallet's own companions and t
 13 of the 20 crowded wallets and 10 of the 55 picked ones buy with companions. No wallet qualifies any more on a
 place we do not reach; 74xVT9's number is the same because it was measured behind outsiders all along.
 
+### The agents' own lab on that first place, run again (18:20 UTC)
+
+The server's analyst had this lead since 10 Nov (idea I51: "a paid place right behind a known wallet"): its labs
+scored a copy right behind the wallet, which for a wallet with companions is between one operator's own transactions.
+Since 18:19 UTC every lab with a wallet rule lands a copy behind the followed wallet's companions. The same lab again
+(72 h, the second known wallet in a coin with a 1 to 3 SOL buy, a 1 SOL copy, 0.02 SOL a transaction, sold after 5 s;
+53 of the 2,658 tracked wallets buy with companions):
+
+| copy lands | unseen trades | SOL a 1 SOL copy | lower bound | win |
+|---|---|---|---|---|
+| right behind the wallet and its companions | 870 | +0.059 | +0.051 | 50 % |
+| one trade further back in the block | 870 | +0.005 | -0.001 | 38 % |
+
+Before the fix the first row read +0.063 (n 800): for these signals the correction is small, the lead stands. It is
+the first place and nothing else, about 290 signals a day. The lab charges 0.02 SOL on the buy and on the sale; what
+the first place really costs is the open number. In the first two hours of bids on the tape the first outside buyer
+behind a tracked wallet's 1 to 3 SOL buy bid 0.0002 SOL at the median and 0.015 at the 90th percentile (146 blocks):
+the place is taken by speed as much as by the bid, and many of those "outsiders" buy the set's own size two places
+behind, so they are its unlabelled companions.
+
 ## Lessons
 
 - The copy edge sits in one place: the first place behind a multi-wallet operator's own buys. One buy further back it is gone (DEdEW3 +0.0172 a 0.2 SOL copy at the 3rd next buy, -0.0105 at the 4th, n 51; BNnN2M +0.0432, +0.0109, +0.0020, n 27).
