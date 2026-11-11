@@ -31,6 +31,14 @@ since 6 Nov; 0.2 SOL fills on the low-fee arm).
   live result.) The book made the next sniper at 06:00:09 (`6af404692721696190446e2e`), as it does while the wallet
   stays qualified. 74xVT9's own result on the three coins: -0.27, -0.30 and +0.25 SOL on 2.1, 1.9 and 1.3 SOL bought;
   what a copy at our landing would have made is in its next verdict (they count as copies after the pick).
+- **14:12-14:16 UTC: two more signals, none bought.** 74xVT9 bought DgX6Rg (1.19 SOL at 14:12:49, a coin it had
+  traded the night before) and Hkfrgk (0.753 SOL at 14:16:52, a first buy), both over its floor. The 06:00 sniper was
+  running at OKTech; no transaction of ours reached the chain, landed or failed. The wallet held 0.0008 SOL beside
+  0.47 wrapped SOL, as in the morning: a buy bids 0.001 SOL of priority fee alone, so it cannot be sent. Five signals
+  of five without a buy since the wallet qualified; the last live buy is of 10 Nov 22:19 UTC. (As above: the balance
+  is the owner's to move and is not flagged.) The server's analyst did not know why and spent nine half-hourly
+  updates on the missing fills; from the afternoon deploy the agents are told that a buy pays its fees in plain SOL
+  and that signals missed for that reason need no test, no idea and no new sniper (audit row 61).
 
 ## The owner, 7 Nov 2026 about 22:05 UTC: "pnl matters but dont stop the bot"
 

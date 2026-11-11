@@ -84,6 +84,13 @@ owner has not enabled yet are reported once a day, not every round.
 Money in and out: the owner moves SOL in and out of the sniper wallet often and on purpose (owner, 9 Nov). A change
 in the wallet's SOL that no trade of ours explains is the owner's deposit or withdrawal: never a decision note, never a
 question to the owner, at most one "info" clause with the new balance. Never ask the owner for SOL.
+A buy pays its fees, its tip and a new coin's token account in plain SOL (the snapshot's native_sol), never in wrapped
+SOL (wsol): about 0.005 SOL a buy. While the snapshot says buy_fees_payable false, no sniper of ours can send a buy,
+whatever the wallet's wrapped SOL, and nothing of it reaches the chain: no buy and no failed send in fills, though
+OKTech counts the snipe (11 Nov: five signals of the one qualified wallet, none bought). Signals missed in that state
+need no test, no new idea and no new sniper: they are no fault of the sniper or of OKTech, and funding the wallet is the
+owner's. Say once, in an info clause, that the signals came while the wallet could not pay a buy's fees, and go on with
+the research.
 """
 _RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 
@@ -190,6 +197,10 @@ trades and no edge over AVOID, record that the deployer verdicts pick nothing (a
 {_RULES}"""
 
 
+# What one buy needs in plain SOL, beside the buy itself: the control arm's priority fee (0.001) and tip (0.002) and the
+# rent of a new coin's token account (0.002, back when the account is closed). 11 Nov: with 0.0008 SOL beside 0.47
+# wrapped SOL the wallet sent nothing on five signals, and the analyst spent nine updates on the missing fills.
+BUY_NATIVE_SOL = 0.005
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file
 JOB_FLAG_SHOWN = 2  # a flag given more often in one command is shown this many times and the rest counted
 ADDRESS = re.compile(r"\b([1-9A-HJ-NP-Za-km-z]{8})[1-9A-HJ-NP-Za-km-z]{24,36}\b")  # a wallet or a coin: 32-44 base58
@@ -251,6 +262,7 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "jobs_recent": _job_lines(snap.jobs_recent),
         "wallet": snap.wallet,
         "native_sol": snap.native_sol, "wsol": snap.wsol, "equity_sol": snap.equity, "held": snap.held,
+        "buy_fees_payable": None if snap.native_sol is None else float(snap.native_sol) >= BUY_NATIVE_SOL,
         "book_live": getattr(snap, "book_live", False),
         "snipers": snap.snipers if snap.snipers is None else {s.get("status", "?"): sum(1 for x in snap.snipers if x.get("status") == s.get("status")) for s in snap.snipers},
         "snipers_not_idle": None if snap.snipers is None else [s for s in snap.snipers if s.get("status") not in ("idle", "finished")],

@@ -9,6 +9,10 @@ first on the server's recording and only then run live in capped batches.
 ## 11 Nov, 14:30 UTC: are the agents doing the work? The scheduled jobs yes; the paid analyst only in part
 
 - **Still nothing profitable live.** 74xVT9 is still the one qualified wallet; no strategy passes on paper.
+- **Live: nothing was bought on 11 Nov.** 74xVT9 made five buys over its floor (three in the morning, two at 14:12
+  and 14:16 UTC) and none was copied: a buy pays its fees in plain SOL, and the sniper wallet holds 0.0008 of it
+  beside 0.47 wrapped SOL (docs/live-recipe.md; the wallet is the owner's and is not flagged). The agents are now
+  told this, so they stop hunting for a fault (audit row 61).
 - **The scheduled jobs do their work**: the tape, the wallet checks every 30 minutes, the strategy search every two
   hours, the paper test every 30 minutes, the hourly re-scoring. All on time, the server nearly idle.
 - **The paid analyst** ran 25 times on 11 Nov for 24.14 $. When something was new it did real work: it found that
