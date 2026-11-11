@@ -6,6 +6,23 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 22:40 UTC: the owner said yes three times; one of the three is waiting for a key only the owner has
+
+- **Still nothing profitable live, and nothing bought on 11 Nov.** Four copies of 74xVT9 were sent and failed for
+  lack of plain SOL (18:52, 21:28, 21:44, 22:06 UTC; 0.001 SOL of fees each). The wallet holds 0.47 SOL, nearly all
+  of it wrapped: a curve buy cannot be paid with it.
+- **The owner's three answers (about 21:50 UTC), and where each stands:**
+  1. *The bot may turn its own wrapped SOL back into plain SOL.* Built, tested and on the server; the chain's own
+     simulation shows the conversion to the lamport (plain SOL 0.0012 to 0.41, wrapped 0.47 to 0.06: two curve buys
+     payable). **It has not run.** The server has never had the wallet's key, so nothing on it can sign for the
+     wallet. The owner adds one line to `/etc/snipetech/env` over SSH (never in chat); then the agreed 0.05 SOL test
+     runs, and after it the round keeps plain SOL for two curve buys by itself (audit row 73).
+  2. *The crew sniper.* Not started: each of its buys is a curve buy, and it is started once the wallet can pay one.
+  3. *Preconfirmations.* On the server since 21:59 UTC; the book's next copy sniper is the first to ask for them. The
+     next 20 copies are compared with the 24 before.
+- **What this cost to learn:** the first design of the conversion needed 0.0015 SOL of rent up front and the wallet
+  had 0.0012 by the time it was simulated. The design that shipped needs its own fee only (0.000011 SOL).
+
 ## 11 Nov, 21:00 UTC: the first copy of the qualified wallet was sent and failed, for a reason this record had wrong
 
 - **Still nothing profitable live, and still no live copy of 74xVT9.** At 18:52 UTC the sniper sent its first copy,

@@ -55,18 +55,31 @@ simulated without the signature check. It shows what a conversion would do; it c
 
 ## When it converts by itself (after the test)
 
-In the agents' round, every 15 minutes, from the round's own reading of the wallet:
+In the agents' round, every 15 minutes, from the round's own reading of the wallet (`operator/plain_sol.py`):
 
-- only while the book is live and the kill switch is not set;
+- only while something of ours can buy (the book is live, or a sniper of ours is running: the crew sniper buys on
+  the curve whether the book is on or not) and the kill switch is not set;
 - only when the wallet cannot pay one curve buy of the book's size (0.205 SOL) and its plain and wrapped SOL together
   can; a wallet that can pay one is left alone (so the two forms do not swing back and forth);
-- the amount: up to `keep_curve_buys` (2) buys of plain SOL, never more than is wrapped, never under 0.01 SOL;
+- the amount: up to `keep_curve_buys` (2) buys of plain SOL and the conversion's own fee on top, so the wallet holds
+  the buys whole afterwards (0.41 SOL) and the snapshot counts two payable curve buys, not one; never more than is
+  wrapped, never under 0.01 SOL;
 - at most 6 conversions a day; each one is a line in the notes (ours, not the owner's move) and a row in
-  `operator/unwrap.json`;
+  `operator/unwrap.json`; a refusal is said once a day and is one row however many rounds repeat it;
+- the round's snapshot takes the balances read from the chain after the send, so the agents and the page see what
+  the wallet holds; a dry round never converts; a step that fails is a line in the round's log and nothing more;
 - `[book] keep_curve_buys = 0` switches it off. It is 0 until the 0.05 SOL test has been read on the chain.
 
 By hand (the owner's command, never an agent's): `snipetech unwrap --sol 0.05`, `--dry-run` simulates and sends
 nothing, and with no amount it shows what the rule above would convert.
+
+## Where it stands (11 Nov 2026, 22:40 UTC)
+
+Built, tested and on the server (fd7d6eb). The chain's simulation of the rule's amount, run from the server for the
+real wallet: 0.408786623 SOL converted, plain SOL 0.001224377 to 0.41, wrapped SOL 0.471817213 to 0.06303059, 14,182
+compute units. **Nothing has been converted.** The server has never had the wallet's key (`SNIPER_SECRET` is not in
+`/etc/snipetech/env`), so nothing on it can sign for the wallet, and a real send is refused with those words. The
+0.05 SOL test, and the rule after it, wait for the owner to put the key there over SSH (never in chat).
 
 ## What is not known and how it is found out
 

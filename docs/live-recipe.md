@@ -28,6 +28,29 @@ What was done about each is written below this entry as it happens.
   4 Nov install; that old value is retired, so the server follows the code and every copy sniper the book makes from
   the next deploy on asks OKTech for preconfirmations (`"preconf": true` in its payload). Nothing else in a sniper
   changes with it (the send count stays 1).
+  On the server since 21:59:31 UTC. The newest copy sniper (74xVT9, made 21:50:08) is older than that and does not
+  ask yet; the next one the book makes is the first that does.
+- **1, wrapped SOL: built and proven by the chain's own simulation. Nothing converted yet: the server has never had
+  the wallet's key.** One transaction that needs nothing but its own fee (0.000011 SOL): the wallet's wrapped-SOL
+  account is closed to the wallet, made again, and what is to stay wrapped is put back. Every destination is the
+  wallet or its own wrapped-SOL account. Simulated from the server for the real wallet (22:39 UTC, sends nothing):
+
+  | | plain SOL | wrapped SOL |
+  |---|---|---|
+  | before | 0.001224377 | 0.471817213 |
+  | after the 0.05 SOL test | 0.051213377 | 0.421817213 |
+  | after the rule's conversion (two curve buys) | 0.41 | 0.06303059 |
+
+  A real send is refused in words: "the wallet's key (SNIPER_SECRET) is not on the server: nothing here can sign for
+  the wallet". OKTech holds the key for its own trades; this server never did (the same reason `/sell` cannot run
+  there). **What only the owner can do:** over SSH, add one line `SNIPER_SECRET=<the sniper wallet's private key>`
+  to `/etc/snipetech/env` (never in chat, never in a commit). Then the 0.05 SOL test runs, its two balances are read
+  from the chain and written here, and the rule is switched on (`[book] keep_curve_buys = 2`: six conversions a day at
+  most, each one a line in the notes). Until then the rule is off and converts nothing.
+- **Three more copies failed for the same reason the same evening**, each for 0.001 SOL of fees: 21:28:39 (6JtU6h,
+  curve), 21:44:28 (GbU7FC, curve), 22:06:51 (EFYdWB, PumpSwap: by then the plain SOL did not cover the buy's fees
+  either). Plain SOL is 0.0012 now, about the fee of one more failed send. Nothing was bought on 11 Nov.
+- **2, the crew sniper: not started.** Each of its buys is a curve buy. It is started once the wallet can pay one.
 
 ## The first copy of 74xVT9 was sent and failed: a curve buy takes the whole buy from plain SOL (11 Nov 2026, 18:52 UTC)
 
