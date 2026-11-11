@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sqlite3
 import time
 from collections.abc import Callable, Sequence
 from contextlib import nullcontext
@@ -482,16 +483,11 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              "venue": path.venue},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
+    # the numbers of the strategies that traded, made now: the operator's report and the live page read them kept
+    report(store, cfg, now)
     codes = sorted({c for why in skipped.values() for c in why})
     return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
             "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}, "retired": retired}  # fmt: skip
-
-
-def _stats(store: Store, strategy: dict, conf: float, samples: int) -> tuple[np.ndarray, dict, int]:
-    """(the pnl of the trades in the strategy's record, their summary, the trades of another venue left out)."""
-    rows, other = record(store, strategy)
-    pnl = np.array([r["pnl"] for r in rows], dtype=np.float64)
-    return pnl, (summarize(pnl, conf, samples) if len(pnl) else {}), other
 
 
 # 7 Nov: a rule showed +10.6 SOL over 1,200 forward trades; three trades made +11.0 SOL (create-slot bundles no live
@@ -511,32 +507,88 @@ def _robust(pnl: np.ndarray, buy_sol: float, conf: float, samples: int) -> dict:
             "top5_share": (top5 / total) if total > 0 else None}  # fmt: skip
 
 
+# The report's numbers for each strategy, kept with what they were made from (coverage REPORT_CACHE_KEY) and made again
+# only when that changes. 11 Nov, the operator's 15-minute round profiled: 39.5 of its 42 s were this report, reading
+# all 511,124 paper trades and running the bootstrap for 36 strategies (2.3 GB at its peak, for one with 72,633
+# trades), while 17 strategies with 6,200 trades between them had had a trade in two hours. The live page shows the
+# same kept numbers (dash._paper): a rule's record, never every row of it.
+REPORT_CACHE_KEY = "paper:report"
+REPORT_VERSION = 1
+
+
+def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bool, counted: int) -> tuple[dict, bool]:
+    """(a strategy's numbers from its record, whether they may be kept for the `counted` trades they were asked for).
+    With `bounds` the summary and the outlier-capped one; without (a superseded strategy) the count, mean and total.
+    Not kept: numbers made from other rows than were counted (the paper run wrote some in between), and a launch-type
+    rule's while a row of it carries no launchpad, for `record` then asks the tape, which forgets coins."""
+    rows = store.paper_trades(strategy["id"])
+    asks_tape = strategy_venue(strategy) is not None and any(not (r.get("data") or {}).get("venue") for r in rows)
+    kept, other = record(store, strategy, rows)
+    pnl = np.array([r["pnl"] for r in kept], dtype=np.float64)
+    roi = [float(r["roi"]) for r in kept if r.get("roi") is not None]
+    bought = [float(r["entry_ts"]) for r in kept if r.get("entry_ts") is not None]
+    nums: dict[str, Any] = {"n": len(pnl), "total": float(pnl.sum()), "mean_roi": sum(roi) / len(roi) if roi else None,
+                            "last_entry": max(bought, default=None)}  # fmt: skip
+    if bounds:
+        st = summarize(pnl, conf, samples) if len(pnl) else {}
+        nums |= {"mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"),
+                 "other_venue": other, **_robust(pnl, strategy["buy_sol"], conf, samples)}  # fmt: skip
+    else:
+        nums["mean"] = float(pnl.mean()) if len(pnl) else None
+    return nums, not asks_tape and len(rows) == counted
+
+
 def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any]:
     now = now or time.time()
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     done_until = store.coverage("paper").get("done_until")
     copy_pos = copy_landing(store, cfg, now)
     cov = store.coverage("paper_strategies")
+    counts = store.paper_counts()  # each strategy's trades: how many, the newest, their sum (no row read)
+    venues = store.coverage("paper:venues")  # the pass that wrote the old rows' launchpads (`tag_venues`)
+    kept = store.coverage(REPORT_CACHE_KEY).get("rows") or {}
+    fresh: dict[str, dict] = {}
+
+    def numbers(s: dict, bounds: bool) -> dict:
+        counted = counts.get(s["id"], [0, 0, 0.0])
+        made_from = [*counted, conf if bounds else None, samples if bounds else None,
+                     s.get("buy_sol") if bounds else None, venues if strategy_venue(s) is not None else None,
+                     bounds, REPORT_VERSION]  # fmt: skip
+        hit = kept.get(s["id"])
+        if hit and hit.get("from") == made_from:
+            fresh[s["id"]] = hit
+            return hit["numbers"]
+        nums, keep = _numbers(store, s, conf, samples, bounds, counted[0])
+        if keep:
+            fresh[s["id"]] = {"from": made_from, "numbers": nums}
+        return nums
+
     out = []
     for s in cov.get("strategies", []):
         kind = (s.get("trigger") or {}).get("kind")
         lat, pos = int(s.get("latency", 0)), str(s.get("position"))
-        pnl, st, other = _stats(store, s, conf, samples)
-        robust = _robust(pnl, s["buy_sol"], conf, samples)
+        nums = numbers(s, True)
+        other, n = nums["other_venue"], nums["n"]
+        robust = {k: nums[k] for k in ("mean_capped", "ev_lower_capped", "total_capped", "top5_share")}
         hours = max(((done_until or now) - s["from_ts"]) / 3600, 0)
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
                     "landing": landing_text(lat, pos, kind), "live_landing": (lat, pos) == live_landing(kind, copy_pos),
-                    "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": len(pnl), "mean": st.get("mean"),
-                    "ev_lower": st.get("ev_lower"), "total": float(pnl.sum()), "win_rate": st.get("win_rate"),
-                    "per_hour": len(pnl) / hours if hours else None, "lab_mean": s["lab"].get("mean"),
+                    "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": n, "mean": nums["mean"],
+                    "ev_lower": nums["ev_lower"], "total": nums["total"], "win_rate": nums["win_rate"],
+                    "per_hour": n / hours if hours else None, "lab_mean": s["lab"].get("mean"),
                     "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"),
                     "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
-        pnl = np.array([r["pnl"] for r in record(store, s)[0]], dtype=np.float64)
+        nums = numbers(s, False)
         superseded.append({"id": s["id"], "label": s["label"], "position": s.get("position"), "latency": s.get("latency"),
                            "landing": landing_text(int(s.get("latency", 0)), str(s.get("position"))),
-                           "superseded_at": s.get("superseded_at"), "n": len(pnl),
-                           "mean": float(pnl.mean()) if len(pnl) else None, "total": float(pnl.sum())})  # fmt: skip
+                           "superseded_at": s.get("superseded_at"), "n": nums["n"],
+                           "mean": nums["mean"], "total": nums["total"]})  # fmt: skip
+    if fresh != kept:
+        try:
+            store.set_coverage(REPORT_CACHE_KEY, {"rows": fresh})
+        except sqlite3.Error:
+            pass  # a store that cannot be written (a read-only copy): the report is the same, computed each time
     return {"strategies": out, "scored_until": done_until, "landing": landings(copy_pos),
             "landing_note": landing_note(copy_pos), "superseded": superseded}  # fmt: skip

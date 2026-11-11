@@ -18,6 +18,12 @@ from .solana.txmeta import TxMeta
 
 log = logging.getLogger(__name__)
 
+# What says whether a paper strategy's trades changed (analysis.paper.report keeps each strategy's numbers until they
+# do). 11 Nov: through the table this walked all 511,124 rows, 2 s; the index paper_trades_strategy holds the three
+# columns, so no row is read. (An index on a small table: built in a second or two by the first opener after the
+# deploy. The big tables' indexes are never added here, see _PRUNED.)
+PAPER_COUNTS_SQL = "SELECT strategy, COUNT(*), MAX(trigger_ts), TOTAL(pnl) FROM paper_trades GROUP BY strategy"
+
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA synchronous=NORMAL;
@@ -125,6 +131,8 @@ CREATE TABLE IF NOT EXISTS paper_trades (
     strategy TEXT NOT NULL, mint TEXT NOT NULL, trigger_ts INTEGER NOT NULL, entry_ts REAL, exit_ts REAL,
     pnl REAL NOT NULL, roi REAL, reason TEXT, data TEXT, PRIMARY KEY (strategy, mint)
 );
+CREATE INDEX IF NOT EXISTS paper_trades_strategy ON paper_trades(strategy, trigger_ts, pnl);
+CREATE INDEX IF NOT EXISTS paper_trades_entry ON paper_trades(entry_ts);
 CREATE TABLE IF NOT EXISTS funders (
     wallet TEXT PRIMARY KEY, funder TEXT, amount INTEGER, ts INTEGER, sig TEXT, checked_at INTEGER
 );
@@ -1207,6 +1215,11 @@ class Store:
             rows = self._q(f"SELECT handle, data FROM x_accounts WHERE handle IN ({','.join('?' * len(chunk))})", chunk)
             out.update({handle: json.loads(data) for handle, data in rows})
         return out
+
+    def paper_counts(self) -> dict[str, list]:
+        """What each strategy's paper trades are, without reading one of them: [how many, the newest trigger, the sum
+        of their results], off the index paper_trades_strategy (PAPER_COUNTS_SQL)."""
+        return {sid: [int(n), int(last or 0), float(total)] for sid, n, last, total in self._q(PAPER_COUNTS_SQL)}
 
     def paper_trades(self, strategy: str | None = None) -> list[dict]:
         sql = "SELECT strategy, mint, trigger_ts, entry_ts, exit_ts, pnl, roi, reason, data FROM paper_trades"
