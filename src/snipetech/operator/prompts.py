@@ -86,14 +86,19 @@ owner has not enabled yet are reported once a day, not every round.
 Money in and out: the owner moves SOL in and out of the sniper wallet often and on purpose (owner, 9 Nov). A change
 in the wallet's SOL that no trade of ours explains is the owner's deposit or withdrawal: never a decision note, never a
 question to the owner, at most one "info" clause with the new balance. Never ask the owner for SOL.
-A buy pays its fees, its tip and a new coin's token account in plain SOL (the snapshot's native_sol), never in wrapped
-SOL (wsol): about 0.005 SOL a buy. While the snapshot says buy_fees_payable false, no sniper of ours can send a buy,
-whatever the wallet's wrapped SOL, and nothing of it reaches the chain: no buy and no failed send in fills, though
-OKTech counts the snipe (11 Nov: five signals of the one qualified wallet, none bought). Signals missed in that state
-need no test, no new idea and no new sniper: they are no fault of the sniper or of OKTech, and funding the wallet is the
-owner's. Say it once a day, in one info clause: that signals came while the wallet could not pay a buy's fees. When the
-day's report or a note of today already says it, leave it out of the update, the report and the note (no line on the
-missed signals, on what the wallet holds or on what the snipers cannot do), and go on with the research.
+What a buy is paid with: on pump.fun's curve the buy itself is paid in plain SOL (the snapshot's native_sol), and
+its fees, its tip and a new coin's token account on top: 0.205 SOL for a 0.2 SOL copy. Wrapped SOL pays only for a coin
+that has left its curve (PumpSwap), and that buy still pays its fees, its tip and a new coin's token account in plain
+SOL, never in wrapped SOL (wsol). The snapshot's buys_payable says how many copies of the book's size the wallet can
+pay on each ("curve", "pumpswap"). At 0 no copy lands there. Under one buy's fees in plain SOL nothing of ours reaches
+the chain: no buy and no failed send in fills, though OKTech counts the snipe (11 Nov: five signals of the one
+qualified wallet, none bought). With the fees but not the buy, a curve buy lands and fails: fills says side "failed"
+and "buy not paid", the chain's log "insufficient lamports ..., need ..." (11 Nov 18:52 UTC: 0.0052 SOL beside 0.47
+wrapped SOL, 0.001 SOL of fees lost). Signals missed or failed in that state need no test, no new idea and no new
+sniper: they are no fault of the sniper or of OKTech, and funding the wallet is the owner's. Say it once a day, in one
+info clause: that signals came while the wallet could not pay a buy on that venue. When the day's report or a note of
+today already says it, leave it out of the update, the report and the note (no line on the missed signals, on what the
+wallet holds or on what the snipers cannot do), and go on with the research.
 """
 _RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 
@@ -207,6 +212,24 @@ trades and no edge over AVOID, record that the deployer verdicts pick nothing (a
 # rent of a new coin's token account (0.002, back when the account is closed). 11 Nov: with 0.0008 SOL beside 0.47
 # wrapped SOL the wallet sent nothing on five signals, and the analyst spent nine updates on the missing fills.
 BUY_NATIVE_SOL = 0.005
+BOOK_FILL_SOL = 0.2  # one copy's size where the snapshot does not carry the book's ([book] fill_min_sol)
+
+
+def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> dict | None:
+    """How many copies of the book's size the wallet can pay, a venue at a time; None when a balance was not read.
+    A buy on pump.fun's curve takes the buy itself from plain SOL (a system transfer to the curve), a PumpSwap buy
+    takes it from wrapped SOL, and each pays BUY_NATIVE_SOL in plain SOL on top. 11 Nov 18:52 UTC: the snapshot's old
+    flag read "a buy's fees are payable" at 0.0052 SOL beside 0.47 wrapped SOL, and the first copy of 74xVT9 landed
+    and failed for the 0.2 SOL it could not take from plain SOL."""
+    if native_sol is None or wsol is None:
+        return None
+    size = float(fill_sol or BOOK_FILL_SOL)
+    eps = 1e-9  # a balance of exactly n buys pays n
+    fees = int((float(native_sol) + eps) // BUY_NATIVE_SOL)
+    return {"size_sol": size, "curve": int((float(native_sol) + eps) // (size + BUY_NATIVE_SOL)),
+            "pumpswap": min(int((float(wsol) + eps) // size), fees)}  # fmt: skip
+
+
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file
 JOB_FLAG_SHOWN = 2  # a flag given more often in one command is shown this many times and the rest counted
 ADDRESS = re.compile(r"\b([1-9A-HJ-NP-Za-km-z]{8})[1-9A-HJ-NP-Za-km-z]{24,36}\b")  # a wallet or a coin: 32-44 base58
@@ -268,7 +291,7 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "jobs_recent": _job_lines(snap.jobs_recent),
         "wallet": snap.wallet,
         "native_sol": snap.native_sol, "wsol": snap.wsol, "equity_sol": snap.equity, "held": snap.held,
-        "buy_fees_payable": None if snap.native_sol is None else float(snap.native_sol) >= BUY_NATIVE_SOL,
+        "buys_payable": buys_payable(snap.native_sol, snap.wsol, getattr(snap, "book_fill_sol", None)),
         "book_live": getattr(snap, "book_live", False),
         "snipers": snap.snipers if snap.snipers is None else {s.get("status", "?"): sum(1 for x in snap.snipers if x.get("status") == s.get("status")) for s in snap.snipers},
         "snipers_not_idle": None if snap.snipers is None else [s for s in snap.snipers if s.get("status") not in ("idle", "finished")],

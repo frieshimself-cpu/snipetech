@@ -31,6 +31,11 @@ ONESHOT_UNITS = (
 )  # fmt: skip
 
 
+def book_fill_sol(cfg: Config) -> float:
+    """What one copy of the book buys: its smallest fill (a wallet's own size is never under it)."""
+    return float(cfg.book.fill_min_sol)
+
+
 @dataclass
 class Snapshot:
     ts: float
@@ -53,6 +58,7 @@ class Snapshot:
     verdicts: dict[str, int] = field(default_factory=dict)  # the qualify stage's candidates by effective status
     resources: list[dict] = field(default_factory=list)  # filled by operator.resources after the snapshot
     book_live: bool = False  # the live book was on (config or the owner's /book on) when this snapshot was taken
+    book_fill_sol: float | None = None  # what one copy of the book buys: the size buys_payable counts at
     equity_ref: float | None = None  # the last total equity a round could value (carried while a coin is unpriced)
     ok_tx_1h: int | None = None  # landed transactions by the wallet in the last hour (None = could not read)
 
@@ -248,7 +254,7 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
                         services: Callable[[], dict[str, str]] = systemd_services,
                         balances: Callable[[str], Any] | None = None) -> Snapshot:  # fmt: skip
     wallet = cfg.operator.wallet
-    snap = Snapshot(ts=now, wallet=wallet)
+    snap = Snapshot(ts=now, wallet=wallet, book_fill_sol=book_fill_sol(cfg))
     since = prev.ts if prev else now - 3600
     already = {j["id"] for j in prev.jobs_ended} if prev else set()
 

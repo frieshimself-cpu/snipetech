@@ -4,6 +4,59 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The first copy of 74xVT9 was sent and failed: a curve buy takes the whole buy from plain SOL (11 Nov 2026, 18:52 UTC)
+
+**Correction first.** The two entries of 11 Nov below, the agents' instructions and the owner were told that "a buy
+needs about 0.005 plain SOL for its fees". That is true and it is not the whole of it. What a buy is paid with depends
+on where the coin trades:
+
+| the coin | the buy itself | fees, tip, the coin's token account |
+|---|---|---|
+| still on pump.fun's curve (74xVT9's buys) | **plain SOL**: a transfer from the wallet to the curve | plain SOL, about 0.005 |
+| left its curve, on PumpSwap (7aPo3n's buys of 10 Nov) | wrapped SOL | plain SOL, about 0.005 |
+
+So one 0.2 SOL copy of 74xVT9 needs 0.205 plain SOL. The wallet's 0.47 SOL is wrapped and pays for no curve buy.
+
+**What happened.** Between 18:02 and 18:30 UTC the wallet's plain SOL went from 0.0008 to 0.0052. At 18:52:27 74xVT9 bought
+2.93 SOL of `4Xz4ZLnf…pump` (65 SOL in its curve). Our sniper sent its copy and it landed in the same block (slot
+468230618), then failed:
+
+- signature `53SuyoSXWbEr1vE5iejniu9ZCrNKh1iWxAKpC85Qsz4kxkgaHYfsn1PNMMDomwDtw8sQubVVhHqNXrJcLZEC15Yg`;
+- instructions: the coin's token account was made (rent paid), then pump.fun's `BuyExactQuoteInV3` for 0.2 SOL moved
+  the coins and asked the wallet for the SOL: `Transfer: insufficient lamports 2725537, need 200000000`. The whole
+  transaction was undone;
+- cost: the fee, 0.001005 SOL. Plain SOL after it: 0.0042. Nothing is held.
+
+**How it is known.** The transaction was read from the chain and decoded (`snipetech tx`). For comparison the last
+landed buy (10 Nov 22:19:33, `N57QpCZL3DwT…`, a copy of 7aPo3n) is PumpSwap's `BuyExactQuoteInV2`: the wallet's
+wrapped SOL fell by 0.2000 and its plain SOL by 0.0045 (fee 0.0010, tip 0.0020, token account 0.0015). The four live
+buys since 9 Nov 18:28 UTC were all of that kind (our last curve buy was at 10:19 that day), which is why wrapped SOL
+had been enough. 74xVT9 is another matter: 33 of its 45 buys over its floor in the last three days were on the curve,
+10 on PumpSwap, 2 on LaunchLab (7aPo3n: 15 of 18 on PumpSwap).
+
+**What it settles.** The sniper does send, in the leader's own block, as soon as the wallet can pay the fee: the
+eight silent misses of the day were the empty balance and nothing else. Live copies of 74xVT9: still none.
+
+**What was changed** (deployed with the next deploy after 21:00 UTC; the wallet is the owner's and nothing alerts or
+asks):
+
+- the agents' instructions say what each kind of buy is paid with;
+- the snapshot they read says how many copies the wallet can pay on each venue (`buys_payable`: curve, pumpswap), in
+  place of a flag that read "a buy's fees are payable" while no curve buy could be paid;
+- a failed send in `fills` carries its cause in words where the error and the instruction give it ("buy not paid: a
+  curve buy takes the whole buy from plain SOL"); the analyst had to guess at `Custom 1`.
+
+**Seen on the way, not changed:** every buy OKTech sends for us carries no price limit (`min_tokens_out: 1`). That is
+OKTech's design for Solana ("slippage pinned to 100 %: we rely on tip and priority", docs/oktech-features.md); behind
+a crowded leader the buy lands at whatever the price is by then, which the measured landing already counts.
+
+**Open, the owner's to decide:** the wallet's SOL turns into wrapped SOL by itself (every sale on PumpSwap pays in
+wrapped SOL; a coin bought on its curve that graduates while we hold it is sold there), a plain transfer out of the
+wallet moves only the plain part, and nothing turns wrapped SOL back. A step that keeps a few buys of plain SOL by
+unwrapping needs a yes: it converts SOL inside the owner's wallet. How OKTech treats the wrapped account is not known
+well enough to build it blind (it wrapped 0.0996 SOL at a sniper's start on 6 Nov; whether it would wrap again for a
+PumpSwap buy after an unwrap is untested).
+
 ## The first wallet to pass the forward check is copied live; 2Tp9sc's sniper stopped (11 Nov 2026, 04:55 UTC, the book)
 
 Nobody switched anything: the book did this on its own run, under the owner's standing settings (the live book, on
@@ -26,7 +79,8 @@ since 6 Nov; 0.2 SOL fills on the low-fee arm).
 - **05:09-05:51 UTC: its first three signals came and none was bought.** 74xVT9 made three first buys over the
   0.558 SOL floor (Fq1Mcq 1.33 SOL at 05:09:31, Diq2CR 1.18 at 05:11:48, YiDqey 0.99 at 05:51:25). OKTech counted
   three snipes and the sniper finished (3 buys a sniper), but no transaction of ours reached the chain, landed or
-  failed: at the time the wallet held 0.0009 SOL beside 0.47 wrapped SOL, and a buy needs SOL for its fees. (The
+  failed: at the time the wallet held 0.0009 SOL beside 0.47 wrapped SOL, and a buy needs SOL for its fees (and, on
+  the curve, for the buy itself: the correction above). (The
   wallet's balance is the owner's to move and is not flagged; it is written here only because it is why there is no
   live result.) The book made the next sniper at 06:00:09 (`6af404692721696190446e2e`), as it does while the wallet
   stays qualified. 74xVT9's own result on the three coins: -0.27, -0.30 and +0.25 SOL on 2.1, 1.9 and 1.3 SOL bought;

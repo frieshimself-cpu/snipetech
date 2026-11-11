@@ -979,3 +979,52 @@ def test_a_fresh_start_counts_only_a_wallets_trips_after_it():
     assert rows["W"]["n"] == 1 and rows["W"]["mean_sol"] == 0.03
     assert rows["V"]["n"] == 1 and rows["V"]["mean_sol"] == -0.05
     assert "W" not in {r["wallet"] for r in wallet_live_rows(trips[:1], NOW, 7.0, starts={"W": NOW - 600})}
+
+
+def test_a_failed_send_says_in_words_why_it_failed():
+    """11 Nov 18:52 UTC: the first copy of 74xVT9 landed in its block and failed with
+    {'InstructionError': [4, {'Custom': 1}]}. The analyst guessed ("normally means an account was short of funds; I did
+    not decode it") and nobody knew a curve buy takes the whole buy from plain SOL: the log said "Transfer: insufficient
+    lamports 2725537, need 200000000" beside 0.47 wrapped SOL. The row now says what the error and the instruction mean
+    together; an error we cannot read stays as it is."""
+    from snipetech.measure.run import failed_cause
+    from snipetech.solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
+    from snipetech.solana.txmeta import PumpIx
+
+    short = {"InstructionError": [4, {"Custom": 1}]}
+    curve_buy = [PumpIx(PUMP_PROGRAM, "buy_exact_quote_in_v3", "W", {"spendable_quote_in": 200000000}, None, "MINT")]
+    pool_buy = [PumpIx(PUMP_AMM_PROGRAM, "buy_exact_quote_in_v2", "W", {}, None, "MINT")]
+    sell = [PumpIx(PUMP_PROGRAM, "sell_v3", "W", {}, None, "MINT")]
+    assert failed_cause(short, curve_buy) == "buy not paid: a curve buy takes the whole buy from plain SOL"
+    pool_words = "buy not paid: a PumpSwap buy takes the buy from wrapped SOL, its fees from plain SOL"
+    assert failed_cause(short, pool_buy) == pool_words
+    assert failed_cause(short, sell) == "sell of coins the wallet no longer held"
+    rent = {"InsufficientFundsForRent": {"account_index": 0}}
+    assert failed_cause(rent, curve_buy) == "no plain SOL left for an account's rent"
+    own = {"InstructionError": [4, {"Custom": 6042}]}  # pump.fun's own error: not guessed at
+    assert failed_cause(own, curve_buy) is None
+    assert failed_cause(short, []) is None and failed_cause(None, curve_buy) is None
+    assert failed_cause("{'InstructionError': [4, {'Custom': 1}]}", curve_buy) is None  # only what the RPC returned
+
+
+def test_a_failed_buy_is_recorded_with_its_cause(tmp_path):
+    from snipetech.solana.programs import PUMP_PROGRAM
+    from snipetech.solana.txmeta import PumpIx
+
+    svc, st, cfg = _svc(tmp_path)
+    _copy_world(st, coins=1)
+    err = {"InstructionError": [4, {"Custom": 1}]}
+    failed = [{"signature": "FAILBUY", "blockTime": NOW - 900, "slot": SLOT + 300, "err": err}]
+    meta = _meta("FAILBUY", priority=1_000_000, tip=0)
+    args = {"spendable_quote_in": 200000000}
+    meta.pump_ixs = [PumpIx(PUMP_PROGRAM, "buy_exact_quote_in_v3", ME, args, None, "MINTX")]
+
+    async def failed_sigs(wallet, since):
+        return failed
+
+    asyncio.run(run_measure(svc, cfg, NOW, ensure_meta=_ensure(st, {"FAILBUY": meta}), failed_sigs=failed_sigs))
+    row = st.fill("FAILBUY")
+    assert row["side"] == "failed" and row["mint"] == "MINTX"
+    assert row["exit_reason"].startswith("buy not paid: a curve buy takes the whole buy from plain SOL")
+    assert "'Custom': 1" in row["exit_reason"]  # the chain's own words stay beside ours
+    st.close()

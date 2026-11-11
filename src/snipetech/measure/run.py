@@ -15,6 +15,7 @@ from typing import Any
 from ..analysis.lab import span_slot_secs
 from ..config import Config
 from ..exits_menu import EXIT_MENU_VERSION
+from ..solana.programs import PUMP_AMM_PROGRAM
 from ..store import Store
 from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
 from .exits import (
@@ -202,6 +203,36 @@ def twin_fees_by_sell(
     for fsig, ssig in twin_sells(failed_rows, sells, window_s).items():
         out[ssig] = out.get(ssig, 0.0) + fee[fsig]
     return out
+
+
+FAILED_WHY_CHARS = 160  # a failed send's reason in fills: our words, then the chain's own error
+INSUFFICIENT = 1  # the system and the token program's "insufficient funds" (pump.fun's own errors start at 6000)
+
+
+def failed_cause(err: Any, pump_ixs) -> str | None:
+    """Why a failed send of ours failed, in words, where the chain's error (as the RPC returns it) and the instruction
+    it carried say so together; None for an error we cannot read (pump.fun's own codes are not guessed at).
+
+    11 Nov 18:52 UTC: the first copy of 74xVT9 landed in its block and failed with InstructionError [4, Custom 1]. Its
+    log: "Transfer: insufficient lamports 2725537, need 200000000", beside 0.47 wrapped SOL. pump.fun's curve takes the
+    whole buy from plain SOL (a system transfer to the curve); only PumpSwap takes it from wrapped SOL (the 10 Nov
+    buys). A sell that fails this way sells coins a twin of it already sold."""
+    if not isinstance(err, dict):
+        return None
+    if "InsufficientFundsForRent" in err:
+        return "no plain SOL left for an account's rent"
+    ie = err.get("InstructionError")
+    inner = ie[1] if isinstance(ie, (list, tuple)) and len(ie) == 2 else None
+    if not isinstance(inner, dict) or inner.get("Custom") != INSUFFICIENT:
+        return None
+    if any(str(ix.name).startswith("sell") for ix in pump_ixs):
+        return "sell of coins the wallet no longer held"
+    buys = [ix for ix in pump_ixs if str(ix.name).startswith("buy")]
+    if not buys:
+        return None
+    if buys[0].program == PUMP_AMM_PROGRAM:
+        return "buy not paid: a PumpSwap buy takes the buy from wrapped SOL, its fees from plain SOL"
+    return "buy not paid: a curve buy takes the whole buy from plain SOL"
 
 
 def _sells_a_coin(meta) -> bool:
@@ -451,10 +482,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                                 (wallet, mint, ts))  # fmt: skip
                 if prev and prev[0][0]:
                     arm = prev[0][0]
+        cause = failed_cause(f.get("err"), meta.pump_ixs if meta is not None else [])
+        why = f"{cause}: {f.get('err')}" if cause else str(f.get("err"))
         row = {"sig": sig, "ts": ts, "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0, "tokens": 0.0, "mint": mint,
                "bid_arm": arm, "priority_lamports": int(meta.priority_lamports) if meta else None,
                "tip_lamports": int(meta.tip_lamports) if meta else None, "cu_limit": meta.cu_limit if meta else None,
-               "cu_used": meta.cu_consumed if meta else None, "exit_reason": str(f.get("err"))[:80]}  # fmt: skip
+               "cu_used": meta.cu_consumed if meta else None, "exit_reason": why[:FAILED_WHY_CHARS]}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
     # round trips over the lookback window

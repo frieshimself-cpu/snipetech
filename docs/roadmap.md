@@ -6,6 +6,36 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 21:00 UTC: the first copy of the qualified wallet was sent and failed, for a reason this record had wrong
+
+- **Still nothing profitable live, and still no live copy of 74xVT9.** At 18:52 UTC the sniper sent its first copy,
+  in the wallet's own block, and the buy failed: pump.fun's curve takes the whole buy (0.2 SOL) from plain SOL, and
+  the wallet held 0.0052 plain SOL beside 0.47 wrapped SOL. Cost: 0.001 SOL of fees. Read from the chain
+  (docs/live-recipe.md, top entry).
+- **What was wrong here.** The record, the agents' instructions and this session's message to the owner all said a
+  buy needs "about 0.005 plain SOL for its fees". That holds for a coin that has left its curve (PumpSwap is paid in
+  wrapped SOL: the four live buys of 9-10 Nov). Three quarters of 74xVT9's buys are on the curve, where one 0.2 SOL
+  copy needs 0.205 plain SOL. Corrected in the record, in the agents' instructions, in the snapshot they read (how
+  many copies the wallet can pay on each venue) and to the owner.
+- **Two tools showed the first part of something as all of it** (audit rows 70 and 71):
+  - the owner's dashboard read the five KOL paper rules through a query that returns 500 rows at most and showed 106
+    trades a rule where each has about 426, with the totals of the first trades only. True record at 20:00 UTC: 2 SOL
+    rule -5.8 SOL over 426 trades (the page said -1.0 over 106), 5 SOL rule +24.8 (the page said -2.9), 10 SOL +23.5,
+    20 SOL +2.8 and +19.0. None has a lower bound above zero; five trades carry each positive total. The week's
+    spend table had the same fault from a file read by its last 200,000 bytes (6 Nov: 2.16 $ shown, 4.44 $ spent).
+  - the forward paper test placed a copy with its own line of code and had not followed the lab to "behind the
+    copied wallet's companions" (17:50 and 18:19 UTC): a rule frozen from a lab was judged forward at a better place
+    than the lab scored it at. Both now place every entry with one function (deployed 20:39 UTC).
+- **The agents after the 18:19 fixes** (their own turns, 18:30-20:30 UTC): a finished job's result is read once from
+  its outline, then by part (no more "the result went unread"); the analyst froze the lab's best 2 SOL KOL rule for a
+  forward test instead of believing it (lab: +0.107 SOL a trade; the same rule family's forward record at 2 SOL:
+  -0.014 a trade over 427), read the failed buy within eight minutes and wrote one info note. About 1 $ a turn.
+- **The first qualify run on the corrected landing** (18:45 UTC, 900 wallets): 38 buy with companions and are scored
+  behind them (33 verdicts say so); the companions read took 4 s of the run's 454. Nobody new qualified.
+- **Open:** the wallet's SOL turns into wrapped SOL by itself and nothing turns it back (the owner's to decide: an
+  automatic unwrap converts SOL inside their wallet); 8MaVa9's and 74xVT9's reviews at 03:46-04:48 UTC on 12 Nov; the
+  bid table (two days of rows from 13 Nov); the deployer forward record (300 trades).
+
 ## 11 Nov, 17:00 UTC: the tape now writes what every trade bid for its place, and who paid for it
 
 - **Still nothing profitable live.** 74xVT9 is the one qualified wallet; no strategy passes on paper. Nothing was
