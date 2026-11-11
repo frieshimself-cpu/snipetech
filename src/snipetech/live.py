@@ -33,6 +33,7 @@ import time
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Iterable, Iterator
 from contextlib import contextmanager
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -94,6 +95,10 @@ SLOT_SECS_GUESS = 0.2142  # a slot's time before the recorder has measured it (5
 # seconds in database calls and its processor seconds, since the process started; written once a minute
 WORK_KEY = "tape:work"
 WORK_EVERY_SECS = 60.0
+# A file inputs/profile-tape in the data directory (`remote put`) makes the recorder profile its event loop: its text is
+# the seconds (60 when empty or unreadable, never under 10 or over 300); the result goes to jobs/tape-profile-<time>.log
+PROFILE_FLAG = "profile-tape"
+PROFILE_SECS = (10.0, 60.0, 300.0)  # the least, the default, the most
 REOPEN_AFTER_SECS = 180.0
 RESTART_AFTER_SECS = 600.0
 # A slot is placed on the chain clock at the slot time the recorder measures on its own stream (`fit_slot_secs`): the
@@ -469,6 +474,8 @@ class LiveWatcher:
         self.amm_skipped: list[list[int]] = []  # stretches of chain time it missed (coverage)
         self.started_at = self.clock()
         self.work_at = -math.inf  # when the work record was last written
+        self.profiler: Any = None  # a cProfile.Profile while the recorder profiles itself (`_profile_tick`)
+        self.profile_until, self.profile_secs = 0.0, 0.0
         self.amm_runs: dict[str, list[int]] = {}  # this process's runs of the coverage record: tag -> [from, to]
 
     # -- entry point --------------------------------------------------------------------------
@@ -1494,6 +1501,7 @@ class LiveWatcher:
                 pruning.add_done_callback(self.tasks.discard)
                 last_prune = now
             await self._rescore()
+            self._profile_tick()
             log.info("live: %s", dict(self.stats))
 
     async def _prune(self, now: float) -> None:
@@ -1551,6 +1559,48 @@ class LiveWatcher:
             if self.head is not None:
                 cov["head"] = [self.head[0], self.head[1]]
         self.store.set_coverage("tape", cov)
+
+    def _profile_tick(self) -> None:
+        """The recorder profiles itself when asked (11 Nov: 2.7 ms of processor an update on the server, 0.1-0.2 ms of
+        it explained on the dev box, and nothing may be installed there). A file `inputs/profile-tape` in the data
+        directory starts a profile of this thread, the event loop's, for the seconds its text says; the file is taken
+        (one profile a file). When the time is up the functions that took the most time, by their own time and with
+        what they call, are written to `jobs/tape-profile-<time>.log`. Checked once a maintenance tick; a failure
+        here never costs the tape."""
+        try:
+            data = Path(self.cfg.storage.db_path).resolve().parent
+            now = self.clock()
+            if self.profiler is None:
+                flag = data / "inputs" / PROFILE_FLAG
+                if not flag.is_file():
+                    return
+                least, default, most = PROFILE_SECS
+                try:
+                    secs = min(most, max(least, float(flag.read_text().strip())))
+                except ValueError:
+                    secs = default
+                flag.unlink()
+                import cProfile
+
+                self.profiler, self.profile_until, self.profile_secs = cProfile.Profile(), now + secs, secs
+                self.profiler.enable()
+            elif now >= self.profile_until:
+                import io
+                import pstats
+
+                prof, self.profiler = self.profiler, None
+                prof.disable()
+                text = io.StringIO()
+                text.write(f"{self.profile_secs:g} s of the recorder's event loop, to {int(now)} "
+                           f"(counts so far: {dict(sorted(self.stats.items()))})\n")  # fmt: skip
+                for order in ("tottime", "cumulative"):
+                    text.write(f"\n== by {order} ==\n")
+                    pstats.Stats(prof, stream=text).strip_dirs().sort_stats(order).print_stats(45)
+                (data / "jobs").mkdir(parents=True, exist_ok=True)
+                (data / "jobs" / f"tape-profile-{int(now)}.log").write_text(text.getvalue())
+        except Exception as exc:  # noqa: BLE001
+            self.profiler = None
+            log.warning("tape: the self-profile failed (%s)", str(exc)[:200])
 
     def _mark_work(self) -> None:
         """Coverage `tape:work`, once a minute: what this process has done since it started. `counts`: the updates and
