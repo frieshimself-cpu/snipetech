@@ -16,7 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive, redact
-from . import learning, live_test, postmortem, risk_guard
+from . import learning, live_test, plain_sol, postmortem, risk_guard
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -253,6 +253,14 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                 if not notes.has_today("live test step failed", t0):
                     notifier.send(notes.write(f"live test step failed: {type(exc).__name__}: {str(exc)[:160]}; the "
                                               "next round looks again", "decision"))  # fmt: skip
+            # plain SOL for curve buys (the owner's yes of 11 Nov; off until [book] keep_curve_buys is set): after the
+            # steps that may start something, before the agents and the saved snapshot read the wallet
+            try:
+                done = await plain_sol.keep_plain_sol(cfg, paths, snap, t0, notes, svc=svc)
+                if done is not None:
+                    _log(paths, t0, redact("plain SOL: " + plain_sol.log_line(done)))
+            except Exception as exc:  # noqa: BLE001 - the wallet's two kinds of SOL never break the round
+                _log(paths, t0, redact(f"plain SOL: failed: {type(exc).__name__}: {exc}"))
         if paths.stop_flag.exists():
             _log(paths, t0, "stopped by owner (/stop); no sniper expected until /resume")
         # Resources: checked by code, alerted once a day per resource, no model involved.

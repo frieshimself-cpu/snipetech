@@ -99,6 +99,9 @@ sniper: they are no fault of the sniper or of OKTech, and funding the wallet is 
 info clause: that signals came while the wallet could not pay a buy on that venue. When the day's report or a note of
 today already says it, leave it out of the update, the report and the note (no line on the missed signals, on what the
 wallet holds or on what the snipers cannot do), and go on with the research.
+The round itself turns the wallet's own wrapped SOL into plain SOL for curve buys when the owner's setting says so
+([book] keep_curve_buys; 0 is off) and a note names each conversion. native_sol up and wsol down by the same amount is
+that: not the owner's move and not a trade, and nothing to write about again.
 """
 _RULES += "\n" + OKTECH_PLAYBOOK + "\n"
 

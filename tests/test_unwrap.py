@@ -78,19 +78,25 @@ def test_converting_all_of_it_puts_nothing_back():
 
 
 def test_how_much_is_converted():
-    """Up to two curve buys of plain SOL, only when the wallet cannot pay one and its two kinds of SOL together can."""
+    """Up to two curve buys of plain SOL, only when the wallet cannot pay one and its two kinds of SOL together can.
+    The conversion's own fee comes out of plain SOL, so it is converted on top: afterwards the wallet holds the buys
+    whole, and the snapshot's count of payable curve buys says two, not one."""
     need = int(0.205 * SOL)  # a 0.2 SOL copy with its fees, tip and token account
+    fee = U.FEE_LAMPORTS
 
     def plan(native, wsol, keep=2):
         return U.plan_amount(int(native * SOL), int(wsol * SOL), need, keep)
 
-    # 11 Nov: 0.0042 plain, 0.4718 wrapped: up to two buys' worth of plain SOL
-    assert plan(0.004239377, 0.471817213) == 2 * need - 4_239_377
+    # 11 Nov: 0.0042 plain, 0.4718 wrapped: two buys' worth of plain SOL once the conversion has paid its own fee
+    assert plan(0.004239377, 0.471817213) == 2 * need - 4_239_377 + fee
+    assert 4_239_377 - fee + plan(0.004239377, 0.471817213) == 2 * need  # what the wallet holds afterwards
     assert plan(0.0, 0.3) == int(0.3 * SOL)  # never more than is wrapped: one buy becomes payable
     assert plan(0.21, 0.5) == 0  # it can pay one curve buy: left alone, so the two forms do not swing
     assert plan(0.01, 0.1) == 0  # together they cannot pay one buy: converting changes nothing
+    assert U.plan_amount(1_000_000, need - 1_000_000, need, 2) == 0  # ... nor when the fee is what would be missing
+    assert U.plan_amount(1_000_000, need - 1_000_000 + fee, need, 2) == need - 1_000_000 + fee  # to the lamport
     assert plan(0.0042, 0.4718, keep=0) == 0  # switched off
-    assert plan(0.0042, 0.4718, keep=1) == need - 4_200_000
+    assert plan(0.0042, 0.4718, keep=1) == need - 4_200_000 + fee
     assert plan(0.2049, 0.4718, keep=1) == 0  # the missing 0.0001 is under the least worth a transaction
     assert U.MIN_UNWRAP_LAMPORTS == 10_000_000
 

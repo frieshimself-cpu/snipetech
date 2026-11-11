@@ -445,3 +445,80 @@ def test_oktech_answering_slowly_leaves_the_coin_to_the_tape(tmp_path, monkeypat
         st.close()
     assert rc == 0 and took < 2.0, f"the pass took {took:.1f} s"
     assert len(sent) == 1 and m.mint in sent[0] and "Nobody is selling" in sent[0]  # the dead exit, from the tape
+
+
+# -- plain SOL for curve buys (the owner's yes of 11 Nov 2026) -------------------------------------------------------
+
+
+def _unwrapper(monkeypatch, asked, result=None):
+    """Stands in for the sniper wallet's conversion: records what the round asked for, converts nothing."""
+    from snipetech.operator import plain_sol as P
+
+    class Fake:
+        def __init__(self, rpc, secret_b58=None, wallet=None):
+            assert wallet == "W" and secret_b58 is None  # the round's wallet; the key only from the server's env
+
+        async def convert(self, amount, dry_run=False, wait=True):
+            asked.append(amount)
+            if isinstance(result, Exception):
+                raise result
+            return result or {"amount_sol": amount / 1e9, "signature": "SIGROUND1234567890", "confirmed": True,
+                              "after": {"plain_sol": 0.41, "wrapped_sol": 0.063045213}}  # fmt: skip
+
+    monkeypatch.setattr(P, "Unwrapper", Fake)
+
+
+def _poor_in_plain_sol(env):
+    """11 Nov 22:25 UTC: 0.0012 plain SOL beside 0.4718 wrapped SOL, the book on."""
+    from snipetech.book.switch import book_switch
+
+    env["svc"].rpc = object()
+    book_switch(env["paths"], True, "test", NOW)
+    return lambda w: (0.001224377, 0.471817213, [])
+
+
+def test_the_round_never_converts_until_the_owner_s_setting_says_how_many_buys(tmp_env, monkeypatch):
+    asked: list[int] = []
+    _unwrapper(monkeypatch, asked)
+    assert _op(tmp_env, balances=_poor_in_plain_sol(tmp_env)) == 0
+    assert asked == [] and "plain SOL" not in tmp_env["paths"].notes.read_text()
+    assert not (tmp_env["paths"].root / "unwrap.json").exists()
+
+
+def test_the_round_turns_wrapped_sol_into_plain_sol_for_two_curve_buys(tmp_env, monkeypatch, capsys):
+    from snipetech.solana.unwrap import FEE_LAMPORTS
+
+    asked: list[int] = []
+    _unwrapper(monkeypatch, asked)
+    tmp_env["cfg"].book.keep_curve_buys = 2
+    bal = _poor_in_plain_sol(tmp_env)
+    assert _op(tmp_env, balances=bal, dry_run=True) == 0
+    assert asked == []  # a dry round shows what a round would see: it never touches the wallet
+    capsys.readouterr()
+    assert _op(tmp_env, balances=bal) == 0
+    assert asked == [2 * 205_000_000 - 1_224_377 + FEE_LAMPORTS]
+    assert "[info] turned 0.4088 wrapped SOL into plain SOL" in tmp_env["paths"].notes.read_text()
+    # the agents, the page and the next round read what the wallet holds after the conversion
+    snap = json.loads(tmp_env["paths"].snapshot.read_text())
+    assert (snap["native_sol"], snap["wsol"]) == (0.41, 0.063045213)
+    assert "plain SOL: converted 0.4088" in tmp_env["paths"].log.read_text()
+
+
+def test_a_conversion_that_cannot_be_made_never_breaks_the_round(tmp_env, monkeypatch):
+    from snipetech.operator import plain_sol as P
+
+    asked: list[int] = []
+    _unwrapper(monkeypatch, asked, RuntimeError("SNIPER_SECRET is not set"))
+    tmp_env["cfg"].book.keep_curve_buys = 2
+    bal = _poor_in_plain_sol(tmp_env)
+    assert _op(tmp_env, balances=bal) == 0 and len(asked) == 1
+    assert "could not turn wrapped SOL into plain SOL" in tmp_env["paths"].notes.read_text()
+    assert "plain SOL: refused" in tmp_env["paths"].log.read_text()
+
+    async def boom(*a, **k):
+        raise ValueError("the step itself broke")
+
+    monkeypatch.setattr(P, "keep_plain_sol", boom)
+    assert _op(tmp_env, balances=bal, now=lambda: NOW + 900) == 0
+    assert "plain SOL: failed: ValueError: the step itself broke" in tmp_env["paths"].log.read_text()
+    assert tmp_env["paths"].snapshot.exists()  # the round went on to its end

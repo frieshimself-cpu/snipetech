@@ -117,13 +117,15 @@ def _ran(logs: list[str]) -> list[str]:
 
 def plan_amount(native: int, wsol: int, need_per_buy: int, keep_buys: int) -> int:
     """How many lamports of wrapped SOL to turn into plain SOL so the wallet can pay curve buys: enough for
-    `keep_buys` buys of `need_per_buy` (the buy with its fees, tip and token account), never more than is wrapped.
-    0 when it is switched off (`keep_buys` 0), when the wallet can already pay one buy (it is left alone, so the two
-    forms do not swing back and forth), when its plain and wrapped SOL together cannot pay one (converting would change
-    nothing), or when the amount is under MIN_UNWRAP_LAMPORTS."""
-    if keep_buys <= 0 or need_per_buy <= 0 or native >= need_per_buy or native + wsol < need_per_buy:
+    `keep_buys` buys of `need_per_buy` (the buy with its fees, tip and token account) once the conversion has paid its
+    own fee out of plain SOL, never more than is wrapped. 0 when it is switched off (`keep_buys` 0), when the wallet
+    can already pay one buy (it is left alone, so the two forms do not swing back and forth), when its plain and
+    wrapped SOL together, less that fee, cannot pay one (converting would change nothing), or when the amount is under
+    MIN_UNWRAP_LAMPORTS."""
+    native, wsol, need = int(native), int(wsol), int(need_per_buy)
+    if keep_buys <= 0 or need <= 0 or native >= need or native + wsol - FEE_LAMPORTS < need:
         return 0
-    amount = min(int(keep_buys) * int(need_per_buy) - int(native), int(wsol))
+    amount = min(int(keep_buys) * need - native + FEE_LAMPORTS, wsol)
     return amount if amount >= MIN_UNWRAP_LAMPORTS else 0
 
 
