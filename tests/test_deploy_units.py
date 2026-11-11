@@ -194,3 +194,21 @@ def test_the_slices_memory_is_not_the_first_to_go():
     low = sl[("Slice", "MemoryLow")]
     assert low.endswith("%") and 30 <= float(low[:-1]) <= 60
     assert float(low[:-1]) < float(sl[("Slice", "MemoryHigh")][:-1])
+
+
+def test_ubuntus_updater_never_restarts_a_snipetech_service():
+    """11 Nov 06:04:00 UTC: the nightly job (1 h 29 min into its work), a qualify run and an operator round were killed
+    with SIGTERM in the same second and started again; the events service was restarted with them; the recorder and
+    the ops service, restarted by a deploy two minutes earlier, were left alone. That is needrestart, which Ubuntu's
+    unattended upgrade runs after it installs packages: a service whose Python files changed on disk since it started
+    counts as outdated and is restarted, and after a deploy that is every job still running the code of before it.
+    The nightly job died the same way on 5 Nov (06:44:40) and 7 Nov (07:10:31). snipetech's services are restarted by
+    `remote update` when they should be: setup.sh tells needrestart to leave every unit named snipetech-* alone."""
+    setup = (UNITS.parent / "setup.sh").read_text()
+    assert "/etc/needrestart/conf.d/snipetech.conf" in setup
+    assert "$nrconf{override_rc}{qr(^snipetech-)} = 0;" in setup
+    # only where needrestart is installed, and written literally (the shell must not expand the Perl)
+    block = setup[
+        setup.index("if [ -d /etc/needrestart/conf.d ]") : setup.index("/etc/needrestart/conf.d/snipetech.conf")
+    ]
+    assert "<<'EOF'" in setup[setup.index("/etc/needrestart/conf.d/snipetech.conf") :][:60] and block

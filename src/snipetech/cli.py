@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -287,6 +288,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--db", help="SQLite database path")
     p.add_argument("--rpc", help="Solana RPC HTTP URL")
     p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--profile", action="store_true",
+                   help="run the command as it is and write the functions that took the most time to "
+                        "jobs/profile-<command>-<time>.log in the data directory (a lab then runs on one process)")  # fmt: skip
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cmd(name: str, help: str, json_flag: bool = True) -> argparse.ArgumentParser:
@@ -1938,8 +1942,69 @@ def _yield_cpu(cmd: str) -> None:
         pass
 
 
+# Set while a command is profiled: the work stays on the one thread a profile sees (`lab.lab_workers` gives one
+# process, `work_in_place` runs what would go to a thread where it is called).
+PROFILE_ENV = "SNIPETECH_PROFILE"
+
+
+@contextlib.contextmanager
+def work_in_place():
+    """While inside: `asyncio.to_thread` runs the function where it is called. A profile sees one thread, and the
+    heavy part of several commands (a deployer's report) is handed to another."""
+    real = asyncio.to_thread
+
+    async def here(fn, /, *args, **kwargs):
+        return fn(*args, **kwargs)
+
+    asyncio.to_thread = here
+    try:
+        yield
+    finally:
+        asyncio.to_thread = real
+
+
+def _profiled(args, argv: list[str] | None) -> int:
+    """`--profile`: the command as it is, and where its time went in jobs/profile-<command>-<time>.log (11 Nov: the
+    recorder's two real costs showed only in a profile taken on the server, where its tables are large). The command's
+    output and exit code are its own; a report that cannot be written never fails it."""
+    import cProfile
+    import io
+    import pstats
+
+    prof = cProfile.Profile()
+    os.environ[PROFILE_ENV] = "1"
+    t0 = time.time()
+    prof.enable()
+    try:
+        with work_in_place():
+            return _main(args)
+    finally:
+        prof.disable()
+        os.environ.pop(PROFILE_ENV, None)
+        try:
+            cfg = Config.load(args.config)
+            data = Path(args.db or cfg.storage.db_path).resolve().parent
+            words = [a for a in (argv if argv is not None else sys.argv[1:]) if a != "--profile"]
+            text = io.StringIO()
+            said = " ".join(words[words.index(args.cmd) :])
+            text.write(f"{said}: {time.time() - t0:.1f} s, one process, one thread\n")
+            for order in ("tottime", "cumulative"):
+                text.write(f"\n== by {order} ==\n")
+                pstats.Stats(prof, stream=text).strip_dirs().sort_stats(order).print_stats(60)
+            (data / "jobs").mkdir(parents=True, exist_ok=True)
+            (data / "jobs" / f"profile-{args.cmd}-{int(t0)}.log").write_text(text.getvalue())
+        except Exception as exc:  # noqa: BLE001
+            print(f"profile not written: {exc}", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.profile:
+        return _profiled(args, argv)
+    return _main(args)
+
+
+def _main(args) -> int:
     _yield_cpu(args.cmd)
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"

@@ -57,6 +57,16 @@ for unit in "$REPO"/deploy/systemd/*; do
   sed -e "s#@REPO@#$REPO#g" -e "s#@USER@#$USER_NAME#g" -e "s#@DATA@#$DATA#g" "$unit" > "/etc/systemd/system/$(basename "$unit")"
 done
 
+# Ubuntu's updater never restarts a snipetech service. After it installs packages it runs needrestart, which restarts
+# every service whose Python files changed on disk since it started: after a deploy, every job still running the code
+# of before it. 11 Nov 2026 06:04:00 UTC it killed the nightly job 1 h 29 min into its work, a qualify run and an
+# operator round in the same second (5 Nov 06:44 and 7 Nov 07:10 too). `remote update` restarts what should restart.
+if [ -d /etc/needrestart/conf.d ]; then
+  cat > /etc/needrestart/conf.d/snipetech.conf <<'EOF'
+$nrconf{override_rc}{qr(^snipetech-)} = 0;
+EOF
+fi
+
 # Ubuntu's own update jobs run gently. 11 Nov 2026 07:12 UTC (and 7 Nov 07:10): the upgrade job held 15.6 GB, the
 # machine stood still for 11 minutes and the tape recorder with it. They keep running: at the lowest priority for
 # processor and disk, their page cache given back above 3 GB. No MemoryMax (an update killed half-way leaves packages

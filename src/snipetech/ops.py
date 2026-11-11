@@ -322,8 +322,11 @@ class Ops:
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
-        if not argv or not all(isinstance(a, str) for a in argv) or argv[0] not in ALLOWED:
-            raise OpsError(403, f"command not allowed: {argv[:1]}")
+        """`--profile` may come first (the command is run as it is and leaves where its time went in jobs/); the
+        command after it is checked like any other."""
+        command = argv[1:] if argv and argv[0] == "--profile" else argv
+        if not command or not all(isinstance(a, str) for a in argv) or command[0] not in ALLOWED:
+            raise OpsError(403, f"command not allowed: {argv[:2]}")
         return self._start([*self.command, *argv], argv, int(timeout))
 
     def op_job(self, id: str, tail: int = 20000) -> dict[str, Any]:

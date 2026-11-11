@@ -1140,7 +1140,9 @@ CODE_MOVED = "the snipetech code on disk changed after the lab's process importe
 def lab_workers(setting: int = 0, cpus: int | None = None) -> int:
     """Worker processes for one lab: `setting` ([lab] workers) when it is 1 or more; 0, the default, is every CPU but
     two (the tape recorder and the services keep theirs), at least one and at most MAX_AUTO_WORKERS. `cpus`: this
-    machine's count when None."""
+    machine's count when None. One while the command is profiled (`snipetech --profile`): a profile sees one process."""
+    if os.environ.get("SNIPETECH_PROFILE"):
+        return 1
     if int(setting) >= 1:
         return int(setting)
     cpus = os.cpu_count() if cpus is None else cpus
