@@ -568,6 +568,35 @@ Next: (a) the same on our own tape at an exact landing (`lab`, about 110 crew co
 any of the twelve sells; (b) a day of forward paper; (c) one yes/no to the owner: Hunt sniper with the twelve wallets,
 0.2-0.5 SOL a buy, sold at 60 s or +50 %, a daily loss cap. Nothing live before that yes.
 
+### Copying on ordered rows: thirteen wallets held on the week they were not picked on (00:10 UTC, 11 Nov)
+
+`history follow --from 2026-10-05 --to 2026-11-09 --min-sol 0.5 --rescan --max-create-share 0.05 --min-pick 40 --walk`
+on ordered rows (150 million rows, 23 million moved by the orderer; 7,204,059 first buys of 0.5+ SOL by 766,193
+wallets). Percent a trade after 2.5 % of fees, before the bid, held a minute:
+
+| who is copied | trades | right behind the buy | one trade behind | end of the buy's block |
+|---|---|---|---|---|
+| every wallet, week 6 | 1,097,029 | +3.1 | -0.9 | -6.0 |
+| 242 wallets picked on weeks 1-5, judged on week 6 (3-9 Nov) | 10,142 by 172 | +15.5 | +8.9 | +3.0 |
+
+Walked forward at the end of the block (week judged: bar 0 / +3 / +6 / +10 %): week 2 +1.9 / +1.9 / +1.4 / -0.2;
+week 3 +2.3 / +2.7 / +2.8 / +4.7; week 4 +0.7 / +1.2 / +2.8 / +4.4; week 5 +0.4 / +1.2 / +2.1 / +3.7; week 6 +3.0 /
++4.1 / +6.4 / +2.4. Positive in every week at every bar but one, and thin: the same picture as before the ordering,
+a little better.
+
+Thirteen picked wallets had 25+ buys in week 6 and stayed at +5 % or better there (picking weeks -> week 6, buys):
+`DVMkhiQe1D8yenuEgsW44NjRn9LfVQjGEpZcez5x7Mff` +8.1 -> +18.4 (144) and its twin
+`FczAVrSD8WPAymBhWrcFy8QsRjgDqmFkuqWa1KkAbzuD` +8.0 -> +20.3 (129); `6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP`
++11.6 -> +8.0 (137); `eeee4Mi64FTxdg8hU96rfm3w6z6YmV8RHYFbNgr8LAD` +6.8 -> +6.6 (116);
+`DEdEW3SMPU2dCfXEcgj2YppmX9H3bnMDJaU4ctn2BQDQ` +8.3 -> +9.5 (65); `2R4fYXDcSbcMBDwuM7BBnCdJkav4S5ToSj9jgweTRvkQ`
++8.0 -> +9.8 (62); `7x6AHogMm2SYoYmJwiRm691ro3eWTQoVz4taHK6Q19AR` +7.7 -> +7.7 (49);
+`9xoW7tmArozmTicuWeQybc9XyYHot8efMECgCDDZAPyF` +8.5 -> +12.2 (35); `CMCkuhr8dynwXzeRc7DmhQt7KJFq2YFiJYSNGJAKkpAr`
++20.3 -> +9.0 (33); `CXMiGLCizCEdiLLXyY9rh3e6zD5AFM44JAMPAtA8ayjB` +20.0 -> +6.9 (41);
+`A8L9o7RYGreuRLyo3VRrso3K4gVvCn9bJLZK9DhzaCru` +17.3 -> +6.5 (42); `DhBdySYwG6mLduj3n4erqXYR9j92iDPXimGh9Dc8KCuu`
++18.1 -> +6.7 (40); `FtEhZX7CuxNwAEvrvt36oCrKUSVL6ZVVQXgSxe2VKwD7` +17.2 -> +7.7 (40). None buys in create blocks.
+They were handed to the server's agents as copy candidates for `qualify` on our own tape (an idea, priority 1): the
+book arms a wallet only if it passes there.
+
 > **Correction, 22:10 UTC, for the three sections that follow** (the bought month; copying on it; the team record).
 > Their numbers were read with a wrong assumption of mine: that every hourly file holds a coin's trades in block
 > order. Some October files do not. `path_check` (the table's one-minute return against the same hold walked along the
