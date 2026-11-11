@@ -1278,7 +1278,7 @@ async def _run(args, cfg: Config) -> int:
             ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
-                   "strategies": ranked}  # fmt: skip
+                   "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
             if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired

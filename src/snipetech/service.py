@@ -558,7 +558,10 @@ class Service:
         had = self.store.label_kind(address)
         if had in (None, PICKED_KIND):
             self.store.set_label(address, note, PICKED_KIND, source)
-        self.store.upsert_candidate(address, "picked", {"note": note}, int(time.time()))
+        now = int(
+            time.time()
+        )  # a pick after the wallet's last verdict makes it due again at once (store._PICKED_AFTER)
+        self.store.upsert_candidate(address, "picked", {"note": note, "at": now}, now)
         return {"address": address, "label": note, "kind": had or PICKED_KIND, "queued_for_qualify": True}
 
     # -- research ------------------------------------------------------------------------------

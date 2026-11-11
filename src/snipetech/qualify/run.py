@@ -202,6 +202,20 @@ def qualify_landing(store, q, now: float | None = None, max_age_secs: float = 7 
     return f"+{n}x"
 
 
+SCREEN_FACTOR = 10  # due wallets a run counts the buys of, for each one its lab may measure
+CHUNK = 50  # wallets one lab measures; their verdicts are written before the next chunk's lab starts
+# A run starts no new chunk after this long. deploy/systemd/snipetech-qualify.service kills it at three hours
+# (TimeoutStartSec=3h), and a chunk of 50 has to fit in what is left.
+RUN_BUDGET_SECS = 100 * 60
+
+
+def _lab_decides(candidate: dict) -> bool:
+    """A wallet the count before the lab never decides for: one that is qualified, carries a forward check or was
+    kept armed. Its review, its forward check and whether its sniper stays are the lab's to say."""
+    v = candidate.get("verdict") or {}
+    return v.get("status") == "qualified" or bool(v.get("forward")) or bool(v.get("kept_armed"))
+
+
 def _tape_start(store, now: float) -> int:
     try:
         spans = store.tape_spans()
@@ -211,36 +225,50 @@ def _tape_start(store, now: float) -> int:
 
 
 def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRunner | None = None,
-                max_wallets: int | None = None, early: bool = False) -> dict[str, Any]:  # fmt: skip
+                max_wallets: int | None = None, early: bool = False,
+                budget_secs: float = RUN_BUDGET_SECS) -> dict[str, Any]:  # fmt: skip
     """`early`: the research rotation found the lab idle (no lab for 30 min) with wallets waiting, so the stage's own
-    lab_interval_h does not defer this lab; a running lab job still does (one lab at a time)."""
+    lab_interval_h does not defer this lab; a running lab job still does (one lab at a time). `budget_secs`: no new
+    chunk of wallets starts after this long."""
     store = svc.store
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
     out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
                            "forward_failed": 0, "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0,
-                           "labelled": 0, "lab_wallets": 0}  # fmt: skip
-    due = [c for c in store.candidates(due_before=int(now), limit=max_wallets * 4) if c["status"] != "banned"][
-        :max_wallets
-    ]
+                           "too_few": 0, "labelled": 0, "lab_wallets": 0}  # fmt: skip
+    take = max_wallets * SCREEN_FACTOR
+    due = [c for c in store.candidates(due_before=int(now), limit=take + max_wallets) if c["status"] != "banned"][:take]
     if not due:
         return out
     since = _tape_start(store, now)
-    seen = {
-        w
-        for (w,) in store._q(
-            f"SELECT DISTINCT user FROM trades WHERE user IN ({','.join('?' * len(due))})", [c["wallet"] for c in due]
-        )
-    }
-    measurable = [c for c in due if c["wallet"] in seen]
+    # The count before the lab. A copy is a coin the wallet bought with KOL_MIN_SOL or more, and a wallet needs
+    # `need` of them at the least: one that bought fewer coins than that cannot pass, and is told so here. 11 Nov: of
+    # 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20, each after a lab and four
+    # reads per wallet. The tape store is what the lab reads; a wallet with more trades than the count walks is
+    # measured.
+    from ..analysis.lab import KOL_MIN_SOL
+
+    need = min(q.min_n_tape, q.min_n_tape_strong)
+    tape = getattr(svc, "tape_store", store)
+    measurable = []
     for c in due:
-        if c["wallet"] in seen:
+        if _lab_decides(c):
+            measurable.append(c)
+            continue
+        coins, more = tape.coins_bought(c["wallet"], int(KOL_MIN_SOL * 1e9))
+        if coins >= need or more:
+            measurable.append(c)
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
+        if coins:
+            why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {KOL_MIN_SOL:g} SOL or more on the tape: "
+                   f"fewer than the {need} copies a wallet needs at the least, not measured")  # fmt: skip
+            v["reasons"] = [why]
         store.put_verdict(v)
-        out["no_tape"] += 1
+        out["too_few" if coins else "no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
+    measurable = measurable[:max_wallets]  # the rest stay due: the next lab's
     if not measurable:
         return out
     labs = [j for j in running_jobs(jobs_dir) if (j.get("argv") or [""])[0] == "lab"]
@@ -258,39 +286,35 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         if w not in labelled:
             store.set_label(w, f"cand:{w}", "cand", "qualify")
             out["labelled"] += 1
-    wallets = [c["wallet"] for c in measurable]
     runner = lab_runner or default_lab_runner(svc, cfg)
     landing = qualify_landing(store, q, now=now)
-    t_lab = time.monotonic()
-    try:
-        with lab_lock(Path(jobs_dir).parent, wait=False):
-            rows = {r["wallet"]: r for r in runner(wallets, landing) if r.get("wallet")}
-    except LabBusy as exc:
-        out["deferred"], out["reason"] = True, f"lab lock held ({exc}); retry next tick"
-        return out
-    t_gates = time.monotonic()
-    # where the run's time goes (11 Nov: 2 h 18 min for 300 wallets at one processor, and nothing said which part)
-    out["secs"] = {"lab": round(t_gates - t_lab, 1), "gates": 0.0}
-    if getattr(runner, "info", None):
-        out["lab"] = runner.info
-    store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": len(wallets)})
-    out["lab_wallets"] = len(wallets)
     q_eff = replace(q, landing_pos=landing)
-    spans = getattr(svc, "tape_store", store).tape_spans()  # the tape the lab read: the forward window's hours
+    spans = tape.tape_spans()  # the tape the lab reads: the forward window's hours
     from ..book.state import copying_now
 
     # the wallets (first six characters) the book's own snipers still buy for at its last reading of OKTech, None when
     # it has not read OKTech within the hour; never the local sniper rows: a book stop leaves the row in place, and the
     # owner's hand-made snipers have rows too (review of 7 Nov)
     copying = copying_now(store, now)
-    for c in measurable:
+
+    def judge(c: dict, row: dict | None) -> None:
+        """One measured wallet's verdict, written."""
         w = c["wallet"]
         hist = normalise_history(c["stats"])
-        venue = venue_share(store, w, since)
-        crowd = crowding(store, w, since)
-        rel_ok, rel_reasons = relationship_gate(store, w)
-        create = create_slot_share(store, w, since)
-        row = rows.get(w)
+        # The readings a verdict needs, made only where they can change it (11 Nov: all four ran for every wallet of a
+        # run, the crowding read with one read per coin the wallet ever bought, which is where a run's two hours
+        # went). With fewer copies than any wallet needs the sample gate decides alone; the crowding gate is only
+        # reached with a lower bound above zero.
+        n_lab = int(row["n"]) if row and row.get("n") is not None else 0
+        lower_lab = row.get("ev_lower") if row else None
+        if n_lab >= need:
+            venue = venue_share(store, w, since)
+            rel_ok, rel_reasons = relationship_gate(store, w)
+            create = create_slot_share(store, w, since)
+        else:
+            venue, rel_ok, rel_reasons, create = None, True, [], None
+        alive = n_lab >= need and lower_lab is not None and float(lower_lab) > 0
+        crowd = crowding(store, w, since) if alive else dict(EMPTY_CROWD)
         moments = row.pop("moments", None) if row else None  # its copies, for the forward check only
         record = (store.get_score("qualify", w) or {}).get("record") or {}  # its copies since its first pick, so far
         copies = with_recorded(record.get("copies"), moments, spans)
@@ -301,13 +325,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         if first is None and v.get("forward") is not None:
             first = int(now)  # picked for the first time now
         if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
-            record = {"first_picked_at": first, "copies": [c for c in copies if c[0] > first]}
+            record = {"first_picked_at": first, "copies": [x for x in copies if x[0] > first]}
         prev = c.get("verdict")
         if copying is None and armed_before_rules(prev):
             # whether the book copies it is unknown: keeping it could arm a wallet nobody copies, dropping it could stop
             # one it does. Its verdict stays as it is and it stays due, for a run after the book has read OKTech.
             out["armed_unknown"] += 1
-            continue
+            return
         v = keep_armed(v, prev, copying is not None and w[:6] in copying, q_eff, now)  # never stops a copied wallet
         out["kept_armed"] += bool((v.get("kept_armed") or {}).get("kept"))
         store.put_verdict(v)
@@ -318,7 +342,44 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         fwd = (v.get("forward") or {}).get("status")
         out["forward_pending"] += fwd == "pending"
         out["forward_failed"] += fwd == "failed"
-    out["secs"]["gates"] = round(time.monotonic() - t_gates, 1)
+
+    # The wallets CHUNK at a time, in the queue's order, each chunk's verdicts written before the next chunk's lab. In
+    # one lab of all of them every verdict waited for the last wallet (the first of the queue two hours for what the
+    # lab had after minutes), and a run the unit killed at its three hours lost them all. A run starts no new chunk
+    # once `budget_secs` have gone: the rest stay due.
+    secs = {"lab": 0.0, "gates": 0.0}  # where the run's time goes (11 Nov: 2 h 18 min, and nothing said which part)
+    lab_info: dict[str, Any] = {}
+    out["chunks"], out["left_due"] = 0, 0
+    started = time.monotonic()
+    try:
+        with lab_lock(Path(jobs_dir).parent, wait=False):
+            for i in range(0, len(measurable), CHUNK):
+                if i and time.monotonic() - started >= budget_secs:
+                    out["left_due"] = len(measurable) - i
+                    break
+                chunk = measurable[i : i + CHUNK]
+                t0 = time.monotonic()
+                rows = {r["wallet"]: r for r in runner([c["wallet"] for c in chunk], landing) if r.get("wallet")}
+                t1 = time.monotonic()
+                for c in chunk:
+                    judge(c, rows.get(c["wallet"]))
+                secs["lab"] += t1 - t0
+                secs["gates"] += time.monotonic() - t1
+                out["chunks"] += 1
+                out["lab_wallets"] += len(chunk)
+                info = getattr(runner, "info", None)
+                if info:  # the lab's processes, its moments and where its own time went, summed over the chunks
+                    lab_info["workers"] = max(lab_info.get("workers") or 0, info.get("workers") or 0)
+                    lab_info["moments"] = lab_info.get("moments", 0) + int(info.get("moments") or 0)
+                    for k, t in (info.get("secs") or {}).items():
+                        lab_info.setdefault("secs", {})[k] = round(lab_info.get("secs", {}).get(k, 0.0) + float(t), 1)
+    except LabBusy as exc:
+        out["deferred"], out["reason"] = True, f"lab lock held ({exc}); retry next tick"
+        return out
+    out["secs"] = {k: round(t, 1) for k, t in secs.items()}
+    if lab_info:
+        out["lab"] = lab_info
+    store.set_coverage(LAST_LAB_KEY, {"ts": int(now), "wallets": out["lab_wallets"]})
     return out
 
 

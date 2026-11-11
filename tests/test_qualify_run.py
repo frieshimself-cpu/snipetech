@@ -30,8 +30,9 @@ def _svc(tmp_path):
     return Service(cfg, store=st), st, data
 
 
-def _tape(st, wallets, coins=3):
-    """Each wallet buys early in a few coins so it has tape trades; the tape span covers them."""
+def _tape(st, wallets, coins=12):
+    """Each wallet buys early in a dozen coins, so it has the buys a wallet needs to be measured at all (10 at the
+    least since 11 Nov: the count before the lab); the tape span covers them."""
     D = addr("dev")
     for i, w in enumerate(wallets):
         for k in range(coins):
@@ -135,8 +136,11 @@ def test_run_writes_verdicts_from_lab_rows(tmp_path):
             "armed_unknown": 0,
             "deferred": False,
             "no_tape": 0,
+            "too_few": 0,
             "labelled": 2,
             "lab_wallets": 3,
+            "chunks": 1,
+            "left_due": 0,
         }
         by = {v["wallet"]: v for v in st.latest_verdicts()}
         # GOOD passed every gate on the tape so far: picked now, it waits for its copies on the tape after now
@@ -956,5 +960,163 @@ def test_a_run_says_where_its_time_went(tmp_path):
         run = default_lab_runner(svc, svc.cfg)
         run(["W1"], "+6")
         assert run.info["moments"] == 12
+    finally:
+        st.close()
+
+
+# --- 11 Nov: what a run spent its two hours on -----------------------------------------------------------------------
+# Of 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20 (the least that can pass), each
+# after a lab and after the crowding read (one read per coin the wallet ever bought) and three more per-wallet reads.
+
+
+def _lab_row(n=30, mean=0.02, lower=0.005):
+    return {"n": n, "mean": mean, "ev_lower": lower, "win_rate": 0.6, "total": n * mean, "exit": "x"}
+
+
+def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp_path):
+    """A wallet needs 10 scored copies at the least (20 without a strong history), and a copy is a coin it bought with
+    0.1 SOL or more: one that bought fewer coins than that cannot pass, and a bounded count says so in milliseconds."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["FEW"], coins=3)
+        _tape(st, ["MANY"], coins=12)
+        st.upsert_candidate("FEW", "coinfirst", {}, NOW - 3600)
+        st.upsert_candidate("MANY", "coinfirst", {}, NOW - 3500)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["MANY"] and out["too_few"] == 1 and out["lab_wallets"] == 1 and out["evaluated"] == 2
+        few = next(v for v in st.latest_verdicts() if v["wallet"] == "FEW")
+        assert few["status"] == "candidate" and few["next_review"] == NOW + 72 * 3600
+        why = "3 coins bought with 0.1 SOL or more on the tape: fewer than the 10 copies a wallet needs at the least"
+        assert few["reasons"] == [why + ", not measured"]
+    finally:
+        st.close()
+
+
+def test_a_run_screens_ten_times_the_wallets_it_can_measure(tmp_path):
+    """The lab measures [qualify] max_wallets; the count before it is cheap, so a run takes ten times as many due
+    wallets, gives the ones that cannot pass their verdict and measures the first max_wallets of the rest (the others
+    stay due). The backlog of 41 thousand is then read in a day or two, not in two weeks."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        few = [f"FEW{i:02d}" for i in range(15)]
+        many = [f"MANY{i}" for i in range(4)]
+        _tape(st, few, coins=1)
+        _tape(st, many, coins=11)
+        for i, w in enumerate(few + many):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 9000 + i)
+        svc.cfg.qualify.max_wallets = 2
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["MANY0", "MANY1"] and out["too_few"] == 15 and out["evaluated"] == 17
+        left = [c["wallet"] for c in st.candidates(due_before=NOW + 60)]
+        assert left == ["MANY2", "MANY3"]  # measurable, not measured this run: still due
+    finally:
+        st.close()
+
+
+def test_the_readings_only_a_passing_wallet_needs_are_made_only_for_one(tmp_path, monkeypatch):
+    """The crowding read loads a minute of trades for every coin a wallet first bought (thousands for a bot), and it
+    ran for all 300 wallets of a run whatever the lab had said of them, which is where the run's two hours went. It
+    only decides for a wallet whose lower bound is above zero; the vetoes and the venue only for one with enough
+    copies to pass. A wallet the lab gave too few copies, or a losing one, is told so without them."""
+    from snipetech.qualify import run as R
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        wallets = ["PASSES", "LOSES", "THIN"]
+        _tape(st, wallets, coins=12)
+        for i, w in enumerate(wallets):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
+        rows = {
+            "PASSES": _lab_row(30, 0.02, 0.005),
+            "LOSES": _lab_row(30, -0.01, -0.02),
+            "THIN": _lab_row(4, 0.03, 0.001),
+        }
+        read: dict[str, list[str]] = {
+            "crowding": [],
+            "venue_share": [],
+            "relationship_gate": [],
+            "create_slot_share": [],
+        }
+        for name in read:
+            real = getattr(R, name)
+            monkeypatch.setattr(
+                R, name, lambda store, w, *a, _n=name, _real=real, **k: read[_n].append(w) or _real(store, w, *a, **k)
+            )
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: [dict(rows[w], wallet=w) for w in ws])
+        assert read["crowding"] == ["PASSES"]
+        assert read["venue_share"] == read["relationship_gate"] == read["create_slot_share"] == ["PASSES", "LOSES"]
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert by["PASSES"]["forward"]["status"] == "pending" and by["LOSES"]["status"] == "retired"
+        assert by["THIN"]["status"] == "candidate" and by["THIN"]["reasons"][-1].startswith("n 4 < 20")
+    finally:
+        st.close()
+
+
+def test_a_wallet_the_book_copies_is_measured_however_few_coins_the_tape_holds(tmp_path):
+    """The count before the lab never decides for a wallet that was picked before or is qualified: its review, its
+    forward check and whether its sniper is kept are the lab's to say."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["ARMED"], coins=3)
+        st.upsert_candidate("ARMED", "tape", {}, NOW - 9000)
+        st.put_verdict({"wallet": "ARMED", "computed_at": NOW - 86400, "status": "qualified", "next_review": NOW - 10,
+                        "score": 0.01, "n_tape": 30, "copy_plan": {"exit_name": "lab"}})  # fmt: skip
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["ARMED"] and out["too_few"] == 0
+    finally:
+        st.close()
+
+
+def test_a_run_measures_its_wallets_in_chunks_and_writes_each_chunks_verdicts_first(tmp_path, monkeypatch):
+    """The unit kills a run after three hours and every verdict was written after the one lab of all 300 wallets: a
+    run that ran long lost them all, and a wallet at the front of the queue waited two hours for a verdict the lab had
+    after minutes. The wallets are measured CHUNK at a time, in the queue's order, each chunk's verdicts written
+    before the next chunk's lab."""
+    from snipetech.qualify import run as R
+
+    monkeypatch.setattr(R, "CHUNK", 2)
+    svc, st, data = _svc(tmp_path)
+    try:
+        wallets = [f"W{i}" for i in range(5)]
+        _tape(st, wallets)
+        for i, w in enumerate(wallets):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 9000 + i)
+        calls, judged_before = [], []
+
+        def runner(ws, pos):
+            calls.append(list(ws))
+            judged_before.append(sorted(v["wallet"] for v in st.latest_verdicts()))
+            return [dict(_lab_row(), wallet=w) for w in ws]
+
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        assert calls == [["W0", "W1"], ["W2", "W3"], ["W4"]]
+        assert judged_before == [[], ["W0", "W1"], ["W0", "W1", "W2", "W3"]]
+        assert out["evaluated"] == 5 and out["lab_wallets"] == 5 and out["chunks"] == 3 and out["left_due"] == 0
+    finally:
+        st.close()
+
+
+def test_a_run_out_of_time_starts_no_new_chunk_and_leaves_the_rest_due(tmp_path, monkeypatch):
+    from snipetech.qualify import run as R
+
+    monkeypatch.setattr(R, "CHUNK", 2)
+    svc, st, data = _svc(tmp_path)
+    try:
+        wallets = [f"W{i}" for i in range(5)]
+        _tape(st, wallets)
+        for i, w in enumerate(wallets):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 9000 + i)
+        calls = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, budget_secs=0.0,
+                          lab_runner=lambda ws, pos: calls.append(list(ws)) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert calls == [["W0", "W1"]]  # the first chunk always runs
+        assert out["evaluated"] == 2 and out["left_due"] == 3 and out["chunks"] == 1
+        assert [c["wallet"] for c in st.candidates(due_before=NOW + 60)] == ["W2", "W3", "W4"]
     finally:
         st.close()

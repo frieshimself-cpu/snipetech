@@ -32,10 +32,11 @@ def test_qualify_defers_while_the_lab_lock_is_held(tmp_path):
     try:
         from tests.synth import Market, addr
 
-        m = Market(st, addr("c"), addr("dev"), NOW - 3000, 400_000_000)
-        m.buy(addr("dev"), 1.0, 0)
-        m.buy("W1", 0.5, 5)
-        m.commit()
+        for k in range(12):  # the buys a wallet needs to be measured at all (the count before the lab, 11 Nov)
+            m = Market(st, addr(f"c{k}"), addr("dev"), NOW - 3000 + k * 60, 400_000_000 + k * 150)
+            m.buy(addr("dev"), 1.0, 0)
+            m.buy("W1", 0.5, 5)
+            m.commit()
         st.set_coverage("tape", {"spans": [[NOW - 7200, NOW]]})
         st.upsert_candidate("W1", "tape", {}, NOW - 100)
         calls = []

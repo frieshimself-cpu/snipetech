@@ -46,8 +46,10 @@ def test_due_ordering(tmp_path):
             {"wallet": "C", "computed_at": NOW + 10, "status": "candidate", "next_review": NOW + 5000, "score": 0.2}
         )
         due = [c["wallet"] for c in st.candidates(due_before=NOW + 1200)]
-        assert due == ["D", "B", "A"]  # never evaluated first, then by oldest review date; C is not due
-        assert [c["wallet"] for c in st.candidates(due_before=NOW + 1200, limit=2)] == ["D", "B"]
+        # a qualified wallet's review first (the book copies it), then the never-judged with the due reviews beside
+        # them; C is not due
+        assert due == ["A", "D", "B"]
+        assert [c["wallet"] for c in st.candidates(due_before=NOW + 1200, limit=2)] == ["A", "D"]
         st.set_candidate_status("D", "banned")
         assert "D" not in [c["wallet"] for c in st.candidates(due_before=NOW + 1200, status="candidate")]
     finally:
@@ -199,7 +201,8 @@ def test_a_wallet_picked_by_hand_is_queued_for_qualify_ahead_of_the_backlog(tmp_
         assert {c["wallet"] for c in due[:2]} == {pick, kol} and {c["wallet"] for c in due[2:]} == set(old)
         assert st.labels("cand") == {pick: "month-study pick"} and st.labels("kol") == {kol: "a KOL"}
         mine = next(c for c in due if c["wallet"] == pick)
-        assert mine["sources"] == ["picked"] and mine["stats"]["picked"] == {"note": "month-study pick"}
+        assert mine["sources"] == ["picked"] and mine["stats"]["picked"]["note"] == "month-study pick"
+        assert mine["stats"]["picked"]["at"] > NOW  # when it was picked: a pick after its last verdict makes it due
     finally:
         st.close()
 
@@ -218,5 +221,73 @@ def test_a_file_of_picked_wallets_is_queued_the_same_way(tmp_path, monkeypatch):
     try:
         assert {c["wallet"] for c in st.candidates()} == {a, b}
         assert st.labels("cand") == {a: "month pick one", b: "cand"}
+    finally:
+        st.close()
+
+
+# --- 11 Nov: the queue as the server ran it --------------------------------------------------------------------------
+# 41,450 never-judged candidates (10-16 thousand more a day) against 3,100 judged a day: the never-judged came before
+# every review, so no wallet was ever judged twice. 25 wallets had passed every gate with a positive lower bound at the
+# real copy landing and waited on their forward check (their copies after the pick), 21 of them due for a day or two,
+# and the run's output said "qualified: 0" every time.
+
+
+def _judged(st, wallet, status="candidate", due=NOW - 10, **more):
+    st.put_verdict({"wallet": wallet, "computed_at": NOW - 86400, "status": status, "next_review": due, "score": 0.0,
+                    "copy_plan": {"exit_name": "lab"}, **more})  # fmt: skip
+
+
+def test_a_due_forward_check_and_a_qualified_wallets_review_come_before_the_never_judged(tmp_path):
+    st = _store(tmp_path)
+    try:
+        for i in range(5):
+            st.upsert_candidate(f"NEW{i}", "coinfirst", {}, NOW - 5000 + i)
+        for w in ("PENDING", "ARMED", "REVIEW", "NOTDUE"):
+            st.upsert_candidate(w, "tape", {}, NOW - 9000)
+        _judged(
+            st, "PENDING", n_tape=30, lower_sol=0.01, forward={"status": "pending", "n": 0, "picked_at": NOW - 86400}
+        )
+        _judged(st, "ARMED", status="qualified", n_tape=40, lower_sol=0.02)
+        _judged(st, "REVIEW", n_tape=12)
+        _judged(st, "NOTDUE", n_tape=30, lower_sol=0.01, due=NOW + 5000,
+                forward={"status": "pending", "n": 0, "picked_at": NOW - 86400})  # fmt: skip
+        due = [c["wallet"] for c in st.candidates(due_before=NOW, limit=4)]
+        assert set(due[:2]) == {"PENDING", "ARMED"} and "NOTDUE" not in due
+        assert due[2:] == ["NEW0", "NEW1"]
+    finally:
+        st.close()
+
+
+def test_due_reviews_get_one_slot_in_four_beside_the_never_judged(tmp_path):
+    """A review that is due (a wallet with 15 copies last time has 25 on today's tape) must not wait for a backlog that
+    never empties, and the backlog must not wait for the reviews: three never-judged, then one review, and so on."""
+    st = _store(tmp_path)
+    try:
+        for i in range(12):
+            st.upsert_candidate(f"N{i:02d}", "coinfirst", {}, NOW + i)
+        for i in range(4):
+            st.upsert_candidate(f"R{i}", "tape", {}, NOW - 100 + i)
+            _judged(st, f"R{i}", due=NOW + 10 + i)
+        due = [c["wallet"] for c in st.candidates(due_before=NOW + 1000, limit=8)]
+        assert due == ["N00", "N01", "R0", "N02", "N03", "N04", "R1", "N05"]
+    finally:
+        st.close()
+
+
+def test_a_wallet_picked_by_hand_after_its_last_verdict_is_due_again_at_once(tmp_path):
+    """The thirteen wallets of the bought month were handed over on 11 Nov; eleven had a verdict days old with a
+    review a week away, so the pick would have changed nothing. A pick after the last verdict makes the wallet due."""
+    st = _store(tmp_path)
+    try:
+        for i in range(3):
+            st.upsert_candidate(f"NEW{i}", "coinfirst", {}, NOW - 5000 + i)
+        st.upsert_candidate("OLD", "coinfirst", {}, NOW - 9000)
+        _judged(st, "OLD", status="retired", due=NOW + 6 * 86400)
+        assert "OLD" not in [c["wallet"] for c in st.candidates(due_before=NOW)]
+        st.upsert_candidate("OLD", "picked", {"note": "month pick", "at": NOW - 60}, NOW - 60)
+        assert [c["wallet"] for c in st.candidates(due_before=NOW, limit=2)] == ["OLD", "NEW0"]
+        _judged_now = {"wallet": "OLD", "computed_at": NOW, "status": "retired", "next_review": NOW + 7 * 86400}
+        st.put_verdict(_judged_now)  # judged again after the pick: not due any more
+        assert "OLD" not in [c["wallet"] for c in st.candidates(due_before=NOW + 60)]
     finally:
         st.close()

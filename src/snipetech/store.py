@@ -258,6 +258,20 @@ _PRIORITY_SOURCES = (
 )
 
 
+# The order of qualify's queue (`Store.candidates(due_before=...)`). 11 Nov: the never-judged came before every review
+# and there were 41,450 of them, 10-16 thousand more a day against 3,100 judged, so no wallet was ever judged a second
+# time: 25 that had passed every gate with a positive lower bound waited on their forward check, 21 of them due for a
+# day or two, and nothing could qualify. Class 0: a qualified wallet's review (the book copies it) and a due forward
+# check (one step from being copied). Class 1: wallets picked by hand or by the targeted screens, never judged, or
+# picked after their last verdict. Class 2: everything else, the never-judged with one due review beside every three.
+_FORWARD_PENDING = '(v.forward LIKE \'%"status": "pending"%\')'
+_PICKED_AFTER = ("(v.id IS NOT NULL AND COALESCE(CASE WHEN json_valid(c.stats) THEN json_extract(c.stats, '$.picked.at') "
+                 "END, 0) > v.computed_at)")  # fmt: skip
+_DUE_CLASS = (f"(CASE WHEN v.status = 'qualified' OR {_FORWARD_PENDING} THEN 0 "
+              f"WHEN {_PICKED_AFTER} OR (v.id IS NULL AND {_PRIORITY_SOURCES} = 0) THEN 1 ELSE 2 END)")  # fmt: skip
+DUE_REVIEW_EVERY = 4
+
+
 class Store:
     # How big the -wal file may stay once the WAL starts over from its beginning. Without a limit it keeps its
     # high-water mark for good: 7 Nov the database plus its WAL grew from 11.3 GB (before 14:03) to 19.6 GB (19:06) while
@@ -766,6 +780,14 @@ class Store:
 
         self._write(do)
 
+    def coins_bought(self, wallet: str, min_quote: int, scan: int = 5000) -> tuple[int, bool]:
+        """How many coins `wallet` bought with `min_quote` lamports or more among its first `scan` trades here, and
+        whether it has more trades than that (the count is then a floor). One bounded read through the wallet index:
+        qualify's count before its lab, which says in milliseconds that a wallet cannot have the copies it needs."""
+        rows = self._q("SELECT mint, is_buy, quote FROM trades WHERE user=? LIMIT ?", (wallet, int(scan) + 1))
+        coins = {mint for mint, is_buy, quote in rows[:scan] if is_buy and quote >= min_quote}
+        return len(coins), len(rows) > scan
+
     def set_candidate_status(self, wallet: str, status: str) -> None:
         self._exec("UPDATE candidates SET status=? WHERE wallet=?", (status, wallet))
 
@@ -787,9 +809,12 @@ class Store:
     def candidates(
         self, status: str | None = None, due_before: int | None = None, limit: int = 1000
     ) -> list[dict[str, Any]]:
-        """Candidates with their latest verdict. `due_before` keeps those never evaluated or whose review date has come,
-        never-evaluated first, then the oldest review date."""
-        sql = f"SELECT c.wallet, c.first_seen, c.last_seen, c.sources, c.stats, c.status, v.* FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet"
+        """Candidates with their latest verdict. `due_before` keeps those never judged, those whose review date has
+        come and those picked by hand after their last verdict, in the queue's order (`_DUE_CLASS`): the wallets one
+        step from being copied or being copied first, then the hand-picked, then the never-judged with one due review
+        beside every three of them."""
+        select = "SELECT c.wallet, c.first_seen, c.last_seen, c.sources, c.stats, c.status, v.*"
+        tables = f" FROM candidates c LEFT JOIN ({_LATEST_VERDICT}) v ON v.wallet = c.wallet"
         where: list[str] = []
         params: list[Any] = []
         if status is not None:
@@ -797,15 +822,24 @@ class Store:
             params.append(status)
         if due_before is not None:
             # a tape verdict the lab wrote before it simulated the live sniper (no copy plan) is due at once
-            where.append(f"(v.id IS NULL OR v.next_review IS NULL OR v.next_review <= ? OR {_OLD_LAB})")
+            where.append(
+                f"(v.id IS NULL OR v.next_review IS NULL OR v.next_review <= ? OR {_OLD_LAB} OR {_PICKED_AFTER})"
+            )
             params.append(int(due_before))
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        # never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
-        sql += (
-            f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
-            f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, {_PRIORITY_SOURCES}, v.next_review, c.first_seen, c.wallet LIMIT ?"
-        )
+        cond = (" WHERE " + " AND ".join(where)) if where else ""
+        inner = f"CASE WHEN {_OLD_LAB} THEN 0 ELSE 1 END, {_PRIORITY_SOURCES}, v.next_review, c.first_seen, c.wallet"
+        if due_before is None:
+            # a listing: never evaluated first, except old-lab qualified verdicts (the book's candidates) ahead of them
+            sql = (select + tables + cond
+                   + f" ORDER BY CASE WHEN v.status = 'qualified' AND {_OLD_LAB} THEN 0 WHEN v.id IS NULL THEN 1"
+                   f" WHEN {_OLD_LAB} THEN 2 ELSE 3 END, {_PRIORITY_SOURCES}, v.next_review, c.first_seen, c.wallet LIMIT ?")  # fmt: skip
+        else:
+            # each class's never-judged and its reviews are numbered apart; in the last class a review takes every
+            # fourth place (DUE_REVIEW_EVERY), elsewhere the two alternate
+            sql = (f"SELECT * FROM ({select}, {_DUE_CLASS} AS q_class, (v.id IS NOT NULL) AS q_review, "
+                   f"ROW_NUMBER() OVER (PARTITION BY {_DUE_CLASS}, (v.id IS NOT NULL) ORDER BY {inner}) AS q_n"
+                   + tables + cond + ") ORDER BY q_class, "
+                   f"CASE WHEN q_class = 2 AND q_review THEN q_n * {DUE_REVIEW_EVERY - 1} - 0.5 ELSE q_n END, q_review LIMIT ?")  # fmt: skip
         params.append(int(limit))
         out = []
         for row in self._q(sql, params):
