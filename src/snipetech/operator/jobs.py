@@ -35,7 +35,7 @@ RESEARCH_COMMANDS = frozenset(
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
 # (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
 # change settings. Named here so the refusal says whose they are and the model does not try variants
-OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "book", "strategist", "config"})
+OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"})
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 
 

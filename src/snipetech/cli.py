@@ -486,6 +486,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true", help="show holdings and quotes, send nothing")
 
     sp = cmd(
+        "unwrap",
+        "turn the sniper wallet's own wrapped SOL back into plain SOL (SNIPER_SECRET): a pump.fun curve buy is paid in "
+        "plain SOL, a PumpSwap sale pays wrapped SOL. Simulated on the chain first; nothing leaves the wallet",
+    )
+    sp.add_argument("--sol", type=float, help="how much to convert; without it, what the book's rule would convert now")
+    sp.add_argument("--keep-buys", type=int, metavar="N",
+                    help="without --sol: plain SOL for this many curve buys of the book's size (default: [book] "
+                         "keep_curve_buys, or 2 while that is 0)")  # fmt: skip
+    sp.add_argument("--dry-run", action="store_true", help="simulate on the chain and send nothing")
+
+    sp = cmd(
         "follow",
         "who is worth following right after they buy: crowd follow-through, the copy bots racing them, the bribe to land first",
     )
@@ -1362,6 +1373,27 @@ async def _run(args, cfg: Config) -> int:
                 )
             except RuntimeError as exc:
                 raise SystemExit(f"sweep: {exc}") from None
+        elif c == "unwrap":
+            from .operator.prompts import BUY_NATIVE_SOL
+            from .solana.unwrap import LAMPORTS, Unwrapper, plan_amount
+
+            try:
+                u = Unwrapper(svc.rpc)
+                if args.sol is not None:
+                    amount = round(args.sol * LAMPORTS)
+                else:  # the book's rule: plain SOL for N curve buys, when the wallet cannot pay one
+                    native, wsol = await u.balances()
+                    need = round((cfg.book.fill_min_sol + BUY_NATIVE_SOL) * LAMPORTS)
+                    keep = args.keep_buys if args.keep_buys is not None else (cfg.book.keep_curve_buys or 2)
+                    amount = plan_amount(native, wsol or 0, need, keep)
+                if amount <= 0:
+                    res = {"wallet": u.user, "amount_sol": 0.0,
+                           "nothing": "the wallet can pay a curve buy, or its plain and wrapped SOL together cannot"}  # fmt: skip
+                else:
+                    res = await u.convert(amount, dry_run=args.dry_run)
+                _out(args, res, R.render_unwrap)
+            except RuntimeError as exc:
+                raise SystemExit(f"unwrap: {exc}") from None
         elif c == "follow":
             ws = list(args.wallets)
             if args.file:

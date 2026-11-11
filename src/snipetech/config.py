@@ -434,6 +434,9 @@ class BookConfig:
     max_buys_per_sniper: int = 3  # OKTech totalSnipes per book sniper: a sniper still selling a coin is never stopped, so this bounds how far it can overrun a stop (the book replaces spent snipers)
     retire_after_buys: int = 1  # buys the book relies on per sniper (used as 1 to max_buys_per_sniper - 1): after them, once the wallet holds nothing, the sniper is deleted and replaced, so its spare buys and the cap-using last one are never relied on
     min_copy_sol: float = 0.3  # copy only the wallet's buys of at least this size
+    # Plain SOL kept for this many curve buys by turning the wallet's own wrapped SOL back (solana/unwrap.py; the
+    # owner's yes of 11 Nov): a curve buy is paid whole in plain SOL. 0: nothing is converted. Only the owner's.
+    keep_curve_buys: int = 0
     # The exit a new book sniper gets (book/policy.exit_for). "fixed": lab for every wallet, as always. "per_wallet": the
     # wallet's own exit from its verdict when the lab kept one on unseen moments, its family is in verified_exits and it
     # passes oktech.validate_exit; lab otherwise. A running sniper keeps its exit until it is replaced. Only the owner
@@ -588,7 +591,7 @@ OVERLAY_FORBIDDEN_WORDS = ("enabled", "wallet", "key", "token", "secret", "url",
 # the owner's limits: never changed by the strategist or its overlay, whatever [autotune] bounds lists
 NEVER_TUNABLE_KEYS = frozenset({
     "book.max_buys_per_sniper", "book.retire_after_buys", "book.daily_risk_sol", "book.day_stop_sol",
-    "book.equity_floor_sol", "book.max_wallets", "book.exit_mode", "book.verified_exits",
+    "book.equity_floor_sol", "book.max_wallets", "book.exit_mode", "book.verified_exits", "book.keep_curve_buys",
 })  # fmt: skip
 
 

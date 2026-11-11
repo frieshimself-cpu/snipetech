@@ -897,6 +897,28 @@ def render_sweep(r: dict) -> str:
     return "\n".join(out)
 
 
+def render_unwrap(r: dict) -> str:
+    out = [f"wallet {r['wallet']}: {r.get('amount_sol', 0):g} wrapped SOL to plain SOL"]
+    if r.get("nothing"):
+        return out[0] + f"\n  nothing to convert: {r['nothing']}"
+    b = r.get("before") or {}
+    out.append(f"  before: {b.get('plain_sol')} plain, {b.get('wrapped_sol')} wrapped")
+    sim = r.get("simulated")
+    if sim:
+        out.append(f"  the chain's simulation: {sim.get('plain_sol_after')} plain, {sim.get('wrapped_sol_after')} wrapped "
+                   f"after it ({sim.get('units')} units)")  # fmt: skip
+    if r.get("refused"):
+        out.append(f"  refused, nothing sent: {r['refused']}")
+    elif r.get("dry_run"):
+        out.append("  dry run: nothing sent")
+    else:
+        a = r.get("after") or {}
+        state = {True: "confirmed", False: "FAILED on the chain", None: "not seen yet"}[r.get("confirmed")]
+        out.append(f"  sent {r.get('signature')}: {state}")
+        out.append(f"  after: {a.get('plain_sol')} plain, {a.get('wrapped_sol')} wrapped")
+    return "\n".join(out)
+
+
 def render_birdeye_pnl(rows: list[dict]) -> str:
     out = ["Birdeye 30-day PnL per wallet", "=" * 72]
     out.append(table([[short(r["wallet"]), r.get("trades"), r.get("unique_tokens"), pct(r.get("win_rate")),
