@@ -31,12 +31,19 @@ def run_discover(ctx: DiscoverContext, sources: list[Source] | None = None) -> d
         except Exception as exc:  # noqa: BLE001 - an API being down must not abort the run
             return src.name, [], f"{type(exc).__name__}: {exc}"
 
-    with ThreadPoolExecutor(max_workers=max(1, min(len(sources), 6))) as pool:
-        for name, rows, err in pool.map(one, sources):
-            results[name] = rows
-            if err:
-                errors[name] = err
-                ctx.log(f"[discover] {name}: {err}")
+    if os.environ.get("SNIPETECH_PROFILE"):
+        # profiled (`snipetech --profile`): one after another in this thread. In threads the sources share the store's
+        # one connection, and a profile counts a source's wait for another's query as its own time (11 Nov: 293 s
+        # read as the cost of the launch lookups were mostly that wait; taken out, the next run took as long).
+        done = [one(src) for src in sources]
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(sources), 6))) as pool:
+            done = list(pool.map(one, sources))
+    for name, rows, err in done:
+        results[name] = rows
+        if err:
+            errors[name] = err
+            ctx.log(f"[discover] {name}: {err}")
     before = {c["wallet"]: c["status"] for c in store.candidates(limit=1_000_000)}
     new = updated = banned = 0
     now = int(ctx.now)

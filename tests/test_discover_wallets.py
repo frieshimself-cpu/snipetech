@@ -140,3 +140,44 @@ def test_launch_times_come_together_and_a_coin_the_tape_never_saw_launch_is_left
         assert store.launch_times(many) == got
     finally:
         store.close()
+
+
+def test_a_profiled_discovery_runs_its_sources_one_after_another_in_the_callers_thread(monkeypatch):
+    """11 Nov: the sources run in threads and share one database connection, so in the first profile a source's time
+    was mostly its wait for another source's query: 293 s were read as the cost of the launch lookups, they were taken
+    out, and the next hourly run took as long as before. Profiled (`--profile` sets SNIPETECH_PROFILE), the sources run
+    in turn, and a source's time is its own."""
+    import threading
+
+    from snipetech.discovery.run import run_discover
+    from snipetech.discovery.sources import DiscoverContext
+
+    store = Store(":memory:")
+    try:
+        ran: list[tuple[str, int]] = []
+
+        class Src:
+            def __init__(self, name):
+                self.name = name
+
+            def fetch(self, ctx):
+                ran.append((self.name, threading.get_ident()))
+                return [{"wallet": addr(f"w-{self.name}"), "stats": {}}]
+
+        class Svc:
+            pass
+
+        svc = Svc()
+        svc.store = store
+        ctx = DiscoverContext(svc=svc, cfg=Config(), now=T0)
+        me = threading.get_ident()
+        monkeypatch.delenv("SNIPETECH_PROFILE", raising=False)
+        out = run_discover(ctx, [Src("a"), Src("b"), Src("c")])
+        assert out["by_source"] == {"a": 1, "b": 1, "c": 1} and all(tid != me for _name, tid in ran)
+        ran.clear()
+        monkeypatch.setenv("SNIPETECH_PROFILE", "1")
+        out = run_discover(ctx, [Src("a"), Src("b"), Src("c")])
+        assert out["by_source"] == {"a": 1, "b": 1, "c": 1}
+        assert ran == [("a", me), ("b", me), ("c", me)]
+    finally:
+        store.close()
