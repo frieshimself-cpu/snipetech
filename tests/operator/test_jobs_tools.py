@@ -511,3 +511,28 @@ def test_read_file_can_read_only_the_end_of_a_file_that_only_grows(toolbox):
     paths.notes.write_text("".join(f"- note {i}\n" for i in range(500)))
     assert _call(tools["read_file"], path="operator/notes.md", tail=3) == "- note 497\n- note 498\n- note 499"
     assert _call(tools["read_file"], path="operator/notes.md").count("\n") == 500
+
+
+def test_start_job_names_every_command_an_agent_may_start(toolbox):
+    """What the agents are told they may start and what they may start were two lists: the tool named 14 commands, the
+    hard rules 8, the runner allowed 15 (`launch-tools` was in neither text). The tool's description names every one,
+    from the runner's own list."""
+    tools, _, _ = toolbox
+    text = tools["start_job"].to_dict()["description"]
+    for command in RESEARCH_COMMANDS:
+        assert re.search(rf"(?<![\w-]){re.escape(command)}(?![\w-])", text), command
+
+
+def test_the_agents_are_told_the_two_tests_they_could_not_run(toolbox):
+    """11 Nov: two of the owner's ideas of 10 Nov were untested. The dip buy had no tool (the lab has no trigger for a
+    fall): `dip-buys` is one now. The instant-bond migration snipe had one, the lab's mig trigger with its window,
+    which neither the tool nor the instructions named among the kinds a hypothesis may have."""
+    from snipetech.operator.prompts import ANALYST_SYSTEM
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["dip-buys", "--hours", "144", "--json"]' in text and "fell 60 %" in text
+    assert '{"kind": "mig", "window": 60}' in text
+    analyst = " ".join(ANALYST_SYSTEM.split())
+    assert "momentum, hunt or mig" in analyst and '{"kind": "mig", "window": 60}' in analyst
+    assert "where a MIG buy lands" in analyst

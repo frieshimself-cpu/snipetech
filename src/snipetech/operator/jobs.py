@@ -22,6 +22,7 @@ RESEARCH_COMMANDS = frozenset(
         "study",
         "copy",
         "early-leaders",
+        "dip-buys",
         "fomo-wallets",
         "winners",
         "leaders-of",

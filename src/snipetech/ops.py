@@ -50,7 +50,7 @@ ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
     "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "db", "tx", "strategist",
-    "research", "early-leaders", "fomo-wallets", "exitrun", "winners", "leaders-of", "copy-context", "playbook", "launch-tools",
+    "research", "early-leaders", "dip-buys", "fomo-wallets", "exitrun", "winners", "leaders-of", "copy-context", "playbook", "launch-tools",
     "history", "rescore",
 })  # fmt: skip
 UNITS = (

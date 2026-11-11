@@ -956,6 +956,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--label", type=int, default=0, help="label the N best with a positive lower bound as cand for qualify"
     )
     sp = cmd(
+        "dip-buys",
+        "buy the dip of a hot coin (owner, 10 Nov): coins that reached 40+ SOL in the curve with 100+ wallets and fell "
+        "60 % from their high within 10 minutes, bought 3 trades later and sold on timers in the lab's simulator "
+        "(reads the tape copy; a research job the agents may start)",
+    )
+    sp.add_argument("--hours", type=float, default=72.0)
+    sp.add_argument("--min-peak-sol", type=float, default=40.0, help="SOL in the curve at the coin's high")
+    sp.add_argument("--min-buyers", type=int, default=100, help="wallets that had bought by the high")
+    sp.add_argument("--fall", type=float, default=0.6, help="how far under its high the price must be (0.6: 60 %%)")
+    sp.add_argument("--within", type=float, default=600.0, help="seconds from the high to that price, at most")
+    sp.add_argument("--behind", type=int, default=3, help="trades that land between the fall's trade and our buy")
+    sp.add_argument("--buy", type=float, default=None, help="SOL a buy (default: the book's size)")
+    sp.add_argument("--min-n", type=int, default=30, help="events a split needs to be shown")
+    sp = cmd(
         "exitrun",
         "our own exits: run (shadow: watch the coins our snipers bought over their own LaserStream "
         "subscription and record when and at what price our rules would sell, sending nothing) or report (each "
@@ -1741,6 +1755,7 @@ BATCH_COMMANDS = frozenset(
         "copy-rank",
         "follow",
         "early-leaders",
+        "dip-buys",
         "fomo-wallets",
         "winners",
         "leaders-of",
@@ -2384,6 +2399,32 @@ def _main(args) -> int:
         finally:
             svc.store.close()
         print(json.dumps(out, indent=1) if args.json else text)
+        return 0
+    if args.cmd == "dip-buys":
+        from .analysis.dip_buys import TOP, dip_buys
+        from .qualify.run import lab_tx_cost_info
+
+        svc = Service(cfg)
+        try:
+            cost = lab_tx_cost_info(svc.store, cfg)  # the measured cost of a transaction, as the labs charge it
+            buy = float(args.buy if args.buy is not None else cfg.book.fill_min_sol)
+            out = dip_buys(svc.tape_store, time.time(), hours=args.hours, min_peak_sol=args.min_peak_sol,
+                           min_buyers=args.min_buyers, fall=args.fall, within=args.within, behind=args.behind,
+                           buy_sol=buy, per_tx_sol=cost["per_tx_sol"], min_n=args.min_n)  # fmt: skip
+        finally:
+            svc.store.close()
+        rows = out.pop("rows")
+        first = str(out["horizons_secs"][0]) if out["horizons_secs"] else ""
+        ranked = sorted(rows, key=lambda r: -r["pnl"][first]) if first else []
+        out |= {"per_tx_source": cost["per_tx_source"], "best": ranked[:TOP], "worst": ranked[-TOP:][::-1]}
+        if args.json:
+            print(json.dumps(out, indent=1))
+        else:
+            print(f"{out['events']} hot falls in {out['hours']:g} h ({out['hot_coins']} coins past the level), "
+                  f"{buy:g} SOL a buy, landing {out['landing']}")  # fmt: skip
+            for k, st in out["all"].items():
+                print(f"  sold after {k} s: n {st['n']}  mean {st['mean_sol']:+.4f}  lower {st['lower_sol']:+.4f}  "
+                      f"win {st['win_rate']:.0%}  five best made {st['top5_share']:.0%} of what was won")  # fmt: skip
         return 0
     if args.cmd == "early-leaders":
         from .analysis.early_leaders import early_leaders

@@ -23,8 +23,8 @@ Hard rules (the tools enforce them too):
   default no new live trade once the day is 1 SOL down or the wallet under 10 SOL, and the owner may
   switch either stop off) is the owner's too. To suggest a test, name the strategy and the evidence in a note;
   never write those files.
-- Research jobs: start_job accepts only lab, follow, discover-wallets, label, copy-rank, paper, study, copy. One lab at a
-  time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
+- Research jobs: start_job accepts only the research commands its description names (lab, paper, the wallet and coin
+  studies) and nothing that trades. One lab at a time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
   that ended in the last 24 h, one line each (id, how it ended, when, what ran) — read one with read_job_log and its id
   (the JSON is the last part of the log) instead of running the same job again. A wallet or coin address in a line
   is cut to its first 8 characters and a flag given many times is counted; the job's log has them whole. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
@@ -154,8 +154,10 @@ to do.
 Hypotheses: the system learns by testing its own strategy ideas, not only the lab's fixed trigger grid. Each turn
 picks ONE hypothesis from operator/ideas.json (list_ideas) or the latest search, paper or live evidence, and states it
 in one line with the result that would refute it. It is tested with start_job ["lab", "--trigger", "<json>",
-"--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum or
-hunt with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}}; the lab
+"--hours", "24", "--json"]: <json> is one trigger as a JSON object, its kind launch, burst, whale, kol, momentum, hunt or
+mig with its numbers, e.g. {{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}} or
+{{"kind": "mig", "window": 60}} (OKTech MIG: a buy on PumpSwap right after the migration of a coin that migrated within
+60 s of its create; such coins are rare, so give it "--hours", "144"); the lab
 refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. A hunt
 fires at the first buy at which every threshold holds, the create's own buys counted; the buys after that one, also
 those in the same block, change nothing, so a coin a hunt fired on can show more buyers in its create slot than its
@@ -164,7 +166,8 @@ hunt, whale and burst triggers fire on pump.fun launches only; "venue": "launchl
 launches instead, research only (no sniper of ours buys LaunchLab, so it never goes live), and a paper trade's
 data.venue says which launchpad it was on (a rule's record counts only its own). The lab
 scores every hypothesis where it trades live, so it needs no --latency or --position: launch, hunt, whale and burst
-triggers run live through OKTech hunt and are always scored where a hunt buy lands, kol and momentum at copy_landing
+triggers run live through OKTech hunt and are always scored where a hunt buy lands, a mig trigger where a MIG buy
+lands (behind the first PumpSwap trades after the migration), kol and momentum at copy_landing
 (where our copies land, as measured). The machine runs a set number of labs at once (two on the 32 GB server, one on a smaller
 one; start_job says when it is full): while it is full, read the last lab's result instead of
 starting one. The next turn reads the result (read_job_log): copy_landing, each ranked trigger with its exit, landing,

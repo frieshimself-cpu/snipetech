@@ -352,9 +352,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     async def start_job(argv: list[str]) -> str:
         """Start a research job in the background; returns the job id.
 
-        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, fomo-wallets, winners, leaders-of,
-        copy-context and playbook are allowed; one lab at a time on a machine under 24 GB, two on a bigger one (the refusal
-        names the limit). ["playbook", "<wallet>", "--json"] reads a bot's
+        Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
+        winners, leaders-of, copy-context, playbook and launch-tools are allowed; one lab at a time on a machine under
+        24 GB, two on a bigger one (the refusal names the limit). ["dip-buys", "--hours", "144", "--json"] buys the dip
+        of a hot coin (owner, 10 Nov): every coin that reached 40+ SOL in its curve with 100+ wallets and fell 60 % from
+        its high within 10 minutes, bought 3 trades later and sold after 30 s, 2 min and 10 min in the lab's simulator at
+        the measured cost; the table over all events and split by the size of the high, the wallets and the speed of the
+        fall, with what the five best events carry ("--min-peak-sol", "--min-buyers", "--fall", "--within", "--behind",
+        "--buy" change the rule; research only, no OKTech mode buys a fall). ["playbook", "<wallet>", "--json"] reads a bot's
         rules off the tape: what each first buy came right after, who it follows and how often, its filters, sizes,
         bids and exits (6Z91). ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's
@@ -367,9 +372,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
         ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. A
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
-        whale, kol, momentum or hunt, with its numbers), refused at once with its reason, before any job starts, when a
-        number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt triggers
-        are the ones OKTech can run exactly as scored. A kol trigger takes the gates OKTech's copy mode has: "known"
+        whale, kol, momentum, hunt or mig, with its numbers), refused at once with its reason, before any job starts,
+        when a number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt
+        triggers are the ones OKTech can run exactly as scored. {"kind": "mig", "window": 60} is OKTech MIG: a buy on
+        PumpSwap right after a coin's migration, only when it migrated within `window` seconds of its create (0 to 60;
+        0: any migration), scored behind the first PumpSwap trades after the migration. A kol trigger takes the gates OKTech's copy mode has: "known"
         (fire only once that many group wallets have made a first buy in the coin, this one included: 2 = the second
         known wallet in; the grid tests only the first), "within" (all of them in the last N seconds), "sol" /
         "max_sol" (the followed buy's size), "min_curve" / "max_curve" (SOL in the curve after it). "--copy-position",
