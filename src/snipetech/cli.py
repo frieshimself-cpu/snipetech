@@ -958,7 +958,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = cmd(
         "dip-buys",
         "buy the dip of a hot coin (owner, 10 Nov): coins that reached 40+ SOL in the curve with 100+ wallets and fell "
-        "60 % from their high within 10 minutes, bought 3 trades later and sold on timers in the lab's simulator "
+        "60 %% from their high within 10 minutes, bought 3 trades later and sold on timers in the lab's simulator "
         "(reads the tape copy; a research job the agents may start)",
     )
     sp.add_argument("--hours", type=float, default=72.0)
