@@ -784,6 +784,10 @@ def venue_refusal(venue: str | None, platforms=STRATEGY_PLATFORMS) -> str | None
             f"(platforms {', '.join(platforms)}): it could never buy the coins its record is made of")  # fmt: skip
 
 
+# the label kinds a hunt trigger's `bots` can name: wallets sent as OKTech's knownBotWallets (`label --kind bundler`)
+BOT_GROUPS = ("bundler",)
+
+
 def strategy_fee_kind(trigger: dict, via: str = "hunt") -> str:
     """The fee kind a strategy's sniper runs as: mig for a MIG rule, hunt for the launch-window rules sent through
     OKTech hunt (whale / burst via hunt, and a hunt rule), launch otherwise."""
@@ -798,7 +802,7 @@ def strategy_fee_kind(trigger: dict, via: str = "hunt") -> str:
 def strategy_sniper(
     strategy: dict, max_buys: int = 5, via: str = "hunt", preexec: bool = True, stale: float | None = 60, *,
     dev_max_zero_confirmed: str = "", cfg: Config | None = None, fees: FeeChoice | None = None,
-    fills: list[dict] | None = None, kinds_of: dict[str, str] | None = None,
+    fills: list[dict] | None = None, kinds_of: dict[str, str] | None = None, bot_wallets: list[str] | None = None,
 ) -> PlannedSniper:  # fmt: skip
     """A frozen lab / paper strategy as a `normal` OKTech launch sniper (monitorProgram on pump.fun), a `hunt` sniper
     for the launch-window rules, or a `mig` sniper (OKTech's pump migration sniper) for a MIG rule.
@@ -810,7 +814,11 @@ def strategy_sniper(
     it is not. A hunt sent with maxDevBuySol 0 is sent as scored either way; its notes say which it is.
 
     The four fees come from the fee policy for the sniper's kind (`fees`, or fees.choose over `fills` / `kinds_of`;
-    with nothing, the minimums)."""
+    with nothing, the minimums).
+
+    `bot_wallets`: for a hunt scored on a wallet group (the trigger's `bots`), that group's wallets, sent as OKTech's
+    `knownBotWallets` with `requireKnownBot` and OKTech's own bot list off. Without them the rule is refused: a sniper
+    for such a rule never goes out without its gate (the automatic live test passes none)."""
     trig, ex = strategy["trigger"], dict(strategy["exit"])
     notes: list[str] = []
     buy = float(strategy.get("buy_sol") or 0.2)
@@ -890,19 +898,35 @@ def strategy_sniper(
             thresholds["minUniqueBuyers"] = _whole_hunt(trig["buyers"], "minUniqueBuyers")
         if int(trig.get("max_buyers") or 0) > 0:
             thresholds["maxUniqueBuyers"] = _whole_hunt(trig["max_buyers"], "maxUniqueBuyers")
-        thresholds["requireKnownBot"] = False
+        group = str(trig.get("bots") or "")
+        if group and group not in BOT_GROUPS:
+            raise ValueError(
+                f"{group!r} is not a wallet group a hunt can be limited to ({', '.join(BOT_GROUPS)}); no sniper"
+            )
+        known = [w for w in dict.fromkeys(bot_wallets or []) if w] if group else []
+        if group and not known:
+            raise ValueError(f"the rule fires only on launches a wallet of the group {group!r} bought, and the wallets "
+                             "of the group were not handed over: without them OKTech would buy every launch that meets "
+                             "the other thresholds; no sniper")  # fmt: skip
+        thresholds["requireKnownBot"] = bool(group)
         window_ms = _whole_hunt(float(trig.get("window") or 0) * 1000, "timeWindowMs")
         if window_ms <= 0:
             raise ValueError("a hunt trigger needs its window (timeWindowMs) as a whole number of milliseconds")
         config["hunt"] = {"timeWindowMs": window_ms, "triggerMode": "all", "thresholds": thresholds,
-                          "knownBotPrograms": [], "knownBotWallets": [], "knownBotLuts": [], "knownBotAccounts": [],
-                          "useKnownBotDefaults": True}  # fmt: skip
+                          "knownBotPrograms": [], "knownBotWallets": known, "knownBotLuts": [], "knownBotAccounts": [],
+                          "useKnownBotDefaults": not group}  # fmt: skip
         summary.append(f"only after >= {thresholds['minTotalSol']} SOL in total is bought within {window_ms / 1000:g} s of "
                        "the launch, the creator's own buy included"
                        + (f"; skips a launch whose creator bought more than {thresholds['maxDevBuySol']} SOL" if "maxDevBuySol" in thresholds else "")
                        + (f"; needs >= {thresholds['minUniqueBuyers']} wallets" if "minUniqueBuyers" in thresholds else "")
                        + (f"; skips it once more than {thresholds['maxUniqueBuyers']} wallets bought" if "maxUniqueBuyers" in thresholds else "")
+                       + (f"; only when one of the {len(known)} wallets of the group {group} is among the buyers "
+                          "(requireKnownBot over knownBotWallets, OKTech's own bot list off)" if group else "")
                        + " (OKTech hunt, exactly as the lab scored it)")  # fmt: skip
+        if group:
+            notes.append("requireKnownBot with our own wallet list has never run live: on the first fills check on the "
+                         "tape that a wallet of the group was among the launch's buyers; if one was not, OKTech ignored "
+                         "the gate (as it ignored fractional thresholds on 5 Nov) and the sniper is stopped")  # fmt: skip
         notes.append("a hunt sniper fires once per start (5 Nov): keep it armed with `oktech cycle`, and keep the "
                      "unsold-coin watch and /sell ready: hunt fills have been left without a sell (HOUSE, CAT)")  # fmt: skip
         if sends_dev_max_zero(config):

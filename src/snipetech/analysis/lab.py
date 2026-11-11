@@ -51,7 +51,7 @@ from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
-from ..oktech import EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
+from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -170,6 +170,11 @@ class Trigger:
     # this many seconds after the previous known wallet's first buy (tape: +11.6 % at 5 s from 26 slots on)
     teams: bool = False
     gap: float = 0.0
+    # hunt (11 Nov): a label group whose wallets are the rule's known bots (OKTech `knownBotWallets` with
+    # `requireKnownBot`): the hunt fires only once one of them has bought in the window. "bundler" = wallets that bundle
+    # launches (`label --kind bundler`); one crew of twelve bundles 7 launches a day whose buyers a block later had a
+    # median of +21 % a minute on, on 36 days of bought history. "" = any launch, the rule every hunt before was
+    bots: str = ""
 
     def label(self) -> str:
         base = self._label()
@@ -193,7 +198,8 @@ class Trigger:
             return ("OKTech hunt: >= " + f"{self.sol:g} SOL bought within {self.window:g} s of the launch"
                     + (f", by >= {self.buyers} wallets" if self.buyers else "")
                     + (f", by at most {self.max_buyers} wallets" if self.max_buyers else "")
-                    + (f", creator's own buy <= {self.dev_max:g} SOL" if self.dev_max is not None else ""))  # fmt: skip
+                    + (f", creator's own buy <= {self.dev_max:g} SOL" if self.dev_max is not None else "")
+                    + (f", a wallet of the group {self.bots} among the buyers" if self.bots else ""))  # fmt: skip
         if self.kind == "whale":
             return f"buy >= {self.sol:g} SOL by a non-dev"
         if self.kind == "mig":
@@ -269,7 +275,7 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
     "kol": ("sol", "group", "max_age", "plain", "known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap"),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
-    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew"),
+    "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew", "bots"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
     "mig": ("window", "dev_paid"),
 }
@@ -283,7 +289,7 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo", "teams")
-TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew")
+TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
@@ -361,6 +367,9 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
+    if trig.bots and trig.bots not in BOT_GROUPS:
+        raise ValueError(f"bots must be one of {', '.join(BOT_GROUPS)} (a label kind of wallets, `snipetech label "
+                         f"--kind bundler`), not {trig.bots!r}")  # fmt: skip
     if trig.crew not in CREW_CHOICES:
         raise ValueError(f'crew must be "" (skip serial crews\' coins) or "only" (score them alone), not {trig.crew!r}')
     if kind == "hunt":
@@ -718,13 +727,14 @@ def fired_at(trig: Trigger, path: MarketPath, i: int, mig=None) -> tuple[int, fl
     return int(path.slot[i]), float(path.ts[i])
 
 
-def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
+def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str], bots: set[str] | None = None) -> int | None:
     """OKTech hunt as the live sniper runs it (docs/live-recipe.md, "Hunt live, 5 Nov"): from the create, every buy in
     the window counts toward the total, the creator's own included (Suncat fired on 1.6 SOL from others + 1.0 from the
     dev); a launch whose creator bought more than `dev_max` SOL in the create is skipped, and so is one where more than
     `max_buyers` distinct wallets bought before the thresholds held. Fires at the buy that meets every threshold
     (triggerMode "all"). A non-SOL-quoted coin never fills: OKTech counts its quote units as SOL and fires, and the SOL
-    buy fails on-chain (pump error 6010)."""
+    buy fails on-chain (pump error 6010). With `trig.bots` (requireKnownBot over `bots`, the group's wallets) one of
+    them must have bought by then: the rule fires at the first buy with every threshold met and a group wallet in."""
     if launch is None or (launch.quote_mint and launch.quote_mint not in SOL_QUOTES):
         return None  # pump.fun's create_v2 names SOL as 1111...1111: that is a SOL coin, not a non-SOL one
     if trig.dev_max is not None:
@@ -734,6 +744,7 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
             return None
     end = launch.ts + trig.window
     total, buyers = 0.0, set()
+    known = not trig.bots  # a rule without a group needs no known wallet
     for i in range(path.n):
         if path.ts[i] > end:
             return None
@@ -741,9 +752,10 @@ def _hunt(trig: Trigger, path: MarketPath, launch, dev: set[str]) -> int | None:
             continue
         total += float(path.quote[i])
         buyers.add(path.users[i])
+        known = known or path.users[i] in (bots or ())
         if trig.max_buyers and len(buyers) > trig.max_buyers:
             return None
-        if total >= trig.sol * LAMPORTS and len(buyers) >= trig.buyers:
+        if known and total >= trig.sol * LAMPORTS and len(buyers) >= trig.buyers:
             return i
     return None
 
@@ -872,7 +884,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     if trig.kind == "momentum":
         return _momentum(trig, path, dev)
     if trig.kind == "hunt":
-        return _hunt(trig, path, launch, dev)
+        bots = (kols.get(trig.bots) or set()) if trig.bots and isinstance(kols, dict) else set()
+        return _hunt(trig, path, launch, dev, bots)
     if trig.kind == "mig":
         return _mig(trig, path, launch, mig, paid)
     if trig.kind == "launch":
@@ -978,7 +991,8 @@ def label_groups(store: Store) -> dict[str, Any]:
     wallet = set(store.labels("wallet"))
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet,
             "trader": {a for a in wallet if category(names[a]) not in NOT_TRADERS},
-            "dev": set(store.labels("dev")), TEAMS: {a: entity(n, a) for a, n in names.items()}}  # fmt: skip
+            "dev": set(store.labels("dev")), "bundler": set(store.labels("bundler")),
+            TEAMS: {a: entity(n, a) for a, n in names.items()}}  # fmt: skip
 
 
 # Wallets one read of `_mints_with_buys_by` asks about. The read walks every trade each wallet ever made (the wallet

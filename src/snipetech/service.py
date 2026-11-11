@@ -1321,8 +1321,10 @@ class Service:
                 if buy_sol:
                     s = s | {"buy_sol": buy_sol}
                 try:
+                    group = str((s.get("trigger") or {}).get("bots") or "")  # a hunt on a wallet group: its wallets
                     p = strategy_sniper(s, max_buys, via, preexec, stale, cfg=self.cfg, fills=evidence, kinds_of=kinds_of,
-                                        dev_max_zero_confirmed=str(answer.get("words") or ""))  # fmt: skip
+                                        dev_max_zero_confirmed=str(answer.get("words") or ""),
+                                        bot_wallets=sorted(self.store.labels(group)) if group else None)  # fmt: skip
                 except ValueError as exc:
                     out.append({"id": s["id"], "label": s["label"], "error": str(exc)})
                     continue

@@ -311,3 +311,94 @@ def test_the_creator_cap_skips_the_live_fills_that_only_the_creator_paid_for():
         if _fire(capped, path, la, set()) is None:
             skipped.add(la.symbol)
     assert skipped >= {"RLT", "Bricks", "Gogeta", "II"}
+
+
+# --- a hunt that needs a wallet of a labeled group among the launch's first buyers (11 Nov) ---------------------------
+# One crew of twelve wallets bundles about 7 launches a day; on 36 days of bought history a buy a block after its
+# launches had a median of +21 % a minute later, against -12 % for every other bundled launch. OKTech's Hunt takes a
+# wallet list (knownBotWallets) and can require one of them among the buyers (requireKnownBot): the lab scores that
+# rule, and the sniper is sent exactly as scored.
+
+
+def _fires(store: Store, m: Market, trig: Trigger, groups: dict) -> str | None:
+    m.commit()
+    launch = store.launch(m.mint)
+    path = MarketPath.build(store.trades_for_mint(m.mint), launch)
+    i = _fire(trig, path, launch, groups)
+    return None if i is None else path.users[i]
+
+
+def test_hunt_on_a_wallet_group_fires_only_once_one_of_its_wallets_has_bought():
+    store = Store(":memory:")
+    crew = {"bundler": {addr("crew-a"), addr("crew-b")}}
+    trig = Trigger("hunt", sol=2.0, window=1.0, bots="bundler")
+    theirs = _coin(store, "hunt-crew-launch", 0.5)
+    theirs.buy(addr("crew-a"), 1.0, 0)
+    theirs.buy(addr("hunt-crew-other"), 1.0, 1)  # 0.5 + 1.0 + 1.0 >= 2 with a crew wallet already in
+    assert _fires(store, theirs, trig, crew) == addr("hunt-crew-other")
+    strangers = _coin(store, "hunt-no-crew", 0.5)
+    strangers.buy(addr("hunt-nc-whale"), 3.0, 1)
+    assert _fires(store, strangers, trig, crew) is None  # the total is there, no wallet of the group is
+    assert _fires(store, strangers, Trigger("hunt", sol=2.0, window=1.0), crew) == addr("hunt-nc-whale")
+    late = _coin(store, "hunt-crew-late", 0.5)
+    late.buy(addr("hunt-cl-whale"), 3.0, 1)
+    late.buy(addr("crew-b"), 0.2, 2)  # the group's wallet comes after the total: the rule fires at its buy
+    assert _fires(store, late, trig, crew) == addr("crew-b")
+    after = _coin(store, "hunt-crew-after", 0.5)
+    after.buy(addr("hunt-ca-whale"), 3.0, 1)
+    after.buy(addr("crew-a"), 0.2, 10)  # after the window: not this rule's launch
+    assert _fires(store, after, trig, crew) is None
+
+
+def test_a_hunt_on_a_wallet_group_is_a_new_rule_and_older_rules_keep_their_ids():
+    from snipetech.analysis.lab import parse_trigger
+
+    plain = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
+    assert paper.strategy_id(plain, LAB_EXIT, "+3", 1, 0.2) == paper.strategy_id(
+        {k: v for k, v in plain.items() if k != "bots"}, LAB_EXIT, "+3", 1, 0.2
+    )
+    crew = parse_trigger({"kind": "hunt", "sol": 15, "window": 1.5, "bots": "bundler"})
+    assert crew.bots == "bundler" and "a wallet of the group bundler" in crew.label()
+    assert paper.strategy_id(crew.__dict__, LAB_EXIT, "+3", 1, 0.2) != paper.strategy_id(
+        crew.__dict__ | {"bots": ""}, LAB_EXIT, "+3", 1, 0.2
+    )
+    with pytest.raises(ValueError, match="bots must be"):
+        parse_trigger({"kind": "hunt", "sol": 15, "window": 1.5, "bots": "friends"})
+    with pytest.raises(ValueError, match="does not apply"):
+        parse_trigger({"kind": "whale", "sol": 2, "bots": "bundler"})
+
+
+def test_strategy_sniper_sends_the_groups_wallets_as_the_known_bots_and_refuses_without_them():
+    trig = Trigger("hunt", sol=15.0, window=2.0, bots="bundler").__dict__
+    strat = {"id": "hc", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": trig}
+    wallets = [addr("crew-a"), addr("crew-b")]
+    cfg = strategy_sniper(strat, 5, bot_wallets=wallets).config
+    hunt = cfg["hunt"]
+    assert hunt["thresholds"] == {"minTotalSol": 15, "requireKnownBot": True}
+    assert hunt["knownBotWallets"] == wallets and hunt["useKnownBotDefaults"] is False
+    assert hunt["knownBotPrograms"] == [] and hunt["knownBotLuts"] == [] and hunt["knownBotAccounts"] == []
+    assert cfg["mode"] == "hunt" and cfg["totalSnipes"] == 5 and cfg["buyAmount"] == 0.2
+    # the automatic live test and every caller that does not hand over the wallets: no sniper, never one without the gate
+    with pytest.raises(ValueError, match="wallets of the group"):
+        strategy_sniper(strat, 5)
+    with pytest.raises(ValueError, match="wallets of the group"):
+        strategy_sniper(strat, 5, bot_wallets=[])
+    # a group the lab does not know is never turned into a wallet list (the tracked wallets are a label kind too)
+    with pytest.raises(ValueError, match="not a wallet group"):
+        strategy_sniper(strat | {"trigger": trig | {"bots": "wallet"}}, 5, bot_wallets=wallets)
+    # a plain hunt is sent as before, OKTech's own bot list untouched
+    plain = strategy_sniper(strat | {"trigger": trig | {"bots": ""}}, 5).config["hunt"]
+    assert plain["thresholds"]["requireKnownBot"] is False and plain["useKnownBotDefaults"] is True
+
+
+def test_the_bundler_label_kind_reaches_the_lab_and_the_command_takes_it(tmp_path, monkeypatch, capsys):
+    from snipetech import cli
+    from snipetech.analysis.lab import label_groups
+
+    store = Store(":memory:")
+    store.set_label(addr("crew-a"), "crew 7j4u", "bundler")
+    assert label_groups(store)["bundler"] == {addr("crew-a")}
+    monkeypatch.setenv("SNIPETECH_DB", str(tmp_path / "t.db"))
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["label", addr("crew-b"), "crew 7j4u", "--kind", "bundler"]) in (0, None)
+    assert Store(tmp_path / "t.db").labels("bundler") == {addr("crew-b"): "crew 7j4u"}

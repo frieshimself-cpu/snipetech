@@ -106,9 +106,10 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
     # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)
     # and a KOL rule's consensus, size and market-cap gates (10 Nov: unset, the first known wallet in at any size)
+    # and a hunt's wallet group (11 Nov: "", any launch)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
-                  "teams": False, "gap": 0.0}  # fmt: skip
+                  "teams": False, "gap": 0.0, "bots": ""}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
