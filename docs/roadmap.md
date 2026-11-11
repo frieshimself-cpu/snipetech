@@ -21,8 +21,8 @@ first on the server's recording and only then run live in capped batches.
   sniping" if a buy one block earlier than ours would have paid. That rule no longer decides anything, and every
   verdict is being made again. Nothing was trading on these verdicts.
 - **Every deployer verdict was also about 0.006 SOL a snipe too kind**: it charged 0.0012 SOL a transaction where a
-  live one costs 0.0042. It now charges the measured cost, as the labs do. Of 110 "worth sniping" about 65 should
-  remain; the exact number comes with the re-scoring.
+  live one costs 0.0042. It now charges the measured cost, as the labs do. After both fixes and a full re-scoring
+  (13:43 UTC) 59 deployers are marked "worth sniping", none of them losing where we land (110 before).
 - **Built: a forward record of the deployer verdicts.** They were made every hour and nothing used them, while 82
   deployers marked "worth sniping" launched 2,096 coins in a day. Now every launch of a deployer that was marked
   before that launch is one paper trade, at our landing and real cost, with "avoid" and "marginal" as the control.
