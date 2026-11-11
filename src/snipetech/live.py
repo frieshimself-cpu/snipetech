@@ -419,6 +419,7 @@ class LiveWatcher:
         self.mbuffer: list[Migration] = []
         self.parked: dict[str, list[tuple[TxEvents, int]]] = {}  # pool -> transactions waiting for its mints
         self.pools = self.store.pools()
+        self.derived_pools: set[str] = set()  # in `pools` from a coin's mints only, no row in the database yet
         self.gaps: list[tuple[float, float]] = []
         self.started = time.time()
         self.disconnected_at: float | None = time.time()
@@ -1191,9 +1192,13 @@ class LiveWatcher:
                 self.stats["amm_unresolved_pools"] += len(norm.unresolved_pools)
             else:
                 self._park(norm.unresolved_pools, tx, pos)
-        if norm.pools:
-            self.pools.update(norm.pools)
-            self.pbuffer.update(norm.pools)
+        for pool, mapping in norm.pools.items():
+            # new, its mints read differently, or known only from a coin's mints so far (`_derived_pool`, never
+            # stored): the rows worth writing. A known pool's row went back into the buffer at every trade on it.
+            if self.pools.get(pool) != mapping or pool in self.derived_pools:
+                self.pools[pool] = mapping
+                self.pbuffer[pool] = mapping
+                self.derived_pools.discard(pool)
         window = self.cfg.storage.live_window_secs
         for launch in norm.launches:
             self.stats["launches"] += 1
@@ -1255,7 +1260,9 @@ class LiveWatcher:
         """The pool a completed SOL-quoted coin migrates into. Its mints are part of the address, so the mapping is
         exact before the pool exists: kept in memory (the logs fallback reads trades' pools from it), never stored."""
         pool = pump_pool(mint)
-        self.pools.setdefault(pool, (mint, WSOL_MINT))
+        if pool not in self.pools:
+            self.pools[pool] = (mint, WSOL_MINT)
+            self.derived_pools.add(pool)
         return pool
 
     def _seed_recent(self, now: float) -> None:

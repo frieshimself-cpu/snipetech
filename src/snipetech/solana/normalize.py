@@ -29,11 +29,21 @@ def normalize(
 ) -> Normalized:
     """`foreign`: also return trades quoted in another token (DJT, wXRP, PUMP...) in `.foreign`,
     in that token's units. They never appear in `.trades`, which stays SOL-denominated."""
-    # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL)
-    ll = {p: (b, q) for p, (b, q, _) in tx.ll_pools.items()}
-    known_pools = {**(known_pools or {}), **tx.pool_mints, **ll}
+    # the instruction's own accounts are authoritative (some pools are quoted in another token, not SOL): this
+    # transaction's pools are looked up before the caller's. The caller's table is read by key and never copied or
+    # changed: the recorder hands over every pool it knows (48,340 on 11 Nov), and a copy of them for every transaction,
+    # freed on return, was 1.7 ms of the 2.7 ms an update cost it.
+    own: dict[str, tuple[str, str]] = dict(tx.pool_mints)
+    for p, (b, q, _) in tx.ll_pools.items():
+        own[p] = (b, q)
+    callers = known_pools if known_pools is not None else {}
+
+    def pool_of(pool: str) -> tuple[str, str] | None:
+        mapping = own.get(pool)
+        return mapping if mapping is not None else callers.get(pool)
+
     out = Normalized([], [], [], [], {}, set())
-    out.pools.update({p: known_pools[p] for p in (*tx.pool_mints, *ll)})
+    out.pools.update(own)
 
     for ev in tx.events:
         name, f = ev.name, ev.fields
@@ -57,19 +67,19 @@ def normalize(
                 out.migrations.append(
                     Migration(f["mint"], f["pool"], tx.slot, f.get("timestamp") or tx.block_time or 0, tx.signature)
                 )
-                known_pools[f["pool"]] = (f["mint"], WSOL_MINT)
+                own[f["pool"]] = (f["mint"], WSOL_MINT)
                 out.pools[f["pool"]] = (f["mint"], WSOL_MINT)
         elif name == "CreatePoolEvent":
             out.pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
-            known_pools[f["pool"]] = (f["base_mint"], f["quote_mint"])
+            own[f["pool"]] = (f["base_mint"], f["quote_mint"])
         elif name == "LaunchLabPoolCreateEvent":
-            mapping = known_pools.get(f["pool_state"])
+            mapping = pool_of(f["pool_state"])
             if mapping is None:
                 out.unresolved_pools.add(f["pool_state"])
             else:
                 out.launches.append(_launchlab_launch(tx, f, *mapping))
         elif name == "LaunchLabTradeEvent":
-            mapping = known_pools.get(f["pool_state"])
+            mapping = pool_of(f["pool_state"])
             if mapping is None:
                 out.unresolved_pools.add(f["pool_state"])
                 continue
@@ -85,7 +95,7 @@ def normalize(
     for ev in tx.events:
         if ev.name in ("BuyEvent", "SellEvent"):
             pool = ev.fields["pool"]
-            mapping = known_pools.get(pool)
+            mapping = pool_of(pool)
             if mapping is None:
                 out.unresolved_pools.add(pool)
                 continue
