@@ -41,9 +41,11 @@ transaction changes the split (never where the SOL is: wallet or its own account
 of 10 Nov 22:19:33, in tests/fixtures: its `CreateIdempotent`), and a test holds the built bytes and accounts against
 it; the transfer of step 3 is built by the `solders` library. `CloseAccount` and `SyncNative` have no landed copy from
 our wallet (OKTech never closes an account; its wrap of 6 Nov is not on record by signature). So nothing is sent on
-trust: **every conversion is first simulated on the chain**, and it is sent only when the simulation shows, with the
-chain's own log, the steps by name and exactly this result: the wallet's plain SOL up by the amount less the fee, its
-wrapped SOL down by the amount, no error. Anything else is a refusal with the reason.
+trust: **every conversion is first simulated on the chain**, and it is sent only when the simulation shows no error,
+this conversion's programs run in order and no other (the token program names no step in its log, so the programs and
+the result are what the chain gives), and exactly this result: the wallet's plain SOL up by the amount less the fee,
+its wrapped SOL down by the amount, the account still the wallet's wrapped-SOL account. Anything else is a refusal
+with the reason.
 
 **Where the SOL can go.** Every destination is the signing wallet or its own wrapped-SOL account, derived from the
 key, never taken from an argument. A test checks that these two are the only accounts the transaction may write.

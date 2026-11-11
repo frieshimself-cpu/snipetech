@@ -20,9 +20,10 @@ A transaction lands whole or not at all, so nothing can see the account missing.
 Step 2 is built as the instruction landed from our own wallet on 10 Nov (tests/test_unwrap.py holds it against that
 transaction) and the transfer of step 3 is the library's. Step 1 and the SyncNative of step 3 have no landed copy from
 our wallet, so nothing is sent on trust: every conversion is simulated on the chain first, and sent only when the
-chain's own log names the steps and the simulated wallet shows exactly this conversion: plain SOL up by the amount less
-the fee, wrapped SOL down by the amount. The SOL can only come back to the signing wallet: every destination is the
-wallet or its own wrapped-SOL account, derived from the key, never taken from an argument.
+chain ran this conversion's programs in order and no other, and the simulated wallet shows exactly this conversion:
+plain SOL up by the amount less the fee, wrapped SOL down by the amount, the account still the wallet's. The SOL can
+only come back to the signing wallet: every destination is the wallet or its own wrapped-SOL account, derived from the
+key, never taken from an argument.
 
 With the wallet's key (SNIPER_SECRET, base58, 64 bytes, in the environment, never logged) it signs and sends; with the
 wallet's address alone it can only show on the chain what a conversion would do.
@@ -36,7 +37,7 @@ import os
 from typing import Any
 
 from .programs import TOKEN_PROGRAM
-from .sell import ATA_PROGRAM, LAMPORTS, SYSTEM_PROGRAM, WSOL_MINT, _pk, _refused, ata
+from .sell import ATA_PROGRAM, COMPUTE_BUDGET, LAMPORTS, SYSTEM_PROGRAM, WSOL_MINT, _pk, _refused, ata
 
 MIN_UNWRAP_LAMPORTS = 10_000_000  # 0.01 SOL: a smaller conversion is not worth a transaction
 CU_LIMIT = 60_000  # the steps use about 30,000 units
@@ -94,9 +95,24 @@ def unwrap_instructions(wallet: str, amount: int, wrapped: int) -> list:
     return steps
 
 
-def steps_named(amount: int, wrapped: int) -> tuple[str, ...]:
-    """What the chain's log must name for this conversion."""
-    return ("CloseAccount", "CreateIdempotent") + (("SyncNative",) if wrapped - amount > 0 else ())
+def programs_run(amount: int, wrapped: int) -> list[str]:
+    """The programs the chain must run for this conversion, in order, and no other: the compute budget twice, the
+    token program (the close), the associated-token program (the account made again), and when something stays
+    wrapped the system program (the transfer back) and the token program (SyncNative). The token program names no
+    step in its log (11 Nov: the first simulation looked for "CloseAccount" and found only the program's address), so
+    the order of the programs and the wallet's two balances afterwards are what proves a conversion."""
+    back = [SYSTEM_PROGRAM, TOKEN_PROGRAM] if int(wrapped) - int(amount) > 0 else []
+    return [COMPUTE_BUDGET, COMPUTE_BUDGET, TOKEN_PROGRAM, ATA_PROGRAM, *back]
+
+
+def _ran(logs: list[str]) -> list[str]:
+    """The programs a simulation's log says the transaction itself called, in order (not what they called in turn)."""
+    out = []
+    for line in logs:
+        parts = line.split()
+        if len(parts) == 4 and parts[0] == "Program" and parts[2] == "invoke" and parts[3] == "[1]":
+            out.append(parts[1])
+    return out
 
 
 def plan_amount(native: int, wsol: int, need_per_buy: int, keep_buys: int) -> int:
@@ -180,9 +196,8 @@ class Unwrapper:
                 "wrapped_sol_after": None if wrapped_after is None else _sol(wrapped_after)}  # fmt: skip
         if value.get("err") is not None:
             return seen | {"log": logs[-8:]}, f"the chain refused it in simulation: {value.get('err')}"
-        missing = [step for step in steps_named(amount, wsol) if not any(line.endswith(step) for line in logs)]
-        if missing:
-            return seen | {"log": logs[-14:]}, f"the simulation's log does not name {', '.join(missing)}"
+        if _ran(logs) != programs_run(amount, wsol):
+            return seen | {"log": logs[-14:]}, "the simulation ran other programs than this conversion's"
         if wallet_after is None or int(wallet_after) != native - FEE_LAMPORTS + amount:
             return seen, (f"the simulated plain SOL is {seen['plain_sol_after']}, not the "
                           f"{_sol(native - FEE_LAMPORTS + amount)} this conversion gives")  # fmt: skip

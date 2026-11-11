@@ -65,13 +65,13 @@ def test_one_conversion_closes_the_account_to_the_wallet_makes_it_again_and_puts
     writable = {str(a.pubkey) for ix in steps for a in ix.accounts if a.is_writable}
     signers = {str(a.pubkey) for ix in steps for a in ix.accounts if a.is_signer}
     assert writable == {OURS, account} and signers == {OURS}  # the SOL can only be in the wallet or its own account
-    assert U.steps_named(50_000_000, 471_817_213) == ("CloseAccount", "CreateIdempotent", "SyncNative")
+    assert U.programs_run(50_000_000, 471_817_213)[2:] == [TOKEN_PROGRAM, ATA_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM]
 
 
 def test_converting_all_of_it_puts_nothing_back():
     steps = U.unwrap_instructions(OURS, 471_817_213, 471_817_213)
     assert [str(ix.program_id) for ix in steps] == [TOKEN_PROGRAM, ATA_PROGRAM]  # closed, made again, left empty
-    assert U.steps_named(471_817_213, 471_817_213) == ("CloseAccount", "CreateIdempotent")
+    assert U.programs_run(471_817_213, 471_817_213)[2:] == [TOKEN_PROGRAM, ATA_PROGRAM]
     for amount in (0, -1, 471_817_214):
         with pytest.raises(ValueError, match="at most what is wrapped"):
             U.unwrap_instructions(OURS, amount, 471_817_213)
@@ -112,6 +112,22 @@ class Chain:
         return {"data": {"parsed": {"info": info, "type": "account"}, "program": "spl-token", "space": 165},
                 "lamports": RENT + amount, "owner": TOKEN_PROGRAM}  # fmt: skip
 
+    def _logs(self, raw: bytes) -> list[str]:
+        """The chain's log as it was on 11 Nov: every program by its address; the token program names no step."""
+        from solders.transaction import Transaction
+
+        tx = Transaction.from_bytes(raw)
+        keys = [str(k) for k in tx.message.account_keys]
+        out = []
+        for ix in tx.message.instructions:
+            prog = keys[ix.program_id_index]
+            out += [f"Program {prog} invoke [1]"]
+            if prog == ATA_PROGRAM:
+                out += ["Program log: CreateIdempotent", f"Program {TOKEN_PROGRAM} invoke [2]",
+                        f"Program {TOKEN_PROGRAM} success"]  # fmt: skip
+            out += [f"Program {prog} success"]
+        return out
+
     def _amount(self, raw: bytes) -> int:
         from solders.transaction import Transaction
 
@@ -133,9 +149,7 @@ class Chain:
         if method == "simulateTransaction":
             amount = self._amount(base64.b64decode(params[0]))
             assert params[1]["accounts"]["addresses"] == [self.user, ata(self.user, WSOL_MINT, TOKEN_PROGRAM)]
-            value = {"err": None, "unitsConsumed": 9_500,
-                     "logs": ["Program log: Instruction: CloseAccount", "Program log: CreateIdempotent",
-                              "Program log: Instruction: SyncNative"],
+            value = {"err": None, "unitsConsumed": 14_182, "logs": self._logs(base64.b64decode(params[0])),
                      "accounts": [{"lamports": self.native - U.FEE_LAMPORTS + amount},
                                   self._wsol_account(self.wsol - amount)]}  # fmt: skip
             if self.sim_patch is not None:
@@ -193,7 +207,8 @@ def test_a_dry_run_simulates_and_sends_nothing(key):
         (lambda v: v.update(err={"InstructionError": [3, {"Custom": 1}]}), "the chain refused it"),
         (lambda v: v["accounts"][0].update(lamports=v["accounts"][0]["lamports"] - 1_000_000), "plain SOL"),
         (lambda v: v["accounts"].__setitem__(1, None), "wrapped"),
-        (lambda v: v.update(logs=["Program log: CreateIdempotent"]), "CloseAccount"),
+        (lambda v: v.update(logs=v["logs"][:-2]), "ran other programs"),
+        (lambda v: v.update(logs=[*v["logs"], f"Program {SYSTEM_PROGRAM} invoke [1]"]), "ran other programs"),
     ],
 )
 def test_a_simulation_that_shows_anything_but_this_conversion_sends_nothing(key, patch, why):
