@@ -23,7 +23,8 @@ VERDICTS = ("SNIPE", "MARGINAL", "AVOID", "INSUFFICIENT_DATA", "UNKNOWN")
 # The version of what a deployer score rests on. 2 (11 Nov 2026): a LaunchLab coin's path starts at its own curve's
 # first state (it started at pump.fun's: a sevenfold jump no buyer rode), and only pump.fun launches count.
 # 3 (11 Nov 2026): the bribe sweep makes no verdict (`_decide`): it places the buy a slot earlier than ours land.
-SCORE_VERSION = 3
+# 4 (11 Nov 2026): a transaction is charged what one costs live (Service.analyze_deployer), not the settings' 0.0012.
+SCORE_VERSION = 4
 
 
 def score_basis(cfg: Config) -> str:

@@ -255,14 +255,32 @@ class Service:
                 launches += store.launches_by_deployer(sib, limit, before_ts=closed_before)
             launches = list({l.mint: l for l in launches}.values())
             label = f"family of {funder['funder']} ({len(siblings) + 1} wallets)"
-        report = await asyncio.to_thread(
-            deployer_report, store, self.cfg, address, launches, funder, label, optimize, now
-        )
+        cfg, cost = self._live_cost_cfg()
+        report = await asyncio.to_thread(deployer_report, store, cfg, address, launches, funder, label, optimize, now)
         score = compact_deployer(report)
+        score["per_tx_sol"], score["per_tx_source"] = cost["per_tx_sol"], cost["per_tx_source"]
         if now is not None:
             score["data_until"] = int(now)
         self.store.put_score("deployer", address, score)
         return report
+
+    def _live_cost_cfg(self) -> tuple[Config, dict]:
+        """(the settings with what a transaction costs live in place of their own [costs] priority + tip, where that
+        cost came from). The settings' own is 0.0012 SOL; the measure stage put a live transaction at 0.00421 on 11 Nov
+        and OKTech's minimums alone are 0.003 a buy, so a deployer scored at the settings' cost looked about 0.006 SOL
+        a snipe better than it is. The labs, the paper test and the wallet checks charge the same measured cost
+        (qualify.run.lab_tx_cost_info: measured, last measured, or the estimate before anything is)."""
+        import copy
+        from dataclasses import replace
+
+        from .qualify.run import lab_tx_cost_info
+
+        cost = lab_tx_cost_info(self.store, self.cfg)
+        per_tx = float(cost["per_tx_sol"])
+        priority = min(float(self.cfg.costs.priority_fee_sol), per_tx)
+        cfg = copy.copy(self.cfg)
+        cfg.costs = replace(self.cfg.costs, priority_fee_sol=priority, tip_sol=per_tx - priority)
+        return cfg, cost
 
     async def rescore_deployers(
         self, budget_secs: float = 900.0, lookback_secs: float = 86_400.0, now: float | None = None

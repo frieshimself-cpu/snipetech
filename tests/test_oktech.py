@@ -15,7 +15,7 @@ TARGET = "Tar9etWa11etXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 
 DEV_SCORE = {
     "address": DEV, "verdict": "SNIPE", "ev_sol": 0.05, "ev_lower_sol": 0.01, "launches": 12,
-    "basis": "1@+3:v3",  # computed the way it is now (analysis.deployer.score_basis): another basis is not planned from
+    "basis": "1@+3:v4",  # computed the way it is now (analysis.deployer.score_basis): another basis is not planned from
     "recommended": {"buy_sol": 0.25, "bribe_sol": 0.01,
                     "exit": {"take_profit": 0.5, "tp_sell_fraction": 1.0, "stop_loss": 0.3, "trailing_stop": 0.18,
                              "trailing_activation": 0.6, "max_hold_secs": 120.0, "sell_on_dev_sell": True}},

@@ -58,4 +58,48 @@ def test_a_score_made_while_the_bribe_sweep_made_verdicts_is_another_basis():
     scored again when their deployer launches (Service.deployer_verdict, rescore_deployers, oktech.build_plan)."""
     from snipetech.analysis.deployer import SCORE_VERSION, score_basis
 
-    assert SCORE_VERSION == 3 and score_basis(Config()) == "1@+3:v3"
+    assert SCORE_VERSION >= 3 and score_basis(Config()) == f"1@+3:v{SCORE_VERSION}"
+
+
+def test_a_deployer_is_scored_at_what_a_transaction_costs_live():
+    """The deployer analysis charged the settings' cost of a transaction (0.0012 SOL: 0.0002 priority + 0.001 tip), where
+    the measure stage puts a live one at 0.00421 (11 Nov, 75 fills) and OKTech's minimums alone come to 0.003 a buy:
+    every verdict was about 0.006 SOL a snipe too kind. The labs, the paper test and the wallet checks charge the
+    measured cost (qualify.run.lab_tx_cost_info); so does a deployer score now, and it says which cost it was."""
+    import asyncio
+    import time
+
+    import pytest
+
+    from snipetech.analysis.deployer import SCORE_VERSION
+    from snipetech.qualify.run import LIVE_TX_SOL, LOW_BID_ARM, TX_COST_KEY
+    from snipetech.service import Service
+    from snipetech.store import Store
+
+    from .synth import addr
+    from .test_competition import contested_launch
+
+    now = int(time.time())
+    store = Store(":memory:")
+    try:
+        cfg = Config()
+        cfg.verdict.bootstrap_samples = 100
+        svc = Service(cfg, store=store)
+        dev = addr("dev-cost")
+        for i in range(6):
+            contested_launch(store, i, dev, now - 80_000 + i * 2000, 400_000 + i * 10_000)
+        # nothing measured yet: the estimate of a live transaction, never the settings' 0.0012
+        rep = asyncio.run(svc.analyze_deployer(dev, refresh=False, optimize=False))
+        assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(LIVE_TX_SOL)
+        cheap = rep["your_strategy"]["mean"]
+        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.0142, "arm": LOW_BID_ARM, "n": 75, "ts": now})
+        rep = asyncio.run(svc.analyze_deployer(dev, refresh=False, optimize=False))
+        assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(0.0142)
+        # two transactions a snipe, each 0.0097 SOL dearer than before
+        assert rep["your_strategy"]["mean"] == pytest.approx(cheap - 2 * (0.0142 - LIVE_TX_SOL), abs=2e-4)
+        score = store.get_score("deployer", dev)
+        assert score["per_tx_sol"] == pytest.approx(0.0142) and score["per_tx_source"] == "last measured"
+        assert score["basis"].endswith(f":v{SCORE_VERSION}") and SCORE_VERSION == 4
+        assert cfg.costs.per_tx_sol() == pytest.approx(0.0012)  # the settings themselves are left as they are
+    finally:
+        store.close()
