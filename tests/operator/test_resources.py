@@ -53,11 +53,9 @@ def test_anthropic_credit_alert_at_20_percent(tmp_store, ledger):
         )
     }
     r = rs["anthropic_credit"]
-    assert (
-        r.status == "crit"
-        and "console.anthropic.com" in r.message
-        and "config set resources.anthropic_credit_usd" in r.message
-    )
+    # what to do about it is one message in Telegram (/credit), not a command on the server (as root)
+    assert r.status == "crit" and "console.anthropic.com" in r.message and "/credit" in r.message
+    assert "config set" not in r.message
     assert r.value == pytest.approx(14.5, abs=0.1) and r.unit == "usd"
 
 
@@ -107,7 +105,8 @@ def test_disk_float_birdeye_and_requests_thresholds(tmp_store, ledger):
     rs = {x.name: x for x in check_resources(cfg, tmp_store, snap(native_sol=1.0, wsol=0.0, wallet=W), ledger, disk_free_gb=lambda: 12.0,
                                                birdeye_credits=lambda: {"used": 7_000_000, "remaining": 900_000}, now=NOW)}  # fmt: skip
     assert rs["disk"].status == "crit" and "320" in rs["disk"].message
-    assert rs["sol_float"].status == "crit" and "send" in rs["sol_float"].message and W in rs["sol_float"].message
+    # the wallet's SOL is the owner's to move (9 Nov: "Don't flag I constantly take out and put money on there")
+    assert rs["sol_float"].status == "ok" and "send" not in rs["sol_float"].message and W not in rs["sol_float"].message
     assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2)  # the control arm's 0.2 SOL fill
     assert rs["birdeye_cu"].status == "crit"
     assert rs["solanatracker_requests"].status == "crit" and rs["solanatracker_requests"].value == 20_000
@@ -248,7 +247,7 @@ def test_the_sol_float_is_sized_from_the_fill_the_book_can_use(tmp_store, ledger
     cfg.book.enabled = True
     rs = {x.name: x for x in check_resources(cfg, tmp_store, snap(native_sol=3.0, wsol=0.0, wallet=W), ledger, disk_free_gb=lambda: 50.0,
                                                birdeye_credits=None, now=NOW)}  # fmt: skip
-    assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2) and rs["sol_float"].status == "warn"
+    assert rs["sol_float"].threshold == pytest.approx(6 * 0.2 * 2 + 0.2) and rs["sol_float"].status == "ok"
 
 
 def test_a_stalled_tape_is_critical_and_says_what_happens(tmp_store, ledger):
@@ -261,3 +260,76 @@ def test_a_stalled_tape_is_critical_and_says_what_happens(tmp_store, ledger):
     fresh = {x.name: x for x in check_resources(cfg, tmp_store, snap(tape_last_ts=NOW - 20), ledger, disk_free_gb=lambda: 200.0,
                                                   birdeye_credits=None, now=NOW)}  # fmt: skip
     assert fresh["tape"].status == "ok"
+
+
+def test_the_wallets_sol_is_never_an_alert(tmp_store, ledger):
+    """Owner, 9 Nov 14:05: "Don't flag I constantly take out and put money on there". The round still sent "sol_float:
+    0.473 SOL in the wallet, 2.60 needed; send 2.13 SOL to <wallet>" by Telegram every midnight (10 and 11 Nov). The
+    row says what is there and what the book could use, for the agents and the page; it asks for nothing."""
+    cfg = Config()
+    cfg.operator.wallet = W
+    cfg.book.enabled = True
+    rows = check_resources(cfg, tmp_store, snap(native_sol=0.4727, wsol=0.0, wallet=W), ledger,
+                           disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)  # fmt: skip
+    r = {x.name: x for x in rows}["sol_float"]
+    assert r.status == "ok" and r.value == 0.4727 and r.threshold == pytest.approx(2.6)
+    assert r.message == "0.473 SOL in the wallet; 2.60 would cover every sniper the book can arm"
+    assert not [line for line in alert_lines(rows) if line.startswith("sol_float")]
+
+
+def test_a_credit_count_that_ran_out_while_the_agents_are_answered_is_unknown_not_an_alarm(tmp_store, ledger):
+    """The count is ours: what was recorded as loaded, less what the ledger says was spent. Nothing ever recorded a
+    top-up, so since 10 Nov it stood at "0 $ of 100 $ left" and alarmed every midnight, while the agents spent 20 $ a
+    day more: an account that still answers holds more than was recorded. That is said once, as not known, with the one
+    message that sets it right."""
+    import json
+
+    cfg = Config()
+    cfg.resources.anthropic_credit_usd = 100
+    ledger.path.write_text("".join(json.dumps({"ts": NOW - k * 3600, "mode": "analyst", "usd": 1.5}) + "\n"
+                                   for k in range(1, 105)))  # 156 $ spent of the 100 $ recorded  # fmt: skip
+    rows = check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    r = {x.name: x for x in rows}["anthropic_credit"]
+    assert r.status == "unknown" and r.value is None
+    assert "156 $ spent" in r.message and "100 $ recorded" in r.message and "/credit" in r.message
+    assert not [line for line in alert_lines(rows) if line.startswith("anthropic_credit")]
+
+
+def test_the_owner_records_the_credit_by_telegram_and_the_count_starts_there(tmp_path, tmp_store, ledger):
+    import json
+
+    from snipetech.operator.commands import Command, handle_command
+    from snipetech.operator.tools import NoteSink
+
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    ledger = Ledger(paths.spend, cfg.operator.prices)  # the one the command reads
+    ledger.path.write_text(json.dumps({"ts": NOW - 7200, "mode": "analyst", "usd": 150.0}) + "\n")
+    sent: list[str] = []
+
+    class Svc:
+        store = tmp_store
+
+    class Notifier:
+        def send(self, text):
+            sent.append(text)
+            return True
+
+    def tell(*args):
+        cmd = Command("credit", list(args), chat_id=1, update_id=1, date=int(NOW))
+        return asyncio.run(handle_command(cmd, svc=Svc(), cfg=cfg, paths=paths, snap=None, notifier=Notifier(),
+                                          notes=NoteSink(paths, now=lambda: NOW), now=NOW))  # fmt: skip
+
+    assert "not a number of dollars" in tell("lots")
+    assert tmp_store.coverage("resources:anthropic_credit") == {}
+    reply = tell("180")
+    assert reply.startswith("recorded: 180 $ on the Anthropic account")
+    assert tmp_store.coverage("resources:anthropic_credit") == {"usd": 180.0, "set_at": NOW}
+    spent_after = json.dumps({"ts": NOW + 600, "mode": "analyst", "usd": 30.0}) + "\n"
+    ledger.path.write_text(ledger.path.read_text() + spent_after)
+    later = NOW + 3600
+    r = {x.name: x for x in check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0,
+                                             birdeye_credits=None, now=later)}["anthropic_credit"]  # fmt: skip
+    assert r.value == 150.0 and "150 $ of 180 $ left" in r.message  # what was spent before the record does not count
+    assert "150 $ of 180 $" in tell()  # /credit alone says the count

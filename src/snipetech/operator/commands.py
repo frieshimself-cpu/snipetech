@@ -40,7 +40,8 @@ HELP = (
     "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend and how often the "
-    "analyst runs)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
+    "analyst runs)  /credit <dollars> (what the Anthropic console shows, after a top-up: the count of the credit "
+    "starts there; /credit alone says the count)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
     "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
     "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk (the wallet-wide "
     "guard: no new live trade once the day is that far down or the wallet under its floor), one per message: "
@@ -501,6 +502,13 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = budget_reply(cfg, paths, cmd.args, "telegram", now)
         if cmd.args and not reply.startswith("budget not changed"):
             notes.write(f"owner set the agents' budget: {reply}", "decision")
+    elif cmd.name == "credit":
+        from .budget import Ledger
+        from .resources import credit_reply
+
+        reply = credit_reply(cfg, svc.store, Ledger(paths.spend, cfg.operator.prices), cmd.args, now)
+        if reply.startswith("recorded"):
+            notes.write(f"owner recorded the Anthropic credit (/credit): {reply}", "decision")
     elif cmd.name == "risk" and cmd.args and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
         # the same rule as /sell: a change that waited in Telegram's queue may loosen the guard after the moment it was
         # meant for. Its words are not repeated

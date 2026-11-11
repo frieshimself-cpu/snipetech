@@ -40,19 +40,33 @@ def _pct_left_status(left_pct: float | None, alert_pct: float) -> str:
     return "ok"
 
 
-def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *, disk_free_gb: Callable[[], float],
-                    birdeye_credits: Callable[[], dict] | None, now: float) -> list[Resource]:  # fmt: skip
-    rc = cfg.resources
-    out: list[Resource] = []
+# The Anthropic credit is our own count: what the owner recorded as on the account (`/credit <dollars>` in Telegram:
+# CREDIT_KEY holds it and when; before any record, the config's figure since the first spend) less what the ledger
+# says the agents spent since. Nobody can read the account's balance with the agents' key.
+CREDIT_KEY = "resources:anthropic_credit"
+CREDIT_OVERRUN = 1.05  # spent this many times what was recorded: the record is wrong, not the account empty
+CREDIT_FIX = "send /credit <dollars the Anthropic console shows> (console.anthropic.com) and the count starts there"
 
-    # Anthropic credit: what the owner loaded minus what the ledger has spent since they loaded it. The pace is the
-    # faster of the week's mean and the last day: once the owner raises the agents' budget (/budget, 7 Nov: 200 $ a day
-    # against the 4.44 $ spent on 6 Nov) the spend jumps from one day to the next, and a week's mean hides it for days
+
+def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resource:
+    """The credit left by our count, and how long it lasts. The pace is the faster of the week's mean and the last day:
+    once the owner raises the agents' budget (/budget, 7 Nov: 200 $ a day against the 4.44 $ spent on 6 Nov) the spend
+    jumps from one day to the next, and a week's mean hides it for days.
+
+    A count that ran out while the agents went on being answered is not an empty account: more was on it than was
+    recorded. 11 Nov: no top-up had ever been recorded (the row asked for `config set` on the server, as root), so the
+    count stood at "0 $ of 100 $ left" and alarmed every midnight while the agents spent 20 $ a day more. That is said
+    as not known, and is no alarm."""
+    rc = cfg.resources
     try:
-        rec = store.coverage("resources:anthropic_credit")
-        credit = float(rec.get("usd", cfg.resources.anthropic_credit_usd))
+        rec = store.coverage(CREDIT_KEY)
+        credit = float(rec.get("usd", rc.anthropic_credit_usd))
         set_at = float(rec.get("set_at", 0))
         spent = ledger.spent_since(set_at)
+        if credit > 0 and spent > credit * CREDIT_OVERRUN:
+            return Resource("anthropic_credit", None, "usd", None, "unknown",
+                            f"not known: {spent:.0f} $ spent against {credit:.0f} $ recorded, and the agents were "
+                            f"answered all the same, so the account held more than was recorded; {CREDIT_FIX}")  # fmt: skip
         left = max(0.0, credit - spent)
         left_pct = 100.0 * left / credit if credit > 0 else None
         per_day = max(ledger.spent_since(now - 7 * 86400) / 7.0, ledger.spent_since(now - 86400))
@@ -65,15 +79,37 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
             f"{left:.0f} $ of {credit:.0f} $ left"
             + (f", about {days_left:.1f} days at the current pace" if days_left is not None else "")
             + (f", {left / daily:.1f} days if the agents spend their whole {daily:g} $ a day" if daily > 0 else "")
-            + ". Top up 100 $ at console.anthropic.com, then run: snipetech config set resources.anthropic_credit_usd <new total>"
+            + f". After a top-up, {CREDIT_FIX}"
         )
-        out.append(
-            Resource(
-                "anthropic_credit", round(left, 2), "usd", round(credit * rc.anthropic_alert_pct / 100, 2), status, msg
-            )
+        return Resource(
+            "anthropic_credit", round(left, 2), "usd", round(credit * rc.anthropic_alert_pct / 100, 2), status, msg
         )
     except Exception as exc:  # noqa: BLE001
-        out.append(Resource("anthropic_credit", None, "usd", None, "unknown", f"could not compute: {exc}"))
+        return Resource("anthropic_credit", None, "usd", None, "unknown", f"could not compute: {exc}")
+
+
+def credit_reply(cfg: Config, store: Store, ledger: Ledger, args: list[str], now: float) -> str:
+    """The owner's /credit: alone it says the count; with a number of dollars it records what is on the account now."""
+    if not args:
+        return "credit: " + credit_row(cfg, store, ledger, now).message
+    try:
+        usd = float(args[0].replace("$", "").replace(",", ""))
+        if not 0 <= usd < 1e7:
+            raise ValueError(args[0])
+    except ValueError:
+        return (f"credit not changed: {args[0][:20]!r} is not a number of dollars. Send /credit 180 when the Anthropic "
+                "console shows 180 $.")  # fmt: skip
+    store.set_coverage(CREDIT_KEY, {"usd": usd, "set_at": now})
+    return (f"recorded: {usd:g} $ on the Anthropic account as of now. The agents' spend counts down from it; you hear "
+            "when it runs low.")  # fmt: skip
+
+
+def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *, disk_free_gb: Callable[[], float],
+                    birdeye_credits: Callable[[], dict] | None, now: float) -> list[Resource]:  # fmt: skip
+    rc = cfg.resources
+    out: list[Resource] = []
+
+    out.append(credit_row(cfg, store, ledger, now))
 
     # Birdeye compute units for the billing cycle.
     if birdeye_credits is None:
@@ -110,7 +146,7 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         except Exception as exc:  # noqa: BLE001
             out.append(Resource(name, None, unit, None, "unknown", f"counter failed: {exc}"))
 
-    # SOL float: what the book needs plus a margin.
+    # SOL float: what the book could use plus a margin.
     try:
         b = cfg.book
         live = b.enabled
@@ -129,11 +165,11 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         if eq is None:
             out.append(Resource("sol_float", None, "sol", needed, "unknown", "wallet balance not read this round"))
         else:
-            status = "crit" if eq < needed else ("warn" if eq < needed * 1.25 else "ok")
-            msg = f"{eq:.3f} SOL in the wallet, {needed:.2f} needed" + (
-                f"; send {max(0.0, needed - eq):.2f} SOL to {snap.wallet}" if status == "crit" else ""
-            )
-            out.append(Resource("sol_float", round(eq, 4), "sol", needed, status, msg))
+            # what is there and what the book could use, for the agents and the live page. Never an alert and never a
+            # request: the wallet's SOL is the owner's to move (9 Nov: "Don't flag I constantly take out and put money
+            # on there"; until 11 Nov the round still asked for SOL by Telegram every midnight)
+            msg = f"{eq:.3f} SOL in the wallet; {needed:.2f} would cover every sniper the book can arm"
+            out.append(Resource("sol_float", round(eq, 4), "sol", needed, "ok", msg))
     except Exception as exc:  # noqa: BLE001
         out.append(Resource("sol_float", None, "sol", None, "unknown", f"could not compute: {exc}"))
 
