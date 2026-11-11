@@ -6,6 +6,25 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 11 Nov, 17:00 UTC: the tape now writes what every trade bid for its place, and who paid for it
+
+- **Still nothing profitable live.** 74xVT9 is the one qualified wallet; no strategy passes on paper. Nothing was
+  bought on 11 Nov: eight buys of 74xVT9 over its floor, none copied, for the reason in the 14:30 entry below.
+- **New on the tape since 16:34 UTC** (audit row 64): with every trade its priority fee, its tip to a landing service,
+  and the wallet that paid when that was not the trader. Until now these were known only for a transaction some study
+  fetched afterwards: none of the last 51,356 trades. Checked against 25 transactions read again from the chain:
+  identical in all. The recorder's processor share did not move (0.09 of a core); a day of rows adds 100 MB.
+- **What it opens.** (1) The place in a copied wallet's block is a fee auction (CLAUDE.md rule 2); what bid buys
+  which place can be read off the tape once a few days of rows exist, where so far it took live fills. (2) The FOMO
+  study sees every FOMO user: FOMO's wallet paid for 784 traders in 15 minutes, where the study saw 300 in three days
+  (the owner asked for all of them on 8 Nov). (3) The bot study reads each bot's bid from its own trades.
+- **The deployer forward record's first numbers** (to 14:15 UTC; it grows with each three-hourly tape copy): 39
+  launches by deployers marked "worth sniping" lose 0.072 SOL a 0.5 SOL snipe, 361 "marginal" lose 0.036, 2,329
+  "avoid" lose 0.020. Too few to judge: 300 are needed, about a day more. So far "worth sniping" is not better than
+  "avoid".
+- **Found and fixed on the way:** `snipetech --help` had crashed since the morning's `dip-buys` command (row 65).
+- **Open:** the 14:30 list below; the bid table (a few days of rows); who the two other large fee payers are.
+
 ## 11 Nov, 14:30 UTC: are the agents doing the work? The scheduled jobs yes; the paid analyst only in part
 
 - **Still nothing profitable live.** 74xVT9 is still the one qualified wallet; no strategy passes on paper.

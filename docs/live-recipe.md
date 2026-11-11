@@ -39,6 +39,9 @@ since 6 Nov; 0.2 SOL fills on the low-fee arm).
   is the owner's to move and is not flagged.) The server's analyst did not know why and spent nine half-hourly
   updates on the missing fills; from the afternoon deploy the agents are told that a buy pays its fees in plain SOL
   and that signals missed for that reason need no test, no idea and no new sniper (audit row 61).
+- **14:33-16:15 UTC: three more, none bought, same cause.** 74xVT9 bought on PumpSwap at 14:33 (1.32 SOL) and on
+  the curve at 15:10 (1.225 SOL) and 16:15 (1.254 SOL). Eight signals of eight without a buy since the wallet
+  qualified. Nothing else changed: the snipers on 74xVT9, 7aPo3n and AG89fn run, no SOL moved by us.
 
 ## The owner, 7 Nov 2026 about 22:05 UTC: "pnl matters but dont stop the bot"
 

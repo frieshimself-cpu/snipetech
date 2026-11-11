@@ -66,3 +66,21 @@ Not in this change: a table of bid against place behind a copied buy. It needs a
 - The first process to open the database after the deploy adds the columns: three schema writes, each under the
   write lock for an instant, through the store's retrying write.
 - A tip account not on the list reads as no tip. The list is the one the measure stage uses for our own fills.
+
+## Result (11 Nov, deployed 16:34 UTC as 6a71272)
+
+- First 10 minutes: 52,337 trades written, all with a priority fee; 13,275 with a tip; 9,848 with a payer other than
+  the trader. By venue: 28,392 PumpSwap, 23,418 pump.fun, 527 LaunchLab, none without its values.
+- 25 fresh transactions (tips to Astralane, Nozomi and Helius Sender, LaunchLab trades, transactions with a separate
+  payer, with no priority fee) read again from a public node and passed through `txmeta.extract_tx_meta`: priority
+  fee, tip and payer identical in all 25. Eleven more were not served by the node.
+- The recorder's processor share: 0.092 of a core in the five minutes before the deploy (1,044 millionths of a second
+  of processor a trade written), 0.085 in five minutes after (1,104); since its restart 1,079 a trade against 1,277
+  before. No change that the samples can show. On the seven stream fixtures the decode takes 1 to 9 millionths of a
+  second more (29 to 144 in all).
+- Size: 8.7 bytes of payer, 2.2 of priority fee and 0.6 of tip a row on average, plus three header bytes: about
+  14 bytes a trade, 100 MB a day at 7.1 million trades a day.
+- No fill of ours has been recorded since the deploy (the bot last bought on 10 Nov), so the check against `fills`
+  waits for the next live buy.
+- The index on `payer` in the first sketch (audit, open item 17) was not built: creating it would have read the whole
+  table under the write lock, and a time-bounded read does the job.
