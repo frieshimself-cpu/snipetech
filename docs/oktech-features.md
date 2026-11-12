@@ -367,7 +367,112 @@ socialUltimate, fomoTracking.
   skip|log}` — first-ever funding of the deployer inside the band and window.
 - **Chain / Social / Ultimate / FOMO** — pages and streams, not sniper fields.
 
+## What every copy sniper is sent since 12 Nov 2026, and why
+
+A small live test on 12 Nov (docs/live-recipe.md, "The tip ladder behind Cupsey") showed two faults in the copy
+snipers we build. Both are fixed in the builder, 12 Nov. This is what a copy sniper (`mode: ctbot`) now carries, whether
+the book made it, `oktech copylist` made it by hand, `oktech push` made it from a verdict, or the speed test made it.
+
+### Never copy a non-coin
+
+**What happened.** Cupsey swapped into USDC. Our sniper copied the swap: it bought USDC through a PumpSwap pool and
+sold it four seconds later. It paid 0.04 SOL of fees for nothing.
+
+**What OKTech has for it.** Nothing that names a coin to refuse. We read every setting on record for copy mode:
+
+| OKTech setting | Can it shut out a coin a copied wallet buys? |
+|---|---|
+| `ctbotWallets[]`: `minSol`, `maxSol`, `minMcapUsd`, `maxMcapUsd` | Only by size of the wallet's buy and by market cap. |
+| `platforms` | By venue. Documented for launch snipers. Never sent with a copy sniper before 12 Nov. |
+| Quote whitelist / blacklist, "ignore configs" | No. They choose which launches to buy by what a launch is priced in. |
+| Metadata filter | No. Documented for launch, migration and stock snipers only. |
+| Vanity filter (the coin's address starts with, ends with or contains a text) | No. It can only require a text, not refuse one. Requiring "pump" at the end would shut out real coins: the coin we copied twice on 12 Nov ends in "Foss". |
+| Account filter (`accountFilter.blacklist`) | Not for us: it is not granted to this account, and it is documented for the launch transaction. |
+| `blockedCreators`, `mints` | No. One blocks a coin's creator, the other is a list of coins to buy. |
+| Buy multiplier, copy exit, migration follow | No. They change how much is bought and when it is sold. |
+| Skip check | Not known. The app shows the name with no help text. |
+
+**So a copy sniper is sent the two nearest things** (`oktech.keep_to_coins`):
+
+| field | value | what it does |
+|---|---|---|
+| `platforms` | `["pumpfun", "pumpswap"]` | Only pump.fun's curve and PumpSwap: the venues the lab scores. No Raydium, Meteora or LaunchLab swap. |
+| `ctbotWallets[].maxMcapUsd` | `50000000` unless a tighter cap is set | A buy above a 50 million dollar market cap fails on chain instead of filling. A failed buy pays its priority fee (0.001 SOL) and gets its tip back. |
+
+A cap the owner set for a wallet (`snipetech book mcap`) is tighter and stays. A cap above the ceiling is brought
+down to it. 50 million dollars is far above any coin the lab scores a copy on: a coin on pump.fun's curve, or one
+that left it in the last 30 minutes. It is far below a stablecoin, wrapped SOL or a staked-SOL token.
+
+**The mints we know are not coins** (`positions.NON_COIN_MINTS`). No sniper is sent this list, because OKTech has no
+field for it. The measure stage checks our own buys against it.
+
+| name | mint | checked against |
+|---|---|---|
+| wrapped SOL | `So11111111111111111111111111111111111111112` | already in the repo (`positions.py`, `meta.py`) |
+| USDC | `EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v` | already in the repo (`positions.STABLES`); the 12 Nov fill |
+| USDT | `Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB` | already in the repo (`positions.STABLES`) |
+| USD1 | `USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB` | already in the repo (`positions.STABLES`) |
+| PYUSD, JUP, JLP, mSOL, jitoSOL, bSOL | left out | **unverified**: no address for them anywhere in the repo, so none was guessed |
+
+**How we see it if it happens again.** Every measure run reports `non_coin_buys`: how many of our buys were of a mint
+on the list, the SOL spent, and which. The first time it sees one it writes a line that starts
+`[measure] ALERT: a sniper bought USDC` into the operator's notes.
+
+### The bid goes in the tip
+
+**What happened.** The test sniper was made with a priority fee of 0.005 SOL and a tip of 0.03. OKTech charged the
+0.005 again on every sell and on every duplicate sell that failed: three to four times a round trip. A tip is paid
+once, and it comes back when a send fails.
+
+**What is sent now.**
+
+| who builds it | `priorityFee` | `tipAmount` | `autoSell.sellTipAmount` | `autoSell.sellPriorityFeeSol` |
+|---|---|---|---|---|
+| `oktech copylist --bid X` (new) | 0.001 | X - 0.001 | 0.002 | 0.0001 |
+| `oktech copylist` with no fee option | 0.001 | 0.002 | 0.002 | 0.0001 |
+| `oktech copylist --priority P --tip T` (by hand) | P | T | 0.002 | 0.0001 |
+| the book, control arm (0.001 + 0.002) | 0.001 | 0.002 | 0.002 | 0.0001 |
+| the book, paid arm (written 0.02 + 0.02; retired since 6 Nov) | 0.001, was 0.02 | 0.039, was 0.02 | 0.002 | 0.0001 |
+
+- `--bid X` is the whole bid for one buy. 0.001 SOL is OKTech's smallest priority fee and 0.002 its smallest tip, so
+  a bid under 0.003 is refused. `--bid` together with `--tip` or `--priority` is refused too.
+- `--priority` and `--tip` still work by hand and are sent as asked. When the priority is above 0.001 the summary
+  says: "OKTech charges it again on every sell and failed duplicate sell: put the bid in the tip".
+- The book's arms are written as priority + tip in `[book] bid_arms`. The book now sends an arm's whole fee with the
+  priority at 0.001 and the rest as the tip (`book/policy.arm_bid`). The paid arm pays the same 0.04 SOL a buy.
+- The rule that skips the paid arm did not change. It still reads: "paid arm skipped: its fee 0.04 SOL needs a 1.33
+  SOL fill to stay under 3%; fill_max_sol is 1".
+- The measure stage tells the arms apart by the fee a fill paid. It now knows both shapes of an arm: as written
+  (0.02 + 0.02, the fills up to 12 Nov) and as sent (0.001 + 0.039).
+- Not changed: the launch sniper built from a deployer verdict (`oktech push`, kind dev) still splits its bribe by
+  `[oktech] tip_share` (0.7 to the tip), so 0.003 of a 0.01 SOL bribe is priority. Whether OKTech charges that again
+  on a launch sniper's sells is not measured. It is the owner's setting; say so if it should follow the same rule.
+
 ## Unknown until a tiny live test
+
+### Whether the two protections against a non-coin work in copy mode (12 Nov 2026)
+
+OKTech has no setting that refuses a coin by its address. What we send instead is the nearest it has, and neither
+part is proven:
+
+1. **Does copy mode read `platforms`?** No copy sniper of ours carried it before 12 Nov (0 of the 59 copy snipers
+   in the server's own record, 4 to 12 Nov). OKTech may honour it, ignore it, or refuse the sniper. A refusal is loud and costs nothing: the
+   create fails with OKTech's words and no sniper exists. The first create after the deploy is the test.
+2. **`platforms` would not have stopped the 12 Nov buy.** That USDC was bought through a PumpSwap pool, and PumpSwap
+   is a venue we want. Only the market-cap ceiling stands in front of a stablecoin traded there.
+3. **Does the ceiling stop it?** OKTech enforces `maxMcapUsd` as a smallest amount the buy must receive. It fails the
+   buy when the coin is worth more. That needs OKTech to price USDC or wrapped SOL above 50 million dollars. We
+   expect so, since each is worth over a billion. It has never been seen. One copy sniper of the 59 carried a
+   per-wallet cap before (8 Nov, 6,700 dollars) and no buy of ours behind its wallet is on record from then, so the
+   field has been accepted once and has never been seen to fill or to fail a buy.
+4. **Does the ceiling cost a normal copy anything?** It should not: for a coin under the ceiling the smallest amount
+   is thousands of times under what the buy receives. Check on the first live copy that it lands where copies landed
+   before (`snipetech landing`).
+5. **A buy that the ceiling fails still costs a little.** It pays its priority fee, 0.001 SOL, and may use up one of
+   the sniper's buys. That is against 0.04 SOL for the round trip of 12 Nov.
+6. **Majors we could not list.** PYUSD, JUP, JLP, mSOL, jitoSOL and bSOL are not on our list of non-coins, because
+   the repo has no address for them. The ceiling should stop them too. The measure stage would not name them.
+7. **The question for OKTech's owner:** is there a way to give a copy sniper a list of coins never to buy?
 
 ### Which field prices the tipped copy of a sell (12 Nov 2026, the tip ladder behind Cupsey)
 
@@ -398,6 +503,10 @@ fee and gets its tip back. `sellPriorityFeeSol` therefore prices only the untipp
 duplicate that fails pays 0.005005 for nothing. At the 0.001 minimum the same two cost 0.001 and 0.001005. A bid
 raised in the **tip** is paid once, on the buy, and comes back when a send fails; a bid raised in the **priority** is
 paid on the buy, again on the sell, and again on each failed tipped duplicate.
+
+**Fixed in the builder, 12 Nov.** `oktech copylist --bid X` sends a bid that way (priority 0.001, tip X - 0.001), the
+book sends its arms that way, and a priority given by hand above 0.001 is warned about ("What every copy sniper is
+sent since 12 Nov 2026", above). The first unknown below is still open: no buy has been sent that way yet.
 
 **Unknown until a tiny live test:**
 

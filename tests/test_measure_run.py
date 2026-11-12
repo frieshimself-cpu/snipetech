@@ -1028,3 +1028,58 @@ def test_a_failed_buy_is_recorded_with_its_cause(tmp_path):
     assert row["exit_reason"].startswith("buy not paid: a curve buy takes the whole buy from plain SOL")
     assert "'Custom': 1" in row["exit_reason"]  # the chain's own words stay beside ours
     st.close()
+
+
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def test_non_coin_buys_are_counted_by_what_was_bought():
+    """12 Nov 17:05 UTC: a copy sniper bought USDC when the wallet it copies swapped into it. The measure stage counts
+    every buy of ours whose mint is on the list of non-coins (positions.NON_COIN_MINTS), so it is seen if it ever
+    happens again."""
+    from snipetech.measure.run import non_coin_buys
+
+    buys = [{"sig": "A", "ts": 100, "mint": USDC, "sol": 0.05},
+            {"sig": "B", "ts": 300, "mint": addr("coin"), "sol": 0.2},
+            {"sig": "C", "ts": 200, "mint": "So11111111111111111111111111111111111111112", "sol": 0.01},
+            {"sig": "D", "ts": 250, "mint": USDC, "sol": 0.05}]  # fmt: skip
+    assert non_coin_buys(buys) == {"n": 3, "sol": 0.11, "mints": {"USDC": 2, "wrapped SOL": 1}, "last_ts": 250,
+                                   "sigs": ["A", "C", "D"]}  # fmt: skip
+    assert non_coin_buys([buys[1]]) == {"n": 0, "sol": 0.0, "mints": {}, "last_ts": None, "sigs": []}
+
+
+def test_a_buy_of_a_stablecoin_is_reported_by_the_run_and_said_once(tmp_path):
+    class Sink:
+        def __init__(self):
+            self.lines = []
+
+        def write(self, text, kind):
+            self.lines.append((kind, text))
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        sigs = _copy_world(st, coins=1)  # one copy of a real coin
+        m = Market(st, USDC, D, NOW - 1800, SLOT + 9000)  # and the wallet we copy swaps into USDC: we follow
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 2)
+        tb = m.buy(ME, 0.05, 3)
+        ts = m.sell(ME, 1.0, 12)
+        m.commit()
+        metas = {s: _meta(s) for pair in [*sigs, (tb.sig, ts.sig)] for s in pair}
+        notes = Sink()
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                      failed_sigs=_no_failed, notes=notes))  # fmt: skip
+        assert out["buys"] == 2
+        got = out["non_coin_buys"]
+        assert got["n"] == 1 and got["mints"] == {"USDC": 1} and got["sigs"] == [tb.sig]
+        assert got["sol"] == pytest.approx(0.05, abs=0.002) and got["last_ts"] == tb.ts
+        said = [text for _kind, text in notes.lines if "not a coin" in text]
+        assert len(said) == 1 and "USDC" in said[0] and USDC[:6] in said[0] and "ALERT" in said[0]
+        assert LEAD[:6] in said[0]  # which copied wallet it followed there
+        # the next run counts it again (it is in the window) and does not say it twice
+        out = asyncio.run(run_measure(svc, cfg, NOW + 60, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                      failed_sigs=_no_failed, notes=notes))  # fmt: skip
+        assert out["non_coin_buys"]["n"] == 1
+        assert len([1 for _kind, text in notes.lines if "not a coin" in text]) == 1
+    finally:
+        st.close()

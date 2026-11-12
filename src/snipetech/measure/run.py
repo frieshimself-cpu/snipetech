@@ -18,6 +18,7 @@ from typing import Any
 from ..analysis.lab import span_slot_secs
 from ..config import Config
 from ..exits_menu import EXIT_MENU_VERSION
+from ..positions import NON_COIN_MINTS
 from ..solana.programs import PUMP_AMM_PROGRAM
 from ..store import Store
 from .chain_landing import fill_fields, known_mates, own_wallets, read_fill, read_landing, wallet_signatures
@@ -371,6 +372,36 @@ def _note(cfg: Config, now: float, notes, text: str) -> None:
         return
 
 
+NON_COIN_SAID_KEY = "measure:non_coin_said"  # the non-coin buys the notes were told of already (their signatures)
+
+
+def non_coin_buys(buys: list[dict]) -> dict[str, Any]:
+    """Our buys of something that is not a coin (wrapped SOL, a stablecoin: positions.NON_COIN_MINTS), oldest first:
+    how many, the SOL they spent, how many of each by name, when the last one was and their signatures. 12 Nov: a copy
+    sniper bought USDC when the wallet it copies swapped into it; OKTech has no setting on record that shuts a mint
+    out (oktech.keep_to_coins sends the nearest it has), so this is where it shows if it happens again."""
+    hit = [b for b in buys if b.get("mint") in NON_COIN_MINTS]
+    hit.sort(key=lambda b: (b.get("ts") or 0, str(b.get("sig"))))
+    mints: dict[str, int] = {}
+    for b in hit:
+        mints[NON_COIN_MINTS[b["mint"]]] = mints.get(NON_COIN_MINTS[b["mint"]], 0) + 1
+    return {"n": len(hit), "sol": round(sum(float(b.get("sol") or 0) for b in hit), 6), "mints": mints,
+            "last_ts": int(hit[-1]["ts"]) if hit else None, "sigs": [b["sig"] for b in hit]}  # fmt: skip
+
+
+def _non_coin_line(buy: dict) -> str:
+    """The owner's line for a buy of a non-coin: what was bought, for how much, when, behind which copied wallet."""
+    mint = str(buy.get("mint"))
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(int(buy.get("ts") or 0)))
+    leader = buy.get("wallet_copied")
+    behind = f"copying {str(leader)[:6]}…" if leader else "the wallet it copied is not known"
+    return (f"[measure] ALERT: a sniper bought {NON_COIN_MINTS.get(mint, mint[:6])} ({mint[:6]}…), not a coin: "
+            f"{float(buy.get('sol') or 0):g} SOL on {when}, {behind}. A copy must never buy a stablecoin or wrapped "
+            "SOL. A sniper made after the fix of 12 Nov is sent platforms and a market-cap ceiling against it "
+            "(docs/oktech-features.md, \"Never copy a non-coin\"): if this buy came from one, they did not stop "
+            "it.")  # fmt: skip
+
+
 def _crossed_line(sell: dict, buy: dict | None) -> str:
     """The owner's line for a crossed sell: which coin, what it paid against its own sniper's fee, and why."""
     paid = (sell.get("priority_lamports") or 0) / 1e9
@@ -710,6 +741,15 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             store.put_fill(s | want)
     for s, buy in newly_crossed:
         _note(cfg, now, notes, _crossed_line(s, buy))
+    # a buy of something that is not a coin (a stablecoin, wrapped SOL): counted every run, said once
+    non_coins = non_coin_buys(all_buys)
+    told = list(store.coverage(NON_COIN_SAID_KEY).get("sigs") or [])
+    untold = [b for b in all_buys if b["sig"] in set(non_coins["sigs"]) - set(told)]
+    for b in sorted(untold, key=lambda b: (b.get("ts") or 0, str(b.get("sig")))):
+        _note(cfg, now, notes, _non_coin_line(b))
+        told.append(b["sig"])
+    if untold:
+        store.set_coverage(NON_COIN_SAID_KEY, {"sigs": told[-500:], "ts": int(now)})
     # did the 8 Nov sell-fee split work: the twins' cost per landed sell by the sell priority they paid, and sells
     # landed per buy before and after it (the first 20 sells after are said one by one; a fall is an alert line)
     prio_by_buy = {b["sig"]: sell_priority_of((buying_sniper(copy_rows, b) or {}).get("payload")) for b in all_buys}
@@ -765,7 +805,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
-            "from_chain": from_chain,
+            "from_chain": from_chain, "non_coin_buys": non_coins,
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
             "landing_by_progress": landing_by_progress(all_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip

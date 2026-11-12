@@ -33,6 +33,7 @@ from .config import Config
 from .exits_menu import MENU
 from .fees import FeeChoice
 from .models import is_address as _is_address
+from .positions import NON_COIN_MINTS
 from .sim.exits import stage_pairs
 from .store import Store
 
@@ -222,6 +223,48 @@ def execution_params(send_count: int | None = None, compute_units: int | None = 
     if compute_units:
         out["computeUnits"] = int(compute_units)
     return out
+
+
+# Never copy a non-coin (12 Nov 2026, the tip ladder: a copy of Cupsey bought USDC when the wallet swapped into it,
+# through a PumpSwap pool, and sold it four seconds later: 0.04 SOL of fees for nothing). OKTech's copy mode has no
+# setting on record that shuts out a mint (docs/oktech-features.md: its quote lists, "ignore configs" and metadata
+# filters gate launches; the account filter is not granted to this account), so every copy payload carries the two
+# nearest things it has:
+# * `platforms`: the venues we mean and the lab scores, pump.fun's curve and PumpSwap, by OKTech's own keys
+#   (docs/oktech-settings.md). No copy sniper was sent it before 12 Nov: whether copy mode reads it is not known, and
+#   the USDC buy went through PumpSwap, which it lets through.
+# * a market-cap ceiling on every copied wallet (`ctbotWallets[].maxMcapUsd`, OKTech's min-out on the buy: above it
+#   the buy fails on chain and pays its priority fee instead of filling). Far above any coin the lab scores a copy
+#   on (a coin on its curve, or one that left it in the last 30 minutes), far below a stablecoin, wrapped SOL or a
+#   staked-SOL token.
+# Setting either to nothing (an empty tuple, 0) stops it being sent.
+COPY_PLATFORMS: tuple[str, ...] = ("pumpfun", "pumpswap")
+COPY_MAX_MCAP_USD = 50_000_000
+
+
+def keep_to_coins(config: dict[str, Any], notes: list[str]) -> None:
+    """Give a copy-mode (ctbot) payload what keeps it from buying a stablecoin, wrapped SOL or another major when the
+    copied wallet swaps into one: the platforms and the market-cap ceiling above. A tighter cap already on a wallet
+    (the owner's, a verdict's) stays; a looser one is brought down to the ceiling. Every builder of a copy sniper
+    calls this, so the book's snipers and the hand-made ones carry the same."""
+    sent = []
+    if COPY_PLATFORMS:
+        config["platforms"] = list(COPY_PLATFORMS)
+        sent.append(f"platforms {', '.join(COPY_PLATFORMS)}")
+    if COPY_MAX_MCAP_USD:
+        for w in config.get("ctbotWallets") or []:
+            cap = w.get("maxMcapUsd")
+            if cap and float(cap) > COPY_MAX_MCAP_USD:
+                notes.append(f"market-cap cap ${int(cap):,} brought down to the ${COPY_MAX_MCAP_USD:,} ceiling every "
+                             "copy carries")  # fmt: skip
+            if not cap or float(cap) > COPY_MAX_MCAP_USD:
+                w["maxMcapUsd"] = COPY_MAX_MCAP_USD
+        sent.append(f"a market-cap ceiling of ${COPY_MAX_MCAP_USD:,} on the copied wallet (above it the buy fails on "
+                    "chain and pays its priority fee instead of filling)")  # fmt: skip
+    notes.append("never copy a non-coin: OKTech's copy mode has no setting on record that shuts out a mint "
+                 f"({', '.join(NON_COIN_MINTS.values())}), so this sniper is sent the nearest it has: "
+                 f"{' and '.join(sent) or 'nothing (both are switched off)'}. They are not proven in copy mode: check "
+                 "the first fills, and the measure stage's non_coin_buys")  # fmt: skip
 
 
 def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[float, float]:
@@ -488,6 +531,8 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
     }  # fmt: skip
     if cfg.oktech.preconf:
         config["preconf"] = True
+    own_cap = wallet.get("maxMcapUsd")  # the verdict's own cap, before the ceiling every copy carries
+    keep_to_coins(config, notes)
     own = rec.get("own_exit_params")
     exit_line = "sells when the copied wallet sells"
     if own and rec.get("own_exit_beats_mirroring"):
@@ -500,11 +545,14 @@ def copy_sniper(score: dict, cfg: Config, sol_usd: float | None) -> PlannedSnipe
         f"copies {a}: {score.get('positions', 0)} positions analyzed, copier EV {score.get('ev_sol') or 0:+.4f} SOL "
         f"(bound {score.get('ev_lower_sol') or 0:+.4f}), ~{score.get('positions_per_day') or 0:.1f} trades/day",
         f"{config['buyAmount']} SOL per copy; only its buys >= {wallet['minSol']} SOL"
-        + (f" below ${wallet['maxMcapUsd']:,} market cap" if "maxMcapUsd" in wallet else ""),
+        + (f" below ${wallet['maxMcapUsd']:,} market cap" if own_cap else ""),
         exit_line,
     ]
     if lat is not None:
         summary.append(f"profitable only if OKTech lands within {lat} slot(s) of its buys")
+    warning = fee_policy.priority_warning(prio, tip)
+    if warning:
+        summary.append(warning)
     return PlannedSniper("vcopy", a, f"snipetech verdict copy {a[:6]}", config, summary, notes)
 
 
@@ -609,7 +657,9 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     flags) win over the policy's buy bid and are said so. `send_count` / `compute_units` go to extraParams (see
     execution_params); `salt` makes a fresh externalId for a replacement with the same settings. `max_mcap_usd`: copy only
     the leader's buys below this market cap (OKTech's per-wallet maxMcapUsd; 8 Nov I15: a leader's early buys pay, its
-    late re-buys lose)."""
+    late re-buys lose). Every such sniper is kept to coins (`keep_to_coins`: platforms pump.fun + PumpSwap and a
+    market-cap ceiling where no tighter cap is given), and a buy priority above OKTech's minimum is sent as asked and
+    warned about in the summary (OKTech charges it again on every sell: the bid belongs in the tip)."""
     cfg = cfg or Config()
     notes: list[str] = []
     choice = fees or fee_policy.choose(cfg, "copy", leader=address)
@@ -636,6 +686,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     }  # fmt: skip
     if max_mcap_usd:
         config["ctbotWallets"][0]["maxMcapUsd"] = int(max_mcap_usd)
+    keep_to_coins(config, notes)
     cu = compute_units if compute_units is not None else cfg.oktech.compute_units
     config["extraParams"] = execution_params(send_count, cu)
     if cfg.oktech.preconf:
@@ -643,13 +694,17 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     sell = autosell(ex | {"copy_exit": True}, notes, **choice.autosell_fees())
     if sell:
         config["autoSell"] = sell
-    cap = f" below ${int(max_mcap_usd):,} market cap" if max_mcap_usd else ""
+    # the cap asked for (the owner's), as it is sent; the ceiling alone is no rule about which coins to copy
+    cap = f" below ${int(config['ctbotWallets'][0]['maxMcapUsd']):,} market cap" if max_mcap_usd else ""
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL{cap}, {buy_sol:g} SOL per copy, "
                f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "
                f"send count {config['extraParams']['globalSendCount']}, no seed account"
                + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else ""),
                "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy"]  # fmt: skip
+    warning = fee_policy.priority_warning(prio, tip)
+    if warning:
+        summary.append(warning)
     name = f"snipetech copy {label[:18]} {address[:6]}" + (f" {tag}" if tag else "")
     return PlannedSniper("copy", address, name[:60], config, summary, notes, salt=salt)
 
@@ -807,14 +862,18 @@ def speedtest_snipers(
                                   "sells 100% after 10 s (or at -40%)", "measures: slots and position after the create"],
                          notes=[choice.note()])]  # fmt: skip
     if copy_wallet:
-        out.append(PlannedSniper("probe", copy_wallet, f"snipetech speed test: copy {copy_wallet[:6]} x{snipes}", {
+        copy_notes = [choice.note()]
+        copy_config = {
             "mode": "ctbot", "ctbotWallets": [{"address": copy_wallet, "label": "speed test leader", "minSol": 0.1}],
             "ctbotMinWallets": 1, "ctbotTimeWindowMs": 10000, "ctbotRetriggerCooldownMs": 15000,
             "ctbotCopyExit": {"enabled": True, "sellThresholdPercent": 50, "sellPercent": 100, "triggerWalletOnly": True, "delayMs": 0},
-            "speedMode": True, **base},
+            "speedMode": True, **base}  # fmt: skip
+        keep_to_coins(copy_config, copy_notes)
+        out.append(PlannedSniper(
+            "probe", copy_wallet, f"snipetech speed test: copy {copy_wallet[:6]} x{snipes}", copy_config,
             summary=[f"copies the next {snipes} buys (>= 0.1 SOL) of {copy_wallet} with {buy_sol:g} SOL, then stops",
                      "sells when it sells, after 10 s at the latest (or at -40%)", "measures: slots and position after its buy"],
-            notes=[choice.note()]))  # fmt: skip
+            notes=copy_notes))  # fmt: skip
     return out
 
 

@@ -695,8 +695,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--exit", choices=["lab", "hold60"], default="lab", help="copylist: default exit for wallets without one"
     )
-    sp.add_argument("--priority", type=float, help="copylist: priority fee in SOL per buy (OKTech minimum 0.001)")
-    sp.add_argument("--tip", type=float, help="copylist: tip in SOL per buy (OKTech minimum 0.002)")
+    sp.add_argument("--bid", type=float,
+                    help="copylist: the whole bid in SOL per buy, sent as priority 0.001 (OKTech's minimum) + tip BID "
+                         "- 0.001; 0.003 at least. Use this, not --priority: OKTech charges the buy priority again on "
+                         "every sell and failed duplicate sell, a tip is paid once")  # fmt: skip
+    sp.add_argument("--priority", type=float,
+                    help="copylist, by hand: priority fee in SOL per buy (OKTech minimum 0.001); above the minimum it "
+                         "is charged again on every sell (prefer --bid)")  # fmt: skip
+    sp.add_argument("--tip", type=float, help="copylist, by hand: tip in SOL per buy (OKTech minimum 0.002)")
     sp.add_argument(
         "--send-count", type=int, help="copylist: extraParams.globalSendCount (1 = send each transaction once)"
     )
@@ -1780,7 +1786,8 @@ async def _run(args, cfg: Config) -> int:
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
                                                 buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
-                                                compute_units=args.compute_units, allow_overlap=args.allow_overlap)  # fmt: skip
+                                                compute_units=args.compute_units, allow_overlap=args.allow_overlap,
+                                                bid=args.bid)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0

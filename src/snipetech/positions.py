@@ -22,6 +22,17 @@ STABLES = frozenset({
     "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",  # USDT
     "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",  # USD1
 })  # fmt: skip
+# What a copy sniper must never buy, by mint, with its name: wrapped SOL and the stablecoins above (12 Nov: a copy of
+# Cupsey bought USDC when the wallet swapped into it). Only addresses the repo already held: other majors (PYUSD, JUP,
+# JLP, mSOL, jitoSOL, bSOL) are not here because nothing in the repo vouches for their addresses. OKTech's copy mode
+# has no setting on record that takes a mint list (docs/oktech-features.md), so this list is what the measure stage
+# checks our fills against (measure/run.non_coin_buys), not something a sniper is sent.
+NON_COIN_MINTS: dict[str, str] = {
+    WSOL: "wrapped SOL",
+    "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": "USDC",
+    "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
+    "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB": "USD1",
+}
 ACTIVE_STATUSES = frozenset({"running", "starting", "stopping"})
 SPENT_STATUSES = frozenset({"finished", "stopped", "error", "completed"})  # a capped sniper that did its buys
 DUST_SOL = 0.001

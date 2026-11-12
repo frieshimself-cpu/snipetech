@@ -1350,7 +1350,7 @@ class Service:
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
                               exit_params: dict | None = None, fee_floor: dict | None = None,
-                              max_mcap_sol: float | None = None) -> dict:  # fmt: skip
+                              max_mcap_sol: float | None = None, bid: float | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
         is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
@@ -1360,10 +1360,18 @@ class Service:
         below this market cap, sent as OKTech's maxMcapUsd at the SOL price, asked for here when the stored one is over
         an hour old (until 11 Nov only the nightly job's `oktech plan` refreshed it: a day old, two when that job
         died). An RPC that gives none leaves the stored price in use; with no price at all the sniper is refused, so
-        a cap the owner set is never silently dropped."""
+        a cap the owner set is never silently dropped. `bid` (SOL): the whole buy bid, sent with the priority at
+        OKTech's minimum and the rest as the tip (fees.bid_in_tip: OKTech charges the buy priority again on every
+        sell and failed duplicate sell); refused under the two minimums together, or next to `priority_fee` / `tip`."""
         from . import fees as fee_policy
         from .meta import WSOL, ensure_assets
         from .oktech import _bucket_usd, list_copy_sniper
+
+        if bid is not None:
+            if priority_fee is not None or tip is not None:
+                raise ValueError("--bid is the whole buy bid (priority at OKTech's minimum, the rest in the tip): give "
+                                 "it without --tip and --priority; no sniper was made")  # fmt: skip
+            priority_fee, tip = fee_policy.bid_in_tip(bid)
 
         max_mcap_usd = None
         if max_mcap_sol:

@@ -338,9 +338,11 @@ at the lower one (`trades_behind`, else `price_gap_pct`, lower; a one-sided test
 minimum, because the 6 Nov fee test paid 20 times the fee and landed no earlier. Priorities are never raised: the buy
 priority is charged again on every exit, the sell priority on every failed twin. Evidence is per kind and, for
 copies, per leader: a leader's fills never price another leader's sniper. The book's arm is the floor of a copy's buy
-bid (the policy may raise the tip above it on evidence, never lower it); a verdict's recommended bribe is the floor of
-a dev sniper's; a bid asked for by hand (`oktech copylist --priority --tip`, the fee test) wins over the policy and is
-said so in the sniper's notes. Every planned sniper's notes carry one line: which fee it gets and why. The strategist
+bid (the policy may raise the tip above it on evidence, never lower it), sent since 12 Nov with the arm's whole fee in
+the tip and the priority at OKTech's minimum (`book/policy.arm_bid`, `fees.sent_bid`); a verdict's recommended bribe
+is the floor of a dev sniper's; a bid asked for by hand wins over the policy and is said so in the sniper's notes:
+`oktech copylist --bid X` (priority 0.001 + tip X - 0.001, `fees.bid_in_tip`), or `--priority` / `--tip` as written,
+with a warning in the summary when the priority is above the minimum. Every planned sniper's notes carry one line: which fee it gets and why. The strategist
 may lower a kind's cap (`fees.tune.<kind>.<number>.max`, checked against the owner's outer bounds and never past
 them) and never a minimum: a raised minimum would be a raised bid with no fills behind it, the thing the rule
 forbids, so a `.min` in its patch or its overlay is refused and ignored (`config.NEVER_TUNABLE_KEYS` unchanged,

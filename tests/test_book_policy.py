@@ -96,6 +96,28 @@ def test_fill_sizing_keeps_fee_under_three_percent_or_skips_arm():
     assert fill_for({"priority": 0.02, "tip": 0.02}, cfg.book) == pytest.approx(0.04 / 0.03)
 
 
+def test_an_arm_is_sent_with_its_bid_in_the_tip_and_the_three_percent_rule_reads_as_before():
+    """12 Nov: OKTech charges a task's buy priority again on every sell and failed duplicate sell, a tip is paid once.
+    So an arm's fee (priority + tip as written in [book] bid_arms) is sent as the same total with the priority at
+    OKTech's minimum: control (0.001 + 0.002) is unchanged, the paid arm (0.02 + 0.02) goes out as 0.001 + 0.039. The
+    3 % rule is untouched: it sizes on the arm's whole fee, 0.04 SOL, and its line reads as it always did."""
+    from snipetech.book.policy import arm_bid, arm_fee_sol
+
+    control, paid = {"priority": 0.001, "tip": 0.002}, {"priority": 0.02, "tip": 0.02}
+    assert arm_bid(control) == {"buy_priority": 0.001, "buy_tip": 0.002}
+    assert arm_bid(paid) == {"buy_priority": 0.001, "buy_tip": 0.039}
+    assert arm_bid({"priority": 0.001, "tip": 0.005, "cu": 90_000}) == {"buy_priority": 0.001, "buy_tip": 0.005}
+    for arm in (control, paid):  # the same SOL a buy, to the lamport
+        assert sum(arm_bid(arm).values()) == pytest.approx(arm_fee_sol(arm), abs=1e-9)
+    cfg = _cfg(bid_arms={"control": dict(control), "paid": dict(paid)})  # the paid arm back in use, as the owner can
+    assert fill_for(paid, cfg.book) is None
+    plan = plan_book(_inp(), cfg.book)
+    assert ("paid arm skipped: its fee 0.04 SOL needs a 1.33 SOL fill to stay under 3%; fill_max_sol is 1"
+            in plan.notes)  # fmt: skip
+    cfg.book.fill_max_sol = 2.0
+    assert fill_for(paid, cfg.book) == pytest.approx(0.04 / 0.03)  # the size the rule gives is the same as before
+
+
 ALT = {"control": {"priority": 0.001, "tip": 0.002}, "alt": {"priority": 0.02, "tip": 0.02}}  # a second live arm
 
 
