@@ -46,7 +46,7 @@ from typing import Any
 
 import numpy as np
 
-from .. import CODE_ID, code_identity
+from .. import CODE_ID, code_identity, positions
 from ..amm_tape import (
     AMM_RECENT_KEY,
     GAP_WORDS,
@@ -2245,7 +2245,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         plan_wallets = set().union(*(rule_wallets(t, kols) for _, t in triggers))
         floor = group_floor(triggers)
     plan = _plan(store, spans, plan_wallets, min_trades, floor)
-    items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
+    # (a stablecoin or wrapped SOL is no coin: a wallet's swap into one is no signal, and since the first agent
+    # backfill of 12 Nov USDC's own pool is on the tape; positions.NON_COIN_MINTS, read at the call)
+    items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints
+             if mint not in positions.NON_COIN_MINTS]  # fmt: skip
     n = lab_workers(cfg.lab.workers if workers is None else workers)
     shared = _shared_file(store) if n > 1 and len(items) >= MIN_PARALLEL_COINS else None
     if shared is not None and code_identity() != CODE_ID:

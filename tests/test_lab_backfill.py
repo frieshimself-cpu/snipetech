@@ -292,3 +292,23 @@ def test_a_lab_that_sells_in_parts_needs_the_longer_stretch_the_agents_are_told_
     assert data["rows"] == [] and data["amm_tape"]["triggers"][RULE.label()]["skipped"] == {NO_BACKFILL: 1}
     kept(360)
     assert len(_lab(store, exits=four)["rows"]) == 1
+
+
+def test_a_stablecoin_is_never_a_moment_in_the_lab_or_the_forward_run(monkeypatch):
+    """12 Nov: big wallets swap into USDC through PumpSwap pools (Cupsey twice during our tip test, Schoen twice that
+    evening), and the first agent backfill put USDC's own pool on the tape. A buy of something that is not a coin
+    (positions.NON_COIN_MINTS) is no signal: neither the lab nor the forward paper run reads such a mint."""
+    from snipetech import positions
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    mint, at = _coin(store, "usdc-like", 7200, later=True)  # the same world in which the buy is scored (test above)
+    store.set_coverage(backfill_key(mint), {"pools": ["p"], "spans": [[at - 60, at + 400]]})
+    _tape(store)
+    assert len(_lab(store)["rows"]) == 1  # a coin: scored
+    s = _frozen(store)
+    monkeypatch.setitem(positions.NON_COIN_MINTS, mint, "a stablecoin")
+    assert _lab(store)["rows"] == []
+    out = paper.run(store, _cfg(), now=at + 3000)
+    assert out["new_trades"] == 0 and store.paper_trades(s["id"]) == []
+    store.close()

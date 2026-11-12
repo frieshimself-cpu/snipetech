@@ -37,6 +37,7 @@ from typing import Any
 
 import numpy as np
 
+from .. import positions
 from ..amm_tape import AMM_RECENT_KEY, NO_BACKFILL, backfill_spans
 from ..config import Config
 from ..models import PUMPFUN
@@ -837,6 +838,8 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         slot_secs = span_slot_secs(store, max(int(a), int(first) - 3600), int(last))
         migs = store.migrations_between(int(a), int(end)) if mig_runs or sell_runs else {}
         for mint in dict.fromkeys(m for ms in active.values() for m in ms):
+            if mint in positions.NON_COIN_MINTS:
+                continue  # a stablecoin or wrapped SOL: no coin, so no moment (as the lab leaves it out)
             trades = store.trades_for_mint(mint, a, end)
             if len(trades) < min_trades:
                 continue
