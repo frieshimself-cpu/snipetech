@@ -697,3 +697,19 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     assert '"--buy-bid", "2"' in text and "paid once on the buy" in text and "no upper limit" in text
     assert "What the place is worth" in text
     assert '"group": "big"' in text and "Ansem, Gake, Cupsey" in text
+
+
+def test_the_agents_are_told_how_to_backfill_the_big_wallets_older_coins(toolbox, jobs):
+    """12 Nov: the big wallets buy coins hours or days old, and the tape holds a coin's PumpSwap trades for 30 minutes.
+    `history amm-backfill` fetches the trades around their buys from the RPC (the owner: "Ok do it"). The tool says how
+    to start it, to ask what it costs first, how a lab says which moments it could not score, and what it never does."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"]' in text
+    assert "estimate.credits" in text and '"--max-credits"' in text and "5,000,000" in text
+    assert "no_backfill" in text and "after the next copy" in text
+    assert "only inside the tape" in text and "trades nothing" in text
+    # what the tool says an agent may start is what the runner lets it start
+    assert _call(tools["start_job"], argv=["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run",
+                                           "--json"]).startswith("{")  # fmt: skip
+    assert "not a research command" in _call(tools["start_job"], argv=["history", "fetch", "--from", "2026-11-01"])

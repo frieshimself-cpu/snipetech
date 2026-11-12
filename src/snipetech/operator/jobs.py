@@ -37,6 +37,12 @@ RESEARCH_COMMANDS = frozenset(
 # (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
 # change settings. Named here so the refusal says whose they are and the model does not try variants
 OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"})
+# One action of a command that is otherwise not an agent's: `history` reads the bought hourly files (the owner's
+# credits there), but `history amm-backfill` fetches the PumpSwap trades around big wallets' buys from the RPC so that
+# a lab can score them (12 Nov 2026, the owner: "Ok do it"). It trades nothing; what it may spend is bounded below and
+# by the job's own limit for the month (`amm_backfill.MONTH_CREDITS`).
+RESEARCH_ACTIONS = frozenset({("history", "amm-backfill")})
+AGENT_BACKFILL_CREDITS = 5_000_000  # the most Helius credits one backfill an agent starts may ask for (5 % of a month)
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 
 
@@ -96,6 +102,28 @@ class OperatorJobs:
             except ValueError as exc:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
 
+    @staticmethod
+    def _check_backfill(argv: list[str]) -> None:
+        """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS and never lifts the month's limit
+        (the owner's: `--month-credits`). Without `--max-credits` the job's own default applies, which is lower."""
+        from itertools import pairwise
+
+        def values(flag: str) -> list[str]:
+            return [v for a, v in pairwise(argv) if a == flag] + [a.split("=", 1)[1] for a in argv
+                                                                  if a.startswith(flag + "=")]  # fmt: skip
+
+        if values("--month-credits") or "--month-credits" in argv:
+            raise PermissionError("--month-credits is the owner's: an agent's backfill runs inside the month's limit")
+        for v in values("--max-credits"):
+            try:
+                over = float(v) > AGENT_BACKFILL_CREDITS
+            except ValueError:
+                over = True
+            if over:
+                raise PermissionError(f"--max-credits {v}: a backfill an agent starts asks for at most "
+                                      f"{AGENT_BACKFILL_CREDITS:,} Helius credits; start with --dry-run and read what "
+                                      "it would cost")  # fmt: skip
+
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
         for jid in jobs_since(self.ops.data / "jobs", now - REPEAT_AFTER_SECS):
             meta = self.ops._meta(jid)
@@ -108,8 +136,13 @@ class OperatorJobs:
         if argv and argv[0] in OWNER_COMMANDS:
             raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
                                   "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
-        if not argv or argv[0] not in RESEARCH_COMMANDS:
-            raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
+        action = tuple(argv[:2]) in RESEARCH_ACTIONS
+        if not argv or (argv[0] not in RESEARCH_COMMANDS and not action):
+            allowed = sorted(RESEARCH_COMMANDS) + [" ".join(a) for a in sorted(RESEARCH_ACTIONS)]
+            raise PermissionError(f"not a research command: {argv[:2] if argv[:1] == ['history'] else argv[:1]}; "
+                                  f"allowed: {allowed}")  # fmt: skip
+        if action:
+            self._check_backfill(argv)
         if argv[:2] == ["paper", "rescore"]:  # it rewrites the kept trades of frozen rules: run by hand after a model
             raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
                                   "which rule needs pricing again and why")  # fmt: skip

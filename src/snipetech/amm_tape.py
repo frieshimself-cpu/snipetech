@@ -15,6 +15,7 @@ it without importing the recorder."""
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 AMM_RECENT_KEY = "tape:amm_recent"  # coverage: the runs in which the tape holds recent coins' PumpSwap trades
@@ -115,3 +116,64 @@ def amm_recent_holes(cov: dict[str, Any], start: float, end: float) -> list[list
         else:
             merged.append([a, b])
     return merged
+
+
+# -- the history backfill (amm_backfill.py, `snipetech history amm-backfill`, 12 Nov 2026) ---------------------------
+# Past the recorder's window the tape holds nothing of a coin's PumpSwap trades, and the big wallets buy coins hours
+# or days old. The backfill fetches a pool's trades around such a buy from the RPC and writes one record per coin,
+# `tape:amm_backfill:<mint>`: {"pools": [the pools read], "spans": [[from, to], ...]}, each span a stretch of block
+# time of which every transaction of those pools was fetched, decoded and written. A lab scores a wallet rule's
+# PumpSwap buy only on a stretch a span or the recorder's own run holds whole (`lab.amm_buy_gap`).
+AMM_BACKFILL_PREFIX = "tape:amm_backfill:"
+NO_BACKFILL = "no_backfill"
+GAP_WORDS[NO_BACKFILL] = (
+    "a wallet's PumpSwap buy on a stretch the tape does not hold whole: past the recorder's window after the "
+    "migration, and no history backfill covers it (`history amm-backfill`)"
+)
+
+
+def backfill_key(mint: str) -> str:
+    return AMM_BACKFILL_PREFIX + mint
+
+
+def merge_spans(spans) -> list[list[float]]:
+    """Stretches in time order, the ones that touch or overlap joined."""
+    out: list[list[float]] = []
+    for a, b in sorted([a, b] for a, b in spans or [] if b >= a):
+        if out and a <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], b)
+        else:
+            out.append([a, b])
+    return out
+
+
+def missing_spans(spans, start: float, end: float) -> list[list[float]]:
+    """The parts of [start, end] that no stretch of `spans` holds, in time order."""
+    out: list[list[float]] = []
+    at = start
+    for a, b in merge_spans(spans):
+        if b < at or a > end:
+            continue
+        if a > at:
+            out.append([at, a])
+        at = max(at, b)
+    if at < end:
+        out.append([at, end])
+    return out
+
+
+def backfill_covers(spans, start: float, end: float) -> bool:
+    """Whether one backfilled stretch of a coin (`spans`: its record's, or None) holds [start, end] whole."""
+    return any(a <= start and end <= b for a, b in spans or [])
+
+
+def backfill_spans(store) -> dict[str, list[list[float]]]:
+    """{coin: the stretches the history backfill holds whole}, every coin with at least one. One read of the coverage
+    table by its key (a range of the primary key): short, however many coins there are."""
+    out: dict[str, list[list[float]]] = {}
+    last = AMM_BACKFILL_PREFIX[:-1] + chr(ord(AMM_BACKFILL_PREFIX[-1]) + 1)  # the first key after the prefix's
+    for key, data in store._q("SELECT key, data FROM coverage WHERE key >= ? AND key < ?", (AMM_BACKFILL_PREFIX, last)):
+        spans = (json.loads(data) or {}).get("spans") or []
+        if spans:
+            out[key[len(AMM_BACKFILL_PREFIX) :]] = [[a, b] for a, b in spans]
+    return out

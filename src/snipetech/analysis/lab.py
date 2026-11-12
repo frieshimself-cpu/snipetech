@@ -47,7 +47,15 @@ from typing import Any
 import numpy as np
 
 from .. import CODE_ID, code_identity
-from ..amm_tape import AMM_RECENT_KEY, GAP_WORDS, amm_recent_gap, amm_recent_holes
+from ..amm_tape import (
+    AMM_RECENT_KEY,
+    GAP_WORDS,
+    NO_BACKFILL,
+    amm_recent_gap,
+    amm_recent_holes,
+    backfill_covers,
+    backfill_spans,
+)
 from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
@@ -665,6 +673,27 @@ def mig_moment(cov: Mapping[str, Any], path: MarketPath, i: int, mig, latency: i
     if why is None and e is None:
         why = "no_landing"
     return e, why
+
+
+def amm_buy_gap(cov: Mapping[str, Any], held, path: MarketPath, i: int, e: int, mig, horizon: float) -> str | None:
+    """Why a wallet rule's moment whose buy lands on PumpSwap cannot be scored (NO_BACKFILL), or None when it can: the
+    followed buy at state i, the copy entered at state e, held up to `horizon` s. The tape must hold every PumpSwap
+    trade of the coin from the followed buy (the trades the landing is counted behind) to the entry plus the horizon,
+    plus a slot for the last sell: on one stretch the history backfill holds whole (`held`: the coin's spans,
+    `amm_tape.backfill_spans`), or inside the recorder's own run from the coin's migration on (`mig`, when the tape
+    recorded one; `amm_recent_gap`).
+
+    Until 12 Nov 2026 such a moment was scored on whatever the tape held. Past the recorder's window that is the
+    wallet's own buy where it rode in a pump.fun transaction and none of the trades after it: every exit sold at the
+    entry price and the lab read the fees as a loss (tests/test_lab_backfill.py: -0.0119 SOL on a 0.2 SOL buy for
+    every exit, where the trades that followed made +0.0759)."""
+    start = float(path.ts[i])
+    end = max(start, float(path.ts[e])) + float(horizon) + SELL_SLOT_SECS
+    if backfill_covers(held, start, end):
+        return None
+    if mig is not None and float(mig.ts) <= start and amm_recent_gap(cov, float(mig.ts), end) is None:
+        return None
+    return NO_BACKFILL
 
 
 def migration_sell_gap(cov: Mapping[str, Any], path: MarketPath, e: int, mig, horizon: float) -> str | None:
@@ -1292,6 +1321,9 @@ class _Run:
     # each copied wallet's companions (qualify.gates.companions): a copy counted across slots lands behind their buys
     # in the wallet's block (`copy_entry`)
     mates: dict[str, frozenset] = field(default_factory=dict)
+    # {coin: the stretches the history backfill holds whole} (`amm_tape.backfill_spans`), read when a wallet rule runs:
+    # where its buy lands on PumpSwap, the moment counts only on such a stretch or in the recorder's run (`amm_buy_gap`)
+    amm_backfill: dict[str, list] = field(default_factory=dict)
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -1371,7 +1403,10 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     migration's slot (`mig_entry`); a MIG moment with nothing to land behind, or that the PumpSwap tape does not hold
     whole (`mig_moment`), comes back as {"mint", "trigger", "ts", "skipped": why} instead of a scored row, and so does
     a curve moment none of whose exits can be scored where the PumpSwap tape lacks the coin's migration. A curve moment
-    scored on some exits only has None in `pnl` for the others and their reasons in `gaps` (`exit_pnls`)."""
+    scored on some exits only has None in `pnl` for the others and their reasons in `gaps` (`exit_pnls`). A wallet
+    rule's moment whose buy lands after the coin left its curve is scored only where a backfilled stretch or the
+    recorder's run holds the coin's PumpSwap trades from the wallet's buy to the end of the longest exit, and comes
+    back skipped ("no_backfill") everywhere else (`amm_buy_gap`, 12 Nov)."""
     trades = [t for t in store.trades_for_mint(mint, a, b)]
     if len(trades) < run.min_trades:
         return []
@@ -1386,6 +1421,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     paid = dev_paid_earlier(store, in_span_launch) if wants_paid else None
     rows: list[dict] = []
     by_user: dict[str, list[int]] | None = None  # each wallet's trades in the coin, once a KOL trigger fires
+    recorded: tuple | None = None  # (the coin's migration as the tape recorded it), read once a wallet buys on PumpSwap
     for ti, trig in run.triggers:
         if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
             continue
@@ -1411,6 +1447,15 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 continue
             if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                 continue  # a launch sniper's buy fails on a completed curve: no position
+            if trig.kind == "kol" and curve_done(path, e):
+                # a copy that buys on PumpSwap: only where a backfilled stretch or the recorder's run holds every
+                # trade from the wallet's buy to the end of the longest exit (`amm_buy_gap`), else said and left out
+                if recorded is None:
+                    recorded = (mig if mig is not None else store.migration(mint),)
+                why = amm_buy_gap(run.amm_cov, run.amm_backfill.get(mint), path, i, e, recorded[0], run.horizon)
+                if why is not None:
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
             # a migration sell among the exits trades on PumpSwap if the coin migrates while held: where the PumpSwap
             # tape lacks that migration, an exit counts only if it sold before the coin left its curve (`exit_pnls`)
             gap = None
@@ -1637,7 +1682,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         triggers = [(ti, t) for ti, t in triggers if t.kind not in AMM_KINDS]
     amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
     mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
-    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell else {}
+    # a wallet rule's buy can land on PumpSwap: it counts only where the recorder's run or a backfilled stretch holds it
+    wallet_runs = any(t.kind == "kol" for _, t in triggers)
+    amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell or wallet_runs else {}
     events_by_mint: dict[str, list[tuple]] = {}
     if event_kinds:
         marks = ",".join("?" * len(event_kinds))
@@ -1660,7 +1707,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)),
-               mates={w: frozenset(m) for w, m in (mates or {}).items() if m})  # fmt: skip
+               mates={w: frozenset(m) for w, m in (mates or {}).items() if m},
+               amm_backfill=backfill_spans(store) if wallet_runs else {})  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     if plan_wallets is None and triggers and isinstance(kols, dict) and all(t.kind == "kol" for _, t in triggers):
         # every rule of this lab fires on a buy by one of its group's wallets, of at least its size (`_fire`): a coin
@@ -1690,9 +1738,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,
            "mates": {"wallets": len(run.mates), "found_by": found_by}}  # fmt: skip
-    if amm_runs or mig_sell:
+    if amm_runs or mig_sell or skipped:  # `skipped` alone: a wallet rule's PumpSwap buys the tape does not hold whole
         horizon = run.mig_horizon if amm_runs else run.horizon
         out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)
+        out["amm_tape"]["mig"] = bool(amm_runs)  # whether a MIG rule ran (the report's first line is about those)
     return out
 
 
