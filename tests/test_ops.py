@@ -472,3 +472,139 @@ def test_status_without_the_slice_says_so(env, tmp_path, monkeypatch):
     assert st["units_cpu_secs"] == {} == st["units_mem_gb"]
     monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "nothing")
     assert req(ops, key, "status")["slice"] is None
+
+
+def test_update_waits_for_jobs_whose_numbers_come_from_the_code_they_started_with(env, monkeypatch):
+    """Deploy between labs (CLAUDE.md): a job that reports numbers keeps the code it started with, a lab's workers
+    import the new files and it falls back to one process, and on 7 Nov a research search was lost to a deploy. The
+    rule was kept by hand: on 12 Nov 00:08 UTC a deploy went out while an events scan ran, on a check that left it
+    out. The server keeps the rule itself: an update is refused while such a job runs and says which; `force` is for
+    a deploy that cannot wait."""
+    ops, key = env
+    started: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(argv) or {"id": "x", "argv": argv})
+    now = time.time()
+    running = [
+        {"id": "a", "argv": ["lab", "--trigger", "{}"], "running": True, "started": now - 312},
+        {"id": "b", "argv": ["exitrun", "run", "--minutes", "345"], "running": True, "started": now - 9000},
+        {"id": "c", "argv": ["research", "next"], "running": True, "started": now - 5},
+        {"id": "d", "argv": ["qualify", "run"], "running": False, "started": now - 4000},
+    ]
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": running})
+    with pytest.raises(O.OpsError, match="lab --trigger") as e:
+        req(ops, key, "update")
+    assert e.value.code == 409 and "exitrun" not in str(e.value) and "qualify" not in str(e.value) and started == []
+    assert "force" in str(e.value)
+    assert req(ops, key, "update", force=True)["argv"] == ["update"] and started == [["update"]]
+    running[:] = running[1:3]  # the long exit runner and the idle picker alone hold nothing back
+    assert req(ops, key, "update")["argv"] == ["update"] and len(started) == 2
+    for argv, holds in ((["--profile", "lab", "--hours", "72"], True), (["research", "search"], True),
+                        (["paper", "run"], True), (["events", "scan"], True), (["snapshot-db"], True),
+                        (["rescore"], True), (["qualify", "run", "--max", "900"], True), (["winners"], True),
+                        (["unwrap", "--dry-run"], False), (["operate", "idea"], False), (["update"], False),
+                        (["doctor"], False), ([], False)):  # fmt: skip
+        assert O.holds_deploy(argv) is holds, argv
+
+
+def test_the_remote_command_can_force_an_update(monkeypatch, capsys):
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(cli, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"}, raising=False)
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"id": "j1"})
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "update"]) == 0
+    assert cli.main(["remote", "--url", "https://x", "--key", "k", "update", "--force"]) == 0
+    assert seen == [("update", {}), ("update", {"force": True})]
+
+
+def test_update_waits_for_a_timer_unit_that_is_mid_run(env, monkeypatch):
+    """A unit a timer starts (the agents' round, the book run that decides live snipers, the qualify lab, the nightly
+    job, the hourly copy) ends by itself. Mid-run it keeps the modules it has loaded and reads the rest from the new
+    files (a command imports its module when it gets there), so an update waits for it as it does for a job. The
+    services that never end (the recorder, this endpoint) are restarted by the update and hold nothing back."""
+    ops, key = env
+    started: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(argv) or {"id": "x", "argv": argv})
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": []})
+    states = {u: "inactive" for u in O.HOLD_UNITS}
+    asked: list[list[str]] = []
+
+    def run(cmd):
+        asked.append(cmd)
+        return "".join(states.get(u, "unknown") + "\n" for u in cmd[2:])
+
+    monkeypatch.setattr(ops, "_run", run)
+    assert req(ops, key, "update")["argv"] == ["update"]
+    assert asked == [[O.SYSTEMCTL, "is-active", *O.HOLD_UNITS]]  # one call for all of them
+    assert {"snipetech-operator", "snipetech-book", "snipetech-qualify", "snipetech-daily", "snipetech-snapshot",
+            "snipetech-measure"} <= set(O.HOLD_UNITS)  # fmt: skip
+    assert not {"snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-events"} & set(O.HOLD_UNITS)
+    assert set(O.HOLD_UNITS) <= set(O.UNITS) and not any(u.endswith(".timer") for u in O.HOLD_UNITS)
+    states["snipetech-operator"] = "activating"  # what systemd calls a oneshot unit while its command runs
+    states["snipetech-book"] = "failed"  # ended badly: not running
+    with pytest.raises(O.OpsError, match="snipetech-operator") as e:
+        req(ops, key, "update")
+    assert e.value.code == 409 and "snipetech-book" not in str(e.value) and len(started) == 1
+    assert req(ops, key, "status")["deploy_waits_for"] == ["the unit snipetech-operator, mid-run"]
+    assert req(ops, key, "update", force=True)["argv"] == ["update"]
+    states["snipetech-operator"] = "inactive"
+    assert req(ops, key, "status")["deploy_waits_for"] == []
+    # a machine without systemd (a test, a laptop) answers with an error text: nothing is held
+    monkeypatch.setattr(ops, "_run", lambda cmd: "[Errno 2] No such file or directory: '/usr/bin/systemctl'")
+    assert req(ops, key, "update")["argv"] == ["update"]
+
+
+def test_status_names_the_jobs_an_update_would_wait_for(env, monkeypatch):
+    ops, key = env
+    now = time.time()
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": [
+        {"id": "a", "argv": ["lab", "--hours", "72"], "running": True, "started": now - 312},
+        {"id": "b", "argv": ["exitrun", "run"], "running": True, "started": now - 9000}]})  # fmt: skip
+    waits = req(ops, key, "status")["deploy_waits_for"]
+    assert len(waits) == 1 and waits[0].startswith("lab --hours 72 (for 31") and waits[0].endswith(" s)")
+
+
+def test_the_remote_command_can_wait_for_a_quiet_moment(monkeypatch, capsys):
+    """`remote update --when-quiet [minutes]`: asks again every 15 seconds while the server says a job or a unit is
+    mid-run, for 20 minutes unless told otherwise, and says once what it waits for. Any other refusal ends it."""
+    from snipetech import cli
+
+    seen: list[tuple] = []
+    answers: list = []
+
+    def fake(url, key, op, **kw):
+        seen.append((op, kw))
+        a = answers.pop(0)
+        if isinstance(a, Exception):
+            raise a
+        return a
+
+    clock = [1000.0]
+    naps: list[float] = []
+
+    def nap(secs):
+        naps.append(secs)
+        clock[0] += secs
+
+    monkeypatch.setattr(O, "call", fake)
+    monkeypatch.setattr(cli.time, "sleep", nap)
+    monkeypatch.setattr(cli.time, "time", lambda: clock[0])
+    base = ["remote", "--url", "https://x", "--key", "k", "update"]
+    answers[:] = [O.OpsError(409, "1 still mid-run: lab"), O.OpsError(409, "1 still mid-run: lab"), {"id": "j1"}]
+    assert cli.main([*base, "--when-quiet"]) == 0
+    assert seen == [("update", {})] * 3 and naps == [15, 15]
+    err = capsys.readouterr().err
+    assert err.count("1 still mid-run: lab") == 1 and "waiting" in err
+    # the minutes asked for, then the server's reason and a failure
+    seen.clear(), naps.clear()
+    answers[:] = [O.OpsError(409, "busy")] * 10
+    assert cli.main([*base, "--when-quiet", "1"]) == 1
+    assert len(seen) == 5 and naps == [15] * 4 and "busy" in capsys.readouterr().err
+    # another refusal is not waited on
+    seen.clear(), naps.clear()
+    answers[:] = [O.OpsError(403, "bad signature")]
+    assert cli.main([*base, "--when-quiet"]) == 1 and naps == [] and len(seen) == 1
+    # without the flag: one try
+    seen.clear()
+    answers[:] = [O.OpsError(409, "busy")]
+    assert cli.main(base) == 1 and len(seen) == 1 and naps == []

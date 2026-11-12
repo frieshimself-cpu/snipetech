@@ -1047,7 +1047,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
-                    "put: local-file name; sql: query; logs: unit")  # fmt: skip
+                    "put: local-file name; sql: query; logs: unit; update: --when-quiet [minutes] to wait (20) for the "
+                    "moment no job or timer unit is mid-run, --force to deploy although one is")  # fmt: skip
 
     sp = cmd("agent", "chat with the Claude strategy agent", json_flag=False)
     sp.add_argument("-p", "--prompt", help="one-shot question instead of an interactive session")
@@ -1725,6 +1726,38 @@ def _ops_serve(args, cfg: Config) -> int:
     return 0
 
 
+UPDATE_RETRY_SECS = 15
+UPDATE_WAIT_MINUTES = 20.0
+
+
+def _update(go, rest: list[str]) -> dict:
+    """`remote update`: the server refuses (409) while a job or a timer unit is mid-run that the new files would leave
+    on mixed code. `--force` deploys all the same; `--when-quiet [minutes]` asks again every 15 seconds until the
+    server takes it (20 minutes unless told), saying once what it waits for."""
+    from .ops import OpsError
+
+    if "--force" in rest:
+        return go("update", force=True)
+    if "--when-quiet" not in rest:
+        return go("update")
+    after = rest[rest.index("--when-quiet") + 1 :][:1]
+    try:
+        minutes = float(after[0]) if after else UPDATE_WAIT_MINUTES
+    except ValueError:
+        minutes = UPDATE_WAIT_MINUTES
+    until, told = time.time() + minutes * 60, False
+    while True:
+        try:
+            return go("update")
+        except OpsError as exc:
+            if exc.code != 409 or time.time() + UPDATE_RETRY_SECS > until:
+                raise
+            if not told:
+                print(f"waiting for a quiet moment (up to {minutes:g} min): {exc}", file=sys.stderr)
+                told = True
+            time.sleep(UPDATE_RETRY_SECS)
+
+
 def _remote(args) -> int:
     from .ops import OpsError, call, keygen, public_line, wait_job
 
@@ -1754,7 +1787,7 @@ def _remote(args) -> int:
     try:
         a = args.action
         if a in ("run", "update"):
-            st = go("run", argv=rest) if a == "run" else go("update")
+            st = go("run", argv=rest) if a == "run" else _update(go, rest)
             if args.wait:
                 st = wait_job(args.url, args.key, st["id"])
                 show_job(st)

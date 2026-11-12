@@ -162,6 +162,36 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
         proc.send_signal(sig)
 
 
+# Commands whose result comes from the code they started with: an update while one runs leaves it on the files of
+# before (a lab's workers import the new ones and it falls back to one process; 7 Nov 07:44 a research search was
+# lost). The long exit runner, the idle research picker, the owner's commands and a read of state hold nothing back.
+HOLDS_DEPLOY = frozenset({
+    "lab", "qualify", "paper", "rescore", "snapshot-db", "events", "study", "copy", "copy-rank", "follow",
+    "discover-wallets", "early-leaders", "dip-buys", "fomo-wallets", "stopped-wallets", "winners", "leaders-of",
+    "copy-context", "playbook", "launch-tools",
+})  # fmt: skip
+# The units a timer starts and that end by themselves. One that is mid-run keeps the modules it has loaded and reads
+# the rest from the new files (a command imports its module when it gets there), so an update waits for it too: the
+# agents' round, the book run that decides live snipers, the qualify lab, the nightly job, the hourly copy. The
+# services that never end are restarted by the update (the recorder, this endpoint) or keep their code.
+HOLD_UNITS = (
+    "snipetech-operator", "snipetech-book", "snipetech-qualify", "snipetech-measure", "snipetech-daily",
+    "snipetech-snapshot", "snipetech-discover", "snipetech-strategist", "snipetech-commands",
+)  # fmt: skip
+UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # `systemctl is-active` of a unit mid-run
+
+
+def holds_deploy(argv: list[str]) -> bool:
+    """Whether a running job with this command line should end before an update goes out (`HOLDS_DEPLOY`; a profiled
+    job is the job it profiles; `research` does but for its idle picker, `research next`)."""
+    command = list(argv[1:] if argv[:1] == ["--profile"] else argv)
+    if not command:
+        return False
+    if command[0] == "research":
+        return command[1:2] != ["next"]
+    return command[0] in HOLDS_DEPLOY
+
+
 REDACT_ENV = SECRET_ENV + (
     "TELEGRAM_BOT_TOKEN",
     "TYPESAFE_API_KEY",
@@ -330,6 +360,7 @@ class Ops:
         out["units_cpu_secs"] = _units_cpu_secs(CGROUP_ROOT / SLICE)
         out["units_mem_gb"] = _units_mem_gb(CGROUP_ROOT / SLICE)
         out["machine"] = _machine(CGROUP_ROOT)
+        out["deploy_waits_for"] = self.deploy_waits_for()  # what `update` would refuse for now
         return out
 
     def op_run(self, argv: list[str], timeout: int = 6 * 3600) -> dict[str, Any]:
@@ -453,7 +484,26 @@ class Ops:
             "log": self._run(["journalctl", "-u", unit, "-n", str(int(lines)), "--no-pager", "-o", "short-iso"]),
         }
 
-    def op_update(self) -> dict[str, Any]:
+    def deploy_waits_for(self) -> list[str]:
+        """What an update would leave on mixed code now, in words: the running jobs whose numbers come from the code
+        they started with (`holds_deploy`), then the timer-run units that are mid-run (`HOLD_UNITS`; a machine without
+        systemd answers with an error text and holds nothing)."""
+        now = time.time()
+        out = [f"{' '.join(map(str, j['argv']))[:60]} (for {int(now - float(j.get('started') or now))} s)"
+               for j in self.op_jobs()["jobs"] if j.get("running") and holds_deploy(j.get("argv") or [])]  # fmt: skip
+        states = self._run([SYSTEMCTL, "is-active", *HOLD_UNITS]).split("\n")
+        out += [f"the unit {u}, mid-run" for u, state in zip(HOLD_UNITS, states) if state.strip() in UNIT_RUNS]
+        return out
+
+    def op_update(self, force: bool = False) -> dict[str, Any]:
+        """Bring the checkout to the branch's tip and restart the recorder and this endpoint. Refused (409) while a job
+        or a timer-run unit is mid-run that would go on with part old and part new code (`deploy_waits_for`), with
+        each named; `force` deploys all the same."""
+        held = [] if force else self.deploy_waits_for()
+        if held:
+            raise OpsError(409, f"{len(held)} still mid-run on the code of before the deploy: {'; '.join(held[:6])}. "
+                                "Deploy when they have ended (`remote status` lists them; `remote update --when-quiet` "
+                                "waits for it), or with force when it cannot wait")  # fmt: skip
         sudo = ["sudo", "-n"] if self.use_sudo else []
         steps = [
             ["git", "-C", str(self.repo), "fetch", "-q", "origin", self.branch],
