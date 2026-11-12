@@ -17,8 +17,13 @@ first on the server's recording and only then run live in capped batches.
 - **What that touches:** the KOL paper rules at 2 to 20 SOL on the owner's page (5 SOL: +22 SOL over 460 trades,
   about zero without its three best), every size lab, and the "1 to 5 SOL right behind a known wallet" lab, which was
   the nearest thing to a live proposal. All of them are upper bounds until re-scored. The 0.2 SOL results barely move.
-- **Fixed in the simulator, not yet re-scored.** The model now replays each later trade in the terms it was made in,
-  checked against a brute-force pool. Still to do: its cost in lab time on the server, then the re-score.
+- **Fixed in the simulator and on the server since 23:49 UTC.** The model now replays each later trade in the terms
+  it was made in, checked against a brute-force pool. The analyst's own 2 SOL lab, re-run: its best rule goes from
+  +0.084 SOL a trade (lower bound +0.031) to **+0.023 (lower bound -0.026)**. No rule at size has a bound above zero.
+  Still to do: re-score the paper rules' kept trades from the tape.
+- **Found on the way:** that lab took 17 minutes because it read every coin on the tape (20 million trades) to score
+  903 moments. A lab of wallet rules now reads only the coins its wallets bought: the same numbers in under 2 minutes
+  (audit row 76).
 - **A wrong alert went to the owner at 22:15 UTC** (audit row 74): "3 failed transactions in the last hour; check
   OKTech sells and the send count". They were the three buys the wallet could not pay. The check now names such
   buys and does not page for them.

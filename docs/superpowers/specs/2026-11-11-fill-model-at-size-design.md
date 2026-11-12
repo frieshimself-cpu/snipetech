@@ -101,3 +101,27 @@ The guard against a position that is most of the pool (`MAX_SHARE`) stays, on `E
   at 0.2, 1, 2 and 5 SOL under both models. Then the re-score: the paper rules' trades (the paper test keeps what a
   trade made under the code of its day: they are re-run from the tape), the qualify verdicts and the deployer scores
   follow at their next scheduled runs; the basis string of stored scores changes so no old score is read as new.
+
+## Measured on the server (11 Nov 23:30 to 12 Nov 00:10 UTC)
+
+The analyst's own lab, run three times under a profile: `lab --trigger {"kind": "kol", "sol": 0.1} --trigger
+{"kind": "kol", "sol": 1} --buy 2 --hours 72` (70 h of tape, landing +6, 0.0042 SOL a transaction, the same 903
+moments each time, exit TP+100 % / SL-20 % / 120 s).
+
+| rule, on the moments the search did not see | old model | new model |
+|---|---|---|
+| a KOL's first buy of 0.1 SOL or more (n 201): mean a trade | +0.084 SOL | **+0.023 SOL** |
+| its lower bound | +0.031 | **-0.026** |
+| its total | +17.0 SOL | +4.6 SOL |
+| a KOL's first buy of 1 SOL or more (n 161): mean a trade | +0.052 SOL | **+0.003 SOL** |
+| its lower bound | -0.007 | **-0.050** |
+
+Three quarters of what the 2 SOL rule made was the old model's assumption, and it no longer has a bound above zero.
+
+Time: 1,051 s under the old model, 1,103 s under the new one (5 % more). The profile showed something else: 500 s
+of the old run were reading trades and 270 s building paths, for 109,876 coins read (20 million trades) to score 903
+moments. A lab whose rules all fire on a labelled wallet's buy now reads only the coins those wallets bought (as the
+qualify lab already did for its group): the third run gave the same strategies to the last digit in 115 s.
+
+Deployed: the model at 23:49:09 UTC (8aba49d), the lab's plan at 00:08:34 (373b604). Paper trades of size rules
+scored before 23:49 are old-model; the paper run scores new ones with the new model.
