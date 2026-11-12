@@ -38,7 +38,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from dataclasses import dataclass, field, fields, replace
@@ -643,6 +643,16 @@ def kind_exits(exits: Sequence[ExitParams]) -> dict[str, list[ExitParams]]:
     return dict.fromkeys(sorted(WATCHED_KINDS), live)
 
 
+def scored_exits(data: Mapping[str, Any], kind: str) -> list[ExitParams]:
+    """The exits a lab's rows of a trigger of `kind` were scored with, column by column (what `_coin_rows` hands
+    `exit_pnls`): MIG's own (`mig_exits`), a watched kind's with the delay (`kind_exits`), the lab's `exits` as given
+    for every other. A row that names an exit or returns its parameters reads them here, so it names what made its
+    numbers; a column index and a look-up of an exit the caller holds (a gate, the menu) read `data["exits"]`."""
+    if kind in AMM_KINDS:
+        return list(data.get("mig_exits") or data["exits"])
+    return list((data.get("kind_exits") or {}).get(kind, data["exits"]))
+
+
 # Triggers whose every position is a PumpSwap buy. Outside the recorder's recent-migrations runs (coverage
 # `tape:amm_recent`, amm_tape.py) the tape keeps just the few PumpSwap trades that ride in a pump.fun transaction (7 Nov,
 # BRUH: its pool fell from 149.2 to 98.6 SOL between its two recorded PumpSwap trades, 366 s apart), and a MIG position
@@ -871,6 +881,14 @@ def bid_entry(path: MarketPath, i: int, mates: Collection[str] | None, trades: S
     place still counts one further back and the price is the same: nothing is there to stand behind). Never cheaper
     than right behind the wallet's own entry, never in the create slot (`_no_cheaper`, as `copy_entry`).
 
+    Nor cheaper than right behind any of them (12 Nov, a review): where the price fell within those blocks, the copy
+    enters at the dearest of those states, the latest of equals (`_dearest`). Until then only the last of them was
+    held against the price right behind the wallet: an outsider that outbid us in the wallet's block at +18 %, sold
+    off two blocks later, and one more buy after that put the copy right behind the wallet, ahead of the outbidder
+    and 18 % cheaper than behind it, at a place it said was third; and "bid-", whose one further buy came after the
+    fall, entered cheaper than "bid". With prices that only rise the dearest state is the last one, as before. The
+    states "bid" chooses among are all among those "bid-" chooses among, so "bid-" never pays less than "bid".
+
     The second value: {"place": ours among the outsiders (1 = first; "bid-" one more), "outbid", "fast", "later": how
     many stood ahead of us for each reason}. A moment the tape holds no fee record for is not placed: (None, the
     reason: NO_BIDS, BID_UNKNOWN)."""
@@ -882,13 +900,25 @@ def bid_entry(path: MarketPath, i: int, mates: Collection[str] | None, trades: S
     hi = int(np.searchsorted(path.slot, s + COPY_LAND_SLOTS, side="right"))
     at = {(path.sigs[j], path.users[j]): j for j in range(hi - 1, i, -1) if path.is_buy[j]}  # each one's first buy
     last_own = own_entry_end(path, i, mates)
-    e = max([last_own] + [at[key] for b in who["ahead"] if (key := (b["sig"], b["user"])) in at])
+    stand = [at[key] for b in who["ahead"] if (key := (b["sig"], b["user"])) in at]  # behind each of these
     place = int(who["place"])
     if cautious(position):
         place += 1
-        e = next((j for j in range(e + 1, hi) if path.is_buy[j] and path.users[j] not in own), e)
+        last = max([last_own, *stand])
+        stand += [j for j in range(last + 1, hi) if path.is_buy[j] and path.users[j] not in own][:1]
     info = {"place": place, "outbid": int(who["outbid"]), "fast": int(who["fast"]), "later": int(who["later"])}
-    return _no_cheaper(path, i, e, last_own), info
+    return _dearest(path, _no_cheaper(path, i, last_own, last_own), stand), info
+
+
+def _dearest(path: MarketPath, floor: int, states: Iterable[int]) -> int:
+    """The state with the highest price among `floor` (the closest a live copy lands, `_no_cheaper`) and those of
+    `states` behind it, the latest of equals: a copy that stands behind all of them pays no less than behind any one
+    (`bid_entry`). Reserves are positive, so prices are compared cross-multiplied."""
+    e = floor
+    for j in sorted(j for j in states if j > floor):
+        if float(path.q[j]) * float(path.b[e]) >= float(path.q[e]) * float(path.b[j]):
+            e = j
+    return e
 
 
 def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, position: str,
@@ -1366,7 +1396,12 @@ def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams) -> list[dict]
     """One exit of a lab on every trigger, whichever exit the ranking picks for it (`rank` shows a trigger's best exit
     only): how a recipe's own exit did. Per trigger, in the lab's order: its moments, and the exit's trades, mean,
     lower bound, share of wins and total on all of them (`all`) and on the newer 40 % the ranking judges on
-    (`newer`). A moment the exit was left out on (`exit_pnls`) is not counted."""
+    (`newer`). A moment the exit was left out on (`exit_pnls`) is not counted.
+
+    `ex` is looked up among the exits the lab was handed (its columns). Each row names the exit its trigger was
+    scored with (`exit`, `exit_params`; `scored_exits`): on a wallet rule and on a launch-type one the exit with
+    OKTech's watch delay, since that is what made the numbers (until 12 Nov a wallet rule's row named `ex` as handed,
+    watch_secs 0)."""
     k = data["exits"].index(ex)
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
 
@@ -1377,8 +1412,10 @@ def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams) -> list[dict]
     out = []
     for ti, trig in enumerate(data["triggers"]):
         rs = sorted((r for r in data["rows"] if r["trigger"] == ti), key=lambda r: r["ts"])
-        out.append({"trigger": trig.label(), "exit": ex.label(), "moments": len(rs), "all": stats(rs),
-                    "newer": stats(rs[int(len(rs) * TRAIN_SHARE):])})  # fmt: skip
+        scored = scored_exits(data, trig.kind)
+        used = scored[k] if len(scored) == len(data["exits"]) else ex  # a set of its own (MIG's) has other columns
+        out.append({"trigger": trig.label(), "exit": used.label(), "exit_params": used.to_dict(), "moments": len(rs),
+                    "all": stats(rs), "newer": stats(rs[int(len(rs) * TRAIN_SHARE):])})  # fmt: skip
     return out
 
 
@@ -2689,6 +2726,11 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     in `live_exits` (None for a search exit), its parameters and LAB_VERSION. `wallets`: score only these (the qualify
     stage's due list), so none of them is cut by the `top` limit behind wallets nobody asked about.
 
+    The exit a row names and returns (`exit`, `exit_name`, `exit_params`) is the one its numbers were made with: a
+    wallet rule's exits wait OKTech's watch delay in the lab (`scored_exits`), so a search exit handed over without
+    the delay is named with it, as `rank` names it (until 12 Nov the row named it as handed over, watch_secs 0). The
+    qualify lab's menu carries the delay already: its rows are unchanged.
+
     `gate` (the qualify stage passes lab, what the book sends by default): every wallet is judged with it instead of
     an exit picked per trigger; when `data` also holds other exits of the menu, each wallet gets its own exit from them
     (`choose_wallet_exit`, shrunk toward every wallet's older moments): `exit_name`, `exit_params` and `exit_source`
@@ -2705,6 +2747,9 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
     on the moments each exit was scored on (`pick_exit`), and a wallet's own exit is chosen on the copies every exit of
     the menu was scored on."""
     rows, exits = data["rows"], list(data["exits"])
+    # the exits the wallet rules' columns were filled with: `exits` with OKTech's watch delay (`kind_exits`). A row
+    # names and returns these; the gate, the menu and every column index are looked up in `exits`
+    used = scored_exits(data, "kol")
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     labels = labels or {}
     want = None if wallets is None else set(wallets)
@@ -2761,9 +2806,10 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             if len(mine) < min_n or (w in best and best[w]["n"] >= len(mine)):
                 continue
             st = summarize(m[np.array(mine, dtype=int), k], conf, samples)
-            row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": exits[k].label(), "n": len(mine),
-                   "mean": st.get("mean"), "ev_lower": st.get("ev_lower"), "win_rate": st.get("win_rate"), "total": st.get("total"),
-                   "moments_all": len(by[w]), "exit_name": names.get(exits[k]), "exit_params": exits[k].to_dict(),
+            row = {"wallet": w, "label": labels.get(w), "trigger": trig.label(), "exit": used[k].label(),
+                   "n": len(mine), "mean": st.get("mean"), "ev_lower": st.get("ev_lower"),
+                   "win_rate": st.get("win_rate"), "total": st.get("total"),
+                   "moments_all": len(by[w]), "exit_name": names.get(used[k]), "exit_params": used[k].to_dict(),
                    "lab_version": LAB_VERSION, "mates": max((int(rs[i].get("mates") or 0) for i in mine), default=0),
                    } | _copy_plan_stats([rs[i] for i in kept], min_sol)  # fmt: skip
             if with_moments:
@@ -2774,10 +2820,10 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
                 group = group_before(fit) if choose else None
                 c = choose_wallet_exit(m[np.array(fit, dtype=int)][:, own], own.index(g), group, shrink_k, min_test,
                                        conf, samples)  # fmt: skip
-                ex = exits[own[c["index"]]]
+                ex = used[own[c["index"]]]
                 row |= {"exit_name": names.get(ex), "exit_params": ex.to_dict(), "exit_source": c["source"],
                         "exit_menu": EXIT_MENU_VERSION if choose else None,
-                        "exit_candidate": None if c["candidate"] is None else names.get(exits[own[c["candidate"]]]),
+                        "exit_candidate": None if c["candidate"] is None else names.get(used[own[c["candidate"]]]),
                         "exit_test_n": c["test_n"], "exit_gain_sol": c["gain"], "exit_gain_lower": c["lower"]}  # fmt: skip
             best[w] = row
     out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)

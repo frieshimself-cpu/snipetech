@@ -325,7 +325,9 @@ def test_exit_scores_reads_one_named_exit_on_every_trigger_of_a_lab():
     scores = exit_scores(data, _cfg(), r.exit)
     assert [s["trigger"] for s in scores] == [t.label() for t in r.triggers]
     wallet = scores[[t.group for t in r.triggers].index("wallet")]
-    assert wallet["moments"] == 40 and wallet["exit"] == r.exit.label()
+    # named with the watch delay every wallet rule's exit carries in the lab: the exit the numbers were made with
+    assert wallet["moments"] == 40 and wallet["exit"] == replace(r.exit, watch_secs=1.3).label()
+    assert ExitParams(**wallet["exit_params"]) == replace(r.exit, watch_secs=1.3)
     assert wallet["all"]["n"] == 40 and wallet["newer"]["n"] == 16  # the newer 40 %, as the ranking judges
     k = data["exits"].index(r.exit)
     rows = [row for row in data["rows"] if data["triggers"][row["trigger"]].group == "wallet"]
