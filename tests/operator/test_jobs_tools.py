@@ -849,6 +849,29 @@ def test_the_backfill_is_open_to_the_agents_since_the_supervised_run_of_12_nov(j
         jobs.start(["history", "fetch", "--from", "2026-11-01"], now=1e9)
 
 
+def test_the_agents_are_told_the_knobs_of_12_nov_evening(toolbox):
+    """The owner, 12 Nov 19:30: "also keep in mind marketcap volume etc". A wallet rule can follow one wallet alone
+    ("only"), count every tracked wallet as known ("known_any"), gate on the coin's volume before the followed buy,
+    and every lab shows its result by market-cap and volume band. The tool says how to use each, that a band is a
+    hypothesis until a lab with that gate confirms it, that a wallet rule's exits wait OKTech's watch delay, and
+    that dust is no buyer in the bid tables. Every trigger it shows parses."""
+    from snipetech.analysis.lab import parse_trigger
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '"only": "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"' in text and "20 at most" in text
+    assert '"known_any": true' in text and '"known": 2' in text
+    assert '"vol_secs": 60, "min_vol": 5, "max_vol": 50' in text and "Nothing after the buy is read" in text
+    assert '"bands"' in text and "mcap_sol" in text and "vol60_sol" in text
+    assert "a hypothesis, not a result" in text and "name the band" in text  # the owner's instruction, as a habit
+    assert "watch1.3s" in text and "1.3 s after the buy" in text
+    assert "under 0.1 SOL" in text and "it stood in the block" in text
+    parse_trigger({"kind": "kol", "group": "kol", "sol": 1, "max_mcap": 300,
+                   "only": "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"})  # fmt: skip
+    parse_trigger({"kind": "kol", "group": "kol", "sol": 1, "known": 2, "known_any": True})
+    parse_trigger({"kind": "kol", "group": "big", "sol": 1, "vol_secs": 60, "min_vol": 5, "max_vol": 50})
+
+
 def test_the_agents_are_told_what_a_backfill_costs_as_measured(toolbox):
     """The first real run and its dry runs (12 Nov): an hour of a pool's trades after one big-wallet buy is about
     38,000 credits (three stretches, 113,466 transactions), five minutes about 1,000 (20 stretches, 18,824). No exit

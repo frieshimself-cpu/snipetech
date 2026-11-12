@@ -633,6 +633,38 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
         that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape
         unless a backfill put them there.
+        ONE WALLET (12 Nov): a kol trigger takes "only": the full address of the wallet it follows (several with
+        commas between them, 20 at most). The rule then fires on a first buy by one of those wallets and on nobody
+        else's; they need not be in the group. "group" still says whose first buys "known" counts (the group's
+        wallets and the named ones). A name or a shortened address is refused at once. The lab reads only the coins
+        those wallets bought, so it is fast. Example: ["lab", "--trigger", '{"kind": "kol", "group": "kol",
+        "sol": 1, "max_mcap": 300, "only": "5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"}', "--copy-position",
+        "+6", "--buy", "2", "--buy-bid", "0.02", "--hours", "168", "--json"]. place-bids and paper freeze take the
+        same trigger. "known_any": true, next to "known": 2 (or "gap"), makes the consensus gate count the tracked
+        wallets of every group (kol, wallet, cand, trader, big), not only the rule's own: "a tracked wallet is
+        already in". Group cand holds qualify's candidates, copy bots among them, so their earlier buys count too.
+        Without "known" of 2 or more it is refused.
+        MARKET CAP AND VOLUME (the owner, 12 Nov: "also keep in mind marketcap volume etc"): a kol trigger takes
+        "vol_secs", "min_vol" and "max_vol": the SOL traded in the coin in the vol_secs seconds before the followed
+        buy (0: since its launch on the tape), buys and sells together, the followed buy not counted, at least
+        min_vol and at most max_vol (0: no limit). Nothing after the buy is read. Example: "vol_secs": 60,
+        "min_vol": 5, "max_vol": 50. Every ranked wallet rule in a lab's answer carries "bands": its chosen exit on
+        all its moments, split by mcap_sol (market cap after the followed buy: under 50, 50-100, 100-200, 200-410,
+        410 and up) and by vol60_sol (SOL traded in the 60 s before it: 0, up to 5, 5-20, 20-50, 50 and up), each
+        with n, mean, ev_lower, win_rate and total; a band under 5 moments shows n only. The bands include the
+        moments the exit was picked on and were not chosen before looking: a band that looks good is a hypothesis,
+        not a result. Test it by running the rule again with that gate ("min_mcap" / "max_mcap", or "vol_secs": 60
+        with "min_vol" / "max_vol") and read test.ev_lower of that lab. When you report a wallet rule, name the band
+        its result comes from, and freeze it with the gate of the band that pays.
+        A WALLET RULE'S EXITS WAIT (12 Nov 19:20): a copy sniper's auto-sell starts watching 1.3 s after the buy, so
+        every exit of a wallet rule is scored that way and its label ends "watch1.3s". A lab from before that scored
+        take-profits, stops and the quiet exit acting from the buy: such a row is an upper end until run again
+        (a timer of 3 s or more is unchanged). A wallet rule frozen before it keeps its id and its trades and no
+        longer stands for its rule: freeze the rule again and judge the new id.
+        DUST: place-bids and tips leave out a buy under 0.1 SOL behind the followed wallet: it is no first buyer and
+        its bid is no bid to outbid (a 0.00 SOL buy behind Cupseyy had made his first outsider's bid read 0.034 SOL
+        instead of 0.305). The bid landing ("--copy-position", "bid" / "bid-") still counts such a transaction: it
+        stood in the block.
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
