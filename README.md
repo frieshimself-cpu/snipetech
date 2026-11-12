@@ -274,7 +274,7 @@ spend. `/budget 200` allows 200 $ a day and, for whatever you do not name, lets 
 40 tool calls a turn, and an analysis every 2 hours. Whatever the budget, a turn starts no new reply after 20 minutes
 (the round is ended at 30), so it always finishes its notes. `/budget 200 turn 4 calls 30 every 3` sets each value;
 `/budget default` goes back to the config. A value outside its bounds (at most 500 $ a day; at most 25 $ a turn and
-never more than the day; 5 to 80 tool calls; an analysis every 0.5 to 24 hours, or 0 for once a day) changes nothing
+never more than the day; 5 to 80 tool calls; an analysis every 0.25 to 24 hours, or 0 for once a day) changes nothing
 and the reply says why. The values live in `operator/BUDGET`; from the cloud session, with your OK in chat,
 `snipetech remote --wait run operate budget --daily-usd 200 --turn-usd 6 --tool-calls 40 --analyst-every-h 2` does the
 same. The agents cannot change it: their job tool refuses `operate`. Besides the daily analysis after 06:00 UTC, the

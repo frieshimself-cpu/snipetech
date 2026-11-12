@@ -571,6 +571,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
         that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape.
         Size has no upper limit: go past 30 SOL while test_sol_per_day still rises.
+        A kol trigger's "group": "big" is the big wallets the owner named (Ansem, Gake, Cupsey, Dior, Cooker, Remus,
+        frankdegods, ResellCalendar, with their side wallets; besides "kol", "wallet", "cand", "trader"): the wallets
+        many others buy on top of, where a bid for the first place is worth the most.
         THE BID (the owner: behind a wallet everyone buys on top of, even 2 to 5 SOL of fees can be worth it): "--per-tx"
         is what every transaction pays, the sales too; "--buy-bid", "2" is a bid paid once on the buy, on top of it,
         with no upper limit. What the place is worth is the difference between the same lab at "--copy-position", "+0"

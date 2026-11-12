@@ -286,3 +286,28 @@ def test_the_place_table_reads_bids_up_to_five_sol():
 
     assert BID_LEVELS[:8] == (0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1)
     assert BID_LEVELS[8:] == (0.3, 1.0, 2.0, 5.0)
+
+
+# --- the owner's big wallets as a group of their own (12 Nov) -----------------------------------------------------
+
+
+def test_the_big_wallets_the_owner_named_are_a_group_a_rule_can_follow():
+    """The owner, 12 Nov: "people like Ansem, Gake, big fomo wallets like resellcalender, remus, frankdegods. Big
+    pumpfun wallets like Cupsey, Chairman Cooker Dior". All are in the owner's tracked list under those names, with
+    their side wallets: group `big` is every tracked wallet or labelled KOL whose name starts with one of them."""
+    from snipetech.analysis.lab import BIG_NAMES, TRIGGER_GROUPS, label_groups
+    from snipetech.store import Store
+    from tests.synth import addr
+
+    assert "big" in TRIGGER_GROUPS and {"ansem", "gake", "cupsey", "dior", "cooker", "remus", "frank"} <= set(BIG_NAMES)
+    store = Store(":memory:")
+    names = {"a": "Cupseyy", "b": "Gake Side", "c": "frankdegods - fomo", "d": "Dior New Wallet", "e": "COOKERRRR",
+             "f": "ResellCalendar", "g": "GoodMO", "h": "1 - cookerbruski  - TIkTok Quant", "i": "Remus"}  # fmt: skip
+    for who, name in names.items():
+        store.set_label(addr(who), name, "wallet", "file")
+    store.set_label(addr("k"), "Ansem", "kol", "file")
+    groups = label_groups(store)
+    assert groups["big"] == {addr(w) for w in "abcdefik"}  # not GoodMO, not the TikTok quant
+    trig = parse_trigger({"kind": "kol", "group": "big", "sol": 1})
+    assert trig.group == "big"
+    store.close()

@@ -26,7 +26,8 @@ RULES: dict[str, tuple[Callable[[float], bool], str]] = {
     "daily_usd": (lambda v: 0 < v <= 500, "dollars a day are more than 0 and at most 500"),
     "turn_usd": (lambda v: 0 < v <= 25, "dollars a turn are more than 0 and at most 25"),
     "max_tool_calls": (lambda v: 5 <= v <= 80 and v == int(v), "tool calls a turn are a whole number from 5 to 80"),
-    "analyst_every_h": (lambda v: v == 0 or 0.5 <= v <= 24, "hours between analyses are 0 (once a day) or 0.5 to 24"),
+    # 0.25: an analysis every operator round (the owner, 12 Nov: "run it as much as you want 500$ a day is fine")
+    "analyst_every_h": (lambda v: v == 0 or 0.25 <= v <= 24, "hours between analyses are 0 (once a day) or 0.25 to 24"),
 }
 FIELDS = tuple(RULES)
 

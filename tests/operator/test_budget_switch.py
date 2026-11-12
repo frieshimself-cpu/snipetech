@@ -62,9 +62,9 @@ def test_a_value_not_given_keeps_the_files_or_else_the_configs(paths):
     assert _effective(op, paths) == (50.0, 4.0, 20, 0.0) and read_budget(paths) == {"daily_usd": 50.0, "turn_usd": 4.0}
 
 
-GOOD = {"daily_usd": (0.01, 500), "turn_usd": (0.01, 25), "max_tool_calls": (5, 80), "analyst_every_h": (0, 0.5, 24)}
+GOOD = {"daily_usd": (0.01, 500), "turn_usd": (0.01, 25), "max_tool_calls": (5, 80), "analyst_every_h": (0, 0.25, 24)}
 BAD = {"daily_usd": (0, -1, 501, math.nan, math.inf, "200", True), "turn_usd": (0, 26, -2, math.nan),
-       "max_tool_calls": (4, 81, 40.5, True, "40"), "analyst_every_h": (0.25, 24.5, -1, math.nan)}  # fmt: skip
+       "max_tool_calls": (4, 81, 40.5, True, "40"), "analyst_every_h": (0.1, 0.2, 24.5, -1, math.nan)}  # fmt: skip
 
 
 @pytest.mark.parametrize("name", sorted(GOOD))

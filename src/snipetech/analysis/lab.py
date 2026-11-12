@@ -305,7 +305,19 @@ TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
-TRIGGER_GROUPS = ("kol", "wallet", "cand", "trader")  # the groups `label_groups` reads from the labels
+TRIGGER_GROUPS = ("kol", "wallet", "cand", "trader", "big")  # the groups `label_groups` reads from the labels
+# The big wallets the owner named on 12 Nov 2026 ("people like Ansem, Gake, big fomo wallets like resellcalender, remus,
+# frankdegods. Big pumpfun wallets like Cupsey, Chairman Cooker Dior"): group `big` is every tracked wallet or labelled
+# KOL whose name starts with one of these (its side wallets carry the name too). A name is read without spaces and
+# signs, so "1 - cookerbruski" is not Cooker.
+BIG_NAMES = ("ansem", "gake", "cupsey", "dior", "cooker", "remus", "frank", "resellcalendar", "chairman")
+
+
+def is_big(name: str) -> bool:
+    flat = "".join(ch for ch in str(name).lower() if ch.isalnum())
+    return flat.startswith(BIG_NAMES)
+
+
 CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` can name (`label --kind dev`)
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
 
@@ -1073,11 +1085,13 @@ def label_groups(store: Store) -> dict[str, Any]:
     """The wallets each KOL trigger group fires on: `kol` = labeled KOLs, `wallet` = the tracked-wallet list,
     `trader` = the tracked list without the wallets its names call faucets, exchanges, snipers or bots, `cand` = the
     qualify stage's candidates plus the tracked list (measured at the 0.1 SOL floor); `dev` = the deployers a launch
-    trigger with `creators` fires on (dev-wallet snipes). Under TEAMS, each KOL's and tracked wallet's team by name."""
+    trigger with `creators` fires on (dev-wallet snipes); `big` = the big wallets the owner named (BIG_NAMES). Under
+    TEAMS, each KOL's and tracked wallet's team by name."""
     names = {**store.labels("wallet"), **store.labels("kol")}
     wallet = set(store.labels("wallet"))
     return {"kol": set(store.labels("kol")), "wallet": wallet, "cand": set(store.labels("cand")) | wallet,
             "trader": {a for a in wallet if category(names[a]) not in NOT_TRADERS},
+            "big": {a for a, n in names.items() if is_big(n)},
             "dev": set(store.labels("dev")), "bundler": set(store.labels("bundler")),
             TEAMS: {a: entity(n, a) for a, n in names.items()}}  # fmt: skip
 

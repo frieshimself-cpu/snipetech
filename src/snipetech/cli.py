@@ -747,7 +747,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--turn-usd", type=float, help="budget: dollars a turn (more than 0, at most 25, at most the day)")
     sp.add_argument("--tool-calls", type=int, help="budget: tool calls a turn (5 to 80)")
     sp.add_argument("--analyst-every-h", type=float,
-                    help="budget: hours between analyses besides the daily one (0: once a day; else 0.5 to 24)")  # fmt: skip
+                    help="budget: hours between analyses besides the daily one (0: once a day; else 0.25 to 24)")  # fmt: skip
     sp.add_argument("--default", dest="budget_default", action="store_true",
                     help="budget or risk: remove the owner's file; the config's (budget) or the 7 Nov plan's (risk) "
                          "values apply again")  # fmt: skip

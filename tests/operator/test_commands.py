@@ -741,7 +741,7 @@ def test_a_bad_budget_changes_nothing_and_says_why(tmp_path):
     _budget(ctx, "200")
     before = _owner_budget(ctx)
     for args, why in ((["900"], "500"), (["200", "turn", "30"], "25"), (["200", "calls", "3"], "5 to 80"),
-                      (["200", "every", "0.1"], "0.5 to 24"), (["200", "turn"], "needs a number"),
+                      (["200", "every", "0.1"], "0.25 to 24"), (["200", "turn"], "needs a number"),
                       (["200", "foo", "3"], "turn, calls and every"), (["0"], "more than 0"), (["5", "turn", "6"], "turn"),
                       (["default", "now"], "default"), ([SECRET_LIKE], "turn, calls and every")):  # fmt: skip
         reply = _budget(ctx, *args)
