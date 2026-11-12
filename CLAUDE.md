@@ -40,6 +40,11 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 1. **No live trading without the owner's explicit yes in chat for that specific step** (wallet, size, duration).
    Never create or start an OKTech sniper, move SOL, or change wallets on your own. A stopped sniper strands its
    coin: never stop one that holds a position it bought.
+   **Standing yes for small live tests (owner, 12 Nov 2026, "Yes to everything" to the offer "live tests are fine
+   without asking, up to 0.2 SOL a buy and 2 SOL lost a day"):** a live TEST inside both numbers, from the sniper
+   wallet, needs no further yes; each one is written into docs/live-recipe.md before it starts (what it tests, the
+   sniper, the stop rule) and after (every fill). Anything larger, anything that is not a test (a rule run for
+   profit, a bigger size, another wallet), and RISK / AUTOTEST still need the owner's yes for that step.
 2. **Measure at the real landing.** Live copies land in the leader's own block (20 of 24 since 7 Nov); the place
    inside it is a fee auction. At a 0.003 SOL bid: 0.3 trades behind at +1 % behind a quiet leader, 2–4 trades behind
    at +18–43 % behind a crowded one (the "+6 regime"). Launch snipes land a slot after the create. A paper result
@@ -62,6 +67,12 @@ agents' instructions, the record. The system itself does the trading and the ana
 A research question goes to the server's agents as an idea (`snipetech remote --wait run operate idea ...`), with the
 missing tool built here. A session starts a job on the server only to test or measure its own change, to run a repair
 it built, or to read state.
+
+**The owner's other answers of 12 Nov 2026 ("Yes to everything"):** parallel helpers (sub-agents, workflows) may be
+used again in a session (the rule of 8 Nov against them is lifted); the server's agents may spend the remaining
+PumpFunData history credits; the agents' budget is 500 $ a day with an analysis every operator round; size and bid
+have no cap in what is tested or proposed; the copy snipers that no longer pass the rules (7aPo3n, AG89fn) are to be
+stopped once they hold nothing.
 
 ## Local-session automations (set these up in `.claude/settings.json` on the owner's PC; a cloud session cannot)
 
