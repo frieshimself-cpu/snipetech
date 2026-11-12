@@ -115,7 +115,8 @@ Since 12 Nov it knows three more of OKTech's sells. No lab has run with them yet
 | **Momentum hold** | yes, new, research only (`momentum_hold`) | no: refused until a live test |
 | Selling out in parts | yes, research only | no |
 | Auto-stop | no | never (it switches the exits off) |
-| Timer extension, stage acceleration, wick mode, per-stage bail timers, confirm windows | no | no |
+| Timer extension, stage acceleration, wick mode, per-stage bail timers | no | no |
+| Confirm window on the stop-loss (`stopLoss.confirmMs`) | no: the lab's stop fires at once | yes: every stop is sent with 250 ms, so a live stop can sell later and lower than the lab scored. The value is the one live stops have run with and is not changed; a copy sniper's notes say so since 12 Nov |
 
 How a ladder is scored, in plain words:
 
@@ -376,7 +377,9 @@ the book made it, `oktech copylist` made it by hand, `oktech push` made it from 
 ### Never copy a non-coin
 
 **What happened.** Cupsey swapped into USDC. Our sniper copied the swap: it bought USDC through a PumpSwap pool and
-sold it four seconds later. It paid 0.04 SOL of fees for nothing.
+sold it four seconds later. It paid 0.04 SOL of fees for nothing. It then copied a second such swap (`fills`: buys of
+USDC at 17:05:56 and 17:24:31 UTC). The second was the sniper's fourth buy on a cap of three. No sale of it was on
+`fills` when this was written, so about 4 USDC sit in the wallet, where nothing counts them as a held coin.
 
 **What OKTech has for it.** Nothing that names a coin to refuse. We read every setting on record for copy mode:
 
@@ -414,6 +417,14 @@ field for it. The measure stage checks our own buys against it.
 | USD1 | `USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB` | already in the repo (`positions.STABLES`) |
 | PYUSD, JUP, JLP, mSOL, jitoSOL, bSOL | left out | **unverified**: no address for them anywhere in the repo, so none was guessed |
 
+**The sniper says it is unverified.** Every copy sniper's summary carries one line that starts "kept to coins,
+UNVERIFIED in copy mode": what was sent, and that nobody knows yet whether a copy sniper reads `platforms`.
+
+**The buy cap is not a hard limit.** The test sniper was sent `totalSnipes` 3 with `singleSnipe` true and bought four
+times. Why is OKTech's to answer, and nothing in what we send was changed for it. The summary of a copy sniper made
+with `oktech copylist` now says: "the cap of 3 buys is not a hard limit: OKTech bought 4 on a cap of 3 on 12 Nov". Size
+a test on what the wallet may lose, not on the cap.
+
 **How we see it if it happens again.** Every measure run reports `non_coin_buys`: how many of our buys were of a mint
 on the list, the SOL spent, and which. The first time it sees one it writes a line that starts
 `[measure] ALERT: a sniper bought USDC` into the operator's notes.
@@ -444,6 +455,15 @@ once, and it comes back when a send fails.
   SOL fill to stay under 3%; fill_max_sol is 1".
 - The measure stage tells the arms apart by the fee a fill paid. It now knows both shapes of an arm: as written
   (0.02 + 0.02, the fills up to 12 Nov) and as sent (0.001 + 0.039).
+- A bid given by hand is not held to the fee bounds. The automatic fee choice (the book's, the fee policy's) keeps a
+  copy's tip at 0.005 SOL at most and the book's buy at 1 SOL at most. Those are the owner's limits and were not
+  touched. `oktech copylist --bid 0.35 --buy 2` goes out as asked (0.001 + 0.349 on a 2 SOL buy), and its notes say
+  the tip is above the bound.
+- What the split is worth, measured on our own sells from 8 Nov 13:00 UTC to 12 Nov (19 sells landed, 28 duplicate
+  sells failed beside them): a sale pays the buy's priority about 2.47 times. So a round trip with S sales costs about
+  tip + priority x (1 + 2.47 x S) + 0.002 x S. The same 0.03 SOL bid costs 0.035 SOL in the tip and 0.108 in the
+  priority with one sale (docs/oktech-playbook.md, 1d). The warning on a hand-made sniper gives the extra cost for
+  each sale.
 - Not changed: the launch sniper built from a deployer verdict (`oktech push`, kind dev) still splits its bribe by
   `[oktech] tip_share` (0.7 to the tip), so 0.003 of a 0.01 SOL bribe is priority. Whether OKTech charges that again
   on a launch sniper's sells is not measured. It is the owner's setting; say so if it should follow the same rule.
@@ -472,7 +492,12 @@ part is proven:
    the sniper's buys. That is against 0.04 SOL for the round trip of 12 Nov.
 6. **Majors we could not list.** PYUSD, JUP, JLP, mSOL, jitoSOL and bSOL are not on our list of non-coins, because
    the repo has no address for them. The ceiling should stop them too. The measure stage would not name them.
-7. **The question for OKTech's owner:** is there a way to give a copy sniper a list of coins never to buy?
+7. **The question for OKTech's owner** (question 5 in docs/oktech-playbook.md): how do we stop a copy sniper from
+   copying a wallet's swap into USDC, USDT or wrapped SOL? Does `platforms` apply to copy mode, or is there a list of
+   coins never to buy?
+8. **The cheapest live test** (T4 in docs/oktech-playbook.md): the next small copy behind Cupsey, then read `fills`
+   after its next USDC swap. No transaction: one of the two fields skips it. A failed buy: the ceiling works and
+   costs a failed send each time. A filled buy: neither field applies to copies.
 
 ### Which field prices the tipped copy of a sell (12 Nov 2026, the tip ladder behind Cupsey)
 
@@ -498,6 +523,13 @@ sells explained"; `measure/exits.fee_pairs`; `fees.py`): every exit goes out as 
 through a relay, carries `sellTipAmount` as its tip and the task's **buy** `priorityFee` as its priority; it is the
 one that lands (47 of 49 on record). The untipped one pays `sellPriorityFeeSol`. A send that fails keeps its priority
 fee and gets its tip back. `sellPriorityFeeSol` therefore prices only the untipped copy.
+
+**Corrected the same day, from every send of a sell on `fills` since 8 Nov 13:00 UTC** (docs/oktech-playbook.md, 1d):
+`sellPriorityFeeSol` at 0.0001 priced one send in 47. Of 19 landed sells 18 paid their sniper's buy priority. Of 28
+failed duplicates 25 paid the buy priority and 3 an older sniper's 0.002; not one paid 0.0001. So a sell priority set
+under the buy's is not used, and the duplicate sells were never made free. The same claim still stands in the code's
+own texts (`fees.py`, `config.py`, `playbook.py`, `oktech.autosell`, the agents' prompts) and is not corrected there
+yet.
 
 **What it costs the ladder.** At a buy priority of 0.005 SOL every landed sell pays 0.005 again, and every tipped
 duplicate that fails pays 0.005005 for nothing. At the 0.001 minimum the same two cost 0.001 and 0.001005. A bid

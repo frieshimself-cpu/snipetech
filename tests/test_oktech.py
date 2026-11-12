@@ -1687,7 +1687,7 @@ def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_
     assert "below $12,000 market cap" in " ".join(capped.summary)
     plain = list_copy_sniper(lead, "book", 0.3, 0.2, 3)
     assert plain.config["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
-    assert "market cap" not in " ".join(plain.summary)
+    assert "below $" not in " ".join(plain.summary)
 
 
 def test_a_market_cap_cap_is_sent_at_a_sol_price_an_hour_old_at_most(monkeypatch):
@@ -1817,11 +1817,13 @@ def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceili
     assert p.config["ctbotWallets"] == [
         {"address": CUPSEYY, "label": "snipetech cupseyy", "minSol": 1.0, "maxMcapUsd": 50_000_000}
     ]
-    said = " ".join(p.notes)
-    assert "no setting on record that shuts out a mint" in said and "USDC" in said and "$50,000,000" in said
-    assert "pumpfun, pumpswap" in said and "not proven" in said
-    # the summary's "below $X market cap" is the owner's cap only: the ceiling is not a rule about which coins to copy
-    assert "market cap" not in " ".join(p.summary)
+    # the summary says it, and that it is unverified: whether copy mode reads `platforms` is a question for OKTech
+    said = [s for s in p.summary if s.startswith("kept to coins")]
+    assert len(said) == 1
+    assert "UNVERIFIED" in said[0] and "platforms pumpfun, pumpswap" in said[0] and "$50,000,000" in said[0]
+    assert "no setting on record that refuses a coin by its address" in said[0] and "USDC twice on 12 Nov" in said[0]
+    # the first line's "below $X market cap" is the owner's cap only: the ceiling is no rule about which coins to copy
+    assert "below $" not in " ".join(p.summary)
     tight = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
     assert tight.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000
     loose = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=2_000_000_000)
@@ -1843,7 +1845,7 @@ def test_the_two_protections_can_be_switched_off_and_the_payload_is_then_the_one
                                 priority_fee=0.001, tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
     assert "platforms" not in p.config and "maxMcapUsd" not in p.config["ctbotWallets"][0]
     assert hashlib.sha256(json.dumps(p.config).encode()).hexdigest()[:16] == "6e5fa622912a7897"
-    assert any("both are switched off" in n for n in p.notes)
+    assert any(s.startswith("NOT kept to coins") and "both are switched off" in s for s in p.summary)
     capped = oktech.list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
     assert capped.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000  # the owner's own cap is still sent
 
@@ -1854,6 +1856,8 @@ def test_every_copy_mode_payload_carries_the_same_protections_and_no_other_kind_
     for name, c in payloads.items():
         assert c["platforms"] == ["pumpfun", "pumpswap"], name
         assert all(0 < w["maxMcapUsd"] <= 50_000_000 for w in c["ctbotWallets"]), name
+        summary = _every_builder()[name].summary
+        assert any(s.startswith("kept to coins") and "UNVERIFIED" in s for s in summary), name
     # the launch, hunt and replica snipers buy pump.fun launches only, as before
     for name, p in _every_builder().items():
         if p.config.get("mode") != "ctbot":
@@ -1909,3 +1913,61 @@ def test_a_priority_given_by_hand_above_the_minimum_is_still_sent_and_the_summar
     for quiet in (list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3),
                   list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, tip=0.034)):  # fmt: skip
         assert not any("WARNING" in s for s in quiet.summary)
+
+
+def test_a_bid_by_hand_is_not_held_to_the_fee_bounds_and_the_bounds_stay_the_owners():
+    """The fee policy's automatic choice keeps a copy's tip at 0.005 SOL at most ([fees] bounds: the owner's risk
+    setting, sized for 0.2 SOL copies). A bid given by hand is the owner's own ask for that sniper: `--bid 0.35` goes
+    out as 0.001 + 0.349, the note says it is outside the bound, and the bound itself is what it was. A copy made
+    with no bid still gets the policy's minimum."""
+    from snipetech import fees as F
+    from snipetech.service import Service
+
+    cfg = Config()
+    before = json.dumps(cfg.fees.bounds, sort_keys=True)
+    assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.005)
+    store = Store(":memory:")
+    try:
+        svc = Service(cfg, store=store)
+        rep = asyncio.run(svc.oktech_copylist([f"{CUPSEYY}:cupseyy:1:lab"], "SNIPER", buy_sol=2.0, bid=0.35))
+        sn = rep["snipers"][0]
+        c = sn["config"]
+        assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.349)
+        assert c["buyAmount"] == 2.0  # the hand command's size is not the book's 1 SOL either
+        assert (c["autoSell"]["sellTipAmount"], c["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
+        assert any("asked for by hand" in n and "above the [fees] bound of 0.005" in n and "not held to it" in n
+                   for n in sn["notes"]), sn["notes"]  # fmt: skip
+        plain = asyncio.run(svc.oktech_copylist([f"{CUPSEYY}:cupseyy:1:lab"], "SNIPER"))["snipers"][0]["config"]
+        assert (plain["priorityFee"], plain["tipAmount"]) == (0.001, 0.002)
+        assert json.dumps(cfg.fees.bounds, sort_keys=True) == before
+        assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.005)
+    finally:
+        store.close()
+
+
+def test_the_summary_says_the_buy_cap_is_not_a_hard_limit():
+    """12 Nov: the test sniper was sent `totalSnipes` 3 with `singleSnipe` true and bought four times (17:04:54,
+    17:05:56, 17:12:12 and 17:24:31 UTC on `fills`). Why is OKTech's to answer; nothing is changed in what is sent. The
+    summary says it, so nobody sizes a test on the cap."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3)
+    assert p.config["totalSnipes"] == 3 and p.config["singleSnipe"] is True  # sent as before
+    line = [s for s in p.summary if "not a hard limit" in s]
+    assert len(line) == 1 and "OKTech bought 4 on a cap of 3 on 12 Nov" in line[0]
+    assert "stops after 3 buys" in p.summary[0]
+
+
+def test_a_copy_snipers_stop_is_sent_with_its_confirm_window_and_the_notes_say_the_lab_has_none():
+    """Every stop goes out with `stopLoss.confirmMs` 250: OKTech sells only once the loss has held a quarter of a
+    second. The lab's stop fires at once. The value is not changed here (it is the one live stops have run with); the
+    sniper's notes say the difference, and a sniper with no stop says nothing."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3)  # the lab exit: stop-loss 30 %
+    assert p.config["autoSell"]["stopLoss"] == {
+        "enabled": True, "stages": [{"percentLoss": 30.0, "sellPercent": 100}], "confirmMs": 250,
+    }  # fmt: skip
+    assert any("confirm window of 250 ms" in n and "the lab's stop fires at once" in n for n in p.notes)
+    hold = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, exit_name="hold60")
+    assert "stopLoss" not in hold.config["autoSell"] and not any("confirm window" in n for n in hold.notes)

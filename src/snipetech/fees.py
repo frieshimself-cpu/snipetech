@@ -55,6 +55,13 @@ RULE = ("a bid is raised above the minimum only where 10+ fills at the higher bi
 # OKTech's minimums per buy (docs/oktech-settings.md: `priorityFee` >= 0.001, `tipAmount` >= 0.002)
 OKTECH_MIN_PRIORITY_SOL = 0.001
 OKTECH_MIN_TIP_SOL = 0.002
+# How many times a sale pays its sniper's BUY priority, measured on our own `fills` from 8 Nov 13:00 UTC (when
+# sellPriorityFeeSol went to 0.0001) to 12 Nov: 19 sells landed and 28 duplicate sells failed beside them, 1.47 a
+# sale. 18 of the 19 and 25 of the 28 paid the buy's priority; the other 3 failed ones paid an older sniper's 0.002
+# and not one paid 0.0001 (docs/oktech-playbook.md, 1d). So a round trip with S sales costs about
+# tip + priority x (1 + 2.47 x S) + the sell tips: the same 0.03 SOL bid costs 0.035 in the tip and 0.108 in the
+# priority with one sale.
+SELL_SENDS_PER_SALE = 2.47
 
 
 def bid_in_tip(bid_sol: float) -> tuple[float, float]:
@@ -86,9 +93,12 @@ def priority_warning(priority_sol: float, tip_sol: float) -> str | None:
     if prio <= OKTECH_MIN_PRIORITY_SOL + 1e-12:
         return None
     bid, least = round(prio + tip, 6), OKTECH_MIN_PRIORITY_SOL
+    more = round((prio - least) * SELL_SENDS_PER_SALE, 4)
     return (f"WARNING: buy priority {prio:g} SOL is above OKTech's minimum {least:g}. OKTech charges it again on every "
             f"sell and failed duplicate sell: put the bid in the tip (--bid {bid:g} sends priority {least:g} + tip "
-            f"{round(bid - least, 6):g}, the same {bid:g} SOL a buy)")  # fmt: skip
+            f"{round(bid - least, 6):g}, the same {bid:g} SOL a buy). Measured on our own sells: the buy's priority "
+            f"is paid about {SELL_SENDS_PER_SALE:g} times a sale, so this one costs about {more:g} SOL more for each "
+            "sale than the same bid in the tip")  # fmt: skip
 
 
 @dataclass(frozen=True)

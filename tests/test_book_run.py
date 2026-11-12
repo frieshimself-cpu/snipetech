@@ -1331,7 +1331,7 @@ def test_a_book_sniper_carries_the_same_protections_as_one_made_by_hand(tmp_path
             assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.002)
             assert (c["autoSell"]["sellTipAmount"], c["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
             assert c["buyAmount"] == 0.2 and c["totalSnipes"] == 3  # the book's size and cap, as before
-            assert any("never copy a non-coin" in n for n in sn["notes"])
+            assert any(s.startswith("kept to coins") and "UNVERIFIED" in s for s in sn["summary"])
             hand = asyncio.run(Service(cfg, store=st).oktech_copylist(
                 [f"{REAL[leader]}:book:0.3:lab"], "SNIPER", buy_sol=0.2, max_buys=3, send_count=1, tag="arm:control"))
             assert hand["snipers"][0]["config"] == c, leader

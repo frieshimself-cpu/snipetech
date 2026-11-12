@@ -698,7 +698,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--bid", type=float,
                     help="copylist: the whole bid in SOL per buy, sent as priority 0.001 (OKTech's minimum) + tip BID "
                          "- 0.001; 0.003 at least. Use this, not --priority: OKTech charges the buy priority again on "
-                         "every sell and failed duplicate sell, a tip is paid once")  # fmt: skip
+                         "every sell and failed duplicate sell, a tip is paid once. A bid by hand is not held to the "
+                         "[fees] bounds of the automatic choice (tip 0.005 at most): they are unchanged")  # fmt: skip
     sp.add_argument("--priority", type=float,
                     help="copylist, by hand: priority fee in SOL per buy (OKTech minimum 0.001); above the minimum it "
                          "is charged again on every sell (prefer --bid)")  # fmt: skip

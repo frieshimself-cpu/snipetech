@@ -272,3 +272,7 @@ def test_a_priority_above_the_minimum_is_warned_about_in_plain_words():
     words = F.priority_warning(0.005, 0.03)
     assert "OKTech charges it again on every sell and failed duplicate sell: put the bid in the tip" in words
     assert "0.005" in words and "--bid 0.035" in words and "0.034" in words
+    # measured on our own fills, 8 to 12 Nov: a sale pays the buy's priority about 2.47 times (the landed sell and 1.47
+    # failed duplicates), so 0.004 above the minimum costs 0.004 x 2.47 = 0.0099 SOL more for each sale
+    assert F.SELL_SENDS_PER_SALE == 2.47
+    assert "about 2.47 times a sale" in words and "0.0099 SOL more for each sale" in words
