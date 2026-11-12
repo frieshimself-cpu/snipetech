@@ -15,7 +15,8 @@ top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md`. Read bo
 - `src/snipetech/` — Python 3.11+ package; `cli.py` is the entry point (`snipetech <command>`); `service.py` ties the
   store, RPC, analysis and OKTech client together; `operator/` is the unattended 15-minute agent on the server.
 - `deploy/` — server install (`bootstrap.sh`, `setup.sh`, systemd units, `ops_authorized_keys`).
-- `tests/` — pytest, real mainnet fixtures plus synthetic markets. `.venv/bin/pytest -q` must be green before a push.
+- `tests/` — pytest, real mainnet fixtures plus synthetic markets. `.venv/bin/pytest -q -n 4` (four cores: about a
+  minute; `-q` alone: three) must be green before a push.
 
 ## The server
 
