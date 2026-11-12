@@ -741,6 +741,10 @@ def _amm_tape_lines(t: dict) -> list[str]:
 
     head = (f"MIG is scored only where the PumpSwap tape holds the coin from its migration to {t['horizon_secs']:g} s "
             "after the buy (coverage tape:amm_recent):")  # fmt: skip
+    if not t.get("mig", True) and not t.get("migration_sell"):  # only a wallet rule's PumpSwap buys were left out
+        head = (f"A wallet's buy on PumpSwap is scored only where the tape holds the coin from that buy to "
+                f"{t['horizon_secs']:g} s after the copy's entry: in the recorder's window after the migration "
+                "(coverage tape:amm_recent) or on a backfilled stretch (`history amm-backfill`):")  # fmt: skip
     out = [head]
     if t.get("migration_sell"):
         out.append("  A migration sell is among the exits: on a curve moment whose coin migrates while held, an exit that "
@@ -964,6 +968,53 @@ def render_solanatracker_candidates(rows: list[dict]) -> str:
                        f"{(r.get('realized_usd') or 0):,.0f}", f"{(r.get('roi_pct') or 0):.0f}%", ",".join(r.get("tags") or [])[:18]]
                       for r in rows], ["wallet", "days", "trades", "coins", "win", "realized $", "roi", "tags"]))  # fmt: skip
     out.append("Next: label the good ones, then the tape labs at +1 and +6 decide (docs/roadmap.md).")
+    return "\n".join(out)
+
+
+def render_amm_backfill(o: dict) -> str:
+    """`history amm-backfill` in words: what was read, what the tape now holds, what it cost, and why it stopped."""
+    s, c = o.get("stretches") or {}, o["credits"]
+    head = "amm-backfill (dry run: nothing fetched, nothing written)" if o["dry_run"] else "amm-backfill"
+    since = time.strftime("%d %b %H:%M", time.gmtime(o["cut_off"]))
+    first = (f"{head}: {len(o['wallets'])} wallets, buys of {o['min_sol']:g} SOL or more since {since} UTC, "
+             f"{o['after_secs']:g} s after each")  # fmt: skip
+    out = [first]
+    if o.get("note"):
+        out.append(f"  {o['note']}")
+    for w in o["wallets"]:
+        did = f"{w['to_fetch']} transactions to fetch" if o["dry_run"] else f"{w['fetched']} transactions fetched"
+        lost = f", {w['missing']} could not be fetched" if w["missing"] else ""
+        out.append(f"  {w['name'] or short(w['wallet'])}: {did}{lost}; {w['buys']} PumpSwap buys of the size known")
+    if s:
+        whys = (
+            ("on_tape", "already on the recorder's tape"), ("buys_too_recent", "buys too recent for a whole stretch"),
+            ("buys_outside_tape", "buys outside the tape"), ("no_cursor", "with no tape signature to list back from"),
+            ("no_pool", "with no pool known"), ("listing_incomplete", "whose listing lacked the buy"),
+            ("incomplete", "with a transaction that could not be fetched"), ("left", "not reached"),
+        )  # fmt: skip
+        left = [f"{s[k]} {words}" for k, words in whys if s.get(k)]
+        out.append(f"  stretches: {s['wanted']} wanted, {s['held']} held before, {s['fetched']} fetched now "
+                   f"({s['transactions']} pool transactions, {s['trades']} trades)"
+                   + (f"; left out: {', '.join(left)}" if left else ""))  # fmt: skip
+    r = o.get("requests") or {}
+    out.append(f"  cost: {c['counted']:,} credits counted ({', '.join(f'{n} {m}' for m, n in r.items())}); "
+               f"{c['this_month']:,} this month; limit {c['max']:,.0f}")  # fmt: skip
+    if o["stopped"] == "month_credits":
+        out.append(f"  stopped: the month's limit of {c['month_max']:,.0f} credits for backfills was reached.")
+    elif o["stopped"]:
+        out.append(f"  stopped: the limit of {c['max']:,.0f} credits was reached. Run it again to go on.")
+    e = o.get("estimate")
+    if e:
+        secs = e.get("seconds_at_the_rate")
+        out.append(f"  a real run: about {e['credits']:,} credits"
+                   + (f", about {secs / 60:.0f} minutes at the configured rate" if secs else "")
+                   + f": {e['wallet_transactions']} wallet transactions, {e['stretch_transactions_known']} pool "
+                   f"transactions in {e['stretches_known']} known stretches, and about "
+                   f"{e['stretch_transactions_expected']:,} more in {e['stretches_expected']:g} stretches not found "
+                   "yet")  # fmt: skip
+        out += [f"    {line}" for line in e["assumed"]]
+    for m, p in c["prices"].items():
+        out.append(f"    {m}: {p['credits']:g} credit a request ({p['source']})")
     return "\n".join(out)
 
 

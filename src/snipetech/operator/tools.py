@@ -520,7 +520,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so is landing; one lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
+        so is landing, and of history only ["history", "amm-backfill", ...] (below; closed to you until the cloud
+        session has run it once under its eyes: the refusal says so); one lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
         wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
@@ -603,7 +604,21 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         "min_mcap" / "max_mcap": the coin's market cap in SOL after the followed buy, on the curve and past it (a
         curve ends near 410 SOL of market cap, so "min_mcap": 410 is coins already on PumpSwap: the bigger wallets'
         buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
-        that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape.
+        that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape
+        unless a backfill put them there.
+        THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
+        the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
+        trade of that pool from 60 s before the buy to an hour after it ("--after-secs"), into the tape's own tables;
+        "--wallet", "<address>" (repeatable) names wallets instead of a group. It trades nothing and changes no
+        setting. Start with "--dry-run": it writes nothing and says what a run would cost (estimate.credits, with
+        every guess marked assumed). Then run it without "--dry-run" and with "--max-credits" (at most 5,000,000 a
+        job from an agent; 1,000,000 when not given): it stops before the request that would pass the limit, says so
+        (stopped), and the same command later goes on where it stopped. It reads only inside the tape (a lab reads
+        nothing older) and a lab sees the new trades after the next copy of the database (every three hours). A lab
+        with a wallet rule then scores a wallet's PumpSwap buy only where the tape holds the stretch whole and counts
+        every other one under amm_tape ... skipped: no_backfill: those moments were never scored, they are not
+        losses. Before 12 Nov such a moment was scored with no trade after the buy: every exit sold at the entry
+        price, and the fees read as a loss; do not quote older numbers for wallet rules past the curve.
         Size has no upper limit: go past 30 SOL while test_sol_per_day still rises.
         A kol trigger's "group": "big" is the big wallets the owner named (Ansem, Gake, Cupsey, Dior, Cooker, Remus,
         frankdegods, ResellCalendar, with their side wallets; besides "kol", "wallet", "cand", "trader"): the wallets

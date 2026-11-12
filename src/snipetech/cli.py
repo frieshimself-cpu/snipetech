@@ -1068,9 +1068,24 @@ def build_parser() -> argparse.ArgumentParser:
         "history",
         "bought history (pumpfundata.com hourly files, one credit each): range | fetch | check against our own tape | "
         "scan the files on disk | table from a kept scan | follow: copy every wallet's first buys; "
-        "the key is PUMPFUNDATA_API_KEY in the server's env file",
+        "the key is PUMPFUNDATA_API_KEY in the server's env file. amm-backfill (another source, the RPC): the "
+        "PumpSwap trades around big wallets' buys in older coins, from Helius into the tape, so a lab can score them",
     )
-    sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow"])
+    sp.add_argument("action", choices=["range", "fetch", "check", "order", "scan", "table", "follow", "amm-backfill"])
+    sp.add_argument("--wallet", action="append", default=[], help="amm-backfill: a wallet whose PumpSwap buys are "
+                    "backfilled (repeat for several)")  # fmt: skip
+    sp.add_argument("--group", help="amm-backfill: every wallet of this label group as well (big, kol, wallet, "
+                    "trader, cand)")  # fmt: skip
+    sp.add_argument("--days", type=float, default=7.0, help="amm-backfill: how far back the wallets' buys are read "
+                    "(never further than the tape: a lab reads nothing older)")  # fmt: skip
+    sp.add_argument("--after-secs", type=float, default=3600.0, help="amm-backfill: the pool's trades are kept from "
+                    "60 s before a buy to this long after it")  # fmt: skip
+    sp.add_argument("--dry-run", action="store_true", help="amm-backfill: list signatures only (a few credits), write "
+                    "nothing, and say what a run would cost")  # fmt: skip
+    sp.add_argument("--max-credits", type=float, help="amm-backfill: stop before the request that would pass this "
+                    "many Helius credits (default 1,000,000: one percent of the month's plan)")  # fmt: skip
+    sp.add_argument("--month-credits", type=float, help="amm-backfill: what all backfills of the month may count "
+                    "together (default 30,000,000; the owner's to raise)")  # fmt: skip
     sp.add_argument("--exchange", choices=["pump_fun", "pump_amm"], default="pump_fun")
     sp.add_argument("--min-block-sol", type=float, default=15.0, help="scan: an organised launch is one where others "
                     "put this much SOL in the create block")  # fmt: skip
@@ -1080,7 +1095,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--x-max", type=int, default=0, help="scan/table: look up at most this many X accounts the organised "
                     "launches link to (twitterapi.io, paid; kept, so never twice); 0 = none")  # fmt: skip
     sp.add_argument(
-        "--min-sol", type=float, default=0.5, help="follow: the smallest first buy that is scored as a copy"
+        "--min-sol", type=float, help="follow: the smallest first buy that is scored as a copy (default 0.5); "
+        "amm-backfill: the smallest PumpSwap buy whose pool is backfilled (default 1)"
     )
     sp.add_argument(
         "--test-weeks", type=int, default=1, help="follow: the last weeks, on which picked wallets are judged"
@@ -2136,8 +2152,18 @@ BATCH_COMMANDS = frozenset(
         "landing",
         "launch-tools",
         "rescore",
+        "history amm-backfill",
     }
 )
+
+
+def batch_name(cmd: str, action: str | None = None) -> str:
+    """The name a command goes by in BATCH_COMMANDS: its own, or "<command> <action>" where only one action of it is a
+    batch job (`history amm-backfill` fetches for hours; the other history actions read files on disk)."""
+    both = f"{cmd} {action}" if action else cmd
+    return both if both in BATCH_COMMANDS else cmd
+
+
 BATCH_NICE = 10
 SNAPSHOT_NICE = 15  # deploy/systemd/snipetech-snapshot.service: Nice=15
 
@@ -2168,8 +2194,50 @@ def _copy_hurdle(cfg: Config, store=None) -> tuple[float, dict]:
                  "pump_fees_pct": pump_pct, "tx_pct": pct - pump_pct}  # fmt: skip
 
 
+def _amm_backfill(args, cfg: Config) -> int:
+    """`snipetech history amm-backfill`: the PumpSwap trades around the named wallets' buys in older coins, from the
+    RPC into the live database (amm_backfill.py). It writes rows the recorder would have written and a coverage record;
+    it trades nothing. The progress goes to stderr (the job's log), the result to stdout."""
+    from . import amm_backfill as ab
+    from .analysis.lab import TRIGGER_GROUPS, label_groups
+    from .solana.base58 import is_pubkey
+
+    svc = Service(cfg)
+    try:
+        wallets = list(args.wallet)
+        if args.group:
+            if args.group not in TRIGGER_GROUPS:
+                print(f"history amm-backfill: --group is one of {', '.join(TRIGGER_GROUPS)}", file=sys.stderr)
+                return 2
+            wallets += sorted(label_groups(svc.store).get(args.group) or ())
+        bad = [w for w in wallets if not is_pubkey(w)]
+        if bad or not wallets:
+            why = f"not a wallet address: {bad[0]}" if bad else "name the wallets: --wallet W (repeat) or --group big"
+            print(f"history amm-backfill: {why}", file=sys.stderr)
+            return 2
+        names = {**svc.store.labels("wallet"), **svc.store.labels("kol")}
+        max_credits = ab.DEFAULT_MAX_CREDITS if args.max_credits is None else args.max_credits
+
+        async def go() -> dict:
+            try:
+                return await ab.backfill(
+                    svc.store, svc.rpc, wallets, time.time(), days=args.days, after_secs=args.after_secs,
+                    min_sol=args.min_sol, dry_run=args.dry_run, max_credits=max_credits, names=names,
+                    month_credits=ab.MONTH_CREDITS if args.month_credits is None else args.month_credits,
+                    progress=lambda msg: print(f"amm-backfill: {msg}", file=sys.stderr, flush=True))  # fmt: skip
+            finally:
+                await svc.close()
+
+        out = asyncio.run(go())
+    finally:
+        svc.store.close()
+    print(json.dumps(out, indent=1) if args.json else R.render_amm_backfill(out))
+    return 0
+
+
 def _history(args, cfg: Config) -> int:
-    """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/."""
+    """`snipetech history range | fetch | check`: the bought hourly files, kept under <data>/history/pumpfundata/.
+    `history amm-backfill` is another source and its own function (`_amm_backfill`)."""
     import calendar
 
     import httpx
@@ -2177,6 +2245,10 @@ def _history(args, cfg: Config) -> int:
     from . import pumpfundata as pfd
     from .store import Store
 
+    if args.min_sol is None:
+        args.min_sol = 1.0 if args.action == "amm-backfill" else 0.5
+    if args.action == "amm-backfill":  # another source (the RPC): no bought file and none of their key
+        return _amm_backfill(args, cfg)
     key = os.environ.get(pfd.KEY_ENV, "")
     if not key:
         print(f"{pfd.KEY_ENV} is not set (the server's env file holds it)", file=sys.stderr)
@@ -2430,7 +2502,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _main(args) -> int:
-    _yield_cpu(args.cmd)
+    _yield_cpu(batch_name(args.cmd, getattr(args, "action", None)))
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING, format="%(levelname)s %(name)s: %(message)s"
     )
@@ -2445,7 +2517,7 @@ def _main(args) -> int:
     if args.cmd == "remote":
         return _remote(args)
     cfg = Config.load(args.config)
-    _batch_rpc(cfg, args.cmd)
+    _batch_rpc(cfg, batch_name(args.cmd, getattr(args, "action", None)))
     if args.db:
         cfg.storage.db_path = args.db
     if args.rpc:

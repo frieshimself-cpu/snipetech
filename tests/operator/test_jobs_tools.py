@@ -778,3 +778,32 @@ def test_the_agents_are_told_how_to_read_a_ladder_exit(toolbox):
     assert "of the first position" in text and "everything left" in text
     assert "share of what is left" in text and "tiny live test" in text  # the open question about OKTech
     assert "momentum hold" in text and "no sniper is sent it" in text
+
+
+def test_the_agents_are_told_how_to_backfill_the_big_wallets_older_coins(toolbox, jobs, monkeypatch):
+    """12 Nov: the big wallets buy coins hours or days old, and the tape holds a coin's PumpSwap trades for 30 minutes.
+    `history amm-backfill` fetches the trades around their buys from the RPC (the owner: "Ok do it"). The tool says how
+    to start it, to ask what it costs first, how a lab says which moments it could not score, and what it never does."""
+    monkeypatch.setattr("snipetech.operator.jobs.AGENT_BACKFILL_OPEN", True)  # the mechanism, once it is opened
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"]' in text
+    assert "estimate.credits" in text and '"--max-credits"' in text and "5,000,000" in text
+    assert "no_backfill" in text and "after the next copy" in text
+    assert "only inside the tape" in text and "trades nothing" in text
+    # what the tool says an agent may start is what the runner lets it start
+    assert _call(tools["start_job"], argv=["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run",
+                                           "--json"]).startswith("{")  # fmt: skip
+    assert "not a research command" in _call(tools["start_job"], argv=["history", "fetch", "--from", "2026-11-01"])
+
+
+def test_the_backfill_is_closed_to_the_agents_until_one_supervised_run(jobs):
+    """12 Nov: the backfill writes the live database and spends the owner's Helius credits, and it had never run. Until
+    the cloud session has run one under its eyes, an agent's start is refused in words that say what to do instead."""
+    from snipetech.operator import jobs as jobs_module
+
+    assert jobs_module.AGENT_BACKFILL_OPEN is False
+    with pytest.raises(PermissionError, match="not open to agents yet"):
+        jobs.start(["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"], now=1e9)
+    with pytest.raises(PermissionError, match="not a research command"):
+        jobs.start(["history", "fetch", "--from", "2026-11-01"], now=1e9)

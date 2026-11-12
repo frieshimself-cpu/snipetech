@@ -193,12 +193,16 @@ UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # 
 
 def holds_deploy(argv: list[str]) -> bool:
     """Whether a running job with this command line should end before an update goes out (`HOLDS_DEPLOY`; a profiled
-    job is the job it profiles; `research` does but for its idle picker, `research next`)."""
+    job is the job it profiles; `research` does but for its idle picker, `research next`; of `history` only the
+    backfill from the RPC, `history amm-backfill`, which writes trade rows for hours: it goes on where it stopped, so
+    `update --force` loses nothing of it, but the rows of one run should come from one decoder)."""
     command = list(argv[1:] if argv[:1] == ["--profile"] else argv)
     if not command:
         return False
     if command[0] == "research":
         return command[1:2] != ["next"]
+    if command[0] == "history":
+        return command[1:2] == ["amm-backfill"]
     return command[0] in HOLDS_DEPLOY
 
 

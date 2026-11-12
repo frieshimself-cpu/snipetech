@@ -87,7 +87,8 @@ class Wal:
 def _trades(first: int, n: int, t0: int = T0, per_sec: float = 1.0, mints: int = 40, users: int = 200,
             seed: int = 7, quote: int = 10_000_000) -> list[Trade]:  # fmt: skip
     """`n` trades from `t0`, `per_sec` a second, spread over `mints` coins and `users` wallets, mostly buys of about
-    `quote` lamports."""
+    `quote` lamports. Each leaves the coin on its curve (a token reserve above the level a completed curve ends at:
+    with less, the coin has left its curve, and since 12 Nov a wallet rule's buy there needs the PumpSwap tape)."""
     rnd = random.Random(seed + first)
     out = []
     for k in range(first, first + n):
@@ -95,7 +96,7 @@ def _trades(first: int, n: int, t0: int = T0, per_sec: float = 1.0, mints: int =
         out.append(Trade(sig=f"s{k:08d}{rnd.random():.6f}", ev=0, slot=380_000_000 + k, pos=k % 40,
                          ts=t0 + int((k - first) / per_sec), mint=f"M{rnd.randrange(mints):03d}", venue="curve",
                          user=f"U{rnd.randrange(users):04d}", is_buy=rnd.random() < 0.7, quote=quote + k,
-                         base=1_000_000, fee=125_000, fee_bps=125, q_after=q, b_after=1_000_000_000_000,
+                         base=1_000_000, fee=125_000, fee_bps=125, q_after=q, b_after=900_000_000_000_000,
                          r_base_after=700_000_000_000, ix="buy"))  # fmt: skip
     return out
 
