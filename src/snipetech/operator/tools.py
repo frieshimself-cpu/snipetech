@@ -648,6 +648,25 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         losses. Before 12 Nov such a moment was scored with no trade after the buy: every exit sold at the entry
         price, and the fees read as a loss; do not quote older numbers for wallet rules past the curve.
         Size has no upper limit: go past 30 SOL while test_sol_per_day still rises.
+        SIZE CHECK (12 Nov: what a result at 10, 30 or 60 SOL rests on). Every lab's "size" says, per rule, what the
+        buy is against the pools the rule met: "line" is one sentence with the numbers; repeat it to the owner with
+        any result above 1 SOL and never quote a size result without it. A pump.fun curve sells a fixed number of
+        coins and completes at 85 SOL, so a moment is never scored (it is counted in "skipped", by reason) where our
+        buy would have ended the curve (size_ends_curve: live it gets only what is left, the rest of the SOL is not
+        spent, and the coin migrates), where it is more than 50% of the SOL the curve still takes (size_curve_fill)
+        or more than 50% of the pool's coins (size_pool_share): after such a buy the tape's later trades could not
+        have happened. If most moments are left out, the size cannot be paper-tested on that rule: say so, do not
+        read the few that are left. Each strategy row's "size" has own_impact_p50 / own_impact_p90 (how far our own
+        buy moves the price, 0.5 = +50 %), pool_share_p50, left_out_for_size, and the two ends of the result:
+        test.mean lets every later buyer buy as on the tape however far we moved the price (the upper end),
+        crowd_free_mean replaces every win by our own round trip right after the buy (nothing a later buyer adds,
+        the lower end), and the truth lies between; crowd_needed is the share of what the later buyers added that
+        must still come for the rule to break even (0.2 is robust, 0.8 is hope). outside_model counts the newer
+        trades whose price the model does not stand behind (our coins became most of the pool, or the curve would
+        have ended before our sale), outside_model_sol is what they add up to and inside_mean the mean without
+        them. "--same-sol" scores the lab again with every later buyer spending the SOL it spent on the tape and
+        no more (a buyer of an exact number of coins pays no more SOL than it did on the tape and gets fewer
+        coins): a tighter upper end, a second lab of the same command.
         A kol trigger's "group": "big" is the big wallets the owner named (Ansem, Gake, Cupsey, Dior, Cooker, Remus,
         frankdegods, ResellCalendar, with their side wallets; besides "kol", "wallet", "cand", "trader"): the wallets
         many others buy on top of, where a bid for the first place is worth the most.

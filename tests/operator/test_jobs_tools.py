@@ -746,6 +746,27 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     assert '"--top", "40"' in text and "a hundred tests a day" in text
 
 
+def test_the_agents_are_told_what_a_big_size_result_rests_on(toolbox):
+    """12 Nov, the analyst: "208 SOL a day on paper is a simulator upper bound I do not believe as it stands". Every
+    lab now says what the size asked is against the pools its rule met; the tool says where to read it, which
+    moments are never scored, which numbers are the two ends of a result, and the sentence to hand the owner."""
+    from snipetech.analysis import lab as L
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert "SIZE CHECK" in text and '"size"' in text and '"line"' in text
+    assert "would have ended the curve" in text and "85 SOL" in text  # the buys no tape can replay
+    assert f"more than {L.CURVE_FILL_MAX:.0%} of the SOL the curve still takes" in text
+    assert f"more than {L.ENTRY_POOL_SHARE_MAX:.0%} of the pool's coins" in text
+    for code in L.SIZE_WORDS:
+        assert code in text, code
+    assert "own_impact_p50" in text and "own_impact_p90" in text and "pool_share_p50" in text
+    assert "crowd_free_mean" in text and "crowd_needed" in text and "the truth lies between" in text
+    assert "outside_model" in text and "inside_mean" in text and "left_out_for_size" in text
+    assert "repeat it to the owner" in text and "never quote a size result without it" in text
+    assert '"--same-sol"' in text and "pays no more SOL than it did on the tape" in text
+
+
 def test_the_agents_are_told_what_gmgn_gives_and_that_it_only_reads(toolbox):
     """12 Nov, the owner bought GMGN's data ("you need to find these people... look at the fees other people are
     using"). The tool lists gmgn among the allowed commands and says, action by action, what comes back: who the

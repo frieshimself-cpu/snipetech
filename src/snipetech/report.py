@@ -772,6 +772,38 @@ def _amm_tape_lines(t: dict) -> list[str]:
     return out
 
 
+SIZE_SAYS_FROM = 0.02  # a rule's size line is printed once our own buy moves the price this much at the median
+
+
+def _size_lines(size: dict, strategies: list[dict]) -> list[str]:
+    """The lab's size check (lab._size_report), one sentence a rule: said where the buy is big enough to move the
+    price by itself, or a moment was left out for size, or a score rests on a price outside the model. Under it, for
+    each ranked strategy of such a rule, both ends of what the later buyers are worth."""
+    said = {label: t for label, t in (size.get("triggers") or {}).items()
+            if t.get("skipped") or t.get("outside_model") or (t.get("impact_p50") or 0) >= SIZE_SAYS_FROM}  # fmt: skip
+    if not said:
+        return []
+    head = ("Size: what a buy of this size is against the pools each rule met (a moment the buy would end the curve "
+            "on, or be most of the pool on, is never scored):")  # fmt: skip
+    out = ["", head]
+    for label, t in said.items():
+        out.append(f"  {label}: {t['line']}")
+        for s in strategies:
+            z = s.get("size") or {}
+            if s.get("trigger") != label or z.get("crowd_free_mean") is None:
+                continue
+            need = z.get("crowd_needed")
+            out.append(f"    {s['exit']}: {sol(s['test']['mean'])} a trade with every later buyer buying as on the "
+                       f"tape, {sol(z['crowd_free_mean'])} with nothing they added"
+                       + (f"; it breaks even if {need:.0%} of what they added still comes" if need is not None else "")
+                       + (f"; {z['outside_model']} of its newer trades ({z['outside_model_sol']:+.2f} SOL together) "
+                          "rest on a price outside the model" if z.get("outside_model") else "")
+                       + ".")  # fmt: skip
+    for code, words in {**(size.get("why") or {}), **(size.get("outside_why") or {})}.items():
+        out.append(f"  {code}: {words}")
+    return out
+
+
 def render_lab(r: dict) -> str:
     cost = f" at {r['per_tx_sol']:g} SOL a transaction" if r.get("per_tx_sol") is not None else ""
     bid = r.get("bid_landing") or {}  # copies scored where their bid puts them (lab --copy-position bid / bid-)
@@ -821,6 +853,11 @@ def render_lab(r: dict) -> str:
         )
     if r.get("amm_tape"):
         out += [""] + _amm_tape_lines(r["amm_tape"])
+    out += _size_lines(r.get("size") or {}, r["strategies"])
+    if r.get("later_buyers") == "same_sol":
+        out.append("Later buyers: every one replayed spending the SOL it spent on the tape and no more (--same-sol), "
+                   "the tighter upper end; without the flag a buyer of an exact number of coins pays what they cost "
+                   "beside our buy.")  # fmt: skip
     if r.get("wallets"):
         out += [
             "",
