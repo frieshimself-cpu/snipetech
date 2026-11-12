@@ -104,8 +104,41 @@ def credit_reply(cfg: Config, store: Store, ledger: Ledger, args: list[str], now
             "when it runs low.")  # fmt: skip
 
 
+def read_network_links() -> str:
+    """`networkctl list` as the machine prints it: one line a link, its setup state last (no root needed)."""
+    import subprocess
+
+    cmd = ["networkctl", "list", "--no-legend", "--no-pager"]
+    return subprocess.run(cmd, check=False, capture_output=True, text=True, timeout=10).stdout
+
+
+def network_row(links: Callable[[], str]) -> Resource:
+    """The machine's network setup. 11 Nov 2026 07:14 UTC: during a freeze the network manager (systemd-networkd)
+    gave up on the network card ("enp1s0: Failed") and stopped renewing the server's address; it ran out at 00:31 the
+    next night and the server had no internet for twelve hours while it kept running. A link whose setup has failed
+    is critical from the moment it fails, hours before the address goes."""
+    try:
+        rows = [line.split() for line in links().splitlines() if line.split()]
+    except Exception as exc:  # noqa: BLE001 - no networkctl on this machine, or it did not answer
+        why = f"networkctl could not be read: {type(exc).__name__}: {exc}"
+        return Resource("network", None, "", None, "unknown", why)
+    if not rows:
+        return Resource("network", None, "", None, "unknown", "networkctl listed no link")
+    failed = [r[1] for r in rows if len(r) >= 5 and r[-1] == "failed"]
+    if not failed:
+        return Resource("network", len(rows), "links", None, "ok", "the network setup is in order")
+    names = ", ".join(failed)
+    return Resource(
+        "network", len(failed), "links", 0, "crit",
+        f"the server's network setup has failed (its network manager gave up on {names}): its internet address is no "
+        "longer renewed and is lost within a day, as on 12 Nov 00:31 UTC. Restart the server in BitLaunch (Restart, "
+        f"never Rebuild), or run on it: sudo networkctl reconfigure {failed[0]}",
+    )  # fmt: skip
+
+
 def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *, disk_free_gb: Callable[[], float],
-                    birdeye_credits: Callable[[], dict] | None, now: float) -> list[Resource]:  # fmt: skip
+                    birdeye_credits: Callable[[], dict] | None, now: float,
+                    network_links: Callable[[], str] | None = None) -> list[Resource]:  # fmt: skip
     rc = cfg.resources
     out: list[Resource] = []
 
@@ -184,6 +217,9 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
                             f"the tape is {lag / 60:.0f} min behind: nothing new is recorded. The recorder opens a new "
                             "connection after 3 minutes of refused writes and restarts itself after 10; if it stays behind, "
                             "`snipetech remote update` restarts it" if late else f"the tape is {lag:.0f} s behind"))  # fmt: skip
+
+    # The machine's network setup: critical from the moment its manager gives up on a link.
+    out.append(network_row(network_links or read_network_links))
 
     # Disk.
     try:

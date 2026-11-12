@@ -127,7 +127,12 @@ def _unit(name: str) -> dict[tuple[str, str], str]:
 
 
 def test_every_service_runs_in_the_slice():
+    """Every service that runs snipetech. The network watch is root's shell script (deploy/netwatch.sh, 12 Nov): it
+    runs none of snipetech's code and stays outside, so a squeezed slice never holds up the repair of the network."""
     for p in sorted(UNITS.glob("*.service")):
+        if p.name == "snipetech-netwatch.service":
+            assert ("Service", "Slice") not in _unit(p.name)
+            continue
         assert _unit(p.name).get(("Service", "Slice")) == "snipetech.slice", p.name
 
 

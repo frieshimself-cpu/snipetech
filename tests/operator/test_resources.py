@@ -419,3 +419,37 @@ def test_the_causes_the_measure_stage_writes_are_the_ones_the_check_reads():
     assert is_unpaid(failed_cause({"InsufficientFundsForRent": {"account_index": 0}}, curve))
     assert not is_unpaid(failed_cause(not_paid, sell))  # a twin's sell: allowed for by the landed sells
     assert not is_unpaid(None) and not is_unpaid("") and not is_unpaid("{'InstructionError': [3, {'Custom': 6042}]}")
+
+
+LINKS_OK = "  1 lo     loopback carrier  unmanaged\n  2 enp1s0 ether    routable configured\n"
+LINKS_FAILED = "  1 lo     loopback carrier  unmanaged\n  2 enp1s0 ether    routable failed\n"
+
+
+def _network(tmp_store, ledger, links):
+    rs = check_resources(Config(), tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None,
+                         now=NOW, network_links=links)  # fmt: skip
+    return {x.name: x for x in rs}["network"]
+
+
+def test_a_network_setup_that_has_failed_is_told_before_the_address_is_lost(tmp_store, ledger):
+    """12 Nov 2026: during the freeze of 11 Nov 07:14 UTC the machine's network manager gave up on its network card
+    ("enp1s0: Failed"). Nothing renewed the server's address after that, it ran out at 00:31 the next night and the
+    server had no internet for twelve hours, though it kept running. The failed state shows 17 hours before the
+    address goes: the round reads it and it is a critical row, one page a day with what to do."""
+    r = _network(tmp_store, ledger, lambda: LINKS_FAILED)
+    assert r.status == "crit" and "enp1s0" in r.message
+    assert "Restart" in r.message and "never Rebuild" in r.message and "networkctl reconfigure enp1s0" in r.message
+    assert _network(tmp_store, ledger, lambda: LINKS_OK).status == "ok"
+    assert any(line.startswith("network:") for line in alert_lines([r]))
+
+
+def test_a_network_state_that_cannot_be_read_is_unknown_and_never_an_alarm(tmp_store, ledger):
+    def missing():
+        raise FileNotFoundError("networkctl")
+
+    r = _network(tmp_store, ledger, missing)
+    assert r.status == "unknown" and "networkctl" in r.message
+    assert _network(tmp_store, ledger, lambda: "").status == "unknown"  # no link listed: nothing is known
+    # a caller that hands no reader (a test, a laptop) gets the row all the same, from the machine itself
+    rs = check_resources(Config(), tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    assert {x.name: x for x in rs}["network"].status in ("ok", "unknown")

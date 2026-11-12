@@ -82,5 +82,10 @@ IOSchedulingClass=idle
 MemoryHigh=3G
 EOF
 done
+# The server repairs its own network setup (deploy/netwatch.sh). 12 Nov 2026: systemd-networkd gave up on the network
+# card during a freeze, the address was not renewed and ran out 17 hours later; twelve hours without internet until a
+# restart. Root, every minute, outside snipetech's slice. To undo: systemctl disable --now snipetech-netwatch.timer
+install -m 755 "$REPO/deploy/netwatch.sh" /usr/local/sbin/snipetech-netwatch
 systemctl daemon-reload
+systemctl enable --now snipetech-netwatch.timer >/dev/null 2>&1 || true
 echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer snipetech-events snipetech-snapshot.timer snipetech-strategist.timer snipetech-commands.timer"

@@ -1,0 +1,6 @@
+[Unit]
+Description=snipetech network watch: re-applies the network setup when its manager gave up on a link or the IPv4 route is gone (deploy/netwatch.sh)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/snipetech-netwatch

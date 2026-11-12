@@ -59,7 +59,7 @@ UNITS = (
     "snipetech-discover.timer", "snipetech-qualify", "snipetech-qualify.timer", "snipetech-measure",
     "snipetech-measure.timer", "snipetech-book", "snipetech-book.timer", "snipetech-events",
     "snipetech-snapshot", "snipetech-snapshot.timer", "snipetech-strategist", "snipetech-strategist.timer",
-    "snipetech-commands", "snipetech-commands.timer",
+    "snipetech-commands", "snipetech-commands.timer", "snipetech-netwatch", "snipetech-netwatch.timer",
 )  # fmt: skip
 SYSTEMCTL = "/usr/bin/systemctl"
 # `logs` of the machine itself: the kernel's messages, systemd's own lines about every unit (started, failed, what
