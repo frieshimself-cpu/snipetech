@@ -444,7 +444,10 @@ def test_the_job_is_allowed_on_the_server_and_for_the_agents(tmp_path, monkeypat
     monkeypatch.setattr(jobs, "AGENT_BACKFILL_OPEN", True)  # the mechanism, once it is opened (closed by default)
 
     assert "history" in ops.ALLOWED
-    assert ops.holds_deploy(["history", "amm-backfill", "--group", "big", "--days", "7"])
+    # a backfill holds no deploy (12 Nov evening: the analyst's ten-wallet run held one for 42 minutes and more while
+    # the fix it was waiting for sat pushed; it reports no numbers, it has loaded its decoder by its first rows, it
+    # survives the restart and goes on where it stopped)
+    assert not ops.holds_deploy(["history", "amm-backfill", "--group", "big", "--days", "7"])
     assert not ops.holds_deploy(["history", "range"])  # the bought files' commands hold nothing back, as before
     assert cli.batch_name("history", "amm-backfill") in cli.BATCH_COMMANDS
     assert cli.batch_name("history", "fetch") not in cli.BATCH_COMMANDS
