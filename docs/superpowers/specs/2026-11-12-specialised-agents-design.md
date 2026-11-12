@@ -1,6 +1,9 @@
 # Three specialised research agents — design (12 Nov 2026)
 
-Status: **design only.** Nothing here is built, deployed or running. Task 148. The owner asked on 12 Nov: "Could we
+Status: **built on 12 Nov (steps 1 to 10), switched off, not deployed, never run against the real model.** Step 11
+is not built. A fourth role was added the same day. The last section, "What was built, and what differs from this
+design", says exactly what the code does where it is not what the text below says: read it first. The text between
+here and that section is the design as it was written, unchanged. Task 148. The owner asked on 12 Nov: "Could we
 maybe add more specalised agents like lookign for wallets etc, ot make it even better. Is there anything else that
 can speed up process".
 
@@ -216,3 +219,97 @@ start another agent's turn or touch the budget.
   for most rows, and the tester can only score fixed places.
 - Three agents ask more questions. They do not make a losing rule win. The two paper rules that showed a positive
   bound on 12 Nov both rest on their five best trades (the analyst's notes of 16:32 and 17:32 UTC).
+
+## What was built, and what differs from this design (12 Nov, evening)
+
+Steps 1 to 10 are built, each from a failing test. Step 11 (`wait_job`) is not. Nothing is deployed. No role has run
+a turn against the real model: every turn in the tests is a scripted reply or a stand-in.
+
+### The switch is off
+
+The design had step 9 switch the roles on with the deploy. It does not. `[operator] role_agents` in `config.py` is
+`False`, and `roles.on` reads it. The server's file holds no value for it, so a deploy changes nothing. With it off:
+no role stage is started, the gate gives the analyst its turns between the daily ones, a job ending calls the
+operator as before, the budget line and the digest name no agent, `operate agent` does nothing, and the analyst's
+instructions and sixteen tools are byte for byte what they were (compared with the commit before, once, by script).
+To switch on: `True` in `config.py` and in `tests/test_config_drift.py`, then a deploy. The owner's `/budget every 0`
+stays the off switch without a deploy, as designed.
+
+### A fourth role: `oktech`
+
+The owner, 12 Nov: "an agent that masters oktech's features an how to apply them". Its question: which of OKTech's
+features would make a paper-proven rule land better or sell better, and what is the cheapest test of each?
+
+- It starts only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools`. No lab, no freeze.
+- It reads `docs/oktech-playbook.md`, `docs/oktech-features.md` and `docs/oktech-settings.md` with `read_file`
+  (exactly these three paths, read-only, for this role alone), our fills, and the tester's and the fee analyst's tables.
+- It writes `operator/oktech-facts.md`: one row a feature (what it does as far as known, verified or not and by
+  which fill, what it would change for which rule, the cheapest test).
+- It hands the tester ideas ("score this sell ladder on rule X"). A proposal for the owner is an idea of kind
+  `live-test` that names the wallet, the size, the cap, the duration and the stop rule in words.
+- It never trades and never creates, starts, stops or arms a sniper. It has no tool that could. The command `oktech`
+  is refused to it as to every agent (`tests/operator/test_jobs_tools.py`,
+  `test_the_oktech_role_starts_only_commands_that_read`).
+
+Shares with four roles: scout 20 %, tester 35 %, fees 20 %, oktech 10 %, reserve 15 % (unchanged). At 500 $ a day:
+100, 175, 100, 50 and 75 $. The worst day for the roles is still 425 $.
+
+### What today's code changed in the design
+
+- **The paper place that follows the bid exists** (task 152; the open point above is closed). The tester scores and
+  freezes at `--copy-position bid` or `bid-` with `--buy-bid`. The fee analyst owns `place-bids` (with
+  `--model-check`), `tips` and `landing`.
+- **New commands, each with a role.** `gmgn`, `winners` and `history amm-backfill` are the scout's. `tips` and
+  `landing` are the fee analyst's (`landing` is also the OKTech analyst's). `lab --recipe` and `paper freeze
+  --recipe` are the tester's. `tests/operator/test_roles.py` (`test_every_research_command_has_a_role`) fails when a
+  command is added to the agents' list without a role.
+- **The size check** (`size.triggers[rule].line`, `crowd_free_mean`, `--same-sol`) is the tester's to read and repeat.
+  Its instructions say so.
+
+### Where the code is not the design's text
+
+- **`START_JOB_HELP[role]` is `roles.job_help(text, role)`.** The analyst's `start_job` text stays one docstring in
+  `tools.py`, untouched. `roles.JOB_HELP_CUTS` names the phrase each part begins with and the commands it explains.
+  A role is told the parts for its commands. Two tests hold this: the parts put together are the text, word for
+  word, and every part but one is in at least one role's help. The one part is the sentence that lists every
+  command an agent may start ("Only lab, follow, ..."): a role is told its own list instead.
+- **The fee analyst's help is long.** It may start a lab, so it is told every lab paragraph (15,000 characters of the
+  23,300). A finer cut needs paragraphs tagged by role, not by command.
+- **`operate idea --role` and `operate agent --role` share one flag.**
+- **`run.py` changed by three lines.** The design left the round untouched. The round has to tell `start_standins`
+  whether the agents are on, because only the round has the config. Off, the call is the one it was.
+- **The role stages are not rows of `STANDIN`.** `due_standins(..., agents=...)` adds them behind `research next`
+  when the round passes the roles. `STANDIN` itself is what it was.
+- **A role's start moves its idea to "testing" in code** (`OperatorJobs.record_test`). The design left that to the
+  agent. Without it the gate's "an idea nobody tested" would fire on an idea whose test runs.
+- **A role cannot change another queue's idea at all**, not only not move or close it.
+- **The 15-idea limit binds a role's turn only.** The analyst, the operator and the cloud session write as before.
+  Nineteen research ideas were open on 12 Nov and all are the tester's until someone moves them, so the tester adds
+  nothing until it has closed five. That is the design's "close or merge before it adds".
+- **The scout's `place-bids` needs `--each`.** The design named `place-bids --each`; the code enforces it, as it does
+  the fee analyst's lab flags.
+- **A role's table that says the same is not written again**, so an unchanged table calls no other role's turn.
+- **The tester's news is simpler than designed.** "A paper rule reached its next reading" is: a rule's count of
+  paper trades passed another multiple of 30. It counts all of a rule's rows, not only those in its record.
+- **Week counts.** "Rules frozen" counts rules whose forward test began in the last seven days. "Passed forward" is
+  the rules that pass now (30 or more trades, total and lower bound above zero), read from the paper report's kept
+  rows. The stricter bar of two readings that do not overlap is in the tester's instructions only; no code checks it.
+- **`CLAUDE.md` and `docs/autopilot.md` are not updated** (the main session's). `docs/architecture.md` is.
+
+### Open points that remain
+
+- **Nothing here has met the real model.** Whether a role keeps to one test a turn, writes its table, and names its
+  idea on every job is unknown until the first hour on the server.
+- **Every number in the "What to expect" table is still an estimate**, and it was made for three roles.
+- **Other roles' tables may call every role every round.** A role is told to keep its table current. Each change is
+  news for the other three. The damper is the one-hour wait after two turns without a test. If dollars a role run
+  away in the first hours, this rule is the first to look at.
+- **The fee analyst and the tester still meet in the lab.** The flag rule is the line between them.
+- **The oktech role and the fee analyst both read `landing`.** Who owns a finding about our own landings is not
+  settled.
+- **`gmgn fees` is the scout's.** The fee analyst would use it (what a wallet pays to land); today it asks the scout.
+- **A backfill the scout started is not in the "jobs that ended" list** of any turn (that list shows research
+  commands, and `history` is an action). The turn's reason still names the job's id.
+- **The daily analysis does not see who started a job.** Its job list is unchanged.
+- **Step 11** and the pause a waiting deploy needs before it.
+- **Splitting today's open research ideas between the queues** (the list above) is the cloud session's, once.

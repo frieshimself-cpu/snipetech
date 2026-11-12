@@ -724,3 +724,122 @@ def test_the_research_record_follows_the_lessons_and_ideas_on_its_own_cap(paths,
     memory, record = text.split("\nResearch record", 1)
     assert memory == L.context(paths) and len(memory) <= L.CONTEXT_MAX_CHARS and "11 tx tx" in memory
     assert len("Research record" + record) <= L.RESEARCH_MAX_CHARS and "OUTCOME: three" in record
+
+
+# -- the roles' queues (operator/roles.py): one queue a role, in the same ideas file ---------------------------------
+
+
+def _idea(paths, title, role=None, by=None, acting=None, kind="research", **over):
+    """An idea written by the role whose turn it is (`acting`), else by the analyst or `by`; `role` is its queue."""
+    fields = {"title": title, "why": "w", "test": "t", "expected": "e", "kind": kind, **over}
+    if role:
+        fields["role"] = role
+    return L.upsert_idea(paths, fields, source=by or acting or "analyst", now=NOW, role=acting)
+
+
+def test_research_idea_without_role_is_the_testers(paths):
+    """Every research idea written before the roles existed has no role: it is the tester's. An idea that needs a
+    coding session, a setting or SOL has no role, whatever it says: it waits for the cloud session or the owner."""
+    plain, code = _idea(paths, "a rule"), _idea(paths, "a tool", kind="code")
+    live = _idea(paths, "a ladder", kind="live-test")
+    assert "role" not in plain and L.role_of(plain) == "tester"
+    assert L.role_of(_idea(paths, "a wallet hunt", role="scout")) == "scout"
+    assert L.role_of(code) is None and L.role_of(live) is None
+    assert L.role_of(_idea(paths, "a tip ladder", role="fees", kind="live-test")) is None
+    with pytest.raises(ValueError, match="role must be one of scout, tester, fees, oktech"):
+        _idea(paths, "nobody's", role="analyst")
+
+
+def test_a_role_sees_only_its_queue(paths):
+    _idea(paths, "hunt wallets", role="scout", priority=5)
+    _idea(paths, "score a rule")
+    _idea(paths, "price a place", role="fees")
+    _idea(paths, "a tool", kind="code")
+    assert [i["title"] for i in L.list_ideas(paths, "open", role="scout")] == ["hunt wallets"]
+    assert [i["title"] for i in L.list_ideas(paths, "open", role="tester")] == ["score a rule"]
+    assert [i["title"] for i in L.untested(paths, role="fees")] == ["price a place"]
+    assert len(L.list_ideas(paths, "open")) == 4 and len(L.untested(paths)) == 3  # no role asked: all, as before
+    text = L.context(paths, role="scout")
+    assert "hunt wallets" in text and "score a rule" not in text and "price a place" not in text
+    assert "Your queue" in text
+
+
+def test_role_cannot_close_another_roles_idea(paths):
+    theirs = _idea(paths, "hunt wallets", role="scout")
+    with pytest.raises(ValueError, match=f"{theirs['id']} is in the scout's queue"):
+        L.upsert_idea(paths, {"id": theirs["id"], "status": "rejected"}, source="tester", now=NOW, role="tester")
+    with pytest.raises(ValueError, match="scout's queue"):  # nor by adding "the same title" again
+        _idea(paths, "hunt wallets", acting="tester")
+    assert L.list_ideas(paths, "open", role="scout")[0]["status"] == "open"
+    mine = L.upsert_idea(paths, {"id": theirs["id"], "status": "rejected", "why": "refuted: n 40, -0.01"},
+                         source="scout", now=NOW, role="scout")  # fmt: skip
+    assert mine["status"] == "rejected"
+    # an idea with no role (a code change, a proposal for the owner) is nobody's queue: any role may write it
+    tool = _idea(paths, "a tool", kind="code", acting="fees")
+    assert L.upsert_idea(paths, {"id": tool["id"], "why": "also needed by the tester"}, source="tester", now=NOW,
+                         role="tester")["why"] == "also needed by the tester"  # fmt: skip
+
+
+def test_role_may_add_to_another_queue(paths):
+    """How work is handed on: the scout adds an idea to the tester's queue. An idea a role adds without naming a queue
+    is its own."""
+    handed = _idea(paths, "score copies of this group", role="tester", acting="scout")
+    own = _idea(paths, "who copies Cupsey", acting="scout")
+    assert L.role_of(handed) == "tester" and handed["source"] == "scout"
+    assert own["role"] == "scout"
+    assert [i["id"] for i in L.list_ideas(paths, "open", role="tester")] == [handed["id"]]
+
+
+def test_a_roles_queue_holds_fifteen_open_ideas(paths):
+    """Each role closes or merges before it adds. The limit binds a role's turn only: the analyst, the operator and
+    the cloud session write as before (on 12 Nov nineteen research ideas were open)."""
+    for i in range(15):
+        _idea(paths, f"rule {i}", acting="tester")
+    with pytest.raises(ValueError, match="the tester's queue already holds 15 open ideas"):
+        _idea(paths, "rule 15", acting="tester")
+    with pytest.raises(ValueError, match="the tester's queue already holds 15"):
+        _idea(paths, "score this group", role="tester", acting="scout")  # a full queue takes no handed idea either
+    first = L.list_ideas(paths, "all")[0]
+    L.upsert_idea(paths, {"id": first["id"], "status": "rejected"}, source="tester", now=NOW, role="tester")
+    assert _idea(paths, "rule 15", acting="tester")["id"]
+    assert _idea(paths, "rule 16")["id"] and _idea(paths, "rule 17", by="cloud")["id"]  # no role's turn: no limit
+
+
+def test_context_carries_the_other_roles_tables(paths):
+    (paths.root / "scout-facts.md").write_text("| wallet | who |\n| 6DQAGJ | Cupsey, 40 copiers |\n")
+    (paths.root / "fees-bids.md").write_text("row " * 495 + "EARLY " + "row " * 30 + "LATE " + "row " * 700)
+    (paths.root / "tester-rules.md").write_text("| rule | n |\n| kol big | 13 |\n")
+    text = L.context(paths, role="tester")
+    assert "Cupsey, 40 copiers" in text and "operator/scout-facts.md" in text
+    assert "EARLY" in text and "LATE" not in text  # each other table cut to 2,000 characters
+    assert "its first 2,000 characters" in text
+    assert "kol big" not in text  # its own table is the turn's message's, not the memory block's
+    assert "operator/oktech-facts.md: not written yet" in text
+    assert "scout-facts" not in L.context(paths)  # the analyst's and the operator's block is as it was
+
+
+def test_digest_names_one_next_test_a_role(paths):
+    """With the research agents on, the owner's six-hourly digest names one next test for each of them (the first
+    idea of its queue nobody tested, else its best open one), what waits for the owner's yes, and the week's three
+    counts. Without them (`week` not given) the digest's lines are what they were."""
+    _idea(paths, "who copies Cupsey", role="scout", priority=2)
+    _idea(paths, "the bots behind Gake", role="scout", priority=5, status="testing")
+    _idea(paths, "score the 6z91 recipe at +1", priority=4, status="testing")
+    _idea(paths, "price the first place behind Cupsey", role="fees")
+    _idea(paths, "a tip ladder behind Cupsey", role="fees", kind="live-test", priority=5)
+    week = {"tests": 212, "frozen": 9, "passed": 1}
+    lines = L.digest_lines(paths, NOW - 6 * H, NOW, week=week)
+    i = lines.index("Testing next, one for each research agent:")
+    assert lines[i + 1 : i + 5] == [
+        "- scout: who copies Cupsey",  # not tested yet comes before what is already being tested
+        "- tester: score the 6z91 recipe at +1 (being tested)",
+        "- fees: price the first place behind Cupsey",
+        "- oktech: nothing in its queue",
+    ]
+    assert lines[i + 5 : i + 7] == ["Waits for your yes:", "- a tip ladder behind Cupsey"]
+    assert lines[-1] == ("This week: 212 tests started, 9 rules frozen for the forward paper test, 1 passing it (30+ "
+                         "trades, total and lower bound above zero)")  # fmt: skip
+    assert L.digest_lines(paths, NOW - 6 * H, NOW, week={"tests": 3, "frozen": None, "passed": None})[-1] == (
+        "This week: 3 tests started")
+    plain = L.digest_lines(paths, NOW - 6 * H, NOW)
+    assert "Testing next:" in plain and not any("research agent" in x or "This week" in x for x in plain)

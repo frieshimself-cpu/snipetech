@@ -30,6 +30,7 @@ from ..analysis.lab_lock import LabBusy
 from ..analysis.lab_lock import lab_lock as _lab_lock
 from ..config import Config
 from ..store import _LATEST_VERDICT, Store
+from . import roles
 from .learning import digest_lines as learning_lines
 from .paths import OperatorPaths
 from .snapshot import systemd_services
@@ -548,7 +549,10 @@ def digest_text(store: Store, cfg: Config, paths: OperatorPaths, now: float, sin
     lines.append(book_reason(store, cfg, paths))
     options = plan(b, metas, cfg, now)
     lines.append(f"Next: {options[0]['why']}" if options else f"Next: nothing to start yet ({not_now(b, metas, now)})")
-    lines += learning_lines(paths, since, now)  # what the agents learned since the last digest, what they test next
+    # what the agents learned since the last digest and what they test next; while the research agents are on, one next
+    # test for each of them and the week's counts of tests, freezes and forward passes
+    week = roles.week_counts(paths, now, store) if roles.on(cfg, paths) else None
+    lines += learning_lines(paths, since, now, **({"week": week} if week is not None else {}))
     text = "\n".join(lines)
     return text if len(text) <= MAX_CHARS else text[: MAX_CHARS - 1] + "…"
 

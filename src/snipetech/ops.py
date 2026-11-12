@@ -195,7 +195,9 @@ def holds_deploy(argv: list[str]) -> bool:
     """Whether a running job with this command line should end before an update goes out (`HOLDS_DEPLOY`; a profiled
     job is the job it profiles; `research` does but for its idle picker, `research next`; of `history` only the
     backfill from the RPC, `history amm-backfill`, which writes trade rows for hours: it goes on where it stopped, so
-    `update --force` loses nothing of it, but the rows of one run should come from one decoder)."""
+    `update --force` loses nothing of it, but the rows of one run should come from one decoder; of `operate` only a
+    research agent's turn, `operate agent --role <role>`, which the round starts as a job while the agents are on: it
+    is mid-run as the round's own unit is)."""
     command = list(argv[1:] if argv[:1] == ["--profile"] else argv)
     if not command:
         return False
@@ -203,6 +205,8 @@ def holds_deploy(argv: list[str]) -> bool:
         return command[1:2] != ["next"]
     if command[0] == "history":
         return command[1:2] == ["amm-backfill"]
+    if command[0] == "operate":  # of the round's own command only a research agent's turn, a job that runs for minutes
+        return command[1:2] == ["agent"]
     return command[0] in HOLDS_DEPLOY
 
 

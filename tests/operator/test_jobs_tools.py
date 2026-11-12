@@ -891,3 +891,391 @@ def test_start_refuses_a_recipe_nobody_wrote_before_any_job_starts(jobs):
             jobs.start(argv)
     assert not list((jobs.ops.data / "jobs").glob("*.json"))
     assert jobs.start(["lab", "--recipe", "6z91", "--hours", "24", "--json"])["id"]
+
+
+# -- the research agents' jobs (operator/roles.py): each role starts its own commands, for an idea of its own queue ----
+
+KOL = '{"kind": "kol", "group": "big", "sol": 1, "known": 1}'
+
+
+def _queue(jobs, role, title=None, **over):
+    """An open research idea in `role`'s queue; returns its id."""
+    from snipetech.operator import learning
+
+    fields = {"title": title or f"an idea of the {role}", "why": "w", "test": "t", "expected": "e", "kind": "research",
+              "role": role, **over}  # fmt: skip
+    return learning.upsert_idea(OperatorPaths(jobs.ops.data), fields, source="cloud")["id"]
+
+
+def _job_files(jobs):
+    return list((jobs.ops.data / "jobs").glob("*.json"))
+
+
+def test_scout_cannot_start_a_lab_or_a_freeze(jobs):
+    idea = _queue(jobs, "scout")
+    for argv in (["lab", "--trigger", KOL, "--json"], ["paper", "freeze", "--trigger", KOL], ["dip-buys", "--json"]):
+        with pytest.raises(PermissionError, match=rf"{argv[0]} is not the wallet scout's to start.*strategy tester"):
+            jobs.start(argv, role="scout", idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["winners", "--hours", "72", "--json"], role="scout", idea=idea)["id"]
+    backfill = ["history", "amm-backfill", "--group", "big", "--dry-run", "--json"]
+    assert jobs.start(backfill, role="scout", idea=idea)["id"]
+    with pytest.raises(PermissionError, match="--each"):  # the auction for one rule is the fee analyst's table
+        jobs.start(["place-bids", "--hours", "48", "--json"], role="scout", idea=idea)
+    assert jobs.start(["place-bids", "--each", "--hours", "48", "--json"], role="scout", idea=idea)["id"]
+
+
+def test_tester_cannot_start_a_wallet_study(jobs):
+    idea = _queue(jobs, "tester")
+    for argv in (["winners", "--json"], ["follow", "--kols"], ["label", "W", "why", "--kind", "cand"],
+                 ["gmgn", "kol", "--json"], ["history", "amm-backfill", "--group", "big", "--dry-run"],
+                 ["tips", "--group", "big", "--json"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="is not the strategy tester's to start"):
+            jobs.start(argv, role="tester", idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["lab", "--trigger", KOL, "--hours", "24", "--json"], role="tester", idea=idea)["id"]
+    assert jobs.start(["paper", "freeze", "--trigger", KOL, "--only-live"], role="tester", idea=idea)["id"]
+
+
+def test_fees_lab_needs_a_place_or_a_bid(jobs):
+    """The fee analyst's lab prices a place or a bid; a rule's own test, at the landing the lab picks, is the
+    tester's. And it freezes nothing: only the tester puts a rule into the forward paper test."""
+    idea = _queue(jobs, "fees")
+    with pytest.raises(PermissionError, match="--copy-position, --per-tx or --buy-bid"):
+        jobs.start(["lab", "--trigger", KOL, "--hours", "24", "--json"], role="fees", idea=idea)
+    with pytest.raises(PermissionError, match="paper is not the fee and place analyst's to start"):
+        jobs.start(["paper", "freeze", "--trigger", KOL, "--copy-position", "+1"], role="fees", idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["lab", "--trigger", KOL, "--copy-position", "+0", "--json"], role="fees", idea=idea)["id"]
+    assert jobs.start(["tips", "--group", "big", "--hours", "30", "--json"], role="fees", idea=idea)["id"]
+
+
+def test_the_oktech_role_starts_only_commands_that_read(jobs):
+    """The owner's "an agent that masters oktech's features" reads: where our buys landed, a bot's rules, what the
+    launch tools did. It starts no lab and no freeze, and `oktech` (the command that creates, starts and stops
+    snipers) is refused to it as to every agent, in the same words."""
+    idea = _queue(jobs, "oktech")
+    for argv in (["lab", "--trigger", KOL, "--copy-position", "+0"], ["paper", "freeze", "--trigger", KOL],
+                 ["place-bids", "--json"], ["winners"], ["label", "W", "x"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="is not the OKTech features analyst's to start"):
+            jobs.start(argv, role="oktech", idea=idea)
+    for argv in (["oktech", "start", "abc"], ["oktech", "copylist", "--bid", "0.05"], ["unwrap"], ["book", "on"]):
+        with pytest.raises(PermissionError, match="the owner's"):
+            jobs.start(argv, role="oktech", idea=idea)
+    assert not _job_files(jobs)
+    assert jobs.start(["landing", "--since-minutes", "120", "--json"], role="oktech", idea=idea)["id"]
+    assert jobs.start(["playbook", "W", "--json"], role="oktech", idea=idea)["id"]
+
+
+def test_role_test_needs_an_idea_of_its_queue(jobs):
+    mine, theirs = _queue(jobs, "scout", "mine"), _queue(jobs, "tester", "theirs")
+    nobodys = _queue(jobs, "scout", "a tool", kind="code")
+    closed = _queue(jobs, "scout", "done", status="rejected")
+    argv = ["winners", "--hours", "72", "--json"]
+    with pytest.raises(PermissionError, match="every job names the idea it tests"):
+        jobs.start(argv, role="scout")
+    with pytest.raises(PermissionError, match="no idea I99"):
+        jobs.start(argv, role="scout", idea="I99")
+    with pytest.raises(PermissionError, match=f"{theirs} is in the tester's queue"):
+        jobs.start(argv, role="scout", idea=theirs)
+    with pytest.raises(PermissionError, match=f"{nobodys} is in nobody's queue"):
+        jobs.start(argv, role="scout", idea=nobodys)
+    with pytest.raises(PermissionError, match=f"{closed} is closed"):
+        jobs.start(argv, role="scout", idea=closed)
+    assert not _job_files(jobs)
+    assert jobs.start(argv, role="scout", idea=mine)["id"]
+
+
+def test_agents_leave_one_lab_slot_free(jobs, monkeypatch):
+    """Two labs run at once on the server and qualify takes a slot too. The roles together hold one (the slots less
+    one, at least one), so the other stays free for qualify, the strategy search and the freeze."""
+    from snipetech.operator import roles
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    tester, fees = _queue(jobs, "tester"), _queue(jobs, "fees")
+    lab = ["lab", "--trigger", KOL, "--copy-position", "+0", "--json"]
+    _meta(jobs.ops.data / "jobs", "theirs", ["lab", "--trigger", KOL], running=True, pid=os.getpid())
+    roles.record_test(OperatorPaths(jobs.ops.data), 1.0, "tester", tester, "theirs", ["lab", "--trigger", KOL])
+    with pytest.raises(PermissionError, match=r"the research agents share 1 lab slot.*job theirs \(tester\)"):
+        jobs.start(lab, role="fees", idea=fees)
+    assert jobs.start(["tips", "--group", "big", "--json"], role="fees", idea=fees)["id"]  # no lab: no slot
+    assert jobs.start(["lab", "--latency", "0"])["id"]  # the analyst's and the machine's own lab takes the other
+    # a lab nobody of the roles started (qualify's, the analyst's) leaves the roles their one
+    for p in _job_files(jobs):
+        p.unlink()
+    _meta(jobs.ops.data / "jobs", "analysts", ["lab", "--latency", "0"], running=True, pid=os.getpid())
+    assert jobs.start(lab, role="fees", idea=fees)["id"]
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "1")  # a small machine: the one slot there is
+    for p in _job_files(jobs):
+        p.unlink()
+    assert jobs.start(["lab", "--trigger", KOL, "--hours", "48", "--json"], role="tester", idea=tester)["id"]
+
+
+def test_same_command_is_refused_whichever_role_asks(jobs):
+    scout, fees = _queue(jobs, "scout"), _queue(jobs, "fees")
+    argv = ["playbook", "6Z91", "--json"]
+    done = jobs.ops.data / "jobs" / "p1.json"
+    done.write_text(json.dumps({"id": "p1", "argv": argv, "started": time.time() - 600, "ended": time.time() - 500,
+                                "exit_code": 0, "running": False}))  # fmt: skip
+    for role, idea in (("scout", scout), ("fees", fees)):
+        with pytest.raises(PermissionError, match="already ran: job p1"):
+            jobs.start(argv, role=role, idea=idea)
+    with pytest.raises(PermissionError, match="already ran: job p1"):
+        jobs.start(argv)
+
+
+def test_no_role_starts_an_owner_command(jobs):
+    from snipetech.operator.jobs import OWNER_COMMANDS
+    from snipetech.operator.roles import ROLES
+
+    assert OWNER_COMMANDS == {"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"}
+    for role in ROLES:
+        idea = _queue(jobs, role, f"{role}'s")
+        for command in sorted(OWNER_COMMANDS):
+            with pytest.raises(PermissionError, match="the owner's: an agent never starts it"):
+                jobs.start([command, "x"], role=role, idea=idea)
+        # nor another agent's turn, its own budget or an idea written past the tool's checks
+        for argv in (["operate", "agent", "--role", "tester"], ["operate", "budget", "--daily-usd", "500"],
+                     ["operate", "idea", "--title", "x"]):  # fmt: skip
+            with pytest.raises(PermissionError, match="the owner's"):
+                jobs.start(argv, role=role, idea=idea)
+    assert not _job_files(jobs)
+
+
+def test_role_start_is_written_to_the_tests_ledger(jobs):
+    """operator/tests.jsonl: when, who, for which idea, the job and its command. It is how a role's turn knows its own
+    jobs, how the job list names who started what, and what the week's count of tests is read from. The idea moves to
+    "testing" with the job, in code: the next turn does not find it under "not tested yet"."""
+    from snipetech.operator import learning, roles
+
+    paths = OperatorPaths(jobs.ops.data)
+    idea = _queue(jobs, "scout")
+    started = jobs.start(["winners", "--hours", "72", "--json"], now=1_793_923_200.0, role="scout", idea=idea)
+    (row,) = roles.read_tests(paths)
+    assert row == {"ts": 1_793_923_200, "role": "scout", "idea": idea, "job": started["id"],
+                   "argv": ["winners", "--hours", "72", "--json"]}  # fmt: skip
+    assert roles.job_roles(paths) == {started["id"]: "scout"}
+    assert learning.list_ideas(paths, "all")[0]["status"] == "testing"
+    with pytest.raises(PermissionError):
+        jobs.start(["lab", "--json"], role="scout", idea=idea)
+    assert len(roles.read_tests(paths)) == 1  # a refused start is no test
+
+
+def test_a_start_without_a_role_is_as_it_was(jobs):
+    """The operator's and the analyst's start_job: any research command, no idea asked for, nothing written to the
+    roles' ledger."""
+    from snipetech.operator import roles
+
+    assert jobs.start(["lab", "--trigger", KOL, "--hours", "24", "--json"])["id"]
+    assert jobs.start(["winners", "--json"])["id"] and jobs.start(["tips", "--group", "big"])["id"]
+    assert roles.read_tests(OperatorPaths(jobs.ops.data)) == []
+    assert not (jobs.ops.data / "operator" / "tests.jsonl").exists()
+
+
+# -- the research agents' tools: a shorter list of the analyst's, each kept to its role --------------------------------
+
+TODAY = ["read_job_log", "read_file", "sql", "start_job", "write_note", "set_candidates", "write_report",
+         "read_verdicts", "read_fills", "read_fee_policy", "read_events", "read_lessons", "add_lesson", "list_ideas",
+         "upsert_idea", "read_round_trips"]  # fmt: skip
+# what a tool that trades, moves SOL or changes a switch would be called: no agent has one, with a role or without
+TRADING = re.compile(r"oktech|sniper|wallet|trade|buy|sell|swap|transfer|send|sign|book|risk|budget|autotest|config"
+                     r"|setting|deploy|update|kill|unwrap|sweep", re.IGNORECASE)  # fmt: skip
+
+
+@pytest.fixture
+def rolebox(tmp_path, jobs):
+    """`tools(role)`: the tools of one turn of that role (None: the analyst's), by name; the paths; the turn's notes."""
+    paths = OperatorPaths(tmp_path / "data").ensure()
+    st = Store(tmp_path / "data" / "snipetech.db")
+
+    class Svc:
+        store = st
+
+    sink = NoteSink(paths, now=lambda: 1_793_923_200)
+
+    def tools(role=None):
+        made = make_operator_tools(Svc(), paths, jobs, OperatorConfig(wallet="W"), sink, source=role or "analyst",
+                                   role=role)  # fmt: skip
+        return {t.name: t for t in made}
+
+    yield tools, paths, sink
+    st.close()
+
+
+def _help(tool) -> str:
+    return " ".join(tool.to_dict()["description"].split())
+
+
+def test_role_tools_are_a_subset_of_todays(rolebox):
+    """Without a role the list is today's, tool for tool. A role's list is the one roles.ROLE_TOOLS names, every name
+    one of today's, and none of them, in any list, is a tool that could trade or change a switch."""
+    from snipetech.operator.roles import ROLE_TOOLS, ROLES
+
+    tools, _, _ = rolebox
+    assert list(tools()) == TODAY
+    for role in ROLES:
+        names = set(tools(role))
+        assert names == ROLE_TOOLS[role] and names < set(TODAY), role
+    for name in TODAY:
+        assert not TRADING.search(name), name
+
+
+def test_only_the_scout_sets_candidates(rolebox):
+    from snipetech.operator.roles import ROLES
+
+    tools, paths, _ = rolebox
+    assert [r for r in ROLES if "set_candidates" in tools(r)] == ["scout"]
+    assert _call(tools("scout")["set_candidates"], items=[{"wallet": "W1", "n": 25}]) == "wrote 1 candidates"
+    assert json.loads(paths.candidates.read_text()) == [{"wallet": "W1", "n": 25}]
+
+
+def test_role_note_is_info_and_one_a_turn(rolebox):
+    """Nothing of a role's goes to Telegram: its note is always "info", one a turn, with its name in front. What the
+    owner must decide is an idea marked for the owner; the digest carries it."""
+    tools, paths, sink = rolebox
+    note = tools("fees")["write_note"]
+    assert "level" not in note.to_dict()["input_schema"]["properties"]
+    line = _call(note, text="place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)")
+    assert line == "- 2026-11-06T00:00:00Z [info] fees: place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)"
+    assert _call(note, text="and one more").startswith("error: one note a turn")
+    with pytest.raises(ValueError, match="Invalid arguments"):  # no such argument: the call never runs
+        _call(tools("fees")["write_note"], text="x", level="decision")
+    assert sink.decisions == [] and paths.notes.read_text().count("\n") == 1
+    assert _call(tools("scout")["write_note"], text="the wallet can't pay a buy").startswith("error")  # not its subject
+
+
+def test_role_writes_only_its_own_table_and_journal(rolebox):
+    tools, paths, _ = rolebox
+    report = tools("scout")["write_report"]
+    assert _call(report, name="scout-facts", text="| wallet | who |") == "wrote scout-facts.md"
+    assert _call(report, name="scout-facts", text="| wallet | who |\n| W1 | Cupsey |") == "wrote scout-facts.md"
+    stamp = (paths.root / "scout-facts.md").stat().st_mtime_ns
+    # the same table again is not written again: an unchanged table is no news that calls the other roles' turns
+    assert "not written again" in _call(report, name="scout-facts", text="| wallet | who |\n| W1 | Cupsey |")
+    assert (paths.root / "scout-facts.md").stat().st_mtime_ns == stamp
+    assert _call(report, name="scout-journal-2026-11-12", text="looked at winners", append=True)
+    assert (paths.root / "scout-journal-2026-11-12.md").read_text() == "looked at winners\n"
+    for name in ("tester-rules", "fees-bids", "oktech-facts", "analyst-2026-11-12", "postmortem-2026-11-12-0900",
+                 "notes", "lessons", "ideas", "tester-journal-2026-11-12", "scout-facts-old"):  # fmt: skip
+        out = _call(report, name=name, text="x")
+        assert out.startswith("error") and "scout-facts" in out, name
+        assert not (paths.root / f"{name}.md").exists()
+    assert _call(tools("oktech")["write_report"], name="oktech-facts", text="| feature |") == "wrote oktech-facts.md"
+    assert "scout-facts" in _help(report) and "scout-journal" in _help(report)
+
+
+def test_role_start_job_names_its_idea_and_keeps_to_its_commands(rolebox, jobs):
+    tools, paths, _ = rolebox
+    idea = _queue(jobs, "scout")
+    start = tools("scout")["start_job"]
+    assert set(start.to_dict()["input_schema"]["required"]) == {"argv", "idea"}
+    assert "not the wallet scout's to start" in _call(start, argv=["lab", "--json"], idea=idea)
+    assert _call(start, argv=["oktech", "start", "x"], idea=idea).startswith("error: oktech is the owner's")
+    started = json.loads(_call(start, argv=["winners", "--hours", "72", "--json"], idea=idea))
+    from snipetech.operator import roles
+
+    assert roles.job_roles(paths) == {started["id"]: "scout"}
+    # the analyst's start_job asks for no idea and holds to no role, as before
+    assert set(tools()["start_job"].to_dict()["input_schema"]["required"]) == {"argv"}
+    assert json.loads(_call(tools()["start_job"], argv=["lab", "--latency", "0"]))["id"]
+
+
+def test_a_roles_idea_tools_keep_to_its_queue(rolebox, jobs):
+    tools, _, _ = rolebox
+    mine, theirs = _queue(jobs, "scout", "hunt wallets"), _queue(jobs, "tester", "score a rule")
+    scout = tools("scout")
+    listed = json.loads(_call(scout["list_ideas"]))
+    assert [i["id"] for i in listed["ideas"]] == [mine] and listed["queue"] == "scout"
+    assert [i["id"] for i in json.loads(_call(scout["list_ideas"], queue="tester"))["ideas"]] == [theirs]
+    assert len(json.loads(_call(scout["list_ideas"], queue="all"))["ideas"]) == 2
+    assert f"{theirs} is in the tester's queue" in _call(scout["upsert_idea"], id=theirs, status="rejected")
+    handed = json.loads(_call(scout["upsert_idea"], title="score copies of this group", why="w", test="t",
+                              expected="e", kind="research", role="tester"))  # fmt: skip
+    own = json.loads(_call(scout["upsert_idea"], title="who copies Cupsey", why="w", test="t", expected="e",
+                           kind="research"))  # fmt: skip
+    assert handed["role"] == "tester" and handed["source"] == "scout" and own["role"] == "scout"
+    # the analyst's two tools are as they were: no queue, no role argument
+    analyst = tools()
+    assert "queue" not in analyst["list_ideas"].to_dict()["input_schema"]["properties"]
+    assert "role" not in analyst["upsert_idea"].to_dict()["input_schema"]["properties"]
+    assert len(json.loads(_call(analyst["list_ideas"]))["ideas"]) == 4
+
+
+def test_the_oktech_role_reads_the_oktech_documents_and_nothing_else_of_the_checkout(rolebox, tmp_path):
+    """The owner's "an agent that masters oktech's features" reads what we know of them: the three OKTech documents in
+    the checkout, read-only, and the research rounds like every agent. No other role reads them (they are long), and
+    no role reads any other file of the checkout."""
+    tools, _, _ = rolebox
+    _checkout(tmp_path)
+    for name in ("oktech-playbook", "oktech-features", "oktech-settings"):
+        (tmp_path / "docs" / f"{name}.md").write_text(f"# {name}\nsellPercent\n")
+    (tmp_path / "docs" / "oktech-audit-2026-11-06.md").write_text("audit")
+    read = tools("oktech")["read_file"]
+    assert _call(read, path="docs/oktech-playbook.md") == "# oktech-playbook\nsellPercent\n"
+    assert _call(read, path="docs/oktech-features.md", tail=1) == "sellPercent"
+    assert _call(read, path="docs/research/README.md").startswith("# Strategy research rounds")
+    for path in ("docs/oktech-audit-2026-11-06.md", "docs/roadmap.md", "docs/../CLAUDE.md",
+                 "docs/oktech-playbook.md/..", "deploy/ops_authorized_keys",
+                 "docs/research/../oktech-playbook.md"):  # fmt: skip
+        assert _call(read, path=path).startswith("error"), path
+    for role in ("scout", "tester", "fees", None):
+        assert _call(tools(role)["read_file"], path="docs/oktech-playbook.md").startswith("error"), role
+    assert "docs/oktech-playbook.md" in _help(read) and "docs/oktech" not in _help(tools()["read_file"])
+
+
+def test_each_command_is_explained_to_the_roles_that_may_run_it_and_no_other(rolebox):
+    """A role's start_job explains its own commands and no other role's: a shorter text is a cheaper turn, and a role
+    that is not told about a lab does not ask for one."""
+    from snipetech.operator import roles
+
+    tools, _, _ = rolebox
+    full = tools()["start_job"].description
+    parts = roles.cut_job_help(full)
+    for role in roles.ROLES:
+        text = _help(tools(role)["start_job"])
+        for tags, words in parts:
+            if tags == roles.OWN_LIST:
+                assert words not in text  # the list of every agent command: a role is told its own
+            elif tags == roles.ALL:
+                assert words in text
+            else:
+                may = bool(tags & roles.ROLE_COMMANDS[role]) or f"@{role}" in tags
+                assert (words in text) is may, (role, sorted(tags), words[:60])
+        for command in roles.ROLE_COMMANDS[role]:  # its own list, by name
+            assert re.search(rf"(?<![\w-]){re.escape(command)}(?![\w-])", text), (role, command)
+        assert f"As the {roles.NAMES[role]} you may start only:" in text and "Nothing here trades" in text
+    scout, tester = _help(tools("scout")["start_job"]), _help(tools("tester")["start_job"])
+    oktech = _help(tools("oktech")["start_job"])
+    assert '["winners", "--hours", "72", "--json"]' in scout and "A strategy hypothesis of your own" not in scout
+    assert "A strategy hypothesis of your own" in tester and '["gmgn", "kol", "--json"]' not in tester
+    assert "WHERE OUR OWN BUYS LANDED" in oktech and "LADDER EXITS" in oktech  # it reads ladder rows, starts no lab
+    assert "A strategy hypothesis of your own" not in oktech and "To test forward, freeze" not in oktech
+    assert len(oktech) < len(scout) < len(tester) < len(_help(tools()["start_job"]))
+    # the argument's own words are a role's, not the analyst's lab example
+    assert "idea" in tools("fees")["start_job"].to_dict()["input_schema"]["properties"]
+
+
+def test_no_paragraph_of_todays_job_help_is_lost_to_the_roles(rolebox):
+    """The analyst's start_job text is the one text (its docstring in tools.py, untouched): it is cut into parts at the
+    phrases of roles.JOB_HELP_CUTS and each role is told the parts for its commands. Put together again, the parts are
+    the text, word for word; and every part but the sentence that lists all the commands is in at least one role's
+    help, word for word. A paragraph added to the text is in a part by construction; a command without a role fails in
+    test_roles.py; a phrase that no longer fits fails here."""
+    from snipetech.operator import roles
+
+    tools, _, _ = rolebox
+    full = tools()["start_job"].description
+    parts = roles.cut_job_help(full)
+    assert " ".join(words for _, words in parts) == " ".join(full.split())  # nothing lost, nothing added, in order
+    assert len(parts) == len(roles.JOB_HELP_CUTS) > 30
+    helps = {role: _help(tools(role)["start_job"]) for role in roles.ROLES}
+    own_list = [words for tags, words in parts if tags == roles.OWN_LIST]
+    assert len(own_list) == 1 and own_list[0].startswith("Only lab,") and own_list[0].endswith("(below);")
+    for tags, words in parts:
+        if tags != roles.OWN_LIST:
+            assert words and any(words in text for text in helps.values()), words[:80]
+    # every command the analyst's text explains with an example is one some part is cut for
+    named = set().union(*(tags for tags, _ in parts if not isinstance(tags, str)))
+    assert {t for t in named if not t.startswith("@")} <= set().union(*roles.ROLE_COMMANDS.values())
+    with pytest.raises(ValueError, match="no longer fit"):
+        roles.cut_job_help(full.replace("THE BACKFILL (12 Nov):", "THE BACKFILL:"))

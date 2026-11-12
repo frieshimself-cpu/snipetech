@@ -6,10 +6,11 @@ or started within its interval is not started again."""
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from pathlib import Path
 
 from ..jobfiles import jobs_since
+from .roles import ROLES
 
 # (argv, the systemd unit that normally runs it or None when no unit does, minimum seconds between starts)
 STANDIN: tuple[tuple[tuple[str, ...], str | None, int], ...] = (
@@ -51,6 +52,17 @@ STAGE_LIMIT_SECS: dict[str, int] = {
     "exitrun run --minutes 345": 345 * 60 + 300,
 }  # fmt: skip
 
+# The research agents' turns (operator/roles.py), one stage a role: `operate agent --role <role>`, its own job with its
+# own lock, started every round WHILE THE AGENTS ARE ON (`due_standins(..., agents=...)`: the round passes the roles
+# only then, so with them off no such stage exists). The round does not wait for them: alerts, the book and the kill
+# switch keep their minutes. They start right after the idle research has looked (`research next`), so they never
+# take a lab slot from under it. A turn cuts itself off at 24 minutes (turn.TURN_HARD_SECS); the job runner ends one
+# that hangs at 26, inside the two rounds its stage would otherwise hold.
+ROLE_STAGE = ("operate", "agent", "--role")
+ROLE_EVERY_SECS = 15 * 60
+ROLE_LIMIT_SECS = 26 * 60
+STAGE_LIMIT_SECS |= {" ".join((*ROLE_STAGE, role)): ROLE_LIMIT_SECS for role in ROLES}
+
 
 # A stage starts some seconds into its round, so N rounds later its last start is some seconds under N rounds old: with
 # an interval of exactly N rounds it was "not due" and waited one more (11 Nov: the half-hourly stages ran every 45
@@ -67,11 +79,22 @@ def _strategist_due(now: float, last_start: float) -> bool:
     return now >= slot and last_start < slot
 
 
-def due_standins(services: dict[str, str], metas: Iterable[dict], now: float) -> list[list[str]]:
-    """The stages to start now. `services` maps unit names to systemd states; `metas` are job metadata files."""
+def _stages(agents: Iterable[str]) -> Iterator[tuple[tuple[str, ...], str | None, int]]:
+    """STANDIN's rows, with a row for each research agent's turn right behind the idle research."""
+    for row in STANDIN:
+        yield row
+        if row[0] == ("research", "next"):
+            for role in agents:
+                yield (*ROLE_STAGE, role), None, ROLE_EVERY_SECS
+
+
+def due_standins(services: dict[str, str], metas: Iterable[dict], now: float,
+                 agents: Iterable[str] = ()) -> list[list[str]]:  # fmt: skip
+    """The stages to start now. `services` maps unit names to systemd states; `metas` are job metadata files;
+    `agents`: the research agents whose turns are stages too (none unless the agents are switched on)."""
     metas = list(metas)
     out: list[list[str]] = []
-    for argv, unit, every in STANDIN:
+    for argv, unit, every in _stages(agents):
         if unit is not None and services.get(unit) == "active":
             continue
         same = [m for m in metas if tuple((m.get("argv") or [])[: len(argv)]) == argv]
@@ -96,6 +119,8 @@ def loop_stage(argv) -> str | None:
             return " ".join(stage)
     if argv[:1] == ("research",):
         return " ".join(argv[:2])
+    if argv[:3] == ROLE_STAGE and len(argv) > 3:  # a research agent's turn: a stage whether or not they are on now
+        return " ".join(argv[:4])
     return None
 
 
@@ -148,9 +173,10 @@ def prune_jobs(jobs_dir: Path, now: float, keep_days: float = KEEP_STAGE_JOBS_DA
 
 
 def start_standins(
-    jobs, services: dict[str, str], now: float, log: Callable[[str], None] | None = None
+    jobs, services: dict[str, str], now: float, log: Callable[[str], None] | None = None, agents: Iterable[str] = ()
 ) -> list[list[str]]:
-    """Start the due stages with the operator's job runner; returns what was started."""
+    """Start the due stages with the operator's job runner; returns what was started. `agents`: the research agents
+    whose turns the round starts too (the round passes them only while they are switched on)."""
     try:
         if now % PRUNE_EVERY_SECS < ROUND_SECS:
             prune_jobs(jobs.ops.data / "jobs", now)
@@ -159,7 +185,7 @@ def start_standins(
             log(f"stand-in: pruning old job files failed: {exc}")
     metas = job_metas(jobs.ops, now - STAGE_MEMORY_SECS)
     started = []
-    for argv in due_standins(services, metas, now):
+    for argv in due_standins(services, metas, now, agents=agents):
         try:
             jobs.ops.op_run(argv, timeout=STAGE_LIMIT_SECS.get(" ".join(argv), 60 * 60))
             started.append(argv)

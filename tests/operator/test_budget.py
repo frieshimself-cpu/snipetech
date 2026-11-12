@@ -79,3 +79,29 @@ def test_an_hours_cache_write_is_priced_at_its_own_rate(tmp_path):
     led.record("analyst", usage, now=DAY)
     line = json.loads((tmp_path / "spend.jsonl").read_text())
     assert line["cache_write"] == 1_500_000 and line["cache_write_1h"] == 1_000_000 and line["usd"] == 21.0
+
+
+def test_role_turn_is_priced_like_the_analyst(tmp_path):
+    """A research agent's turn runs on the analyst's model: its spend is priced at the analyst's rows, under its own
+    name in the ledger."""
+    from snipetech.operator.budget import TIERS
+    from snipetech.operator.roles import ROLES
+
+    led = Ledger(tmp_path / "spend.jsonl", DEFAULT_OPERATOR_PRICES)
+    for role in ROLES:
+        assert TIERS[role] == "analyst"
+        assert led.record(role, {"output_tokens": 1_000_000}, now=DAY) == pytest.approx(40.0)
+    assert '"mode": "scout"' in (tmp_path / "spend.jsonl").read_text().splitlines()[0]
+
+
+def test_spent_today_by_role(tmp_path):
+    led = Ledger(tmp_path / "spend.jsonl", DEFAULT_OPERATOR_PRICES)
+    led.record("scout", {"output_tokens": 100_000}, now=DAY - 60)  # yesterday
+    led.record("scout", {"output_tokens": 100_000}, now=DAY + 60)
+    led.record("scout", {"output_tokens": 50_000}, now=DAY + 120)
+    led.record("tester", {"output_tokens": 200_000}, now=DAY + 60)
+    led.record("operator", {"input_tokens": 1_000_000}, now=DAY + 60)
+    by = led.spent_today_by(DAY + 3600)
+    assert by == pytest.approx({"scout": 6.0, "tester": 8.0, "operator": 2.0})
+    assert sum(by.values()) == pytest.approx(led.spent_today(DAY + 3600))
+    assert Ledger(tmp_path / "none.jsonl", DEFAULT_OPERATOR_PRICES).spent_today_by(DAY) == {}

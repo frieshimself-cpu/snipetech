@@ -10,6 +10,8 @@ _MILLION = 1_000_000.0
 
 
 TIERS = {"analyst": "analyst", "postmortem": "analyst", "strategist": "strategist"}  # a turn's mode -> its price rows
+# a research agent's turn (operator/roles.py) runs on the analyst's model: priced at its rows, recorded under its role
+TIERS |= {"scout": "analyst", "tester": "analyst", "fees": "analyst", "oktech": "analyst"}
 
 
 def cost_usd(usage: dict, prices: dict, analyst: bool = False, tier: str = "") -> float:
@@ -78,6 +80,17 @@ class Ledger:
     def spent_today(self, now: float | None = None) -> float:
         day = _utc_day(time.time() if now is None else now)
         return float(sum(r.get("usd", 0.0) for r in self._lines() if _utc_day(r.get("ts", 0)) == day))
+
+    def spent_today_by(self, now: float | None = None) -> dict[str, float]:
+        """Today's dollars by who spent them (a line's mode: operator, analyst, postmortem, strategist, or a research
+        agent's role): what a role's share of the day is counted against."""
+        day = _utc_day(time.time() if now is None else now)
+        out: dict[str, float] = {}
+        for r in self._lines():
+            if _utc_day(r.get("ts", 0)) == day:
+                mode = str(r.get("mode") or "?")
+                out[mode] = out.get(mode, 0.0) + float(r.get("usd", 0.0))
+        return out
 
     def spent_since(self, ts: float) -> float:
         return float(sum(r.get("usd", 0.0) for r in self._lines() if r.get("ts", 0) >= ts))

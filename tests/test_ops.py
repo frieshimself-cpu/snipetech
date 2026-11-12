@@ -506,6 +506,29 @@ def test_update_waits_for_jobs_whose_numbers_come_from_the_code_they_started_wit
         assert O.holds_deploy(argv) is holds, argv
 
 
+def test_a_role_turn_holds_a_deploy(env, monkeypatch):
+    """A research agent's turn (`operate agent --role <role>`, a job the round starts while the agents are on) is
+    mid-run like the round itself: it has loaded half its modules and reads the rest from the new files, so an update
+    waits for it and names it. Every other `operate` job holds nothing back, as before: with the agents off there is
+    no such job, and the deploy guard is what it was."""
+    ops, key = env
+    for role in ("scout", "tester", "fees", "oktech"):
+        assert O.holds_deploy(["operate", "agent", "--role", role]) is True
+    for argv in (["operate"], ["operate", "idea", "--role", "scout"], ["operate", "budget"], ["operate", "--commands"],
+                 ["operate", "autotest"], ["operate", "--dry-run"]):  # fmt: skip
+        assert O.holds_deploy(argv) is False, argv
+    started: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(argv) or {"id": "x", "argv": argv})
+    monkeypatch.setattr(ops, "_run", lambda cmd: "\n".join("inactive" for _ in O.HOLD_UNITS))
+    turn = {"id": "a", "argv": ["operate", "agent", "--role", "tester"], "running": True, "started": time.time() - 90}
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": [turn]})
+    with pytest.raises(O.OpsError, match="operate agent --role tester") as e:
+        req(ops, key, "update")
+    assert e.value.code == 409 and started == []
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": [turn | {"running": False}]})
+    assert req(ops, key, "update")["argv"] == ["update"]
+
+
 def test_the_remote_command_can_force_an_update(monkeypatch, capsys):
     from snipetech import cli
 

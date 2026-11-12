@@ -326,6 +326,12 @@ class OperatorConfig:
     # an analyst turn also every this many hours since the last one, besides the daily one (0: once a day only). New
     # on 7 Nov, so the server's file (a dump of the old defaults) does not pin it; the owner's /budget overrides it
     analyst_every_h: float = 2.0
+    # The four specialised research agents (operator/roles.py: wallet scout, strategy tester, fee and place analyst,
+    # OKTech features analyst) take the analyst's turns between the daily analyses, each with its own commands, queue
+    # and share of the day's dollars. Off: nothing of theirs starts and the round runs as before. New on 12 Nov, so
+    # the server's file does not pin it and this default is what the server runs: to switch them on, True here (and in
+    # tests/test_config_drift.py) and a deploy; the owner's `/budget every 0` switches them off without one.
+    role_agents: bool = False
     digest_hour_utc: int = 7  # the daily Telegram digest goes out in the first round after this hour (UTC)
     model: str = "claude-sonnet-5-5"  # the 15-minute health check
     analyst_model: str = "claude-fable-5-2"  # the research thinking (analyst turns and post-mortems)

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..config import OperatorConfig
+from . import roles
 from .budget import Ledger
 from .paths import OperatorPaths
 
@@ -111,6 +112,27 @@ def room_for_extra_analysis(cfg, paths: OperatorPaths | None, spent_today: float
     return float(spent_today or 0.0) + (1 + RESERVE_TURNS) * float(b["turn_usd"]) <= float(b["daily_usd"])
 
 
+def role_share_usd(cfg, paths: OperatorPaths | None, role: str) -> float:
+    """A research agent's share of the day in dollars (roles.SHARES of the owner's /budget, else the config's)."""
+    return roles.SHARES[role] * effective_daily_usd(cfg, paths)
+
+
+def role_turn_usd(cfg, paths: OperatorPaths | None) -> float:
+    """Where a research agent's turn stops: roles.ROLE_TURN_USD, or the owner's dollars a turn when that is less."""
+    return min(roles.ROLE_TURN_USD, effective_turn_usd(cfg, paths))
+
+
+def room_for_role(cfg, paths: OperatorPaths | None, role: str, spent_today: float, spent_by_role: float) -> bool:
+    """Whether a turn of `role` may start: its own share of the day is not spent (`spent_by_role`: what the ledger
+    holds under its name today) and the day is not inside the reserve (the last roles.RESERVE_SHARE of it, kept for
+    the alert rounds, the daily analysis and the post-mortems). An unused share is not passed on. Turns that check in
+    the same second can each overrun by one turn's cap, which the reserve covers."""
+    daily = effective_daily_usd(cfg, paths)
+    if float(spent_today or 0.0) >= daily * (1.0 - roles.RESERVE_SHARE):
+        return False
+    return float(spent_by_role or 0.0) < role_share_usd(cfg, paths, role)
+
+
 def set_budget(
     paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None
 ) -> dict[str, float | int]:
@@ -162,9 +184,19 @@ def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
     every, turn = float(b["analyst_every_h"]), float(b["turn_usd"])
     when = (f"an analysis every {every:g} h besides the daily one after {op.analyst_after_utc} UTC" if every > 0
             else f"the analysis once a day after {op.analyst_after_utc} UTC")  # fmt: skip
+    agents = roles.on(cfg, paths)
+    if agents:  # their turns stand where the analyses between the daily ones stood (gate.analyst_reason)
+        when = f"the research agents' turns every round and the analysis once a day after {op.analyst_after_utc} UTC"
     line = (f"Claude budget: {b['daily_usd']:g} $ a day ({spent_today:.2f} $ spent today), at most {turn:g} $ "
             f"and {b['max_tool_calls']} tool calls a turn, {when}; extra analyses pause when less than "
             f"{(1 + RESERVE_TURNS) * turn:g} $ of the day is left, so the alert rounds keep {RESERVE_TURNS * turn:g} $")  # fmt: skip
+    if agents:  # who gets what of the day
+        daily = float(b["daily_usd"])
+        shares = ", ".join(f"{r} {roles.SHARES[r] * 100:g} % ({roles.SHARES[r] * daily:g} $)" for r in roles.ROLES)
+        line += (f"; the research agents share the day: {shares}, each turn at most {role_turn_usd(cfg, paths):g} $; "
+                 f"the last {roles.RESERVE_SHARE * 100:g} % ({roles.RESERVE_SHARE * daily:g} $) is kept for the alert "
+                 "rounds, the daily analysis and the post-mortems; /budget every 0 switches the research agents "
+                 "off")  # fmt: skip
     if read_budget(paths):
         return (
             line
