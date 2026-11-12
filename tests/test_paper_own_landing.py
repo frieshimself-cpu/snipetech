@@ -222,10 +222,14 @@ def test_selling_in_parts_can_be_frozen_too():
     (rule,) = rep["frozen"]
     assert rule["exit"]["sell_parts"] == 3 and rule["exit"]["sell_part_secs"] == 5.0
     assert rep["asked"]["sell_parts"] == {"parts": 3, "secs": 5.0}
-    (whole,) = _freeze(st, copy_position="+1", buy_bid_sol=0.01)["frozen"] or [None]  # one record a rule: not again
-    assert whole is None
+    # the same rule sold in one sale is a rule of its own, frozen beside it (until the review of 12 Nov it was
+    # "one record a rule: not again", and a record in parts, which no sniper runs, kept the runnable exit out)
+    (whole,) = _freeze(st, copy_position="+1", buy_bid_sol=0.01)["frozen"]
+    assert whole["exit"]["sell_parts"] == 1 and whole["id"] != rule["id"]
+    assert _freeze(st, copy_position="+1", buy_bid_sol=0.01, sell_parts=(2, 5.0))["frozen"] == []  # in parts: once
     _forward(st)
-    assert paper.run(st, _cfg(), now=RUN)["new_trades"] == 5
+    assert paper.run(st, _cfg(), now=RUN)["new_trades"] == 10
+    assert len(st.paper_trades(rule["id"])) == 5
     st.close()
 
 
@@ -277,3 +281,99 @@ def test_the_cli_freezes_a_hypothesis_at_a_landing_and_bid_of_its_own(tmp_path, 
         assert frozen[1]["exit"]["sell_parts"] == 2
     finally:
         st.close()
+
+
+# -- a place asked for or a bid is never reported as our landing (12 Nov, review) -------------------------------------
+
+
+def _two_rules(st: Store) -> tuple[dict, dict]:
+    """The rule frozen plainly (at +6, where our copies land) and the same rule one place behind the wallet at a
+    0.01 SOL bid, both scored forward on five moments."""
+    _tape(st)
+    (plain,) = _freeze(st)["frozen"]
+    (own,) = _freeze(st, copy_position="+1", buy_bid_sol=0.01)["frozen"]
+    _forward(st)
+    return plain, own
+
+
+def test_the_owners_digest_keeps_a_place_asked_for_out_of_the_result_at_our_landing():
+    from snipetech.operator.research import _paper_line
+
+    st = Store(":memory:")
+    plain, own = _two_rules(st)
+    paper.run(st, _cfg(), now=RUN)
+    at_ours = sum(r["pnl"] for r in st.paper_trades(plain["id"]))
+    asked = sum(r["pnl"] for r in st.paper_trades(own["id"]))
+    assert asked > at_ours  # one place behind the wallet pays more than six: the number that must not pass for ours
+    line = _paper_line(st, FREEZE, RUN)
+    ours, _, theirs = line.partition(". ")
+    # until the review: "Paper test at our landing: 10 trades, ...; best <the rule at +1>"
+    assert ours == (f"Paper test at our landing: 5 trades, {at_ours:+.3f} SOL; best {plain['label'][:60]}: "
+                    f"{at_ours:+.3f} over 5 trades")  # fmt: skip
+    assert theirs.startswith("At a place asked for or with a bid, not where our copies land: 5 trades, "
+                             f"{asked:+.3f} SOL; best {own['label'][:60]} (+1 with a 0.01 SOL bid): ")  # fmt: skip
+    # with no rule at our landing, nothing is said to have been measured there
+    alone = Store(":memory:")
+    _tape(alone)
+    _freeze(alone, copy_position="+1")
+    _forward(alone)
+    assert _paper_line(alone, FREEZE, RUN) == ("Paper test at our landing: no rule is tested there. At a place asked "
+                                               "for or with a bid: no new trades (1 rule waiting)")  # fmt: skip
+    paper.run(alone, _cfg(), now=RUN)
+    line = _paper_line(alone, FREEZE, RUN)
+    assert line.startswith("Paper test at our landing: no rule is tested there. At a place asked for or with a bid, "
+                           "not where our copies land: 5 trades, ")  # fmt: skip
+    assert "(+1, no bid charged)" in line
+    # a run with nothing new: the rules at our landing wait, and so do the others, each under its own words
+    assert _paper_line(st, RUN, RUN + 60) == ("Paper test at our landing: no new trades (1 rule waiting for their "
+                                              "signal). At a place asked for or with a bid: no new trades (1 rule "
+                                              "waiting)")  # fmt: skip
+    st.close()
+    alone.close()
+
+
+def test_the_runs_own_words_say_which_trades_were_scored_at_the_live_landing():
+    from snipetech import report as R
+
+    st = Store(":memory:")
+    _two_rules(st)
+    out = paper.run(st, _cfg(), now=RUN)
+    assert out["new_trades"] == 10 and out["new_trades_own_landing"] == 5
+    text = R.render_paper("run", out)
+    assert text.startswith("scored 10 new paper trades: 5 at the live landing (copies +6, launch snipes a slot after "
+                           "the create), 5 at a place asked for or with a bid of their rule's own (not where our "
+                           "copies land live) (triggers up to ")  # fmt: skip
+    # only the rule at a place of its own: none of its trades is called a trade at the live landing
+    alone = Store(":memory:")
+    _tape(alone)
+    _freeze(alone, copy_position="+1", buy_bid_sol=0.01)
+    _forward(alone)
+    out = paper.run(alone, _cfg(), now=RUN)
+    assert out["new_trades"] == out["new_trades_own_landing"] == 5
+    text = R.render_paper("run", out)
+    assert "at the live landing" not in text and "not where our copies land live" in text
+    # and a run of plain rules reads as it always did
+    only = Store(":memory:")
+    _tape(only)
+    _freeze(only)
+    _forward(only)
+    out = paper.run(only, _cfg(), now=RUN)
+    assert out["new_trades_own_landing"] == 0
+    assert R.render_paper("run", out).startswith("scored 5 new paper trades at the live landing (copies +6, launch "
+                                                 "snipes a slot after the create) (triggers up to ")  # fmt: skip
+    for x in (st, alone, only):
+        x.close()
+
+
+def test_the_paper_report_lists_a_place_asked_for_apart_from_the_rules_at_the_live_landing():
+    from snipetech import report as R
+
+    st = Store(":memory:")
+    plain, own = _two_rules(st)
+    paper.run(st, _cfg(), now=RUN)
+    text = R.render_paper("report", paper.report(st, _cfg(), now=RUN))
+    live, mark, asked = text.partition("At a place asked for or with a bid of their own, not where our copies land")
+    assert mark and "Scored where live trades land" in live
+    assert plain["id"] in live and own["id"] not in live  # until the review: one table under "where live trades land"
+    assert own["id"] in asked and plain["id"] not in asked and "+1 with a 0.01 SOL bid" in asked
+    st.close()

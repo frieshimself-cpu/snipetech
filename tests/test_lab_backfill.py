@@ -154,3 +154,117 @@ def test_the_qualify_lab_leaves_the_same_moment_out():
     assert data["rows"] == [] and data["amm_tape"]["triggers"][rule.label()]["skipped"] == {NO_BACKFILL: 1}
     store.set_coverage(backfill_key(mint), {"pools": [addr("pool")], "spans": [[at - 60, at + 3630]]})
     assert [r["who"] for r in _lab(store, **kw)["rows"]] == [BIG]
+
+
+# -- the forward paper test leaves out what the lab leaves out (12 Nov, review) ---------------------------------------
+
+
+def _frozen(store: Store, ex: ExitParams = HOLD60, buy_sol: float = 0.2) -> dict:
+    """The wallet rule frozen by hand at the lab's place here (+3x), and the big wallet under a name of the big
+    group, as the run reads its wallets from the labels."""
+    from snipetech.analysis import paper
+
+    store.set_label(BIG, "Ansem", kind="wallet")
+    s = {"id": paper.strategy_id(RULE.__dict__, ex.to_dict(), "+3x", 0, buy_sol), "label": RULE.label(),
+         "trigger": dict(RULE.__dict__), "exit": ex.to_dict(), "position": "+3x", "latency": 0, "buy_sol": buy_sol,
+         "per_tx_sol": PER_TX, "from_ts": hm(9, 0), "lab": {"mean": 0.1, "ev_lower": 0.05},
+         "landing_asked": True}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": [s]})
+    return s
+
+
+def _cfg() -> Config:
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 200
+    return cfg
+
+
+def test_the_forward_paper_run_leaves_the_same_moment_out_and_counts_it():
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    _mint, at = _coin(store, "old", 7200, later=False)
+    _tape(store)
+    s = _frozen(store)
+    out = paper.run(store, _cfg(), now=at + 3000)
+    # before: one trade of -0.0119 SOL held 0 s (the fees), written into the rule's record as a measured loss
+    assert out["new_trades"] == 0 and store.paper_trades(s["id"]) == []
+    assert out["skipped"] == {s["id"]: {NO_BACKFILL: 1}} and out["why"][NO_BACKFILL] == SKIP_WORDS[NO_BACKFILL]
+    assert "1 a wallet's PumpSwap buy on a stretch the tape does not hold whole" in R.render_paper("run", out)
+    store.close()
+
+
+def test_the_forward_paper_run_needs_the_coverage_record_too():
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    _mint, at = _coin(store, "old", 7200, later=True)  # the trades are there, nothing says the stretch is whole
+    _tape(store)
+    s = _frozen(store)
+    out = paper.run(store, _cfg(), now=at + 3000)
+    assert out["new_trades"] == 0 and out["skipped"] == {s["id"]: {NO_BACKFILL: 1}}
+    store.close()
+
+
+def test_the_forward_paper_run_scores_the_buy_on_a_backfilled_stretch_as_the_lab_does():
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    mint, at = _coin(store, "old", 7200, later=True)
+    _tape(store)
+    store.set_coverage(backfill_key(mint), {"pools": [addr("pool")], "spans": [[at - 60, at + 120]]})
+    (row,) = _lab(store)["rows"]
+    s = _frozen(store)
+    out = paper.run(store, _cfg(), now=at + 3000)
+    assert out["new_trades"] == 1 and out["skipped"] == {}
+    (trade,) = store.paper_trades(s["id"])
+    assert trade["mint"] == mint and trade["pnl"] == pytest.approx(row["pnl"][0]) and trade["pnl"] > 0.005
+    # the rule's own exit decides how much tape it needs: the stretch is too short for a 300 s timer
+    long = _frozen(store, HOLD300)
+    store.set_coverage("paper", {})
+    out = paper.run(store, _cfg(), now=at + 3000)
+    assert out["new_trades"] == 0 and out["skipped"] == {long["id"]: {NO_BACKFILL: 1}}
+    store.close()
+
+
+def test_the_forward_paper_run_scores_a_buy_inside_the_recorders_own_window():
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    mint, at = _coin(store, "young", 600, later=True)
+    _tape(store)
+    store.set_coverage(AMM_RECENT_KEY, {"runs": [{"run": "r", "from": hm(9, 30), "to": hm(12, 0), "secs": 1800,
+                                                  "skipped": [], "slot_secs": 0.4}]})  # fmt: skip
+    s = _frozen(store)
+    out = paper.run(store, _cfg(), now=at + 3000)
+    assert out["new_trades"] == 1 and [t["mint"] for t in store.paper_trades(s["id"])] == [mint]
+    store.close()
+
+
+def test_a_fee_only_row_already_in_a_record_is_counted_by_rescore_and_left_as_it_was(monkeypatch):
+    """The rows the run wrote before 12 Nov evening stay in the rule's record, as a row too large for its pool does:
+    `paper rescore` says how many of a rule's trades they are (`left`: backfill) and prices none of them again."""
+    from snipetech.analysis import paper
+
+    store = Store(":memory:")
+    _mint, at = _coin(store, "old", 7200, later=False)
+    _tape(store)
+    s = _frozen(store)
+    with monkeypatch.context() as mp:  # the run as it was: a wallet's PumpSwap buy scored on whatever the tape held
+        mp.setattr(paper, "amm_buy_gap", lambda *a, **kw: None)
+        assert paper.run(store, _cfg(), now=at + 3000)["new_trades"] == 1
+    (before,) = store.paper_trades(s["id"])
+    assert before["pnl"] == pytest.approx(-0.011938, abs=1e-6) and before["data"]["hold_secs"] == 0.0
+    out = paper.rescore(store, _cfg(), ids=[s["id"]], now=at + 3000)  # a row of today's model: looked at all the same
+    (one,) = out["strategies"]
+    assert one["rows"] == 1 and one["rescored"] == 0 and one["left"] == {"backfill": 1}
+    assert one["total_after"] == pytest.approx(one["total_before"]) and "history amm-backfill" in out["why"]["backfill"]
+    assert store.paper_trades(s["id"]) == [before]
+    # a row another model priced is not priced again there either
+    store.conn.execute("UPDATE paper_trades SET data=json_remove(data, '$.model')")
+    store.conn.commit()
+    (old,) = store.paper_trades(s["id"])
+    (one,) = paper.rescore(store, _cfg(), ids=[s["id"]], now=at + 3000)["strategies"]
+    assert one["rescored"] == 0 and one["left"] == {"backfill": 1} and store.paper_trades(s["id"]) == [old]
+    assert "1 a wallet's PumpSwap buy" in R.render_paper("rescore", out)
+    store.close()
