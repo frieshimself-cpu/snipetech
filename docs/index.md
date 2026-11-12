@@ -14,6 +14,7 @@
 | `research/` | The cloud session's strategy research rounds: one report per round (outcome, labs, builds, lessons, next angles) and their index; the server's agents read the newest round at every turn | Claude, after every round |
 | `birdeye.md` | What the Birdeye plan gives us, CU costs, where it plugs in | Claude |
 | `research/2026-11-12-gmgn-api.md` | GMGN's query API: how a call is made (key in a header, no signature on a read), every read with its weight and fields, the limits, what `snipetech gmgn` and the `gmgn` discover source do, what is not verified until the first real call | Claude, 12 Nov |
+| `research/2026-11-12-recipe-6z91.md` | The winning copy bot's recipe as rules: what `lab --recipe 6z91` and `paper freeze --recipe 6z91` run, what the tape corrected in the playbook's one line (its copy exit, the market-cap band, a typed 1 SOL), how much of the bot's own copies the recipe covers (11 % in 24 hours) and why, what is not known, the commands for the analyst | Claude, 12 Nov |
 | `jev.md` | TypeSafe's Jev: what it is, why it is not used yet, the measured-first plan | Claude |
 | `superpowers/specs/` | Designs approved before building (operator agent). `2026-11-12-specialised-agents-design.md`: the analyst split into a wallet scout, a strategy tester and a fee and place analyst; a design, not built | Claude, owner approves |
 | `superpowers/plans/` | Task-by-task implementation plans with their tests | Claude |

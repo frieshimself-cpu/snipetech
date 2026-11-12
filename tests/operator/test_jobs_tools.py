@@ -778,3 +778,31 @@ def test_the_agents_are_told_how_to_read_a_ladder_exit(toolbox):
     assert "of the first position" in text and "everything left" in text
     assert "share of what is left" in text and "tiny live test" in text  # the open question about OKTech
     assert "momentum hold" in text and "no sniper is sent it" in text
+
+
+def test_the_agents_are_told_what_a_recipe_is_and_that_it_never_follows_the_bot(toolbox):
+    """12 Nov, the owner on the winning copy bot: "we cant copy a wallet that is copying because we are filled above,
+    we can learn from it tho". `--recipe 6z91` is the bot's playbook in the lab's own knobs; the tool says what it
+    expands to, where the bot's own exit is scored, how to freeze it forward, and that it follows the wallets the bot
+    follows, never the bot."""
+    from snipetech.analysis.lab import RECIPES
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["lab", "--recipe", "6z91", "--hours", "24", "--json"]' in text
+    assert '["paper", "freeze", "--recipe", "6z91"]' in text
+    assert "follows the wallets the bot follows" in text and "never the bot" in text
+    assert "13 s to 7 min old" in text and "2 SOL a buy at a 0.03 SOL bid" in text
+    assert '"sol": 0.95' in text and "typed as 1 SOL" in text  # a typed 1 SOL is under 1 SOL on the tape
+    assert "recipe.scores" in text and "research only" in text
+    assert "30 % sold at 3 s" in text and "out by 18 s" in text  # the bot's own exit on its copies, as measured
+    for name in RECIPES:  # every recipe there is, by its name
+        assert f'"{name}"' in text, name
+
+
+def test_start_refuses_a_recipe_nobody_wrote_before_any_job_starts(jobs):
+    for argv in (["lab", "--recipe", "7iyYn4", "--json"], ["paper", "freeze", "--recipe=6Z91Dgiz"]):
+        with pytest.raises(PermissionError, match="--recipe refused, no job started: no recipe is called"):
+            jobs.start(argv)
+    assert not list((jobs.ops.data / "jobs").glob("*.json"))
+    assert jobs.start(["lab", "--recipe", "6z91", "--hours", "24", "--json"])["id"]

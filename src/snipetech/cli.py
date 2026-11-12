@@ -579,13 +579,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="where in that slot you land: start, middle, end, or +N (N trades in the token ahead of you); launch, "
         "hunt, whale and burst triggers are always scored where a hunt buy lands (a launch a slot after the create)",
     )
-    sp.add_argument("--buy", type=float, default=0.2, help="SOL per buy")
+    sp.add_argument("--buy", type=float, default=None, help="SOL per buy (default 0.2; with --recipe the bot's size)")
     sp.add_argument("--per-tx", type=float, default=None,
                     help="SOL per transaction (priority + tip + base + failed duplicate sends; default: the measured "
                          "cost, half the low bid's measured round trip, the last one measured after a week without "
                          "enough fills, 0.0045 until one is measured, as `paper freeze` charges; the output names the "
                          "cost and where it came from)")  # fmt: skip
     sp.add_argument("--top", type=int, default=10)
+    sp.add_argument("--recipe", metavar="NAME",
+                    help="a winning bot's recipe by name instead of typed triggers (6z91: the copy bot's copy half; "
+                         "6z91-quick: the same rules on its faster clock; 6z91-big and fhbh1d-big: the bigger tasks "
+                         "behind the big wallets): its family of triggers, "
+                         "every exit of the search set and the bot's own exit, at the bot's size and bid unless --buy "
+                         "/ --buy-bid say another. It follows the wallets the bot follows (our label groups), never "
+                         "the bot. The result's `recipe` block scores the bot's own exit on every trigger. Research "
+                         "only: no live sniper runs the bot's exit")  # fmt: skip
     sp.add_argument(
         "--by-wallet",
         action="store_true",
@@ -602,10 +610,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
                          "the N-th buy across slots. A closer place is bought with a bid: charge it with --per-tx")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
-    sp.add_argument("--buy-bid", type=float, default=0.0, metavar="SOL",
+    sp.add_argument("--buy-bid", type=float, default=None, metavar="SOL",
                     help="a bid paid once on every buy, on top of --per-tx (which every transaction pays, the sales "
                          "too): what a paid place costs, e.g. --copy-position +0 --buy-bid 2 for the first place "
-                         "behind a wallet everyone buys on top of. No upper limit")  # fmt: skip
+                         "behind a wallet everyone buys on top of. No upper limit (default 0; with --recipe the "
+                         "bot's bid)")  # fmt: skip
     sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
                     help="every exit sells out in N equal parts (2 to 20) instead of one sale: what selling slowly is "
                          "worth at a size (--buy 5, 10, 30). Each part is priced into the pool the earlier parts left "
@@ -796,7 +805,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="freeze: landing position of the lab (+6: where live copies land; scoring is at the live landing)",
     )
     sp.add_argument("--latency", type=int, default=0, help="freeze: slots after the trigger")
-    sp.add_argument("--buy", type=float, default=0.2, help="freeze: SOL per buy")
+    sp.add_argument("--buy", type=float, default=None,
+                    help="freeze: SOL per buy (default 0.2; with --recipe the bot's size)")  # fmt: skip
+    sp.add_argument("--buy-bid", type=float, default=None, metavar="SOL",
+                    help="freeze: a bid paid once on every buy, on top of --per-tx; the lab charges it and each rule "
+                         "frozen keeps it, so its forward trades pay it too (default 0; with --recipe the bot's "
+                         "bid)")  # fmt: skip
+    sp.add_argument("--recipe", metavar="NAME",
+                    help="freeze: a winning bot's recipe by name (as `lab --recipe`: 6z91, 6z91-quick, 6z91-big, "
+                         "fhbh1d-big): its "
+                         "triggers, each frozen with the bot's own exit (never the lab's pick), at the bot's size and "
+                         "bid unless told. It follows the wallets the bot follows, never the bot. Not with "
+                         "--trigger")  # fmt: skip
     sp.add_argument("--per-tx", type=float, default=None,
                     help="freeze: SOL per transaction (default: the measured cost, half the low bid's measured round "
                          "trip, the last one measured after a week without enough fills, 0.0045 until one is measured; "
@@ -1579,27 +1599,40 @@ async def _run(args, cfg: Config) -> int:
 
             from .analysis import paper
             from .analysis.lab import collect as lab_collect
+            from .analysis.lab import exit_scores as lab_exit_scores
             from .analysis.lab import exit_set as lab_exit_set
             from .analysis.lab import in_parts as lab_in_parts
             from .analysis.lab import label_groups as lab_groups
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
+            from .analysis.lab import recipe as lab_recipe
+            from .analysis.lab import recipe_exits as lab_recipe_exits
             from .analysis.lab_lock import lab_lock
             from .operator.research import recent_tape
             from .qualify.run import lab_tx_cost_info
 
             try:  # refused before any tape is read
-                if not args.buy_bid >= 0:
-                    raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {args.buy_bid:g}")
+                # a bot's recipe by name: its triggers ahead of any typed with it, its own exit among the exits, its
+                # size and bid unless told
+                rec = lab_recipe(args.recipe) if args.recipe else None
+                if rec is not None and args.sell_parts > 1:
+                    raise ValueError("--recipe scores the bot's own exit, which has its own parts: leave --sell-parts "
+                                     "out (or type the triggers with --trigger to put every exit in "
+                                     "parts)")  # fmt: skip
+                buy = args.buy if args.buy is not None else (rec.buy_sol if rec else 0.2)
+                buy_bid = args.buy_bid if args.buy_bid is not None else (rec.bid_sol if rec else 0.0)
+                if not buy_bid >= 0:
+                    raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {buy_bid:g}")
                 lab_in_parts(lab_exit_set()[:1], args.sell_parts, args.sell_part_secs)
             except ValueError as exc:
                 print(f"lab: {exc}", file=sys.stderr)
                 return 2
+            hypotheses = [*(rec.triggers if rec else ()), *(args.trigger or ())] or None
             sell_parts = (args.sell_parts, args.sell_part_secs) if args.sell_parts > 1 else None
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
             # of their own: their copies at the copy landing; the grid's copies at --latency / --position
-            lat, pos = (paper.hypothesis_landing(copy_pos, args.copy_position) if args.trigger
+            lat, pos = (paper.hypothesis_landing(copy_pos, args.copy_position) if hypotheses
                         else (args.latency, args.position))  # fmt: skip
             # what a transaction costs live, as `paper freeze`, the qualify lab and the strategy search charge it, unless
             # told: every lab of research round 1 (7 Nov) charged the flat 0.0035 against about 0.0045 live, so every
@@ -1619,25 +1652,33 @@ async def _run(args, cfg: Config) -> int:
                     # the trades from the hourly copy, the wallet groups from the live database: the copy has none of
                     # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
                     # nothing and said so nowhere)
-                    return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
-                                       triggers=args.trigger, kols=lab_groups(svc.store),
-                                       sell_parts=sell_parts, buy_bid_sol=args.buy_bid)  # fmt: skip
+                    return lab_collect(tape, cfg, buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
+                                       triggers=hypotheses, kols=lab_groups(svc.store),
+                                       exits=lab_recipe_exits(rec) if rec else None,
+                                       sell_parts=sell_parts, buy_bid_sol=buy_bid)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
-            top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
+            top = max(args.top, len(hypotheses)) if hypotheses else args.top  # --top never hides a hypothesis
             ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
-                   "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
+                   "copy_landing": copy_pos, "buy_sol": buy, **cost, "hours": args.hours,
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
-            if args.buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
-                res["buy_bid_sol"] = float(args.buy_bid)
+            if buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
+                res["buy_bid_sol"] = float(buy_bid)
+            if rec is not None:
+                # the bot's own exit on every trigger of the recipe, whichever exit the ranking picked: `strategies`
+                # says what the best exit of the search set makes of the same moments
+                res["recipe"] = {"name": rec.name, "what": rec.what, "bot_buy_sol": rec.buy_sol,
+                                 "bot_bid_sol": rec.bid_sol, "exit": rec.exit.label(),
+                                 "exit_params": rec.exit.to_dict(), "research_only": True,
+                                 "scores": lab_exit_scores(data, cfg, rec.exit)}  # fmt: skip
             if sell_parts:  # every exit sold out in parts (research only)
                 res["sell_parts"] = {"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
             if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of
                 res["copy_companions"] = data["mates"]
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
-            if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired
+            if hypotheses:  # each hypothesis, ranked or not: where it was scored and how often it fired
                 fired = Counter(r["trigger"] for r in data["rows"])
                 res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
                                     **paper.landing_fields({"landing": data["landing_of"][ti], "trigger_spec": t.__dict__},
@@ -1707,12 +1748,25 @@ async def _run(args, cfg: Config) -> int:
                     if args.per_tx is not None
                     else lab_tx_cost_info(svc.store, cfg)
                 )
+                try:  # refused before any lab runs
+                    from .analysis.lab import recipe as lab_recipe
+
+                    rec = lab_recipe(args.recipe) if args.recipe else None
+                    if rec is not None and args.trigger:
+                        raise ValueError("--recipe brings its own triggers: freeze typed --trigger rules in a command "
+                                         "of their own")  # fmt: skip
+                    if args.buy_bid is not None and not args.buy_bid >= 0:
+                        raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {args.buy_bid:g}")
+                except ValueError as exc:
+                    print(f"paper freeze: {exc}", file=sys.stderr)
+                    return 2
                 rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
                                               cost["per_tx_sol"], args.replace, only_live=args.only_live,
                                               triggers=args.trigger, hours=args.hours,
                                               lock_dir=Path(cfg.storage.db_path).resolve().parent,
                                               per_tx_source=cost["per_tx_source"],
-                                              tape=lambda: svc.tape_store)  # fmt: skip
+                                              tape=lambda: svc.tape_store, recipe=rec,
+                                              buy_bid_sol=args.buy_bid)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             elif args.action == "rescore":

@@ -639,6 +639,24 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
         that size; it is research only (no live sniper sells in parts yet: a winner is a finding for the owner, not a
         sniper to propose).
+        A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
+        filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
+        bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s
+        to 7 min old at the bot's market-cap band, behind groups wallet, trader, big and kol, plus the big wallets
+        without those gates, at 2 SOL a buy at a 0.03 SOL bid unless "--buy" / "--buy-bid" say another. (A buy typed as
+        1 SOL is 0.96 to 0.99 SOL on the tape once the fees are off it, so the recipe's floor is "sol": 0.95; a
+        floor of 1 in a trigger of your own passes none of them.) A recipe follows
+        the wallets the bot follows (our label groups: the bot's own list is not known), never the bot. The lab
+        scores every exit of the set as always, and recipe.scores in the result is the bot's own exit on its copies
+        (30 % sold at 3 s, the rest in five pieces every 3 s, all out by 18 s) on each trigger: compare it with the
+        best exit in strategies on the same moments. The other recipes are "6z91-quick" (the same triggers on the
+        faster clock of the bot's launch snipes: 40 % at 2 s, all out by 20 s, everything at once when the price has
+        not moved), "6z91-big" (10 SOL at a 0.3 SOL bid behind the big wallets) and "fhbh1d-big" (5 SOL at 0.35,
+        everything sold at once after 1 to 2 s). ["paper", "freeze", "--recipe", "6z91"] freezes each trigger of the
+        recipe with the bot's
+        own exit and bid for the forward test (its skipped list says which fired too rarely or had no positive
+        lower bound). The bot's exit is research only: no sniper is sent it, so a recipe that pays is a finding for
+        the owner with its landing and bid named, never a sniper to start.
         LADDER EXITS (OKTech's stages, the owner: "partially sell but hold some", "hold it until it start going
         down"): every lab scores a few without being asked; read a row's "exit" label stage by stage.
         TP+20%@25%/+50%@25%/+100%@25% sells 25 % of the first position at +20 %, 25 % at +50 %, 25 % at +100 %; a

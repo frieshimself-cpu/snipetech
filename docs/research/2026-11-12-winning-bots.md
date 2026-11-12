@@ -292,6 +292,12 @@ The larger the buy, the better it did all week, before bids: +1.4 % on its 1.2 S
 What an OKTech copy sniper would have to do to be each bot. None of this is tested by us; sizes above 0.2 SOL and new
 bids are the owner's yes for each step.
 
+**Corrected the same evening** ([the recipe as rules](2026-11-12-recipe-6z91.md)). The copy half's line below reads
+the bot's whole week as one clock. On its copies alone the bot sells 30 % at 3.2 seconds and 17 % every 2.7 seconds,
+and drops a copy whole at 2 seconds on 2 of 100; the 40 % at 2 seconds and the drop are its launch snipes. The 57 to
+122 SOL is the market cap after the bot's own buy (47 to 106 after the buy it follows), and the three bands are the
+middle half of what it buys, not its limits. `lab --recipe 6z91` runs the corrected rules.
+
 - **6Z91, the copy half.** Copy any wallet's buy of 1 to 3 SOL in a pump.fun coin 13 seconds to 7 minutes old at a
   market cap of 57 to 122 SOL, in the wallet's own block, 2 to 3.6 SOL a buy, priority fee about 0.03 SOL and no tip,
   sell 40 % within 2 seconds and the rest in pieces every 3 seconds, everything out by 20 seconds, drop everything at

@@ -539,11 +539,14 @@ def _laddered(e: ExitParams) -> bool:
 
 
 def test_the_lab_searches_a_few_ladder_exits_and_every_exit_it_had():
-    from snipetech.analysis.lab import MIG_MAX_HOLD_SECS, _as_live, exit_set, exits_horizon, mig_exit_set
+    from snipetech.analysis.lab import MIG_MAX_HOLD_SECS, RECIPES, _as_live, exit_set, exits_horizon, mig_exit_set
 
     exits = exit_set()
     labels = [e.label() for e in exits]
     assert len(set(labels)) == len(labels)  # the ranking and the paper report tell exits apart by label
+    # the last one is the 6Z91 recipe's own exit (tests/test_recipe.py); ahead of it the set is as it was
+    assert exits[-1] == RECIPES["6z91"].exit and not _laddered(exits[-1])
+    exits = exits[:-1]
     new = [e for e in exits if _laddered(e)]
     assert 4 <= len(new) <= 8  # a few: every exit costs one simulation per moment on the whole tape
     assert exits[-len(new) :] == new and len(exits) - len(new) == 54  # the 54 there were, in their order, then these

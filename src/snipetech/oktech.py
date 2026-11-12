@@ -329,6 +329,13 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
         raise ValueError("an exit with momentum hold is research only: it was scored on our own reading of OKTech's "
                          "clock, which no live trade has shown yet, and sent without the hold it is another "
                          "exit")  # fmt: skip
+    # an exit that sells out in parts (`sell_parts`, with `first_part` / `flat_below`): no OKTech setting sends it,
+    # and without its parts it is another exit (a 3 s timer in six parts would go out as everything sold at 3 s).
+    # Since 12 Nov every lab scores one (the 6Z91 recipe's), so a rule frozen with it must never become a sniper
+    in_parts = float(e.get("sell_parts") or 0) > 1
+    if in_parts or float(e.get("first_part") or 0) > 0 or float(e.get("flat_below") or 0) > 0:
+        raise ValueError("an exit that sells out in parts is research only: no OKTech setting sends its parts yet, "
+                         "and sent without them it is another exit")  # fmt: skip
     tp_ladder, sl_ladder = stage_pairs(e.get("tp_stages"), "tp_stages"), stage_pairs(e.get("sl_stages"), "sl_stages")
     if not (tp or sl or trail or hold or stale or mig or tp_ladder or sl_ladder):
         return None
@@ -527,7 +534,8 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
     stop-loss of at most 35 %, a sell-all timer of at most 600 s, a dead exit (if any) of 1 s or more, a take-profit
     (if any) of +5 % or more. A ladder (`tp_stages`, `sl_stages`) is held to the same rules: every take-profit stage at
     +5 % or more, and the stop stages (with the single stop-loss) must have sold the whole position by -35 %. Selling
-    out in parts and momentum hold are research only. With the config, an exit in the lab's form (it carries
+    out in parts (with a first part of its own size, or dropped whole when the price has not moved: `first_part`,
+    `flat_below`) and momentum hold are research only. With the config, an exit in the lab's form (it carries
     `copy_exit_pct`, the copy exit it was scored with) must have the copy exit copy snipers send ([oktech]
     copy_exit_threshold_percent)."""
     e = params or {}
@@ -588,6 +596,16 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
     if not parts <= 1:  # 0 or missing: one sale
         out.append(f"sells out in {parts:g} parts: research only, no OKTech setting sends that yet (its stages are "
                    "not tested for it)")  # fmt: skip
+    # the two fields that shape a sale in parts (the 6Z91 recipe, 12 Nov): refused by themselves too, so an exit that
+    # lost its parts on the way here is still not sent as another exit
+    first = num("first_part")
+    if not first <= 0:
+        out.append(f"a first part of {first:.0%} on a clock: research only, no OKTech setting sends a timed part yet "
+                   "(its stages are not tested for it)")  # fmt: skip
+    flat = num("flat_below")
+    if not flat <= 0:
+        out.append(f"drops everything when worth under {flat:g} of its cost at the first part: research only, no "
+                   "OKTech setting sends that yet")  # fmt: skip
     if cfg is not None and e.get("copy_exit_pct") is not None:
         scored, sent = num("copy_exit_pct"), float(cfg.oktech.copy_exit_threshold_percent) / 100.0
         if not abs(scored - sent) <= 1e-9:

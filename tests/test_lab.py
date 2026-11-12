@@ -824,8 +824,8 @@ def test_the_exit_set_has_the_seconds_long_timers_the_profitable_bots_sell_on():
     from snipetech.analysis.lab import exit_set
 
     timers = sorted(e.max_hold_secs for e in exit_set() if not (e.take_profit or e.stop_loss or e.trailing_stop
-                                                               or e.stale_secs))  # fmt: skip
-    assert timers[:3] == [3, 5, 10]
+                                                               or e.stale_secs) and e.sell_parts == 1)  # fmt: skip
+    assert timers[:3] == [3, 5, 10]  # one sale each (the exit in parts of the 6Z91 recipe is not one of them)
 
 
 def test_a_hypothesis_can_be_scored_at_a_paid_place_instead_of_the_measured_copy_landing():
