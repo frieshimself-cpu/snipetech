@@ -1,0 +1,6 @@
+{
+ "code": 429,
+ "error": "RATE_LIMIT_BANNED",
+ "message": "too many requests",
+ "reset_at": 1775184222
+}

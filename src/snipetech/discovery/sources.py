@@ -20,6 +20,7 @@ class DiscoverContext:
     birdeye: Any = None
     solanatracker: Any = None
     vybe: Any = None
+    gmgn: Any = None
     log: Callable[[str], None] = print
     budgets: dict[str, int] = field(default_factory=lambda: {"birdeye_cu": 60_000, "solanatracker": 1_500, "vybe": 500})
 
@@ -121,6 +122,25 @@ class VybeSource:
         return out
 
 
+class GmgnSource:
+    """The wallets GMGN ranks: everyone trading on its KOL list and its smart-money list right now, and the winners
+    of its hottest pump.fun coins, with GMGN's name for each and its profit and win rate (`Service.discover_gmgn`,
+    which also names the named ones in our labels). The lists are the newest 200 trades each, so the set grows run
+    by run. GMGN is asked at most every `every_secs` (`[gmgn] every_hours`, an hour by default), however often the
+    discover stage runs: about 160 of the plan's weight a run (Pro: 50 a second)."""
+
+    name = "gmgn"
+
+    def __init__(self, every_secs: float = 3600):
+        self.every_secs = int(every_secs)
+
+    def fetch(self, ctx: DiscoverContext) -> list[dict]:
+        if ctx.gmgn is None:
+            return []
+        rows = ctx.svc.discover_gmgn(ctx.gmgn, now=ctx.now)
+        return [{"wallet": r["wallet"], "stats": r} for r in rows if r.get("wallet")]
+
+
 class CoinFirstBuyersSource:
     """Coin-first: the first buyers of coins that ran (price x `min_multiple` within 10 minutes of the launch).
     First buyers come from SolanaTracker when a client is present, else from the tape; a wallet early in several
@@ -218,4 +238,6 @@ def default_sources(ctx: DiscoverContext) -> list[Source]:
     out.append(CoinFirstBuyersSource())
     if ctx.vybe is not None:
         out.append(VybeSource())
+    if ctx.gmgn is not None:
+        out.append(GmgnSource(every_secs=ctx.cfg.gmgn.every_hours * 3600))
     return out

@@ -1,0 +1,7 @@
+{
+ "code": 403,
+ "error": "PLAN_UPGRADE_REQUIRED",
+ "message": "plan upgrade required",
+ "upgrade_url": "https://gmgn.ai/ai?chain=bsc&tab=paid_plans",
+ "upgrade_message": "Upgrade your plan to use this endpoint."
+}

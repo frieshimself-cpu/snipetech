@@ -290,8 +290,9 @@ coin held, the tape stalled). At the config's 15 $ a day and 2 $ a turn, the ext
 **Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
 `snipetech discover run` (hourly) puts every source's wallets into one `candidates` table: the tape's consistent
 winners, your tracked list, SolanaTracker's 90- and 30-day boards, Birdeye's gainers and hot-coin top traders,
-Vybe's 30-day board, and the first buyers of coins that ran 5× within ten minutes. Platform wallets and flagged bots
-are banned, a failing source is reported and skipped, and each source has its own budget. `snipetech qualify run`
+Vybe's 30-day board, the first buyers of coins that ran 5× within ten minutes, and (with `GMGN_API_KEY` set) the
+wallets on GMGN's KOL and smart-money lists plus the winners of its hottest pump.fun coins. Platform wallets and
+flagged bots are banned, a failing source is reported and skipped, and each source has its own budget. `snipetech qualify run`
 (every 30 min) takes the candidates whose review is due, labels them `cand`, runs **one** by-wallet lab where live
 copies land (`+3x`: behind the 3rd buy after the leader's, counted across slots, never cheaper than right behind the
 leader and never in the create slot; further back only when the measured landing or `[qualify] landing_pos` says so)
@@ -347,6 +348,18 @@ trade that lifts a coin's curve past 10, 30 and 60 SOL of real reserves, measure
 reserves, and the creator's outgoing SOL in the day around any launch that reached 60 SOL, which becomes a
 `paid_by_dev` edge that the qualify stage's relationship gate reads. The nightly event-expectancy lab (each event
 kind as a trigger at the measured landing) is the next step of this phase.
+
+**GMGN (a data source that only reads).** With `GMGN_API_KEY` in `/etc/snipetech/env`, `snipetech gmgn <action>`
+looks things up on GMGN: `ping` (does the key work, which plan answers), `kol` and `smart-money` (the wallets on
+GMGN's lists with name, X handle, profit and win rate), `who <name>` (a name or X handle to wallets),
+`wallet <address>` (profit, win rate, how many GMGN users follow it, its last trades), `fees <address>` (the priority
+fee and tip it pays on its buys), `token <mint>` (card, risk, top holders and traders with tags such as sniper,
+insider, bundler), `top-traders [mint]`, `trending`, `new-pairs`, `candles <mint>`, `gas` (the fees GMGN's own users
+pick), `created <address>`. Every action prints JSON; `--raw` prints GMGN's answer as it came. The discover stage
+reads GMGN at most once an hour (`[gmgn] every_hours`) and labels the wallets GMGN names (`kol`, `wallet`; never over
+a label of yours; `[gmgn] label = false` switches it off). GMGN never trades for us: the client has no code for a
+swap or an order and refuses any path that is not on its list of reads. How the API is called, what it weighs and
+what is not verified yet: `docs/research/2026-11-12-gmgn-api.md`.
 
 **Remote operations.** `snipetech-ops` only accepts requests signed with an Ed25519 key listed in
 `deploy/ops_authorized_keys` — public halves only, so nothing secret is ever exchanged — and refuses

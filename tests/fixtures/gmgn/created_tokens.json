@@ -1,0 +1,34 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "last_create_timestamp": 1794494800,
+  "inner_count": 12,
+  "open_count": 2,
+  "open_ratio": "0.1429",
+  "creator_ath_info": {
+   "creator": "EoNVqoCkE4cADjRfHP5hHFfuaqEaVUK39MKFzoLnXPv",
+   "ath_token": "o5NbBLfzj32SGMF8NA72aE8iN43VsdEHob8EKYqjpump",
+   "ath_mc": "902000",
+   "token_symbol": "CAT",
+   "token_name": "Cat"
+  },
+  "tokens": [
+   {
+    "token_address": "CcnpRLK4pnA35KjAd2aGZr4GAat16h8oTTKQq9pSpump",
+    "symbol": "FROG",
+    "chain": "sol",
+    "create_timestamp": 1794494800,
+    "is_open": false,
+    "market_cap": "41200",
+    "token_ath_mc": "58100",
+    "pool_liquidity": "18200.5",
+    "holders": 1820,
+    "launchpad_platform": "Pump.fun",
+    "is_pump": true,
+    "bundler_rate": 0.11,
+    "cto_flag": false
+   }
+  ]
+ }
+}

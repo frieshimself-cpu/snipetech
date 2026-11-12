@@ -1,0 +1,5 @@
+{
+ "code": 401,
+ "error": "AUTH_INVALID",
+ "message": "missing api key or client_id"
+}

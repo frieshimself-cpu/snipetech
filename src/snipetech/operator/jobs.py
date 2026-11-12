@@ -31,6 +31,7 @@ RESEARCH_COMMANDS = frozenset(
         "playbook",
         "launch-tools",
         "place-bids",
+        "gmgn",
     }
 )
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
@@ -38,6 +39,8 @@ RESEARCH_COMMANDS = frozenset(
 # change settings. Named here so the refusal says whose they are and the model does not try variants
 OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "book", "strategist", "config"})
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
+# a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
+LOOKUP_REPEAT_SECS = {"gmgn": 600}
 
 
 class OperatorJobs:
@@ -97,10 +100,11 @@ class OperatorJobs:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
-        for jid in jobs_since(self.ops.data / "jobs", now - REPEAT_AFTER_SECS):
+        window = LOOKUP_REPEAT_SECS.get(argv[0], REPEAT_AFTER_SECS)
+        for jid in jobs_since(self.ops.data / "jobs", now - window):
             meta = self.ops._meta(jid)
             if (meta and list(meta.get("argv") or []) == list(argv) and not meta.get("running")
-                    and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - REPEAT_AFTER_SECS):  # fmt: skip
+                    and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - window):  # fmt: skip
                 return meta
         return None
 

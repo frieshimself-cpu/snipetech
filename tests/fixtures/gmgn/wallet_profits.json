@@ -1,0 +1,44 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "list": [
+   {
+    "wallet_address": "Dc4gM8pJBGrNNxBJxGBj5DEqvSWAER1bRwb18xw1Ku2D",
+    "realized_profit": "15234.52",
+    "realized_profit_cost": "48000",
+    "buy": 140,
+    "sell": 131,
+    "unrealized_profit": "-320.1",
+    "total_realized_profit": "412345.9",
+    "total_realized_profit_cost": "1900000",
+    "total_profit": "412345.9",
+    "total_cost": "1900000"
+   },
+   {
+    "wallet_address": "9MFPQ8VzmPNuaK3kJMwGdwasCsSp1eMXmYCYgWtzPhPL",
+    "realized_profit": "-2210.4",
+    "realized_profit_cost": "30100",
+    "buy": 310,
+    "sell": 305,
+    "unrealized_profit": "0",
+    "total_realized_profit": "-9100",
+    "total_realized_profit_cost": "250000",
+    "total_profit": "-9100",
+    "total_cost": "250000"
+   },
+   {
+    "wallet_address": "CAKzhjHor8i7tXvFpPRUxiNB7wXZubJ7fWCxGLqHnz3e",
+    "realized_profit": "640",
+    "realized_profit_cost": "5200",
+    "buy": 22,
+    "sell": 19,
+    "unrealized_profit": "55.5",
+    "total_realized_profit": "7300",
+    "total_realized_profit_cost": "61000",
+    "total_profit": "7300",
+    "total_cost": "61000"
+   }
+  ]
+ }
+}
