@@ -1061,8 +1061,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
-                    "put: local-file name; sql: query; logs: unit; update: --when-quiet [minutes] to wait (20) for the "
-                    "moment no job or timer unit is mid-run, --force to deploy although one is")  # fmt: skip
+                    "put: local-file name; sql: query; logs: a unit, kernel or systemd, with --boot -1 for the boot "
+                    "before this one and --lines N; update: --when-quiet [minutes] to wait (20) for the moment no job or "
+                    "timer unit is mid-run, --force to deploy although one is")  # fmt: skip
 
     sp = cmd("agent", "chat with the Claude strategy agent", json_flag=False)
     sp.add_argument("-p", "--prompt", help="one-shot question instead of an interactive session")
@@ -1830,7 +1831,10 @@ def _remote(args) -> int:
             if r.get("truncated"):
                 print("... (truncated)")
         elif a == "logs":
-            print(go("logs", unit=rest[0] if rest else "snipetech-tape")["log"], end="")
+            # logs [unit | kernel | systemd] [--boot -1] [--lines N]: --boot -1 is the boot before this one
+            opts = {k: int(rest[rest.index(f"--{k}") + 1]) for k in ("boot", "lines") if f"--{k}" in rest[:-1]}
+            unit = rest[0] if rest and not rest[0].startswith("--") else "snipetech-tape"
+            print(go("logs", unit=unit, **opts)["log"], end="")
         else:
             print(json.dumps(go(a), indent=2, default=str))
     except OpsError as exc:

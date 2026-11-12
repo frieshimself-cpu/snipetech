@@ -62,6 +62,11 @@ UNITS = (
     "snipetech-commands", "snipetech-commands.timer",
 )  # fmt: skip
 SYSTEMCTL = "/usr/bin/systemctl"
+# `logs` of the machine itself: the kernel's messages, and systemd's own lines about every unit (started, failed, what
+# it used), never another service's output
+MACHINE_LOGS = {"kernel": ["-k"], "systemd": ["_PID=1"]}
+MAX_LOG_LINES = 5000
+MAX_LOG_BOOTS = 50
 
 
 class OpsError(Exception):
@@ -476,13 +481,21 @@ class Ops:
             con.close()
         return {"columns": cols, "rows": [list(r) for r in data[: int(rows)]], "truncated": len(data) > int(rows)}
 
-    def op_logs(self, unit: str = "snipetech-tape", lines: int = 100) -> dict[str, Any]:
-        if unit not in UNITS:
+    def op_logs(self, unit: str = "snipetech-tape", lines: int = 100, boot: int | None = None) -> dict[str, Any]:
+        """The last `lines` of a snipetech unit's journal, or of the machine's own: "kernel" (out of memory, a hung
+        disk, a panic) and "systemd" (what was starting and what failed, for every service on the machine, without
+        their output). `boot`: 0 this boot, -1 the one before it, and so on: what the machine was doing right before
+        it went down (12 Nov: it stopped answering and only a restart brought it back). Without it a unit's lines run
+        across boots, as they always did."""
+        if unit not in UNITS and unit not in MACHINE_LOGS:
             raise OpsError(403, f"unit not allowed: {unit}")
-        return {
-            "unit": unit,
-            "log": self._run(["journalctl", "-u", unit, "-n", str(int(lines)), "--no-pager", "-o", "short-iso"]),
-        }
+        counted = isinstance(boot, int) and not isinstance(boot, bool) and -MAX_LOG_BOOTS <= boot <= 0
+        if boot is not None and not counted:
+            raise OpsError(400, f"boot is 0 (this one) or a count back to -{MAX_LOG_BOOTS}, not {boot!r}")
+        which = ["-b", str(boot)] if boot is not None else []
+        what = MACHINE_LOGS.get(unit) or ["-u", unit]
+        n = str(max(1, min(int(lines), MAX_LOG_LINES)))
+        return {"unit": unit, "log": self._run(["journalctl", *which, *what, "-n", n, "--no-pager", "-o", "short-iso"])}
 
     def deploy_waits_for(self) -> list[str]:
         """What an update would leave on mixed code now, in words: the running jobs whose numbers come from the code

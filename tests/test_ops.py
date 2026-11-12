@@ -625,3 +625,44 @@ def test_status_says_when_the_machine_booted(env, tmp_path, monkeypatch):
     assert req(ops, key, "status")["machine"]["boot_ts"] == 1_794_011_400
     (proc / "stat").unlink()
     assert "boot_ts" not in req(ops, key, "status")["machine"]
+
+
+def test_the_logs_of_the_boot_before_and_of_the_machine_itself(env, monkeypatch):
+    """12 Nov: the server stopped answering and only a restart brings it back. What it was doing right before is in
+    the journal of the boot before: a unit's last lines there, the kernel's (out of memory, a hung disk) and
+    systemd's own (what was starting and what failed, for every service on the machine, without their output)."""
+    ops, key = env
+    asked: list[list[str]] = []
+    monkeypatch.setattr(ops, "_run", lambda cmd: asked.append(cmd) or "a line\n")
+    tail = ["--no-pager", "-o", "short-iso"]
+    assert req(ops, key, "logs", unit="snipetech-tape", lines=50) == {"unit": "snipetech-tape", "log": "a line\n"}
+    assert asked[-1] == ["journalctl", "-u", "snipetech-tape", "-n", "50", *tail]  # as it always was
+    req(ops, key, "logs", unit="snipetech-tape", lines=50, boot=-1)
+    assert asked[-1] == ["journalctl", "-b", "-1", "-u", "snipetech-tape", "-n", "50", *tail]
+    req(ops, key, "logs", unit="kernel", lines=200, boot=-1)
+    assert asked[-1] == ["journalctl", "-b", "-1", "-k", "-n", "200", *tail]
+    req(ops, key, "logs", unit="systemd", boot=-2)
+    assert asked[-1] == ["journalctl", "-b", "-2", "_PID=1", "-n", "100", *tail]
+    req(ops, key, "logs", unit="kernel", boot=0)
+    assert asked[-1] == ["journalctl", "-b", "0", "-k", "-n", "100", *tail]
+    req(ops, key, "logs", unit="kernel", lines=10**9)
+    assert asked[-1][asked[-1].index("-n") + 1] == str(O.MAX_LOG_LINES)  # a whole journal is never asked for
+    n = len(asked)
+    for bad in ({"unit": "sshd"}, {"unit": "kernel", "boot": 1}, {"unit": "kernel", "boot": "-1; reboot"},
+                {"unit": "snipetech-tape", "boot": -1000}, {"unit": "-k"}):  # fmt: skip
+        with pytest.raises(O.OpsError):
+            req(ops, key, "logs", **bad)
+    assert len(asked) == n  # nothing was run for any of them
+
+
+def test_the_remote_command_reads_the_boot_before(monkeypatch, capsys):
+    from snipetech import cli
+
+    seen = []
+    monkeypatch.setattr(O, "call", lambda url, key, op, **kw: seen.append((op, kw)) or {"log": "x\n"})
+    base = ["remote", "--url", "https://x", "--key", "k", "logs"]
+    assert cli.main([*base, "snipetech-ops"]) == 0
+    assert cli.main([*base, "kernel", "--boot", "-1", "--lines", "300"]) == 0
+    assert cli.main(base) == 0
+    assert seen == [("logs", {"unit": "snipetech-ops"}), ("logs", {"unit": "kernel", "boot": -1, "lines": 300}),
+                    ("logs", {"unit": "snipetech-tape"})]  # fmt: skip

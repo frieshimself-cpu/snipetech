@@ -21,7 +21,9 @@ top section of `docs/roadmap.md`; the test log is `docs/live-recipe.md`. Read bo
 
 One Ubuntu box runs the tape recorder, a daily research job, the operator timer and `snipetech-ops`, a signed
 remote-operations endpoint. From a checkout with an authorized key:
-`snipetech remote status | jobs | --wait run <command> | read jobs/<id>.log | sql "<select>" | update`.
+`snipetech remote status | jobs | --wait run <command> | read jobs/<id>.log | sql "<select>" | logs <unit> | update`.
+`remote logs kernel --boot -1` and `remote logs systemd --boot -1` are the machine's own last lines before its last
+restart (out of memory, what was starting); a unit's name with `--boot -1` gives that unit's.
 `remote update` restarts `snipetech-ops` and the tape recorder. Since 7 Nov 20:49 (`KillMode=process`, installed by the
 owner's `deploy/setup.sh` run) a job started with `remote run` survives it like the bot's own jobs, but keeps the old code
 until it ends; before that it died with it (7 Nov 07:44: a `research search` was lost). Deploy between labs, so no
