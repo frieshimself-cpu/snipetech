@@ -15,7 +15,7 @@
 | `birdeye.md` | What the Birdeye plan gives us, CU costs, where it plugs in | Claude |
 | `research/2026-11-12-gmgn-api.md` | GMGN's query API: how a call is made (key in a header, no signature on a read), every read with its weight and fields, the limits, what `snipetech gmgn` and the `gmgn` discover source do, what is not verified until the first real call | Claude, 12 Nov |
 | `jev.md` | TypeSafe's Jev: what it is, why it is not used yet, the measured-first plan | Claude |
-| `superpowers/specs/` | Designs approved before building (operator agent) | Claude, owner approves |
+| `superpowers/specs/` | Designs approved before building (operator agent). `2026-11-12-specialised-agents-design.md`: the analyst split into a wallet scout, a strategy tester and a fee and place analyst; a design, not built | Claude, owner approves |
 | `superpowers/plans/` | Task-by-task implementation plans with their tests | Claude |
 | `inbox/` | The owner's raw notes and screenshots, read-only for Claude | Owner |
 | `../README.md` | How to install and run everything, server included | Claude |
