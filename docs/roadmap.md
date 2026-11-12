@@ -25,9 +25,17 @@ first on the server's recording and only then run live in capped batches.
 - **Waiting for the owner's one command on the server** (`sudo bash /opt/snipetech/deploy/setup.sh`, asked 13:25 UTC):
   the server then repairs its network setup by itself within a minute, and Ubuntu's daily update job, which caused
   the freeze, runs at the lowest priority. Until it is run, the same can happen again after any freeze.
-- **Still nothing profitable live.** That has not changed: no rule has a lower bound above zero at a landing we get.
-  The analyst qualified a second wallet during the day (4sAUSQ) and at once questioned its own result: the wallet
-  buys in a set of four whose order changes, which the paper test may not see (its idea I72, being checked).
+- **Still nothing profitable live, and by the evening of 12 Nov no wallet worth copying.** The two wallets the book
+  copied (74xVT9, 4sAUSQ) each buy as one of a set of four wallets that land in the same block in changing order.
+  The server's analyst suspected it (its idea I72); the tape confirms it; the rule that finds a wallet's companions
+  looked only behind the wallet and missed them. Measured behind the whole set a copy makes +0.003 SOL with a lower
+  bound below zero (it had shown +0.009 with +0.005). Both lost their verdict at 14:26 UTC and the book stopped
+  their snipers by itself at 14:30. (Audit row 81.)
+- **The bid table was run by the analyst within 40 minutes of reaching the server.** The first place behind a known
+  wallet is taken mostly by speed, not by the bid: the highest bidder is first only half the time, and half the
+  first places paid under 0.001 SOL. On paper that place still pays (+0.069 SOL a trade at 1 SOL, 885 unseen
+  moments, scored before the set rule: being re-run). What decides the lead now is whether our copies can be that
+  fast. That is a question about the execution service's speed, not about a fee.
 - **Built during the outage, on the server since 13:07 UTC (audit rows 77 to 79, open item 19):**
   - the table the nearest lead was waiting for: **which bid lands first behind a followed wallet** (`place-bids`).
     It says whether the first place behind a known wallet is bought with a bid or taken by speed, what each bid
