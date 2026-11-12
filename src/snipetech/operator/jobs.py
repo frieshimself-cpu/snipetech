@@ -109,6 +109,9 @@ class OperatorJobs:
                                   "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
         if not argv or argv[0] not in RESEARCH_COMMANDS:
             raise PermissionError(f"not a research command: {argv[:1]}; allowed: {sorted(RESEARCH_COMMANDS)}")
+        if argv[:2] == ["paper", "rescore"]:  # it rewrites the kept trades of frozen rules: run by hand after a model
+            raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
+                                  "which rule needs pricing again and why")  # fmt: skip
         self._check_paths(argv)
         self._check_triggers(argv)
         now = time.time() if now is None else now

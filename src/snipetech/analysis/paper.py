@@ -36,7 +36,7 @@ from ..amm_tape import AMM_RECENT_KEY
 from ..config import Config
 from ..models import PUMPFUN
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
-from ..sim.market import MarketPath
+from ..sim.market import FILL_MODEL, MarketPath
 from ..store import Store
 from .companions import companions
 from .lab import (
@@ -497,6 +497,27 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             "landing": landings(copy_pos)}  # fmt: skip
 
 
+def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitParams, costs: Costs, i: int, e: int,
+              mig, end: float):  # fmt: skip
+    """A strategy's position opened at state `e` for the moment at state `i`, held under its exit to the tape's `end`:
+    (the simulated result or None, why the trade is left out or None). An exit that sells into the migration needs the
+    PumpSwap tape of it: on a launch-type rule it is scored where every sale landed before the coin left its curve,
+    priced on the curve tape, as the lab scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is
+    left out, as in the lab."""
+    gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
+    gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs) if gated else None
+    res = None
+    if gap is None or trig.kind in LAUNCH_KINDS:
+        frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
+        prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+                       migration_slot=None if mig is None else mig.slot)  # fmt: skip
+        if prep is not None:
+            res = run_exit(prep, ex, costs, end_ts=float(end))
+            if gated and trig.kind in LAUNCH_KINDS:
+                gap = exit_gap(amm_cov, path, prep, res, ex, mig)
+    return res, gap
+
+
 def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5) -> dict[str, Any]:
     """Score every frozen strategy, at the live landing, on the triggers that fired since the last run (and after its
     freeze). A strategy that buys on PumpSwap (MIG) lands behind PumpSwap trades after the migration and gets a trade
@@ -594,20 +615,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 mig = migs.get(mint)
-                # an exit that sells into the migration needs the PumpSwap tape of it. On a launch-type rule it is
-                # scored where every sale landed before the coin left its curve, priced on the curve tape, as the lab
-                # scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is left out, as in the lab
-                gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
-                gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs) if gated else None
-                res = None
-                if gap is None or trig.kind in LAUNCH_KINDS:
-                    frac = leader_sell_fractions(path, path.users[i]) if trig.kind == "kol" else None
-                    prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
-                                   migration_slot=None if mig is None else mig.slot)  # fmt: skip
-                    if prep is not None:
-                        res = run_exit(prep, ex, costs, end_ts=float(end))
-                        if gated and trig.kind in LAUNCH_KINDS:
-                            gap = exit_gap(amm_cov, path, prep, res, ex, mig)
+                res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
                 if gap is not None:
                     skipped.setdefault(s["id"], {})
                     skipped[s["id"]][gap] = skipped[s["id"]].get(gap, 0) + 1
@@ -619,7 +627,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"]), "behind": e - i,
-                             "venue": path.venue,
+                             "venue": path.venue, "model": FILL_MODEL,
                              # a copy: how many companions of the copied wallet it was scored behind (rows
                              # without the field were entered before 11 Nov 2026, companions counted as outsiders)
                              **({"mates": len(own or ())} if trig.kind == "kol" else {})},
@@ -630,6 +638,141 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     codes = sorted({c for why in skipped.values() for c in why})
     return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
             "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}, "retired": retired}  # fmt: skip
+
+
+RESCORE_MIN_BUY = 0.5  # `rescore` without ids: the rules that buy at least this much (where the model matters most)
+LEFT_WORDS = {
+    "tape": "the tape no longer holds the coin at that time",
+    "moment": "the rule no longer fires at that moment (a label or the tape changed since)",
+    "entry": "the state it was entered at cannot be found again",
+    "position": "no position can be opened there",
+    "gap": "its exit sells into a migration the PumpSwap tape does not hold whole",
+}
+
+
+def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy: float = RESCORE_MIN_BUY,
+            now: float | None = None, min_trades: int = 5) -> dict[str, Any]:  # fmt: skip
+    """Price the kept trades of frozen rules again with today's simulator: the same moment, the same entry state, the
+    same exit rule. `run` keeps what a trade made under the code of its day, and scores only what fired since its last
+    run, so a change of the model (11 Nov 2026: what a position is worth after later buys, `sim.market`) leaves a
+    record half in one model and half in the other. The rules named in `ids`, or without ids every rule the run scores
+    that buys at least `min_buy` SOL; of each, the rows another model priced (`data.model`).
+
+    A row is priced again only where the tape still gives its moment exactly: the rule fires at the same slot and
+    second on today's labels, and the entry state it was scored at is there. Any other row is left as it is and
+    counted (`left`, `why`). Each trade is read on the slot time measured around it, where the run that scored it
+    measured its own half hour: a timer can fire a state apart. The rows are written in one transaction a rule, with
+    the result they had before (`pnl_old`), and the report's kept numbers follow."""
+    cov = store.coverage("paper_strategies")
+    known: dict[str, dict] = {}
+    for s in [*cov.get("strategies", []), *cov.get("superseded", [])]:
+        known.setdefault(s["id"], s)
+    if ids:
+        chosen = [known[i] for i in dict.fromkeys(ids) if i in known]
+    else:
+        chosen = [s for s in cov.get("strategies", []) if not fed(s) and float(s.get("buy_sol") or 0) >= min_buy]
+    if not chosen:
+        return {"strategies": [], "model": FILL_MODEL, "note": "no frozen rule to price again"}
+    now = now or time.time()
+    spans = [(int(a), int(b)) for a, b in store.tape_spans()]
+    kols = label_groups(store)
+    parsed = {s["id"]: (s, Trigger(**s["trigger"]), ExitParams(**s["exit"]),
+                        Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS)) for s in chosen}  # fmt: skip
+    needs_amm = any(t.kind in AMM_KINDS or ex.migration_sell_frac > 0 for _, t, ex, _ in parsed.values())
+    amm_cov = store.coverage(AMM_RECENT_KEY) if needs_amm else {}
+    crews = _crew_uris(store, spans)
+    # the rows to price again, by the stretch of tape and the coin they are on: one path serves every rule's row there
+    todo: dict[tuple[int, str], list[tuple[str, dict]]] = {}
+    tally = {s["id"]: {"rows": 0, "rescored": 0, "left": {}, "before": 0.0, "after": 0.0} for s in chosen}
+
+    def leave(sid: str, why: str, row: dict) -> None:
+        tally[sid]["left"][why] = tally[sid]["left"].get(why, 0) + 1
+        tally[sid]["after"] += float(row["pnl"])
+
+    for s in chosen:
+        for row in store.paper_trades(s["id"]):
+            t = tally[s["id"]]
+            t["rows"] += 1
+            t["before"] += float(row["pnl"])
+            if (row.get("data") or {}).get("model") == FILL_MODEL:
+                t["after"] += float(row["pnl"])
+                continue
+            k = next((k for k, (a, b) in enumerate(spans) if a <= int(row["trigger_ts"]) <= b), None)
+            if k is None:
+                leave(s["id"], "tape", row)
+                continue
+            todo.setdefault((k, row["mint"]), []).append((s["id"], row))
+    migs_of: dict[int, dict] = {}
+    slot_secs_of: dict[tuple[int, int], float] = {}
+    updates: dict[str, list[dict]] = {s["id"]: [] for s in chosen}
+    for (k, mint), rows in sorted(todo.items()):
+        a, b = spans[k]
+        end = min(b, int(now))
+        trades = store.trades_for_mint(mint, a, end)
+        launch = store.launch(mint)
+        in_span = launch if (launch and a <= launch.ts) else None
+        path = None
+        if len(trades) >= min_trades:
+            first = min(int(r["trigger_ts"]) for _, r in rows)
+            hour = (k, first // 1800)
+            if hour not in slot_secs_of:
+                slot_secs_of[hour] = span_slot_secs(store, max(a, first - 3600), min(end, first + 1800))
+            path = MarketPath.build(trades, in_span, slot_secs=slot_secs_of[hour])
+        if path is None or path.n < min_trades or implausible_coin(path):
+            for sid, row in rows:
+                leave(sid, "tape", row)
+            continue
+        if k not in migs_of:
+            migs_of[k] = store.migrations_between(a, end) if needs_amm else {}
+        mig = migs_of[k].get(mint)
+        for sid, row in rows:
+            s, trig, ex, costs = parsed[sid]
+            data = dict(row.get("data") or {})
+            i = None
+            fires = not (trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60))
+            if fires and not crew_skips(trig, launch, crews):
+                paid = (
+                    dev_paid_earlier(store, in_span)
+                    if trig.kind == "mig" and trig.dev_paid is not None and mig
+                    else None
+                )
+                i = _fire(trig, path, in_span, kols, mig=mig, paid=paid)
+            if i is not None:
+                t_slot, t_ts = fired_at(trig, path, i, mig)
+                if int(t_ts) != int(row["trigger_ts"]) or data.get("trigger_slot") not in (None, t_slot):
+                    i = None
+            if i is None:
+                leave(sid, "moment", row)
+                continue
+            e = i + int(data["behind"]) if data.get("behind") is not None else None
+            if e is None or not 0 <= e < path.n or float(path.ts[e]) != float(row["entry_ts"]):
+                leave(sid, "entry", row)
+                continue
+            res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
+            if gap is not None or res is None:
+                leave(sid, "gap" if gap is not None else "position", row)
+                continue
+            tally[sid]["rescored"] += 1
+            tally[sid]["after"] += float(res.pnl_sol)
+            updates[sid].append({
+                "strategy": sid, "mint": mint, "trigger_ts": row["trigger_ts"], "exit_ts": res.exit_ts,
+                "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
+                "data": data | {"hold_secs": res.hold_secs, "model": FILL_MODEL, "pnl_old": row["pnl"]},
+            })  # fmt: skip
+    for rows in updates.values():
+        store.update_paper_trades(rows)
+    if any(updates.values()):
+        report(store, cfg, now)  # the kept numbers of the rules that moved
+    out = []
+    for s in chosen:
+        t = tally[s["id"]]
+        n = t["rows"]
+        out.append({"id": s["id"], "label": s.get("label"), "buy_sol": s.get("buy_sol"), "rows": n,
+                    "rescored": t["rescored"], "left": t["left"], "total_before": t["before"],
+                    "total_after": t["after"], "mean_before": t["before"] / n if n else None,
+                    "mean_after": t["after"] / n if n else None})  # fmt: skip
+    codes = sorted({c for row in out for c in row["left"]})
+    return {"strategies": out, "model": FILL_MODEL, "why": {c: LEFT_WORDS.get(c, c) for c in codes}}
 
 
 # 7 Nov: a rule showed +10.6 SOL over 1,200 forward trades; three trades made +11.0 SOL (create-slot bundles no live

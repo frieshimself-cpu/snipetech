@@ -642,7 +642,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--port", type=int)
 
     sp = cmd("paper", "forward paper-trading: freeze the lab's best strategies, then score them only on newer tape")
-    sp.add_argument("action", choices=["freeze", "run", "report"])
+    sp.add_argument("action", choices=["freeze", "run", "report", "rescore"])
+    sp.add_argument("--id", action="append", metavar="STRATEGY",
+                    help="rescore: price this rule's kept trades again with today's simulator (repeatable; default: "
+                         "every rule that buys at least --min-buy)")  # fmt: skip
+    sp.add_argument("--min-buy", type=float, default=0.5,
+                    help="rescore, without --id: the rules that buy at least this much SOL (default 0.5)")  # fmt: skip
     sp.add_argument("--top", type=int, default=4, help="freeze: how many strategies (positive lower bound only)")
     sp.add_argument(
         "--position",
@@ -1430,6 +1435,8 @@ async def _run(args, cfg: Config) -> int:
                                               tape=lambda: svc.tape_store)  # fmt: skip
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
+            elif args.action == "rescore":
+                rep = await asyncio.to_thread(paper.rescore, svc.store, cfg, args.id, args.min_buy)
             else:
                 rep = await asyncio.to_thread(paper.report, svc.store, cfg)
             _out(args, rep, lambda r: R.render_paper(args.action, r))

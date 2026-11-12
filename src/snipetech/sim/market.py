@@ -32,6 +32,9 @@ from ..models import AMM, CURVE, LAUNCHLAB, PUMPFUN, Launch, Trade, coin_venue
 from ..solana.programs import INITIAL_VIRTUAL_SOL_RESERVES, INITIAL_VIRTUAL_TOKEN_RESERVES
 
 POSITIONS = ("start", "middle", "end")
+# The name of the model a position is valued by after its entry (the module's account of it). A stored result says
+# which one priced it (a paper trade's `model`): one without a name, or with another, was priced by an earlier one.
+FILL_MODEL = "replay-1"
 # Buys that spend an exact amount of SOL and take the tokens it buys (pump.fun's curve, PumpSwap, LaunchLab, and a
 # router's swap into the coin). Every other kind deals in tokens: `buy` / `buy_v2` / `buy_exact_out` ask for an exact
 # number and pay what it costs, a sale sells tokens. On the tape, 5-11 Nov 2026: 53-62 % of curve buys, 85-98 % of

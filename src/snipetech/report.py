@@ -840,6 +840,17 @@ def render_paper(action: str, r: dict) -> str:
         ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
         return "\n".join(out)
+    if action == "rescore":
+        if r.get("note"):
+            return r["note"]
+        words = r.get("why") or {}
+        out = [f"Kept paper trades priced again by today's simulator ({r.get('model')}):"]
+        for s in r["strategies"]:
+            left = ", ".join(f"{n} {words.get(c, c)}" for c, n in sorted((s.get("left") or {}).items()))
+            out.append(f"  {s['id']}  {str(s.get('label') or '')[:50]}  {s['rows']} trades, {s['rescored']} priced again: "
+                       f"total {s['total_before']:+.3f} -> {s['total_after']:+.3f} SOL"
+                       + (f"; left as they were: {left}" if left else ""))  # fmt: skip
+        return "\n".join(out)
     if action == "run":
         if r.get("note"):
             return r["note"]

@@ -1216,6 +1216,26 @@ class Store:
         self._write(do)
         return out["n"]
 
+    def update_paper_trades(self, rows: list[dict]) -> int:
+        """Write the result of paper trades priced again (`paper.rescore`): each row's exit, result and data, found
+        by its strategy, coin and trigger time. One transaction: a record is never left half in one model."""
+        todo = [(r.get("exit_ts"), r["pnl"], r.get("roi"), r.get("reason"), json.dumps(r.get("data") or {}),
+                 r["strategy"], r["mint"], r["trigger_ts"]) for r in rows]  # fmt: skip
+        out = {"n": 0}
+
+        def do():
+            out["n"] = 0
+            for row in todo:
+                out["n"] += self.conn.execute(
+                    "UPDATE paper_trades SET exit_ts=?, pnl=?, roi=?, reason=?, data=? "
+                    "WHERE strategy=? AND mint=? AND trigger_ts=?",
+                    row,
+                ).rowcount
+
+        if todo:
+            self._write(do)
+        return out["n"]
+
     def put_launch_marks(self, marks: dict[str, list[str]]) -> int:
         """Keep what each launch's create transaction carries (`analysis.launch_tools.tx_marks`): one row a mark, and
         one row with an empty mark for a launch read and found without any, so it is not fetched again. Returns the

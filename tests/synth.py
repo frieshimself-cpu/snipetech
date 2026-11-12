@@ -39,7 +39,8 @@ class Market:
     def _ts(self, slot: int) -> int:
         return self.ts0 + int((slot - self.slot0) * 0.4)
 
-    def _push(self, user: str, slot: int, is_buy: bool, quote: int, base: int, sig: str | None = None) -> Trade:
+    def _push(self, user: str, slot: int, is_buy: bool, quote: int, base: int, sig: str | None = None,
+              ix: str | None = None) -> Trade:  # fmt: skip
         self.n += 1
         sig = sig or addr(f"{self.mint}:{self.n}")
         ev = sum(
@@ -49,18 +50,20 @@ class Market:
             sig=sig, ev=ev, slot=slot, pos=self.n, ts=self._ts(slot), mint=self.mint,
             venue=self.venue, user=user, is_buy=is_buy, quote=quote, base=base, fee=quote * FEE_BPS // 10_000,
             fee_bps=FEE_BPS, q_after=self.q, b_after=self.b, r_base_after=0 if self.venue == "amm" else R0 - (B0 - self.b),
-            ix="buy" if is_buy else "sell",
+            ix=ix or ("buy" if is_buy else "sell"),
         )  # fmt: skip
         self.trades.append(t)
         return t
 
-    def buy(self, user: str, sol: float, slot_offset: int, sig: str | None = None) -> Trade:
+    def buy(self, user: str, sol: float, slot_offset: int, sig: str | None = None, ix: str | None = None) -> Trade:
+        """`ix`: the instruction kind the tape records ("buy": an exact number of tokens, the default;
+        "buy_exact_quote_in": an exact amount of SOL, which the simulator replays differently beside a position)."""
         s = int(sol * 1e9)
         tokens = self.b * s // (self.q + s)
         self.q += s
         self.b -= tokens
         self.holdings[user] = self.holdings.get(user, 0) + tokens
-        return self._push(user, self.slot0 + slot_offset, True, s, tokens, sig)
+        return self._push(user, self.slot0 + slot_offset, True, s, tokens, sig, ix)
 
     def sell(self, user: str, fraction: float, slot_offset: int) -> Trade | None:
         tokens = int(self.holdings.get(user, 0) * fraction)
