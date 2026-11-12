@@ -16,10 +16,11 @@ much a round trip. Among several higher bids that pass, the cheapest is chosen; 
 capped at the max.
 
 The two priority fees are never raised on evidence: OKTech charges the buy priority fee again on the landed sell of
-every exit (7 of 7 fee-test sells), and the sell priority fee is what each of a sell's failed twins pays (OKTech signs
-every exit on up to three nonce accounts; one lands, the others fail with pump error 6023 and pay priority + base fee,
-while a failed send's tip is refunded). So the priorities stay at the kind's minimum and the bids are carried by the
-tips. The `floor` a caller passes (the book's arm, a verdict's bribe) raises a number's lower end inside the bounds,
+every exit (7 of 7 fee-test sells) and, measured 8 to 12 Nov, on a sell's failed twins too (OKTech signs every exit on
+up to three nonce accounts; one lands, the others fail with pump error 6023 and pay priority + base fee, while a
+failed send's tip is refunded: 25 of 28 failed twins paid the BUY priority and not one paid the sell priority we send,
+`SELL_SENDS_PER_SALE` below). So the buy priority stays at OKTech's minimum and the bids are carried by the
+tips (`bid_in_tip`); the sell priority is sent near zero and, as far as our fills show, ignored. The `floor` a caller passes (the book's arm, a verdict's bribe) raises a number's lower end inside the bounds,
 never past the max. The owner's `[oktech] sell_priority_sol` is the floor of every kind's sell priority (the split's
 number); `[oktech] sell_tip_sol` is the floor of the copy kind's sell tip only, because it priced the live copies'
 sells and nothing else: a hunt, launch, MIG or probe sniper bids its own kind's minimum (0.001, what it bid before

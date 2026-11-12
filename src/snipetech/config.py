@@ -174,7 +174,11 @@ class OktechConfig:
     # Sells: OKTech signs every sell on up to three nonce accounts and sends all (measured 5-8 Nov); one lands, the
     # others fail with pump error 6023 and pay their priority fee plus the base fee, while a failed send's tip is
     # refunded. So the sell bid is carried by the tip (sell_tip_sol, autoSell.sellTipAmount) and the priority
-    # (sell_priority_sol, autoSell.sellPriorityFeeSol) is near zero: it is what each failed twin pays. 8 Nov, before the
+    # (sell_priority_sol, autoSell.sellPriorityFeeSol) is near zero. CORRECTED 12 Nov (docs/oktech-playbook.md, 1d;
+    # fees.SELL_SENDS_PER_SALE): OKTech does not charge this number on a sell. 18 of 19 landed sells and 25 of 28
+    # failed twins since 8 Nov paid the sniper's BUY priority, not one paid 0.0001; what keeps the twins cheap is a
+    # buy priority at OKTech's minimum (the bid in the tip: fees.bid_in_tip). The number is still sent, in case OKTech
+    # starts to honour it. 8 Nov, before the
     # split: 0.008 SOL of twins on 0.119 SOL gross. Never the buy bid on either. The fee policy (fees.py) may raise the
     # tip per kind of sniper inside [fees] bounds. sell_priority_sol is the base every builder falls back to;
     # sell_tip_sol is the copy kind's base (it priced the live copies' sells) and the verdict dev sniper's: the other
