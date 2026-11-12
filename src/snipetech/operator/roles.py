@@ -145,7 +145,6 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ('["playbook", "<wallet>", "--json"] reads a bot\'s rules off the tape', frozenset({"playbook"})),
     ('["place-bids", "--hours", "48", "--json"] says which bid lands first', frozenset({"place-bids"})),
     ('["tips", "--group", "big", "--hours", "30", "--json"] is the tip table', frozenset({"tips"})),
-    ("auction.in_bid_order near 1 means the place is bought", frozenset({"place-bids"})),
     ('["copy-context", "--hours", "72", "--json"] scores every known', frozenset({"copy-context"})),
     ('["winners", "--hours", "72", "--json"] finds who is winning', frozenset({"winners"})),
     ("For a bot it finds, read its rules next:", frozenset({"leaders-of"})),

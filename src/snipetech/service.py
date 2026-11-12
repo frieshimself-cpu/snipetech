@@ -1198,8 +1198,8 @@ class Service:
             held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
             if held0:
                 raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({h.get('value_sol', 0):.4f} SOL)" for h in held0)
-                                 + ": not cycling (stopping a sniper strands its coin). Sell by hand, or pass --ignore MINT "
-                                 "for a position no sniper manages.")  # fmt: skip
+                                 + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
+                                 "pass --ignore-mint MINT for a position no sniper manages.")  # fmt: skip
             log(
                 f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min"
             )

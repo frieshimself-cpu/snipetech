@@ -6,6 +6,7 @@ own RPC client."""
 import asyncio
 import copy
 import json
+import os
 
 import pytest
 
@@ -183,11 +184,20 @@ def test_every_request_waits_for_the_clients_limiter(world):
     assert len(waited) == len(chain.requests) == 13
 
 
-def test_a_dry_run_counts_and_writes_nothing(world):
+def test_a_dry_run_writes_no_tape_data_and_its_requests_are_counted(world):
+    # until 12 Nov evening a dry run's own requests (it lists every signature: 3 here, about 37,000 for 7 days of a
+    # wallet that failed transactions name 110,000 times in half an hour) were left out of the month's count: the
+    # number under-reported what backfills spent, and the month's limit never saw a loop of dry runs
     chain, store, _ = world
-    before = store._q("SELECT COUNT(*) FROM trades")[0][0], store._q("SELECT key FROM coverage ORDER BY key")
+
+    def tape() -> tuple:
+        return (store._q("SELECT COUNT(*) FROM trades")[0][0],
+                store._q("SELECT key, data FROM coverage WHERE key NOT LIKE 'api_usage:%' ORDER BY key"))  # fmt: skip
+
+    before = tape()
     out = run(chain, store, dry_run=True)
-    assert (store._q("SELECT COUNT(*) FROM trades")[0][0], store._q("SELECT key FROM coverage ORDER BY key")) == before
+    assert tape() == before  # no trade, no stretch, no place in a wallet's history: the ledger of credits alone moves
+    assert store.usage_month("helius-backfill", NOW) == 3 and out["credits"]["this_month"] == 3
     assert chain.count("getTransaction") == 0 and chain.count("getSignaturesForAddress") == 3
     (w,) = out["wallets"]
     assert out["dry_run"] is True and w["to_fetch"] == 3 and w["buys"] == 0
@@ -218,7 +228,7 @@ def test_max_credits_stops_the_run_before_it_passes_and_the_next_run_continues(w
     assert sorted(chain.fetched()) == sorted([n["p-later"], n["p-same-slot"], R, n["p-before"]])
     assert chain.count("getSignaturesForAddress") == 1 + 3
     assert backfill_spans(store) == {M: [STRETCH]}
-    assert store.usage_month("helius-backfill", NOW) == 6 + 8
+    assert store.usage_month("helius-backfill", NOW) == 6 + 4 + 8  # the dry run's four listing requests count too
 
 
 def test_a_stretch_that_does_not_fit_is_not_started(world):
@@ -467,3 +477,311 @@ def test_the_job_is_allowed_on_the_server_and_for_the_agents(tmp_path, monkeypat
     with pytest.raises(PermissionError, match="owner's"):  # the month's limit is the owner's to lift
         oj.start(["history", "amm-backfill", "--group", "big", "--month-credits", "90000000"], now=1e9)
     assert len(started) == 1
+
+
+def test_dry_runs_cannot_pass_the_months_limit_and_are_counted_while_they_run(world, monkeypatch):
+    chain, store, _ = world
+    monkeypatch.setattr(B, "USAGE_EVERY", 1)
+    seen = []
+    handle = chain.handle
+
+    def watching(request):
+        seen.append(store.usage_month("helius-backfill", NOW))
+        return handle(request)
+
+    chain.handle = watching
+    run(chain, store, dry_run=True)
+    assert seen == [0, 1, 2]  # a dry run that is killed half way has still been counted
+    store.usage_add("helius-backfill", B.MONTH_CREDITS - 3 - 2, NOW)  # two credits are left of the month
+    out = run(chain, store, dry_run=True)
+    assert out["stopped"] == "month_credits" and out["credits"]["counted"] == 2
+    assert store.usage_month("helius-backfill", NOW) == B.MONTH_CREDITS
+    out = run(chain, store, dry_run=True)  # nothing is left: a dry run asks nothing either
+    assert out["credits"]["counted"] == 0 and chain.count("getSignaturesForAddress") == 5
+
+
+def test_the_texts_no_longer_call_a_dry_run_a_few_credits():
+    import inspect
+
+    from snipetech.operator import tools
+
+    history = next(a for a in cli.build_parser()._actions if getattr(a, "choices", None) and "history" in a.choices)
+    text = " ".join(history.choices["history"].format_help().split())
+    assert "a few credits" not in text and "counted in the month" in text
+    assert "a few credits" not in " ".join((B.backfill.__doc__ or "").split())
+    told = " ".join(inspect.getsource(tools).split())
+    assert "not much to pay" not in told and "37,000" in told and "a dry run too" in told
+
+
+# -- what an agent may ask for (operator/jobs.py) ----------------------------------------------------------------------
+
+
+def _agent_jobs(tmp_path, db=None):
+    from snipetech.operator import jobs
+
+    oj = jobs.OperatorJobs(repo=tmp_path, data=tmp_path, db=db or tmp_path / "t.db", branch="b")
+    (tmp_path / "jobs").mkdir(exist_ok=True)
+    started = []
+    oj.ops.op_run = lambda argv: started.append(argv) or {"id": f"j{len(started)}"}
+    return oj, started
+
+
+BIG = ["history", "amm-backfill", "--group", "big"]
+
+
+@pytest.mark.parametrize("more", [
+    ["--month", "1e12"], ["--mo=1e12"], ["--month-c", "100000000"], ["--month-credit", "5"], ["--mo", "1"],
+    ["--max-cred", "9e9"], ["--max-cred=9e9"], ["--max-credit", "9000000"], ["--max-cre", "90000000"],
+    ["--max-cred", "9e9", "--month", "1e12", "--after", "86400"],  # the review's own command
+    ["--max-c", "9e9"], ["--max", "9e9"], ["--m", "9e9"],  # ambiguous to the parser: never left to it
+    ["--max-credits", "inf"], ["--max-credits", "nan"], ["--max-credits=NaN"], ["--max-credits", "1e999"],
+    ["--max-credits", "lots"], ["--max-credits"], ["--max-credits", "5000001"], ["--max-credits", "--dry-run"],
+    ["--max-credits", "1000", "--max-credits", "9e9"],  # the parser takes the last one
+])  # fmt: skip
+def test_an_agent_cannot_lift_a_backfills_limits_by_shortening_or_bending_a_flag(tmp_path, more):
+    # 12 Nov, the review: the check looked for the two flags spelled in full, and the command line took any prefix of
+    # them (--max-cred 9e9 --month 1e12 ran with both limits lifted)
+    oj, started = _agent_jobs(tmp_path)
+    with pytest.raises(PermissionError, match="no job started|owner's"):
+        oj.start([*BIG, *more], now=1e9)
+    assert started == []
+
+
+def test_an_agents_backfill_inside_the_limits_starts(tmp_path):
+    from snipetech.operator import jobs
+
+    oj, started = _agent_jobs(tmp_path)
+    for more in (["--max-credits", "5000000"], ["--max-credits=4e6"], ["--max-credits", "400000", "--days", "3"],
+                 ["--min-sol", "2", "--max-create-share", "1"], ["--max-stretch-txs", "20000"],
+                 [f"--max-stretch-txs={jobs.AGENT_BACKFILL_STRETCH_TXS}"]):  # fmt: skip
+        assert oj.start([*BIG, *more], now=1e9)
+        assert cli.build_parser().parse_args([*BIG, *more])  # and the command line reads what the check let through
+    assert len(started) == 6
+
+
+@pytest.mark.parametrize("argv", [
+    [*BIG, "--max-cred", "9e9"], [*BIG, "--month", "1e12"], [*BIG, "--after", "86400"], [*BIG, "--dry"],
+    ["--verb", "init"], ["lab", "--hour", "24"], ["tips", "--gm"],
+])  # fmt: skip
+def test_the_command_line_reads_no_shortened_flag(argv, capsys):
+    with pytest.raises(SystemExit) as stop:
+        cli.build_parser().parse_args(argv)
+    assert stop.value.code == 2 and "unrecognized arguments" in capsys.readouterr().err
+
+
+def test_every_command_and_sub_command_parser_refuses_shortened_flags():
+    import argparse
+
+    parser = cli.build_parser()
+    (subs,) = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+    assert parser.allow_abbrev is False and len(subs.choices) > 50
+    assert [name for name, sp in subs.choices.items() if sp.allow_abbrev] == []
+
+
+def test_a_hint_that_names_a_flag_names_it_in_full():
+    # the one place the repo told somebody to type a shortened flag (found by scanning every tracked file for a
+    # `--word` that is a prefix of a flag and no flag itself): `oktech cycle` said "pass --ignore MINT"
+    import inspect
+
+    from snipetech import service
+
+    text = inspect.getsource(service)
+    assert "pass --ignore-mint MINT" in text and "--ignore MINT" not in text
+    assert cli.build_parser().parse_args(["oktech", "cycle", "--ignore-mint", "M"]).ignore_mint == ["M"]
+
+
+def test_the_servers_own_commands_are_spelled_in_full():
+    """The timer units and the nightly job call the command line: each of their commands must parse now that a
+    shortened flag is refused."""
+    import re
+    import shlex
+    from pathlib import Path
+
+    units = Path(__file__).resolve().parents[1] / "deploy" / "systemd"
+    parser, seen = cli.build_parser(), 0
+    for unit in sorted(units.glob("*.service")):
+        text = unit.read_text().replace("\\\n", " ").replace("$S $DB", "snipetech --db x.db")
+        for found in re.findall(r"snipetech (--db \S+ [a-z][^;>'\n]*)", text):
+            parser.parse_args(shlex.split(found))  # SystemExit fails the test
+            seen += 1
+    assert seen >= 13
+
+
+# -- a backfill that stopped at its limit goes on at once --------------------------------------------------------------
+
+
+def _ended(oj, jid: str, argv: list[str], log: str, ago: int = 600, now: int = NOW) -> None:
+    meta = {"id": jid, "argv": argv, "started": now - ago - 60, "ended": now - ago, "exit_code": 0, "running": False}
+    (oj.ops.data / "jobs" / f"{jid}.json").write_text(json.dumps(meta))
+    (oj.ops.data / "jobs" / f"{jid}.log").write_text(log)
+
+
+@pytest.fixture
+def command(world, monkeypatch, capsys):
+    """The real command on this world: (run it and give back the job log it leaves, stdout and stderr together)."""
+    chain, store, _ = world
+    from snipetech.solana.rpc import SolanaRpc
+
+    monkeypatch.setattr(SolanaRpc, "from_config", classmethod(lambda cls, cfg: chain.rpc()))
+    clock = __import__("time").time
+
+    def go(argv: list[str]) -> str:
+        monkeypatch.setattr("time.time", lambda: float(NOW))
+        try:
+            assert cli.main(["--db", store.path, *argv]) == 0
+        finally:
+            monkeypatch.setattr("time.time", clock)
+        io = capsys.readouterr()
+        return io.err + io.out
+
+    return go
+
+
+ONE = ["history", "amm-backfill", "--wallet", W, "--days", "1", "--min-sol", "0.1", "--after-secs", "3600"]
+
+
+@pytest.mark.parametrize("fmt", [[], ["--json"]])
+def test_a_backfill_that_stopped_at_its_credit_limit_may_be_started_again_at_once(world, command, tmp_path, fmt):
+    # 12 Nov, the review: the result said "Run it again to go on where it stopped" and the agents' start refused the
+    # same command for six hours ("already ran ... read its log")
+    _, store, _ = world
+    oj, started = _agent_jobs(tmp_path, store.path)
+    argv = [*ONE, "--max-credits", "9", *fmt]  # the wallet's 6 and the pool's 3 pages fit; its 4 transactions do not
+    _ended(oj, "b1", argv, command(argv))
+    assert backfill_spans(store) == {}
+    assert oj.start(argv, now=NOW)["id"] and started == [argv]
+    # while the run that goes on is still running, a third start of the same command is not a second fetch beside it
+    going = {"id": "b2", "argv": argv, "started": NOW - 30, "ended": None, "exit_code": None, "running": True,
+             "pid": os.getpid()}  # fmt: skip
+    (oj.ops.data / "jobs" / "b2.json").write_text(json.dumps(going))
+    with pytest.raises(PermissionError, match="job b2 is this same backfill and still runs"):
+        oj.start(argv, now=NOW)
+    # the run that went on ended whole (1 + 3 pages, 4 transactions): the same command is then held like any other
+    whole = command(argv)
+    assert backfill_spans(store) == {M: [STRETCH]}
+    _ended(oj, "b2", argv, whole, ago=60)
+    with pytest.raises(PermissionError, match="already ran: job b2"):
+        oj.start(argv, now=NOW)
+    assert len(started) == 1
+
+
+def test_only_a_real_backfill_stopped_at_its_own_limit_is_started_again(world, command, tmp_path):
+    _, store, _ = world
+    oj, started = _agent_jobs(tmp_path, store.path)
+    dry = [*ONE, "--max-credits", "2", "--dry-run", "--json"]  # a dry run keeps no place: again is the same again
+    log = command(dry)
+    assert json.loads(log[log.index("{"):])["stopped"] == "max_credits"
+    _ended(oj, "d1", dry, log)
+    with pytest.raises(PermissionError, match="already ran: job d1"):
+        oj.start(dry, now=NOW)
+    # another command whose log happens to carry the words is no backfill
+    lab = ["lab", "--latency", "0", "--json"]
+    _ended(oj, "l1", lab, 'amm-backfill: stopped at max_credits\n{"stopped": "max_credits"}')
+    with pytest.raises(PermissionError, match="already ran: job l1"):
+        oj.start(lab, now=NOW)
+    # a backfill that ended whole, or whose log is gone
+    done = [*ONE, "--json"]
+    _ended(oj, "w1", done, command(done))
+    with pytest.raises(PermissionError, match="already ran: job w1"):
+        oj.start(done, now=NOW)
+    (oj.ops.data / "jobs" / "w1.log").unlink()
+    with pytest.raises(PermissionError, match="already ran: job w1"):
+        oj.start(done, now=NOW)
+    assert started == []
+
+
+def test_a_backfill_stopped_at_the_months_limit_waits_for_the_owner(world, command, tmp_path, monkeypatch):
+    _, store, _ = world
+    oj, started = _agent_jobs(tmp_path, store.path)
+    store.usage_add("helius-backfill", B.MONTH_CREDITS - 5, NOW)
+    argv = [*ONE, "--json"]
+    log = command(argv)
+    assert json.loads(log[log.index("{"):])["stopped"] == "month_credits"
+    _ended(oj, "m1", argv, log)
+    with pytest.raises(PermissionError, match="month's limit.*owner"):
+        oj.start(argv, now=NOW)  # nothing is left of the month: the same run would stop at its first request
+    monkeypatch.setattr(B, "MONTH_CREDITS", B.MONTH_CREDITS + 1000)  # the owner lifts it
+    assert oj.start(argv, now=NOW)["id"] and started == [argv]
+
+
+# -- what is never a stretch -------------------------------------------------------------------------------------------
+
+
+def test_a_buy_of_something_that_is_not_a_coin_gets_no_stretch(world, monkeypatch):
+    # 12 Nov: a big wallet swapped into USDC through a PumpSwap pool and the backfill fetched that pool's trades
+    from snipetech import positions
+
+    assert B.NON_COIN_MINTS is positions.NON_COIN_MINTS
+    assert {"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", WSOL_MINT} <= set(B.NON_COIN_MINTS)
+    chain, store, _ = world
+    monkeypatch.setitem(positions.NON_COIN_MINTS, M, "a stablecoin")
+    out = run(chain, store)
+    assert out["stretches"]["buys_non_coin"] == 1 and out["stretches"]["wanted"] == 0
+    assert out["wallets"][0]["buys"] == 0 and backfill_spans(store) == {}
+    assert not any(p[0] == P for m, p in chain.requests if m == "getSignaturesForAddress")  # the pool is not listed
+    assert chain.count("getTransaction") == 3  # the wallet's own three
+    assert "1 buy of something that is not a coin" in out["note"] and "a stablecoin" in out["note"]
+    dry = run(chain, store, dry_run=True)
+    assert dry["stretches"]["buys_non_coin"] == 1 and dry["estimate"]["stretches_known"] == 0
+
+
+def test_a_stretch_busier_than_the_limit_is_listed_and_not_fetched(world):
+    # 12 Nov: one coin with 48,689 trades in 20 minutes took most of a ten-wallet run's 392,543 requests. Listing a
+    # stretch costs a credit a thousand signatures, so its size is known before a transaction is paid for
+    chain, store, _ = world
+    out = run(chain, store, max_stretch_txs=3)  # the stretch around the buy holds 4 transactions
+    s = out["stretches"]
+    assert s["too_busy"] == 1 and s["wanted"] == 1 and s["fetched"] == 0 and s["transactions"] == 0
+    assert chain.count("getTransaction") == 3 and backfill_spans(store) == {}  # the wallet's own three, no pool's
+    assert out["max_stretch_txs"] == 3 and out["stopped"] is None
+    assert out["too_busy"] == [{"mint": M, "from": STRETCH[0], "to": STRETCH[1], "transactions": 4,
+                                "buys": [{"wallet": W, "sig": R, "ts": T}]}]  # fmt: skip
+    assert "1 stretch" in out["note"] and "more than 3 transactions" in out["note"]
+    assert "4 credits" in out["note"] and "--max-stretch-txs" in out["note"]
+    # the dry run's estimate leaves the same stretch out
+    dry = run(chain, store, dry_run=True, max_stretch_txs=3)
+    est = dry["estimate"]
+    assert dry["stretches"]["too_busy"] == 1 and dry["too_busy"][0]["transactions"] == 4
+    assert est["stretches_known"] == 1 and est["stretches_too_busy"] == 1
+    assert est["stretch_transactions_known"] == 0 and est["credits"] == 0
+    assert run(chain, store, dry_run=True)["estimate"]["credits"] == 4  # at the limit given when nothing is said
+    # at a limit the stretch fits it is fetched: the limit is "more than", and the next run goes on
+    out = run(chain, store, max_stretch_txs=4)
+    assert out["stretches"]["fetched"] == 1 and out["stretches"]["too_busy"] == 0 and out["too_busy"] == []
+    assert backfill_spans(store) == {M: [STRETCH]} and out["note"] == ""
+
+
+def test_the_limit_on_a_stretchs_size_from_the_command_line_and_from_an_agent(world, command, tmp_path):
+    from snipetech.operator import jobs
+
+    _, store, _ = world
+    assert B.MAX_STRETCH_TXS == 8000 and B.MAX_STRETCH_TXS < jobs.AGENT_BACKFILL_STRETCH_TXS
+    assert cli.build_parser().parse_args(ONE).max_stretch_txs is None  # the module's 8,000 when nothing is said
+    log = command([*ONE, "--max-stretch-txs", "3", "--json"])
+    out = json.loads(log[log.index("{"):])
+    assert out["stretches"]["too_busy"] == 1 and out["max_stretch_txs"] == 3
+    text = command([*ONE, "--max-stretch-txs", "3"])
+    assert "more than 3 transactions" in text  # the words of the result say it too
+    assert cli.main(["--db", store.path, *ONE, "--max-stretch-txs", "0"]) == 2
+    oj, started = _agent_jobs(tmp_path)
+    over = str(jobs.AGENT_BACKFILL_STRETCH_TXS + 1)
+    for more in (["--max-stretch-txs", over], [f"--max-stretch-txs={over}"], ["--max-stretch", "9000"],
+                 ["--max-stretch-txs", "0"], ["--max-stretch-txs", "-1"], ["--max-stretch-txs", "1e4"],
+                 ["--max-stretch-txs", "inf"], ["--max-stretch-txs"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="no job started"):
+            oj.start([*BIG, *more], now=1e9)
+    assert started == []
+
+
+def test_a_second_run_with_a_longer_time_after_the_buy_fetches_only_the_seconds_that_are_missing(world):
+    # what the agents are told to do for a lab that sells in parts: backfill the same wallets again with a longer
+    # "--after-secs". The stretch held is not fetched again; the seconds past it are
+    chain, store, n = world
+    run(chain, store, after_secs=3600)
+    chain.add(*plain(CURVE_TX, "tape-after-4", T + 3800))
+    tape_row(store, "tape-after-4", T + 3800)
+    chain.requests.clear()
+    out = run(chain, store, after_secs=3700)
+    assert out["stretches"]["wanted"] == 1 and out["stretches"]["fetched"] == 1 and out["stretches"]["held"] == 0
+    assert chain.fetched() == [n["p-after"]]  # the one trade between the old end and the new one
+    assert backfill_spans(store) == {M: [[T - B.BEFORE_SECS, T + 3700 + B.TAIL_SECS]]}

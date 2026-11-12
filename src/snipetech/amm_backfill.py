@@ -17,10 +17,20 @@ What it does, for the wallets it is given:
 Only inside the tape's own stretches: a lab reads nothing outside them, and the nightly prune deletes what is older.
 It counts every request, stops before the one that would pass `max_credits`, and a second run goes on where the first
 stopped (the wallet's record `amm_backfill:wallet:<wallet>`, the coins' records, the buys already in `trades`).
+
+What gets no stretch (12 Nov 2026 evening: a ten-wallet run spent 392,543 requests on 12 stretches, where about 1,000 a
+stretch was measured before): a buy of something that is not a coin (`positions.NON_COIN_MINTS`: a big wallet swapped
+into USDC through a PumpSwap pool), and a stretch whose listing holds more than `max_stretch_txs` transactions (one coin
+had 48,689 trades in 20 minutes). Listing costs a credit a thousand signatures, so a stretch's size is known before a
+transaction is paid for; the result names each stretch left out with its size, its coin and its buys.
 The rate is the RPC client's own limiter (`SolanaRpc.limiter`: `[rpc] max_rps`, halved on a 429)."""
 
 from __future__ import annotations
 
+import json
+import re
+import sqlite3
+import time
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +38,7 @@ from typing import Any
 from .amm_tape import AMM_RECENT_KEY, amm_recent_covers, backfill_key, merge_spans, missing_spans
 from .ingest import assign_positions
 from .models import AMM, Trade
+from .positions import NON_COIN_MINTS
 from .solana.normalize import normalize
 from .solana.programs import SOL_QUOTES
 from .solana.tx import extract_from_transaction
@@ -45,6 +56,11 @@ DEFAULT_MAX_CREDITS = 1_000_000  # one percent of the month's plan (Helius Busin
 # more than what is left of it. The agents may start runs, each inside its own limit, as often as they like; this is
 # what keeps a loop of them from spending the plan. The owner lifts it with `--month-credits`.
 MONTH_CREDITS = 30_000_000
+# A stretch whose listing holds more transactions than this is not fetched (`--max-stretch-txs`). Measured 12 Nov: a
+# stretch of 300 s after a buy held about 940 (20 stretches, 18,824 transactions), one of an hour about 38,000 (3
+# stretches, 113,466), and the one that took a run's budget 48,689 in 20 minutes. So 8,000 lets every usual five-minute
+# stretch through and stops the runaway one; a run with a long `--after-secs` has to raise it, and says so.
+MAX_STRETCH_TXS = 8000
 USAGE = "helius-backfill"  # `Store.usage_add`: the credits this job counted in the month
 USAGE_EVERY = 1000  # credits between two additions to that number while a run goes on
 WALLET_PREFIX = "amm_backfill:wallet:"  # coverage: where the scan of a wallet's history stands
@@ -83,6 +99,40 @@ def wallet_key(wallet: str) -> str:
     return WALLET_PREFIX + wallet
 
 
+# -- how a run ended, for whoever starts the next one ------------------------------------------------------------------
+
+STOP_REASONS = ("max_credits", "month_credits")
+STOP_LINE = "amm-backfill: stopped at "  # the command's last line on stderr (its job's log) when a limit ended it
+_STOPPED = re.compile(rf'(?:^{re.escape(STOP_LINE)}|"stopped": ")({"|".join(STOP_REASONS)})\b', re.MULTILINE)
+
+
+def stop_line(stopped: str) -> str:
+    """The line the command prints when a limit ended the run, whatever the form of its result."""
+    return STOP_LINE + str(stopped)
+
+
+def stopped_in(log: str) -> str | None:
+    """Which limit ended the backfill whose log this is ("max_credits", "month_credits"), or None when none did or
+    the log does not say: the command's own line (`stop_line`), or the `stopped` of a result printed with --json."""
+    found = _STOPPED.findall(log or "")
+    return found[-1] if found else None
+
+
+def month_count(db_path: str, now: float) -> int | None:
+    """What the backfills of `now`'s month have counted so far, read from the database file without opening it for
+    writing (`Store.usage_month`'s number for a caller that holds no Store); None when it cannot be read."""
+    key = f"api_usage:{USAGE}:{time.strftime('%Y-%m', time.gmtime(now))}"
+    try:
+        con = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = con.execute("SELECT data FROM coverage WHERE key=?", (key,)).fetchone()
+        finally:
+            con.close()
+        return int(json.loads(row[0]).get("n", 0)) if row else 0
+    except (sqlite3.Error, ValueError, TypeError, AttributeError):
+        return None
+
+
 class OutOfCredits(Exception):
     """The next request would pass the run's credit limit."""
 
@@ -109,8 +159,10 @@ def _chunks(items: list, size: int) -> list[list]:
 
 class _Run:
     def __init__(self, store: Store, rpc, now: float, days: float, after_secs: float, min_sol: float, dry_run: bool,
-                 max_credits: float, names: dict[str, str] | None, progress: Callable[[str], None] | None):  # fmt: skip
+                 max_credits: float, names: dict[str, str] | None, progress: Callable[[str], None] | None,
+                 max_stretch_txs: int = MAX_STRETCH_TXS):  # fmt: skip
         self.store, self.rpc, self.now, self.dry = store, rpc, float(now), bool(dry_run)
+        self.max_stretch_txs = int(max_stretch_txs)
         self.after, self.min_quote = float(after_secs), round(float(min_sol) * LAMPORTS)
         self.names = names or {}
         self.say = progress or (lambda _msg: None)
@@ -124,7 +176,10 @@ class _Run:
         self.amm_cov = store.coverage(AMM_RECENT_KEY)
         self.counts = dict.fromkeys(
             ("wanted", "held", "fetched", "on_tape", "no_cursor", "no_pool", "listing_incomplete", "incomplete",
-             "left", "buys_outside_tape", "buys_too_recent", "transactions", "trades"), 0)  # fmt: skip
+             "too_busy", "left", "buys_outside_tape", "buys_too_recent", "buys_non_coin", "transactions",
+             "trades"), 0)  # fmt: skip
+        self.too_busy: list[dict[str, Any]] = []  # the stretches left out for their size, each with its coin and buys
+        self.non_coins: dict[str, int] = {}  # the non-coins bought, by name: how many buys of each got no stretch
         self.listed = 0  # stretches a dry run listed: what `transactions` was counted over
         self.counted = 0  # credits already added to the month's number (`count_usage`)
 
@@ -141,6 +196,8 @@ class _Run:
                 raise OutOfCredits
             page = await self.rpc.get_signatures(address, before=cursor, until=until, limit=PAGE)
             self.meter.add(SIGS)
+            self.count_usage()  # a listing is paid for too, in a dry run as well: 110 requests for half an hour of
+            # a wallet that failed transactions name 110,000 times
             kept = [e for e in page if e.get("blockTime") is None or e["blockTime"] >= floor]
             if len(kept) < len(page):
                 yield kept, "floor"
@@ -252,9 +309,11 @@ class _Run:
     def count_usage(self, final: bool = False) -> None:
         """Add what this run has counted since the last time to the month's number (`Store.usage_add`), every
         USAGE_EVERY credits and at the end: a job that is killed has still been counted, so the month's limit holds for
-        the next one. A dry run writes nothing, this included."""
+        the next one. A dry run's requests are counted like any other (until 12 Nov evening they were not: it lists
+        every signature, about 37,000 requests for 7 days of one busy wallet): this number is the ledger of what was
+        spent, not tape data, and it is the one thing a dry run writes."""
         new = round(self.meter.credits - self.counted)
-        if self.dry or new <= 0 or (new < USAGE_EVERY and not final):
+        if new <= 0 or (new < USAGE_EVERY and not final):
             return
         self.store.usage_add(USAGE, new, self.now)
         self.counted += new
@@ -301,22 +360,25 @@ class _Run:
         """The stretches still to fetch, newest first: per coin, the windows around its buys joined where they overlap,
         less what its coverage record holds. A window the recorder's own PumpSwap tape holds whole is counted and
         left."""
-        windows: dict[str, list[tuple[int, int, str, int]]] = {}
+        windows: dict[str, list[tuple[int, int, str, int, str]]] = {}
         for w in wallets:
             found = self.buys(w)
-            rows[w]["buys"] = len(found)
+            rows[w]["buys"] = sum(1 for _sig, _ts, mint in found if mint not in NON_COIN_MINTS)
             for sig, ts, mint in found:
                 a, b = int(ts - BEFORE_SECS), int(ts + self.after + TAIL_SECS)
-                if not self._in_tape(ts):
+                if mint in NON_COIN_MINTS:  # a swap into wrapped SOL or a stablecoin: no coin was bought
+                    self.counts["buys_non_coin"] += 1
+                    self.non_coins[NON_COIN_MINTS[mint]] = self.non_coins.get(NON_COIN_MINTS[mint], 0) + 1
+                elif not self._in_tape(ts):
                     self.counts["buys_outside_tape"] += 1
                 elif b > self.now - RECENT_SECS:
                     self.counts["buys_too_recent"] += 1
                 else:
-                    windows.setdefault(mint, []).append((a, b, sig, int(ts)))
+                    windows.setdefault(mint, []).append((a, b, sig, int(ts), w))
         pieces: list[dict[str, Any]] = []
         for mint, ws in windows.items():
             rec = self.store.coverage(backfill_key(mint))
-            for a, b in merge_spans([[a, b] for a, b, _sig, _ts in ws]):
+            for a, b in merge_spans([[a, b] for a, b, _sig, _ts, _w in ws]):
                 self.counts["wanted"] += 1
                 gaps = missing_spans(rec.get("spans"), a, b)
                 if not gaps:
@@ -331,8 +393,10 @@ class _Run:
                     self.counts["no_pool"] += 1
                     continue
                 for ga, gb in gaps:
-                    must = {sig for _a, _b, sig, ts in ws if ga <= ts <= gb}
-                    pieces.append({"mint": mint, "pools": pools, "a": int(ga), "b": int(gb), "must": must})
+                    buys = sorted(((ts, sig, w) for _a, _b, sig, ts, w in ws if ga <= ts <= gb))
+                    pieces.append({"mint": mint, "pools": pools, "a": int(ga), "b": int(gb),
+                                   "must": {sig for _ts, sig, _w in buys},
+                                   "buys": [{"wallet": w, "sig": sig, "ts": ts} for ts, sig, w in buys]})  # fmt: skip
         return sorted(pieces, key=lambda p: -p["b"])
 
     def _pools_of(self, mint: str, mig) -> list[str]:
@@ -351,7 +415,8 @@ class _Run:
 
     async def stretch(self, p: dict[str, Any]) -> str:
         """Fetch and write one stretch of a coin's pools; what became of it (a key of `counts`, or "listed" in a dry
-        run). Its span goes into the coin's record only when every transaction listed in it was fetched."""
+        run). Its span goes into the coin's record only when every transaction listed in it was fetched. A stretch
+        with more than `max_stretch_txs` transactions is listed and left ("too_busy"), in a dry run as well."""
         cursor = self._cursor_after(p["b"])
         if cursor is None and p["b"] < self.now - CURSOR_SLACK_SECS:
             return "no_cursor"  # the tape has a hole right after it: listing back from now would read the pool's days
@@ -366,9 +431,13 @@ class _Run:
         if p["must"] - seen:
             return "listing_incomplete"  # the buy the stretch is built around is not in it: the listing is not whole
         todo = [e["signature"] for e in listing if not e.get("err")]
+        self.listed += 1
+        if len(todo) > self.max_stretch_txs:
+            self.too_busy.append({"mint": p["mint"], "from": p["a"], "to": p["b"], "transactions": len(todo),
+                                  "buys": p["buys"]})  # fmt: skip
+            return "too_busy"
         self.counts["transactions"] += len(todo)
         if self.dry:
-            self.listed += 1
             return "listed"
         if not self.meter.fits(TX, len(todo)):
             raise OutOfCredits  # a stretch is not started unless all of it fits
@@ -398,9 +467,10 @@ class _Run:
 
     def estimate(self, wallets: list[str], rows: dict[str, dict], known: int) -> dict[str, Any]:
         """What a real run would ask for: the wallets' transactions still to fetch (counted), the stretches of the buys
-        already known (`known` of them, their transactions counted from the pools' listings), and the stretches the
-        unread transactions may still hold (their rate and size measured on this wallet set where a scan has read
-        enough, else assumed and said so)."""
+        already known (`known` of them, their transactions counted from the pools' listings; one too busy to be
+        fetched costs a real run nothing more than its listing and adds nothing here), and the stretches the unread
+        transactions may still hold (their rate and size measured on this wallet set where a scan has read enough,
+        else assumed and said so; a stretch not found yet is taken to be as often too busy as the listed ones)."""
         to_fetch = sum(rows[w]["to_fetch"] for w in wallets)
         read = sum(int(self.store.coverage(wallet_key(w)).get("txs", 0)) for w in wallets)
         assumed: list[str] = []
@@ -413,12 +483,13 @@ class _Run:
         if self.listed:
             per_stretch = self.counts["transactions"] / self.listed
         else:
-            per_stretch = float(ASSUMED_TXS_PER_STRETCH)
+            per_stretch = float(min(ASSUMED_TXS_PER_STRETCH, self.max_stretch_txs))
             assumed.append(f"pool transactions per stretch: {per_stretch:g} (assumed: no stretch is listed yet)")
         expected = to_fetch * per_tx
         requests = to_fetch + self.counts["transactions"] + expected * per_stretch
         rps = float(getattr(getattr(self.rpc, "limiter", None), "max_rate", 0) or 0)
         return {"wallet_transactions": to_fetch, "stretches_known": known,
+                "stretches_too_busy": self.counts["too_busy"],
                 "stretch_transactions_known": self.counts["transactions"],
                 "stretches_expected": round(expected, 2),
                 "stretch_transactions_expected": round(expected * per_stretch),
@@ -429,20 +500,27 @@ class _Run:
 async def backfill(store: Store, rpc, wallets: list[str], now: float, days: float = 7.0, after_secs: float = 3600.0,
                    min_sol: float = 1.0, dry_run: bool = False, max_credits: float = DEFAULT_MAX_CREDITS,
                    names: dict[str, str] | None = None, progress: Callable[[str], None] | None = None,
-                   month_credits: float = MONTH_CREDITS) -> dict[str, Any]:  # fmt: skip
+                   month_credits: float = MONTH_CREDITS,
+                   max_stretch_txs: int = MAX_STRETCH_TXS) -> dict[str, Any]:  # fmt: skip
     """Backfill the PumpSwap trades around `wallets`' buys of the last `days` days (module docstring). `rpc`: the
-    repo's client (`SolanaRpc`); every request waits for its limiter. `dry_run`: lists signatures only (a few credits),
-    fetches no transaction, writes nothing, and adds an `estimate`. Returns what was asked for and what it cost:
-    `wallets` (one row each), `stretches` (counts by what became of them), `requests`, `credits` and `stopped`
-    ("max_credits" when the run's limit ended it, "month_credits" when the month's did: `month_credits` less what the
-    runs of this month have counted so far; `note` says which)."""
+    repo's client (`SolanaRpc`); every request waits for its limiter. `dry_run`: lists signatures only (a request a
+    thousand signatures, each counted in the month's number like a real run's: about 37,000 for 7 days of a wallet
+    that failed transactions name 110,000 times in half an hour), fetches no transaction, writes no tape data, and
+    adds an `estimate`. Returns what was asked for and what it cost: `wallets` (one row each), `stretches` (counts by
+    what became of them), `too_busy` (each stretch left out for holding more than `max_stretch_txs` transactions: its
+    coin, its seconds, its size, its buys), `requests`, `credits` and `stopped` ("max_credits" when the run's limit
+    ended it, "month_credits" when the month's did: `month_credits` less what the runs of this month have counted so
+    far; `note` says which, and what was left out as too busy or as no coin)."""
+    if int(max_stretch_txs) < 1:
+        raise ValueError("max_stretch_txs is 1 or more")
     left = max(0.0, float(month_credits) - store.usage_month(USAGE, now))
     by_month = left < float(max_credits)  # the month's limit is the nearer one
-    run = _Run(store, rpc, now, days, after_secs, min_sol, dry_run, left if by_month else max_credits, names, progress)
+    run = _Run(store, rpc, now, days, after_secs, min_sol, dry_run, left if by_month else max_credits, names, progress,
+               max_stretch_txs)  # fmt: skip
     wallets = list(dict.fromkeys(wallets))
     out: dict[str, Any] = {"dry_run": bool(dry_run), "days": days, "after_secs": after_secs, "min_sol": min_sol,
-                           "cut_off": run.cut, "tape_from": run.tape_from, "wallets": [], "stopped": None,
-                           "note": ""}  # fmt: skip
+                           "max_stretch_txs": run.max_stretch_txs, "cut_off": run.cut, "tape_from": run.tape_from,
+                           "wallets": [], "stopped": None, "note": ""}  # fmt: skip
     rows = {w: {"wallet": w, "name": run.names.get(w, ""), "listed": 0, "fetched": 0, "to_fetch": 0, "missing": 0,
                 "buys": 0} for w in wallets}  # fmt: skip
     pieces: list[dict[str, Any]] = []
@@ -471,16 +549,30 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
                 run.say(f"{k + 1} of {len(pieces)} stretches, {run.meter.credits:,.0f} credits")
     out["wallets"] = [rows[w] for w in wallets]
     out["stretches"] = dict(run.counts)
+    out["too_busy"] = sorted(run.too_busy, key=lambda t: -t["transactions"])
     out["requests"] = dict(run.meter.requests)
+    notes = [out["note"]] if out["note"] else []
     if run.stopped and by_month:
         out["stopped"] = "month_credits"
-        out["note"] = (f"stopped at the month's limit of {month_credits:,.0f} credits for backfills ({left:,.0f} were "
-                       "left): the next request would have passed it. The owner lifts it with "
-                       "--month-credits.")  # fmt: skip
+        notes.append(f"stopped at the month's limit of {month_credits:,.0f} credits for backfills ({left:,.0f} were "
+                     "left): the next request would have passed it. The owner lifts it with --month-credits.")
     elif run.stopped:
         out["stopped"] = "max_credits"
-        out["note"] = (f"stopped at the limit of {max_credits:,.0f} credits: the next request would have passed it. "
-                       "Run it again to go on where it stopped.")  # fmt: skip
+        notes.append(f"stopped at the limit of {max_credits:,.0f} credits: the next request would have passed it. "
+                     + ("A dry run keeps no place: the same one again stops at the same request."
+                        if dry_run else "Run it again to go on where it stopped."))  # fmt: skip
+    if run.too_busy:
+        n, txs = len(run.too_busy), sum(t["transactions"] for t in run.too_busy)
+        notes.append(f"{n} stretch{'es' if n > 1 else ''} with more than {run.max_stretch_txs:,} transactions "
+                     f"{'were' if n > 1 else 'was'} listed and not fetched (too_busy: {txs:,} transactions together, "
+                     f"about {round(txs * PRICES[TX].credits):,} credits to fetch). too_busy names each with its "
+                     "coin, its size and its buys: for the ones worth it, run again with --max-stretch-txs above "
+                     "their size.")  # fmt: skip
+    if run.non_coins:
+        n = sum(run.non_coins.values())
+        notes.append(f"{n} buy{'s' if n > 1 else ''} of something that is not a coin "
+                     f"({', '.join(sorted(run.non_coins))}) got no stretch.")  # fmt: skip
+    out["note"] = " ".join(notes)
     if dry_run:
         out["estimate"] = run.estimate(wallets, rows, len(pieces))
     run.count_usage(final=True)
