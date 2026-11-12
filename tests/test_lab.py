@@ -1070,3 +1070,44 @@ def test_a_copy_inside_the_leaders_block_starts_behind_its_companions():
     one_back = collect(st, cfg, 0.2, 0, "+1", **kw)  # one outsider (the 4 SOL bot) ahead
     assert made(one_back) == made(collect(st, cfg, 0.2, 0, "+4", mates={}, **kw))
     assert {r["mates"] for r in right_behind["rows"]} == {3}
+
+
+def test_a_lab_of_wallet_rules_reads_only_the_coins_its_wallets_bought(monkeypatch):
+    """11 Nov 23:30 UTC, the analyst's 2 SOL lab under a profile: 109,876 coins read and 83,733 paths built (20 million
+    trades, 17 minutes) for 903 moments. A rule that fires on a labelled wallet's buy can fire on no coin those wallets
+    did not buy at the rule's size, so a lab of such rules reads those coins only (as the qualify lab does for its
+    group) and scores the same rows; with a rule of any other kind beside them every coin is read as before."""
+    from snipetech.analysis.lab import LIVE_EXITS
+
+    store = Store(":memory:")
+    kol = addr("nk-kol")
+    for i in range(12):
+        m = Market(store, addr(f"nk-{i}"), addr(f"nk-dev-{i}"), NOW - 6_000 + i * 400, 60_000_000 + i * 1_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        if i < 4:
+            m.buy(kol, 0.5, 2)  # four coins the wallet bought at the rule's size
+        if i == 4:
+            m.buy(kol, 0.05, 2)  # one it bought dust of: no moment under a 0.3 SOL rule
+        for k in range(6):
+            m.buy(addr(f"nk-fan-{i}-{k}"), 0.3, 3 + k)
+        m.commit()
+    store.set_coverage("tape", {"spans": [[NOW - 6_100, NOW]]})
+    store.set_label(kol, "kol:one", "kol")
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    read: list[str] = []
+    real = Store.trades_for_mint
+
+    def spy(self, mint, *a, **k):
+        read.append(mint)
+        return real(self, mint, *a, **k)
+
+    monkeypatch.setattr(Store, "trades_for_mint", spy)
+    rule = Trigger("kol", sol=0.3)
+    data = collect(store, cfg, 0.2, 0, "+1", exits=[LIVE_EXITS["lab"]], triggers=[rule], workers=1)
+    assert sorted(read) == sorted(addr(f"nk-{i}") for i in range(4))
+    assert sorted(r["mint"] for r in data["rows"]) == sorted(addr(f"nk-{i}") for i in range(4))
+    read.clear()
+    both = collect(store, cfg, 0.2, 0, "+1", exits=[LIVE_EXITS["lab"]], triggers=[rule, Trigger("launch")], workers=1)
+    assert len(set(read)) == 12
+    assert [r for r in both["rows"] if r["trigger"] == 0] == data["rows"]

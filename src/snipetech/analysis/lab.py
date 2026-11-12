@@ -1604,7 +1604,14 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)),
                mates={w: frozenset(m) for w, m in (mates or {}).items() if m})  # fmt: skip
-    plan = _plan(store, spans, group_wallets, min_trades, group_floor(triggers) if groups else 0)
+    plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
+    if plan_wallets is None and triggers and isinstance(kols, dict) and all(t.kind == "kol" for _, t in triggers):
+        # every rule of this lab fires on a buy by one of its group's wallets, of at least its size (`_fire`): a coin
+        # none of them bought so gives no moment and is not read (11 Nov, the analyst's 2 SOL lab under a profile:
+        # 109,876 coins read, 20 million trades, 17 minutes, for 903 moments)
+        plan_wallets = set().union(*((kols.get(t.group) or set()) for _, t in triggers))
+        floor = group_floor(triggers)
+    plan = _plan(store, spans, plan_wallets, min_trades, floor)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
     n = lab_workers(cfg.lab.workers if workers is None else workers)
     shared = _shared_file(store) if n > 1 and len(items) >= MIN_PARALLEL_COINS else None
