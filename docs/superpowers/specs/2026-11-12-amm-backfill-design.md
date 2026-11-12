@@ -174,3 +174,19 @@ has measured this wallet's own rates.
    rest under `no_backfill`.
 6. The qualify lab's next run: how many candidates' moments are now left out as `no_backfill` (they used to count as
    small losses).
+
+## The first real run (12 Nov 2026, 19:02 UTC)
+
+`history amm-backfill --wallet 4Hq9UkSX… (Gake Side) --days 2 --after-secs 300 --max-credits 20000`: 585 wallet
+transactions read, 21 PumpSwap buys of 1 SOL or more, 19 stretches fetched and 1 already on the tape, 18,824 pool
+transactions, 3,937 trades written, 19,453 credits counted, about 3 minutes. The wallet's PumpSwap trades are in
+`trades` afterwards (24 buys, 59 sells in two days), most with a fee record.
+
+- Cost: about 1,000 credits a buy with 300 s after it. A dry run with an hour after it listed 113,466 transactions for
+  3 stretches: about 38,000 a buy. `--after-secs` therefore defaults to 300 since this run (the lab's exits hold 300 s
+  at most); section "With `--after-secs 3600` (the default)" above describes the default before it.
+- A dry run counts too few buys before any transaction is read (3 against 21): its estimate is a floor.
+- A wallet named by many failed transactions is slow to list, not dear: Cupseyy's main wallet had 111,847 signatures
+  in half an hour, 218 of them successful. Seven days of it are about 37,000 list requests and over an hour.
+- Not checked: the credits counted against what Helius charged (only the account's own page shows that).
+- The agents may start a backfill since this run (`operator.jobs.AGENT_BACKFILL_OPEN = True`).

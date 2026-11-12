@@ -520,9 +520,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so are landing and tips, and of history only ["history", "amm-backfill", ...] (below; closed to you until the
-        cloud session has run it once under its eyes: the refusal says so); one lab at a time on a machine under
-        24 GB, two on a bigger one (the refusal names the limit).
+        so are landing and tips, and of history only ["history", "amm-backfill", ...] (below); one lab at a time on a
+        machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
         wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
@@ -636,10 +635,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         unless a backfill put them there.
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
-        trade of that pool from 60 s before the buy to an hour after it ("--after-secs"), into the tape's own tables;
+        trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
+        nothing is said, and enough for every exit of the lab's set), into the tape's own tables;
         "--wallet", "<address>" (repeatable) names wallets instead of a group. It trades nothing and changes no
-        setting. Start with "--dry-run": it writes nothing and says what a run would cost (estimate.credits, with
-        every guess marked assumed). Then run it without "--dry-run" and with "--max-credits" (at most 5,000,000 a
+        setting. WHAT IT COSTS, MEASURED (the first real run, 12 Nov: Gake Side, 2 days, 21 buys, 19,453 credits in
+        3 minutes): about 1,000 credits a buy at 300 s after it; about 38,000 a buy at an hour after it (these coins
+        are busy), so ask for more than 300 only for an exit that holds longer, and for few wallets. The month's plan
+        is 100 million credits. A wallet that thousands of failed transactions name takes long to list, not much to
+        pay: Cupseyy's address is named by 110,000 transactions in half an hour (218 of them its own), so 7 days of
+        it take over an hour to list: give such a wallet a job of its own and a day or two at a time.
+        Start with "--dry-run": it writes nothing and says what a run would cost (estimate.credits, with
+        every guess marked assumed; before any transaction is read it counts too few buys: Gake Side's said 3, the
+        run found 21). Then run it without "--dry-run" and with "--max-credits" (at most 5,000,000 a
         job from an agent; 1,000,000 when not given): it stops before the request that would pass the limit, says so
         (stopped), and the same command later goes on where it stopped. It reads only inside the tape (a lab reads
         nothing older) and a lab sees the new trades after the next copy of the database (every three hours). A lab

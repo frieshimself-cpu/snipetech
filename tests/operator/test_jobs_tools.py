@@ -837,16 +837,32 @@ def test_the_agents_are_told_how_to_backfill_the_big_wallets_older_coins(toolbox
     assert "not a research command" in _call(tools["start_job"], argv=["history", "fetch", "--from", "2026-11-01"])
 
 
-def test_the_backfill_is_closed_to_the_agents_until_one_supervised_run(jobs):
-    """12 Nov: the backfill writes the live database and spends the owner's Helius credits, and it had never run. Until
-    the cloud session has run one under its eyes, an agent's start is refused in words that say what to do instead."""
+def test_the_backfill_is_open_to_the_agents_since_the_supervised_run_of_12_nov(jobs):
+    """12 Nov 19:02 UTC: the cloud session ran one under its eyes (Gake Side, 2 days, 300 s after each buy: 19 stretches
+    fetched, 3,937 trades written, 19,453 credits counted, the wallet's PumpSwap buys in `trades` with their fees).
+    Since then an agent may start one, inside the limits; the bought hourly files stay the owner's."""
     from snipetech.operator import jobs as jobs_module
 
-    assert jobs_module.AGENT_BACKFILL_OPEN is False
-    with pytest.raises(PermissionError, match="not open to agents yet"):
-        jobs.start(["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"], now=1e9)
+    assert jobs_module.AGENT_BACKFILL_OPEN is True
+    assert jobs.start(["history", "amm-backfill", "--group", "big", "--days", "2", "--dry-run", "--json"], now=1e9)["id"]
     with pytest.raises(PermissionError, match="not a research command"):
         jobs.start(["history", "fetch", "--from", "2026-11-01"], now=1e9)
+
+
+def test_the_agents_are_told_what_a_backfill_costs_as_measured(toolbox):
+    """The first real run and its dry runs (12 Nov): an hour of a pool's trades after one big-wallet buy is about
+    38,000 credits (three stretches, 113,466 transactions), five minutes about 1,000 (20 stretches, 18,824). No exit
+    of the lab's set holds past 300 s, so 300 is what the tool tells an agent to ask for, and what the command gives
+    when nothing is said. A wallet named by thousands of failed transactions takes long to list, not much to pay."""
+    from snipetech.cli import build_parser
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert "closed to you" not in text
+    assert '"--after-secs", "300"' in text and "about 1,000 credits a buy" in text and "38,000" in text
+    assert "Cupseyy" in text and "over an hour" in text  # 111,847 signatures in half an hour, 218 of them its own
+    args = build_parser().parse_args(["history", "amm-backfill", "--group", "big"])
+    assert args.after_secs == 300.0
 
 
 def test_the_agents_are_told_what_a_recipe_is_and_that_it_never_follows_the_bot(toolbox):

@@ -45,10 +45,11 @@ OWNER_COMMANDS = frozenset({"operate", "oktech", "sweep", "unwrap", "book", "str
 # a lab can score them (12 Nov 2026, the owner: "Ok do it"). It trades nothing; what it may spend is bounded below and
 # by the job's own limit for the month (`amm_backfill.MONTH_CREDITS`).
 RESEARCH_ACTIONS = frozenset({("history", "amm-backfill")})
-# Closed to the agents until the cloud session has run one small backfill under its eyes and the credit prices are
-# confirmed (12 Nov 2026: the job writes the live database and spends the owner's Helius credits; it had never run).
-# The owner's commands and `remote run` are not held by this.
-AGENT_BACKFILL_OPEN = False
+# Open to the agents since the cloud session ran one small backfill under its eyes (12 Nov 2026, 19:02 UTC: Gake Side,
+# 2 days, 300 s after each buy: 19 stretches fetched, 3,937 trades written, 19,453 credits counted at Helius's listed
+# price of 1 a request; the wallet's PumpSwap buys in `trades` with their fees). Set it False to close it again: the
+# owner's commands and `remote run` are not held by this.
+AGENT_BACKFILL_OPEN = True
 BACKFILL_CLOSED = ("history amm-backfill is not open to agents yet: the cloud session runs the first one under its eyes "
                    "(the credit prices are unconfirmed). Put the wallets and days you want in an idea")
 AGENT_BACKFILL_CREDITS = 5_000_000  # the most Helius credits one backfill an agent starts may ask for (5 % of a month)

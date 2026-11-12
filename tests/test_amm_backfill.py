@@ -403,7 +403,9 @@ def test_the_command_runs_from_the_command_line(world, monkeypatch, capsys):
     monkeypatch.delenv("PUMPFUNDATA_API_KEY", raising=False)  # the bought files' key is not this command's
     monkeypatch.setattr(SolanaRpc, "from_config", classmethod(lambda cls, cfg: chain.rpc()))
     monkeypatch.setattr("time.time", lambda: float(NOW))
-    base = ["--db", store.path, "history", "amm-backfill", "--wallet", W, "--days", "1", "--min-sol", "0.1"]
+    # an hour after each buy, as this world's stretch is (the command gives 300 s when nothing is said: 12 Nov)
+    base = ["--db", store.path, "history", "amm-backfill", "--wallet", W, "--days", "1", "--min-sol", "0.1",
+            "--after-secs", "3600"]  # fmt: skip
     assert cli.main([*base, "--dry-run", "--json"]) == 0
     dry = json.loads(capsys.readouterr().out)
     assert dry["dry_run"] is True and dry["wallets"][0]["to_fetch"] == 3 and chain.count("getTransaction") == 0

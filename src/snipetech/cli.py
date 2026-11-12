@@ -1149,8 +1149,9 @@ def build_parser() -> argparse.ArgumentParser:
                     "trader, cand)")  # fmt: skip
     sp.add_argument("--days", type=float, default=7.0, help="amm-backfill: how far back the wallets' buys are read "
                     "(never further than the tape: a lab reads nothing older)")  # fmt: skip
-    sp.add_argument("--after-secs", type=float, default=3600.0, help="amm-backfill: the pool's trades are kept from "
-                    "60 s before a buy to this long after it")  # fmt: skip
+    sp.add_argument("--after-secs", type=float, default=300.0, help="amm-backfill: the pool's trades are kept from "
+                    "60 s before a buy to this long after it (300: every exit of the lab's set; measured 12 Nov, "
+                    "about 1,000 credits a buy at 300 and 38,000 at 3600)")  # fmt: skip
     sp.add_argument("--dry-run", action="store_true", help="amm-backfill: list signatures only (a few credits), write "
                     "nothing, and say what a run would cost")  # fmt: skip
     sp.add_argument("--max-credits", type=float, help="amm-backfill: stop before the request that would pass this "
