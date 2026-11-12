@@ -139,3 +139,51 @@ def test_it_runs_as_root_every_minute_and_setup_installs_and_starts_it():
     assert {"snipetech-netwatch", "snipetech-netwatch.timer"} <= set(O.UNITS)  # `remote status`, `remote logs`
     assert "snipetech-netwatch" not in O.HOLD_UNITS  # it holds no deploy: it runs none of snipetech's code
     assert SCRIPT.read_text().startswith("#!/bin/sh\n")
+
+
+def _need_packages(tmp_path, tools):
+    """Run setup.sh's own `need_packages` on a machine that has only `tools` on its PATH."""
+    import re
+
+    setup = (DEPLOY / "setup.sh").read_text()
+    func = re.search(r"^need_packages\(\) \{\n.*?^\}\n", setup, re.DOTALL | re.MULTILINE).group(0)
+    bin_ = tmp_path / "bin"
+    bin_.mkdir(exist_ok=True)
+    for f in bin_.iterdir():
+        f.unlink()
+    for name, body in tools.items():
+        f = bin_ / name
+        f.write_text("#!/bin/sh\n" + body + "\n")
+        f.chmod(f.stat().st_mode | stat.S_IEXEC)
+    r = subprocess.run(["/bin/bash", "-c", func + "need_packages && echo install || echo nothing"], check=False,
+                       env={"PATH": str(bin_)}, capture_output=True, text=True, timeout=30)  # fmt: skip
+    return r.stdout.strip()
+
+
+def test_a_rerun_of_setup_asks_the_package_manager_for_nothing(tmp_path):
+    """12 Nov: the owner runs setup.sh again on the live server for its protections (the network watch, the gentle
+    update jobs). Until now it began with `apt-get update && apt-get install` under `set -e`: with the package manager
+    busy or the network gone the script stopped there, before any protection, and an upgrade it started restarted
+    running jobs. Packages are asked for only when a tool is missing, pip only when the environment cannot import the
+    package (`remote update` installs dependencies on every deploy)."""
+    have = {"python3": "exit 0", "git": "exit 0", "sudo": "exit 0"}
+    assert _need_packages(tmp_path, have) == "nothing"
+    assert _need_packages(tmp_path, {k: v for k, v in have.items() if k != "git"}) == "install"
+    assert _need_packages(tmp_path, have | {"python3": "exit 1"}) == "install"  # no venv module in this python
+    setup = (DEPLOY / "setup.sh").read_text()
+    apt = setup.index("apt-get update")
+    assert setup.rfind("if need_packages; then", 0, apt) > 0 and setup.count("apt-get update") == 1
+    pip = setup.index('"$REPO/.venv/bin/pip" install')
+    guard = setup.rfind("if ", 0, pip)
+    assert "-c 'import snipetech'" in setup[guard:pip]
+    # the protections come after no step that needs the network
+    assert setup.index("snipetech-netwatch.timer") > setup.index("apt-daily-upgrade.service") > pip
+
+
+def test_a_rerun_of_setup_says_that_nothing_else_is_to_do():
+    """The owner is not technical: after a second run the script must not tell them to fill in keys that are there."""
+    setup = (DEPLOY / "setup.sh").read_text()
+    assert "first_install=1" in setup[setup.index("if [ ! -f /etc/snipetech/env ]") :][:200]
+    tail = setup[setup.index("systemctl enable --now snipetech-netwatch.timer") :]
+    assert 'if [ -n "$first_install" ]; then' in tail and "Fill /etc/snipetech/env" in tail
+    assert "Nothing else to do" in tail and tail.index("Fill /etc/snipetech/env") < tail.index("Nothing else to do")

@@ -9,20 +9,37 @@ DATA=/var/lib/snipetech
 
 id "$USER_NAME" >/dev/null 2>&1 || useradd --system --create-home --shell /usr/sbin/nologin "$USER_NAME"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip git sudo >/dev/null
+# Packages only when a tool is missing. A re-run on a live server (for new units or protections) asks the package
+# manager for nothing: it may be busy or the network gone (12 Nov 2026), `set -e` would stop this script before the
+# protections below, and an upgrade it starts restarts running jobs.
+need_packages() {
+  for tool in python3 git sudo; do command -v "$tool" >/dev/null 2>&1 || return 0; done
+  python3 -c 'import venv, ensurepip' 2>/dev/null || return 0
+  return 1
+}
+if need_packages; then
+  apt-get update -qq && apt-get install -y -qq python3 python3-venv python3-pip git sudo >/dev/null
+fi
 PY=python3
 if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null; then
   # Ubuntu 22.04 ships 3.10; snipetech needs 3.11+
-  apt-get install -y -qq python3.11 python3.11-venv >/dev/null && PY=python3.11
+  command -v python3.11 >/dev/null 2>&1 || apt-get install -y -qq python3.11 python3.11-venv >/dev/null
+  PY=python3.11
 fi
 install -d -o "$USER_NAME" -g "$USER_NAME" "$DATA" "$DATA/reports" "$DATA/jobs" "$DATA/inputs"
 [ -x "$REPO/.venv/bin/python" ] || "$PY" -m venv "$REPO/.venv"
-"$REPO/.venv/bin/pip" install -q --upgrade pip >/dev/null
-"$REPO/.venv/bin/pip" install -q -e "$REPO"
+# the package and what it needs: into a new environment, or one that cannot import it (`remote update` installs
+# them on every deploy)
+if ! "$REPO/.venv/bin/python" -c 'import snipetech' 2>/dev/null; then
+  "$REPO/.venv/bin/pip" install -q --upgrade pip >/dev/null
+  "$REPO/.venv/bin/pip" install -q -e "$REPO"
+fi
 chown -R "$USER_NAME":"$USER_NAME" "$REPO"
 
 install -d -m 750 /etc/snipetech
+first_install=""
 if [ ! -f /etc/snipetech/env ]; then
+  first_install=1
   cat > /etc/snipetech/env <<'ENV'
 # Read by every snipetech service. Keep this file private (mode 600).
 HELIUS_API_KEY=
@@ -88,4 +105,8 @@ done
 install -m 755 "$REPO/deploy/netwatch.sh" /usr/local/sbin/snipetech-netwatch
 systemctl daemon-reload
 systemctl enable --now snipetech-netwatch.timer >/dev/null 2>&1 || true
-echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer snipetech-events snipetech-snapshot.timer snipetech-strategist.timer snipetech-commands.timer"
+if [ -n "$first_install" ]; then
+  echo "Installed. Fill /etc/snipetech/env, then: systemctl enable --now snipetech-tape snipetech-ops snipetech-daily.timer snipetech-operator.timer snipetech-discover.timer snipetech-qualify.timer snipetech-measure.timer snipetech-book.timer snipetech-events snipetech-snapshot.timer snipetech-strategist.timer snipetech-commands.timer"
+else
+  echo "Done: the services, the protections against Ubuntu's update job and the network watch are in place. Nothing else to do."
+fi
