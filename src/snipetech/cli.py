@@ -605,7 +605,12 @@ def build_parser() -> argparse.ArgumentParser:
                          'trigger\'s fields, e.g. \'{"kind": "hunt", "sol": 4, "window": 1.5, "dev_max": 1}\'; each is '
                          "scored where it trades live (launch, hunt, whale and burst where a hunt buy lands, kol and "
                          "momentum at the copy landing, `copy_landing` in the output): --latency / --position do not "
-                         "apply to it")  # fmt: skip
+                         'apply to it. A wallet rule (kind kol) can name the wallets it follows ("only": their full '
+                         'addresses, separated by commas; the group then only says whose buys "known" counts), let '
+                         '"known" count the tracked wallets of every group ("known_any": true) and ask for the SOL '
+                         'traded in the coin before the followed buy ("vol_secs": 60, "min_vol", "max_vol"). Each '
+                         "ranked wallet rule shows its result by market-cap band and by volume band "
+                         "(`bands`)")  # fmt: skip
     sp.add_argument("--copy-position", metavar="POS",
                     help="with --trigger: score copies (kol, momentum) at this place in the followed wallet's slot "
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
@@ -1066,7 +1071,8 @@ def build_parser() -> argparse.ArgumentParser:
         "the bids and what a bid would have won (reads the tape copy; a research job)",
     )
     sp.add_argument("--trigger", help="the wallet rule, a lab kol trigger as a JSON object (default: the second known "
-                    "wallet into a coin with a buy of 1 to 3 SOL)")  # fmt: skip
+                    'wallet into a coin with a buy of 1 to 3 SOL); "only": "<address>" reads one wallet\'s moments. '
+                    "A buy under 0.1 SOL behind the wallet is left out as dust")  # fmt: skip
     sp.add_argument("--hours", type=float, default=48.0, help="the newest hours of tape (bids are on it since 11 Nov "
                     "16:34 UTC)")  # fmt: skip
     sp.add_argument("--each", action="store_true", help="every wallet of the group gives its own moment in a coin "

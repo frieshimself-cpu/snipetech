@@ -6,7 +6,9 @@ holds every trade's priority fee and tip since 11 Nov 16:34 UTC. For every momen
 moments a lab of that rule scores), this reads the followed wallet's block and the few after it:
 
 - **who bought behind it in its own block**, companions left out as the lab leaves them out (`analysis.companions`: no
-  copy lands between one operator's wallets) and our own wallets left out as well: each outsider's place, what it paid
+  copy lands between one operator's wallets), our own wallets left out as well, and dust left out (a buy under
+  `lab.DUST_SOL`, 0.1 SOL, moves no price and competes for nothing: 12 Nov, a 0.00 SOL buy right behind Cupseyy made
+  his first outsider's bid read 0.034 SOL instead of 0.305): each outsider's place, what it paid
   for the coins, its bid (priority fee plus tip), how far over the followed wallet's price it bought, and whether it is
   the very next transaction in the block (sent with the wallet's own, or by its operator);
 - **whether the order follows the bids**: how often the block's highest bidder is first, and the share of pairs of
@@ -35,6 +37,7 @@ from .bid_landing import own_wallets as _own_wallets
 from .companions import companions
 from .lab import (
     COPY_LAND_SLOTS,
+    DUST_SOL,
     KOL_MIN_SOL,
     Trigger,
     _fire,
@@ -44,6 +47,7 @@ from .lab import (
     implausible_coin,
     label_groups,
     parse_trigger,
+    rule_wallets,
 )
 from .playbook import _q
 
@@ -58,6 +62,11 @@ SPAN_TAIL_SECS = 60  # as the lab: a moment in the last minute of a stretch of t
 # idea I51: the second known wallet into a coin, with a buy of 1 to 3 SOL
 DEFAULT_TRIGGER: dict[str, Any] = {"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}
 NO_FEES = "this copy of the tape holds no fee records (taken before 11 Nov): no bid is known"
+DUST_READING = (
+    f"A buy under {DUST_SOL:g} SOL behind the followed wallet is left out as dust: it is no buyer, it holds no place "
+    "and its bid is no bid to outbid (it moves no price and competes for nothing). The bid landing model of the lab "
+    "(--copy-position bid / bid-) still counts such a transaction: it stood in the block."
+)
 READING = (
     (
         "A bid is what the transaction paid to land: its priority fee plus its tip, in SOL. The chain orders by fee per "
@@ -72,6 +81,7 @@ READING = (
         "The moments are the ones a lab of the same trigger scores: lab --copy-position +0 with --per-tx at the bid this "
         "table names scores the copy in that place at that cost."
     ),
+    DUST_READING,
 )
 
 
@@ -79,13 +89,14 @@ def moments(store: Store, trig: Trigger, spans: Sequence[tuple[int, int]], *, ea
             wallets: Collection[str] | None = None, min_trades: int = 5, kols: Any = None) -> list[dict[str, Any]]:  # fmt: skip
     """The moments `trig` follows on the stretches of tape `spans`, found as the lab finds them (`lab._coin_rows`):
     once a coin where the rule fires (`_fire`), or with `each` every group wallet's own first buy (`_first_buys`, what
-    each wallet's own copy sniper copies). `wallets`: only the moments whose followed wallet is one of these. Each is
+    each wallet's own copy sniper copies). The wallets are the rule's (`lab.rule_wallets`: the ones it names with
+    `only`, else its group's). `wallets`: only the moments whose followed wallet is one of these. Each is
     {"mint", "ts", "slot", "leader", "sig"}: the followed buy."""
     if trig.kind != "kol":
         raise ValueError(f"place-bids reads the block behind a followed wallet: it takes a wallet rule (a kol "
                          f"trigger), not a {trig.kind} one")  # fmt: skip
     kols = label_groups(store) if kols is None else kols
-    group = set((kols.get(trig.group) or ()) if isinstance(kols, dict) else kols)
+    group = set(rule_wallets(trig, kols))
     keep = None if not wallets else set(wallets)
     floor = round((trig.sol or KOL_MIN_SOL) * LAMPORTS)
     # the followed wallet bought the coin at the rule's size: its coins are all the coins a moment of it can be in
@@ -212,7 +223,8 @@ def read_blocks(store: Store, cfg: Config, now: float, trig: Trigger, *, hours: 
                 ) -> tuple[list[dict], list[dict], dict[str, frozenset[str]], bool]:  # fmt: skip
     """The moments `trig` follows over the newest `hours` of tape (`moments`) and each one read off its block
     (`block`): (every moment found, the ones whose block's bids are known, each followed wallet's companions, whether
-    this copy of the tape holds fee records at all). `place_bids` and `tips` are two tables over the same reading."""
+    this copy of the tape holds fee records at all). `place_bids` and `tips` are two tables over the same reading,
+    and in both an outsider's buy under DUST_SOL is no buyer (`block`'s `min_sol`)."""
     spans = _window(store.tape_spans(), now, hours)
     found = moments(store, trig, spans, each=each, wallets=wallets, min_trades=min_trades, kols=kols)
     own = _own_wallets(store, cfg) if own is None else set(own)
@@ -225,7 +237,7 @@ def read_blocks(store: Store, cfg: Config, now: float, trig: Trigger, *, hours: 
         if who not in mates_of:  # as a lab finds them: on the tape it reads
             mates_of[who] = companions(store, who, since)
         trades = _fix_slot_order(store.block_trades(m["mint"], m["slot"], m["slot"] + AFTER_SLOTS))
-        read = block(trades, m["sig"], mates_of[who], own)
+        read = block(trades, m["sig"], mates_of[who], own, min_sol=DUST_SOL)
         if read is not None and read["leader_bid"] is not None:
             scored.append({**m, **read})
     return found, scored, mates_of, fees
@@ -275,7 +287,7 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
         "ours": {"moments": len(mine), "same_block": sum(1 for o in mine if o["slots_later"] == 0),
                  "place": _q((o["place"] for o in mine), 0), "slots_later": _q((o["slots_later"] for o in mine), 0),
                  "bid_sol": _q((o["bid"] for o in mine), 4), "buy_sol": _q(o["sol"] for o in mine)} if mine else None,
-        "reading": list(READING),
+        "dust_under_sol": DUST_SOL, "reading": list(READING),
     }  # fmt: skip
 
 

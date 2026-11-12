@@ -7,7 +7,8 @@ block is won with a few thousandths of a SOL, a crowded one's is bid up to tenth
 For each wallet of a group (default `big`, the owner's big names; or the wallets named), over the newest hours of
 tape, at each of its own first buys of a coin (the moment a copy sniper of that wallet copies; `place_bids.moments`
 with `each`), the outsiders in its block are read as `place-bids` reads them: the wallet's companions and our own
-wallets left out, a bid being priority fee plus tip in SOL. The line says:
+wallets left out, and dust left out (a buy under 0.1 SOL is no buyer and its bid no bid to outbid: `lab.DUST_SOL`), a
+bid being priority fee plus tip in SOL. The line says:
 
 - how many of its first buys had an outsider in the block at all;
 - what the first outsider bid (median, 75th and 90th percentile);
@@ -33,8 +34,8 @@ from typing import Any
 from .. import gmgn as G
 from ..config import Config
 from ..store import Store
-from .lab import KOL_MIN_SOL, label_groups, parse_trigger
-from .place_bids import LAMPORTS, read_blocks
+from .lab import DUST_SOL, KOL_MIN_SOL, label_groups, parse_trigger
+from .place_bids import DUST_READING, LAMPORTS, read_blocks
 
 LEVELS = (50, 75, 90)  # percent of a wallet's blocks a bid is to be above every outsider in
 SUGGESTED = (50, 90)
@@ -64,6 +65,7 @@ READING = (
         "A bid belongs in the tip: a tip is paid once and comes back on a failed send, while the buy's priority fee "
         "is charged again on every sell."
     ),
+    DUST_READING,
 )
 
 
@@ -226,7 +228,7 @@ def tips(store: Store, cfg: Config, now: float, *, group: str = "big", wallets: 
         else "."
     )
     out: dict[str, Any] = {
-        "group": group, "hours": hours, "named": named, "bids_known": bool(fees),
+        "group": group, "hours": hours, "named": named, "bids_known": bool(fees), "dust_under_sol": DUST_SOL,
         "first_buys": len(found), "blocks_read": len(scored), "from_ts": min((m["ts"] for m in scored), default=None),
         "warning": warning, "highest_bidder_first": measured, "wallets": rows, "reading": list(READING),
     }  # fmt: skip
@@ -242,6 +244,9 @@ def render(out: Mapping[str, Any]) -> str:
         f"{out['blocks_read']} blocks with known bids"
     )
     head = [first, out["warning"]]
+    if out.get("dust_under_sol"):
+        head.append(f"buys under {out['dust_under_sol']:g} SOL behind a wallet are left out as dust: no buyer, and "
+                    "no bid to outbid")  # fmt: skip
     if not out["bids_known"]:
         head.append("this copy of the tape holds no fee records (taken before 11 Nov): no bid is known")
     lines = [r["line"] for r in out["wallets"]] or ["no wallet of the group bought on this tape"]

@@ -962,6 +962,16 @@ What the main session has to add for exact rules: a per-wallet knob on the kol t
 `known` counting tracked wallets of every group (Schoen's and Jijo's best split). And one fix: `place-bids` should not
 count a buy of dust as the first buyer.
 
+All three are built (12 Nov evening, branch `wf/wallet-knob`). They are tested on synthetic markets only. None of the
+numbers above has been run again with them.
+
+- The per-wallet knob: built. Add `"only":"<address>"` to a kol trigger (several addresses with commas between them)
+  and the rule follows those wallets alone, in `lab`, `paper freeze`, `paper run` and `place-bids`.
+- `known` over every group: built. Add `"known_any":true` next to `"known":2` and a tracked wallet of any group that
+  is already in the coin counts.
+- Dust in the bid tables: built. `place-bids` and `tips` leave out a buy under 0.1 SOL behind the wallet, so it is no
+  first buyer and its bid is no bid to outbid.
+
 ## What the tape cannot show
 
 - **How often our sniper is first at a given bid.** The whole value is in one place. The tape shows what others bid
