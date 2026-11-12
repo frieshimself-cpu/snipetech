@@ -59,6 +59,10 @@ def test_arm_from_the_fee_paid_on_chain():
     assert arm_from_fee(20_000_000, 0, ARMS) == "paid"  # untipped paid send
     assert arm_from_fee(1_000_000, 0, ARMS) == "control"
     assert arm_from_fee(None, None, ARMS) == "control" and arm_from_fee(20_000_000, 0, {}) == "control"
+    # since 12 Nov an arm is sent with its bid in the tip (priority at OKTech's minimum, fees.sent_bid): a fill of the
+    # paid arm then pays 0.001 + 0.039, and is still the paid arm's; the old fills (0.02 + 0.02) stay the paid arm's
+    assert arm_from_fee(1_000_000, 39_000_000, ARMS) == "paid"
+    assert arm_from_fee(1_000_000, 2_000_000, ARMS) == "control" and arm_from_fee(1_000_000, 0, ARMS) == "control"
     st = Store(":memory:")
     tl, tme, _, _ = _world(st)
     meta = TxMeta(sig=tme.sig, slot=tme.slot, block_time=tme.ts, version=0, fee_payer=ME, signers=[ME], n_signatures=1, fee=5000,

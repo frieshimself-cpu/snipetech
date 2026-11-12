@@ -8,6 +8,7 @@ from typing import Any
 
 from ..analysis.audit import _position_in_slot
 from ..analysis.lab import CURVE_REAL_TOKENS, VIRTUAL_OFFSET
+from ..fees import sent_bid
 from ..models import AMM, CURVE, Trade
 from ..solana.txmeta import TxMeta
 from ..store import Store
@@ -78,13 +79,21 @@ def leaders_for(store: Store, ts: float | None = None) -> set[str]:
 def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: dict[str, dict] | None) -> str:
     """The bid arm a fill paid for: the arm whose priority fee is nearest (tip as the tiebreaker: one send in three
     carries no tip). Both arms copy the same leaders from one wallet and OKTech's task documents carry no fills, so
-    the fee is the only thing on chain that tells them apart. Unknown fee or no arms: control."""
+    the fee is the only thing on chain that tells them apart. Unknown fee or no arms: control.
+
+    An arm has two shapes on the chain: as it is written in [book] bid_arms (how it was sent until 12 Nov: the paid
+    arm 0.02 + 0.02) and as it is sent since, the same total with the bid in the tip (fees.sent_bid: 0.001 + 0.039).
+    A fill belongs to the arm one of whose shapes it is nearest; an untipped send of an arm whose priority is at the
+    minimum cannot be told from control's."""
     if not arms or priority_lamports is None:
         return "control"
     prio, tip = priority_lamports / 1e9, (tip_lamports or 0) / 1e9
-    return min(
-        arms, key=lambda a: (abs(prio - float(arms[a].get("priority") or 0)), abs(tip - float(arms[a].get("tip") or 0)))
-    )
+
+    def distance(name: str) -> tuple[float, float]:
+        written = (float(arms[name].get("priority") or 0), float(arms[name].get("tip") or 0))
+        return min((abs(prio - p), abs(tip - t)) for p, t in (written, sent_bid(*written)))
+
+    return min(arms, key=distance)
 
 
 def arm_for(store: Store, sniper_id: str | None) -> str:

@@ -1287,3 +1287,80 @@ def test_a_wallet_the_owner_drops_is_never_copied_again_whatever_its_verdict_say
     st.close()
     with pytest.raises(SystemExit, match="give the wallet"):
         cli.main(["--db", db, "book", "drop"])
+
+
+REAL = {L1: "7aPo3npvLCXNKTWuApjdnyyGBwn2176Z3jFRrDvbGXN8", L2: "2Tp9scbrD3mrzFCQexmw56QY19bZ7VtRydAqkXUB8D65"}
+
+
+class BuildingSvc(FakeSvc):
+    """The book's own call, built by the real builder: what `oktech_copylist` would send OKTech for the book's exact
+    arguments (a dry build: nothing is created anywhere). The test wallets are not addresses, so each is swapped for a
+    real one on the way in."""
+
+    def __init__(self, store, cfg):
+        super().__init__(store, cfg=cfg)
+        self.built: dict[str, dict] = {}
+
+    async def oktech_copylist(self, specs, wallet, create=False, **kw):
+        from snipetech.service import Service
+
+        real = [":".join([REAL[s.split(":")[0]], *s.split(":")[1:]]) for s in specs]
+        rep = await Service(self.cfg, store=self.store).oktech_copylist(real, wallet, create=False, **kw)
+        for spec, sn in zip(specs, rep["snipers"]):
+            self.built[spec.split(":")[0]] = sn
+        return await super().oktech_copylist(specs, wallet, create=create, **kw)
+
+
+def test_a_book_sniper_carries_the_same_protections_as_one_made_by_hand(tmp_path):
+    """12 Nov: a copy must never buy a non-coin, and its bid sits in the tip. The book builds its snipers through the
+    same builder as `oktech copylist`, so both carry the same: platforms pump.fun + PumpSwap, the market-cap ceiling
+    on the copied wallet, the priority at OKTech's minimum. The whole payload is equal, field for field."""
+    from snipetech.service import Service
+
+    st, cfg = _env(tmp_path, enabled=True)
+    svc = BuildingSvc(st, cfg)
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert set(svc.built) == {L1, L2}
+        for leader, sn in svc.built.items():
+            c = sn["config"]
+            assert c["mode"] == "ctbot" and c["platforms"] == ["pumpfun", "pumpswap"], leader
+            assert c["ctbotWallets"] == [{"address": REAL[leader], "label": "snipetech book", "minSol": 0.3,
+                                          "maxMcapUsd": 50_000_000}]  # fmt: skip
+            assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.002)
+            assert (c["autoSell"]["sellTipAmount"], c["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
+            assert c["buyAmount"] == 0.2 and c["totalSnipes"] == 3  # the book's size and cap, as before
+            assert any(s.startswith("kept to coins") and "UNVERIFIED" in s for s in sn["summary"])
+            hand = asyncio.run(Service(cfg, store=st).oktech_copylist(
+                [f"{REAL[leader]}:book:0.3:lab"], "SNIPER", buy_sol=0.2, max_buys=3, send_count=1, tag="arm:control"))
+            assert hand["snipers"][0]["config"] == c, leader
+    finally:
+        st.close()
+
+
+def test_the_books_paid_arm_goes_out_with_its_bid_in_the_tip(tmp_path):
+    """The paid arm is written as priority 0.02 + tip 0.02 ([book] bid_arms; retired since 6 Nov, the owner's file can
+    bring it back). Until 12 Nov the book sent it as written, and OKTech charged the 0.02 priority again on every sell
+    and failed duplicate sell. It now goes out as priority 0.001 + tip 0.039: the same 0.04 SOL a buy, paid once. Which
+    wallet gets the arm, its size (the 3 % rule: 0.04 / 0.03 = 1.33 SOL) and its cap are what they were."""
+    arms = {"control": {"priority": 0.001, "tip": 0.002}, "paid": {"priority": 0.02, "tip": 0.02}}
+    st, cfg = _env(tmp_path, enabled=True, bid_arms=arms, explore_share=0.5, fill_max_sol=2.0)
+    svc = BuildingSvc(st, cfg)
+    try:
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=lambda u, d: None),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        creates = {c[1][0].split(":")[0]: c for c in svc.calls if c[0] == "create"}
+        # ("create", specs, wallet, buy_sol, max_buys, priority, tip, send_count, tag)
+        assert creates[L1][3:] == (0.2, 3, 0.001, 0.002, 1, "arm:control")
+        assert creates[L2][3:] == (pytest.approx(0.04 / 0.03, abs=1e-6), 3, 0.001, 0.039, 1, "arm:paid")
+        paid = svc.built[L2]["config"]
+        assert (paid["priorityFee"], paid["tipAmount"]) == (0.001, 0.039)
+        assert (paid["autoSell"]["sellTipAmount"], paid["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
+        assert paid["platforms"] == ["pumpfun", "pumpswap"] and paid["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
+        assert paid["buyAmount"] == pytest.approx(0.04 / 0.03, abs=1e-4) and paid["totalSnipes"] == 3
+        assert not any("WARNING" in s for s in svc.built[L2]["summary"])
+        control = svc.built[L1]["config"]
+        assert (control["priorityFee"], control["tipAmount"]) == (0.001, 0.002)
+    finally:
+        st.close()

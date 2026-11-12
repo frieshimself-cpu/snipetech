@@ -68,7 +68,8 @@ def test_dev_and_copy_snipers():
     assert c.config["mode"] == "ctbot" and w["address"] == TARGET and w["minSol"] == 1.0 and w["maxMcapUsd"] == 50_000
     assert c.config["ctbotCopyExit"]["enabled"] and c.config["autoSell"]["stages"][0]["gainPercent"] == 30.0
     assert any("other buyers" in n for n in c.notes) and any("2 slot" in s for s in c.summary)
-    assert copy_sniper(COPY_SCORE, cfg, sol_usd=None).config["ctbotWallets"][0].get("maxMcapUsd") is None
+    # no SOL price: the verdict's own cap cannot be sent (a note says so); the ceiling every copy carries still is
+    assert copy_sniper(COPY_SCORE, cfg, sol_usd=None).config["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
     assert len(c.external_id) <= 120 and c.external_id.startswith(f"st:vcopy:{TARGET}:")
     assert c.config["singleSnipe"] is True and c.config["totalSnipes"] == Config().oktech.verdict_max_buys
 
@@ -1526,16 +1527,25 @@ def test_partial_take_profit_ends_with_a_100_percent_stage():
 def test_the_presets_sent_today_are_byte_identical_to_before_the_menu():
     """EXITS is built from the menu now; the book's lab sniper and the hold60 copy sniper are byte for byte what they
     were before (their externalIds too), so nothing a running book sends changed. The 8 Nov sell-fee split is the one
-    change since: sellPriorityFeeSol 0.0001 instead of 0.002 (the digests below are from that payload)."""
+    change to the fees since: sellPriorityFeeSol 0.0001 instead of 0.002 (the first digest of each pair is from that
+    payload). 12 Nov added exactly two fields, the ones that keep a copy from buying a non-coin (`platforms` and the
+    copied wallet's `maxMcapUsd` ceiling): with those two taken out the payload is still that digest, byte for byte;
+    with them it is the second digest, and the externalId's hash moved with it."""
+    import copy
     import hashlib
 
     from snipetech.oktech import list_copy_sniper
 
-    want = {"lab": ("6e5fa622912a7897", "d798dcb3344b"), "hold60": ("520c36c6f80bcedd", "8f1c1c97f60e")}
-    for name, (digest, config_hash) in want.items():
+    want = {"lab": ("6e5fa622912a7897", "baa53a4b623281bc", "4008238ecc6e"),
+            "hold60": ("520c36c6f80bcedd", "227a20c051d1b774", "4f8a7849df72")}  # fmt: skip
+    for name, (before, digest, config_hash) in want.items():
         p = list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, cfg=Config(), exit_name=name, priority_fee=0.001,
                              tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
         assert hashlib.sha256(json.dumps(p.config).encode()).hexdigest()[:16] == digest, name
+        was = copy.deepcopy(p.config)
+        assert was.pop("platforms") == ["pumpfun", "pumpswap"]
+        assert was["ctbotWallets"][0].pop("maxMcapUsd") == 50_000_000
+        assert hashlib.sha256(json.dumps(was).encode()).hexdigest()[:16] == before, name
         assert p.external_id.endswith(f":{config_hash}:g1") and p.name == "snipetech copy book LLLLLL arm:control"
 
 
@@ -1667,7 +1677,8 @@ def test_a_crew_only_rule_is_refused_live_since_oktech_cannot_tell_a_crews_coin(
 
 def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_it():
     """I15/I21 (8 Nov): 7aPo and AG89's buys in the first ~20 slots of a coin pay at our landing, their late re-buys
-    lose; OKTech's copy filter for that is the wallet's maxMcapUsd. Without a cap nothing is sent."""
+    lose; OKTech's copy filter for that is the wallet's maxMcapUsd. Without a cap only the ceiling every copy carries
+    since 12 Nov is sent (oktech.COPY_MAX_MCAP_USD: no coin we copy is near it), and the summary names no cap."""
     from snipetech.oktech import list_copy_sniper
 
     lead = "7aPo3npvVtdpkqE7jjY2TAubbYtp2ZpZDaaBLxkKbGXN"
@@ -1675,7 +1686,8 @@ def test_a_copy_sniper_with_a_market_cap_cap_copies_only_the_leaders_buys_below_
     assert capped.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000
     assert "below $12,000 market cap" in " ".join(capped.summary)
     plain = list_copy_sniper(lead, "book", 0.3, 0.2, 3)
-    assert "maxMcapUsd" not in plain.config["ctbotWallets"][0]
+    assert plain.config["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
+    assert "below $" not in " ".join(plain.summary)
 
 
 def test_a_market_cap_cap_is_sent_at_a_sol_price_an_hour_old_at_most(monkeypatch):
@@ -1762,3 +1774,200 @@ def test_a_buy_priority_given_by_hand_goes_into_the_buy_field_and_no_sell_field(
             yield path
 
     assert list(carriers(config)) == ["priorityFee"]  # no other field of the payload holds the buy's priority
+
+
+# -- 12 Nov, the tip ladder behind Cupsey: never copy a non-coin; the bid goes in the tip ----------------------------
+
+CUPSEYY = "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP"
+USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+
+
+def _ctbot_payloads() -> dict:
+    """Every copy-mode (ctbot) payload a builder of ours makes: the hand-made list sniper, the verdict's copy sniper
+    and the speed test's copy probe."""
+    return {name: p.config for name, p in _every_builder().items() if p.config.get("mode") == "ctbot"}
+
+
+def test_the_non_coins_are_the_mints_the_repo_can_vouch_for():
+    """What a copy must never buy, by mint: wrapped SOL and the stablecoins `positions.py` already keeps out of the
+    wallet's positions. PYUSD, JUP, JLP, mSOL, jitoSOL and bSOL have no address anywhere in the repo: unverified, so
+    left out rather than guessed (the market-cap ceiling is what stands in front of them)."""
+    from snipetech.positions import NON_COIN_MINTS, STABLES, WSOL
+
+    assert NON_COIN_MINTS == {
+        "So11111111111111111111111111111111111111112": "wrapped SOL",
+        USDC: "USDC",
+        "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB": "USDT",
+        "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB": "USD1",
+    }
+    assert set(NON_COIN_MINTS) == {WSOL} | set(STABLES)
+
+
+def test_a_copy_sniper_is_kept_to_pump_fun_and_pumpswap_under_a_market_cap_ceiling():
+    """12 Nov 17:05 UTC: a copy of Cupsey bought USDC (through a PumpSwap pool) and sold it four seconds later, 0.04
+    SOL of fees for nothing. OKTech's copy mode has no field on record that shuts out a mint, so every copy payload
+    carries the two nearest things it has: `platforms` pumpfun + pumpswap (no Raydium, Meteora or LaunchLab swap) and a
+    market-cap ceiling on the copied wallet (`ctbotWallets[].maxMcapUsd`, a min-out on the buy: above it the buy fails
+    on chain instead of filling). An owner's tighter cap wins; one above the ceiling is brought down to it."""
+    from snipetech.oktech import COPY_MAX_MCAP_USD, COPY_PLATFORMS, list_copy_sniper
+
+    assert COPY_PLATFORMS == ("pumpfun", "pumpswap") and COPY_MAX_MCAP_USD == 50_000_000
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3)
+    assert p.config["platforms"] == ["pumpfun", "pumpswap"]
+    assert p.config["ctbotWallets"] == [
+        {"address": CUPSEYY, "label": "snipetech cupseyy", "minSol": 1.0, "maxMcapUsd": 50_000_000}
+    ]
+    # the summary says it, and that it is unverified: whether copy mode reads `platforms` is a question for OKTech
+    said = [s for s in p.summary if s.startswith("kept to coins")]
+    assert len(said) == 1
+    assert "UNVERIFIED" in said[0] and "platforms pumpfun, pumpswap" in said[0] and "$50,000,000" in said[0]
+    assert "no setting on record that refuses a coin by its address" in said[0] and "USDC twice on 12 Nov" in said[0]
+    # the first line's "below $X market cap" is the owner's cap only: the ceiling is no rule about which coins to copy
+    assert "below $" not in " ".join(p.summary)
+    tight = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
+    assert tight.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000
+    loose = list_copy_sniper(CUPSEYY, "book", 0.3, 0.2, 3, max_mcap_usd=2_000_000_000)
+    assert loose.config["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
+    assert any("brought down" in n for n in loose.notes)
+
+
+def test_the_two_protections_can_be_switched_off_and_the_payload_is_then_the_one_of_before(monkeypatch):
+    """If OKTech refuses `platforms` on a copy sniper, or the ceiling hurts a normal copy, each is one constant: with
+    both empty the book's sniper is byte for byte the payload it sent before 12 Nov (the digest of
+    test_the_presets_sent_today_are_byte_identical_to_before_the_menu), and the note says nothing is sent."""
+    import hashlib
+
+    from snipetech import oktech
+
+    monkeypatch.setattr(oktech, "COPY_PLATFORMS", ())
+    monkeypatch.setattr(oktech, "COPY_MAX_MCAP_USD", 0)
+    p = oktech.list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, cfg=Config(), exit_name="lab",
+                                priority_fee=0.001, tip=0.002, send_count=1, tag="arm:control", salt="g1")  # fmt: skip
+    assert "platforms" not in p.config and "maxMcapUsd" not in p.config["ctbotWallets"][0]
+    assert hashlib.sha256(json.dumps(p.config).encode()).hexdigest()[:16] == "6e5fa622912a7897"
+    assert any(s.startswith("NOT kept to coins") and "both are switched off" in s for s in p.summary)
+    capped = oktech.list_copy_sniper("L" * 32 + "abc", "book", 0.3, 0.2, 3, max_mcap_usd=12_000)
+    assert capped.config["ctbotWallets"][0]["maxMcapUsd"] == 12_000  # the owner's own cap is still sent
+
+
+def test_every_copy_mode_payload_carries_the_same_protections_and_no_other_kind_changes():
+    payloads = _ctbot_payloads()
+    assert set(payloads) == {"list_copy", "copy", "speed_probe_1"}
+    for name, c in payloads.items():
+        assert c["platforms"] == ["pumpfun", "pumpswap"], name
+        assert all(0 < w["maxMcapUsd"] <= 50_000_000 for w in c["ctbotWallets"]), name
+        summary = _every_builder()[name].summary
+        assert any(s.startswith("kept to coins") and "UNVERIFIED" in s for s in summary), name
+    # the launch, hunt and replica snipers buy pump.fun launches only, as before
+    for name, p in _every_builder().items():
+        if p.config.get("mode") != "ctbot":
+            assert p.config["platforms"] == ["pumpfun"], name
+            assert "ctbotWallets" not in p.config, name
+
+
+def test_copylist_bid_puts_the_whole_bid_in_the_tip_and_pins_every_fee_field():
+    """`oktech copylist --bid X`: priority at OKTech's minimum (0.001), tip X - 0.001. The tip ladder's first arm as
+    it should have been sent: a 0.035 SOL bid is 0.001 + 0.034, not 0.005 + 0.03 (OKTech charges the buy priority
+    again on every sell and failed duplicate sell). The sell fields do not move with the bid."""
+    from snipetech.cli import build_parser
+    from snipetech.service import Service
+
+    a = build_parser().parse_args(["oktech", "copylist", "--copy", f"{CUPSEYY}:cupseyy:1:lab", "--bid", "0.035",
+                                   "--snipes", "3", "--tag", "arm:tip03"])  # fmt: skip
+    assert a.bid == 0.035 and a.tip is None and a.priority is None
+    store = Store(":memory:")
+    svc = Service(Config(), store=store)
+    try:
+        rep = asyncio.run(svc.oktech_copylist([f"{CUPSEYY}:cupseyy:1:lab"], "SNIPER", buy_sol=0.05, max_buys=3,
+                                              bid=0.035, tag="arm:tip03"))  # fmt: skip
+        c = rep["snipers"][0]["config"]
+        assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.034)
+        assert (c["autoSell"]["sellTipAmount"], c["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
+        assert c["platforms"] == ["pumpfun", "pumpswap"] and c["ctbotWallets"][0]["maxMcapUsd"] == 50_000_000
+        assert c["mode"] == "ctbot" and c["buyAmount"] == 0.05 and c["totalSnipes"] == 3
+        assert not any("WARNING" in s for s in rep["snipers"][0]["summary"])
+        assert any("priority 0.001 SOL + tip 0.034 SOL" in s for s in rep["snipers"][0]["summary"])
+        # the smallest bid there is: the two minimums together; under it, refused before anything is built
+        c = asyncio.run(svc.oktech_copylist([CUPSEYY], "SNIPER", bid=0.003))["snipers"][0]["config"]
+        assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.002)
+        with pytest.raises(ValueError, match="0.003"):
+            asyncio.run(svc.oktech_copylist([CUPSEYY], "SNIPER", bid=0.0029))
+        # --bid is the whole bid: together with --tip or --priority nobody can say which was meant
+        for extra in ({"tip": 0.03}, {"priority_fee": 0.005}):
+            with pytest.raises(ValueError, match="--bid"):
+                asyncio.run(svc.oktech_copylist([CUPSEYY], "SNIPER", bid=0.035, **extra))
+    finally:
+        store.close()
+
+
+def test_a_priority_given_by_hand_above_the_minimum_is_still_sent_and_the_summary_warns():
+    """`--tip` / `--priority` stay for hand use and are sent as asked; the summary says what the priority costs."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, priority_fee=0.005, tip=0.03)
+    assert (p.config["priorityFee"], p.config["tipAmount"]) == (0.005, 0.03)
+    warn = [s for s in p.summary if s.startswith("WARNING")]
+    assert len(warn) == 1
+    assert "OKTech charges it again on every sell and failed duplicate sell: put the bid in the tip" in warn[0]
+    assert "--bid 0.035" in warn[0]
+    for quiet in (list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3),
+                  list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, tip=0.034)):  # fmt: skip
+        assert not any("WARNING" in s for s in quiet.summary)
+
+
+def test_a_bid_by_hand_is_not_held_to_the_fee_bounds_and_the_bounds_stay_the_owners():
+    """The fee policy's automatic choice keeps a copy's tip at 0.005 SOL at most ([fees] bounds: the owner's risk
+    setting, sized for 0.2 SOL copies). A bid given by hand is the owner's own ask for that sniper: `--bid 0.35` goes
+    out as 0.001 + 0.349, the note says it is outside the bound, and the bound itself is what it was. A copy made
+    with no bid still gets the policy's minimum."""
+    from snipetech import fees as F
+    from snipetech.service import Service
+
+    cfg = Config()
+    before = json.dumps(cfg.fees.bounds, sort_keys=True)
+    assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.005)
+    store = Store(":memory:")
+    try:
+        svc = Service(cfg, store=store)
+        rep = asyncio.run(svc.oktech_copylist([f"{CUPSEYY}:cupseyy:1:lab"], "SNIPER", buy_sol=2.0, bid=0.35))
+        sn = rep["snipers"][0]
+        c = sn["config"]
+        assert (c["priorityFee"], c["tipAmount"]) == (0.001, 0.349)
+        assert c["buyAmount"] == 2.0  # the hand command's size is not the book's 1 SOL either
+        assert (c["autoSell"]["sellTipAmount"], c["autoSell"]["sellPriorityFeeSol"]) == (0.002, 0.0001)
+        assert any("asked for by hand" in n and "above the [fees] bound of 0.005" in n and "not held to it" in n
+                   for n in sn["notes"]), sn["notes"]  # fmt: skip
+        plain = asyncio.run(svc.oktech_copylist([f"{CUPSEYY}:cupseyy:1:lab"], "SNIPER"))["snipers"][0]["config"]
+        assert (plain["priorityFee"], plain["tipAmount"]) == (0.001, 0.002)
+        assert json.dumps(cfg.fees.bounds, sort_keys=True) == before
+        assert F.effective_bounds(cfg, "copy")["buy_tip"] == (0.002, 0.005)
+    finally:
+        store.close()
+
+
+def test_the_summary_says_the_buy_cap_is_not_a_hard_limit():
+    """12 Nov: the test sniper was sent `totalSnipes` 3 with `singleSnipe` true and bought four times (17:04:54,
+    17:05:56, 17:12:12 and 17:24:31 UTC on `fills`). Why is OKTech's to answer; nothing is changed in what is sent. The
+    summary says it, so nobody sizes a test on the cap."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3)
+    assert p.config["totalSnipes"] == 3 and p.config["singleSnipe"] is True  # sent as before
+    line = [s for s in p.summary if "not a hard limit" in s]
+    assert len(line) == 1 and "OKTech bought 4 on a cap of 3 on 12 Nov" in line[0]
+    assert "stops after 3 buys" in p.summary[0]
+
+
+def test_a_copy_snipers_stop_is_sent_with_its_confirm_window_and_the_notes_say_the_lab_has_none():
+    """Every stop goes out with `stopLoss.confirmMs` 250: OKTech sells only once the loss has held a quarter of a
+    second. The lab's stop fires at once. The value is not changed here (it is the one live stops have run with); the
+    sniper's notes say the difference, and a sniper with no stop says nothing."""
+    from snipetech.oktech import list_copy_sniper
+
+    p = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3)  # the lab exit: stop-loss 30 %
+    assert p.config["autoSell"]["stopLoss"] == {
+        "enabled": True, "stages": [{"percentLoss": 30.0, "sellPercent": 100}], "confirmMs": 250,
+    }  # fmt: skip
+    assert any("confirm window of 250 ms" in n and "the lab's stop fires at once" in n for n in p.notes)
+    hold = list_copy_sniper(CUPSEYY, "cupseyy", 1.0, 0.05, 3, exit_name="hold60")
+    assert "stopLoss" not in hold.config["autoSell"] and not any("confirm window" in n for n in hold.notes)

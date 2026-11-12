@@ -411,7 +411,13 @@ deletes it and creates a fresh one, because the buy that uses up OKTech's cap ca
 zero), whatever its verdict says; **each wallet is copied only on buys of its own floor or more**
 (`copy_plan.min_leader_sol` from the lab, never below `min_copy_sol`); only verdicts written by the lab since it
 simulates the live sniper are booked (older ones are re-qualified first, and `/book status` counts them); the paid bid
-arm is retired. **The unsold-coin watch** (`book/watch.py`) runs in the one-minute pass and at the end of every book
+arm is retired. **Every copy sniper is kept to coins and bids in the tip** (12 Nov, after a copy bought USDC and a
+0.005 SOL priority fee was charged again on every sell): the book's snipers and the hand-made ones
+(`oktech copylist`) are sent `platforms` pump.fun + PumpSwap and a 50 million dollar market-cap ceiling on the copied
+wallet (OKTech has no setting that refuses a coin by its address; neither part is proven yet), and a buy bid goes out
+with the priority fee at OKTech's minimum and the rest as the tip: `oktech copylist --bid 0.035` sends 0.001 + 0.034,
+and the book sends its bid arms the same way (docs/oktech-features.md, "What every copy sniper is sent since 12 Nov
+2026"). **The unsold-coin watch** (`book/watch.py`) runs in the one-minute pass and at the end of every book
 run: a coin still held a minute after one of its exits was due (dead exit, copy exit, stop-loss, timer), or held over
 6 minutes by a sniper that is gone, gets one Telegram line (`[watch] Nobody is selling …`: the coin, the leader, the
 exits that were due, its value, how to sell it) and again every 15 minutes while held. It never sells.

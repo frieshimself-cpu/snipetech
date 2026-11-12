@@ -241,3 +241,38 @@ def test_every_kind_has_a_choice_inside_its_bounds(kind):
     c = F.choose(Config(), kind)
     for name, (lo, hi) in F.effective_bounds(Config(), kind).items():
         assert lo - 1e-12 <= getattr(c, name) <= hi + 1e-12
+
+
+def test_a_whole_bid_goes_into_the_tip_and_the_priority_stays_at_oktechs_minimum():
+    """12 Nov, the tip ladder: OKTech charges a task's buy priority again on every sell and on every failed duplicate
+    sell, while a tip is paid once and comes back when a send fails. So a bid of X is priority 0.001 (OKTech's
+    minimum) + tip X - 0.001; a bid under the two minimums together (0.003) is refused, never rounded up."""
+    assert (F.OKTECH_MIN_PRIORITY_SOL, F.OKTECH_MIN_TIP_SOL) == (0.001, 0.002)
+    assert F.bid_in_tip(0.035) == (0.001, 0.034)
+    assert F.bid_in_tip(0.101) == (0.001, 0.1)
+    assert F.bid_in_tip(0.003) == (0.001, 0.002)  # the two minimums together: the smallest bid there is
+    for bad in (0.0029, 0.002, 0, -1, float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="0.003"):
+            F.bid_in_tip(bad)
+
+
+def test_a_bid_split_between_priority_and_tip_is_sent_with_all_but_the_minimum_in_the_tip():
+    """A bid someone wrote as priority + tip (the book's bid arms: [book] bid_arms) is sent as the same total with the
+    priority at the minimum. The control arm (0.001 + 0.002) is unchanged; the paid arm (0.02 + 0.02) goes out as
+    0.001 + 0.039."""
+    assert F.sent_bid(0.001, 0.002) == (0.001, 0.002)
+    assert F.sent_bid(0.02, 0.02) == (0.001, 0.039)
+    assert F.sent_bid(0.005, 0.03) == (0.001, 0.034)
+    assert F.sent_bid(0.001, 0.005) == (0.001, 0.005)
+    assert F.sent_bid(0, 0) == (0.001, 0.002)  # nothing configured: OKTech's minimums
+
+
+def test_a_priority_above_the_minimum_is_warned_about_in_plain_words():
+    assert F.priority_warning(0.001, 0.034) is None
+    words = F.priority_warning(0.005, 0.03)
+    assert "OKTech charges it again on every sell and failed duplicate sell: put the bid in the tip" in words
+    assert "0.005" in words and "--bid 0.035" in words and "0.034" in words
+    # measured on our own fills, 8 to 12 Nov: a sale pays the buy's priority about 2.47 times (the landed sell and 1.47
+    # failed duplicates), so 0.004 above the minimum costs 0.004 x 2.47 = 0.0099 SOL more for each sale
+    assert F.SELL_SENDS_PER_SALE == 2.47
+    assert "about 2.47 times a sale" in words and "0.0099 SOL more for each sale" in words

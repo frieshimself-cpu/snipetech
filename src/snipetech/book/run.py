@@ -26,6 +26,7 @@ from .policy import (
     BookInputs,
     BookPlan,
     ExitChoice,
+    arm_bid,
     buying_book_wallets,
     copied_leaders,
     plan_book,
@@ -457,11 +458,13 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                 extra["max_mcap_sol"] = caps[a.wallet]  # the owner's cap: only the leader's buys below it
             try:
                 # salt = this run's second: a sniper replaced within 5 minutes needs an externalId of its own. The arm
-                # is the floor of the buy bid: the fee policy (fees.py) may raise the tip for this leader on evidence
-                # inside the owner's [fees] bounds, and prices the sells (sell tip + near-zero sell priority)
+                # is the floor of the buy bid, sent with the bid in the tip and the priority at OKTech's minimum
+                # (policy.arm_bid: OKTech charges the buy priority again on every sell): the fee policy (fees.py) may
+                # raise the tip for this leader on evidence inside the owner's [fees] bounds, and prices the sells
+                # (sell tip + near-zero sell priority)
                 rep = await svc.oktech_copylist([f"{a.wallet}:book:{floor:g}:{name}"], cfg.oktech.wallet or "SNIPER", create=True,
                                                 buy_sol=a.fill_sol or b.fill_min_sol, max_buys=b.max_buys_per_sniper, exit_name=name,
-                                                fee_floor={"buy_priority": arm.get("priority"), "buy_tip": arm.get("tip")},
+                                                fee_floor=arm_bid(arm),
                                                 send_count=b.send_count, tag=f"arm:{a.arm}",
                                                 compute_units=arm.get("cu"), salt=f"g{int(now)}", **extra)  # fmt: skip
                 for s in rep.get("snipers", []):

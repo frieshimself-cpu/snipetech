@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from ..analysis.lab import EXIT_MIN_TEST
 from ..config import BookConfig
 from ..exits_menu import EXIT_MENU_VERSION, exit_family
+from ..fees import sent_bid
 from ..oktech import validate_exit
 from ..positions import SPENT_STATUSES, is_active
 
@@ -204,6 +205,16 @@ def still_paused(q: dict, rec: dict | None) -> bool:
 
 def arm_fee_sol(arm: dict) -> float:
     return float(arm.get("priority") or 0.0) + float(arm.get("tip") or 0.0)
+
+
+def arm_bid(arm: dict) -> dict[str, float]:
+    """The buy bid a new sniper on this arm is sent, as the fee policy's floor: the arm's whole fee (priority + tip as
+    written in [book] bid_arms) with the priority at OKTech's minimum and the rest in the tip (fees.sent_bid). OKTech
+    charges a task's buy priority again on every sell and on every failed duplicate sell, and a tip once (12 Nov). The
+    control arm (0.001 + 0.002) is unchanged; the paid arm (0.02 + 0.02) goes out as 0.001 + 0.039. The fee the 3 %
+    rule sizes on (arm_fee_sol) is the same SOL."""
+    priority, tip = sent_bid(arm.get("priority"), arm.get("tip"))
+    return {"buy_priority": priority, "buy_tip": tip}
 
 
 def fill_for(arm: dict, cfg: BookConfig) -> float | None:

@@ -52,6 +52,55 @@ RULE = ("a bid is raised above the minimum only where 10+ fills at the higher bi
         "on every failed twin.")  # fmt: skip
 
 
+# OKTech's minimums per buy (docs/oktech-settings.md: `priorityFee` >= 0.001, `tipAmount` >= 0.002)
+OKTECH_MIN_PRIORITY_SOL = 0.001
+OKTECH_MIN_TIP_SOL = 0.002
+# How many times a sale pays its sniper's BUY priority, measured on our own `fills` from 8 Nov 13:00 UTC (when
+# sellPriorityFeeSol went to 0.0001) to 12 Nov: 19 sells landed and 28 duplicate sells failed beside them, 1.47 a
+# sale. 18 of the 19 and 25 of the 28 paid the buy's priority; the other 3 failed ones paid an older sniper's 0.002
+# and not one paid 0.0001 (docs/oktech-playbook.md, 1d). So a round trip with S sales costs about
+# tip + priority x (1 + 2.47 x S) + the sell tips: the same 0.03 SOL bid costs 0.035 in the tip and 0.108 in the
+# priority with one sale.
+SELL_SENDS_PER_SALE = 2.47
+
+
+def bid_in_tip(bid_sol: float) -> tuple[float, float]:
+    """A whole buy bid as OKTech's two fields with the bid in the tip: (priority at OKTech's minimum, tip = the rest).
+    OKTech charges a task's buy priority again on every sell and on every failed duplicate sell, while a tip is paid
+    once and comes back when a send fails (12 Nov, the tip ladder; on record since 8 Nov). A bid under the two
+    minimums together is refused, never raised: the caller asked for less than OKTech takes."""
+    least = OKTECH_MIN_PRIORITY_SOL + OKTECH_MIN_TIP_SOL
+    try:
+        bid = float(bid_sol)
+    except (TypeError, ValueError):
+        bid = math.nan
+    if not math.isfinite(bid) or bid < least - 1e-12:
+        raise ValueError(f"a bid of {bid_sol!r} SOL is under OKTech's minimums together ({least:g} SOL: "
+                         f"{OKTECH_MIN_PRIORITY_SOL:g} priority + {OKTECH_MIN_TIP_SOL:g} tip)")  # fmt: skip
+    return OKTECH_MIN_PRIORITY_SOL, round(bid - OKTECH_MIN_PRIORITY_SOL, 6)
+
+
+def sent_bid(priority_sol: float | None, tip_sol: float | None) -> tuple[float, float]:
+    """A bid written as priority + tip (a bid arm of the book) as it is sent: the same total, the priority at OKTech's
+    minimum and the rest in the tip, neither under its minimum. An arm already at the minimum priority is unchanged."""
+    total = float(priority_sol or 0.0) + float(tip_sol or 0.0)
+    return OKTECH_MIN_PRIORITY_SOL, round(max(OKTECH_MIN_TIP_SOL, total - OKTECH_MIN_PRIORITY_SOL), 6)
+
+
+def priority_warning(priority_sol: float, tip_sol: float) -> str | None:
+    """The line a planned sniper carries when its buy priority is above OKTech's minimum; None at the minimum."""
+    prio, tip = float(priority_sol), float(tip_sol)
+    if prio <= OKTECH_MIN_PRIORITY_SOL + 1e-12:
+        return None
+    bid, least = round(prio + tip, 6), OKTECH_MIN_PRIORITY_SOL
+    more = round((prio - least) * SELL_SENDS_PER_SALE, 4)
+    return (f"WARNING: buy priority {prio:g} SOL is above OKTech's minimum {least:g}. OKTech charges it again on every "
+            f"sell and failed duplicate sell: put the bid in the tip (--bid {bid:g} sends priority {least:g} + tip "
+            f"{round(bid - least, 6):g}, the same {bid:g} SOL a buy). Measured on our own sells: the buy's priority "
+            f"is paid about {SELL_SENDS_PER_SALE:g} times a sale, so this one costs about {more:g} SOL more for each "
+            "sale than the same bid in the tip")  # fmt: skip
+
+
 @dataclass(frozen=True)
 class FeeChoice:
     kind: str
