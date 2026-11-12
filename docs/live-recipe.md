@@ -4,6 +4,31 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The tip ladder behind Cupsey (12 Nov 2026): which tip lands first
+
+**Why.** The owner: "It all comes down to fees and having higher ones than other bots... look at the fees other
+people are using, because if ours arent higher then they will buy before us." On paper (the analyst, 16:46 UTC, 1 SOL
+a buy, 137 hours, mostly Cupsey's two wallets): first place behind the wallet +0.34 SOL a trade, two back +0.03, four
+back zero, six back (where our copies landed so far) -0.05. Others' bids for that place: half under 0.03 SOL, a quarter
+above 0.35. Whether a higher tip gets OUR copy to the first place through OKTech is not known: this test measures it.
+
+**Under which yes.** The owner's standing yes of 12 Nov for small live tests (0.2 SOL a buy at most, 2 SOL lost a day
+at most; CLAUDE.md rule 1). This test: 0.05 SOL a copy.
+
+**What runs.** One copy sniper at a time on the sniper wallet (`6VFrZ15V…`), copying Cupseyy (`6DQAGJ…QqqP`), only its
+buys of 1 SOL or more, 0.05 SOL a copy, 3 buys, preconfirmations on, the lab exit (its sale, 1 s without a trade,
+-30 %, 300 s). Arm A: priority 0.005 + tip 0.03 SOL a buy. Arm B, after A's three buys: priority 0.005 + tip 0.1.
+A guard stops everything if the wallet falls under 0.30 SOL or after 3 hours.
+
+**What is read.** For every fill, on the tape: the block it landed in against Cupsey's buy, how many outsiders'
+buys were ahead of it, what they bid (priority and tip), and the price it paid against Cupsey's.
+
+**What it can lose.** About 0.04 SOL of fees a buy in arm A and 0.11 in arm B, plus at most 0.015 on each position:
+about 0.55 SOL for all six buys if every one loses.
+
+| arm | time (UTC) | coin | landed (blocks after, buys ahead) | our bid | highest bid ahead | price vs Cupsey | result (SOL) |
+|---|---|---|---|---|---|---|---|
+
 ## The owner's three answers (11 Nov 2026, about 21:50 UTC): yes, yes, yes
 
 Asked in chat as three yes/no questions, each with its wallet, size and limit; the owner's answers, in their words of
