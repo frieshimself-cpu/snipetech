@@ -55,6 +55,15 @@ AGENT_BACKFILL_OPEN = True
 BACKFILL_CLOSED = ("history amm-backfill is not open to agents yet: the cloud session runs the first one under its eyes "
                    "(the credit prices are unconfirmed). Put the wallets and days you want in an idea")
 AGENT_BACKFILL_CREDITS = 5_000_000  # the most Helius credits one backfill an agent starts may ask for (5 % of a month)
+# The highest `--max-stretch-txs` an agent may give: a stretch at this size costs as many credits to fetch, one percent
+# of the job's own limit above. The job leaves out a stretch above 8,000 unless told otherwise
+# (`amm_backfill.MAX_STRETCH_TXS`); the busiest one met on 12 Nov held 48,689, so an agent can still ask for that one.
+AGENT_BACKFILL_STRETCH_TXS = 50_000
+# The backfill's flags that bound what it spends. An agent writes them in full: the command line took any prefix of a
+# flag until 12 Nov (`--max-cred 9e9 --month 1e12` ran with both limits lifted, the check below looking only for the
+# full spellings), so a shortened one is refused here whatever the command line makes of it.
+BACKFILL_LIMIT_FLAGS = ("--max-credits", "--month-credits", "--max-stretch-txs")
+BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's log to see whether a limit ended it
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
 LOOKUP_REPEAT_SECS = {"gmgn": 600}
@@ -132,34 +141,106 @@ class OperatorJobs:
 
     @staticmethod
     def _check_backfill(argv: list[str]) -> None:
-        """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS and never lifts the month's limit
-        (the owner's: `--month-credits`). Without `--max-credits` the job's own default applies, which is lower."""
-        from itertools import pairwise
-
-        def values(flag: str) -> list[str]:
-            return [v for a, v in pairwise(argv) if a == flag] + [a.split("=", 1)[1] for a in argv
-                                                                  if a.startswith(flag + "=")]  # fmt: skip
-
-        if values("--month-credits") or "--month-credits" in argv:
-            raise PermissionError("--month-credits is the owner's: an agent's backfill runs inside the month's limit")
-        for v in values("--max-credits"):
+        """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
+        AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
+        Without `--max-credits` the job's own default applies, which is lower. Each of those flags is read the way the
+        command line could read it: any shortening of one is refused, and so is a value that is no plain number (nan
+        and inf pass a "greater than" test)."""
+        given: dict[str, list[str | None]] = {flag: [] for flag in BACKFILL_LIMIT_FLAGS}
+        rest = argv[2:]
+        for i, arg in enumerate(rest):
+            name, eq, value = arg.partition("=")
+            flag = name.startswith("--") and name != "--"
+            meant = [f for f in BACKFILL_LIMIT_FLAGS if f.startswith(name)] if flag else []
+            if meant == ["--month-credits"]:
+                raise PermissionError(f"{name} is the owner's (--month-credits): an agent's backfill runs inside the "
+                                      "month's limit")  # fmt: skip
+            if meant and name not in BACKFILL_LIMIT_FLAGS:
+                raise PermissionError(f"{name} refused, no job started: write the flag in full "
+                                      f"({' or '.join(f for f in meant if f != '--month-credits')}); the command "
+                                      "reads no shortened flag")  # fmt: skip
+            if meant:
+                given[name].append(value if eq else rest[i + 1] if i + 1 < len(rest) else None)
+        for v in given["--max-credits"]:
             try:
-                over = float(v) > AGENT_BACKFILL_CREDITS
-            except ValueError:
-                over = True
-            if over:
-                raise PermissionError(f"--max-credits {v}: a backfill an agent starts asks for at most "
-                                      f"{AGENT_BACKFILL_CREDITS:,} Helius credits; start with --dry-run and read what "
-                                      "it would cost")  # fmt: skip
+                ok = math.isfinite(float(v)) and float(v) <= AGENT_BACKFILL_CREDITS  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise PermissionError(f"--max-credits {v} refused, no job started: a backfill an agent starts asks "
+                                      f"for at most {AGENT_BACKFILL_CREDITS:,} Helius credits, as a plain number; "
+                                      "start with --dry-run and read what it would cost")  # fmt: skip
+        for v in given["--max-stretch-txs"]:
+            try:
+                ok = 1 <= int(v) <= AGENT_BACKFILL_STRETCH_TXS  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                ok = False
+            if not ok:
+                raise PermissionError(f"--max-stretch-txs {v} refused, no job started: a whole number from 1 to "
+                                      f"{AGENT_BACKFILL_STRETCH_TXS:,} from an agent (a stretch of that size costs "
+                                      "as many credits; a busier one is the owner's call: name it in an "
+                                      "idea)")  # fmt: skip
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
+        """The newest run of exactly this command that ended well inside its repeat window."""
         window = LOOKUP_REPEAT_SECS.get(argv[0], REPEAT_AFTER_SECS)
+        found: dict | None = None
         for jid in jobs_since(self.ops.data / "jobs", now - window):
             meta = self.ops._meta(jid)
             if (meta and list(meta.get("argv") or []) == list(argv) and not meta.get("running")
-                    and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - window):  # fmt: skip
-                return meta
-        return None
+                    and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - window
+                    and (found is None or (meta.get("ended") or 0) >= (found.get("ended") or 0))):  # fmt: skip
+                found = {**meta, "id": jid}
+        return found
+
+    def _backfill_stopped(self, argv: list[str], earlier: dict) -> str | None:
+        """Which limit ended the earlier run of this backfill ("max_credits", "month_credits"), read from the end of
+        its log; None when it ended whole, when its log is gone, and for a dry run (it keeps no place: the same one
+        again lists the same signatures and stops at the same request)."""
+        from ..amm_backfill import stopped_in
+
+        if "--dry-run" in argv:
+            return None
+        log = self.ops.data / "jobs" / f"{earlier['id']}.log"
+        try:
+            with log.open("rb") as f:
+                f.seek(max(0, log.stat().st_size - BACKFILL_LOG_TAIL))
+                return stopped_in(f.read().decode(errors="replace"))
+        except OSError:
+            return None
+
+    def _check_repeat(self, argv: list[str], now: float, backfill: bool) -> None:
+        """The same research command is not started twice inside its window: its numbers have not changed, and its log
+        is there to read. One exception, and nothing else: a backfill that a credit limit ended goes on where it
+        stopped, so the same command is what continues it (its own result says "run it again"; until 12 Nov evening
+        that was refused for six hours). One the month's limit ended goes on once that limit has room again: the
+        owner's to lift, or a new month."""
+        dup = self._recent_identical(argv, now)
+        if not dup:
+            return
+        stopped = self._backfill_stopped(argv, dup) if backfill else None
+        if stopped:  # it may go on, but not beside itself: two runs of one backfill fetch the same stretches twice
+            twin = next((m for m in self.running() if list(m.get("argv") or []) == list(argv)), None)
+            if twin:
+                raise PermissionError(f"job {twin.get('id')} is this same backfill and still runs: it is the one "
+                                      "going on where the last stopped; read it with read_job_log when it "
+                                      "ends")  # fmt: skip
+        if stopped == "max_credits":
+            return
+        if stopped == "month_credits":
+            from .. import amm_backfill as ab
+
+            counted = ab.month_count(str(self.ops.db), now)
+            if counted is not None and counted < ab.MONTH_CREDITS:
+                return
+            raise PermissionError(f"job {dup.get('id')} stopped at the month's limit for backfills "
+                                  f"({ab.MONTH_CREDITS:,} credits) and nothing is left of it: the same run would stop "
+                                  "at its first request. The limit is the owner's to lift: say so in a note or an "
+                                  "idea with owner_needed")  # fmt: skip
+        raise PermissionError(
+            f"already ran: job {dup.get('id')} with these exact arguments finished "
+            f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"
+        )
 
     def _check_role(self, argv: list[str], role: str, idea: str | None) -> None:
         """What a research agent's start is held to beyond every agent's: the command is one of its role's
@@ -236,12 +317,7 @@ class OperatorJobs:
         self._check_paths(argv)
         self._check_triggers(argv)
         now = time.time() if now is None else now
-        dup = self._recent_identical(argv, now)
-        if dup:
-            raise PermissionError(
-                f"already ran: job {dup.get('id')} with these exact arguments finished "
-                f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"
-            )
+        self._check_repeat(argv, now, backfill=action)
         running = self.running()
         labs, slots = sum(1 for m in running if m.get("argv", [""])[0] == "lab"), lab_slots()
         if argv[0] == "lab" and labs >= slots:

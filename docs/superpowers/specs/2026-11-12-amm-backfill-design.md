@@ -137,8 +137,11 @@ pool has 5,000 transactions in an hour, that is 7.5 million credits: 7.5 % of th
 requests a second it takes about 17 hours. A hot coin can have ten times as many trades in its hour; a quiet one a
 tenth. A run that size needs `--max-credits 7500000`: the default stops at one million.
 
-`--dry-run` replaces the guesses with counts. It lists signatures (a few credits), fetches no transaction and writes
-nothing. It prints, per wallet, the transactions still to fetch and the buys found so far; for the buys already
+`--dry-run` replaces the guesses with counts. It lists signatures, fetches no transaction and writes no tape data.
+The listing is paid for: one request for every thousand signatures, about 37,000 requests for seven days of a wallet
+that failed transactions name 110,000 times in half an hour. Since 12 Nov evening those requests are added to the
+month's number like a real run's (before that a dry run was left out of it). It prints, per wallet, the
+transactions still to fetch and the buys found so far; for the buys already
 known, the exact number of pool transactions; for the buys not found yet, an estimate marked `assumed` until a run
 has measured this wallet's own rates.
 
@@ -190,3 +193,31 @@ transactions, 3,937 trades written, 19,453 credits counted, about 3 minutes. The
   in half an hour, 218 of them successful. Seven days of it are about 37,000 list requests and over an hour.
 - Not checked: the credits counted against what Helius charged (only the account's own page shows that).
 - The agents may start a backfill since this run (`operator.jobs.AGENT_BACKFILL_OPEN = True`).
+
+## Changed after the review of 12 Nov evening
+
+The analyst's first run (ten big wallets, 3 days, 300 s after each buy, limit 400,000 credits) spent 392,543
+`getTransaction` requests on 12 stretches: about 33,000 a stretch, where the first real run measured about 1,000. Two
+stretches explain it. One "coin" was USDC: a big wallet swapped into it through a PumpSwap pool. One coin had 48,689
+trades in 20 minutes.
+
+- A buy of something that is not a coin (wrapped SOL, USDC, USDT, USD1: `positions.NON_COIN_MINTS`) gets no stretch.
+  The result counts it under `stretches.buys_non_coin`.
+- A stretch whose listing holds more than 8,000 transactions is listed and not fetched (`--max-stretch-txs`, default
+  8,000; an agent may give up to 50,000). Listing costs one credit for every thousand signatures, so the size is known
+  before a transaction is paid for. The result counts it under `stretches.too_busy`, names each one in `too_busy`
+  (coin, seconds, size, buys) and says in `note` what they would have cost. The dry run's estimate leaves them out
+  the same way. A stretch of an hour holds about 38,000 transactions, so a run with a long `--after-secs` has to
+  raise the limit.
+- The command line reads no shortened flag any more (`allow_abbrev=False` on every parser). An agent had been able to
+  lift both credit limits with `--max-cred 9e9 --month 1e12`: the agents' check looked for the full spellings and the
+  command line took any prefix. The check now refuses any shortening of a limit flag, and a value that is not a
+  plain number (nan, inf).
+- A run that stopped at `max_credits` may be started again at once by an agent with the same command. Before, the
+  same command was refused for six hours. A dry run is not (it keeps no place), and a run that stopped at
+  `month_credits` waits until the month's limit has room again.
+- A lab that sells in parts holds longer than 300 s: `--sell-parts 4 --sell-part-secs 15` holds 345 s. A backfill at
+  the default 300 keeps 330 s after a buy, so that lab scores none of its moments. Backfill with `--after-secs 360`
+  for it; the second run fetches only the missing seconds.
+- Not done here: the rows the first run wrote for USDC stay in `trades` and its coverage record stays. The text form
+  of the result (`report.render_amm_backfill`) shows the two new reasons only through `note`.

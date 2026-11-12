@@ -252,7 +252,9 @@ def render(out: Mapping[str, Any]) -> str:
     lines = [r["line"] for r in out["wallets"]] or ["no wallet of the group bought on this tape"]
     tail = []
     asked = out.get("gmgn")
-    if asked:
+    if asked and "look_ups" not in asked:  # no client could be made (no key on this machine): only the reason is here
+        tail.append(f"GMGN: not asked: {asked.get('error') or 'no reason given'}")
+    elif asked:
         tail.append(
             f"GMGN: {asked['look_ups']} look-ups (cap {asked['cap']}), {asked['from_kept_answers']} kept answers "
             f"used, {asked['not_asked']} left for the next run" + (f"; {asked['error']}" if asked.get("error") else "")

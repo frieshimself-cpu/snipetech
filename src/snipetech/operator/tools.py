@@ -644,6 +644,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
         outsiders' first buys in the wallet's own block, companions left out: the bid of place 1, 2 and 3 (priority
         fee plus tip), who holds the first place, each followed wallet's regulars and where our own copies landed.
+        In place-bids' answer, auction.in_bid_order near 1 means the place is bought, and win_at says what share of
+        moments a bid would have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score
+        the rule next with "--copy-position", "+0" and "--per-tx" at the bid place-bids' table names.
         ["tips", "--group", "big", "--hours", "30", "--json"] is the tip table, one line a followed wallet (the
         group's, or "--wallet", "<wallet>" for any one): its blocks with outsiders, the first outsider's bid
         (median, 75th, 90th percentile), the bid that was above every outsider in 50, 75 and 90 % of its blocks,
@@ -652,9 +655,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         in 56 % of blocks; the table says the share on its own blocks). "--gmgn" adds how many GMGN users follow
         each wallet and what its most regular copiers pay by GMGN's history (six look-ups a run at most, kept a
         day). A bid belongs in the tip, not the priority fee.
-        auction.in_bid_order near 1 means the place is bought, and win_at says what share of moments a bid would
-        have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score the rule next with
-        "--copy-position", "+0" and "--per-tx" at the bid the table names. ["copy-context", "--hours", "72", "--json"] scores every known
+        ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's
         volume, age, hour, the leader's size and the buys later in its own block ("--groups", "kol" for KOLs alone;
         "--behind-leader" enters in the leader's own block, where most live copies land;
@@ -744,19 +745,37 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
-        nothing is said, and enough for every exit of the lab's set), into the tape's own tables;
+        nothing is said, and enough for every exit of the lab's set sold in one sale), into the tape's own tables;
         "--wallet", "<address>" (repeatable) names wallets instead of a group. It trades nothing and changes no
-        setting. WHAT IT COSTS, MEASURED (the first real run, 12 Nov: Gake Side, 2 days, 21 buys, 19,453 credits in
+        setting. A lab that sells in parts needs a longer stretch: with "--sell-parts" it holds
+        (parts - 1) x part-secs longer than the 300 s of its longest exit, and a moment whose stretch ends before
+        that is skipped (no_backfill), every one of them after a backfill at 300: "--sell-parts", "4",
+        "--sell-part-secs", "15" holds 345 s, so backfill those wallets with "--after-secs", "360" first (a second
+        run with the longer time fetches only the seconds that are missing).
+        WHAT IT COSTS, MEASURED (the first real run, 12 Nov: Gake Side, 2 days, 21 buys, 19,453 credits in
         3 minutes): about 1,000 credits a buy at 300 s after it; about 38,000 a buy at an hour after it (these coins
         are busy), so ask for more than 300 only for an exit that holds longer, and for few wallets. The month's plan
-        is 100 million credits. A wallet that thousands of failed transactions name takes long to list, not much to
-        pay: Cupseyy's address is named by 110,000 transactions in half an hour (218 of them its own), so 7 days of
-        it take over an hour to list: give such a wallet a job of its own and a day or two at a time.
-        Start with "--dry-run": it writes nothing and says what a run would cost (estimate.credits, with
+        is 100 million credits. The same evening a ten-wallet run (3 days, 300 s) spent 392,543 requests on 12
+        stretches, about 33,000 a stretch: one "coin" was USDC (a big wallet swapped into it through a PumpSwap pool)
+        and one coin had 48,689 trades in 20 minutes. Since then a buy of wrapped SOL or a stablecoin gets no stretch
+        (stretches.buys_non_coin), and a stretch whose listing holds more than 8,000 transactions is listed, which
+        costs a credit a thousand, and not fetched (stretches.too_busy; too_busy in the result names each one with
+        its coin, its size and its buys, and note says what they would have cost; the dry run's estimate leaves
+        them out the same way). For the ones worth their credits run it again with "--max-stretch-txs" above their
+        size (50,000 at most from an agent); an hour after a buy is about 38,000 transactions, so a run with a long
+        "--after-secs" needs it too. A wallet that thousands of failed transactions name takes long to list,
+        and its listing is paid for, in a dry run too: Cupseyy's address is named by 110,000 transactions in half an
+        hour (218 of them its own), 110 requests for that half hour, so 7 days of it are about 37,000 credits and
+        take over an hour to list: give such a wallet a job of its own and a day or two at a time.
+        Start with "--dry-run": it writes no tape data and says what a run would cost (estimate.credits, with
         every guess marked assumed; before any transaction is read it counts too few buys: Gake Side's said 3, the
-        run found 21). Then run it without "--dry-run" and with "--max-credits" (at most 5,000,000 a
+        run found 21); what it lists is counted in the month's credits like a real run's. Then run it without
+        "--dry-run" and with "--max-credits" (at most 5,000,000 a
         job from an agent; 1,000,000 when not given): it stops before the request that would pass the limit, says so
-        (stopped), and the same command later goes on where it stopped. It reads only inside the tape (a lab reads
+        (stopped), and goes on where it stopped when it is run again: send the same command again at once (a real
+        run that stopped at max_credits is the one command that is not held for six hours; one that stopped at
+        month_credits waits for the owner, who alone lifts the month's limit). Write every flag in full: a shortened
+        one ("--max-cred") is refused. It reads only inside the tape (a lab reads
         nothing older) and a lab sees the new trades after the next copy of the database (every three hours). A lab
         with a wallet rule then scores a wallet's PumpSwap buy only where the tape holds the stretch whole and counts
         every other one under amm_tape ... skipped: no_backfill: those moments were never scored, they are not
@@ -821,7 +840,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
         that size; it is research only (no live sniper sells in parts yet: a winner is a finding for the owner, not a
-        sniper to propose).
+        sniper to propose). Past the curve a lab in parts needs a longer backfill than a lab that sells at once: it
+        holds (parts - 1) x part-secs longer than the 300 s of its longest exit (345 s for 4 parts 15 s apart), and
+        a backfill at the 300 s given when nothing is said keeps 330 s after a buy, so every such moment comes back
+        skipped (no_backfill) until the wallets are backfilled with "--after-secs", "360" (THE BACKFILL).
         A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
         filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
         bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s

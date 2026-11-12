@@ -154,3 +154,27 @@ def test_the_qualify_lab_leaves_the_same_moment_out():
     assert data["rows"] == [] and data["amm_tape"]["triggers"][rule.label()]["skipped"] == {NO_BACKFILL: 1}
     store.set_coverage(backfill_key(mint), {"pools": [addr("pool")], "spans": [[at - 60, at + 3630]]})
     assert [r["who"] for r in _lab(store, **kw)["rows"]] == [BIG]
+
+
+def test_a_lab_that_sells_in_parts_needs_the_longer_stretch_the_agents_are_told_to_backfill():
+    """12 Nov, the review: the agents' text showed `--sell-parts 4 --sell-part-secs 15` (345 s held) next to a backfill
+    at the 300 s given when nothing is said (330 s kept after a buy) and called that enough. On such a stretch the lab
+    in parts scores nothing; on the one "--after-secs", "360" keeps, which the text now names, it scores the moment."""
+    from snipetech.amm_backfill import BEFORE_SECS, TAIL_SECS
+    from snipetech.analysis.lab import in_parts
+
+    store = Store(":memory:")
+    mint, at = _coin(store, "old", 7200, later=True)
+    _tape(store)
+    four = in_parts([HOLD300], 4, 15.0)
+
+    def kept(after_secs: int) -> None:  # the stretch `history amm-backfill --after-secs N` writes around the buy
+        span = [at - BEFORE_SECS, at + after_secs + TAIL_SECS]
+        store.set_coverage(backfill_key(mint), {"pools": [addr("pool")], "spans": [span]})
+
+    kept(300)
+    assert len(_lab(store, exits=[HOLD300])["rows"]) == 1  # sold in one sale: 300 is enough
+    data = _lab(store, exits=four)
+    assert data["rows"] == [] and data["amm_tape"]["triggers"][RULE.label()]["skipped"] == {NO_BACKFILL: 1}
+    kept(360)
+    assert len(_lab(store, exits=four)["rows"]) == 1

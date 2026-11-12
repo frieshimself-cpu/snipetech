@@ -229,3 +229,30 @@ def test_the_gmgn_cache_is_written_to_the_live_store_when_the_tape_is_a_copy(tmp
     finally:
         tape.close()
         live.close()
+
+
+def test_asking_gmgn_without_a_key_still_prints_the_table_and_says_why(tmp_path, capsys, monkeypatch):
+    # 12 Nov, the review: `tips --gmgn` on a machine with no GMGN key computed the whole table and then ended in a
+    # traceback (KeyError 'look_ups'): the record of a client that could not be made holds the reason alone
+    st = _store()
+    try:
+        _ten_blocks(st)
+        out = T.tips(st, Config(), NOW, group="wallet", hours=2)
+    finally:
+        st.close()
+    text = T.render({**out, "gmgn": {"error": "no key in this machine's env"}})
+    assert "GMGN: not asked: no key in this machine's env" in text and "0.0201" in text
+    kept = {"look_ups": 3, "from_kept_answers": 0, "not_asked": 1, "cap": 3}
+    assert "GMGN: 3 look-ups (cap 3), 0 kept answers used, 1 left for the next run" in T.render({**out, "gmgn": kept})
+    assert "; AUTH_IP_BLOCKED" in T.render({**out, "gmgn": {**kept, "error": "AUTH_IP_BLOCKED"}})  # asked, then refused
+    # the command itself, with the key out of the environment
+    monkeypatch.delenv(G.ENV_KEY, raising=False)
+    db = tmp_path / "snipetech.db"
+    st = _store(db)
+    try:
+        _ten_blocks(st)
+    finally:
+        st.close()
+    assert cli.main(["--db", str(db), "tips", "--group", "wallet", "--hours", "2", "--gmgn"]) == 0
+    text = capsys.readouterr().out
+    assert "GMGN: not asked: " in text and "0.0201" in text

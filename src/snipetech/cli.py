@@ -411,7 +411,11 @@ def _sol_or_off(v: str) -> float | str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="snipetech", description="Decide what to snipe and who to copy on pump.fun.")
+    # allow_abbrev=False, here and on every command's parser below (a sub-parser does not inherit it): a flag is
+    # written in full. Until 12 Nov any prefix of one was read as the flag, so `--max-cred 9e9 --month 1e12` lifted
+    # both credit limits of `history amm-backfill` past the agents' check, which looked for the full spellings.
+    p = argparse.ArgumentParser(prog="snipetech", description="Decide what to snipe and who to copy on pump.fun.",
+                                allow_abbrev=False)  # fmt: skip
     p.add_argument("--version", action="version", version=__version__)
     p.add_argument("--config", help="config file (default ./snipetech.toml or $SNIPETECH_CONFIG)")
     p.add_argument("--db", help="SQLite database path")
@@ -423,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def cmd(name: str, help: str, json_flag: bool = True) -> argparse.ArgumentParser:
-        sp = sub.add_parser(name, help=help, description=help)
+        sp = sub.add_parser(name, help=help, description=help, allow_abbrev=False)
         if json_flag:
             sp.add_argument("--json", action="store_true", help="machine-readable output")
         return sp
@@ -1161,10 +1165,19 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--days", type=float, default=7.0, help="amm-backfill: how far back the wallets' buys are read "
                     "(never further than the tape: a lab reads nothing older)")  # fmt: skip
     sp.add_argument("--after-secs", type=float, default=300.0, help="amm-backfill: the pool's trades are kept from "
-                    "60 s before a buy to this long after it (300: every exit of the lab's set; measured 12 Nov, "
-                    "about 1,000 credits a buy at 300 and 38,000 at 3600)")  # fmt: skip
-    sp.add_argument("--dry-run", action="store_true", help="amm-backfill: list signatures only (a few credits), write "
-                    "nothing, and say what a run would cost")  # fmt: skip
+                    "60 s before a buy to this long after it (300: every exit of the lab's set sold in one sale; a "
+                    "lab with --sell-parts holds (parts - 1) x part-secs longer and needs that much more, 360 for 4 "
+                    "parts 15 s apart; measured 12 Nov, about 1,000 credits a buy at 300 and 38,000 at 3600, which "
+                    "is past the 8,000 of --max-stretch-txs: give both)")  # fmt: skip
+    sp.add_argument("--dry-run", action="store_true", help="amm-backfill: list signatures only, write no tape data, "
+                    "and say what a run would cost. The listing is paid for and counted in the month's number like a "
+                    "real run's: a request a thousand signatures, about 37,000 for 7 days of a wallet that failed "
+                    "transactions name 110,000 times in half an hour")  # fmt: skip
+    sp.add_argument("--max-stretch-txs", type=int, help="amm-backfill: a stretch whose listing holds more "
+                    "transactions than this is listed and not fetched; the result names it with its size (default "
+                    "8,000: one coin with 48,689 trades in 20 minutes and a stablecoin's pool took a run's budget on "
+                    "12 Nov; a stretch of an hour holds about 38,000, so raise it with a long "
+                    "--after-secs)")  # fmt: skip
     sp.add_argument("--max-credits", type=float, help="amm-backfill: stop before the request that would pass this "
                     "many Helius credits (default 1,000,000: one percent of the month's plan)")  # fmt: skip
     sp.add_argument("--month-credits", type=float, help="amm-backfill: what all backfills of the month may count "
@@ -2357,6 +2370,10 @@ def _amm_backfill(args, cfg: Config) -> int:
             why = f"not a wallet address: {bad[0]}" if bad else "name the wallets: --wallet W (repeat) or --group big"
             print(f"history amm-backfill: {why}", file=sys.stderr)
             return 2
+        max_txs = ab.MAX_STRETCH_TXS if args.max_stretch_txs is None else args.max_stretch_txs
+        if max_txs < 1:
+            print("history amm-backfill: --max-stretch-txs is 1 or more", file=sys.stderr)
+            return 2
         names = {**svc.store.labels("wallet"), **svc.store.labels("kol")}
         max_credits = ab.DEFAULT_MAX_CREDITS if args.max_credits is None else args.max_credits
 
@@ -2366,6 +2383,7 @@ def _amm_backfill(args, cfg: Config) -> int:
                     svc.store, svc.rpc, wallets, time.time(), days=args.days, after_secs=args.after_secs,
                     min_sol=args.min_sol, dry_run=args.dry_run, max_credits=max_credits, names=names,
                     month_credits=ab.MONTH_CREDITS if args.month_credits is None else args.month_credits,
+                    max_stretch_txs=max_txs,
                     progress=lambda msg: print(f"amm-backfill: {msg}", file=sys.stderr, flush=True))  # fmt: skip
             finally:
                 await svc.close()
@@ -2373,7 +2391,9 @@ def _amm_backfill(args, cfg: Config) -> int:
         out = asyncio.run(go())
     finally:
         svc.store.close()
-    print(json.dumps(out, indent=1) if args.json else R.render_amm_backfill(out))
+    print(json.dumps(out, indent=1) if args.json else R.render_amm_backfill(out), flush=True)
+    if out["stopped"]:  # the log's last line, whatever the form of the result: the agents' start reads it to let a
+        print(ab.stop_line(out["stopped"]), file=sys.stderr, flush=True)  # run a limit ended go on at once (jobs.py)
     return 0
 
 

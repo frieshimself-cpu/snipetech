@@ -683,6 +683,47 @@ def test_the_agents_are_told_how_to_read_the_table_of_place_against_bid(toolbox)
     assert '"--copy-position", "+0"' in text and "--per-tx" in text
 
 
+def test_what_place_bids_answer_says_is_told_with_place_bids_and_not_with_the_tip_table(toolbox):
+    """12 Nov, the review: the tip table's paragraph had been put in the middle of place-bids', so the two sentences
+    on reading place-bids' answer (auction.in_bid_order, win_at, what to score next) followed the tip table, which
+    has neither key. They stand with place-bids again, and a fee analyst's cut of the text keeps them there."""
+    from snipetech.operator import roles
+
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    text = " ".join(full.split())
+    bids, tips = text.index('["place-bids", "--hours", "48", "--json"]'), text.index('["tips", "--group", "big"')
+    after = text.index('["copy-context", "--hours", "72", "--json"]')
+    reading = text.index("In place-bids' answer, auction.in_bid_order near 1 means the place is bought")
+    assert bids < text.index("where our own copies landed.") < reading < text.index("win_at says") < tips < after
+    assert reading < text.index("at the bid place-bids' table names.") < tips
+    tip_table = text[tips:after]
+    assert "in_bid_order" not in tip_table and "win_at" not in tip_table and "--copy-position" not in tip_table
+    assert tip_table.rstrip().endswith("A bid belongs in the tip, not the priority fee.")
+    parts = {words.split(" is ")[0].split(" says ")[0]: words for _tags, words in roles.cut_job_help(full)}
+    assert "win_at says" in parts['["place-bids", "--hours", "48", "--json"]']
+    assert "win_at" not in parts['["tips", "--group", "big", "--hours", "30", "--json"]']
+
+
+def test_the_agents_are_told_what_a_backfill_leaves_out_and_how_one_goes_on(toolbox):
+    """12 Nov evening: the analyst's ten-wallet backfill spent 392,543 requests on 12 stretches (a stablecoin's pool
+    and one coin with 48,689 trades in 20 minutes). The text says what is left out since, how to ask for a busy
+    stretch that is worth it, that a dry run's listing is paid for, and that a run its limit ended is sent again."""
+    from snipetech import amm_backfill
+    from snipetech.operator import jobs as jobs_module
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    told = text[text.index("THE BACKFILL (12 Nov):"):text.index("A lab with a wallet rule then scores")]
+    assert "392,543 requests on 12 stretches" in told and "48,689 trades in 20 minutes" in told and "USDC" in told
+    assert "buys_non_coin" in told and "too_busy" in told and '"--max-stretch-txs"' in told
+    assert f"more than {amm_backfill.MAX_STRETCH_TXS:,} transactions" in told
+    assert f"{jobs_module.AGENT_BACKFILL_STRETCH_TXS:,} at most from an agent" in told
+    assert "a dry run too" in told and "about 37,000" in told and "not much to pay" not in told
+    assert "send the same command again at once" in told and "month_credits" in told
+    assert "Write every flag in full" in told
+
+
 def test_the_agents_are_told_how_to_score_and_freeze_a_copy_where_its_bid_puts_it(toolbox):
     """12 Nov: the owner's rule is a profitable paper trade first. A paper copy stood at a fixed place whatever it
     bid, and `paper freeze` took no landing and no bid (the analyst's freeze of 18:01 was refused: "a plain freeze
@@ -737,6 +778,22 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     assert '"min_mcap"' in text and '"max_mcap"' in text and "410 SOL" in text
     assert "30 minutes after it leaves its curve" in text
     assert '"--sell-parts", "4", "--sell-part-secs", "15"' in text and "research only" in text
+    # 12 Nov, the review: that example holds 345 s, a backfill at the 300 s given when nothing is said keeps 330 s
+    # after a buy, and the text called 300 "enough for every exit of the lab's set": every backfilled moment of such
+    # a lab came back skipped (no_backfill). The text says what a lab in parts needs, here and with the backfill.
+    from snipetech import amm_backfill
+    from snipetech.analysis.lab import SELL_SLOT_SECS, exit_set, exits_horizon, in_parts
+
+    whole, in_four = exits_horizon(exit_set()), exits_horizon(in_parts(exit_set(), 4, 15.0))
+    assert (whole, in_four) == (300.0, 345.0)
+    assert whole + SELL_SLOT_SECS <= 300 + amm_backfill.TAIL_SECS < in_four + SELL_SLOT_SECS  # 300 s: one sale only
+    assert in_four + SELL_SLOT_SECS <= 360 + amm_backfill.TAIL_SECS  # what the text tells an agent to ask for
+    assert "enough for every exit of the lab's set sold in one sale" in text
+    parts_told = text[text.index("SELLING OUT IN PARTS:"):text.index("A WINNING BOT'S RECIPE BY NAME")]
+    backfill_told = text[text.index("THE BACKFILL (12 Nov):"):text.index("A lab with a wallet rule then scores")]
+    for told in (parts_told, backfill_told):  # the tester reads the first, whoever backfills reads the second
+        assert '"--after-secs", "360"' in told and "345 s" in told and "no_backfill" in told
+        assert "(parts - 1) x part-secs" in told
     # the same day: "even 2-5 sol fees to copytrade could be worth... 1 to 30 isnt the limit"
     assert '"--buy-bid", "2"' in text and "paid once on the buy" in text and "no upper limit" in text
     assert "What the place is worth" in text
