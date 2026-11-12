@@ -24,7 +24,10 @@ VERDICTS = ("SNIPE", "MARGINAL", "AVOID", "INSUFFICIENT_DATA", "UNKNOWN")
 # first state (it started at pump.fun's: a sevenfold jump no buyer rode), and only pump.fun launches count.
 # 3 (11 Nov 2026): the bribe sweep makes no verdict (`_decide`): it places the buy a slot earlier than ours land.
 # 4 (11 Nov 2026): a transaction is charged what one costs live (Service.analyze_deployer), not the settings' 0.0012.
-SCORE_VERSION = 4
+# 5 (12 Nov 2026): the position is valued in the pool as the later trades leave it (sim.market, FILL_MODEL replay-1):
+# a later buyer who spends exact SOL takes fewer tokens with our buy ahead of it. Before, every winner of the 0.5 SOL
+# snipe was overstated, a point on an ordinary one and far more on the runner a SNIPE verdict rests on.
+SCORE_VERSION = 5
 
 
 def score_basis(cfg: Config) -> str:

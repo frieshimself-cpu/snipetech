@@ -61,6 +61,22 @@ def test_a_score_made_while_the_bribe_sweep_made_verdicts_is_another_basis():
     assert SCORE_VERSION >= 3 and score_basis(Config()) == f"1@+3:v{SCORE_VERSION}"
 
 
+def test_a_score_priced_before_the_pool_was_replayed_is_another_basis():
+    """Version 5 (12 Nov 2026). A deployer's score simulates a 0.5 SOL snipe on each of its launches. Until 11 Nov
+    23:49 UTC the simulator valued that position as if every later buyer still got the coins the tape recorded
+    (sim.market, tests/test_fill_model.py): every winner overstated, by a point on an ordinary one at that size and
+    by far more on the runner a SNIPE verdict rests on. A score stored before it is another basis: not planned from,
+    not answered as a verdict, scored again at the deployer's next launch; and the forward record of the verdicts
+    starts again under a rule of its own, so trades of the two pricings never share a record."""
+    from snipetech.analysis import dev_forward
+    from snipetech.analysis.deployer import SCORE_VERSION, score_basis
+
+    assert SCORE_VERSION == 5 and score_basis(Config()) == "1@+3:v5"
+    old = dev_forward.rule(Config(), "SNIPE", "1@+3:v4", 0.0042, 0)
+    new = dev_forward.rule(Config(), "SNIPE", score_basis(Config()), 0.0042, 0)
+    assert old["id"] != new["id"] and "v5" in new["label"]
+
+
 def test_a_deployer_is_scored_at_what_a_transaction_costs_live():
     """The deployer analysis charged the settings' cost of a transaction (0.0012 SOL: 0.0002 priority + 0.001 tip), where
     the measure stage puts a live one at 0.00421 (11 Nov, 75 fills) and OKTech's minimums alone come to 0.003 a buy:
@@ -99,7 +115,7 @@ def test_a_deployer_is_scored_at_what_a_transaction_costs_live():
         assert rep["your_strategy"]["mean"] == pytest.approx(cheap - 2 * (0.0142 - LIVE_TX_SOL), abs=2e-4)
         score = store.get_score("deployer", dev)
         assert score["per_tx_sol"] == pytest.approx(0.0142) and score["per_tx_source"] == "last measured"
-        assert score["basis"].endswith(f":v{SCORE_VERSION}") and SCORE_VERSION == 4
+        assert score["basis"].endswith(f":v{SCORE_VERSION}") and SCORE_VERSION >= 4
         assert cfg.costs.per_tx_sol() == pytest.approx(0.0012)  # the settings themselves are left as they are
     finally:
         store.close()

@@ -22,7 +22,7 @@ def test_the_installers_landing_in_the_servers_file_is_not_a_choice(tmp_path):
     p.write_text('[snipe]\nbuy_sol = 0.5\nentry_slot_offset = 1\nentry_position = "middle"\n')
     cfg = Config.load(p)
     assert cfg.snipe.entry_position == "+3" == Config().snipe.entry_position
-    assert score_basis(cfg) == "1@+3:v4"  # the basis every stored verdict must have
+    assert score_basis(cfg) == "1@+3:v5"  # the basis every stored verdict must have
     p.write_text('[snipe]\nentry_position = "end"\n')  # any other value is somebody's choice and stays
     assert Config.load(p).snipe.entry_position == "end"
 
