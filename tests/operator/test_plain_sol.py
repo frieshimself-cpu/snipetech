@@ -39,7 +39,6 @@ def _run(cfg, paths, snap, notes, convert):
 
 def test_it_is_off_until_the_owner_s_setting_says_how_many_buys(tmp_path):
     cfg, paths, snap, notes, calls, convert = _world(tmp_path, keep=0)
-    assert Config().book.keep_curve_buys == 0  # the 0.05 SOL test comes first
     assert _run(cfg, paths, snap, notes, convert) is None and calls == []
     assert not paths.notes.exists() or paths.notes.read_text() == ""
 

@@ -41,6 +41,21 @@ What was done about each is written below this entry as it happens.
   | after the 0.05 SOL test | 0.051213377 | 0.421817213 |
   | after the rule's conversion (two curve buys) | 0.41 | 0.06303059 |
 
+  **12 Nov 14:56 UTC: the 0.05 SOL test ran and did what the simulation said.** The owner put the wallet's key on
+  the server (over SSH, 14:55); the dry run then said `"signed": true`; one real conversion followed
+  (`remote run unwrap --sol 0.05 --json`, job 20261112-145616-426105), confirmed, signature
+  `2mr9Tm7tvaczR2UKWktwhyhPQAEW9vmzJkGFSkWcei3P2xcYtVNJJtS5kWSMxtAKTRjTAzGagXLLgBU1197q3TB5`:
+
+  | read from the chain | plain SOL | wrapped SOL |
+  |---|---|---|
+  | before | 0.001194378 | 0.471817213 |
+  | after | 0.051183378 | 0.421817213 |
+
+  0.05 moved from wrapped to plain, 0.000011 SOL of fee, nothing left the wallet. The rule is switched on with it
+  (`[book] keep_curve_buys = 2` is the code's default from this commit; `tests/test_config_drift.py` names the yes):
+  when the wallet cannot pay one curve buy and something of ours can buy, the round converts enough for two (plain
+  SOL to 0.41), six times a day at most, one line in the notes each time.
+
   A real send is refused in words: "the wallet's key (SNIPER_SECRET) is not on the server: nothing here can sign for
   the wallet". OKTech holds the key for its own trades; this server never did (the same reason `/sell` cannot run
   there). **What only the owner can do:** over SSH, add one line `SNIPER_SECRET=<the sniper wallet's private key>`

@@ -6,8 +6,8 @@ SOL for up to two 0.2 SOL curve buys whenever the wallet has it in wrapped form,
 conversion itself is solana/unwrap.py (simulated on the chain before every send; the SOL can only be in the wallet or
 its own wrapped-SOL account); this is when the round asks for one:
 
-* `[book] keep_curve_buys` says how many buys of plain SOL to keep; 0 (the default until the first 0.05 SOL test has
-  been read on the chain) converts nothing;
+* `[book] keep_curve_buys` says how many buys of plain SOL to keep (2 since the 0.05 SOL test of 12 Nov was read on
+  the chain); 0 converts nothing;
 * only while something of ours can buy (the book is live, or a sniper of ours is running) and the kill switch is not
   set, from the round's own reading of the wallet;
 * only when the wallet cannot pay one curve buy and its plain and wrapped SOL together can (`unwrap.plan_amount`);

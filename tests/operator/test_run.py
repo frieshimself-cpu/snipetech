@@ -477,9 +477,10 @@ def _poor_in_plain_sol(env):
     return lambda w: (0.001224377, 0.471817213, [])
 
 
-def test_the_round_never_converts_until_the_owner_s_setting_says_how_many_buys(tmp_env, monkeypatch):
+def test_the_round_never_converts_while_the_owner_s_setting_is_zero(tmp_env, monkeypatch):
     asked: list[int] = []
     _unwrapper(monkeypatch, asked)
+    tmp_env["cfg"].book.keep_curve_buys = 0  # the switch: 2 since the owner's 0.05 SOL test of 12 Nov
     assert _op(tmp_env, balances=_poor_in_plain_sol(tmp_env)) == 0
     assert asked == [] and "plain SOL" not in tmp_env["paths"].notes.read_text()
     assert not (tmp_env["paths"].root / "unwrap.json").exists()

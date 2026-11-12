@@ -436,7 +436,8 @@ class BookConfig:
     min_copy_sol: float = 0.3  # copy only the wallet's buys of at least this size
     # Plain SOL kept for this many curve buys by turning the wallet's own wrapped SOL back (solana/unwrap.py; the
     # owner's yes of 11 Nov): a curve buy is paid whole in plain SOL. 0: nothing is converted. Only the owner's.
-    keep_curve_buys: int = 0
+    # 2 since 12 Nov 14:56 UTC, when the owner's 0.05 SOL test was read on the chain (docs/live-recipe.md).
+    keep_curve_buys: int = 2
     # The exit a new book sniper gets (book/policy.exit_for). "fixed": lab for every wallet, as always. "per_wallet": the
     # wallet's own exit from its verdict when the lab kept one on unseen moments, its family is in verified_exits and it
     # passes oktech.validate_exit; lab otherwise. A running sniper keeps its exit until it is replaced. Only the owner

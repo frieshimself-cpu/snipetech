@@ -149,3 +149,12 @@ def test_preconfirmations_are_on_since_the_owners_yes():
     next 20 copies compared with the 24 before). To switch it back: the default in config.py, not the server's file."""
     assert Config.load(SERVER_FILE, overlay=False).oktech.preconf is True
     assert settings_drift(SERVER_FILE)["retired"]["oktech.preconf"] == {"file": False, "now": True}
+
+
+def test_the_bot_keeps_plain_sol_for_two_curve_buys_since_the_owners_yes():
+    """A pump.fun curve buy is paid whole in plain SOL, and OKTech leaves the wallet's SOL wrapped. The owner's yes of
+    11 Nov 21:50 UTC: first a 0.05 SOL test, then the bot keeps plain SOL for up to two 0.2 SOL curve buys from the
+    wallet's own wrapped SOL. The test ran on 12 Nov 14:56 UTC (docs/live-recipe.md), so the rule is on. The server's
+    file holds no value for it: the default here is what the server runs. To switch it off: 0 here."""
+    assert Config().book.keep_curve_buys == 2
+    assert Config.load(SERVER_FILE, overlay=False).book.keep_curve_buys == 2
