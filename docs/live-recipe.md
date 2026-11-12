@@ -56,6 +56,11 @@ What was done about each is written below this entry as it happens.
   when the wallet cannot pay one curve buy and something of ours can buy, the round converts enough for two (plain
   SOL to 0.41), six times a day at most, one line in the notes each time.
 
+  **15:30 UTC: the rule's first conversion.** Asked 0.3588 SOL, confirmed (signature `2xCVkEWtJAvT…`). Read
+  after: plain 0.252985, wrapped 0.22 exactly (before 0.051183 / 0.421817; total whole, fee 0.000016). Only 0.2018
+  stayed plain: wrapped SOL was back at 0.22 at the read, most likely OKTech keeping a buy's worth wrapped for its
+  running snipers. The wallet pays one curve buy and one PumpSwap buy; the rule is quiet while it can.
+
   A real send is refused in words: "the wallet's key (SNIPER_SECRET) is not on the server: nothing here can sign for
   the wallet". OKTech holds the key for its own trades; this server never did (the same reason `/sell` cannot run
   there). **What only the owner can do:** over SSH, add one line `SNIPER_SECRET=<the sniper wallet's private key>`
