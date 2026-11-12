@@ -230,3 +230,59 @@ def test_the_lab_command_refuses_parts_it_cannot_score(tmp_path, capsys):
     argv = ["--db", str(db), "lab", "--trigger", WHALE_JSON, "--hours", "1", "--sell-parts", "40"]
     assert cli.main(argv) == 2
     assert "2 to 20 parts" in capsys.readouterr().err
+
+
+# --- a bid on the buy alone (the owner, 12 Nov: "even 2-5 sol fees to copytrade could be worth") ------------------
+
+
+def test_a_bid_on_the_buy_is_charged_once_and_no_sale_pays_it():
+    trades = _market(6, n=90, kinds=("in", "in", "out", "sell"))[1]
+    path = MarketPath.build(trades)
+    plain, bid = Costs(per_tx_lamports=0.01 * SOL), Costs(per_tx_lamports=0.01 * SOL, entry_bid_lamports=2.0 * SOL)
+    assert Costs().entry_bid_lamports == 0.0
+    ex = ExitParams(max_hold_secs=20.0, sell_parts=4, sell_part_secs=10.0, **HOLD)
+    a = run_exit(prepare(path, 4, 10.0, plain, exit_latency_slots=0), ex, plain)
+    b = run_exit(prepare(path, 4, 10.0, bid, exit_latency_slots=0), ex, bid)
+    assert b.proceeds_sol == pytest.approx(a.proceeds_sol)  # the same coins bought and sold
+    assert b.cost_sol - a.cost_sol == pytest.approx(2.0) and a.pnl_sol - b.pnl_sol == pytest.approx(2.0)
+
+
+def test_the_lab_command_charges_a_bid_on_the_buy_and_names_it(tmp_path, capsys):
+    import json
+
+    from snipetech import cli
+    from tests.test_lab_hypotheses import WHALE_JSON, _tape_db
+
+    db = _tape_db(tmp_path)
+    base = [
+        "--db",
+        str(db),
+        "lab",
+        "--trigger",
+        WHALE_JSON,
+        "--hours",
+        "1",
+        "--buy",
+        "10",
+        "--per-tx",
+        "0.005",
+        "--json",
+    ]
+    assert cli.main(base) == 0
+    was = json.loads(capsys.readouterr().out)
+    assert cli.main([*base, "--buy-bid", "2"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert "buy_bid_sol" not in was and out["buy_bid_sol"] == 2.0 and out["per_tx_sol"] == 0.005
+    # the same trades, each 2 SOL dearer: the mean of every exit falls by exactly the bid
+    by_exit = {r["exit"]: r for r in was["strategies"]}
+    row = out["strategies"][0]
+    assert row["train_mean"] == pytest.approx(by_exit[row["exit"]]["train_mean"] - 2.0, abs=1e-6)
+    assert cli.main([*base, "--buy-bid", "-1"]) == 2
+    assert "--buy-bid" in capsys.readouterr().err
+
+
+def test_the_place_table_reads_bids_up_to_five_sol():
+    from snipetech.analysis.place_bids import BID_LEVELS
+
+    assert BID_LEVELS[:8] == (0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1)
+    assert BID_LEVELS[8:] == (0.3, 1.0, 2.0, 5.0)

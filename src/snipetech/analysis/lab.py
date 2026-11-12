@@ -1557,9 +1557,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             kols: dict[str, set[str]] | None = None, landings: Mapping[str, tuple[int, str]] | None = None,
             triggers: Sequence[Trigger] | None = None, workers: int | None = None,
             mates: Mapping[str, Collection[str]] | None = None,
-            sell_parts: tuple[int, float] | None = None) -> dict[str, Any]:  # fmt: skip
+            sell_parts: tuple[int, float] | None = None, buy_bid_sol: float = 0.0) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
+    `buy_bid_sol`: a bid paid once on every buy, on top of `per_tx_sol` (`Costs.entry_bid_lamports`).
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
     moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
@@ -1601,7 +1602,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     MIN_PARALLEL_COINS coins, a file another copy has been renamed over since the store opened it, or snipetech code
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
-    costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS)
+    costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS, entry_bid_lamports=max(0.0, float(buy_bid_sol)) * LAMPORTS)
     # handed exits score every trigger, MIG included, watched as a live OKTech sniper runs a MIG rule's auto-sell
     mig_exits = [watched(ex) for ex in exits] if exits else mig_exit_set()
     exits = list(exits) if exits else exit_set()

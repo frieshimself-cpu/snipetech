@@ -473,6 +473,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
                          "the N-th buy across slots. A closer place is bought with a bid: charge it with --per-tx")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
+    sp.add_argument("--buy-bid", type=float, default=0.0, metavar="SOL",
+                    help="a bid paid once on every buy, on top of --per-tx (which every transaction pays, the sales "
+                         "too): what a paid place costs, e.g. --copy-position +0 --buy-bid 2 for the first place "
+                         "behind a wallet everyone buys on top of. No upper limit")  # fmt: skip
     sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
                     help="every exit sells out in N equal parts (2 to 20) instead of one sale: what selling slowly is "
                          "worth at a size (--buy 5, 10, 30). Each part is priced into the pool the earlier parts left "
@@ -1350,6 +1354,8 @@ async def _run(args, cfg: Config) -> int:
             from .qualify.run import lab_tx_cost_info
 
             try:  # refused before any tape is read
+                if not args.buy_bid >= 0:
+                    raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {args.buy_bid:g}")
                 lab_in_parts(lab_exit_set()[:1], args.sell_parts, args.sell_part_secs)
             except ValueError as exc:
                 print(f"lab: {exc}", file=sys.stderr)
@@ -1380,7 +1386,7 @@ async def _run(args, cfg: Config) -> int:
                     # nothing and said so nowhere)
                     return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
                                        triggers=args.trigger, kols=lab_groups(svc.store),
-                                       sell_parts=sell_parts)  # fmt: skip
+                                       sell_parts=sell_parts, buy_bid_sol=args.buy_bid)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
@@ -1388,6 +1394,8 @@ async def _run(args, cfg: Config) -> int:
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
+            if args.buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
+                res["buy_bid_sol"] = float(args.buy_bid)
             if sell_parts:  # every exit sold out in parts (research only)
                 res["sell_parts"] = {"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
             if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of

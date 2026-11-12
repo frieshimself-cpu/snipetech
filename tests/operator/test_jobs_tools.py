@@ -693,3 +693,6 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     assert '"min_mcap"' in text and '"max_mcap"' in text and "410 SOL" in text
     assert "30 minutes after it leaves its curve" in text
     assert '"--sell-parts", "4", "--sell-part-secs", "15"' in text and "research only" in text
+    # the same day: "even 2-5 sol fees to copytrade could be worth... 1 to 30 isnt the limit"
+    assert '"--buy-bid", "2"' in text and "paid once on the buy" in text and "no upper limit" in text
+    assert "What the place is worth" in text

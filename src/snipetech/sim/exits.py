@@ -96,6 +96,9 @@ class ExitParams:
 class Costs:
     per_tx_lamports: float = 1_200_000.0
     platform_fee_bps: float = 0.0
+    # A bid paid once, on the buy alone, on top of what every transaction costs (the owner, 12 Nov 2026: a place right
+    # behind a wallet everyone buys on top of can be worth 2 to 5 SOL of fees): a sale never pays it.
+    entry_bid_lamports: float = 0.0
 
     @classmethod
     def from_config(cls, cc) -> "Costs":
@@ -201,7 +204,7 @@ def prepare(
     exec_idx = path.landing_index(target, exit_position, np.arange(e, path.n))
     if exit_latency_slots == 0:
         exec_idx = np.arange(e, path.n)
-    fixed = spent * costs.platform_fee_bps / 10_000.0 + costs.per_tx_lamports
+    fixed = spent * costs.platform_fee_bps / 10_000.0 + costs.per_tx_lamports + costs.entry_bid_lamports
     oc = getattr(path, "off_curve", None)  # paths built by hand carry none
     return Prepared(
         path=path,

@@ -570,6 +570,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         curve ends near 410 SOL of market cap, so "min_mcap": 410 is coins already on PumpSwap: the bigger wallets'
         buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
         that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape.
+        Size has no upper limit: go past 30 SOL while test_sol_per_day still rises.
+        THE BID (the owner: behind a wallet everyone buys on top of, even 2 to 5 SOL of fees can be worth it): "--per-tx"
+        is what every transaction pays, the sales too; "--buy-bid", "2" is a bid paid once on the buy, on top of it,
+        with no upper limit. What the place is worth is the difference between the same lab at "--copy-position", "+0"
+        and at the place our copies get without a bid ("+2", "+4" behind a crowded wallet), at the size meant: a bid
+        under that difference pays, if it wins the place. Whether a bid wins it is place-bids' auction.in_bid_order
+        and win_at (bids up to 5 SOL), per wallet with "--each".
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at

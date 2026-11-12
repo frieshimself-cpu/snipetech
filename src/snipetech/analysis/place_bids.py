@@ -48,7 +48,7 @@ from .playbook import _q
 LAMPORTS = 1_000_000_000
 PLACES = 3  # places behind the followed wallet the table gives
 AFTER_SLOTS = 4  # blocks after the wallet's own that are read for the first outsider and for our own copy
-BID_LEVELS = (0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1)  # SOL: what each would have won
+BID_LEVELS = (0.001, 0.003, 0.005, 0.01, 0.02, 0.03, 0.05, 0.1, 0.3, 1.0, 2.0, 5.0)  # SOL: what each would have won
 UNDER = (0.001, 0.003, 0.01)  # SOL: the share of a place's bids under each (0.003 is our copies' bid)
 OUR_BID = 0.003
 REGULAR_SHARE, REGULAR_MIN = 0.3, 3  # a wallet in the first places behind one wallet this often is a regular of it
