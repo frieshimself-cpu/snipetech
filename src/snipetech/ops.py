@@ -189,6 +189,14 @@ HOLD_UNITS = (
     "snipetech-snapshot", "snipetech-discover", "snipetech-strategist", "snipetech-commands",
 )  # fmt: skip
 UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # `systemctl is-active` of a unit mid-run
+# A deploy that was asked for and refused leaves this mark in the data directory, kept fresh by the client asking
+# again (`remote update --when-quiet`: every 15 s). While it is fresh no new job that would hold the deploy starts
+# (`Ops.op_run`), so the running ones end and the deploy goes out. 12 Nov: the agents' labs followed each other so
+# closely that two waits of 28 minutes found no gap. A mark nobody refreshes holds nothing after
+# DEPLOY_ASK_FRESH_SECS, and no wait holds jobs back longer than DEPLOY_HOLD_MAX_SECS.
+DEPLOY_WAITS = "DEPLOY_WAITS"
+DEPLOY_ASK_FRESH_SECS = 60
+DEPLOY_HOLD_MAX_SECS = 1800
 
 
 def holds_deploy(argv: list[str]) -> bool:
@@ -351,6 +359,7 @@ class Ops:
         from .infra import nightly
 
         out["unit"] = nightly.current_unit()  # the unit this service runs in, as a job would read its own
+        out["deploy_waiting"] = self.deploy_waiting()  # a refused deploy is being asked for: new jobs are held back
         out["services"] = {u: self._run([SYSTEMCTL, "is-active", u]).strip() or "unknown" for u in UNITS}
         du = shutil.disk_usage(self.data)
         out["disk_gb"] = {"free": round(du.free / 1e9, 1), "total": round(du.total / 1e9, 1)}
@@ -387,6 +396,10 @@ class Ops:
         command = argv[1:] if argv and argv[0] == "--profile" else argv
         if not command or not all(isinstance(a, str) for a in argv) or command[0] not in ALLOWED:
             raise OpsError(403, f"command not allowed: {argv[:2]}")
+        if holds_deploy(argv) and self.deploy_waiting():
+            raise OpsError(409, "a code update is waiting for the running jobs to end: no new job that reports numbers "
+                                "starts until it is out (minutes, half an hour at the most). Start this one again "
+                                "then; nothing was started")  # fmt: skip
         return self._start([*self.command, *argv], argv, int(timeout))
 
     def op_job(self, id: str, tail: int = 20000) -> dict[str, Any]:
@@ -521,12 +534,38 @@ class Ops:
         out += [f"the unit {u}, mid-run" for u, state in zip(HOLD_UNITS, states) if state.strip() in UNIT_RUNS]
         return out
 
+    def deploy_waiting(self) -> bool:
+        """Whether a deploy was asked for, refused and is still being asked for (`DEPLOY_WAITS`): asked again within
+        DEPLOY_ASK_FRESH_SECS, and waiting for no longer than DEPLOY_HOLD_MAX_SECS."""
+        try:
+            mark = json.loads((self.data / DEPLOY_WAITS).read_text())
+            since, asked = float(mark["since"]), float(mark["asked"])
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):  # no mark, a broken one, no data directory
+            return False
+        now = time.time()
+        return now - asked <= DEPLOY_ASK_FRESH_SECS and now - since <= DEPLOY_HOLD_MAX_SECS
+
+    def _deploy_asked(self) -> None:
+        """Note that a deploy was refused just now: a wait that is still fresh keeps its start, any other starts one."""
+        now = time.time()
+        since = now
+        if self.deploy_waiting():
+            try:
+                since = float(json.loads((self.data / DEPLOY_WAITS).read_text())["since"])
+            except (OSError, ValueError, KeyError, TypeError):
+                since = now
+        try:
+            (self.data / DEPLOY_WAITS).write_text(json.dumps({"since": since, "asked": now}))
+        except OSError:
+            pass  # a mark that cannot be written holds nothing: the deploy waits as it did before
+
     def op_update(self, force: bool = False) -> dict[str, Any]:
         """Bring the checkout to the branch's tip and restart the recorder and this endpoint. Refused (409) while a job
         or a timer-run unit is mid-run that would go on with part old and part new code (`deploy_waits_for`), with
         each named; `force` deploys all the same."""
         held = [] if force else self.deploy_waits_for()
         if held:
+            self._deploy_asked()  # no new job that would hold it starts while the client keeps asking (`op_run`)
             raise OpsError(409, f"{len(held)} still mid-run on the code of before the deploy: {'; '.join(held[:6])}. "
                                 "Deploy when they have ended (`remote status` lists them; `remote update --when-quiet` "
                                 "waits for it), or with force when it cannot wait")  # fmt: skip
@@ -540,6 +579,7 @@ class Ops:
             [*sudo, SYSTEMCTL, "--no-block", "restart", "snipetech-ops"],  # last: this server restarts itself
         ]
         script = " && ".join(" ".join(_sh(a) for a in s) for s in steps)
+        (self.data / DEPLOY_WAITS).unlink(missing_ok=True)  # it is going out: nothing waits any more
         return self._start(["/bin/sh", "-c", script], ["update"], 1800)
 
     def op_daily(self) -> dict[str, Any]:

@@ -704,3 +704,48 @@ def test_a_gmgn_key_never_shows_in_a_job_s_output(monkeypatch):
     monkeypatch.setenv("GMGN_API_KEY", "gmgn_live_0123456789abcdef")
     assert "GMGN_API_KEY" in ops.REDACT_ENV
     assert ops.redact("GET /v1/x?key=gmgn_live_0123456789abcdef failed") == "GET /v1/x?key=<redacted> failed"
+
+
+def test_a_waiting_deploy_holds_new_number_producing_jobs_back(env, monkeypatch):
+    """12 Nov evening: the agents' labs followed each other so closely that `remote update --when-quiet` found no gap
+    in 28 minutes, twice, while the analyst waited for the very fix that was to be deployed. A deploy that was asked
+    for and refused now leaves a mark, kept fresh by the client's asking again every 15 seconds: while it is fresh no
+    new job that would hold the deploy starts (the running ones end, the deploy goes out, the mark goes). A mark
+    nobody refreshes stops holding after a minute, and no wait holds jobs longer than half an hour."""
+    ops, key = env
+    started: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(argv) or {"id": "x", "argv": argv})
+    running = [{"id": "a", "argv": ["lab", "--trigger", "{}"], "running": True, "started": time.time() - 30}]
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": running})
+    assert req(ops, key, "run", argv=["lab", "--hours", "1"])["argv"] == ["lab", "--hours", "1"]  # no deploy waits
+    with pytest.raises(O.OpsError, match="lab --trigger"):
+        req(ops, key, "update")  # refused: the lab is mid-run; the deploy now waits
+    assert ops.deploy_waiting()
+    with pytest.raises(O.OpsError, match="a code update is waiting") as e:
+        req(ops, key, "run", argv=["lab", "--hours", "2"])
+    assert e.value.code == 409 and started == [["lab", "--hours", "1"]]
+    with pytest.raises(O.OpsError, match="a code update is waiting"):
+        ops.op_run(["paper", "run"])  # the round's own stages too
+    assert ops.op_run(["operate", "idea", "--id", "I1"])["argv"][0] == "operate"  # what holds no deploy still starts
+    assert req(ops, key, "status")["deploy_waiting"] is True
+    running.clear()  # the lab ended: the next ask deploys, and the mark is gone
+    assert req(ops, key, "update")["argv"] == ["update"] and not ops.deploy_waiting()
+    assert ops.op_run(["lab", "--hours", "2"])["argv"] == ["lab", "--hours", "2"]
+    # a mark nobody refreshes (the client gave up): after a minute it holds nothing
+    running.append({"id": "b", "argv": ["lab"], "running": True, "started": time.time()})
+    with pytest.raises(O.OpsError):
+        req(ops, key, "update")
+    real = time.time
+    monkeypatch.setattr(O.time, "time", lambda: real() + O.DEPLOY_ASK_FRESH_SECS + 5)
+    assert not ops.deploy_waiting() and ops.op_run(["lab", "--hours", "3"])["argv"][-1] == "3"
+    # and a wait that is refreshed for longer than the limit stops holding too
+    monkeypatch.setattr(O.time, "time", real)
+    with pytest.raises(O.OpsError):
+        req(ops, key, "update")
+    mark = json.loads((ops.data / O.DEPLOY_WAITS).read_text())
+    (ops.data / O.DEPLOY_WAITS).write_text(json.dumps(mark | {"since": real() - O.DEPLOY_HOLD_MAX_SECS - 5}))
+    assert not ops.deploy_waiting()
+    with pytest.raises(O.OpsError):
+        req(ops, key, "update", force=False)  # asking again after the limit starts a new wait
+    assert ops.deploy_waiting()
+    assert req(ops, key, "update", force=True)["argv"] == ["update"] and not ops.deploy_waiting()
