@@ -125,3 +125,32 @@ qualify lab already did for its group): the third run gave the same strategies t
 
 Deployed: the model at 23:49:09 UTC (8aba49d), the lab's plan at 00:08:34 (373b604). Paper trades of size rules
 scored before 23:49 are old-model; the paper run scores new ones with the new model.
+
+## The paper rules' kept trades, priced again (12 Nov 00:27 UTC)
+
+`snipetech paper rescore` (analysis/paper.py: the same moment, the same entry state, the same exit rule, today's
+pricing; 65 s on the server). Every size rule frozen at the time:
+
+| rule | trades | priced again | total before | total after | a trade, before | a trade, after |
+|---|---|---|---|---|---|---|
+| KOL first buy, trailing exit, 2 SOL (0cd0374b1d) | 466 | 434 | -2.5 SOL | **-20.7 SOL** | -0.005 | -0.044 |
+| the same at 5 SOL (b17196e12a) | 466 | 434 | +23.6 | **-76.9** | +0.051 | -0.165 |
+| the same at 10 SOL (a0c5b59350) | 464 | 433 | +14.9 | **-332.9** | +0.032 | -0.717 |
+| KOL buys of 1 SOL+, 20 SOL (bd20e4ebb1) | 376 | 345 | -9.6 | **-545.7** | -0.025 | -1.451 |
+| KOL buys of 0.1 SOL+, 20 SOL (d55c50d94b) | 459 | 428 | -7.2 | **-688.8** | -0.016 | -1.501 |
+| KOL first buy, TP+100 % / SL-20 % / 120 s, 2 SOL (3eb9ccf852) | 46 | 46 | +7.1 | +4.7 | +0.154 | +0.103 |
+| the same at 5 SOL (2243373f00) | 13 | 13 | +5.3 | +4.2 | +0.405 | +0.323 |
+
+31 trades a rule were left as they were (their moment no longer fires on today's labels) and one for a coin the tape
+no longer holds; they stay in the totals at their old value.
+
+Why so much more than the table at the top: these rules have a stop at -15 %. Our own buy is most of the move at
+these sizes (10 SOL into a curve holding 45 SOL lifts the price by half), and every holder who sells after it sells
+into that price. A dip the old model read as -14.8 % is -17.3 % in the pool as it really would be, the stop fires,
+and the trade that the old model rode to +150 % ends at -17 %. Checked on that very trade (HLxqLV, 11 Nov 16:20 UTC,
+10 SOL): the simulator's value path equals a brute-force replay of the coin's 1,003 recorded trades at every state
+of the hold.
+
+So: nothing at 5 SOL or more comes close; the trailing-stop rule loses at 2 SOL as well; the take-profit rule at
+2 SOL is positive over 46 trades, which proves nothing yet (the lab's unseen half says +0.023 a trade with a lower
+bound of -0.026).

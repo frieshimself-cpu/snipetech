@@ -20,7 +20,11 @@ first on the server's recording and only then run live in capped batches.
 - **Fixed in the simulator and on the server since 23:49 UTC.** The model now replays each later trade in the terms
   it was made in, checked against a brute-force pool. The analyst's own 2 SOL lab, re-run: its best rule goes from
   +0.084 SOL a trade (lower bound +0.031) to **+0.023 (lower bound -0.026)**. No rule at size has a bound above zero.
-  Still to do: re-score the paper rules' kept trades from the tape.
+- **The paper rules' kept trades, priced again (12 Nov 00:27 UTC).** The KOL copy rules on the owner's page: 2 SOL
+  -2.5 SOL becomes **-20.7**; 5 SOL +23.6 becomes **-76.9**; 10 SOL +14.9 becomes **-332.9**; 20 SOL -9.6 and -7.2
+  become **-545.7 and -688.8** (about 460 trades each). At these sizes our own buy is most of the move: the first dip
+  after it is deeper than the old model read it and the -15 % stop fires. Checked against a brute-force replay of a
+  real coin's recorded trades. **Copying KOL first buys at 2 to 20 SOL loses; the "+22 SOL at 5 SOL" never existed.**
 - **Found on the way:** that lab took 17 minutes because it read every coin on the tape (20 million trades) to score
   903 moments. A lab of wallet rules now reads only the coins its wallets bought: the same numbers in under 2 minutes
   (audit row 76).
