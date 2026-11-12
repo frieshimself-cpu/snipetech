@@ -683,6 +683,19 @@ def test_the_agents_are_told_how_to_read_the_table_of_place_against_bid(toolbox)
     assert '"--copy-position", "+0"' in text and "--per-tx" in text
 
 
+def test_the_agents_are_told_how_to_find_the_winning_bots_and_wallets_themselves(toolbox):
+    """12 Nov, the owner: "you need to find these people, me having to give you his wallet is insane". `winners` ranks
+    every busy wallet by what it made and marks the bots; the tool says how to start it, which numbers to read, that
+    the numbers are the wallet's own fills and not a copy's, and how to hand the best to qualify."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["winners", "--hours", "72", "--json"]' in text and "no wallet list" in text
+    assert "kind" in text and "lower_sol" in text and "copy_share" in text and "snipe_share" in text
+    assert "its own fills" in text and "not a copy's" in text
+    assert '"--label", "20"' in text and '"--kind", "bot"' in text and '"--min-sol-per-day"' in text
+    assert '["leaders-of", "<wallet>", "--json"]' in text and '["playbook", "<wallet>", "--json"]' in text
+
+
 def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolbox):
     """12 Nov, the owner: "make sure it tests 1-30 sol buys, especially on bigger influence wallets that buy at higher
     caps... slowly selling out might be better". The tool says how to size a lab, how to ask for a market cap past

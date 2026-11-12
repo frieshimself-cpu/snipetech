@@ -555,6 +555,24 @@ class Store:
             lo = hi
         return [(mint, n) for mint, n in sorted(counts.items()) if n >= min_trades]
 
+    def trade_pieces(self, start_ts: int, end_ts: int, select: str, tail: str = "") -> Iterator[list[tuple]]:
+        """`select` over the SOL trades from `start_ts` to `end_ts`, a list of rows for every READ_SPAN_SECS of tape,
+        oldest first (the pieces of `active_mints`: each read whole before the next starts, a trade on the edge of two
+        in one of them). `tail` ends each read ("GROUP BY user", "ORDER BY slot, pos, ev"): a block's trades share its
+        time, so pieces read in block order follow each other in block order. Each read is told to use the time
+        index: left to choose for a GROUP BY user, the planner may walk the whole wallet index instead, once a piece.
+        For a study of every wallet at once (`winners`): the alternative, a read a wallet or a coin, is 42,000 reads
+        for one day's coins (12 Nov)."""
+        lo, end = int(start_ts), int(end_ts)
+        while lo <= end:
+            hi = lo + self.READ_SPAN_SECS
+            last = hi >= end
+            yield self._q(f"SELECT {select} FROM trades INDEXED BY trades_ts WHERE ts>=? AND ts{'<=' if last else '<'}? "
+                          f"{tail}", (lo, end if last else hi))  # fmt: skip
+            if last:
+                break
+            lo = hi
+
     def user_market(self, user: str, since_ts: int = 0) -> list[Trade]:
         """A wallet's trades, SOL- and foreign-quoted, in block order."""
         rows = self._q(f"SELECT {_TRADE_COLS}, '' FROM trades WHERE user=? AND ts>=? "
@@ -1194,6 +1212,10 @@ class Store:
         if kind:
             return {a: l for a, l in self._q("SELECT address, label FROM labels WHERE kind=?", (kind,))}
         return {a: l for a, l in self._q("SELECT address, label FROM labels")}
+
+    def label_kinds(self) -> dict[str, tuple[str, str]]:
+        """address -> (kind, label) of every labelled address, in one read."""
+        return {a: (k, l) for a, k, l in self._q("SELECT address, kind, label FROM labels")}
 
     # -- lists, signals, funders -----------------------------------------------
 

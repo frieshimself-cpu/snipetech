@@ -61,6 +61,30 @@ class TapeSource:
         return [{"wallet": r["wallet"], "stats": r} for r in rows if r.get("wallet")]
 
 
+class WinnersSource:
+    """The wallets that made the most on our own tape, bots and traders, found without a wallet list (owner, 12 Nov:
+    "you need to find these people"): `analysis.winners` over `hours` of tape, the `top` by SOL made, kept when the
+    lower bound of what a round trip makes is above zero and the result is a trade (`worth_judging`). Where the tape
+    source reads the 2,000 busiest wallets one by one, this reads the window twice by time and follows every wallet
+    with `min_trips` buys and sells; it charges each transaction's priority fee and tip and says which wallet is a
+    bot. The numbers are each wallet's own fills: whether a copy pays is qualify's question, and these wait first in
+    its queue (`store._PRIORITY_SOURCES`). Its stats never say `is_bot` (that word bans a wallet here): a winning bot
+    is what the owner asked to have found."""
+
+    name = "winners"
+    every_secs = SLOW_SOURCE_SECS
+
+    def __init__(self, hours: float = 72.0, min_trips: int = 20, top: int = 100):
+        self.hours, self.min_trips, self.top = hours, min_trips, top
+
+    def fetch(self, ctx: DiscoverContext) -> list[dict]:
+        from ..analysis.winners import winners_report, worth_judging
+
+        out = winners_report(_tape(ctx), ctx.now, hours=self.hours, min_trips=self.min_trips, top=self.top,
+                             labels=ctx.svc.store.label_kinds(), confidence=ctx.cfg.verdict.confidence)  # fmt: skip
+        return [{"wallet": r["wallet"], "stats": r} for r in out["wallets"] if worth_judging(r)]
+
+
 class OwnerSource:
     """The owner's tracked wallets (label kind `wallet`): always candidates, measured like everyone else."""
 
@@ -210,7 +234,7 @@ class CoinFirstBuyersSource:
 
 
 def default_sources(ctx: DiscoverContext) -> list[Source]:
-    out: list[Source] = [TapeSource(), OwnerSource()]
+    out: list[Source] = [TapeSource(), WinnersSource(), OwnerSource()]
     if ctx.solanatracker is not None:
         out += [SolanaTrackerSource(90), SolanaTrackerSource(30, pages=3)]
     if ctx.birdeye is not None:

@@ -289,7 +289,8 @@ coin held, the tape stalled). At the config's 15 $ a day and 2 $ a turn, the ext
 
 **Discover and qualify (the learning loop, phase 2).** Two timers do the wallet work by themselves.
 `snipetech discover run` (hourly) puts every source's wallets into one `candidates` table: the tape's consistent
-winners, your tracked list, SolanaTracker's 90- and 30-day boards, Birdeye's gainers and hot-coin top traders,
+winners, the wallets that made the most SOL on the tape after their landing fees, bots and traders (`winners`, every
+six hours; `snipetech winners` prints the ranking), your tracked list, SolanaTracker's 90- and 30-day boards, Birdeye's gainers and hot-coin top traders,
 Vybe's 30-day board, and the first buyers of coins that ran 5× within ten minutes. Platform wallets and flagged bots
 are banned, a failing source is reported and skipped, and each source has its own budget. `snipetech qualify run`
 (every 30 min) takes the candidates whose review is due, labels them `cand`, runs **one** by-wallet lab where live
