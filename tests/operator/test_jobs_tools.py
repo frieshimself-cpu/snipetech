@@ -710,3 +710,6 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     assert '"--buy-bid", "2"' in text and "paid once on the buy" in text and "no upper limit" in text
     assert "What the place is worth" in text
     assert '"group": "big"' in text and "Ansem, Gake, Cupsey" in text
+    # the owner, 12 Nov: "we cant do one person tests per day has to be like 100 per day"
+    assert "MANY TESTS AT ONCE" in text and "ten to twenty" in text and '"--by-wallet"' in text
+    assert '"--top", "40"' in text and "a hundred tests a day" in text

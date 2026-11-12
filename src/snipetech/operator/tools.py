@@ -590,6 +590,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and at the place our copies get without a bid ("+2", "+4" behind a crowded wallet), at the size meant: a bid
         under that difference pays, if it wins the place. Whether a bid wins it is place-bids' auction.in_bid_order
         and win_at (bids up to 5 SOL), per wallet with "--each".
+        MANY TESTS AT ONCE (the owner, 12 Nov: not one test a day, a hundred tests a day): one lab takes ten to twenty
+        "--trigger" objects in the same command and scores every one on every exit (about fifty) in one pass over the
+        tape, so send the whole family of a question together (every size gate, market-cap band, known-wallet count
+        and group you want compared), never one rule a lab; add "--by-wallet" and the same run also ranks every
+        followed wallet by its own numbers, so no wallet needs a lab of its own. To test forward, freeze the whole
+        family at once: ["paper", "freeze", "--trigger", ..., "--trigger", ..., "--top", "40", "--buy", "2"] keeps up
+        to forty rules of one freeze running on paper side by side (the forward run scores them all every round).
+        Different sizes and bids are separate commands; two labs run at a time, so queue the next two as soon as two
+        end. Count what you have in flight in your note: the target is a hundred tests a day.
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
