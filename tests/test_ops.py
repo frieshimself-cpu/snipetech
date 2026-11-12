@@ -647,6 +647,11 @@ def test_the_logs_of_the_boot_before_and_of_the_machine_itself(env, monkeypatch)
     assert asked[-1] == ["journalctl", "-b", "0", "-k", "-n", "100", *tail]
     req(ops, key, "logs", unit="kernel", lines=10**9)
     assert asked[-1][asked[-1].index("-n") + 1] == str(O.MAX_LOG_LINES)  # a whole journal is never asked for
+    # 12 Nov: the machine ran all night without a network. What its network services said (the address it was given
+    # and lost, the link going down, name lookups failing) is the third view of the machine
+    req(ops, key, "logs", unit="network", boot=-1, lines=300)
+    assert asked[-1] == ["journalctl", "-b", "-1", "-u", "systemd-networkd", "-u", "systemd-resolved", "-u",
+                         "systemd-timesyncd", "-n", "300", *tail]  # fmt: skip
     n = len(asked)
     for bad in ({"unit": "sshd"}, {"unit": "kernel", "boot": 1}, {"unit": "kernel", "boot": "-1; reboot"},
                 {"unit": "snipetech-tape", "boot": -1000}, {"unit": "-k"}):  # fmt: skip

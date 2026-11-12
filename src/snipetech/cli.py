@@ -1061,7 +1061,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("action", choices=["keygen", "pubkey", "status", "run", "job", "jobs", "kill", "ls", "read", "put", "sql",
                                        "logs", "update", "daily"])  # fmt: skip
     sp.add_argument("rest", nargs=argparse.REMAINDER, help="run: a snipetech command; job/kill: id; read/ls: path; "
-                    "put: local-file name; sql: query; logs: a unit, kernel or systemd, with --boot -1 for the boot "
+                    "put: local-file name; sql: query; logs: a unit, kernel, systemd or network, with --boot -1 for the boot "
                     "before this one and --lines N; update: --when-quiet [minutes] to wait (20) for the moment no job or "
                     "timer unit is mid-run, --force to deploy although one is")  # fmt: skip
 
@@ -1831,7 +1831,7 @@ def _remote(args) -> int:
             if r.get("truncated"):
                 print("... (truncated)")
         elif a == "logs":
-            # logs [unit | kernel | systemd] [--boot -1] [--lines N]: --boot -1 is the boot before this one
+            # logs [unit | kernel | systemd | network] [--boot -1] [--lines N]: --boot -1 is the boot before this one
             opts = {k: int(rest[rest.index(f"--{k}") + 1]) for k in ("boot", "lines") if f"--{k}" in rest[:-1]}
             unit = rest[0] if rest and not rest[0].startswith("--") else "snipetech-tape"
             print(go("logs", unit=unit, **opts)["log"], end="")

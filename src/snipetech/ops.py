@@ -62,9 +62,14 @@ UNITS = (
     "snipetech-commands", "snipetech-commands.timer",
 )  # fmt: skip
 SYSTEMCTL = "/usr/bin/systemctl"
-# `logs` of the machine itself: the kernel's messages, and systemd's own lines about every unit (started, failed, what
-# it used), never another service's output
-MACHINE_LOGS = {"kernel": ["-k"], "systemd": ["_PID=1"]}
+# `logs` of the machine itself: the kernel's messages, systemd's own lines about every unit (started, failed, what
+# it used) and what its network services said (the address it was given and lost, the link, name lookups, the clock:
+# 12 Nov, it ran twelve hours without a network); never another service's output
+MACHINE_LOGS = {
+    "kernel": ["-k"],
+    "systemd": ["_PID=1"],
+    "network": ["-u", "systemd-networkd", "-u", "systemd-resolved", "-u", "systemd-timesyncd"],
+}
 MAX_LOG_LINES = 5000
 MAX_LOG_BOOTS = 50
 
@@ -483,8 +488,8 @@ class Ops:
 
     def op_logs(self, unit: str = "snipetech-tape", lines: int = 100, boot: int | None = None) -> dict[str, Any]:
         """The last `lines` of a snipetech unit's journal, or of the machine's own: "kernel" (out of memory, a hung
-        disk, a panic) and "systemd" (what was starting and what failed, for every service on the machine, without
-        their output). `boot`: 0 this boot, -1 the one before it, and so on: what the machine was doing right before
+        disk, a panic), "systemd" (what was starting and what failed, for every service on the machine, without
+        their output) and "network" (its network services: the address, the link, name lookups). `boot`: 0 this boot, -1 the one before it, and so on: what the machine was doing right before
         it went down (12 Nov: it stopped answering and only a restart brought it back). Without it a unit's lines run
         across boots, as they always did."""
         if unit not in UNITS and unit not in MACHINE_LOGS:
