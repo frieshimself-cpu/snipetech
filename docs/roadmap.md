@@ -6,6 +6,24 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 12 Nov, 04:00 UTC: the server has been off since 00:31 UTC; nothing is recorded or traded until it is restarted
+
+- **The server stopped answering on 12 Nov at 00:31 UTC** and has not come back by itself. Only the owner can
+  restart it (Vultr). Why it stopped is not known: the last deploy was at 00:26, the half-hourly jobs started at
+  00:30, and Ubuntu's own update job froze this machine once before (11 Nov 07:12). The evidence is on the machine.
+- **What is lost while it is off:** no trade is recorded, no copy can be bought or sold by the book, the agents do not
+  run. The recorder replays what it missed for 40 hours: restarted before 13 Nov 16:30 UTC the tape has no hole.
+- **Still nothing profitable live.** That has not changed: no rule has a lower bound above zero at a landing we get.
+- **Built meanwhile, tested, pushed, waiting for the server (audit rows 77 to 79, open item 19):**
+  - the table the nearest lead was waiting for: **which bid lands first behind a followed wallet** (`place-bids`).
+    It says whether the first place behind a known wallet is bought with a bid or taken by speed, what each bid
+    would have won, and who holds the place today. The server's analyst runs it and then scores the copy at that bid;
+  - the server **refuses a code update while one of its jobs is mid-run** (a deploy went out during a scan on
+    12 Nov 00:08);
+  - the server **tells the owner once when it restarted or stood still**: from when to when, and what is not running;
+  - the machine's own log of **the boot before** can be read (`remote logs kernel --boot -1`): how this outage's
+    cause will be found.
+
 ## 11 Nov, 23:30 UTC: every paper result at size is too good; a wrong alert went to the owner
 
 - **The paper test overstates winning trades, more the bigger the buy** (audit row 75). The server's analyst saw two
