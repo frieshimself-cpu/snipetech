@@ -943,6 +943,24 @@ class Store:
                         "stats": json.loads(row[4] or "{}"), "status": row[5], "verdict": verdict})  # fmt: skip
         return out
 
+    def review_now(self, wallets: Iterable[str], now: float) -> int:
+        """Put the review date of each of these wallets' latest verdict at `now`: the next qualify lab takes them (the
+        queue's order: the copied and the qualified first). Returns how many had a verdict to move; an older verdict
+        of a wallet is left as it was."""
+        wallets = list(dict.fromkeys(wallets))
+        if not wallets:
+            return 0
+        marks = ",".join("?" * len(wallets))
+        sql = (f"UPDATE verdicts SET next_review = ? WHERE id IN (SELECT v.id FROM ({_LATEST_VERDICT}) v "
+               f"WHERE v.wallet IN ({marks}))")  # fmt: skip
+        holder: dict[str, int] = {}
+
+        def do():
+            holder["n"] = int(self.conn.execute(sql, [int(now), *wallets]).rowcount)
+
+        self._write(do)
+        return holder.get("n", 0)
+
     def put_verdict(self, v: dict[str, Any]) -> int:
         vals = []
         for c in _VERDICT_COLS:

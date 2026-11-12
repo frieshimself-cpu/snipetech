@@ -630,6 +630,54 @@ def test_companions_count_first_buys_on_the_tape_asked_for():
     st.close()
 
 
+def test_a_set_whose_wallets_buy_in_changing_order_is_seen():
+    """12 Nov 2026 (the analyst's question I72). 4sAUSQ qualified; three wallets of about 1 SOL each are in the block of
+    its first buy on 72, 60 and 53 % of its 145 coins, AHEAD of it on 45-49 % of those, 18-22 block places away.
+    74xVT9's three the same, on 75-77 %. Four wallets of one set, sent together, landing in changing order. The rule
+    looked only at the five places behind the wallet (they are there on 10-26 %): none was seen, and a copy was scored
+    as if it landed among them. A copier never lands ahead of the wallet it copies (the bots 80-190 places behind
+    4sAUSQ are ahead of it in 0-6 % of the blocks they share), and a wallet it copies is never behind it: a wallet in
+    its block on half its first buys, ahead of it in a quarter of those blocks and behind it in a quarter, is sent
+    with it."""
+    from snipetech.qualify.gates import COMPANION_AHEAD_SHARE, companions
+
+    assert COMPANION_AHEAD_SHARE == 0.25
+    st = Store(":memory:")
+    dev = addr("order-dev")
+    for k in range(12):
+        m = Market(st, addr(f"order:coin{k}"), dev, NOW - 5000 + 60 * k, SLOT + 700 * k)
+        m.buy(dev, 1.0, 0, sig=m.create_sig)
+        block = [("followed-by-W", 100), ("W", 200), ("copier", 300)]  # each in the block of every one of W's buys
+        block += [("p1", 180), ("p2", 160)] if k % 2 == 0 else [("p1", 220), ("p2", 240)]  # the set: ahead on half
+        if k % 2 == 0:
+            block.append(("p1", 280))  # it buys again further down the block: its first buy there says where it stood
+        if k % 3 == 0:
+            block.append(("p3", 150 if k % 2 else 250))  # a fourth, on a third of its coins: too rare to be called
+        if k < 3:
+            block.append(("mostly-ahead", 120))
+        elif k < 12:
+            block.append(("mostly-ahead", 110 if k < 11 else 260))  # ahead in 11 of 12: behind too seldom
+        for name, pos in sorted(block, key=lambda x: x[1]):
+            m.buy(addr(name), 1.0, 5).pos = pos
+        m.commit()
+    got = companions(st, addr("W"), NOW - 10_000)
+    st.close()
+    assert got == frozenset({addr("p1"), addr("p2")})
+    # the wallet W itself follows (always ahead), its copier (always behind, far), the rare fourth, and a wallet that
+    # was behind it once in twelve blocks: none of them
+    assert not {addr("followed-by-W"), addr("copier"), addr("p3"), addr("mostly-ahead")} & got
+
+
+def test_the_next_places_rule_and_the_set_rule_hold_together():
+    """A wallet in the next places on half the wallet's buys is a companion as before, whatever the set rule says."""
+    from snipetech.qualify.gates import companions
+
+    st = Store(":memory:")
+    _set_world(st, "W", 8, mates=("m1", "m2", "m3"), every={"m2": 5, "m3": 3})
+    assert companions(st, addr("W"), NOW - 10_000) == frozenset({addr("m1"), addr("m2")})
+    st.close()
+
+
 def test_a_verdict_says_when_its_copies_were_scored_behind_companions(cfg):
     row = {"n": 30, "mean": 0.01, "ev_lower": 0.004, "exit": "lab", "mates": 3}
     crowd = {"followers_1s": 0.0, "gap3_pct": 4.0, "n": 30}

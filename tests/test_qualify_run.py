@@ -1173,3 +1173,38 @@ def test_the_qualify_lab_scores_a_wallet_behind_its_own_companions(tmp_path, mon
         assert any("2 wallets of its own" in r for r in v["reasons"])
     finally:
         st.close()
+
+
+def test_a_wallet_can_be_called_up_for_review_now(tmp_path, capsys):
+    """12 Nov: the rule that finds the set a wallet buys with changed (the analyst's I72) and the two wallets it
+    matters for were qualified, their next review a day away, while the book copies a qualified wallet. `qualify due
+    <wallet>...` puts the review date of a wallet's latest verdict at now: the next qualify lab takes it, the copied
+    and the qualified first as the queue orders them. An older verdict of the wallet is left as it was."""
+    import time
+
+    from snipetech import cli
+
+    _svc_, st, data = _svc(tmp_path)
+    try:
+        for w in ("A", "B"):
+            st.upsert_candidate(w, "solanatracker", {"trades": 300}, NOW - 9000)
+            for age, status in ((7200, "candidate"), (3600, "qualified")):
+                st.put_verdict({"wallet": w, "computed_at": NOW - age, "landing_pos": "+3x", "status": status,
+                                "next_review": NOW + 86400, "reasons": []})  # fmt: skip
+        assert st.candidates(due_before=NOW) == []
+        assert st.review_now(["A", "nobody"], NOW) == 1
+        assert [c["wallet"] for c in st.candidates(due_before=NOW)] == ["A"]
+        old = st._q("SELECT next_review FROM verdicts WHERE wallet='A' ORDER BY computed_at")
+        assert [r[0] for r in old] == [NOW + 86400, NOW]  # the latest verdict only
+        assert st.review_now([], NOW) == 0
+    finally:
+        st.close()
+    assert cli.main(["--db", str(data / "snipetech.db"), "qualify", "due", "B", "nobody"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"due": 1, "asked": 2}
+    st = Store(data / "snipetech.db")
+    try:
+        assert {c["wallet"] for c in st.candidates(due_before=int(time.time()) + 5)} == {"A", "B"}
+    finally:
+        st.close()
+    a = build_parser().parse_args(["qualify", "run", "--max", "50", "--json"])
+    assert a.action == "run" and a.wallets == []

@@ -555,8 +555,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         (fire only once that many group wallets have made a first buy in the coin, this one included: 2 = the second
         known wallet in; the grid tests only the first), "within" (all of them in the last N seconds), "sol" /
         "max_sol" (the followed buy's size), "min_curve" / "max_curve" (SOL in the curve after it). A copy is always
-        scored behind the followed wallet's companions (the wallets its operator buys with in the next transactions
-        of the block: no copy lands between them; the result's copy_companions says how many wallets had some).
+        scored behind the followed wallet's companions (the wallets its operator buys with: in the next transactions
+        of the block, or in its block in changing order, ahead of it as often as behind, which a copier never is; no
+        copy lands among them; the result's copy_companions says how many wallets had some).
         "--copy-position", "+0" with "--per-tx" scores a copy right behind them at the bid that buys the place
         (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",

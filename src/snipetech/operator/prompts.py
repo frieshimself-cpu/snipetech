@@ -38,7 +38,8 @@ How a wallet gets money: `discover` (hourly) fills the candidates table from eve
 one lab at a time) writes a verdict per wallet at the copy landing ("+3x": behind the 3rd buy by others after the
 leader's, counted across slots, where live copies of early-curve leaders landed, 2-4 trades behind and 18-43 % above
 its price; the buys of the leader's own companion wallets, the ones its operator buys with in the next transactions of
-the same block, are not counted and a copy never lands ahead of them: the verdict's reasons say when it has any),
+the same block or in changing order around it, are not counted and a copy never lands ahead of them: the verdict's
+reasons say when it has any),
 scored with the exit the book sends and the wallet's copy plan (copy_plan: the smallest leader buy worth copying, the
 leader's selling style). Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound),
 crowding, relationship and create-slot gates all passed, and so did its own copies on the tape after it was picked

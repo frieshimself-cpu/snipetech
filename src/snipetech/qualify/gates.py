@@ -10,6 +10,7 @@ from typing import Any
 # A wallet's companions (the wallets its operator buys with in the next transactions): the rule lives beside the lab
 # that scores a copy behind them; the names stay here for the gates' readers.
 from ..analysis.companions import (  # noqa: F401
+    COMPANION_AHEAD_SHARE,
     COMPANION_MIN,
     COMPANION_MIN_SOL,
     COMPANION_MOMENTS,
@@ -371,8 +372,8 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
             reasons.append(f"crowded: gap to the 3rd follower {crowd['gap3_pct']:.1f} % > {cfg.max_gap3_pct:g} %")
     mates = int(lab_row.get("mates") or 0) if lab_row else 0
     if mates:  # said with every verdict the lab scored that way: its numbers are behind the operator's own wallets
-        reasons.append(f"buys with {mates} wallet{'s' if mates != 1 else ''} of its own in the next places: a copy "
-                       "is scored behind them")  # fmt: skip
+        reasons.append(f"buys with {mates} wallet{'s' if mates != 1 else ''} of its own in its block (in the next "
+                       "places, or in changing order around it): a copy is scored behind them")  # fmt: skip
     hours = {"qualified": cfg.review_qualified_h, "candidate": cfg.review_candidate_h, "retired": cfg.review_retired_h}[
         status
     ]

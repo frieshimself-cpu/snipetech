@@ -780,7 +780,10 @@ def build_parser() -> argparse.ArgumentParser:
         "qualify",
         "the learning loop's qualify stage: due candidates through the gates at the measured landing (one lab)",
     )
-    sp.add_argument("action", choices=["run"])
+    sp.add_argument("action", choices=["run", "due"],
+                    help="run: one lab over the due candidates; due: call these wallets up for review now (their "
+                         "latest verdict's review date becomes now: the next lab takes them)")  # fmt: skip
+    sp.add_argument("wallets", nargs="*", help="due: the wallets")
     sp.add_argument("--max", type=int, default=None, help="due candidates per lab (default [qualify] max_wallets)")
     sp.add_argument("--early", action="store_true",
                     help="run the lab before [qualify] lab_interval_h (the rotation, when the lab has been idle)")  # fmt: skip
@@ -2607,6 +2610,15 @@ def _main(args) -> int:
             print(f"  {g}: {st['wallets']} wallets, {st['copies']} copies since  mean {st['mean_sol']:+.4f}  "
                   f"lower {st['lower_sol']:+.4f}  win {st['win_rate']:.0%}  {st['wallets_up']} of "
                   f"{st['wallets_judged']} wallets up  (at the verdict: {st['at_verdict_mean_sol']:+.4f})")  # fmt: skip
+        return 0
+    if args.cmd == "qualify" and args.action == "due":
+        from .store import Store
+
+        st = Store(cfg.storage.db_path)
+        try:
+            print(json.dumps({"due": st.review_now(args.wallets, time.time()), "asked": len(args.wallets)}))
+        finally:
+            st.close()
         return 0
     if args.cmd == "qualify":
         from .qualify.run import run_qualify_cli
