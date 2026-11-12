@@ -1624,6 +1624,22 @@ class Service:
             c["cu_used"] = cu
         return cands
 
+    def discover_gmgn(self, client, now: float | None = None) -> list[dict]:
+        """Copy candidates from GMGN: the wallets on its KOL and smart-money lists and the winners of its hottest
+        pump.fun coins, minus the platform wallets we know, each with GMGN's name for it and its profit and win rate
+        over `[gmgn] period`. The wallets GMGN names are named in our labels too (kind `kol` or `wallet`, never over a
+        label somebody else wrote; `[gmgn] label = false` leaves the labels alone). The lab at our landing decides."""
+        from . import gmgn
+
+        gc = self.cfg.gmgn
+        exclude = {a for kind in ("service", "platform", "router") for a in self.store.labels(kind)}
+        rows = gmgn.candidates(client, feed_limit=gc.feed_limit, period=gc.period, stats_top=gc.stats_top,
+                               trending_coins=gc.trending_coins, traders_per_coin=gc.traders_per_coin,
+                               max_wallets=gc.max_wallets, exclude=exclude, now=now, log=self.progress)  # fmt: skip
+        if gc.label:
+            gmgn.label_people(self.store, rows)
+        return rows
+
     async def own_funds_share(self, wallet: str, sample: int = 8) -> float | None:
         """Share of a wallet's recent transactions in which its own SOL or tokens move. A platform's execution
         wallet signs everybody's trades through a program but holds none of the money (share ~0): its 'PnL' is

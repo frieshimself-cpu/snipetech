@@ -1,0 +1,68 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "address": "CcnpRLK4pnA35KjAd2aGZr4GAat16h8oTTKQq9pSpump",
+  "symbol": "FROG",
+  "name": "Frog Coin",
+  "decimals": 6,
+  "total_supply": "1000000000",
+  "circulating_supply": "1000000000",
+  "max_supply": "1000000000",
+  "price": {
+   "price": "0.0000412",
+   "price_1h": "0.0000300",
+   "volume_1h": "182000.5",
+   "buys_1h": 940,
+   "sells_1h": 801,
+   "swaps_1h": 1741,
+   "hot_level": 2
+  },
+  "liquidity": "41200.7",
+  "holder_count": 1820,
+  "creation_timestamp": 1794494800,
+  "open_timestamp": 0,
+  "biggest_pool_address": "6JWo6VtZqN5hs6qsPEjk23VN5YEz8SL76rkuwYabjNyq",
+  "launchpad": "pump",
+  "launchpad_status": 1,
+  "launchpad_progress": 0.61,
+  "launchpad_platform": "Pump.fun",
+  "ath_price": 5.81e-05,
+  "pool": {
+   "pool_address": "6JWo6VtZqN5hs6qsPEjk23VN5YEz8SL76rkuwYabjNyq",
+   "quote_symbol": "SOL",
+   "exchange": "pump",
+   "liquidity": "41200.7"
+  },
+  "dev": {
+   "creator_address": "EoNVqoCkE4cADjRfHP5hHFfuaqEaVUK39MKFzoLnXPv",
+   "creator_token_status": "sell",
+   "top_10_holder_rate": 0.21,
+   "creator_open_count": 14,
+   "cto_flag": 0
+  },
+  "link": {
+   "twitter_username": "frogcoin",
+   "website": "https://frog.example",
+   "telegram": ""
+  },
+  "stat": {
+   "holder_count": 1820,
+   "top_10_holder_rate": 0.21,
+   "dev_team_hold_rate": 0.0,
+   "top_rat_trader_percentage": 0.04,
+   "top_bundler_trader_percentage": 0.11,
+   "fresh_wallet_rate": 0.18
+  },
+  "wallet_tags_stat": {
+   "smart_wallets": 7,
+   "renowned_wallets": 3,
+   "sniper_wallets": 12,
+   "rat_trader_wallets": 2,
+   "bundler_wallets": 9,
+   "whale_wallets": 1,
+   "fresh_wallets": 140,
+   "top_wallets": 0
+  }
+ }
+}

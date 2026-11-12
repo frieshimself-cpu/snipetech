@@ -514,8 +514,27 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """Start a research job in the background; returns the job id.
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
-        stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools and place-bids are allowed; one lab at a time on
-        a machine under 24 GB, two on a bigger one (the refusal names the limit). ["stopped-wallets", "--json"] says
+        stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed; one
+        lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
+        GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
+        seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
+        wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
+        (realized_usd) and win rate over 30 days. ["gmgn", "who", "Cupsey", "--json"] turns a name or X handle into
+        wallets (`exact`: the handle is the name; a search is fuzzy). ["gmgn", "wallet", "<wallet>", "--json"] is one
+        wallet: profit and win rate over 7 and 30 days, all-time profit, how many GMGN users follow it
+        (follow_count: how copied it is), its last 50 trades. ["gmgn", "fees", "<wallet>", "--json"] is what that
+        wallet pays to land its trades: priority_fee and tip_fee per trade and their quartiles over its buys (the
+        owner's rule: if our fee is not higher than theirs, they buy before us; check the unit against one trade
+        of our own fee record first). ["gmgn", "token", "<mint>", "--json"] is a coin's card, its risk numbers and
+        its top holders and traders, each with `tags` (kol, smart_degen) and `coin_tags` (sniper, bundler,
+        rat_trader = insider, creator). ["gmgn", "top-traders", "--json"] is who made the most on the hottest
+        pump.fun coins ("<mint>" after it: on one coin); ["gmgn", "trending", "--json"] and ["gmgn", "new-pairs",
+        "--json"] list coins by launchpad; ["gmgn", "candles", "<mint>", "--resolution", "1m", "--json"] a coin's
+        candles; ["gmgn", "gas", "--json"] the fees GMGN's own users pick; ["gmgn", "created", "<wallet>", "--json"]
+        the coins a wallet launched. "--raw" prints GMGN's answer as it came. The field names come from GMGN's
+        documents and are not checked against a real answer yet: where a number looks wrong, read the same
+        look-up with "--raw" and say so in a note. A wallet found there is a candidate to score in a lab at our
+        landing, never a wallet to copy on GMGN's word. ["stopped-wallets", "--json"] says
         whether two verdict rules cost money: every wallet whose paper numbers pass and that only the crowding rule
         (gap to the 3rd follower over 15 %) or the history rule (its own win rate, mostly) stops, measured in one
         qualify lab on its copies AFTER the verdict that stopped it, pooled by rule ("crowding", "history",

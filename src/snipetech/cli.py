@@ -39,11 +39,12 @@ def _discover_sources(cfg) -> dict:
         VybeSource,
         WinnersSource,
     )
+    from .discovery.sources import GmgnSource
 
     return {"tape": TapeSource, "winners": WinnersSource, "owner": OwnerSource,
             "solanatracker": lambda: SolanaTrackerSource(90), "solanatracker30": lambda: SolanaTrackerSource(30, pages=3),
             "birdeye": lambda: BirdeyeSource(top_coins=cfg.birdeye.top_coins), "coinfirst": CoinFirstBuyersSource,
-            "vybe": VybeSource}  # fmt: skip
+            "vybe": VybeSource, "gmgn": lambda: GmgnSource(every_secs=cfg.gmgn.every_hours * 3600)}  # fmt: skip
 
 
 def _discover(args, cfg) -> int:
@@ -77,6 +78,11 @@ def _discover(args, cfg) -> int:
 
             ctx.vybe = Vybe(budget_requests=ctx.budgets["vybe"], counter=_usage(svc, "vybe"))
             clients.append(ctx.vybe)
+        if os.environ.get("GMGN_API_KEY"):
+            from . import gmgn
+
+            ctx.gmgn = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=_gmgn_mark(lambda: svc.store))
+            clients.append(ctx.gmgn)
         if args.sources:
             table = _discover_sources(cfg)
             sources = [table[n.strip()]() for n in args.sources.split(",") if n.strip()]
@@ -242,6 +248,70 @@ def _usage_from_cfg(cfg, provider: str):
             pass
 
     return count
+
+
+def _gmgn_mark(store_of):
+    """The GMGN client's counter: the weight of every answered request into the month's tally, and the time GMGN last
+    answered (the doctor's row). `store_of` gives the store to write to."""
+
+    def count(weight: int) -> None:
+        from . import gmgn
+
+        with contextlib.suppress(Exception):  # never let bookkeeping break a query
+            gmgn.mark_answered(store_of(), weight)
+
+    return count
+
+
+def _gmgn(args, cfg) -> int:
+    """`snipetech gmgn <action>`: one look-up on GMGN, printed as JSON. A refusal is printed the same way
+    ({"ok": false, "status", "error"}: GMGN's own words, the key scrubbed) and ends with exit code 1; a wrong
+    argument with 2. Reading only: there is no action that trades."""
+    from . import gmgn
+    from .store import Store
+
+    store = Store(cfg.storage.db_path)
+    code = 0
+    try:
+        mark = _gmgn_mark(lambda: store)
+        if args.action == "ping":
+            out = gmgn.ping(rate=cfg.gmgn.weight_per_sec, counter=mark)
+        else:
+            try:
+                client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=mark)
+            except gmgn.GmgnError as exc:
+                out = {"ok": False, "status": None, "error": str(exc)}
+            else:
+                try:
+                    out = gmgn.action(
+                        client,
+                        args.action,
+                        args.target,
+                        period=args.period or cfg.gmgn.period,
+                        limit=args.limit,
+                        stats=args.stats,
+                        interval=args.interval,
+                        resolution=args.resolution,
+                        hours=args.hours,
+                        platforms=args.platform,
+                        tag=args.tag,
+                        order_by=args.order_by,
+                        coins=args.coins,
+                        kinds=args.kinds,
+                        pages=args.pages,
+                        raw=args.raw,
+                        log=_progress,
+                    )
+                except gmgn.GmgnError as exc:
+                    out = {"ok": False, "status": exc.status, "error": str(exc)}
+                except ValueError as exc:
+                    out, code = {"ok": False, "status": None, "error": str(exc)}, 2
+                finally:
+                    client.close()
+    finally:
+        store.close()
+    print(json.dumps(out, indent=None if args.json else 1, default=str))
+    return code or (0 if out.get("ok") else 1)
 
 
 def _out(args, data, render=None) -> None:
@@ -792,7 +862,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--sources",
         default=None,
-        help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe (default: all with a key)",
+        help="comma list: tape,owner,solanatracker,solanatracker30,birdeye,coinfirst,vybe,gmgn (default: all with a "
+        "key)",
     )
     sp = cmd(
         "qualify",
@@ -1082,6 +1153,88 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--frame", default="7d", help="top: time frame")
     sp.add_argument("--limit", type=int, default=20)
     sp.add_argument("--raw", action="store_true", help="print Birdeye's response as it came")
+    sp = cmd(
+        "gmgn",
+        "look something up on GMGN (reading only; it never trades): ping = does the key work; kol, smart-money = the "
+        "wallets on GMGN's lists with name, X handle, profit, win rate; top-traders [mint] = who made the most on a "
+        "coin or on the hottest pump.fun coins; who <name> = a name or X handle to wallets; wallet <address> = its "
+        "profit, win rate, followers and recent trades; fees <address> = what it pays to land its trades; created "
+        "<address> = the coins it launched; token <mint> = card, risk, top holders and traders with tags; trending, "
+        "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds",
+    )
+    sp.add_argument(
+        "action",
+        choices=[
+            "ping",
+            "kol",
+            "smart-money",
+            "top-traders",
+            "who",
+            "wallet",
+            "fees",
+            "created",
+            "token",
+            "trending",
+            "new-pairs",
+            "candles",
+            "gas",
+            "signals",
+            "callouts",
+        ],
+    )
+    sp.add_argument(
+        "target",
+        nargs="?",
+        help="wallet, fees, created: the wallet; token, candles, top-traders: the coin's mint; who: the name or handle",
+    )
+    sp.add_argument("--period", choices=["7d", "30d"], help="window of profit and win rate (default [gmgn] period)")
+    sp.add_argument(
+        "--limit",
+        type=int,
+        help="rows asked of GMGN (lists: 200 at most; holders, traders: 100; a wallet's trades: 50; trending: 100; "
+        "new-pairs: 80 a stage)",
+    )
+    sp.add_argument(
+        "--stats",
+        type=int,
+        default=20,
+        help="kol, smart-money, top-traders: wallets that get their win rate (one request each; 20)",
+    )
+    sp.add_argument("--interval", default="1h", choices=["1m", "5m", "1h", "6h", "24h"], help="trending, top-traders")
+    sp.add_argument(
+        "--resolution",
+        default="1m",
+        choices=["1s", "30s", "1m", "5m", "15m", "1h", "4h", "1d"],
+        help="candles (1s: Pro only, 500 a request)",
+    )
+    sp.add_argument("--hours", type=_hours, help="candles: how far back from now (default: GMGN's own window)")
+    sp.add_argument(
+        "--platform",
+        action="append",
+        help="trending, new-pairs, top-traders: a launchpad as GMGN names it, repeatable (default Pump.fun; also "
+        "pump_mayhem, pump_agent, pool_pump_amm, letsbonk, ...); all = every launchpad",
+    )
+    sp.add_argument(
+        "--tag",
+        help="token, top-traders: only wallets with this GMGN tag (smart_degen, renowned = KOLs, sniper, "
+        "rat_trader = insiders, bundler, dev, fresh_wallet)",
+    )
+    sp.add_argument(
+        "--order-by",
+        dest="order_by",
+        help="token: traders by profit (default), unrealized_profit, buy_volume_cur, sell_volume_cur; trending: "
+        "volume, swaps, marketcap, smart_degen_count, ...",
+    )
+    sp.add_argument("--coins", type=int, default=5, help="top-traders without a mint: how many of the hottest coins")
+    sp.add_argument(
+        "--type",
+        dest="kinds",
+        action="append",
+        help="new-pairs: a stage (new_creation, near_completion, completed); signals: a signal number (12 "
+        "smart-money buy, 20 KOL buy, 6 price spike, 10 bundlers selling); repeatable",
+    )
+    sp.add_argument("--pages", type=int, default=2, help="fees: pages of 50 trades read (2)")
+    sp.add_argument("--raw", action="store_true", help="print GMGN's answer as it came (to check its field names)")
 
     sp = cmd("remote", "operate snipetech on your server through its ops endpoint", json_flag=False)
     sp.add_argument("--url", default=os.environ.get("SNIPETECH_OPS_URL"), help="ops URL ($SNIPETECH_OPS_URL)")
@@ -1201,6 +1354,9 @@ async def doctor(svc: Service) -> dict:
             out["vybe"] = {"ok": False, "detail": f"VYBE_API_KEY set but the API answered: {exc}"}
     else:
         out["vybe"] = {"ok": False, "detail": "VYBE_API_KEY not set (optional: free 30-day leaderboard)"}
+    from . import gmgn
+
+    out["gmgn"] = await asyncio.to_thread(gmgn.doctor_row, svc.store)
     out["config"] = {
         "ok": bool(cfg.path and cfg.path.exists()),
         "detail": str(cfg.path)
@@ -2271,6 +2427,8 @@ def _main(args) -> int:
         return 0
     if args.cmd == "discover":
         return _discover(args, cfg)
+    if args.cmd == "gmgn":
+        return _gmgn(args, cfg)
     if args.cmd == "tx":
         svc = Service(cfg)
 

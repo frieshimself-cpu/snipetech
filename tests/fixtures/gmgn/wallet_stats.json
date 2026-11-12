@@ -1,0 +1,34 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "realized_profit": "15234.52",
+  "unrealized_profit": "-320.1",
+  "winrate": 0.62,
+  "total_cost": "48000.0",
+  "buy_count": 140,
+  "sell_count": 131,
+  "pnl": 0.3174,
+  "common": {
+   "avatar": "",
+   "name": "Cupsey",
+   "ens": "",
+   "tag": "kol",
+   "tags": [
+    "kol",
+    "smart_degen"
+   ],
+   "twitter_username": "cupseyy",
+   "twitter_name": "Cupsey",
+   "followers_count": 251000,
+   "is_blue_verified": true,
+   "follow_count": 18234,
+   "remark_count": 4021,
+   "created_token_count": 0,
+   "created_at": 1711929600,
+   "fund_from": "Coinbase",
+   "fund_from_address": "7RaT4qX2jwLHTxuPUpm5rXfbZHbCtXihfKugoQUegJdk",
+   "fund_amount": "12.5"
+  }
+ }
+}

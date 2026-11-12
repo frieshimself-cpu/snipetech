@@ -65,7 +65,7 @@ DISCOVER_QUIET_H = 3.0  # no discovery for this long and nothing waiting: the pi
 STALE_VERDICT_DAYS = 3.0
 FAILED_BACKOFF_SECS = 6 * 3600  # a unit whose last job failed waits this long before it is tried again
 LOST_RETRY_SECS = 30 * 60  # a unit whose job vanished without an exit code (a deploy) runs again after this
-DISCOVER_SOURCES = ("tape", "winners", "owner", "solanatracker", "solanatracker30", "birdeye", "coinfirst", "vybe")
+DISCOVER_SOURCES = ("tape", "winners", "owner", "solanatracker", "solanatracker30", "birdeye", "coinfirst", "vybe", "gmgn")
 
 SEARCH_KEY = "research:search"
 DIGEST_KEY = "research:digest"
@@ -81,7 +81,8 @@ STATUS_WORDS = {"qualified": ("passes every check", "passed every check"),
                 "candidate": ("needs more evidence", "need more evidence"), "retired": ("dropped", "dropped")}  # fmt: skip
 SOURCE_NAMES = {"tape": "our tape", "winners": "winners on our tape", "owner": "your list",
                 "coinfirst": "first buyers of runners", "birdeye": "Birdeye",
-                "solanatracker": "SolanaTracker 90 days", "solanatracker30": "SolanaTracker 30 days", "vybe": "Vybe"}  # fmt: skip
+                "solanatracker": "SolanaTracker 90 days", "solanatracker30": "SolanaTracker 30 days", "vybe": "Vybe",
+                "gmgn": "GMGN"}  # fmt: skip
 
 
 # -- what is running ----------------------------------------------------------------------------------------------------

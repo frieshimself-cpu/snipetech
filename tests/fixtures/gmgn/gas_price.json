@@ -1,0 +1,19 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "last_block": 380000000,
+  "auto": "0.0012",
+  "auto_mev": "0.003",
+  "low": "1",
+  "average": "1",
+  "high": "1",
+  "low_prio_fee_mixed": "0.0005",
+  "average_prio_fee_mixed": "0.0012",
+  "high_prio_fee_mixed": "0.004",
+  "low_estimate_time": 6,
+  "average_estimate_time": 3,
+  "high_estimate_time": 1,
+  "native_token_usd_price": 162.4
+ }
+}

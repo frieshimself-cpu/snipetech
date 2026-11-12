@@ -1,0 +1,45 @@
+{
+ "code": 0,
+ "message": "ok",
+ "data": {
+  "coins": [
+   {
+    "address": "CcnpRLK4pnA35KjAd2aGZr4GAat16h8oTTKQq9pSpump",
+    "name": "Cupsey Coin",
+    "symbol": "CUPSEY",
+    "mcp": "41200",
+    "holder_count": 1820
+   }
+  ],
+  "wallets": [
+   {
+    "address": "FGomXMFp4WSaZefwmt2UTsLmRZPLPKSqLS6gex8m8jwb",
+    "chain": "sol",
+    "twitter_username": "cupseyy_fan",
+    "wallet_tags": []
+   },
+   {
+    "address": "Dc4gM8pJBGrNNxBJxGBj5DEqvSWAER1bRwb18xw1Ku2D",
+    "chain": "sol",
+    "twitter_username": "Cupseyy",
+    "wallet_tags": [
+     "kol",
+     "smart_degen"
+    ]
+   },
+   {
+    "address": "4ZrJ6r76hRgMXzSaU8C64ocRafQgVY3im2iKgRivDBKd",
+    "chain": "sol",
+    "twitter_username": "cupseyy",
+    "wallet_tags": [
+     "kol"
+    ]
+   },
+   {
+    "address": "0x52908400098527886E0F7030069857D2E4169EE7",
+    "chain": "eth",
+    "twitter_username": "cupseyy"
+   }
+  ]
+ }
+}

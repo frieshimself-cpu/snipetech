@@ -363,6 +363,22 @@ class SolanaTrackerConfig:
 
 
 @dataclass
+class GmgnConfig:
+    """GMGN's query API (docs/research/2026-11-12-gmgn-api.md): reading only. The key is GMGN_API_KEY in the
+    environment, never in this file."""
+
+    every_hours: float = 1.0  # the discover stage asks GMGN at most this often, however often it runs
+    weight_per_sec: float = 10.0  # what one job spends of the plan's rate (Pro: 50 a second, shared by key and IP)
+    feed_limit: int = 200  # newest trades read from each of GMGN's lists (KOL, smart money): its maximum
+    period: str = "30d"  # the window of a wallet's profit and win rate: 7d or 30d
+    stats_top: int = 40  # candidates that get their own statistics (win rate, coins traded, name): one request each
+    trending_coins: int = 5  # hottest pump.fun coins whose top traders become candidates (0: none)
+    traders_per_coin: int = 50
+    max_wallets: int = 300  # candidates a run brings at most
+    label: bool = False  # off until the names are checked against real answers (12 Nov): name the wallets GMGN names: kind `kol` for its KOLs, `wallet` for the other named ones
+
+
+@dataclass
 class AutotuneConfig:
     """What the strategist (`snipetech strategist run`, daily 05:10 UTC once 20 new round trips arrived) may change by itself, and how far.
     A key not in `bounds` is never touched; a proposal outside them becomes a question on Telegram instead of a
@@ -504,6 +520,7 @@ class Config:
     operator: OperatorConfig = field(default_factory=OperatorConfig)
     birdeye: BirdeyeConfig = field(default_factory=BirdeyeConfig)
     solanatracker: SolanaTrackerConfig = field(default_factory=SolanaTrackerConfig)
+    gmgn: GmgnConfig = field(default_factory=GmgnConfig)
     resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     qualify: QualifyConfig = field(default_factory=QualifyConfig)
     measure: MeasureConfig = field(default_factory=MeasureConfig)

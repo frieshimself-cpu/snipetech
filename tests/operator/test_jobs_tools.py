@@ -713,3 +713,37 @@ def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolb
     # the owner, 12 Nov: "we cant do one person tests per day has to be like 100 per day"
     assert "MANY TESTS AT ONCE" in text and "ten to twenty" in text and '"--by-wallet"' in text
     assert '"--top", "40"' in text and "a hundred tests a day" in text
+
+
+def test_the_agents_are_told_what_gmgn_gives_and_that_it_only_reads(toolbox):
+    """12 Nov, the owner bought GMGN's data ("you need to find these people... look at the fees other people are
+    using"). The tool lists gmgn among the allowed commands and says, action by action, what comes back: who the
+    known wallets are, what a wallet earns and pays, who holds a coin; and that nothing there trades."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert "place-bids and gmgn are allowed" in text
+    for action in ('"kol"', '"smart-money"', '"who", "Cupsey"', '"wallet", "<wallet>"', '"fees", "<wallet>"',
+                   '"token", "<mint>"', '"top-traders"', '"trending"', '"gas"'):  # fmt: skip
+        assert f'["gmgn", {action}, "--json"]' in text, action
+    assert "follow_count" in text and "priority_fee" in text and "tip_fee" in text and "coin_tags" in text
+    assert "GMGN only reads" in text and "never trades" in text
+    assert "not checked against a real answer yet" in text  # the field names come from GMGN's documents
+
+
+def test_a_gmgn_look_up_may_be_repeated_after_ten_minutes_not_six_hours(jobs):
+    """A lab's numbers do not change in six hours, so the same lab is not run twice; GMGN's lists change by the
+    minute. The same look-up is refused for ten minutes (the agent reads the log it has) and allowed after."""
+    now = 1_000_000
+
+    def done(jid, argv, ago):
+        meta = {"id": jid, "argv": argv, "started": now - ago - 5, "ended": now - ago, "exit_code": 0, "running": False}
+        (jobs.ops.data / "jobs" / f"{jid}.json").write_text(json.dumps(meta))
+
+    done("g1", ["gmgn", "kol", "--json"], 5 * 60)
+    with pytest.raises(PermissionError, match="already ran"):
+        jobs.start(["gmgn", "kol", "--json"], now=now)
+    assert jobs.start(["gmgn", "smart-money", "--json"], now=now)["id"]  # another look-up is another job
+    assert jobs.start(["gmgn", "kol", "--json"], now=now + 6 * 60)["id"]  # eleven minutes after the first
+    done("l1", ["lab", "--latency", "0"], 20 * 60)
+    with pytest.raises(PermissionError, match="already ran"):
+        jobs.start(["lab", "--latency", "0"], now=now)  # a lab keeps its six hours
