@@ -198,11 +198,17 @@ class Trigger:
     # launches (`label --kind bundler`); one crew of twelve bundles 7 launches a day whose buyers a block later had a
     # median of +21 % a minute on, on 36 days of bought history. "" = any launch, the rule every hunt before was
     bots: str = ""
+    # kol (12 Nov, the recipe of the copy bot 6Z91: its copies are in coins 13 s to 7 min old): the followed buy comes
+    # at least this many seconds after the coin's launch; a followed wallet's first buy in a younger coin is passed
+    # over, and the rule fires on the next followed wallet's first buy that is old enough. 0 = any age; `max_age` is
+    # the other end. A coin whose launch the tape does not hold has no age and gives no moment
+    min_age: float = 0.0
 
     def label(self) -> str:
         base = self._label()
         extra = (
             ([f"by a labeled dev ({self.creators})"] if self.creators else [])
+            + ([f"at least {self.min_age:g}s after launch"] if self.min_age else [])
             + ([f"within {self.max_age:g}s of launch"] if self.max_age else [])
             + (["normal coins"] if self.plain else [])
             + (["not a create bundle"] if self.solo else [])
@@ -300,7 +306,7 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
     "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
-    "kol": ("sol", "group", "max_age", "plain", *KOL_GATES),
+    "kol": ("sol", "group", "min_age", "max_age", "plain", *KOL_GATES),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew", "bots"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
@@ -309,7 +315,8 @@ TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
 HUNT_CANNOT = ("OKTech hunt cannot skip mayhem or holder-reward coins (plain), see the create transaction (solo) or "
                "limit the coin's age beyond its own window (max_age)")  # fmt: skip
 TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
-    "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "max_buyers": (0, 200),
+    "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "min_age": (0, 600),
+    "max_buyers": (0, 200),
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
     "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000),
@@ -405,6 +412,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"max_curve ({trig.max_curve:g}) is under min_curve ({trig.min_curve:g}): no coin fits")
     if trig.max_mcap and trig.max_mcap < trig.min_mcap:
         raise ValueError(f"max_mcap ({trig.max_mcap:g}) is under min_mcap ({trig.min_mcap:g}): no coin fits")
+    if trig.max_age and trig.max_age < trig.min_age:
+        raise ValueError(f"min_age ({trig.min_age:g} s) is past max_age ({trig.max_age:g} s): no coin fits")
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
@@ -530,7 +539,8 @@ def in_parts(exits: Sequence[ExitParams], parts: int, secs: float) -> list[ExitP
     """Every exit of a lab selling out in `parts` equal parts `secs` apart (`ExitParams.sell_parts`: the owner's
     "slowly selling out" at size, 12 Nov 2026). One part gives the exits back as they are. The same moments under the
     same exits with and without parts say what selling in parts is worth at a size; it is research only (no live
-    sniper is sent it)."""
+    sniper is sent it). An exit that already sells in parts on a clock of its own (a recipe's: `RECIPES`) is left out:
+    every exit of such a lab sells in the parts asked for, and a recipe's exit is scored by the lab without them."""
     parts = int(parts)
     if parts <= 1:
         return list(exits)
@@ -538,7 +548,7 @@ def in_parts(exits: Sequence[ExitParams], parts: int, secs: float) -> list[ExitP
         raise ValueError(f"--sell-parts takes 2 to {MAX_SELL_PARTS} parts, not {parts}")
     if not 0 <= float(secs) <= MAX_SELL_PART_SECS:
         raise ValueError(f"--sell-part-secs takes 0 to {MAX_SELL_PART_SECS:g} s apart, not {float(secs):g}")
-    return [replace(ex, sell_parts=parts, sell_part_secs=float(secs)) for ex in exits]
+    return [replace(ex, sell_parts=parts, sell_part_secs=float(secs)) for ex in exits if ex.sell_parts <= 1]
 
 
 # Where a MIG buy lands (`mig_entry`; no live MIG fill exists yet, playbook fact 8): never in the migration's own slot,
@@ -1081,6 +1091,10 @@ def exit_set() -> list[ExitParams]:
     for frac in (0.5, 1.0):
         out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False,
                               migration_sell_frac=frac, migration_sell_delay=0.1))  # fmt: skip
+    # the clock the copy bot 6Z91 sells on, as one exit (`RECIPES`): research only, no sniper is sent it
+    # (the 6Z91 recipe's own exit, sold in parts, is not in this set: no sniper can run it yet, and a rule the search
+    # froze with it would hold that rule's one forward record with an exit that can never go live. `--recipe` scores
+    # it on the recipe's rules, `recipe_exits`; 12 Nov)
     return out + ladder_exits()
 
 
@@ -1106,6 +1120,134 @@ def ladder_exits() -> list[ExitParams]:
     hold = {"momentum_hold": 2.0, "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.1}
     out.append(ExitParams(take_profit=0.3, stop_loss=0.2, max_hold_secs=120, sell_on_dev_sell=False, **hold))
     out.append(ExitParams(tp_stages=two, stop_loss=0.15, trailing_stop=0.18, **base, **hold))
+    return out
+
+
+# --- recipes: what a winning bot does, as rules a lab or a freeze is asked for by name -----------------------------
+#
+# The owner, 12 Nov 2026: "we cant copy a wallet that is copying because we are filled above, we can learn from it
+# tho". A recipe is a bot's playbook (docs/research/2026-11-12-winning-bots.md) written in the lab's own knobs: the
+# wallets it follows (our label groups: the bot's own list is not known), the coins it picks, its size, its bid and
+# its exit. It follows the wallets the bot follows, never the bot: no trigger here names a group the bots are in
+# (6Z91 is labelled `smart`, Fhbh1D and the other winners `cand`). One entry a recipe; `lab --recipe NAME` and
+# `paper freeze --recipe NAME` read this table and nothing else. What each number is measured on, and what the
+# recipe covers of the bot's own buys: docs/research/2026-11-12-recipe-6z91.md.
+
+
+@dataclass(frozen=True)
+class Recipe:
+    name: str
+    what: str  # one or two plain sentences: whose rules, what they follow, what is not runnable live
+    triggers: tuple[Trigger, ...]
+    exit: ExitParams  # the bot's own exit: scored next to the search set in a lab, the one exit of a freeze
+    buy_sol: float  # the bot's size: the lab's and the freeze's, unless told another (--buy)
+    bid_sol: float  # the bot's bid on a buy: charged once on every buy, unless told another (--buy-bid)
+
+
+# The clock 6Z91 sells its COPIES on, read off its own trades (7 days to 12 Nov 18:00 UTC; 1,689 one-buy trades
+# behind another wallet's buy in the same block, 1,638 of them sold in pieces): 30 % of the coins 3.2 s after the
+# buy, then 17 % at 5.8, 8.8, 11.3 and 13.7 s and the rest at 16.3 s (medians). On average 19 % of the coins are sold
+# by 3 s, 32 % by 5 s, 58 % by 10 s, 80 % by 15 s, 94 % by 20 s. As one exit: 30 % at 3 s, then five equal parts of
+# 14 % every 3 s, everything out by 18 s. A timer is priced on the tape's whole-second clock, so "3 s" sells 3 to 4 s
+# after the buy. No flat line: it dropped a copy whole about 2 s after the buy on 32 of the 1,689 (2 %).
+R6Z91_EXIT = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=3.0, sell_on_dev_sell=False, sell_parts=6,
+                        sell_part_secs=3.0, first_part=0.3)  # fmt: skip
+# The clock the playbook's one line gave for the whole bot ("40 % within 2 seconds, the rest in pieces every 3
+# seconds, everything out by 20 seconds, drop everything at 2 seconds when the price has not moved"). On the tape that
+# is the bot's launch snipes and its buys 1 to 4 blocks late (first sell at 1.7 s, 40 % or everything; 36 % and
+# 26 % of those trades are dropped whole 1.5 to 3 s after the buy), not its copies. "Not moved": the position is
+# worth less than R6Z91_FLAT of its cost when the first part is due. A position nobody traded behind is worth 0.975
+# (the fee both ways), the bot's drops sit there (median 0.976 on 855 drops; 0.985 where it sold a piece instead), so
+# 0.99 is "the price is under 1.5 % above our buy". It is a weak reading of the bot: the line sorts 58 % of its 1,635
+# first sells at 1.5 to 3 s the way the bot did (50 % is a coin toss); the task, not the price, decides its drops.
+R6Z91_FLAT = 0.99
+R6Z91_QUICK_EXIT = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=2.0, sell_on_dev_sell=False, sell_parts=7,
+                              sell_part_secs=3.0, first_part=0.4, flat_below=R6Z91_FLAT)  # fmt: skip
+# Fhbh1D sells everything at once 1 to 1.5 s after its buy (67 % of its trades are one sale): a 1 s timer, which on
+# the tape's whole-second clock sells 1 to 2 s after the buy
+FHBH1D_EXIT = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=1.0, sell_on_dev_sell=False)
+# The coin's market cap in SOL after the FOLLOWED buy, which is what a lab trigger gates on. The playbook's 57 to 122
+# SOL is the cap after the bot's OWN buy (25 to 75 % of its 1,741 copies on the curve in 7 days: 57.6 to 122.7); its
+# 2 to 3 SOL lift the cap by a fifth. After the buy it follows the same copies stand at 47.6 to 106.1 (behind our
+# wallets, 1,058 copies), so that is the band here
+R6Z91_MCAP = (47.0, 106.0)
+# "A buy of 1 SOL" on the tape: a wallet that types 1 SOL puts 0.988 SOL into the curve (pump.fun's 1.25 % comes off
+# it), 0.978 through a terminal that takes 1 % more, down to 0.958. A floor of 1.0 passes none of them: of the buys
+# 6Z91 followed, 155 put 0.95 to 1.0 SOL into the curve and 39 put 1.0 to 1.05. A typed 3 SOL is 2.93 to 2.96
+R6Z91_LEAD_SOL = (0.95, 3.0)
+
+
+def _copy_half(group: str) -> Trigger:
+    """6Z91's copy half behind one of our groups: a followed wallet's first buy of 1 to 3 SOL (as typed: R6Z91_LEAD_SOL
+    into the curve) in a pump.fun coin 13 s to 7 min old, at a market cap of R6Z91_MCAP after that buy."""
+    return Trigger("kol", sol=R6Z91_LEAD_SOL[0], max_sol=R6Z91_LEAD_SOL[1], group=group, min_age=13.0, max_age=420.0,
+                   min_mcap=R6Z91_MCAP[0], max_mcap=R6Z91_MCAP[1])  # fmt: skip
+
+
+# the bots' bigger tasks: any first buy of a typed 1 SOL or more by a big wallet (group `big`: Cupsey's and Gake's
+# wallets among them; Decu, Slingor and cap are not in it), no age or market-cap gate
+_BIG_TASK = Trigger("kol", sol=R6Z91_LEAD_SOL[0], group="big")
+# `trader` next to `wallet`: 1,093 of the bot's 1,117 copies behind our wallets in 7 days are behind names the tracker
+# calls traders, and group `wallet` also fires behind its faucets (72 of its 389 moments in 24 h; the bot took none)
+_R6Z91_FAMILY = (_copy_half("wallet"), _copy_half("trader"), _copy_half("big"), _copy_half("kol"), _BIG_TASK)
+_NOT_THE_BOT = "It follows the wallets the bot follows (our label groups: its own list is not known), never the bot."
+RECIPES: dict[str, Recipe] = {r.name: r for r in (
+    Recipe("6z91",
+           "6Z91's copy half: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s to 7 min old at a market cap "
+           "of 47 to 106 SOL after that buy (57 to 122 after the bot's own), behind our tracked wallets (all of them, "
+           "and the traders among them), the big wallets and the KOLs, and the big wallets without the age and cap "
+           "gates; 2 SOL a buy at a 0.03 SOL bid; the exit it runs on its copies: 30 % sold at 3 s, "
+           "the rest in five pieces every 3 s, everything out by 18 s. " + _NOT_THE_BOT,
+           _R6Z91_FAMILY, R6Z91_EXIT, 2.0, 0.03),
+    Recipe("6z91-quick",
+           "The same triggers as 6z91 with the faster clock the bot runs on its launch snipes and late buys, not on "
+           "its copies (it is what the playbook's one line described): 40 % sold at 2 s, the rest in six pieces "
+           "every 3 s, everything out by 20 s, the whole position at 2 s when it is worth under 0.99 of its cost "
+           "(the price has not moved). For comparison with 6z91 on the same moments. " + _NOT_THE_BOT,
+           _R6Z91_FAMILY, R6Z91_QUICK_EXIT, 2.0, 0.03),
+    Recipe("6z91-big",
+           "6Z91's bigger tasks behind the big wallets (it buys 5 to 20 SOL behind Cupsey, Decu, Gake's side wallet "
+           "and Slingor at 0.2 to 3.4 SOL of bid): 10 SOL a buy at a 0.3 SOL bid, the same exit. " + _NOT_THE_BOT,
+           (_BIG_TASK,), R6Z91_EXIT, 10.0, 0.3),
+    Recipe("fhbh1d-big",
+           "Fhbh1D's bigger setting (4 to 11 SOL behind Cupsey, Decu and cap at a 0.35 SOL bid; +43.9 SOL on 53 buys "
+           "in 7 days before bids): 5 SOL a buy behind the big wallets at a 0.35 SOL bid, everything sold at once 1 "
+           "to 2 s after the buy. " + _NOT_THE_BOT,
+           (_BIG_TASK,), FHBH1D_EXIT, 5.0, 0.35),
+)}  # fmt: skip
+
+
+def recipe(name: str) -> Recipe:
+    """The recipe of that name; a ValueError naming the ones there are for any other."""
+    try:
+        return RECIPES[str(name)]
+    except KeyError:
+        raise ValueError(f"no recipe is called {name!r}: the recipes are {', '.join(RECIPES)}") from None
+
+
+def recipe_exits(rec: Recipe) -> list[ExitParams]:
+    """The exits a recipe's lab scores: the search set, and the recipe's own exit when the set does not hold it."""
+    exits = exit_set()
+    return exits if rec.exit in exits else [*exits, rec.exit]
+
+
+def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams) -> list[dict]:
+    """One exit of a lab on every trigger, whichever exit the ranking picks for it (`rank` shows a trigger's best exit
+    only): how a recipe's own exit did. Per trigger, in the lab's order: its moments, and the exit's trades, mean,
+    lower bound, share of wins and total on all of them (`all`) and on the newer 40 % the ranking judges on
+    (`newer`). A moment the exit was left out on (`exit_pnls`) is not counted."""
+    k = data["exits"].index(ex)
+    conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
+
+    def stats(part: list[dict]) -> dict[str, Any]:
+        st = summarize([r["pnl"][k] for r in part if r["pnl"][k] is not None], conf, samples)
+        return {x: st[x] for x in ("n", "mean", "ev_lower", "win_rate", "total") if x in st}
+
+    out = []
+    for ti, trig in enumerate(data["triggers"]):
+        rs = sorted((r for r in data["rows"] if r["trigger"] == ti), key=lambda r: r["ts"])
+        out.append({"trigger": trig.label(), "exit": ex.label(), "moments": len(rs), "all": stats(rs),
+                    "newer": stats(rs[int(len(rs) * TRAIN_SHARE):])})  # fmt: skip
     return out
 
 
@@ -1163,7 +1305,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         return None  # a launch-type rule buys only its own launchpad's coins (OKTech's snipers: pump.fun only)
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
-    if trig.max_age and launch is None:
+    if (trig.max_age or trig.min_age) and launch is None:
         return None
     if trig.kind == "momentum":
         return _momentum(trig, path, dev)
@@ -1215,6 +1357,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             and first
             and path.users[i] in group
             and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS
+            and (not trig.min_age or path.ts[i] >= launch.ts + trig.min_age)  # the coin is old enough
             and _kol_gates(trig, path, i, known_at)
         ):
             while (  # a copy cannot land inside the team's bundle: behind its last back-to-back buy in the block
@@ -1243,7 +1386,7 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
     sniper copies its own first buy, so the qualify lab gives each wallet its own moment in a coin."""
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return []
-    if trig.max_age and launch is None:
+    if (trig.max_age or trig.min_age) and launch is None:
         return []
     dev = launch.deployers() if launch is not None else set()
     group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
@@ -1257,6 +1400,8 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
         if not path.is_buy[i] or u in dev or u in seen:
             continue
         seen.add(u)
+        if trig.min_age and path.ts[i] < launch.ts + trig.min_age:
+            continue  # its first buy came while the coin was too young
         if u in group and path.quote[i] >= floor:
             out.append(i)
     return out

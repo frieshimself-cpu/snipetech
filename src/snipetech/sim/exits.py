@@ -72,6 +72,16 @@ class ExitParams:
     # only: no live sniper is sent it (oktech.validate_exit).
     sell_parts: int = 1
     sell_part_secs: float = 0.0
+    # The clock the copy bot 6Z91 sells on (12 Nov 2026, docs/research/2026-11-12-recipe-6z91.md: 30 % of the coins
+    # about 3 s after a copy, 40 % about 2 s after a launch snipe, the rest in pieces every 3 s, and on its launch
+    # snipes often everything at once at 2 s). Both fields shape the sale in parts and do nothing without `sell_parts`
+    # above 1; research only, like the parts themselves (lab.RECIPES holds the exits made of them).
+    # `first_part`: the first part sells this share of what is left and the other parts share the rest equally
+    # (0 = every part the same). `flat_below`: when the parts are due and what is held is worth less than this
+    # multiple of its cost (value after the sell fee over cost with the buy fee, the units of every stop: a position
+    # nobody traded behind is worth about 0.975), everything goes in one sale named "flat" (0 = off).
+    first_part: float = 0.0
+    flat_below: float = 0.0
     # OKTech's ladders (the owner, 12 Nov 2026: "partially sell but hold some"). `tp_stages`: (gain, share of the
     # ORIGINAL position) pairs in rising gain, e.g. ((0.2, 0.25), (0.5, 0.25), (1.0, 0.25)): each stage sells its share
     # when what is held is first worth that gain on its cost. `sl_stages`: (loss, share of the original) pairs in rising
@@ -95,6 +105,10 @@ class ExitParams:
     def __post_init__(self) -> None:
         object.__setattr__(self, "tp_stages", stage_pairs(self.tp_stages, "tp_stages"))
         object.__setattr__(self, "sl_stages", stage_pairs(self.sl_stages, "sl_stages"))
+        if not 0 <= float(self.first_part or 0) < 1:  # NaN fails here too
+            raise ValueError(f"first_part is the share the first part sells, 0 to under 1, not {self.first_part!r}")
+        if not 0 <= float(self.flat_below or 0) < float("inf"):
+            raise ValueError(f"flat_below is a multiple of the position's cost, 0 or more, not {self.flat_below!r}")
 
     def tp_ladder(self) -> list[tuple[float, float]]:
         """Every take-profit stage in rising gain: the ladder's, and the single take-profit as one more (a share of 1
@@ -142,6 +156,11 @@ class ExitParams:
             parts.append(f"watch{self.watch_secs:g}s")
         if self.sell_parts > 1:
             parts.append(f"parts{int(self.sell_parts)}/{self.sell_part_secs:g}s")
+            # first40%: the first part sells 40 %; flat<0.99x: one sale when worth under 0.99 of the cost by then
+            if self.first_part > 0:
+                parts.append(f"first{self.first_part:.0%}")
+            if self.flat_below > 0:
+                parts.append(f"flat<{self.flat_below:g}x")
         if self.momentum_hold > 0:
             # MOM2%/s@3s<30s-10%: waits while up 2 % a second over 3 s, 30 s at most, or until 10 % under the high
             drop = f"-{self.momentum_peak_drop:.0%}" if self.momentum_peak_drop > 0 else ""
@@ -488,7 +507,10 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
     exits.
 
     With `ex.sell_parts` above 1 the sale that sells everything left goes in that many equal parts, `ex.sell_part_secs`
-    apart (the class's account of it): the later ones are named "part" in the result's `exit_reason`."""
+    apart (the class's account of it): the later ones are named "part" in the result's `exit_reason`. With
+    `ex.first_part` the first of them sells that share and the others share the rest; with `ex.flat_below` the parts
+    are dropped for one sale named "flat" when what is held is worth less than that multiple of its cost at the state
+    the first part is priced on."""
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
@@ -651,13 +673,21 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         # tape has ended), a slot-clock step further on
         why, at, at_abs, slot, _all = sales.pop()
         n, step = int(ex.sell_parts), max(0.0, float(ex.sell_part_secs))
+        first = float(ex.first_part)
+        # the price has not moved (`flat_below`): what is left, valued where the first part would be priced, against
+        # its share of the cost (`v` and `cost` are those of the last phase above: what no stage sold)
+        if ex.flat_below > 0 and float(v[min(at_abs, path.n - 1) - p.e]) < cost * float(ex.flat_below):
+            n = 0
+            sales.append(("flat", at, at_abs, slot, 1.0))
         t0 = float(path.ts[min(at_abs, path.n - 1)])
         for k in range(n):
             state = at_abs
             if k and step > 0:
                 state = max(at_abs, min(int(np.searchsorted(path.ts, t0 + k * step, side="right")) - 1, path.n - 1))
             lands_in = slot + int(np.floor(k * step / p.slot_secs + 1e-9))
-            sales.append(("part" if k else why, at + k * step, state, lands_in, 1.0 / (n - k)))
+            # a first part of its own size, then the rest in equal parts: each a share of what is held then
+            share = first if first > 0 and not k else 1.0 / (n - k)
+            sales.append(("part" if k else why, at + k * step, state, lands_in, share))
 
     proceeds, held, tx_costs = 0.0, p.held, p.fixed_cost
     for _why, _at, at_abs, _slot, share in sales:

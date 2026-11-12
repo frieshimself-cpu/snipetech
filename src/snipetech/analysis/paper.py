@@ -60,6 +60,7 @@ from .lab import (
     TRIGGERS,
     WATCH_SECS,
     WATCHED_KINDS,
+    Recipe,
     Trigger,
     _crew_uris,
     _fire,
@@ -134,10 +135,12 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     A copy's exit did not change, nor did its id."""
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
     # sell (7 Nov), selling out in parts (12 Nov: one part, one sale), OKTech's ladders and momentum hold (12 Nov: no
-    # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults)
+    # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults), the first part's own
+    # size and the flat line of a sale in parts (12 Nov, the 6Z91 recipe: equal parts, no flat line)
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0,
              "sell_parts": 1, "sell_part_secs": 0.0, "tp_stages": [], "sl_stages": [], "momentum_hold": 0.0,
-             "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.0}  # fmt: skip
+             "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.0,
+             "first_part": 0.0, "flat_below": 0.0}  # fmt: skip
 
     def unset(k: str, v) -> bool:
         # a ladder is a tuple in the lab's exit and a list in a rule's record: the one value
@@ -149,9 +152,11 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)
     # and a KOL rule's consensus, size and market-cap gates (10 Nov: unset, the first known wallet in at any size)
     # and a hunt's wallet group (11 Nov: "", any launch) and a KOL rule's market cap past the curve (12 Nov: unset)
+    # and a KOL rule's smallest coin age (12 Nov, the 6Z91 recipe: 0, any age)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
-                  "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0}  # fmt: skip
+                  "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0,
+                  "min_age": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     extra: dict[str, Any] = {"buy_bid_sol": float(buy_bid_sol)} if float(buy_bid_sol or 0) > 0 else {}
     if asked:
@@ -180,6 +185,13 @@ def sid_of(strategy: dict, **over) -> str:
     s = strategy | over
     return strategy_id(s["trigger"], s["exit"], str(s["position"]), int(s["latency"]), s["buy_sol"], bid_of(s),
                        bool(s.get("landing_asked")))  # fmt: skip
+
+
+def rule_costs(strategy: dict) -> Costs:
+    """What a frozen rule's trades are charged: its cost of a transaction, and the bid it was frozen with
+    (`bid_of`, paid once on every buy: a recipe's, `freeze`), none on a rule frozen without one."""
+    return Costs(per_tx_lamports=float(strategy["per_tx_sol"]) * LAMPORTS,
+                 entry_bid_lamports=bid_of(strategy) * LAMPORTS)  # fmt: skip
 
 
 def copy_landing(store: Store, cfg: Config, now: float) -> str:
@@ -449,12 +461,14 @@ def _sells_as_live(strategy: dict) -> bool:
         return False
 
 
-def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0, buy_sol: float = 0.2,
+def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0,
+           buy_sol: float | None = None,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
            hours: float | None = None, per_tx_source: str | None = None,
-           tape: Callable[[], Store] | None = None, copy_position: str | None = None, buy_bid_sol: float = 0.0,
-           sell_parts: tuple[int, float] | None = None) -> dict[str, Any]:  # fmt: skip
+           tape: Callable[[], Store] | None = None, copy_position: str | None = None,
+           buy_bid_sol: float | None = None, sell_parts: tuple[int, float] | None = None,
+           recipe: Recipe | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
@@ -483,10 +497,28 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     that rule under another setting and takes no place; a rule refuted forward is not frozen again for
     RETEST_AFTER_SECS and takes no place either. `skipped` names each row left out and why. No limit on new rules a
     day (owner, 9 Nov), another size is another rule, and a launch-type rule scored before the watch delay does not
-    stand for its rule (`_sells_as_live`)."""
+    stand for its rule (`_sells_as_live`).
+
+    `buy_sol`: SOL a buy (0.2 unless told; a recipe's own size). `buy_bid_sol`: a bid paid once on every buy, on top
+    of `per_tx_sol`: the lab charges it and each rule frozen keeps it (`buy_bid_sol`), so the forward run charges it
+    too (`rule_costs`); it is no part of a rule's id. `recipe` (lab.RECIPES, `--recipe`): a winning bot's rules by
+    name: the lab runs the recipe's triggers on the recipe's own exit alone, so each rule is frozen with the exit the
+    bot runs, never the lab's pick of the day, at the bot's size and bid unless told; each record names its recipe,
+    and `skipped` says which of its triggers fired too rarely to rank or had no positive lower bound. A recipe follows
+    the wallets the bot follows, never the bot, and its exit is research only: no sniper is sent it
+    (oktech.validate_exit; only hunt rules go from paper to a live test, operator/live_test.py)."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
-    bid = max(0.0, float(buy_bid_sol or 0.0))
+    exits = None
+    if recipe is not None:
+        if triggers:
+            raise ValueError("a recipe brings its own triggers: freeze typed triggers in a command of their own")
+        triggers, exits = list(recipe.triggers), [recipe.exit]
+    if buy_sol is None:
+        buy_sol = recipe.buy_sol if recipe is not None else 0.2
+    if buy_bid_sol is None:
+        buy_bid_sol = recipe.bid_sol if recipe is not None else 0.0
+    bid = buy_bid_sol = max(0.0, float(buy_bid_sol))
     own_landing = bool(triggers) and (copy_position is not None or bid > 0)
     if (copy_position is not None or bid > 0 or sell_parts) and not (triggers and data is None):
         raise ValueError("a landing, a bid or a sale in parts of one's own goes with --trigger: the grid's rules are "
@@ -517,9 +549,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
             # (the wallet groups from the live database: the copy has none of the labels written since it was taken)
             data = collect(source, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
-                           triggers=triggers, kols=label_groups(store), buy_bid_sol=bid,
+                           triggers=triggers, kols=label_groups(store), exits=exits, buy_bid_sol=bid,
                            sell_parts=sell_parts)  # fmt: skip
-    ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
+    every = rank(data, cfg, top=50)
+    ranked = [r for r in every if (r["test"].get("ev_lower") or 0) > 0]
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
         lat, pos = r.get("landing") or (latency, position)
@@ -551,6 +584,19 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             taken.append((f"{under.get('label', under['id'])} ({under['id']})", seen, at))
     new: list[dict] = []
     skipped: list[dict] = []
+    if recipe is not None:  # a recipe's rules are named, so each one left out is named too
+        seen_labels = {r["trigger"] for r in every}
+        fired_n = _fired_counts(data)
+        for ti, t in enumerate(data.get("triggers") or ()):
+            if t.label() not in seen_labels:
+                skipped.append({"label": t.label(), "why": f"fired on {fired_n.get(ti, 0)} moments: too few for the "
+                                "lab to rank it"})  # fmt: skip
+        for r in every:
+            low, n = r["test"].get("ev_lower") or 0, r["test"].get("n", 0)
+            if not low > 0:
+                skipped.append({"label": f"{r['trigger']} | {r['exit']}",
+                                "why": f"its lower bound in the lab is not positive ({low:+.4f} SOL a trade on {n} "
+                                "newer moments): nothing to test forward"})  # fmt: skip
     places = 0
     for r in ranked:
         if places >= top:
@@ -602,6 +648,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                             **({"places": r["places"]} if r.get("places") else {}), **r["test"]}})  # fmt: skip
         if bid > 0:  # the bid every forward buy pays once, as the lab charged it
             new[-1]["buy_bid_sol"] = bid
+        if recipe is not None:  # the winning bot's recipe the rule is of
+            new[-1]["recipe"] = recipe.name
         if asked:  # the landing it was asked to be frozen at: the run keeps it there (`pinned`)
             new[-1]["landing_asked"] = True
         if pinned(new[-1]):  # the landing and the bid in words, as the report names them
@@ -616,6 +664,16 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                        if sell_parts else None)}  # fmt: skip
     if data.get("bid_landing"):  # at a bid landing: the places the copies got, what was refused for want of a bid
         out["bid_landing"] = data["bid_landing"]
+    if recipe is not None:
+        out |= {"recipe": recipe.name, "buy_sol": buy_sol, "buy_bid_sol": bid}
+    return out
+
+
+def _fired_counts(data: dict) -> dict[int, int]:
+    """How many moments each trigger of a lab fired on, by its place among the lab's triggers."""
+    out: dict[int, int] = {}
+    for r in data["rows"]:
+        out[r["trigger"]] = out.get(r["trigger"], 0) + 1
     return out
 
 
@@ -677,9 +735,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         s["id"]: MIG_CAP for s in strategies
         if (s.get("trigger") or {}).get("kind") in AMM_KINDS and not within_mig_cap([ExitParams(**s["exit"])])
     }  # fmt: skip
-    # what a transaction costs, and the bid a rule frozen with one pays once on every buy (`bid_of`)
-    parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]),
-               Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS, entry_bid_lamports=bid_of(s) * LAMPORTS))
+    parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), rule_costs(s))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
     # our own wallets are nobody's place at a bid landing (`lab.bid_entry`)
     ours = frozenset(own_wallets(store, cfg)) if any(is_bid(s.get("position")) for s, *_ in parsed) else frozenset()
@@ -821,9 +877,7 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
     now = now or time.time()
     spans = [(int(a), int(b)) for a, b in store.tape_spans()]
     kols = label_groups(store)
-    parsed = {s["id"]: (s, Trigger(**s["trigger"]), ExitParams(**s["exit"]),
-                        Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS, entry_bid_lamports=bid_of(s) * LAMPORTS))
-              for s in chosen}  # fmt: skip
+    parsed = {s["id"]: (s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), rule_costs(s)) for s in chosen}
     needs_amm = any(t.kind in AMM_KINDS or ex.migration_sell_frac > 0 for _, t, ex, _ in parsed.values())
     amm_cov = store.coverage(AMM_RECENT_KEY) if needs_amm else {}
     crews = _crew_uris(store, spans)

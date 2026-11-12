@@ -858,6 +858,21 @@ def render_lab(r: dict) -> str:
         out.append("Later buyers: every one replayed spending the SOL it spent on the tape and no more (--same-sol), "
                    "the tighter upper end; without the flag a buyer of an exact number of coins pays what they cost "
                    "beside our buy.")  # fmt: skip
+    if r.get("recipe"):  # a bot's recipe: its own exit on every trigger, whichever exit the table above picked
+        rec = r["recipe"]
+        bid = f" at a {r['buy_bid_sol']:g} SOL bid" if r.get("buy_bid_sol") else ""
+        bot = f"{rec['bot_buy_sol']:g} SOL at {rec['bot_bid_sol']:g}"
+        out.append("")
+        out.append(f"Recipe {rec['name']}: {rec['what']}")
+        out.append(f"The bot's own exit ({rec['exit']}) on every trigger, {r['buy_sol']:g} SOL a buy{bid} (the bot: "
+                   f"{bot}). Research only: no live sniper runs this exit.")  # fmt: skip
+
+        def cells(s: dict) -> list:
+            return [s.get("n", 0), sol(s.get("mean")), sol(s.get("ev_lower")), pct(s.get("win_rate"))]
+
+        heads = ["trigger", "moments", "n", "mean", "bound", "win", "newer n", "mean", "bound", "win"]
+        out.append(table([[s["trigger"], s["moments"], *cells(s["all"]), *cells(s["newer"])] for s in rec["scores"]],
+                         heads))  # fmt: skip
     if r.get("wallets"):
         out += [
             "",

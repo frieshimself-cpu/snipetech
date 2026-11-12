@@ -103,7 +103,7 @@ class OperatorJobs:
         id, the job died on start, and the analyst ended its turn thinking the lab was running."""
         from itertools import pairwise
 
-        from ..analysis.lab import parse_trigger
+        from ..analysis.lab import parse_trigger, recipe
 
         specs = [v for a, v in pairwise(argv) if a == "--trigger"]
         specs += [a.split("=", 1)[1] for a in argv if a.startswith("--trigger=")]
@@ -112,6 +112,15 @@ class OperatorJobs:
                 parse_trigger(spec)
             except ValueError as exc:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
+        # a bot's recipe by name (`lab --recipe`, `paper freeze --recipe`): one the table does not hold is refused
+        # here too, with the names there are
+        names = [v for a, v in pairwise(argv) if a == "--recipe"]
+        names += [a.split("=", 1)[1] for a in argv if a.startswith("--recipe=")]
+        for name in names:
+            try:
+                recipe(name)
+            except ValueError as exc:
+                raise PermissionError(f"--recipe refused, no job started: {exc}") from None
 
     @staticmethod
     def _check_backfill(argv: list[str]) -> None:
