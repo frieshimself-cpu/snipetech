@@ -965,3 +965,77 @@ def render_solanatracker_candidates(rows: list[dict]) -> str:
                       for r in rows], ["wallet", "days", "trades", "coins", "win", "realized $", "roi", "tags"]))  # fmt: skip
     out.append("Next: label the good ones, then the tape labs at +1 and +6 decide (docs/roadmap.md).")
     return "\n".join(out)
+
+
+def render_place_bids(o: dict) -> str:
+    """`place-bids` in words: who lands behind a followed wallet in its own block, at what bid, and whether the order
+    follows the bids."""
+
+    def share(x) -> str:
+        return "n/a" if x is None else f"{x:.0%}"
+
+    def q(d, key="p50") -> str:
+        return "n/a" if not d or d.get(key) is None else f"{d[key]:g}"
+
+    bids = o["bids"]
+    out = [
+        f"place-bids: {o['rule']}" + (", each wallet's own first buy" if o.get("each") else ""),
+        (
+            f"  {o['moments']} moments in the newest {o['hours']:g} h of tape ({o['coins']} coins, {o['wallets']} "
+            f"followed wallets); {o['scored']} with the block's bids on the tape, {bids['unknown_moments']} without"
+        ),
+    ]
+    if bids.get("note"):
+        out.append(f"  {bids['note']}")
+    a = o.get("overall")
+    if not a:
+        return "\n".join(out + ["  nothing to score"])
+    fb = a["first_buyer"]
+    out.append(
+        "  the first outsider behind the wallet: "
+        + ", ".join(f"{k.replace('_', ' ')} {share(v)}" for k, v in fb.items())
+    )
+    out.append(
+        f"  the followed wallet itself bids {q(a['leader_bid_sol'])} SOL (median) on a buy of {q(a['leader_buy_sol'])} SOL"
+    )
+    for p in a["places"]:
+        under = p["under"] or {}
+        out.append(
+            f"  place {p['place']}: {p['n']} blocks  bid {q(p['bid_sol'], 'p25')} / {q(p['bid_sol'])} / "
+            f"{q(p['bid_sol'], 'p75')} SOL (quartiles; {p['bid_known']} known)  under 0.003: {share(under.get('0.003'))}  "
+            f"buys {q(p['buy_sol'])} SOL  {q(p['gap_pct'])} % over the wallet's price  the wallet's very next transaction: "
+            f"{share(p['adjacent'])}"
+        )
+    au = a["auction"]
+    if au:
+        out.append(f"  do the places follow the bids: the highest bid is first in {share(au['highest_bid_first'])} of "
+                   f"{au['blocks']} blocks with two bids; {share(au['in_bid_order'])} of {au['pairs']} pairs stand in "
+                   "the order of their bids (100 %: the place is bought; 50 % or under: it is not)")  # fmt: skip
+    else:
+        out.append("  do the places follow the bids: no block with two known bids")
+    for w in a["win_at"]:
+        out.append(f"    a bid of {w['bid_sol']:g} SOL: above the first buyer's bid in {share(w['above_first'])} of "
+                   f"{w['moments']} moments, above every bid in the block in {share(w['above_all'])} (an empty block "
+                   "counts as won)")  # fmt: skip
+    if a["between_its_wallets"]:
+        out.append(f"  an outsider bought between a wallet and its companion in {a['between_its_wallets']} blocks")
+    if o["first_place_holders"]:
+        out.append("  who holds the first place:")
+        for h in o["first_place_holders"][:10]:
+            out.append(f"    {short(h['wallet'])} ({h['label'] or 'no label'}): {h['firsts']} blocks ({share(h['share'])}), "
+                       f"bid {h['bid_sol'] if h['bid_sol'] is not None else 'n/a'} SOL, buys {h['buy_sol']} SOL, behind "
+                       f"{h['behind']} followed wallets, the very next transaction {share(h['adjacent'])}")  # fmt: skip
+    if o["by_wallet"]:
+        out.append("  by followed wallet:")
+        for w in o["by_wallet"][:15]:
+            f = w["first"] or {}
+            regs = ", ".join(f"{short(g['wallet'])} place {g['place']} on {share(g['share'])}" for g in w["regulars"])
+            out.append(f"    {short(w['wallet'])} ({w['label'] or 'no label'}): {w['moments']} moments, {w['mates']} "
+                       f"companions, somebody in its block {share(w['in_block_share'])}, first place bid "
+                       f"{f.get('bid_sol', 'n/a')} SOL (under 0.003: {share(f.get('under_0.003'))})"
+                       + (f"; regulars: {regs}" if regs else ""))  # fmt: skip
+    u = o.get("ours")
+    if u:
+        out.append(f"  our own copies: {u['moments']} ({u['same_block']} in the wallet's block), place {q(u['place'])} "
+                   f"(median) at a bid of {q(u['bid_sol'])} SOL, {q(u['buy_sol'])} SOL a buy")  # fmt: skip
+    return "\n".join(out)

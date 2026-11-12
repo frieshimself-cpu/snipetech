@@ -858,6 +858,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--label", type=int, default=0, help="send the N best mid/late traders (no create-slot sniping, "
                     "no insider sales) to qualify's queue as cand")  # fmt: skip
     sp = cmd(
+        "place-bids",
+        "which bid lands first behind a followed wallet: for every moment a wallet rule follows, the buyers behind the "
+        "wallet in its own block (its companions left out), each one's place, size and bid, whether the order follows "
+        "the bids and what a bid would have won (reads the tape copy; a research job)",
+    )
+    sp.add_argument("--trigger", help="the wallet rule, a lab kol trigger as a JSON object (default: the second known "
+                    "wallet into a coin with a buy of 1 to 3 SOL)")  # fmt: skip
+    sp.add_argument("--hours", type=float, default=48.0, help="the newest hours of tape (bids are on it since 11 Nov "
+                    "16:34 UTC)")  # fmt: skip
+    sp.add_argument("--each", action="store_true", help="every wallet of the group gives its own moment in a coin "
+                    "(what each wallet's own copy sniper copies), not one moment a coin")  # fmt: skip
+    sp.add_argument("--wallet", action="append", default=[], help="only moments behind this wallet (repeatable)")
+    sp.add_argument("--top", type=int, default=20, help="followed wallets and first-place holders to list")
+    sp = cmd(
         "playbook",
         "a bot's rules read off the tape: what each first buy came right after, who it follows and how often, its "
         "filters, sizes, bids and exits (reads the tape copy; a research job)",
@@ -1850,6 +1864,7 @@ BATCH_COMMANDS = frozenset(
         "leaders-of",
         "copy-context",
         "playbook",
+        "place-bids",
         "launch-tools",
         "rescore",
     }
@@ -2374,6 +2389,24 @@ def _main(args) -> int:
         print(json.dumps(out, indent=1) if args.json else "\n".join(
             f"{r['wallet']}  {r['buys']} buys  {r['buy_sol']:g} SOL  {r['coins']} coins" for r in rows[:50])
             or "no FOMO wallet with enough buys")  # fmt: skip
+        return 0
+    if args.cmd == "place-bids":
+        from .analysis.lab import label_groups
+        from .analysis.place_bids import place_bids
+
+        svc = Service(cfg)
+        try:
+            # the trades from the hourly copy, the wallet groups and names from the live database (the copy has none
+            # of the labels written since it was taken)
+            out = place_bids(svc.tape_store, cfg, time.time(), trigger=args.trigger, hours=args.hours, each=args.each,
+                             wallets=args.wallet or None, top=args.top, kols=label_groups(svc.store),
+                             labels=svc.store.labels())  # fmt: skip
+        except ValueError as exc:
+            print(f"place-bids: {exc}", file=sys.stderr)
+            return 2
+        finally:
+            svc.store.close()
+        print(json.dumps(out, indent=1) if args.json else R.render_place_bids(out))
         return 0
     if args.cmd == "playbook":
         from .analysis.playbook import playbook

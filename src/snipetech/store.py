@@ -760,6 +760,24 @@ class Store:
         sql += " ORDER BY slot, pos, ev"
         return [_trade(r) for r in self._q(sql, params)]
 
+    def block_trades(self, mint: str, slot_from: int, slot_to: int) -> list[Trade]:
+        """A coin's trades in the blocks `slot_from` to `slot_to`, in tape order, each with its transaction's fee record
+        (who paid, the priority fee, the tip) when this file holds those columns (a copy taken before 11 Nov does not:
+        the three stay unset). One small read on the coin's index: a study asks it for one moment's block."""
+        fees = self.has_columns("trades", ("payer", "priority", "tip"))
+        rows = self._q(
+            f"SELECT {_TRADE_COLS}{', payer, priority, tip' if fees else ''} FROM trades "
+            "WHERE mint=? AND slot>=? AND slot<=? ORDER BY slot, pos, ev",
+            (mint, int(slot_from), int(slot_to)),
+        )
+        out = []
+        for r in rows:
+            t = _trade(r[:17])
+            if fees:
+                t.payer, t.priority, t.tip = r[17] or "", r[18], r[19]
+            out.append(t)
+        return out
+
     def last_price(self, mint: str) -> float | None:
         """The tape's latest price of a coin in lamports per raw token unit (the reserves after its last trade), or
         None when the tape has never seen it."""

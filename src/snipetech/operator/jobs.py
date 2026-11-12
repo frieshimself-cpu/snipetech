@@ -30,6 +30,7 @@ RESEARCH_COMMANDS = frozenset(
         "copy-context",
         "playbook",
         "launch-tools",
+        "place-bids",
     }
 )
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget

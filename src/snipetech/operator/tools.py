@@ -514,7 +514,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """Start a research job in the background; returns the job id.
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
-        stopped-wallets, winners, leaders-of, copy-context, playbook and launch-tools are allowed; one lab at a time on
+        stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools and place-bids are allowed; one lab at a time on
         a machine under 24 GB, two on a bigger one (the refusal names the limit). ["stopped-wallets", "--json"] says
         whether two verdict rules cost money: every wallet whose paper numbers pass and that only the crowding rule
         (gap to the 3rd follower over 15 %) or the history rule (its own win rate, mostly) stops, measured in one
@@ -529,7 +529,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         "--buy" change the rule; "--rebound", "0.1" waits until the price is 10 % above its lowest since the fall and
         buys 3 trades after that; research only, no OKTech mode buys a fall). ["playbook", "<wallet>", "--json"] reads a bot's
         rules off the tape: what each first buy came right after, who it follows and how often, its filters, sizes,
-        bids and exits (6Z91). ["copy-context", "--hours", "72", "--json"] scores every known
+        bids and exits (6Z91). ["place-bids", "--hours", "48", "--json"] says which bid lands first behind a followed
+        wallet: for every moment a wallet rule follows (the second known wallet in with 1 to 3 SOL unless "--trigger"
+        gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
+        outsiders' first buys in the wallet's own block, companions left out: the bid of place 1, 2 and 3 (priority
+        fee plus tip), who holds the first place, each followed wallet's regulars and where our own copies landed.
+        auction.in_bid_order near 1 means the place is bought, and win_at says what share of moments a bid would
+        have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score the rule next with
+        "--copy-position", "+0" and "--per-tx" at the bid the table names. ["copy-context", "--hours", "72", "--json"] scores every known
         wallet's buy entered a block late, split by how many known wallets were in (the second KOL in), the coin's
         volume, age, hour, the leader's size and the buys later in its own block ("--groups", "kol" for KOLs alone;
         "--behind-leader" enters in the leader's own block, where most live copies land;

@@ -670,3 +670,14 @@ def test_the_wallet_line_is_allowed_again_on_a_new_day(tmp_path, jobs):
     clock[0] += 86400
     assert _call(tools["write_note"], text=line).startswith("- 2026-11-07")
     st.close()
+
+
+def test_the_agents_are_told_how_to_read_the_table_of_place_against_bid(toolbox):
+    """12 Nov: the analyst's lead (idea I51: a paid place right behind a known wallet) waited on one number, the bid
+    that takes the place. `place-bids` gives it; the tool says how to start it, how to read the one number that
+    says whether a bid buys the place at all, and what to score next."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["place-bids", "--hours", "48", "--json"]' in text
+    assert "auction.in_bid_order" in text and "win_at" in text and "companions left out" in text
+    assert '"--copy-position", "+0"' in text and "--per-tx" in text
