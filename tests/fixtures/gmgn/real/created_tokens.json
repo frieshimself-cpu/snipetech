@@ -1,0 +1,18 @@
+{
+ "code": 0,
+ "data": {
+  "last_create_timestamp": null,
+  "inner_count": 0,
+  "open_count": 0,
+  "open_ratio": "",
+  "creator_ath_info": {
+   "creator": "",
+   "ath_token": "",
+   "ath_mc": "",
+   "token_symbol": "",
+   "token_logo": "",
+   "token_name": ""
+  },
+  "tokens": []
+ }
+}

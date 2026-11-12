@@ -1,0 +1,71 @@
+{
+ "code": 0,
+ "data": {
+  "wallet_address": "ardinRsN1mNYVeoJWTBsWeYeXvuR9UUDGMsCDKpb6AT",
+  "native_balance": "479.485425105",
+  "realized_profit": "18351.05895911286264144048",
+  "realized_profit_pnl": "0.1034895867631988",
+  "buy": 1627,
+  "sell": 889,
+  "bought_cost": "154194.13865193257743093098",
+  "bought_fee": "3256.89710364601470580687",
+  "sold_income": "188397.35373844321815156936",
+  "sold_fee": "3030.32518752019989840754",
+  "total_cost": "173724.84282364561964463613",
+  "last_timestamp": 1794506681,
+  "pnl_stat": {
+   "token_num": 700,
+   "winrate": 0.4551422319474836,
+   "pnl_lt_nd5_num": 0,
+   "pnl_nd5_0x_num": 249,
+   "pnl_0x_2x_num": 443,
+   "pnl_2x_5x_num": 8,
+   "pnl_gt_5x_num": 0,
+   "avg_holding_period": 177626.19097744362
+  },
+  "common": {
+   "avatar": "https://gmgn.ai/defi/images/twitter/a5645f1bd85d024312cbc98f88cae735.jpg",
+   "name": "",
+   "ens": "",
+   "tag": "",
+   "tags": [
+    "kol",
+    "wash_trader",
+    "arbitrager",
+    "bluechip_owner",
+    "padre",
+    "top_followed",
+    "top_renamed",
+    "axiom"
+   ],
+   "tag_rank": {
+    "arbitrager": 0,
+    "axiom": 0,
+    "bluechip_owner": 0,
+    "kol": 0,
+    "padre": 0,
+    "top_followed": 0,
+    "top_renamed": 0,
+    "wash_trader": 0
+   },
+   "nick_name": "",
+   "created_at": 1746741080,
+   "twitter_name": "trunoest",
+   "twitter_username": "trunoest",
+   "is_blue_verified": true,
+   "twitter_bind": false,
+   "twitter_fans_num": 27555,
+   "twitter_description": "1.5 sol and a dream | @GrindsetFnF",
+   "followers_count": 27555,
+   "follow_count": 31293,
+   "remark_count": 4824,
+   "created_token_count": 2,
+   "fund_from": "Coinbase Hot Wallet",
+   "fund_from_ts": 1777050275,
+   "fund_tx_hash": "125omVyZBUPRdUNeupr7waw9k4r6iePvrKUUA2426P8x8e8uVFgWQZJpEeYVS1Gov7zkY26jki6gjCCDh3E9gJQo",
+   "wallet_address": "",
+   "fund_from_address": "AxiomRXZAq1Jgjj9pHmNqVP7Lhu67wLXZJZbaK87TTSk",
+   "fund_amount": "0.028920126"
+  }
+ }
+}

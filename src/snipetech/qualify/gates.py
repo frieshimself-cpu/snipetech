@@ -385,6 +385,43 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
             "copy_plan": copy_plan(lab_row), "create_slot": create, "gate": gate}  # fmt: skip
 
 
+# -- how copied a wallet is: said in the verdict, decided by nothing ------------------------------------------------
+# GMGN counts the users who follow a wallet and tags it (docs/research/2026-11-12-gmgn-api.md). The owner has set no
+# rule on either, so neither is a gate or a part of the score: the finished verdict gets one more reason, last, and
+# everything else in it stays what the gates made it.
+
+
+def followed_by(candidate_stats: dict | None, lookup: dict | None) -> dict[str, Any] | None:
+    """What GMGN says of how followed a wallet is, from the newer of two places: the discovery source's row in the
+    candidate's stats (`stats["gmgn"]`: `follow_count`, `tags`, `scanned_at`) and a kept look-up (`gmgn.known_wallet`:
+    `follow_count`, `tags`, `ts`). None when neither has a count."""
+    best: dict[str, Any] | None = None
+    row = candidate_stats.get("gmgn") if isinstance(candidate_stats, dict) else None
+    for src, stamp in ((row, "scanned_at"), (lookup, "ts")):
+        if not isinstance(src, dict) or src.get("follow_count") is None:
+            continue
+        got = {"follow_count": int(src["follow_count"]), "tags": [str(t) for t in src.get("tags") or []],
+               "ts": int(src.get(stamp) or 0)}  # fmt: skip
+        if best is None or got["ts"] >= best["ts"]:
+            best = got
+    return best
+
+
+def followed_note(info: dict | None) -> str | None:
+    if not info:
+        return None
+    n = int(info["follow_count"])
+    tags = f" (GMGN tags: {', '.join(info['tags'])})" if info.get("tags") else ""
+    return (f"followed by {n:,} GMGN user{'' if n == 1 else 's'}{tags}; information only: no gate and no score "
+            "reads it")  # fmt: skip
+
+
+def with_followed_note(v: dict[str, Any], info: dict | None) -> dict[str, Any]:
+    """The finished verdict `v` with the note as its last reason; `v` itself when GMGN said nothing."""
+    note = followed_note(info)
+    return v if note is None else dict(v, reasons=[*list(v.get("reasons") or []), note])
+
+
 # The gates these rules added or changed (research round 2, 7 Nov): what a copy makes where it lands ("tape": the lab
 # moved from the in-slot +6 to +3x), first buys in a create slot, and the forward check. A wallet the book copied before
 # them is never stopped by them (keep_armed); every other gate stops it as it always did.

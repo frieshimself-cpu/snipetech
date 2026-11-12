@@ -188,8 +188,9 @@ def test_fees_prints_what_a_wallet_pays_to_land_its_trades(gmgn):
     gmgn.routes["/v1/user/wallet_activity"] = "wallet_activity_fees.json"
     code, out, seen = gmgn("fees", K1, "--json")
     assert code == 0 and out["wallet"] == K1 and len(out["trades"]) == 7
-    assert out["buys"]["priority_fee"]["median"] == 0.003 and out["buys"]["tip_fee"]["p75"] == 0.04
-    assert out["buys"]["n"] == 6 and out["sells"]["n"] == 1 and "unverified" in out["unit"]
+    assert out["buys"]["priority_sol"]["median"] == 0.003 and out["buys"]["tip_sol"]["p75"] == 0.04
+    assert out["buys"]["bid_sol"]["median"] == 0.033  # priority fee and tip together: what a bid has to beat
+    assert out["buys"]["n"] == 6 and out["sells"]["n"] == 1 and out["unit"].startswith("SOL")
     assert seen[0].url.path == "/v1/user/wallet_activity" and seen[0].url.params["limit"] == "50"
     code, out, _ = gmgn("fees", "--json")
     assert code == 2 and "address" in out["error"]
@@ -211,7 +212,7 @@ def test_gas_prints_gmgns_fee_presets(gmgn):
         code == 0 and out["ok"] is True and out["presets"]["average"] == 0.0012 and out["presets"]["sol_usd"] == 162.4
     )
     assert seen[0].method == "GET" and seen[0].url.path == "/v1/trade/gas_price"
-    assert "unverified" in out["unit"]
+    assert out["unit"].startswith("SOL")
 
 
 def test_created_prints_the_coins_a_wallet_launched(gmgn):
@@ -224,7 +225,7 @@ def test_created_prints_the_coins_a_wallet_launched(gmgn):
 def test_wallet_says_how_followed_the_wallet_is(gmgn):
     gmgn.routes["/v1/user/wallet_stats"] = "wallet_stats_pnl_stat.json"
     _, out, _ = gmgn("wallet", S2, "--json")
-    assert out["stats_7d"]["follow_count"] == 12 and out["stats_7d"]["bought_fee"] == 31.2
+    assert out["stats_7d"]["follow_count"] == 12 and out["stats_7d"]["buy_fees_usd"] == 31.2
 
 
 def test_raw_prints_gmgns_own_answer(gmgn):

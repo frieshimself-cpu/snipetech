@@ -1,0 +1,20 @@
+{
+ "code": 0,
+ "data": {
+  "list": [
+   {
+    "wallet_address": "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP",
+    "realized_profit": "-37628.27605147056001573754",
+    "realized_profit_cost": "2883261.53987856218512179308",
+    "buy": 13957,
+    "sell": 6300,
+    "unrealized_profit": "1148.108119596941832698164",
+    "unrealized_profit_cost": "34399.377297767437695638837",
+    "total_realized_profit": "-37628.27605147056001573754",
+    "total_realized_profit_cost": "2883261.53987856218512179308",
+    "total_profit": "-36480.167931873618183039376",
+    "total_cost": "2917354.78988654003269731427"
+   }
+  ]
+ }
+}

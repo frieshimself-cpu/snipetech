@@ -520,26 +520,36 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
         stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
-        so is landing, and of history only ["history", "amm-backfill", ...] (below; closed to you until the cloud
-        session has run it once under its eyes: the refusal says so); one lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
+        so are landing and tips, and of history only ["history", "amm-backfill", ...] (below; closed to you until the
+        cloud session has run it once under its eyes: the refusal says so); one lab at a time on a machine under
+        24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
         wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
         (realized_usd) and win rate over 30 days. ["gmgn", "who", "Cupsey", "--json"] turns a name or X handle into
         wallets (`exact`: the handle is the name; a search is fuzzy). ["gmgn", "wallet", "<wallet>", "--json"] is one
         wallet: profit and win rate over 7 and 30 days, all-time profit, how many GMGN users follow it
-        (follow_count: how copied it is), its last 50 trades. ["gmgn", "fees", "<wallet>", "--json"] is what that
-        wallet pays to land its trades: priority_fee and tip_fee per trade and their quartiles over its buys (the
-        owner's rule: if our fee is not higher than theirs, they buy before us; check the unit against one trade
-        of our own fee record first). ["gmgn", "token", "<mint>", "--json"] is a coin's card, its risk numbers and
+        (follow_count: how copied it is), its last 50 trades; its `summary` leads with those in plain names.
+        ["gmgn", "fees", "<wallet>", "--json"] is what that wallet pays to land its trades, in SOL: per transaction
+        priority_sol, tip_sol and bid_sol (the two together) and their quartiles over its buys and over its sales
+        (the owner's rule: if our fee is not higher than theirs, they buy before us). The unit is settled: added up
+        over a transaction's rows GMGN's numbers are our tape's own fee record to the lamport (68 of 68
+        transactions of two wallets, 12 Nov; the tip is any landing service's, not Jito's alone); our tape stays
+        the record for a fee study, GMGN adds the wallets and the days the
+        tape does not hold. ["gmgn", "funder", "<wallet>", "--json"] is the wallet that funded it and the tracked
+        wallets the same funder ties to it: proposed companions, stored as a proposal and applied to nothing (the
+        tape's companion rule stays the judge; tape_says_companion is its word on each).
+        ["gmgn", "token", "<mint>", "--json"] is a coin's card, its risk numbers and
         its top holders and traders, each with `tags` (kol, smart_degen) and `coin_tags` (sniper, bundler,
         rat_trader = insider, creator). ["gmgn", "top-traders", "--json"] is who made the most on the hottest
         pump.fun coins ("<mint>" after it: on one coin); ["gmgn", "trending", "--json"] and ["gmgn", "new-pairs",
         "--json"] list coins by launchpad; ["gmgn", "candles", "<mint>", "--resolution", "1m", "--json"] a coin's
         candles; ["gmgn", "gas", "--json"] the fees GMGN's own users pick; ["gmgn", "created", "<wallet>", "--json"]
-        the coins a wallet launched. "--raw" prints GMGN's answer as it came. The field names come from GMGN's
-        documents and are not checked against a real answer yet: where a number looks wrong, read the same
-        look-up with "--raw" and say so in a note. A wallet found there is a candidate to score in a lab at our
+        the coins a wallet launched. "--raw" prints GMGN's answer as it came. The field names were checked against
+        real answers on 12 Nov (docs/research/2026-11-12-gmgn-api.md says what was wrong and is fixed); where a
+        number still looks wrong, read the same look-up with "--raw" and say so in a note. One trade can be two or
+        three rows on GMGN's lists (a coin bought with another token): this client counts it once. A wallet found
+        there is a candidate to score in a lab at our
         landing, never a wallet to copy on GMGN's word. ["stopped-wallets", "--json"] says
         whether two verdict rules cost money: every wallet whose paper numbers pass and that only the crowding rule
         (gap to the 3rd follower over 15 %) or the history rule (its own win rate, mostly) stops, measured in one
@@ -559,6 +569,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         gives another kol trigger; "--each" takes every wallet's own first buy, "--wallet" one followed wallet) the
         outsiders' first buys in the wallet's own block, companions left out: the bid of place 1, 2 and 3 (priority
         fee plus tip), who holds the first place, each followed wallet's regulars and where our own copies landed.
+        ["tips", "--group", "big", "--hours", "30", "--json"] is the tip table, one line a followed wallet (the
+        group's, or "--wallet", "<wallet>" for any one): its blocks with outsiders, the first outsider's bid
+        (median, 75th, 90th percentile), the bid that was above every outsider in 50, 75 and 90 % of its blocks,
+        how many different wallets stood behind it, and suggested_bid_sol for a 50 % and a 90 % chance of
+        outbidding them. Read its warning every time: outbidding is not landing first (the highest bidder is first
+        in 56 % of blocks; the table says the share on its own blocks). "--gmgn" adds how many GMGN users follow
+        each wallet and what its most regular copiers pay by GMGN's history (six look-ups a run at most, kept a
+        day). A bid belongs in the tip, not the priority fee.
         auction.in_bid_order near 1 means the place is bought, and win_at says what share of moments a bid would
         have been first in; near 0.5 or under, speed takes the place and no bid buys it. Score the rule next with
         "--copy-position", "+0" and "--per-tx" at the bid the table names. ["copy-context", "--hours", "72", "--json"] scores every known

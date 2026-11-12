@@ -353,6 +353,7 @@ def _gmgn(args, cfg) -> int:
                         pages=args.pages,
                         raw=args.raw,
                         log=_progress,
+                        store=store,
                     )
                 except gmgn.GmgnError as exc:
                     out = {"ok": False, "status": exc.status, "error": str(exc)}
@@ -1048,6 +1049,23 @@ def build_parser() -> argparse.ArgumentParser:
                          "buy of ours the chain reader placed: where the model puts a copy with that bid in that "
                          "block, where it really landed, and how often they agree")  # fmt: skip
     sp = cmd(
+        "tips",
+        "the tip table: for each followed wallet, what the outsiders behind it in its own block bid (the first one's "
+        "bid, the bid above every one of them in 50, 75 and 90 percent of its blocks), how many different wallets "
+        "follow it, and a suggested bid for a 50 and a 90 percent chance of outbidding them. Outbidding is not landing "
+        "first (reads the tape copy; a research job)",
+    )
+    sp.add_argument("--group", default="big", help="the wallets read: big (the owner's big names; default), kol, "
+                    "wallet, trader, cand")  # fmt: skip
+    sp.add_argument("--wallet", action="append", default=[], help="only this followed wallet, whatever group it is "
+                    "in (repeatable)")  # fmt: skip
+    sp.add_argument("--hours", type=float, default=30.0, help="the newest hours of tape (bids are on it since 11 Nov "
+                    "16:34 UTC)")  # fmt: skip
+    sp.add_argument("--top", type=int, default=40, help="wallets to list, most blocks with outsiders first")
+    sp.add_argument("--gmgn", action="store_true", help="add GMGN's count of the users who follow each wallet and "
+                    "what its most regular copiers pay by GMGN's history (a few look-ups, kept a day)")  # fmt: skip
+    sp.add_argument("--lookups", type=int, default=6, help="--gmgn: requests made to GMGN at most (6)")
+    sp = cmd(
         "landing",
         "where a live buy of ours landed, read from the chain itself (any coin, any program): the blocks between the "
         "copied wallet's buy and ours, every other buyer in between with its bid, who tried and failed, our bid "
@@ -1262,7 +1280,9 @@ def build_parser() -> argparse.ArgumentParser:
         "look something up on GMGN (reading only; it never trades): ping = does the key work; kol, smart-money = the "
         "wallets on GMGN's lists with name, X handle, profit, win rate; top-traders [mint] = who made the most on a "
         "coin or on the hottest pump.fun coins; who <name> = a name or X handle to wallets; wallet <address> = its "
-        "profit, win rate, followers and recent trades; fees <address> = what it pays to land its trades; created "
+        "profit, win rate, followers and recent trades; fees <address> = what it pays to land its trades, in SOL; "
+        "funder <address> = the wallet that funded it and the tracked wallets the same funder ties to it (proposed "
+        "companions: stored, applied to nothing); created "
         "<address> = the coins it launched; token <mint> = card, risk, top holders and traders with tags; trending, "
         "new-pairs = coins by launchpad; candles <mint>; gas = GMGN's fee presets; signals, callouts = GMGN's feeds",
     )
@@ -1276,6 +1296,7 @@ def build_parser() -> argparse.ArgumentParser:
             "who",
             "wallet",
             "fees",
+            "funder",
             "created",
             "token",
             "trending",
@@ -1289,7 +1310,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "target",
         nargs="?",
-        help="wallet, fees, created: the wallet; token, candles, top-traders: the coin's mint; who: the name or handle",
+        help="wallet, fees, funder, created: the wallet; token, candles, top-traders: the coin's mint; who: the name "
+        "or handle",
     )
     sp.add_argument("--period", choices=["7d", "30d"], help="window of profit and win rate (default [gmgn] period)")
     sp.add_argument(
@@ -2191,6 +2213,7 @@ BATCH_COMMANDS = frozenset(
         "copy-context",
         "playbook",
         "place-bids",
+        "tips",
         "landing",
         "launch-tools",
         "rescore",
@@ -2815,6 +2838,35 @@ def _main(args) -> int:
         finally:
             svc.store.close()
         print(json.dumps(out, indent=1) if args.json else R.render_place_bids(out))
+        return 0
+    if args.cmd == "tips":
+        from .analysis import tips as T
+        from .analysis.lab import label_groups
+
+        svc = Service(cfg)
+        client = asked = None
+        try:
+            if args.gmgn:
+                from . import gmgn
+
+                try:
+                    client = gmgn.Gmgn(rate=cfg.gmgn.weight_per_sec, counter=_gmgn_mark(lambda: svc.store))
+                except gmgn.GmgnError as exc:
+                    asked = {"error": str(exc)}
+            # the trades from the hourly copy; the groups, the names and what GMGN said from the live database
+            out = T.tips(svc.tape_store, cfg, time.time(), group=args.group, wallets=args.wallet or None,
+                         hours=args.hours, top=args.top, kols=label_groups(svc.store), labels=svc.store.labels(),
+                         gmgn=client, live=svc.store, max_lookups=args.lookups)  # fmt: skip
+            if asked:
+                out["gmgn"] = asked
+        except ValueError as exc:
+            print(f"tips: {exc}", file=sys.stderr)
+            return 2
+        finally:
+            if client is not None:
+                client.close()
+            svc.store.close()
+        print(json.dumps(out, indent=1) if args.json else T.render(out))
         return 0
     if args.cmd == "landing":
         return _landing(args, cfg)

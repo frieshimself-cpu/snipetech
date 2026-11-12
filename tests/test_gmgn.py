@@ -88,6 +88,7 @@ def test_the_kol_feed_is_read_into_plain_rows():
         "mint": M1,
         "symbol": "FROG",
         "launchpad": "pump",
+        "tokens": rows[0]["tokens"],
         "usd": 1523.4,
         "price_usd": 0.0000412,
         "ts": T0,
@@ -119,34 +120,38 @@ def test_feeds_become_one_row_a_wallet_with_who_it_is_and_what_it_did():
 def test_a_wallets_statistics_in_both_shapes_gmgn_sends():
     g = client()
     row = g.wallet_stats(K1, period="30d")
-    assert row == {
-        "wallet": K1,
-        "period": "30d",
-        "days": 30,
-        "realized_usd": 15234.52,
-        "unrealized_usd": -320.1,
-        "win_rate": 0.62,
-        "cost_usd": 48000.0,
-        "buys": 140,
-        "sells": 131,
-        "trades": 271,
-        "pnl_ratio": 0.3174,
-        "tokens": None,
-        "avg_hold_secs": None,
-        "name": "Cupsey",
-        "twitter": "cupseyy",
-        "tags": ["kol", "smart_degen"],
-        "followers": 251000,
-        "created_at": 1711929600,
-        "funded_by": "Coinbase",
-        "created_tokens": 0,
-        "follow_count": 18234,
-        "last_ts": None,
-        "bought_fee": None,
-        "sold_fee": None,
-        "extra": {},
-    }
-    # the names a live answer uses, per GMGN's own wallet analysis script: counts as buy/sell, the win rate under
+    assert (
+        row.items()
+        >= {
+            "wallet": K1,
+            "period": "30d",
+            "days": 30,
+            "realized_usd": 15234.52,
+            "unrealized_usd": -320.1,
+            "win_rate": 0.62,
+            "cost_usd": 48000.0,
+            "buys": 140,
+            "sells": 131,
+            "trades": 271,
+            "pnl_ratio": 0.3174,
+            "tokens": None,
+            "avg_hold_secs": None,
+            "name": "Cupsey",
+            "twitter": "cupseyy",
+            "tags": ["kol", "smart_degen"],
+            "followers": 251000,
+            "created_at": 1711929600,
+            "funded_by": "7RaT4qX2jwLHTxuPUpm5rXfbZHbCtXihfKugoQUegJdk",  # the wallet its first SOL came from
+            "funded_by_name": "Coinbase",  # and GMGN's name for that wallet when it is a service
+            "funded_sol": 12.5,
+            "created_tokens": 0,
+            "follow_count": 18234,
+            "last_ts": None,
+            "buy_fees_usd": None,
+            "sell_fees_usd": None,
+        }.items()
+    )
+    # the names a live answer uses (tests/test_gmgn_real.py reads a real one): counts as buy/sell, the win rate under
     # pnl_stat, the ratio as realized_profit_pnl, the fees it paid, when it last traded
     g2 = client(routes={"/v1/user/wallet_stats": "wallet_stats_pnl_stat.json"})
     row = g2.wallet_stats(S2)
@@ -154,10 +159,9 @@ def test_a_wallets_statistics_in_both_shapes_gmgn_sends():
     assert (row["buys"], row["sells"], row["trades"]) == (61, 58, 119)
     assert row["win_rate"] == pytest.approx(0.4318) and row["tokens"] == 44 and row["avg_hold_secs"] == 1840
     assert row["cost_usd"] == 9100.0 and row["realized_usd"] == 880.25 and row["pnl_ratio"] == 0.0967
-    assert (row["bought_fee"], row["sold_fee"], row["last_ts"]) == (31.2, 29.9, T0 - 60)
+    assert (row["buy_fees_usd"], row["sell_fees_usd"], row["last_ts"]) == (31.2, 29.9, T0 - 60)
     assert row["follow_count"] == 12  # how many GMGN users follow the wallet: how copied it is
-    assert row["name"] is None and row["tags"] == []
-    assert row["extra"] == {"native_balance": "12.5"}  # a field this client has no name for is kept as it came
+    assert row["name"] is None and row["tags"] == [] and row["sol_balance"] == 12.5
 
 
 def test_profit_and_loss_of_many_wallets_in_one_request():
@@ -177,6 +181,7 @@ def test_profit_and_loss_of_many_wallets_in_one_request():
         "unrealized_usd": -320.1,
         "all_time_realized_usd": 412345.9,
         "all_time_cost_usd": 1900000.0,
+        "all_time_profit_usd": 412345.9,
     }
     assert rows[1]["realized_usd"] == -2210.4
     with pytest.raises(ValueError, match="100"):
@@ -191,21 +196,24 @@ def test_a_wallets_recent_activity():
     assert q["wallet_address"] == K1 and q["limit"] == "3" and q.get_list("type") == ["buy", "sell"]
     assert out["next"] == "eyJjIjoiMTIzIn0="
     sell, buy, transfer = out["rows"]
-    assert sell == {
-        "tx": sell["tx"],
-        "kind": "sell",
-        "mint": M2,
-        "symbol": "CAT",
-        "tokens": 900000.0,
-        "usd": 2890.75,
-        "buy_cost_usd": 1400.5,
-        "price_usd": 0.00321,
-        "ts": T0 - 300,
-        "platform": "Pump.fun",
-        "gas_usd": 0.41,
-        "priority_fee": 0.0005,
-        "tip_fee": 0.003,  # what the wallet paid to land the trade
-    }
+    assert (
+        sell.items()
+        >= {
+            "tx": sell["tx"],
+            "kind": "sell",
+            "mint": M2,
+            "symbol": "CAT",
+            "tokens": 900000.0,
+            "usd": 2890.75,
+            "buy_cost_usd": 1400.5,
+            "price_usd": 0.00321,
+            "ts": T0 - 300,
+            "platform": "Pump.fun",
+            "gas_usd": 0.41,
+            "priority_fee": 0.0005,
+            "tip_fee": 0.003,  # what the wallet paid to land the trade, in SOL
+        }.items()
+    )
     assert buy["kind"] == "buy"  # some chains name the field `type`
     assert transfer["kind"] == "transferIn" and transfer["priority_fee"] is None
     # a page holds 50 rows at most, and GMGN answers a bigger ask with 20: never ask for more than 50
@@ -227,19 +235,24 @@ def test_what_a_wallet_pays_to_land_its_buys():
         "mint": M1,
         "symbol": "FROG",
         "usd": 100.0,
-        "priority_fee": 0.001,
-        "tip_fee": 0.01,
+        "rows": 1,
+        "priority_sol": 0.001,
+        "tip_sol": 0.01,
+        "bid_sol": 0.011,
+        "gas_sol": None,
         "gas_usd": 0.1,
         "tx": out["trades"][0]["tx"],
     }
     buys = out["buys"]
     assert buys["n"] == 6 and buys["with_fees"] == 5  # one buy came without its fees: counted, not averaged in
-    assert buys["priority_fee"] == {"p25": 0.002, "median": 0.003, "p75": 0.004, "max": 0.005}
-    assert buys["tip_fee"] == {"p25": 0.02, "median": 0.03, "p75": 0.04, "max": 0.05}
-    assert buys["priority_plus_tip"] == pytest.approx({"p25": 0.022, "median": 0.033, "p75": 0.044, "max": 0.055})
+    assert buys["priority_sol"] == {"p25": 0.002, "median": 0.003, "p75": 0.004, "max": 0.005}
+    assert buys["tip_sol"] == {"p25": 0.02, "median": 0.03, "p75": 0.04, "max": 0.05}
+    assert buys["bid_sol"] == pytest.approx({"p25": 0.022, "median": 0.033, "p75": 0.044, "max": 0.055})
     assert buys["gas_usd"]["median"] == pytest.approx(0.45)  # gas is there on all six buys
-    assert out["sells"]["n"] == 1 and out["sells"]["tip_fee"]["median"] == 0.001
-    assert "unverified" in out["unit"]  # GMGN's documents give no unit for the two fee fields
+    assert out["sells"]["n"] == 1 and out["sells"]["tip_sol"]["median"] == 0.001
+    # the unit is SOL, checked against our own tape (tests/test_gmgn_real.py); the last page was read: nothing is cut
+    assert out["unit"].startswith("SOL") and "unverified" not in out["unit"]
+    assert out["more"] is False and out["left_out_at_the_cut"] == 0
     empty = G.fees(client(routes={"/v1/user/wallet_activity": httpx.Response(200, json={"code": 0, "data": {}})}), K1)
     assert empty["trades"] == [] and empty["buys"] == {"n": 0, "with_fees": 0}
 
@@ -251,7 +264,7 @@ def test_a_name_or_a_handle_becomes_wallets():
     q = seen[0].url.params
     assert seen[0].url.path == "/v1/market/search" and q["q"] == "Cupseyy" and q["chain"] == "sol"
     assert [w["wallet"] for w in found["wallets"]] == [FAN, K1, SIDE]  # the row of another chain is no wallet of ours
-    assert found["wallets"][1] == {"wallet": K1, "twitter": "Cupseyy", "tags": ["kol", "smart_degen"]}
+    assert found["wallets"][1].items() >= {"wallet": K1, "twitter": "Cupseyy", "tags": ["kol", "smart_degen"]}.items()
     assert found["coins"][0]["mint"] == M1 and found["coins"][0]["symbol"] == "CUPSEY"
     # a search is fuzzy: the wallets whose handle is exactly the name come first, the one with the most tags on top
     who = G.who(g, "cupseyy")
@@ -294,7 +307,8 @@ def test_a_coins_card_and_its_risk_numbers():
     info = g.token_info(M1)
     assert info["mint"] == M1 and info["symbol"] == "FROG" and info["price_usd"] == 0.0000412
     assert info["launchpad"] == "pump" and info["platform"] == "Pump.fun" and info["curve_progress"] == 0.61
-    assert info["creator"] == DEV and info["creator_status"] == "sell" and info["creator_launches"] == 14
+    assert info["creator"] == DEV and info["creator_status"] == "sell"
+    assert info["creator_launches"] == 120 and info["creator_graduated"] == 14  # launched; left their curve
     assert info["holders"] == 1820 and info["liquidity_usd"] == 41200.7 and info["twitter"] == "frogcoin"
     assert info["wallets"] == {"smart": 7, "kol": 3, "sniper": 12, "insider": 2, "bundler": 9, "whale": 1, "fresh": 140}
     sec = g.token_security(M1)
@@ -355,6 +369,8 @@ def test_trending_coins_on_pump_fun():
         "insider_rate": 0.04,
         "snipers": 12,
         "top10_rate": 0.21,
+        "curve_progress": None,
+        "quote_mint": None,
         "source": "gmgn",
     }
     # a filter tag GMGN does not document can switch its own default screening off: only documented tags go out

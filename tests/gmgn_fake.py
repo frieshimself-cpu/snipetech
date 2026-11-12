@@ -1,8 +1,14 @@
 """A stand-in for openapi.gmgn.ai in tests: every documented read answers with its example from tests/fixtures/gmgn/.
 
-The examples are in the shape GMGN's own field tables give (the public gmgn-skills repository, 29 Oct 2026); the
-addresses and numbers are made up, because no answer of a real key was available on 12 Nov 2026. One file is a real
-answer: error_auth_invalid.json is what openapi.gmgn.ai said that day to a request without a key (HTTP 401)."""
+The examples in tests/fixtures/gmgn/ are in the shape GMGN's own field tables give (the public gmgn-skills repository,
+29 Oct 2026) with made-up addresses and numbers: they were written before a real key answered, and they stay for what
+they pin (how a request is made, the errors, the pace, the old spellings still read). Where a real answer showed a
+table wrong, the example was corrected (the candles' volume and amount, the coin card's two creator counts). One file
+there is real: error_auth_invalid.json, what openapi.gmgn.ai said to a request without a key (HTTP 401).
+
+tests/fixtures/gmgn/real/ holds REAL answers of the owner's key (12 Nov 2026, 17:56 to 18:08 UTC), trimmed to a few
+rows with nothing renamed: tests/test_gmgn_real.py runs the client on them. Its tape_fees.json is our own tape's fee
+record of twelve of the transactions in real/wallet_activity.json (lamports, read by signature)."""
 
 import json
 from pathlib import Path

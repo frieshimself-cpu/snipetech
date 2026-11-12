@@ -18,12 +18,14 @@ from .gates import (
     companions,
     create_slot_share,
     crowding,
+    followed_by,
     forward_gate,
     keep_armed,
     normalise_history,
     relationship_gate,
     venue_share,
     verdict_for,
+    with_followed_note,
 )
 
 LabRunner = Callable[[list[str], str], list[dict]]
@@ -224,6 +226,14 @@ def _lab_decides(candidate: dict) -> bool:
     return v.get("status") == "qualified" or bool(v.get("forward")) or bool(v.get("kept_armed"))
 
 
+def _followed(store, candidate: dict) -> dict[str, Any] | None:
+    """How followed the candidate is by GMGN's count (`gates.followed_by`): the discovery source's row in its stats,
+    or a kept look-up of the wallet, whichever is newer. Information for the verdict's reasons; no gate reads it."""
+    from ..gmgn import known_wallet
+
+    return followed_by(candidate.get("stats"), known_wallet(store, candidate["wallet"]))
+
+
 def _tape_start(store, now: float) -> int:
     try:
         spans = store.tape_spans()
@@ -276,7 +286,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {KOL_MIN_SOL:g} SOL or more on the tape: "
                    f"fewer than the {need} copies a wallet needs at the least, not measured")  # fmt: skip
             v["reasons"] = [why]
-        store.put_verdict(v)
+        store.put_verdict(with_followed_note(v, _followed(store, c)))
         out["too_few" if coins else "no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
@@ -340,9 +350,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             return
         v = keep_armed(v, prev, copying is not None and w[:6] in copying, q_eff, now)  # never stops a copied wallet
         out["kept_armed"] += bool((v.get("kept_armed") or {}).get("kept"))
+        # how copied the wallet is by GMGN's count: one more reason on the finished verdict, read by no gate
+        followed = _followed(store, c)
+        v = with_followed_note(v, followed)
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
-                                       "computed_at": int(now), "record": record or None})  # fmt: skip
+                                       "computed_at": int(now), "record": record or None,
+                                       **({"gmgn": followed} if followed else {})})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
         fwd = (v.get("forward") or {}).get("status")

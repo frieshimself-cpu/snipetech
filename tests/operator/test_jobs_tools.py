@@ -754,11 +754,13 @@ def test_the_agents_are_told_what_gmgn_gives_and_that_it_only_reads(toolbox):
     text = " ".join(tools["start_job"].to_dict()["description"].split())
     assert "place-bids and gmgn are allowed" in text
     for action in ('"kol"', '"smart-money"', '"who", "Cupsey"', '"wallet", "<wallet>"', '"fees", "<wallet>"',
-                   '"token", "<mint>"', '"top-traders"', '"trending"', '"gas"'):  # fmt: skip
+                   '"funder", "<wallet>"', '"token", "<mint>"', '"top-traders"', '"trending"', '"gas"'):  # fmt: skip
         assert f'["gmgn", {action}, "--json"]' in text, action
-    assert "follow_count" in text and "priority_fee" in text and "tip_fee" in text and "coin_tags" in text
+    assert "follow_count" in text and "priority_sol" in text and "tip_sol" in text and "coin_tags" in text
     assert "GMGN only reads" in text and "never trades" in text
-    assert "not checked against a real answer yet" in text  # the field names come from GMGN's documents
+    # the field names and the fee unit were checked against real answers on 12 Nov: the doubt is no longer told
+    assert "checked against real answers on 12 Nov" in text and "in SOL" in text
+    assert "not checked against a real answer yet" not in text
 
 
 def test_a_gmgn_look_up_may_be_repeated_after_ten_minutes_not_six_hours(jobs):
