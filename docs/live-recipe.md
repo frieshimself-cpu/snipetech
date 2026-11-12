@@ -28,6 +28,11 @@ about 0.55 SOL for all six buys if every one loses.
 
 | arm | time (UTC) | coin | landed (blocks after, buys ahead) | our bid | highest bid ahead | price vs Cupsey | result (SOL) |
 |---|---|---|---|---|---|---|---|
+| A | 17:04:54 | 3dqeBW… (PumpSwap) | 1 block after, 0 ahead: FIRST | 0.035 (priority 0.005 + tip 0.03) | none ahead | +0.8 % | bought 0.0500, sold 0.0515 two seconds later (+3 %); after fees -0.0405 |
+| A | 17:05:56 | EPjFWd… (USDC, PumpSwap route) | not placed: Cupsey's buy was not found | 0.035 | - | - | bought 0.0500, sold 0.0497; after fees -0.0403 |
+| A | 17:12:12 | 3dqeBW… (PumpSwap) | same block, 0 ahead: FIRST | 0.035 | none ahead | +0.8 % | bought 0.0500, sold 0.0527 a second later (+5.4 %); after fees -0.0393 |
+
+**Read from the chain at 17:55 UTC** (`measure backfill`, the chain reader of 12 Nov; `fills.landing_src = 'chain'`). Both buys that could be placed landed FIRST behind Cupsey, one in its own block, 0.8 % above its price, with nobody else ahead. Each made 3 to 5 % in one or two seconds before fees; at 0.05 SOL a copy the fees (about 0.04 SOL a round trip) are 80 % of the position, so each lost 0.04 SOL, as the test was priced to. Three buys are no proof. Two things to fix before any more live copies: (1) the sniper copied a USDC swap of Cupsey's: stablecoin and wrapped-SOL mints must be shut out; (2) OKTech charges the buy's PRIORITY fee again on every sell and on every failed duplicate sell (0.005 here, three to four times a round trip), while a TIP is paid once and given back when a send fails: put the bid in the tip and the priority at its minimum.
 
 **How the table is filled (built 12 Nov, on the server from the deploy of branch `wf/fill-landing` on).** The first
 two copies (17:04-17:06 UTC) bought a coin the tape does not hold (`3dqeBW…Foss`: not on a pump.fun curve, not a coin
