@@ -491,10 +491,14 @@ def _momentum(trig: Trigger, path: MarketPath, dev: set[str]) -> int | None:
 # triggers a live launch sniper runs (OKTech hunt on the pump.fun curve): no trade once the coin has left its curve.
 # MIG is not one of them: its buy is on PumpSwap, after the curve has completed, by design.
 LAUNCH_KINDS = frozenset({"launch", "hunt", "whale", "burst"})
-# triggers whose every exit waits OKTech's watch delay in the lab (`kind_exits`): the rules a live launch sniper runs.
+# triggers whose every exit waits OKTech's watch delay in the lab (`kind_exits`): the rules a live sniper runs.
 # Kept apart from LAUNCH_KINDS, which also means "on the curve only": a rule run by another OKTech sniper whose exits
-# wait too (a MIG trigger buys on PumpSwap) belongs here and not there.
-WATCHED_KINDS = LAUNCH_KINDS
+# wait too belongs here and not there. A wallet rule ("kol") is one since 12 Nov: it runs live through an OKTech copy
+# sniper, whose auto-sell starts watching 1.3 s after the buy (WATCH_SECS was measured on copy fills), and until then
+# a hypothesis lab scored its exits acting from the buy: a take-profit could fire in the followed wallet's own block
+# and sell at the start of the next one, ahead of every bot that bought behind the wallet. The qualify lab's exits
+# carry the delay already (`_as_live`); a recipe's exit holds longer than the delay.
+WATCHED_KINDS = LAUNCH_KINDS | {"kol"}
 
 
 def watched(ex: ExitParams, secs: float = WATCH_SECS) -> ExitParams:
@@ -504,12 +508,13 @@ def watched(ex: ExitParams, secs: float = WATCH_SECS) -> ExitParams:
 
 
 def kind_exits(exits: Sequence[ExitParams]) -> dict[str, list[ExitParams]]:
-    """The exits each launch-type kind (WATCHED_KINDS: launch, hunt, whale, burst) is scored with: `exits`, each
-    `watched`, since such a rule runs live through an OKTech launch sniper. Every other kind is scored with `exits` as
-    given: a copy keeps the exits it is given (the qualify lab's carry their own watch), and momentum and event rules
-    have no live sniper to time them. Every exit keeps its column, so a row's pnl list reads against either."""
-    launch = [watched(ex) for ex in exits]
-    return dict.fromkeys(sorted(WATCHED_KINDS), launch)
+    """The exits each kind a live sniper runs (WATCHED_KINDS: launch, hunt, whale, burst, and a wallet rule, kol) is
+    scored with: `exits`, each `watched`, since such a rule runs live through an OKTech sniper whose auto-sell waits
+    that long. Every other kind is scored with `exits` as given: momentum and event rules have no live sniper to
+    time them. An exit that already carries the delay (the qualify lab's) is unchanged. Every exit keeps its column,
+    so a row's pnl list reads against either."""
+    live = [watched(ex) for ex in exits]
+    return dict.fromkeys(sorted(WATCHED_KINDS), live)
 
 
 # Triggers whose every position is a PumpSwap buy. Outside the recorder's recent-migrations runs (coverage

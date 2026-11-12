@@ -10,6 +10,7 @@ pool of test_fill_model.py.
 """
 
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -416,7 +417,9 @@ def test_paper_freeze_freezes_a_recipe_with_its_own_exit_and_bid():
     why = " | ".join(x["why"] for x in rep["skipped"])
     assert "fires on the same moments" in why and "fired on 0 moments: too few" in why
     s = frozen["wallet"]
-    assert ExitParams(**s["exit"]) == r.exit and s["buy_sol"] == 2.0 and s["buy_bid_sol"] == 0.03
+    # the bot's exit, with the watch delay every wallet rule's exit carries (its first sale at 3 s is past the delay)
+    assert ExitParams(**s["exit"]) == replace(r.exit, watch_secs=1.3)
+    assert s["buy_sol"] == 2.0 and s["buy_bid_sol"] == 0.03
     assert s["recipe"] == "6z91" and s["lab"]["ev_lower"] > 0
     # the same recipe at a bid that eats it: nothing is frozen, and the freeze says why
     store2 = Store(":memory:")

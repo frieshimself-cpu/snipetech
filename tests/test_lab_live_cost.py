@@ -154,44 +154,68 @@ def _cfg() -> Config:
     return cfg
 
 
-def test_every_exit_on_a_launch_type_rule_waits_oktechs_watch_delay_and_a_copys_does_not():
+def test_every_exit_on_a_rule_a_live_sniper_runs_waits_oktechs_watch_delay_a_wallet_rule_too():
+    """A wallet rule runs live through an OKTech copy sniper, whose auto-sell starts watching 1.3 s after the buy (the
+    delay itself was measured on copy fills). Until 12 Nov a hypothesis lab on a wallet rule scored the search set's
+    exits acting from the buy: a take-profit could fire in the followed wallet's own block and sell at the start of
+    the next one, which no sniper of ours can do. The analyst, 12 Nov 18:31: "Cupseyy's mean is above what a +30 %
+    take-profit can pay at its threshold, so the simulator's fill there needs checking"."""
     store = Store(":memory:")
     _pause_world(store)
     data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[*LAUNCH_TYPE, KOL],
                    exits=[LAB_EXIT])  # fmt: skip
     assert data["slot_secs"] == [pytest.approx(0.4, abs=0.01)]  # the world runs at the tape's slot time
-    assert set(data["kind_exits"]) == {"launch", "hunt", "whale", "burst"}  # never a copy, momentum or event rule
+    assert set(data["kind_exits"]) == {"launch", "hunt", "whale", "burst", "kol"}  # never a momentum or event rule
     ranked = {r["trigger_spec"]["kind"]: r for r in rank(data, _cfg(), top=10, min_train=5)}
     assert set(ranked) == {"launch", "hunt", "whale", "burst", "kol"}
-    for kind in ("launch", "hunt", "whale", "burst"):  # all four run live through an OKTech launch sniper
+    for kind in ("launch", "hunt", "whale", "burst", "kol"):  # each runs live through an OKTech sniper
         assert ranked[kind]["exit_params"] == LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}, kind
         assert ranked[kind]["exit"] == f"{LAB_EXIT.label()} watch{WATCH_SECS:g}s", kind
-    assert ranked["kol"]["exit_params"] == LAB_EXIT.to_dict()  # a copy: the exit as it was given
     assert WATCH_SECS == 1.3  # OKTech's measured watch delay (6 Nov copy fills: 1.25-1.4 s)
 
 
-def test_an_exit_that_would_fire_inside_the_watch_delay_does_not():
-    """The same buy, the same landing and the same exit. A copy (no watch here) sells at once: the coin is quiet for
-    1.2 s right after the buy, and the 1 s dead exit fires at the buy's own price, for the fees. The hunt's exit waits
-    OKTech's 1.3 s, so that pause never counts; it rides the six buys that follow and sells when they stop."""
+def test_a_wallet_rule_frozen_without_the_watch_delay_does_not_stand_for_its_rule():
+    """As for a launch-type rule frozen before 7 Nov: it keeps its id and its trades, and the same rule frozen again,
+    with the delay, is the rule's record."""
+    kol = {"kind": "kol", "group": "big", "sol": 1.0}
+    assert not paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict()})
+    assert paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}})
+    assert paper._sells_as_live({"trigger": {"kind": "momentum"}, "exit": LAB_EXIT.to_dict()})  # no sniper times it
+
+
+def test_an_exit_that_would_fire_inside_the_watch_delay_does_not(monkeypatch):
+    """The same buy, the same landing and the same exit. Scored as acting from the buy (a wallet rule until 12 Nov) it
+    sells at once: the coin is quiet for 1.2 s right after the buy, and the 1 s dead exit fires at the buy's own price,
+    for the fees. An exit that waits OKTech's 1.3 s never counts that pause; it rides the six buys that follow and
+    sells when they stop. Both the hunt and the wallet rule are scored that way now."""
+    import snipetech.analysis.lab as lab_module
+
     store = Store(":memory:")
     _pause_world(store)
-    data = collect(store, _cfg(), 0.2, 1, "+3", landings={"hunt": paper.HUNT_LANDING}, triggers=[HUNT, KOL],
-                   exits=[LAB_EXIT])  # fmt: skip
-    by = {ti: [r for r in data["rows"] if r["trigger"] == ti] for ti in (0, 1)}
-    assert len(by[0]) == len(by[1]) == 24 and {r["landing"] for r in data["rows"]} == {"+3@1"}
+
+    def rows_by_trigger():
+        data = collect(store, _cfg(), 0.2, 1, "+3", landings={"hunt": paper.HUNT_LANDING}, triggers=[HUNT, KOL],
+                       exits=[LAB_EXIT])  # fmt: skip
+        by = {ti: [r for r in data["rows"] if r["trigger"] == ti] for ti in (0, 1)}
+        assert len(by[0]) == len(by[1]) == 24 and {r["landing"] for r in data["rows"]} == {"+3@1"}
+        return by
+
+    by = rows_by_trigger()
     for hunt, copy in zip(by[0], by[1]):
         assert hunt["mint"] == copy["mint"]
+        assert hunt["pnl"][0] > 0.01 and copy["pnl"][0] > 0.01  # held through the buying that followed
+    monkeypatch.setattr(lab_module, "WATCHED_KINDS", lab_module.LAUNCH_KINDS)  # the wallet rule as it was scored before
+    for hunt, copy in zip(*rows_by_trigger().values()):
         assert copy["pnl"][0] == pytest.approx(-0.012, abs=0.002)  # sold at once: 2.5 % in fees, 2 x 0.0035
-        assert hunt["pnl"][0] > 0.01  # held through the buying that followed
+        assert hunt["pnl"][0] > 0.01
 
 
 def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_now_is_new():
     """A strategy frozen before the watch delay keeps its id, its exit and its trades: paper strategy ids leave a field
     at its default out (paper.strategy_id), and the paper test scores every strategy with the exit it was frozen with.
     The same hunt rule frozen now carries the watch delay, which is a different exit, so it is a strategy of its own,
-    scored with the delay from its own freeze; the old one is never re-keyed or replaced. A copy's exit is unchanged,
-    so a copy frozen now gets the id it had before and is not frozen twice."""
+    scored with the delay from its own freeze; the old one is never re-keyed or replaced. A wallet rule frozen now
+    carries the delay too (12 Nov), so it is new as well, and one frozen before keeps the id it had."""
     store = Store(":memory:")
     _pause_world(store)
     old_id = paper.strategy_id(HUNT.__dict__, LAB_EXIT.to_dict(), "+3", 1, 0.2)
@@ -203,7 +227,7 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
     data = collect(store, _cfg(), 0.2, 0, "+6", landings=paper.LAUNCH_LANDINGS, triggers=[HUNT, KOL],
                    exits=[LAB_EXIT])  # fmt: skip
     rep = paper.freeze(store, _cfg(), top=4, position="+6", latency=0, buy_sol=0.2, now=NOW, data=data, only_live=True)
-    (new,) = rep["frozen"]  # the hunt pays here with the delay; the copy, sold at once, does not
+    (new,) = rep["frozen"]  # the hunt pays here with the delay; the copy, six places back, does not
     assert new["exit"]["watch_secs"] == WATCH_SECS and new["id"] == "4f7915097e" != old_id
     assert [s["id"] for s in rep["kept"]] == [old_id]
     paper.run(store, _cfg(), now=NOW)
@@ -214,8 +238,12 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
     # one sniper live for both: the automatic test drops them and carries their live record as one, and the old one
     # never goes live (tests/operator: test_live_test.py, test_autotest.py)
     assert paper.live_id(strategies[new["id"]]) == paper.live_id(strategies[old_id]) == old_id
+    # a wallet rule frozen before the delay had this id and keeps it; the same rule ranked now carries the delay and
+    # would be frozen under an id of its own
     (copy,) = [r for r in rank(data, _cfg(), top=10) if r["trigger_spec"]["kind"] == "kol"]
-    assert paper.strategy_id(KOL.__dict__, copy["exit_params"], "+6", 0, 0.2) == "0035d424be"  # its id before
+    assert copy["exit_params"]["watch_secs"] == WATCH_SECS
+    assert paper.strategy_id(KOL.__dict__, LAB_EXIT.to_dict(), "+6", 0, 0.2) == "0035d424be"
+    assert paper.strategy_id(KOL.__dict__, copy["exit_params"], "+6", 0, 0.2) != "0035d424be"
 
 
 def test_the_watch_delay_is_how_oktech_sells_not_a_setting_it_is_sent():

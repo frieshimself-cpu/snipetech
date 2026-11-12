@@ -22,8 +22,9 @@ HUNT_AT = (1, "+3")  # where a hunt buy lands
 COPY_AT = (0, "+6")  # where a copy lands
 HOLD10 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10, sell_on_dev_sell=False, watch_secs=1.3)
 HOLD60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3)
-COPY30 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=30, sell_on_dev_sell=False)
-COPY60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False)
+# a wallet rule's exits wait OKTech's watch delay too, as the lab gives them since 12 Nov (lab.WATCHED_KINDS)
+COPY30 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=30, sell_on_dev_sell=False, watch_secs=1.3)
+COPY60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3)
 HUNT1 = Trigger("hunt", sol=5.0, window=1.0, max_buyers=2, dev_max=1.0)
 HUNT2 = Trigger("hunt", sol=5.0, window=2.0, max_buyers=2, dev_max=1.0)  # fires on the same buys as HUNT1
 CROWD = Trigger("hunt", sol=10.0, buyers=10, window=1.0)
