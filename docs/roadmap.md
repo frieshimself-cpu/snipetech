@@ -9,7 +9,7 @@ first on the server's recording and only then run live in capped batches.
 ## 12 Nov, 04:00 UTC: the server has been off since 00:31 UTC; nothing is recorded or traded until it is restarted
 
 - **The server stopped answering on 12 Nov at 00:31 UTC** and has not come back by itself. Only the owner can
-  restart it (Vultr). Why it stopped is not known: the last deploy was at 00:26, the half-hourly jobs started at
+  restart it (Reboot in the BitLaunch panel, which shows the machine as running: that is its power state). Why it stopped is not known: the last deploy was at 00:26, the half-hourly jobs started at
   00:30, and Ubuntu's own update job froze this machine once before (11 Nov 07:12). The evidence is on the machine.
 - **What is lost while it is off:** no trade is recorded, no copy can be bought or sold by the book, the agents do not
   run. The recorder replays what it missed for 40 hours: restarted before 13 Nov 16:30 UTC the tape has no hole.
