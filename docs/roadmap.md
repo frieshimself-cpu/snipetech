@@ -6,23 +6,37 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
-## 12 Nov, 04:00 UTC: the server has been off since 00:31 UTC; nothing is recorded or traded until it is restarted
+## 12 Nov, 14:00 UTC: twelve hours without a network (00:31 to 12:30 UTC); found, fixed in code, one command left for the owner
 
-- **The server stopped answering on 12 Nov at 00:31 UTC** and has not come back by itself. Only the owner can
-  restart it (Reboot in the BitLaunch panel, which shows the machine as running: that is its power state). Why it stopped is not known: the last deploy was at 00:26, the half-hourly jobs started at
-  00:30, and Ubuntu's own update job froze this machine once before (11 Nov 07:12). The evidence is on the machine.
-- **What is lost while it is off:** no trade is recorded, no copy can be bought or sold by the book, the agents do not
-  run. The recorder replays what it missed for 40 hours: restarted before 13 Nov 16:30 UTC the tape has no hole.
+- **What happened.** The server never crashed. On 11 Nov at 07:14 UTC, during that morning's 11-minute freeze, its
+  network manager failed one operation and gave up on the network card. From then on nothing renewed the server's
+  lease on its internet address. The lease ran out on 12 Nov at 00:31 UTC, and for twelve hours the machine ran
+  with no connection in or out: no trade recorded, no agent turn, no contact with OKTech, no message to the owner.
+  A restart by BitLaunch's support at 12:30 UTC, asked for by the owner, brought it back. It was not the code update
+  of 00:26. (Audit row 80. An earlier version of this section said the server was off and the cause unknown: it was
+  running, and the cause is the one above.)
+- **What it cost.** Twelve hours of the agents' work and of any live copy. No money: nothing was held, and the wallet
+  cannot pay a curve buy anyway. The recorder replayed all twelve hours of pump.fun curve trades within 44 minutes of
+  the restart: the tape has no hole. PumpSwap trades of recently migrated coins for those hours are missing.
+- **This session could not tell a dead server from a cut-off one for ten hours.** It has one way in, and that way was
+  the dead one. The owner's panel showed the machine as running, which was true.
+- **Fixed since 13:17 UTC:** every 15 minutes the server checks its own network setup; a failed one is a message to
+  the owner at once, with what to do. Last time that was 17 hours before the connection went.
+- **Waiting for the owner's one command on the server** (`sudo bash /opt/snipetech/deploy/setup.sh`, asked 13:25 UTC):
+  the server then repairs its network setup by itself within a minute, and Ubuntu's daily update job, which caused
+  the freeze, runs at the lowest priority. Until it is run, the same can happen again after any freeze.
 - **Still nothing profitable live.** That has not changed: no rule has a lower bound above zero at a landing we get.
-- **Built meanwhile, tested, pushed, waiting for the server (audit rows 77 to 79, open item 19):**
+  The analyst qualified a second wallet during the day (4sAUSQ) and at once questioned its own result: the wallet
+  buys in a set of four whose order changes, which the paper test may not see (its idea I72, being checked).
+- **Built during the outage, on the server since 13:07 UTC (audit rows 77 to 79, open item 19):**
   - the table the nearest lead was waiting for: **which bid lands first behind a followed wallet** (`place-bids`).
     It says whether the first place behind a known wallet is bought with a bid or taken by speed, what each bid
     would have won, and who holds the place today. The server's analyst runs it and then scores the copy at that bid;
   - the server **refuses a code update while one of its jobs is mid-run** (a deploy went out during a scan on
     12 Nov 00:08);
   - the server **tells the owner once when it restarted or stood still**: from when to when, and what is not running;
-  - the machine's own log of **the boot before** can be read (`remote logs kernel --boot -1`): how this outage's
-    cause will be found.
+  - the machine's own log of **the boot before** can be read (`remote logs kernel|systemd|network --boot -1`): how
+    this outage's cause was found.
 
 ## 11 Nov, 23:30 UTC: every paper result at size is too good; a wrong alert went to the owner
 
