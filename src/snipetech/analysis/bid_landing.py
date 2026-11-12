@@ -96,9 +96,14 @@ def own_wallets(store: Store, cfg: Config) -> set[str]:
     return own | ({cfg.operator.wallet} if cfg.operator.wallet else set())
 
 
-def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: Collection[str] = ()) -> dict | None:
+def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: Collection[str] = (),
+          min_sol: float = 0.0) -> dict | None:  # fmt: skip
     """One moment read off its block. `trades`: the coin's trades from the followed wallet's block on, in the order
-    they ran; `sig`: the followed buy; `mates`: the wallet's companions; `own`: our wallets. Returns the followed
+    they ran; `sig`: the followed buy; `mates`: the wallet's companions; `own`: our wallets. `min_sol`: an outsider's
+    buy of less SOL than this is dust and is passed over: no buyer, no place, and not that wallet's first buy (a
+    larger buy of its own later counts). The bid tables read with the lab's dust floor (`place_bids.read_blocks`,
+    lab.DUST_SOL). The landing model reads without one (0, the default: `lab.bid_entry`, `place_bids._model_behind`):
+    a dust transaction ahead of a copy stood there whatever it bought (see `ahead`). Returns the followed
     buy's size and bid, the outsiders' first buys behind it in its block in order (`buyers`: place, wallet, SOL paid,
     bid, percent over the followed wallet's price, `adjacent`: the next transaction after the wallet's own entry,
     `between`: ahead of one of its companions, `behind`: transactions behind the wallet's own entry, `sig`), the
@@ -117,6 +122,7 @@ def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: C
         if trades[k].is_buy and trades[k].user in mates:
             end = k
     p0 = _price(lead)
+    floor = _lamports(min_sol)
     seen = {lead.user}
     buyers: list[dict[str, Any]] = []
     after: list[dict[str, Any]] = []
@@ -126,11 +132,14 @@ def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: C
         t = trades[k]
         if not t.is_buy or t.user in seen or t.user in mates:
             continue
-        seen.add(t.user)
         later = int(t.slot) - int(lead.slot)
         if t.user in own:
+            seen.add(t.user)
             ours = ours or {"place": outsiders + 1, "slots_later": later, "bid": _bid(t), "sol": _paid(t)}
             continue
+        if int(t.quote) < floor:  # dust: it moves no price and competes for no place (the tables' reading)
+            continue
+        seen.add(t.user)
         outsiders += 1
         if first_later is None:
             first_later = later
@@ -160,6 +169,13 @@ def ahead(read: Mapping[str, Any], bid_sol: float, fast_txs: int = FAST_TXS) -> 
       own entry, whatever it bid (so its bid need not be known);
     - `outbid`: any other outsider in the wallet's block that bid at least `bid_sol`;
     - `later`: an outsider in the blocks after it (as many as the reading holds) that bid at least `bid_sol`.
+
+    A dust buy counts like any other (the reading holds it: `block` without `min_sol`). It took its place in the
+    block whatever it bought: one right behind the wallet is the faster sender no bid beats, and one that bid at
+    least as much stands where a bid like ours did not reach. Leaving it out would put a paper copy at a place better
+    than its bid buys. Right behind the wallet it costs the copy nothing (it moves no price), and the place counts
+    it, as the chain reader counts every buy ahead of our real ones (`fills.trades_behind`, `place_bids.model_check`).
+    Only the bid tables leave dust out (`place_bids.read_blocks`).
 
     Returns {"ahead": their rows, in the order they ran, "fast", "outbid", "later": how many of each, "place": ours
     among the outsiders, 1 = first}."""

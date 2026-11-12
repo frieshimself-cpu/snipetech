@@ -203,6 +203,23 @@ class Trigger:
     # over, and the rule fires on the next followed wallet's first buy that is old enough. 0 = any age; `max_age` is
     # the other end. A coin whose launch the tape does not hold has no age and gives no moment
     min_age: float = 0.0
+    # kol (12 Nov, the leader profiles: Schoen and Dustxbt pay as single wallets, and every per-leader rule "needs:
+    # only this wallet"): the wallets the rule follows, full addresses separated by commas, sorted and each once
+    # (`parse_trigger`, `only_wallets`); "" = every wallet of `group`. The rule fires on a first buy by one of them
+    # and on nobody else's; they need not be in `group`. `group` still says whose first buys the consensus gate
+    # counts (`known`, `gap`: the group's wallets and the named ones). Companions are looked up for the named wallets
+    only: str = ""
+    # kol: the consensus gate (`known`, `gap`) counts the first buys of tracked wallets of every trigger group
+    # (TRIGGER_GROUPS), not only the rule's own ("a tracked wallet already in" was the best split for Schoen and
+    # Jijo; with the 18 KOLs alone it left 7 copies). False = the rule's own group, as every rule before
+    known_any: bool = False
+    # kol (12 Nov, the owner: "also keep in mind marketcap volume etc"): the SOL traded in the coin before the
+    # followed buy, buys and sells together, that buy itself not counted (`volume_before`), is at least `min_vol` and
+    # at most `max_vol` (0 = no limit), over the `vol_secs` seconds before it (0 = since the coin's launch on the
+    # tape). Only what was traded before the followed buy is read. The market cap has its own gate (`min_mcap`)
+    vol_secs: float = 0.0
+    min_vol: float = 0.0
+    max_vol: float = 0.0
 
     def label(self) -> str:
         base = self._label()
@@ -216,6 +233,9 @@ class Trigger:
             + (["serial-crew coins only"] if self.crew == "only" else [])
         )
         return base + (f" ({', '.join(extra)})" if extra else "")
+
+    def _vol_window(self) -> str:
+        return f"in the {self.vol_secs:g} s before the buy" if self.vol_secs else "before the buy since the launch"
 
     def _label(self) -> str:
         if self.kind == "momentum":
@@ -240,18 +260,30 @@ class Trigger:
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
             who = "a KOL" if self.group == "kol" else f"a tracked wallet ({self.group})"
+            named = [short_wallet(w) for w in only_wallets(self)]
+            if named:  # the wallets by name: the group is then only whose buys the consensus gate counts
+                who = (f"the wallet {named[0]}" if len(named) == 1 else f"one of {', '.join(named)}"
+                       if len(named) <= 3 else f"one of {len(named)} wallets ({', '.join(named)})")  # fmt: skip
+            known = "tracked wallets of any group" if self.known_any else "known wallets"
+            whose = "" if self.known_any or not named else f" (the group {self.group} and the named)"
             gates = (
                 ([f"<= {self.max_sol:g} SOL"] if self.max_sol else [])
-                + ([f"with >= {self.known} known wallets in"
-                    + (f" within {self.within:g} s" if self.within else "")] if self.known > 1 else [])
+                + ([f"with >= {self.known} {known} in"
+                    + (f" within {self.within:g} s" if self.within else "") + whose] if self.known > 1 else [])
                 + ([f"{self.min_curve:g} to {self.max_curve:g} SOL in the curve"] if self.min_curve and self.max_curve
                    else [f">= {self.min_curve:g} SOL in the curve"] if self.min_curve
                    else [f"<= {self.max_curve:g} SOL in the curve"] if self.max_curve else [])
                 + ([f"market cap {self.min_mcap:g} to {self.max_mcap:g} SOL"] if self.min_mcap and self.max_mcap
                    else [f"market cap >= {self.min_mcap:g} SOL"] if self.min_mcap
                    else [f"market cap <= {self.max_mcap:g} SOL"] if self.max_mcap else [])
+                + ([f"{self.min_vol:g} to {self.max_vol:g} SOL traded {self._vol_window()}"]
+                   if self.min_vol and self.max_vol
+                   else [f">= {self.min_vol:g} SOL traded {self._vol_window()}"] if self.min_vol
+                   else [f"<= {self.max_vol:g} SOL traded {self._vol_window()}"] if self.max_vol else [])
                 + (["teams count once"] if self.teams else [])
-                + ([f">= {self.gap:g} s after the previous known wallet"] if self.gap else [])
+                + ([f">= {self.gap:g} s after the previous "
+                    + ("tracked wallet of any group" if self.known_any else "known wallet") + whose]
+                   if self.gap else [])
             )  # fmt: skip
             return (f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
                     + "".join(f", {g}" for g in gates))  # fmt: skip
@@ -259,6 +291,63 @@ class Trigger:
 
 
 KOL_MIN_SOL = 0.1  # a labeled wallet's buy below this is noise, not a signal
+# An outsider's buy below this is dust: it moves no price and competes for no place, so the bid tables (`place-bids`,
+# `tips`) do not count it as a buyer behind the followed wallet, nor its bid as a bid to outbid (12 Nov: a 0.00 SOL
+# buy right behind Cupseyy made his first outsider's bid read 0.034 SOL instead of 0.305). The one floor for both.
+# The bid landing model (analysis.bid_landing `ahead`) still counts it: it stood there
+DUST_SOL = KOL_MIN_SOL
+ONLY_MAX = 20  # wallets a rule can name (`Trigger.only`); more than that is a list to label as a group
+
+
+def only_wallets(trig: Trigger) -> tuple[str, ...]:
+    """The wallets a wallet rule names (`Trigger.only`), sorted, each once; () when it follows its whole group."""
+    return tuple(sorted({w.strip() for w in str(trig.only or "").split(",") if w.strip()}))
+
+
+def short_wallet(address: str) -> str:
+    """An address as a label shows it: 5hAgYC…84zM."""
+    return f"{address[:6]}…{address[-4:]}" if len(address) > 12 else address
+
+
+def rule_wallets(trig: Trigger, kols: Any) -> Collection[str]:
+    """The wallets a wallet rule fires on: the ones it names (`only`), else every wallet of its label group (the
+    group's own set, not a copy: this is asked once a coin). `kols`: {label group: wallets}, or a bare set (the group
+    itself). The one place a rule's group becomes wallets: the lab's rule, each wallet's own moments, the coins a lab
+    reads, the companions it looks up, `place-bids` and the forward paper run all ask here."""
+    named = only_wallets(trig)
+    if named:
+        return frozenset(named)
+    return (kols.get(trig.group) or frozenset()) if isinstance(kols, dict) else kols
+
+
+def known_sets(trig: Trigger, kols: Any) -> tuple[Collection[str], ...]:
+    """The sets of wallets whose first buys a wallet rule's consensus gate counts (`known`, `gap`): its label group's
+    and the ones it names, or with `known_any` the tracked wallets of every trigger group (TRIGGER_GROUPS). A wallet
+    counts when it is in any of them."""
+    named = (frozenset(only_wallets(trig)),) if trig.only else ()
+    if not isinstance(kols, dict):
+        return (kols, *named)
+    groups = TRIGGER_GROUPS if trig.known_any else (trig.group,)
+    return (*(kols.get(g) or frozenset() for g in groups), *named)
+
+
+def volume_before(path: MarketPath, i: int, secs: float = 0.0) -> float:
+    """SOL traded in the coin before the trade at state i, buys and sells together, that trade itself not counted:
+    over the `secs` seconds before it, or with 0 since the path starts (the coin's launch, where the tape holds it).
+    Nothing that came after state i is read. The tape's clock is whole seconds, so "the 60 s before" is every earlier
+    trade stamped at most 60 s before the buy."""
+    lo = int(np.searchsorted(path.ts, float(path.ts[i]) - float(secs), side="left")) if secs > 0 else 0
+    return float(np.sum(path.quote[lo:i])) / LAMPORTS
+
+
+def _vol_gate(trig: Trigger, path: MarketPath, i: int) -> bool:
+    """A wallet rule's volume gate at the followed buy i: the SOL traded in the `vol_secs` before it (`volume_before`)
+    is at least `min_vol` and at most `max_vol` (0 = no limit)."""
+    if not (trig.min_vol or trig.max_vol):
+        return True
+    vol = volume_before(path, i, trig.vol_secs)
+    return vol >= trig.min_vol and not (trig.max_vol and vol > trig.max_vol)
+
 
 TRIGGERS = (
     [Trigger("launch")]
@@ -301,7 +390,8 @@ TRIGGERS = (
 
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
-KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap", "min_mcap", "max_mcap")
+KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap", "min_mcap", "max_mcap",
+             "only", "known_any", "vol_secs", "min_vol", "max_vol")  # fmt: skip
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
@@ -320,10 +410,11 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
     "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000),
+    "vol_secs": (0, 86_400), "min_vol": (0, 10_000_000), "max_vol": (0, 10_000_000),
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
-FLAG_FIELDS = ("plain", "solo", "teams")
-TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots")
+FLAG_FIELDS = ("plain", "solo", "teams", "known_any")
+TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots", "only")
 CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
@@ -344,8 +435,33 @@ CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` c
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
 
 
+def _only_value(value: Any) -> str:
+    """`only` as a rule keeps it: full wallet addresses, sorted, each once, joined by commas, so the same set of
+    wallets is always the same rule. Given as text (addresses separated by commas) or as a JSON list of addresses.
+    Anything that is not a wallet address is refused: a typed name would follow nobody, and the lab would answer "0
+    moments" as if the wallet had not traded."""
+    how = ("only takes the full addresses of the wallets the rule follows, separated by commas (e.g. "
+           '"5hAgYC8TJCcEZV7LTXAzkTrm7YL29YXyQQJPCNrG84zM"), or "" for every wallet of the group')  # fmt: skip
+    if isinstance(value, (list, tuple)):
+        parts = list(value)
+    elif isinstance(value, str):
+        parts = [p.strip() for p in value.split(",")] if value else []
+        parts = [p for p in parts if p] or ([value] if value else [])  # "," or " " names nobody: refused below
+    else:
+        raise ValueError(f"{how}, not {value!r}")  # noqa: TRY004 - every refusal is a ValueError
+    bad = [p for p in parts if not _is_address(p)]
+    if bad:
+        raise ValueError(f"{how}; {bad[0]!r} is not a wallet address (a name or a shortened address follows nobody)")
+    named = sorted(set(parts))
+    if len(named) > ONLY_MAX:
+        raise ValueError(f"only names at most {ONLY_MAX} wallets, not {len(named)}: label a longer list as a group")
+    return ",".join(named)
+
+
 def _trigger_value(name: str, value: Any) -> Any:
     """One field of an agent's trigger, typed the way the grid's triggers are (3 SOL is 3.0, 4 buyers is 4)."""
+    if name == "only":
+        return _only_value(value)
     if name in TEXT_FIELDS:
         if not isinstance(value, str):
             raise ValueError(f"{name} must be text, not {value!r}")
@@ -414,6 +530,16 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"max_mcap ({trig.max_mcap:g}) is under min_mcap ({trig.min_mcap:g}): no coin fits")
     if trig.max_age and trig.max_age < trig.min_age:
         raise ValueError(f"min_age ({trig.min_age:g} s) is past max_age ({trig.max_age:g} s): no coin fits")
+    if trig.max_vol and trig.max_vol < trig.min_vol:
+        raise ValueError(f"max_vol ({trig.max_vol:g}) is under min_vol ({trig.min_vol:g}): no coin fits")
+    if trig.vol_secs and not (trig.min_vol or trig.max_vol):
+        raise ValueError(f"vol_secs ({trig.vol_secs:g}) is the window the volume gate counts over: it goes with "
+                         "min_vol or max_vol (SOL traded in it before the followed buy). Without one it would be "
+                         "the plain rule under another name")  # fmt: skip
+    if trig.known_any and trig.known < 2 and not trig.gap:
+        raise ValueError("known_any widens the consensus gate to the tracked wallets of every group: it goes with "
+                         "known of 2 or more (or gap). Without one it would be the plain rule under another "
+                         "name")  # fmt: skip
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
@@ -1281,7 +1407,7 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
         mcap = path.mcap_sol(i)
         if mcap < trig.min_mcap or (trig.max_mcap and mcap > trig.max_mcap):
             return False
-    return True
+    return _vol_gate(trig, path, i)  # the SOL traded before the followed buy, inside `min_vol` / `max_vol`
 
 
 def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
@@ -1331,10 +1457,14 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
                 return None
         idx = [i for i in range(path.n) if path.sigs[i] == launch.sig]
         return max(idx) if idx else None
-    group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
+    # the wallets the rule fires on (the ones it names with `only`, else its group) and the ones its consensus gate
+    # counts (its group and the named, or with `known_any` every trigger group's): the same sets without the knobs
+    # (the consensus sets only where a gate reads them: `known` of 2 or more, or `gap`)
+    group = rule_wallets(trig, kols) if trig.kind == "kol" else ()
+    known = known_sets(trig, kols) if trig.kind == "kol" and (trig.known > 1 or trig.gap) else ()
     team_of = (kols.get(TEAMS) or {}) if trig.teams and isinstance(kols, dict) else {}
     seen: set[str] = set()  # buyers so far: a KOL trigger wants the wallet's *first* buy in the coin, not a top-up
-    known_at: list[float] = []  # when each group wallet made its first buy in the coin (a KOL trigger's consensus)
+    known_at: list[float] = []  # when each known wallet made its first buy in the coin (a KOL trigger's consensus)
     for i in range(path.n):
         if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
             return None
@@ -1343,7 +1473,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         who = team_of.get(path.users[i], path.users[i])  # the known wallet this buyer counts as
         first = who not in seen
         seen.add(who)
-        if trig.kind == "kol" and first and path.users[i] in group and path.quote[i] >= KOL_MIN_SOL * LAMPORTS:
+        if known and first and path.quote[i] >= KOL_MIN_SOL * LAMPORTS and any(path.users[i] in g for g in known):
             known_at.append(float(path.ts[i]))
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
             if trig.solo:
@@ -1386,15 +1516,17 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
 
 
 def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
-    """`_fire`'s KOL rule for every wallet of the trigger's group, not only the first one in: the index of each group
-    wallet's first buy in the coin when that buy is at least the trigger's size, in tape order. Each wallet's own copy
-    sniper copies its own first buy, so the qualify lab gives each wallet its own moment in a coin."""
+    """`_fire`'s KOL rule for every wallet of the trigger's group (or every wallet it names, `only`), not only the
+    first one in: the index of each such wallet's first buy in the coin when that buy is at least the trigger's size,
+    in tape order. Each wallet's own copy sniper copies its own first buy, so the qualify lab gives each wallet its
+    own moment in a coin. Of a rule's gates only the volume gate is applied here (`_vol_gate`, 12 Nov); the consensus,
+    size-cap, curve and market-cap gates are `_fire`'s alone, as before."""
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return []
     if (trig.max_age or trig.min_age) and launch is None:
         return []
     dev = launch.deployers() if launch is not None else set()
-    group = (kols.get(trig.group) or set()) if isinstance(kols, dict) else kols
+    group = rule_wallets(trig, kols)  # the wallets the rule names (`only`), else its group's
     floor = (trig.sol or KOL_MIN_SOL) * LAMPORTS
     seen: set[str] = set()  # buyers so far: only a wallet's first buy counts, never its top-ups
     out: list[int] = []
@@ -1407,7 +1539,7 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
         seen.add(u)
         if trig.min_age and path.ts[i] < launch.ts + trig.min_age:
             continue  # its first buy came while the coin was too young
-        if u in group and path.quote[i] >= floor:
+        if u in group and path.quote[i] >= floor and _vol_gate(trig, path, i):
             out.append(i)
     return out
 
@@ -1823,6 +1955,10 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 row["outside"] = outside
             if trig.kind == "kol":  # how many companions of the wallet the copy was scored behind
                 row["mates"] = len(run.mates.get(path.users[i]) or ())
+                # for the bands (`bands`): the coin's market cap after the followed buy and the SOL traded in the
+                # BAND_VOL_SECS before it, both read off the path the moment was found on (no second pass)
+                row["mcap_sol"] = round(path.mcap_sol(i), 3)
+                row["vol60_sol"] = round(volume_before(path, i, BAND_VOL_SECS), 6)
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
             if trig.kind in AMM_KINDS:
@@ -2048,8 +2184,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         found_by = "lab"
         followed: set[str] = set()
         for _, t in triggers:
-            if t.kind == "kol":
-                followed |= set((kols.get(t.group) or ()) if isinstance(kols, dict) else kols)
+            if t.kind == "kol":  # the wallets it fires on: the ones it names (`only`), else its group's
+                followed |= rule_wallets(t, kols)
         mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0))) if followed else {}
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
@@ -2062,11 +2198,14 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                own=frozenset(own_wallets(store, cfg)) if is_bid(position) else frozenset(),
                same_sol=bool(same_sol))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
-    if plan_wallets is None and triggers and isinstance(kols, dict) and all(t.kind == "kol" for _, t in triggers):
-        # every rule of this lab fires on a buy by one of its group's wallets, of at least its size (`_fire`): a coin
-        # none of them bought so gives no moment and is not read (11 Nov, the analyst's 2 SOL lab under a profile:
-        # 109,876 coins read, 20 million trades, 17 minutes, for 903 moments)
-        plan_wallets = set().union(*((kols.get(t.group) or set()) for _, t in triggers))
+    named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
+    if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)
+            and all(t.kind == "kol" for _, t in triggers)):  # fmt: skip
+        # every rule of this lab fires on a buy by one of its wallets (the ones it names, else its group's:
+        # `rule_wallets`), of at least its size (`_fire`): a coin none of them bought so gives no moment and is not
+        # read (11 Nov, the analyst's 2 SOL lab under a profile: 109,876 coins read, 20 million trades, 17 minutes,
+        # for 903 moments). A rule for one wallet reads that wallet's coins, in the qualify lab's form too
+        plan_wallets = set().union(*(rule_wallets(t, kols) for _, t in triggers))
         floor = group_floor(triggers)
     plan = _plan(store, spans, plan_wallets, min_trades, floor)
     items = [(a, b, slot_secs, mint) for a, b, slot_secs, mints in plan for mint in mints]
@@ -2334,6 +2473,59 @@ def pick_exit(m: np.ndarray, cut: int, need: int) -> tuple[int | None, np.ndarra
     return k, means
 
 
+# Where a wallet rule's moments paid (12 Nov, the owner: "also keep in mind marketcap volume etc"): every ranked
+# wallet rule carries its chosen exit's result split by the coin's market cap after the followed buy and, separately,
+# by the SOL traded in the minute before it, so one lab answers "where does this rule pay" without ten reruns.
+BAND_VOL_SECS = 60.0
+MCAP_BAND_EDGES = (50.0, 100.0, 200.0, 410.0)  # SOL; a pump.fun curve ends near 410 SOL of market cap
+MCAP_BAND_NAMES = ("under 50", "50-100", "100-200", "200-410", "410 and up")
+VOL_BAND_EDGES = (5.0, 20.0, 50.0)  # SOL traded in the minute before; the first band is nothing at all
+VOL_BAND_NAMES = ("0", "up to 5", "5-20", "20-50", "50 and up")
+BAND_MIN_N = 5  # a band with fewer moments shows how many, and no mean
+BANDS_NOTE = ("the bands are over all the rule's moments the chosen exit was scored on, the older ones the exit was "
+              "picked on included, and the bands were not chosen before looking: a band that looks good is a "
+              "hypothesis to test with the gate, not a result. mcap_sol: the coin's market cap in SOL after the "
+              "followed buy (gate: min_mcap / max_mcap). vol60_sol: SOL traded in the coin in the 60 s before the "
+              "followed buy, buys and sells, that buy not counted (gate: vol_secs 60 with min_vol / max_vol). A band "
+              f"runs from its lower edge up to, not including, its upper edge; under {BAND_MIN_N} moments it shows n "
+              "only")  # fmt: skip
+
+
+def _mcap_band(mcap: float) -> int:
+    return bisect.bisect_right(MCAP_BAND_EDGES, mcap)
+
+
+def _vol_band(vol: float) -> int:
+    return 0 if vol <= 0 else 1 + bisect.bisect_right(VOL_BAND_EDGES, vol)
+
+
+def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) -> dict[str, Any] | None:
+    """A wallet rule's moments `rs` on exit `k`, split by market-cap band and, separately, by volume band (the rows'
+    `mcap_sol` and `vol60_sol`): per band its moments (`n`) and, from BAND_MIN_N moments on, the mean, the bootstrap
+    lower bound, the share of wins and the total. Over every moment the exit was scored on, older and newer alike
+    (`BANDS_NOTE`). None for rows that carry neither number (no wallet rule). No tape is read."""
+    scored = [r for r in rs if r["pnl"][k] is not None and "mcap_sol" in r and "vol60_sol" in r]
+    if not scored:
+        return None
+
+    def split(names: Sequence[str], band_of, key: str) -> list[dict[str, Any]]:
+        pnl: list[list[float]] = [[] for _ in names]
+        for r in scored:
+            pnl[band_of(float(r[key]))].append(float(r["pnl"][k]))
+        out = []
+        for name, xs in zip(names, pnl):
+            row: dict[str, Any] = {"band": name, "n": len(xs)}
+            if len(xs) >= BAND_MIN_N:
+                st = summarize(xs, conf, samples)
+                row |= {x: st[x] for x in ("mean", "ev_lower", "win_rate", "total")}
+            out.append(row)
+        return out
+
+    return {"note": BANDS_NOTE, "moments": len(scored), "min_n": BAND_MIN_N,
+            "mcap_sol": split(MCAP_BAND_NAMES, _mcap_band, "mcap_sol"),
+            "vol60_sol": split(VOL_BAND_NAMES, _vol_band, "vol60_sol")}  # fmt: skip
+
+
 def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
     """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. Each row
     names the exit its moments were scored with: on a launch-type trigger the watched one (`collect`'s `kind_exits`),
@@ -2353,7 +2545,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     `size` (12 Nov) says what each strategy's numbers rest on at the size bought (`_size_of`): how far our own buy
     moved the price, the result with nothing the later buyers added next to the one with all of it, how many newer
     moments rest on a price outside the model, and how many moments were never scored for size. It changes no
-    ranking and no other number."""
+    ranking and no other number. Nor does `bands` (12 Nov): a wallet rule's chosen exit on all its moments, by
+    market-cap band and by volume band (`bands`)."""
     rows, curve_exits = data["rows"], data["exits"]
     by_kind = data.get("kind_exits") or {}
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
@@ -2391,7 +2584,13 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         })  # fmt: skip
         if any("place" in r for r in rs):  # at a bid landing: the places the rule's copies got among the outsiders
             out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
+        out[-1]["_rows"] = (rs, k)  # for the bands of the rows that are kept
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
+    for j, r in enumerate(out):
+        rs, k = r.pop("_rows")
+        split = bands(rs, k, conf, samples) if j < top else None  # a wallet rule: where its moments paid
+        if split is not None:
+            r["bands"] = split
     return out[:top]
 
 

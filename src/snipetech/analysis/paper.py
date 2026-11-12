@@ -153,10 +153,13 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     # and a KOL rule's consensus, size and market-cap gates (10 Nov: unset, the first known wallet in at any size)
     # and a hunt's wallet group (11 Nov: "", any launch) and a KOL rule's market cap past the curve (12 Nov: unset)
     # and a KOL rule's smallest coin age (12 Nov, the 6Z91 recipe: 0, any age)
+    # and a KOL rule's own wallets, its consensus gate over every group and its volume gate (12 Nov evening, the
+    # leader profiles: "", the whole group; False, the rule's own group; no window and no limit)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
                   "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0,
-                  "min_age": 0.0}  # fmt: skip
+                  "min_age": 0.0, "only": "", "known_any": False, "vol_secs": 0.0, "min_vol": 0.0,
+                  "max_vol": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     extra: dict[str, Any] = {"buy_bid_sol": float(buy_bid_sol)} if float(buy_bid_sol or 0) > 0 else {}
     if asked:

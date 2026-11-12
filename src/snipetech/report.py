@@ -804,6 +804,34 @@ def _size_lines(size: dict, strategies: list[dict]) -> list[str]:
     return out
 
 
+def _band_lines(strategies: list[dict]) -> list[str]:
+    """Each ranked wallet rule's two small tables (lab.bands): its chosen exit on all its moments, by the coin's
+    market cap after the followed buy and by the SOL traded in the minute before it. Said with them: the bands hold
+    the moments the exit was picked on too, so a band that looks good is a hypothesis, not a result."""
+    banded = [s for s in strategies if s.get("bands")]
+    if not banded:
+        return []
+    head = ("Where each wallet rule paid, by market cap and by volume. The bands are over ALL the rule's moments, "
+            "the ones its exit was picked on included: a band that looks good is a hypothesis to test with the "
+            f"gate, not a result. A band with fewer than {banded[0]['bands'].get('min_n', 5)} moments shows its "
+            "count only.")  # fmt: skip
+    out = ["", head]
+
+    def rows(split: list[dict]) -> list[list]:
+        return [[b["band"], b["n"], sol(b.get("mean")), sol(b.get("ev_lower")), pct(b.get("win_rate")),
+                 sol(b.get("total"))] for b in split]  # fmt: skip
+
+    for s in banded:
+        b = s["bands"]
+        out.append(f"  {s['trigger']} | {s['exit']} ({b['moments']} moments)")
+        for title, key in (("By market cap after the followed buy, SOL (gate: min_mcap / max_mcap)", "mcap_sol"),
+                           ("By SOL traded in the 60 s before it (gate: vol_secs 60, min_vol / max_vol)",
+                            "vol60_sol")):  # fmt: skip
+            text = table(rows(b[key]), [title, "n", "mean", "bound", "win", "total"])
+            out += ["    " + line for line in text.split("\n")]
+    return out
+
+
 def render_lab(r: dict) -> str:
     cost = f" at {r['per_tx_sol']:g} SOL a transaction" if r.get("per_tx_sol") is not None else ""
     bid = r.get("bid_landing") or {}  # copies scored where their bid puts them (lab --copy-position bid / bid-)
@@ -854,6 +882,7 @@ def render_lab(r: dict) -> str:
     if r.get("amm_tape"):
         out += [""] + _amm_tape_lines(r["amm_tape"])
     out += _size_lines(r.get("size") or {}, r["strategies"])
+    out += _band_lines(r["strategies"])
     if r.get("later_buyers") == "same_sol":
         out.append("Later buyers: every one replayed spending the SOL it spent on the tape and no more (--same-sol), "
                    "the tighter upper end; without the flag a buyer of an exact number of coins pays what they cost "
@@ -1199,6 +1228,9 @@ def render_place_bids(o: dict) -> str:
     if u:
         out.append(f"  our own copies: {u['moments']} ({u['same_block']} in the wallet's block), place {q(u['place'])} "
                    f"(median) at a bid of {q(u['bid_sol'])} SOL, {q(u['buy_sol'])} SOL a buy")  # fmt: skip
+    if o.get("dust_under_sol"):
+        out.append(f"  buys under {o['dust_under_sol']:g} SOL behind the wallet are left out as dust: no buyer, no "
+                   "place, no bid to outbid")  # fmt: skip
     return "\n".join(out)
 
 
