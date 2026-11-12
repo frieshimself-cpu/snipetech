@@ -1184,7 +1184,8 @@ def test_a_wallet_can_be_called_up_for_review_now(tmp_path, capsys):
 
     from snipetech import cli
 
-    _svc_, st, data = _svc(tmp_path)
+    _svc_only, st, data = _svc(tmp_path)
+    del _svc_only
     try:
         for w in ("A", "B"):
             st.upsert_candidate(w, "solanatracker", {"trades": 300}, NOW - 9000)
