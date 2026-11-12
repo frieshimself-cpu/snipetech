@@ -749,7 +749,8 @@ def _machine(root: Path) -> dict[str, Any] | None:
     memory (`other_units`: GB, largest first). And how close the machine itself is to running out (11 Nov 07:12 UTC:
     it stood still for 11 minutes): `memory` (GB available, waiting to be written, swap and free swap), `pressure`
     (the share, %, of the last minute its tasks waited for processor, memory and disk) and `stalled_secs` (the seconds
-    they have waited since boot: two readings bracket a stall). None without cgroup v2."""
+    they have waited since boot: two readings bracket a stall), and `boot_ts`, when it booted. None without cgroup
+    v2."""
     if not (root / "cpu.stat").is_file():
         return None
     others: list[tuple[str, float]] = []
@@ -779,7 +780,21 @@ def _machine(root: Path) -> dict[str, Any] | None:
                     pressure[kind], stalled[kind] = float(fields["avg60"]), round(int(fields["total"]) / 1e6, 1)
     if pressure:
         out["pressure"], out["stalled_secs"] = pressure, stalled
+    boot = boot_ts()
+    if boot is not None:  # after an outage: did the machine restart, or did it stand still
+        out["boot_ts"] = boot
     return out
+
+
+def boot_ts(proc: Path | None = None) -> int | None:
+    """When the machine booted (unix seconds, the kernel's `btime` in /proc/stat); None where it cannot be read."""
+    try:
+        for line in ((proc or PROC) / "stat").read_text().splitlines():
+            if line.startswith("btime "):
+                return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
 
 
 def _meminfo() -> dict[str, int]:

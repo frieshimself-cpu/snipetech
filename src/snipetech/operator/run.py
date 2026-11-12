@@ -16,7 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive, redact
-from . import learning, live_test, plain_sol, postmortem, risk_guard
+from . import learning, live_test, outage, plain_sol, postmortem, risk_guard
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -200,7 +200,8 @@ def carry_reason_ts(prev_ts: dict[str, float], decision: Decision, t0: float) ->
 async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = False, repo: Path, branch: str,
                   now: Callable[[], float] = time.time, services=None, balances=None, turn=run_turn, client=None,
                   disk_free_gb: Callable[[], float] | None = None, send: Callable[[str], bool] | None = None,
-                  commands_get: Callable[[str, dict], dict] | None = None) -> int:  # fmt: skip
+                  commands_get: Callable[[str, dict], dict] | None = None,
+                  boot: Callable[[], int | None] | None = None) -> int:  # fmt: skip
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent).ensure()
     t0 = now()
     if not _acquire_lock(paths, t0):
@@ -222,6 +223,15 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         if balances is not None:
             kw["balances"] = balances
         snap = await take_snapshot(svc, paths, cfg, prev, t0, **kw)
+        if not dry_run:
+            # the server was off, or stood still, since the last round: said once, to the owner and in the notes
+            try:
+                gone = outage.check(paths, t0, (boot or outage.boot_ts)())
+                if gone is not None:
+                    notifier.send(notes.write(outage.words(gone, snap.services), "decision"))
+                    _log(paths, t0, f"uptime: {gone['kind']} of {gone['secs']} s told")
+            except Exception as exc:  # noqa: BLE001 - the notice never breaks the round
+                _log(paths, t0, redact(f"uptime: failed: {type(exc).__name__}: {exc}"))
         if not dry_run:  # loop stages whose timers are not enabled run from here
 
             def standin_log(m: str) -> None:
@@ -364,6 +374,11 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         _log(paths, now(), f"turn {decision.mode}: {json.dumps(result, default=str)}")
         return 0
     finally:
+        if not dry_run:  # the round was alive until now: a long one is no standstill for the next (outage.seen)
+            try:
+                outage.seen(paths, now())
+            except Exception as exc:  # noqa: BLE001
+                _log(paths, t0, redact(f"uptime: failed: {type(exc).__name__}: {exc}"))
         try:
             paths.lock.unlink()
         except OSError:

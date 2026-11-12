@@ -608,3 +608,20 @@ def test_the_remote_command_can_wait_for_a_quiet_moment(monkeypatch, capsys):
     seen.clear()
     answers[:] = [O.OpsError(409, "busy")]
     assert cli.main(base) == 1 and len(seen) == 1 and naps == []
+
+
+def test_status_says_when_the_machine_booted(env, tmp_path, monkeypatch):
+    """12 Nov: after an outage the first question is whether the machine restarted or stood still. Status gives the
+    kernel's boot time."""
+    ops, key = env
+    root = tmp_path / "cgroup"
+    root.mkdir()
+    (root / "cpu.stat").write_text("usage_usec 5000000\n")
+    proc = tmp_path / "proc"
+    proc.mkdir()
+    (proc / "stat").write_text("cpu  1 2 3\nbtime 1794011400\n")
+    monkeypatch.setattr(O, "CGROUP_ROOT", root)
+    monkeypatch.setattr(O, "PROC", proc)
+    assert req(ops, key, "status")["machine"]["boot_ts"] == 1_794_011_400
+    (proc / "stat").unlink()
+    assert "boot_ts" not in req(ops, key, "status")["machine"]

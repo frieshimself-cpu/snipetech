@@ -522,3 +522,67 @@ def test_a_conversion_that_cannot_be_made_never_breaks_the_round(tmp_env, monkey
     assert _op(tmp_env, balances=bal, now=lambda: NOW + 900) == 0
     assert "plain SOL: failed: ValueError: the step itself broke" in tmp_env["paths"].log.read_text()
     assert tmp_env["paths"].snapshot.exists()  # the round went on to its end
+
+
+def test_the_round_tells_the_owner_once_that_the_server_was_off(tmp_env):
+    """12 Nov 2026: the server stopped answering at 00:31 UTC and nothing on it would have said afterwards from when
+    to when. The first round after a restart tells the owner once, in words, and leaves a note the agents read."""
+    sent: list[str] = []
+
+    def say(text):
+        sent.append(text)
+        return True
+
+    def notices():  # the note's own message (the day's digest may quote the note again)
+        return [t for t in sent if t.startswith("- ") and "The server restarted" in t]
+
+    _op(tmp_env, boot=lambda: NOW - 86400, send=say)
+    assert not notices()
+    back = NOW + 6 * 3600
+    _op(tmp_env, now=lambda: back + 200, boot=lambda: back, send=say)
+    (told,) = notices()
+    assert "6 h 0 min" in told and "replays" in told and "Not running" not in told
+    _op(tmp_env, now=lambda: back + 1100, boot=lambda: back, send=say)
+    assert len(notices()) == 1
+    assert "[decision] The server restarted" in tmp_env["paths"].notes.read_text()
+
+
+def test_a_look_by_hand_is_no_round_for_the_standstill_check(tmp_env):
+    sent: list[str] = []
+
+    def say(text):
+        sent.append(text)
+        return True
+
+    boot = NOW - 86400
+    _op(tmp_env, boot=lambda: boot, send=say)
+    _op(tmp_env, dry_run=True, now=lambda: NOW + 7200, boot=lambda: boot, send=say)  # a dry run records nothing
+    _op(tmp_env, now=lambda: NOW + 7260, boot=lambda: boot, send=say)
+    (told,) = [t for t in sent if t.startswith("- ") and "No round ran" in t]
+    assert "2 h 1 min" in told and "did not restart" in told
+
+
+def test_a_notice_that_cannot_be_built_never_breaks_the_round(tmp_env, monkeypatch):
+    from snipetech.operator import outage
+
+    def broken(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(outage, "check", broken)
+    assert _op(tmp_env) == 0
+    assert "uptime: failed: OSError: disk full" in tmp_env["paths"].log.read_text()
+
+
+def test_the_round_records_when_it_ended(tmp_env):
+    from snipetech.operator import outage
+
+    clock = iter([NOW, NOW + 3000])
+    last = [NOW]
+
+    def now():
+        last[0] = next(clock, last[0])
+        return last[0]
+
+    _op(tmp_env, now=now, boot=lambda: NOW - 86400)
+    state = json.loads((tmp_env["paths"].root / outage.STATE).read_text())
+    assert state["round_ts"] == NOW + 3000  # the last time the round read the clock, not its start
