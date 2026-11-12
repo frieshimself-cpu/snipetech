@@ -639,6 +639,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
         that size; it is research only (no live sniper sells in parts yet: a winner is a finding for the owner, not a
         sniper to propose).
+        LADDER EXITS (OKTech's stages, the owner: "partially sell but hold some", "hold it until it start going
+        down"): every lab scores a few without being asked; read a row's "exit" label stage by stage.
+        TP+20%@25%/+50%@25%/+100%@25% sells 25 % of the first position at +20 %, 25 % at +50 %, 25 % at +100 %; a
+        stage without @ sells everything left; what no stage sold stays with the rest of the label (SL, TRAIL, STALE,
+        hold). SL-10%@50%/-25%@50% is a stop in steps: half at -10 %, the other half at -25 %. MOM2%/s@3s<30s-10% is
+        momentum hold: a take-profit that fires while the price is still up 2 % a second over the last 3 s waits, and
+        sells when that rise fades, 10 % under its high, or after 30 s. Compare a ladder with the rows of the same
+        lab that share the rest of its label (SL-15% TRAIL18% hold300s for the take-profit ladders; the same label
+        without MOM for a momentum exit): the difference is what the ladder, or the hold, is worth. Two things are
+        assumed, not known: that OKTech's sellPercent is a share of the first position (it may be a share of what
+        is left), and how OKTech times a momentum hold; both wait for a tiny live test. So a ladder that wins is a
+        finding with that caveat, and momentum hold is research only: no sniper is sent it.
 
         Args:
             argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"],

@@ -1128,6 +1128,9 @@ Our 100%-out trailing stop leaves that on the table.
    because it holds minutes, and our edge is in the first seconds.
 2. Add OKTech's remaining exits to the search grid: `autoStop` (a fast +50% in 3 s turns the exits
    off and lets it run), `momentumHold`, `timerExtension`, `stageAcceleration`.
+   12 Nov: ladders of take-profit stages, ladders of stop stages and `momentumHold` are in the lab's exit set
+   (7 exits; no lab result yet). `autoStop`, `timerExtension` and `stageAcceleration` are still not modelled.
+   What the lab assumes about OKTech is listed in oktech-features.md, "Unknown until a tiny live test".
 3. Freeze the winner, judge it forward for >= 300 trades, then switch the live sniper to it.
 
 ## Phase 3 — more signal, same speed (week 2–3)

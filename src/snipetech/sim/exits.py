@@ -25,6 +25,27 @@ _FIRST = {"take_profit": 0, "copy_exit": 1, "stop_loss": 2, "trailing_stop": 3, 
 DISPLACEMENT_SECS = 900.0
 
 
+def stage_pairs(stages, what: str = "stages") -> tuple[tuple[float, float], ...]:
+    """A ladder as ((level, share of the original position), ...): the level (a gain for take-profit stages, a loss
+    for stop stages) above 0 and rising, each share above 0 and at most 1, the shares together at most the whole
+    position. Lists (a ladder read back from a record) become tuples. Anything else raises: a ladder nobody can read
+    is never scored and never sent."""
+    try:
+        out = tuple((float(level), float(share)) for level, share in (stages or ()))
+    except (TypeError, ValueError):
+        raise ValueError(f"{what} takes pairs of (level, share of the position), not {stages!r}") from None
+    for k, (level, share) in enumerate(out):
+        if not level > 0 or not np.isfinite(level):
+            raise ValueError(f"{what}: a stage's level must be above 0, not {level:g}")
+        if not 0 < share <= 1 + 1e-9:
+            raise ValueError(f"{what}: a stage's share of the position is above 0 and at most 1, not {share:g}")
+        if k and not level > out[k - 1][0]:
+            raise ValueError(f"{what}: the stages come in rising order, and {level:g} follows {out[k - 1][0]:g}")
+    if sum(share for _, share in out) > 1 + 1e-9:
+        raise ValueError(f"{what}: the shares add up to more than the position")
+    return out
+
+
 @dataclass(frozen=True)
 class ExitParams:
     take_profit: float = 1.0
@@ -51,6 +72,40 @@ class ExitParams:
     # only: no live sniper is sent it (oktech.validate_exit).
     sell_parts: int = 1
     sell_part_secs: float = 0.0
+    # OKTech's ladders (the owner, 12 Nov 2026: "partially sell but hold some"). `tp_stages`: (gain, share of the
+    # ORIGINAL position) pairs in rising gain, e.g. ((0.2, 0.25), (0.5, 0.25), (1.0, 0.25)): each stage sells its share
+    # when what is held is first worth that gain on its cost. `sl_stages`: (loss, share of the original) pairs in rising
+    # loss, e.g. ((0.25, 0.4), (0.5, 0.6)). What no stage has sold stays with the other exits. With a ladder,
+    # `take_profit` / `stop_loss` are its last stage (everything left at that level; `take_profit` with
+    # `tp_sell_fraction` under 1 is one more stage of that share): the single form is the ladder of one stage. Whether
+    # OKTech's sellPercent is a share of the original position or of what is left is not known
+    # (docs/oktech-features.md, "Unknown until a tiny live test"); the original is modelled.
+    tp_stages: tuple[tuple[float, float], ...] = ()
+    sl_stages: tuple[tuple[float, float], ...] = ()
+    # OKTech's momentum hold (the owner: "hold it until it start going down"): a take-profit stage that fires while the
+    # position's value has risen at least `momentum_hold` PERCENT A SECOND over the last `momentum_lookback` seconds
+    # waits. It is sold when the rise fades below that, when the value is `momentum_peak_drop` (a fraction, 0 = off)
+    # under its high since the stage fired, or `momentum_max_secs` after it fired, whichever comes first (`_release`
+    # says what is assumed about OKTech's clock). 0 = off. Research only: no live sniper is sent it.
+    momentum_hold: float = 0.0
+    momentum_lookback: float = 3.0
+    momentum_max_secs: float = 30.0
+    momentum_peak_drop: float = 0.0
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tp_stages", stage_pairs(self.tp_stages, "tp_stages"))
+        object.__setattr__(self, "sl_stages", stage_pairs(self.sl_stages, "sl_stages"))
+
+    def tp_ladder(self) -> list[tuple[float, float]]:
+        """Every take-profit stage in rising gain: the ladder's, and the single take-profit as one more (a share of 1
+        sells everything left)."""
+        single = [(float(self.take_profit), float(self.tp_sell_fraction))] if self.take_profit > 0 else []
+        return sorted([*self.tp_stages, *single], key=lambda s: s[0])
+
+    def sl_ladder(self) -> list[tuple[float, float]]:
+        """Every stop stage in rising loss: the ladder's, and the single stop-loss selling everything left."""
+        single = [(float(self.stop_loss), 1.0)] if self.stop_loss > 0 else []
+        return sorted([*self.sl_stages, *single], key=lambda s: s[0])
 
     @classmethod
     def from_config(cls, ec) -> "ExitParams":
@@ -66,11 +121,12 @@ class ExitParams:
 
     def label(self) -> str:
         parts = [f"STALE{self.stale_secs:g}s"] if self.stale_secs > 0 else []
-        if self.take_profit > 0:
-            frac = "" if self.tp_sell_fraction >= 1 else f"@{self.tp_sell_fraction:.0%}"
-            parts.append(f"TP+{self.take_profit:.0%}{frac}")
-        if self.stop_loss > 0:
-            parts.append(f"SL-{self.stop_loss:.0%}")
+        # a ladder reads stage by stage: TP+20%@25%/+50%@25% sells 25 % of the first position at +20 % and 25 % at
+        # +50 %; a stage without @ sells everything left
+        if self.tp_stages or self.take_profit > 0:
+            parts.append("TP" + "/".join(f"+{g:.0%}" + ("" if s >= 1 else f"@{s:.0%}") for g, s in self.tp_ladder()))
+        if self.sl_stages or self.stop_loss > 0:
+            parts.append("SL" + "/".join(f"-{g:.0%}" + ("" if s >= 1 else f"@{s:.0%}") for g, s in self.sl_ladder()))
         if self.trailing_stop > 0:
             act = f">{self.trailing_activation:.0%}" if self.trailing_activation > 0 else ""
             parts.append(f"TRAIL{self.trailing_stop:.0%}{act}")
@@ -86,10 +142,19 @@ class ExitParams:
             parts.append(f"watch{self.watch_secs:g}s")
         if self.sell_parts > 1:
             parts.append(f"parts{int(self.sell_parts)}/{self.sell_part_secs:g}s")
+        if self.momentum_hold > 0:
+            # MOM2%/s@3s<30s-10%: waits while up 2 % a second over 3 s, 30 s at most, or until 10 % under the high
+            drop = f"-{self.momentum_peak_drop:.0%}" if self.momentum_peak_drop > 0 else ""
+            parts.append(f"MOM{self.momentum_hold:g}%/s@{self.momentum_lookback:g}s<{self.momentum_max_secs:g}s{drop}")
         return " ".join(parts)
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        """The exit as a rule's record keeps it: the ladders as lists, so the exit read back from the record (JSON)
+        equals this, and `ExitParams(**record)` is the same exit again."""
+        d = asdict(self)
+        d["tp_stages"] = [list(s) for s in self.tp_stages]
+        d["sl_stages"] = [list(s) for s in self.sl_stages]
+        return d
 
 
 @dataclass(frozen=True)
@@ -299,8 +364,57 @@ def _migration_sale(
     return (at, int(p.exec_idx[k])) if k <= last_rel else None
 
 
+def _release(
+    ex: ExitParams, v: np.ndarray, rt: np.ndarray, t: int, last_rel: int, end_rel: float
+) -> tuple[int, float] | None:
+    """OKTech's momentum hold on a take-profit stage that fired at state `t`: (the state in effect when the stage is
+    sold, seconds after the entry), or None when the sell-all timer comes first.
+
+    The stage waits while the value of what is held has risen at least `ex.momentum_hold` percent a second over the
+    last `ex.momentum_lookback` seconds (the rise over the lookback, divided by the lookback). It is sold at the first
+    moment that no longer holds, or the value is `ex.momentum_peak_drop` under its high since the stage fired, or
+    `ex.momentum_max_secs` after it fired. A stage that fires while the price is not running that fast is sold at once.
+
+    What is assumed about OKTech's clock, none of it measured on a live trade yet (docs/oktech-features.md, "Unknown
+    until a tiny live test"): it reads the rise on a running clock, not only when a trade arrives. So the replay checks
+    at every trade and, between trades, at each moment the lookback window slides past an earlier trade: a coin that
+    stands still for a whole lookback has no rise left and is sold at its standing price. The rise is read on the
+    position's value (the price it would sell at), on the slots' clock; the sale lands like every other exit's, a slot
+    after it is released."""
+    look = max(float(ex.momentum_lookback), 1e-9)
+    need = float(ex.momentum_hold) * look / 100.0  # the rise over the lookback that keeps the sale waiting
+    cap = float(rt[t]) + max(0.0, float(ex.momentum_max_secs))
+    drop = float(ex.momentum_peak_drop)
+    high = float(v[t])
+    j = t
+    while j <= last_rel:
+        now, vj = float(rt[j]), float(v[j])
+        high = max(high, vj)
+        b = max(0, int(np.searchsorted(rt, now - look + 1e-9, side="right")) - 1)  # the state a lookback ago
+        if now >= cap or v[b] <= 0 or vj / float(v[b]) - 1.0 < need or (drop > 0 and vj <= high * (1.0 - drop)):
+            return j, now
+        # Still running at this trade. Until the next one the value stands still while the window slides on: the rise
+        # fades at the first moment the window starts at a trade the value is no longer `need` above (at the latest
+        # this trade itself, a lookback from now).
+        when = cap
+        for i in range(b + 1, j + 1):
+            if v[i] <= 0 or vj / float(v[i]) - 1.0 < need:
+                when = min(cap, float(rt[i]) + look)
+                break
+        if j + 1 >= len(v) or when < float(rt[j + 1]):
+            return (j, when) if j < last_rel or when <= end_rel else None
+        j += 1
+    return None
+
+
 def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = None) -> SimResult:
     """Simulate holding the prepared position under exit rules `ex`.
+
+    With `ex.tp_stages` / `ex.sl_stages` (OKTech's ladders of take-profit and stop stages) each stage sells its share
+    of the original position when what is held is first worth that gain, or that loss, on its cost; what no stage sold
+    stays with the other exits, exactly as after the single part sale (`take_profit` with `tp_sell_fraction`), which is
+    the ladder of one stage. With `ex.momentum_hold` a take-profit stage that fires while the price still runs waits
+    (`_release`).
 
     With `ex.watch_secs` the seller starts watching that long after the entry: price and copy exits are checked from
     the state then in effect, and a pause counts only when its dead exit would fire after the watch starts (OKTech on
@@ -320,7 +434,8 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         deadline = min(deadline, end_ts)
     last_rel = int(np.searchsorted(p.ts, deadline, side="right")) - 1
     last_rel = max(0, min(last_rel, n_rel - 1))
-    _reach(p, max(p.e + last_rel, int(p.exec_idx[last_rel])))  # no sale is priced past this state
+    reach = min(max(p.e + last_rel, int(p.exec_idx[last_rel])), path.n - 1)  # no sale is priced past this state
+    _reach(p, reach)
     rt = _rel_secs(p)
     watch = max(0.0, float(ex.watch_secs))
     lo = max(1, int(np.searchsorted(rt, watch, side="right")) - 1) if watch > 0 else 1
@@ -331,33 +446,6 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         stale_ok = _quiet_secs(p, deadline) >= ex.stale_secs
         if watch > 0:
             stale_ok &= rt + ex.stale_secs >= watch
-    triggers: dict[str, int] = {}
-    if ex.take_profit > 0:
-        t = _first(p.v >= basis * (1 + ex.take_profit), lo, last_rel)
-        if t is not None:
-            triggers["take_profit"] = t
-    if ex.copy_exit_pct > 0 and p.leader_frac is not None:
-        t = _first(p.leader_frac >= ex.copy_exit_pct, lo, last_rel)
-        if t is not None:
-            triggers["copy_exit"] = t
-    if ex.stop_loss > 0:
-        t = _first(p.v <= basis * (1 - ex.stop_loss), lo, last_rel)
-        if t is not None:
-            triggers["stop_loss"] = t
-    if ex.trailing_stop > 0:
-        armed = peak >= basis * (1 + ex.trailing_activation)
-        t = _first(armed & (p.v <= peak * (1 - ex.trailing_stop)), lo, last_rel)
-        if t is not None:
-            triggers["trailing_stop"] = t
-    if ex.sell_on_dev_sell and p.insider_sell is not None:
-        t = _first(p.insider_sell, lo, last_rel)
-        if t is not None:
-            triggers["dev_sell"] = t
-    if stale_ok is not None:
-        t = _first(stale_ok, 0, last_rel)
-        if t is not None:
-            triggers["stale"] = t
-
     entry_slot = int(path.slot[p.e])
     end_rel = deadline - p.entry_ts  # when the timer fires, in seconds after the entry
 
@@ -369,6 +457,10 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         return float(rt[t_rel]) + ex.stale_secs if why == "stale" else max(float(rt[t_rel]), watch)
 
     sold: list[tuple[int, float]] = []  # our own sales so far: (state, tokens)
+    # the pool behind a list of our own sales, replayed as far as this exit can sell (`reach`) when what was left was
+    # valued (the phases below): the sale that follows them is priced on that replay, not on a second walk of the
+    # same trades
+    walked: dict[tuple[tuple[int, float], ...], np.ndarray] = {}
 
     def sell(abs_idx: int, amount: float, held_now: float) -> float:
         # into the pool as the replay leaves it: short of `p.disp` because of us, less what we have sold back
@@ -377,7 +469,11 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         elif not sold:
             short = float(p.disp[abs_idx - p.e])
         else:
-            short = float(path.displacement(p.e, p.held, until=abs_idx, own_sells=tuple(sold))[abs_idx - p.e])
+            behind = tuple(sold)
+            series = walked.get(behind) if abs_idx <= reach else None
+            if series is None:
+                series = path.displacement(p.e, p.held, until=abs_idx, own_sells=behind)
+            short = float(series[abs_idx - p.e])
         gross = path.sell_at(abs_idx, amount, short)
         sold.append((abs_idx, amount))
         net = gross * (1 - path.fee_bps[abs_idx] / 10_000.0)
@@ -385,61 +481,102 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
 
     # The sells in the order they fire: (exit, seconds after the entry it fires at, the state it sells at, the slot it
     # lands in, the share of what is held then). The last one sells all that is left.
+    #
+    # The position is watched in phases. A phase ends with the first exit that fires in it: a stage (of the take-profit
+    # ladder or the stop ladder) that sells a share and leaves the rest, or an exit that sells everything, or the timer.
+    # After a stage the rest rides in the next phase: valued in the pool our own sales so far left, against its share
+    # of the cost, watched from the trade after the state the stage sold at, its high counted from that state. One
+    # trade that trips several stages sells them all on that trade, each its own sale and transaction.
     sales: list[tuple[str, float, int, int, float]] = []
-    if triggers:
-        reason, t_rel = min(triggers.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
-        exec_abs = p.e + t_rel if reason == "stale" else int(p.exec_idx[t_rel])
-        at = fires_at(reason, t_rel)
-        if reason == "take_profit" and ex.tp_sell_fraction < 1.0:
-            sales.append(("take_profit", at, exec_abs, lands(at), ex.tp_sell_fraction))
-            rest = p.held - p.held * ex.tp_sell_fraction
-            # The remainder rides: trailing / stop / dev-exit / time, valued on what is left.
-            rest_basis = basis * (rest / p.held)
-            start_rel = exec_abs - p.e
-            disp2 = None
-            if p.disp is not None:  # the pool after our first sale: the remainder is valued in it
-                first_sale = ((exec_abs, p.held * ex.tp_sell_fraction),)
-                disp2 = path.displacement(p.e, p.held, until=p.horizon, own_sells=first_sale)
-            v2 = path.value_series(p.e, rest, disp=disp2)
-            peak2 = np.maximum.accumulate(np.where(np.arange(n_rel) >= start_rel, v2, 0.0))
-            more: dict[str, int] = {}
-            if ex.stop_loss > 0:
-                t = _first(v2 <= rest_basis * (1 - ex.stop_loss), start_rel + 1, last_rel)
-                if t is not None:
-                    more["stop_loss"] = t
-            if ex.trailing_stop > 0:
-                t = _first(v2 <= peak2 * (1 - ex.trailing_stop), start_rel + 1, last_rel)
-                if t is not None:
-                    more["trailing_stop"] = t
-            if ex.sell_on_dev_sell and p.insider_sell is not None:
-                t = _first(p.insider_sell, start_rel + 1, last_rel)
-                if t is not None:
-                    more["dev_sell"] = t
-            if ex.copy_exit_pct > 0 and p.leader_frac is not None:  # the copied wallet dumps: the rest goes too
-                t = _first(p.leader_frac >= ex.copy_exit_pct, start_rel + 1, last_rel)
-                if t is not None:
-                    more["copy_exit"] = t
-            # the remainder also leaves when the coin goes quiet (the scale-out ladder's dead exit)
-            if stale_ok is not None:
-                t = _first(stale_ok, start_rel, last_rel)
-                if t is not None:
-                    more["stale"] = t
-            if more:
-                reason2, t2 = min(more.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
-                at2 = fires_at(reason2, t2)
-                sales.append((reason2, at2, p.e + t2 if reason2 == "stale" else int(p.exec_idx[t2]), lands(at2), 1.0))
+    tp_left, sl_left = ex.tp_ladder(), ex.sl_ladder()
+    own: list[tuple[int, float]] = []  # the stages sold so far, (state, tokens): the replay behind them
+    rest, v, high = p.held, p.v, peak
+    lo_v, lo_stale = lo, 0
+    took = armed = False  # a take-profit stage has sold (the trail is on from then, as it always was); the trail armed
+    at = exec_abs = None  # when and where the last stage sold
+    while True:
+        cost = basis * (rest / p.held)
+        found: dict[str, int] = {}
+        fired = release = None
+        if tp_left:
+            fired = t = _first(v >= cost * (1 + tp_left[0][0]), lo_v, last_rel)
+            if t is not None and ex.momentum_hold > 0:  # it waits while the price still runs
+                release = _release(ex, v, rt, t, last_rel, end_rel)
+                t = None if release is None else release[0]
+            if t is not None:
+                found["take_profit"] = t
+        if ex.copy_exit_pct > 0 and p.leader_frac is not None:  # the copied wallet dumps: all that is left goes too
+            t = _first(p.leader_frac >= ex.copy_exit_pct, lo_v, last_rel)
+            if t is not None:
+                found["copy_exit"] = t
+        if sl_left:
+            t = _first(v <= cost * (1 - sl_left[0][0]), lo_v, last_rel)
+            if t is not None:
+                found["stop_loss"] = t
+        if ex.trailing_stop > 0:
+            hit = v <= high * (1 - ex.trailing_stop)
+            if not (took or armed):
+                hit = (high >= cost * (1 + ex.trailing_activation)) & hit
+            t = _first(hit, lo_v, last_rel)
+            if t is not None:
+                found["trailing_stop"] = t
+        if ex.sell_on_dev_sell and p.insider_sell is not None:
+            t = _first(p.insider_sell, lo_v, last_rel)
+            if t is not None:
+                found["dev_sell"] = t
+        if stale_ok is not None:  # what is left also leaves when the coin goes quiet
+            t = _first(stale_ok, lo_stale, last_rel)
+            if t is not None:
+                found["stale"] = t
+        if not found:
+            if at is None:
+                sales.append(("time", end_rel, p.e + last_rel, lands(end_rel), 1.0))
             else:
                 sales.append(("time", max(at, end_rel), max(p.e + last_rel, exec_abs), max(lands(at), lands(end_rel)),
                               1.0))  # fmt: skip
-        else:
+            break
+        reason, t_rel = min(found.items(), key=lambda kv: (kv[1], _FIRST[kv[0]]))
+        exec_abs = p.e + t_rel if reason == "stale" else int(p.exec_idx[t_rel])
+        at = fires_at(reason, t_rel)
+        stages = None  # the stages this exit sells; None: it sells everything
+        if reason == "take_profit":
+            top = v[t_rel]
+            if release is not None:  # every stage reached while it waited is sold with it
+                at, top = max(release[1], watch), v[fired : t_rel + 1].max()
+            stages = [s for s in tp_left if top >= cost * (1 + s[0])]
+            tp_left = tp_left[len(stages) :]
+        elif reason == "stop_loss":
+            stages = [s for s in sl_left if v[t_rel] <= cost * (1 - s[0])]
+            sl_left = sl_left[len(stages) :]
+        whole = rest is p.held or rest == p.held
+        for _level, share in stages or [(0.0, 1.0)]:
+            # a stage sells its share of the ORIGINAL position; one that reaches the last of it sells what is left
+            if share >= 1.0 or p.held * share >= rest * (1 - 1e-12):
+                stages = None
+                break
+            part = share if whole else p.held * share / rest  # as a share of what is held then
+            sales.append((reason, at, exec_abs, lands(at), part))
+            own.append((exec_abs, rest * part))
+            rest, whole = rest - rest * part, False
+        if stages is None:
             sales.append((reason, at, exec_abs, lands(at), 1.0))
-    else:
-        sales.append(("time", end_rel, p.e + last_rel, lands(end_rel), 1.0))
+            break
+        # The remainder rides: the stages left, trailing / stop / dev-exit / copy exit / dead exit / time, valued on
+        # what is left in the pool after our own sales
+        took = took or reason == "take_profit"
+        armed = armed or bool(high[t_rel] >= cost * (1 + ex.trailing_activation))
+        start_rel = exec_abs - p.e
+        disp2 = None
+        if p.disp is not None:
+            disp2 = walked[tuple(own)] = path.displacement(p.e, p.held, until=reach, own_sells=tuple(own))
+        v = path.value_series(p.e, rest, disp=disp2)
+        high = np.maximum.accumulate(np.where(np.arange(n_rel) >= start_rel, v, 0.0))
+        lo_v, lo_stale = start_rel + 1, start_rel
     mig = _migration_sale(p, ex, rt, watch, last_rel)
     if mig is not None:
         # it goes in before the first sell that fires after it (one firing at the same moment goes first). A share
-        # sold changes no other exit's trigger: each compares value with cost, and both shrink together. Selling it
-        # all, it is the last sell.
+        # sold changes no other exit's trigger: each compares value with cost, and both shrink together (a ladder's
+        # stage behind it sells the same share of what is held then). Selling it all, it is the last sell.
         i = next((k for k, s in enumerate(sales) if s[1] > mig[0]), None)
         if i is not None:
             sale = ("migration_sell", mig[0], mig[1], lands(mig[0]), ex.migration_sell_frac)

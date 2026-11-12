@@ -761,3 +761,20 @@ def test_a_gmgn_look_up_may_be_repeated_after_ten_minutes_not_six_hours(jobs):
     done("l1", ["lab", "--latency", "0"], 20 * 60)
     with pytest.raises(PermissionError, match="already ran"):
         jobs.start(["lab", "--latency", "0"], now=now)  # a lab keeps its six hours
+
+
+def test_the_agents_are_told_how_to_read_a_ladder_exit(toolbox):
+    """12 Nov, the owner: "There are like so many sell strategies on the tech, so many, go through them all... hold
+    it until it start going down, or partially sell but hold some". Every lab now scores OKTech's ladders and its
+    momentum hold; the tool says how to read their labels, what is assumed, and which of them no sniper runs yet."""
+    from snipetech.analysis.lab import exit_set
+
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    explained = ("TP+20%@25%/+50%@25%/+100%@25%", "SL-10%@50%/-25%@50%", "MOM2%/s@3s<30s-10%")
+    labels = " ".join(e.label() for e in exit_set())
+    for part in explained:
+        assert part in text and part in labels  # each label the tool explains is one the lab scores
+    assert "of the first position" in text and "everything left" in text
+    assert "share of what is left" in text and "tiny live test" in text  # the open question about OKTech
+    assert "momentum hold" in text and "no sniper is sent it" in text
