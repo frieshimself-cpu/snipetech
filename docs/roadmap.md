@@ -22,9 +22,9 @@ first on the server's recording and only then run live in capped batches.
   the dead one. The owner's panel showed the machine as running, which was true.
 - **Fixed since 13:17 UTC:** every 15 minutes the server checks its own network setup; a failed one is a message to
   the owner at once, with what to do. Last time that was 17 hours before the connection went.
-- **Waiting for the owner's one command on the server** (`sudo bash /opt/snipetech/deploy/setup.sh`, asked 13:25 UTC):
-  the server then repairs its network setup by itself within a minute, and Ubuntu's daily update job, which caused
-  the freeze, runs at the lowest priority. Until it is run, the same can happen again after any freeze.
+- **Fixed for good since 14:46 UTC, when the owner ran the one command on the server:** the server now repairs its
+  network setup by itself within a minute, and Ubuntu's daily update job, which caused the freeze, runs at the
+  lowest priority.
 - **Still nothing profitable live, and by the evening of 12 Nov no wallet worth copying.** The two wallets the book
   copied (74xVT9, 4sAUSQ) each buy as one of a set of four wallets that land in the same block in changing order.
   The server's analyst suspected it (its idea I72); the tape confirms it; the rule that finds a wallet's companions
