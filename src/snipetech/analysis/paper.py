@@ -16,6 +16,11 @@ Every entry lands where a live trade lands (CLAUDE.md rule 2), with the lab's ow
 A strategy frozen at another landing (the 5 Nov strategies were scored at +1, which no live trade gets) is
 re-keyed on the next run: a new id at the live landing that starts where the old scoring stopped; the old one
 and its trades are kept apart as `superseded`, never mixed into the live-landing numbers.
+
+The one exception is a hypothesis frozen at a landing or with a bid it was asked for (12 Nov: `freeze` with
+`copy_position` / `buy_bid_sol`; "what does this rule make one place behind the wallet at a 0.05 SOL bid"). It keeps
+that landing and that bid (`pinned`), the forward run scores it there and charges the bid on every buy, and no output
+calls it where our copies land live.
 """
 
 from __future__ import annotations
@@ -36,11 +41,14 @@ from ..amm_tape import AMM_RECENT_KEY
 from ..config import Config
 from ..models import PUMPFUN
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
-from ..sim.market import FILL_MODEL, MarketPath
+from ..sim.market import FILL_MODEL, MarketPath, _fix_slot_order
 from ..store import Store
+from .bid_landing import CAUTIOUS_WORDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
+from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
 from .companions import companions
 from .lab import (
     AMM_KINDS,
+    COPY_LAND_SLOTS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
@@ -54,6 +62,8 @@ from .lab import (
     Trigger,
     _crew_uris,
     _fire,
+    bid_entry,
+    check_bid_landing,
     collect,
     crew_skips,
     curve_done,
@@ -105,9 +115,14 @@ def fed(strategy: dict) -> bool:
     return bool(strategy.get(FED))
 
 
-def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float) -> str:
+def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float,
+                buy_bid_sol: float = 0.0, asked: bool = False) -> str:  # fmt: skip
     """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
-    so a strategy frozen before it existed keeps its id and is not frozen a second time.
+    so a strategy frozen before it existed keeps its id and is not frozen a second time. So do the two things a
+    hypothesis can be frozen with since 12 Nov: `buy_bid_sol`, a bid charged once on every buy, and `asked`, a landing
+    it was asked for instead of the live one (`pinned`). Unset, the id is the one it always was; set, the same trigger
+    and exit at another landing or bid is another strategy (and an asked "+1" is never the "+1" strategy of 5 Nov
+    that was moved to the live landing).
 
     Since 7 Nov evening the lab scores every exit of a launch, hunt, whale or burst rule with OKTech's watch delay
     (lab.kind_exits), so such a rule frozen from then on stores watch_secs 1.3, a field that is set: it is a new
@@ -136,8 +151,33 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
                   "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
-    raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
+    extra: dict[str, Any] = {"buy_bid_sol": float(buy_bid_sol)} if float(buy_bid_sol or 0) > 0 else {}
+    if asked:
+        extra["asked"] = True
+    raw = json.dumps([trig, ex, position, latency, buy_sol] + ([extra] if extra else []), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
+
+
+def bid_of(strategy: dict) -> float:
+    """The bid a frozen strategy pays once on every buy, in SOL (0: none; every strategy frozen before 12 Nov)."""
+    try:
+        return max(0.0, float(strategy.get("buy_bid_sol") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def pinned(strategy: dict) -> bool:
+    """Whether a frozen strategy keeps the landing it was frozen at: one asked for by hand (`landing_asked`), or any
+    landing with a bid. `to_live_landing` leaves it there, the run scores it there, and it is never reported as where
+    our trades land live: a place asked for, or bought with a bid, is not one our fills were measured at."""
+    return bool(strategy.get("landing_asked")) or bid_of(strategy) > 0
+
+
+def sid_of(strategy: dict, **over) -> str:
+    """A frozen strategy's id from its own fields (`over` replaces some: exit, position, latency)."""
+    s = strategy | over
+    return strategy_id(s["trigger"], s["exit"], str(s["position"]), int(s["latency"]), s["buy_sol"], bid_of(s),
+                       bool(s.get("landing_asked")))  # fmt: skip
 
 
 def copy_landing(store: Store, cfg: Config, now: float) -> str:
@@ -151,14 +191,16 @@ def copy_landing(store: Store, cfg: Config, now: float) -> str:
 def hypothesis_landing(copy_pos: str, override: str | None) -> tuple[int, str]:
     """(slots after the trigger, position in that slot) a `lab --trigger` hypothesis is scored at: the measured copy
     landing, or `--copy-position` when given: "+N" (N trades of the coin ahead of us in the followed wallet's slot,
-    "+0" right behind it), "+Nx" (behind the N-th buy after it, across slots), start, middle or end. A place closer
-    than the measured one is bought with a bid: charge it with --per-tx, or the result is no evidence."""
+    "+0" right behind it), "+Nx" (behind the N-th buy after it, across slots), start, middle or end, or a place
+    that follows the bid: "bid" (where --buy-bid puts the copy among the buyers of the wallet's block) or "bid-"
+    (one buy further back, the cautious one; analysis.bid_landing). A fixed place closer than the measured one is
+    bought with a bid: charge it with --buy-bid or --per-tx, or the result is no evidence."""
     if override is None:
         return (0, copy_pos)
     pos = str(override).strip()
     plus = pos.startswith("+") and (pos[1:].isdigit() or (pos.endswith("x") and pos[1:-1].isdigit()))
-    if not plus and pos not in ("start", "middle", "end"):
-        raise ValueError(f"--copy-position is +N, +Nx, start, middle or end, not {override!r}")
+    if not plus and pos not in ("start", "middle", "end") and not is_bid(pos):
+        raise ValueError(f"--copy-position is +N, +Nx, bid, bid-, start, middle or end, not {override!r}")
     return (0, pos)
 
 
@@ -169,20 +211,37 @@ def live_landing(kind: str | None, copy_pos: str) -> tuple[int, str]:
     return (0, copy_pos)
 
 
-def landing_key(latency: int, position: str) -> str:
-    return f"{position}@{int(latency)}"
+def landing_key(latency: int, position: str, bid_sol: float = 0.0) -> str:
+    """A landing's key: "+3@1" (the place, slots after the trigger); "bid-@0.05" for a place that follows the bid."""
+    return landing_name(position, latency, bid_sol)
 
 
-def landing_fields(row: dict, copy_pos: str) -> dict[str, Any]:
-    """A ranked lab row's landing for the agents: its key ("+3@1") and whether it is where that trigger trades live; a
-    lower bound at any other landing is no evidence (CLAUDE.md rule 2)."""
+def landing_fields(row: dict, copy_pos: str, bid_sol: float = 0.0) -> dict[str, Any]:
+    """A ranked lab row's landing for the agents: its key ("+3@1"; "bid-@0.05" for a place that follows the bid
+    `bid_sol`) and whether it is where that trigger trades live; a lower bound at any other landing is no evidence
+    (CLAUDE.md rule 2). A bid landing is a model, never where our copies land live, and says so (`landing_note`)."""
     lat, pos = row["landing"]
+    if is_bid(pos):
+        return {"landing": landing_key(lat, pos, bid_sol), "live_landing": False, "landing_note": NOT_LIVE}
     live = live_landing((row.get("trigger_spec") or {}).get("kind"), copy_pos) == (int(lat), str(pos))
     return {"landing": landing_key(lat, pos), "live_landing": live}
 
 
-def landing_text(latency: int, position: str, kind: str | None = None) -> str:
-    """The landing in words, for the report; a MIG strategy's (`kind` mig) as `lab.mig_entry` lands it."""
+def landing_text(latency: int, position: str, kind: str | None = None, bid_sol: float = 0.0,
+                 asked: bool = False) -> str:  # fmt: skip
+    """The landing in words, for the report; a MIG strategy's (`kind` mig) as `lab.mig_entry` lands it. With a bid
+    (`bid_sol`) or a landing asked for at the freeze (`asked`), both are named first ("+1 with a 0.05 SOL bid") and
+    the words end by saying it is not where our copies land live (`pinned`)."""
+    if float(bid_sol or 0) > 0 or asked or is_bid(position):
+        bid = f" with a {float(bid_sol):g} SOL bid" if float(bid_sol or 0) > 0 else ""
+        if is_bid(position):
+            where = ("where that bid puts the copy among the buyers of the followed wallet's block"
+                     + (f", {CAUTIOUS_WORDS}" if cautious(position) else ""))  # fmt: skip
+        else:
+            where = landing_text(latency, position, kind)
+            where = where.split(": ", 1)[1] if where.startswith(f"{position}: ") else where
+        why = "asked for at the freeze" if asked or is_bid(position) else "a bid charged on every buy"
+        return f"{position}{bid}: {where} ({why}: not where our copies land live)"
     latency, position = int(latency), str(position)
     if kind in AMM_KINDS:
         n = position[1:] if position.startswith("+") and position[1:].isdigit() else "1"
@@ -192,6 +251,8 @@ def landing_text(latency: int, position: str, kind: str | None = None) -> str:
         return "the first trade of the slot after the create"
     if latency == 0 and position.startswith("+") and position[1:].isdigit():
         return f"{position}: up to {position[1:]} trades behind the trigger, in its slot"
+    if position.startswith("+") and position.endswith("x") and position[1:-1].isdigit():
+        return f"{position}: behind the first {position[1:-1]} buys after the trigger, counted across slots"
     if latency >= 1 and position.startswith("+") and position[1:].isdigit():
         slot = "the slot after the trigger" if latency == 1 else f"the slot {latency} after the trigger"
         return f"{position[1:]} trades into {slot}, behind everything in the trigger's own slot"
@@ -257,19 +318,24 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
                     now: float) -> list[dict]:  # fmt: skip
     """The frozen strategies, each at the live landing for its trigger. One frozen at another landing gets a new id
     there, starting where the old scoring stopped (or at its freeze, if it never traded); the old record moves to
-    `superseded` so its trades are never counted with the live-landing ones. Written back only when something moved."""
+    `superseded` so its trades are never counted with the live-landing ones. Written back only when something moved.
+    A hypothesis frozen at a landing or with a bid it was asked for stays as it was frozen (`pinned`)."""
     live: list[dict] = []
     have: set[str] = set()
-    for s in strategies:  # first the ones already at the live landing: they keep their id and their start
+
+    def stays(s: dict) -> bool:  # a fed rule lands where its feeder puts it, a pinned one where it was asked for
         lat, pos = live_landing((s.get("trigger") or {}).get("kind"), copy_pos)
-        if (fed(s) or (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos)) and s["id"] not in have:
+        return fed(s) or pinned(s) or (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos)
+
+    for s in strategies:  # first the ones already at the live landing: they keep their id and their start
+        if stays(s) and s["id"] not in have:
             live.append(s)
             have.add(s["id"])
     moved: list[dict] = []
     for s in strategies:
         lat, pos = live_landing((s.get("trigger") or {}).get("kind"), copy_pos)
-        if fed(s) or (int(s.get("latency", 0)), str(s.get("position"))) == (lat, pos):
-            continue  # a fed rule lands where its feeder puts it: never re-keyed
+        if stays(s):
+            continue  # never re-keyed
         moved.append(s | {"superseded_at": int(now)})
         sid = strategy_id(s["trigger"], s["exit"], pos, lat, s["buy_sol"])
         if sid in have:
@@ -323,9 +389,7 @@ def live_id(strategy: dict) -> str:
     first this is its own id. The automatic test drops them, and carries their live record, as one (review of 7 Nov
     evening: a rule dropped under one id could be armed again under the other)."""
     ex = {k: v for k, v in dict(strategy["exit"]).items() if k != "watch_secs"}
-    return strategy_id(
-        strategy["trigger"], ex, str(strategy["position"]), int(strategy["latency"]), strategy["buy_sol"]
-    )
+    return sid_of(strategy, exit=ex)
 
 
 # One forward record a rule. 11 Nov: the strategy search (every two hours) froze its four best rows whatever was under
@@ -337,14 +401,21 @@ TWIN_SHARE = 0.8  # two triggers are one rule when this share of the moments of 
 RETEST_AFTER_SECS = 7 * 86400  # a rule refuted forward is not frozen again, with any exit, for this long
 
 
-def rule_key(trigger: dict, position: str, latency: int, buy_sol: float) -> str:
+def rule_key(trigger: dict, position: str, latency: int, buy_sol: float, buy_bid_sol: float = 0.0,
+             asked: bool = False) -> str:  # fmt: skip
     """A frozen strategy's rule: its trigger at a landing and size, whatever exit it sells with. A trigger stored
-    before a field existed is read with that field's default, so it is the same rule as today's."""
+    before a field existed is read with that field's default, so it is the same rule as today's. A rule frozen with a
+    bid, or at a landing asked for, is a rule of its own (`pinned`)."""
     try:
         trig = Trigger(**trigger).__dict__
     except TypeError:  # no lab trigger (a rule another job feeds), or a field this code no longer has
         trig = dict(trigger)
-    return json.dumps([trig, str(position), int(latency), float(buy_sol)], sort_keys=True, default=str)
+    return json.dumps([trig, str(position), int(latency), float(buy_sol), float(buy_bid_sol or 0), bool(asked)],
+                      sort_keys=True, default=str)  # fmt: skip
+
+
+def _rule_of(s: dict) -> str:
+    return rule_key(s["trigger"], s["position"], s["latency"], s["buy_sol"], bid_of(s), bool(s.get("landing_asked")))
 
 
 def _spec_key(spec: dict) -> str:
@@ -380,7 +451,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
            only_live: bool = False, lock_dir: str | Path | None = None, triggers: Sequence[Trigger] | None = None,
            hours: float | None = None, per_tx_source: str | None = None,
-           tape: Callable[[], Store] | None = None) -> dict[str, Any]:  # fmt: skip
+           tape: Callable[[], Store] | None = None, copy_position: str | None = None, buy_bid_sol: float = 0.0,
+           sell_parts: tuple[int, float] | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
@@ -394,6 +466,15 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     as `lab` and the strategy search read theirs: a lab's reads held the live WAL back for as long as they took); the
     frozen strategies are written to `store`.
 
+    `copy_position`, `buy_bid_sol`, `sell_parts` (with `triggers` only; 12 Nov, the analyst: "a plain freeze would
+    score +6, where the rule loses"): the hypotheses' copies (kol, momentum) are scored and frozen at this place
+    instead of the copy landing (`hypothesis_landing`: +N, +Nx, start, middle, end, or "bid" / "bid-", the place the
+    bid buys, analysis.bid_landing), every buy pays `buy_bid_sol` once on top of `per_tx_sol`, and every exit sells
+    out in parts as `lab --sell-parts`. A rule frozen so stores the landing and the bid (`landing_asked`,
+    `buy_bid_sol`), the forward run scores it there with that bid (`pinned`), it has an id of its own, and it is
+    never reported as where our copies land live. A `copy_position` that is today's copy landing, with no bid, is the
+    plain rule. `only_live` cannot be asked for with them.
+
     One forward record a rule (`rule_key`: a trigger at a landing and size). The `top` are the lab's best distinct
     rules: a rule already under test keeps the exit it was frozen with and counts among them; a row that fires on the
     moments of a better row or of a rule under test (`TWIN_SHARE`, among rules of its kind at its landing and size) is
@@ -403,11 +484,24 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     stand for its rule (`_sells_as_live`)."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
+    bid = max(0.0, float(buy_bid_sol or 0.0))
+    own_landing = bool(triggers) and (copy_position is not None or bid > 0)
+    if (copy_position is not None or bid > 0 or sell_parts) and not (triggers and data is None):
+        raise ValueError("a landing, a bid or a sale in parts of one's own goes with --trigger: the grid's rules are "
+                         "frozen where they trade live")  # fmt: skip
+    if own_landing and only_live:
+        raise ValueError("--only-live keeps the rules scored where they trade live: not with --copy-position or "
+                         "--buy-bid")  # fmt: skip
+    asked_pos = None  # the place the hypotheses' copies were asked to be frozen at, when it is not today's copy landing
     if data is None:
         from .lab_lock import lab_lock
 
         if triggers:  # a hypothesis has no landing of its own to get wrong: its copies are scored where ours land
-            latency, position = 0, copy_pos
+            latency, position = hypothesis_landing(copy_pos, copy_position)  # ... or at the place asked for
+            if position != copy_pos:
+                asked_pos = position
+            if is_bid(position):  # refused in words before any tape is read
+                check_bid_landing(position, latency, bid, [t for t in triggers if t.kind not in LAUNCH_LANDINGS])
         with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
             # the tape store only now, the lock held: freeze may have waited behind the strategy search (41 minutes on
             # 7 Nov) while snapshot-db renamed a new copy over the path, and a copy opened before the wait is the one
@@ -421,7 +515,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
             # (the wallet groups from the live database: the copy has none of the labels written since it was taken)
             data = collect(source, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
-                           triggers=triggers, kols=label_groups(store))  # fmt: skip
+                           triggers=triggers, kols=label_groups(store), buy_bid_sol=bid,
+                           sell_parts=sell_parts)  # fmt: skip
     ranked = [r for r in rank(data, cfg, top=50) if (r["test"].get("ev_lower") or 0) > 0]
 
     def scored_at(r: dict) -> tuple[int, str]:  # the landing the lab scored this row at (per kind since 7 Nov)
@@ -437,7 +532,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     records: dict[str, list[dict]] = {}  # rule -> the strategies frozen on it, oldest first
     for s in old:
         if not fed(s) and _sells_as_live(s):  # a rule another job feeds carries no lab trigger
-            records.setdefault(rule_key(s["trigger"], s["position"], s["latency"], s["buy_sol"]), []).append(s)
+            records.setdefault(_rule_of(s), []).append(s)
     # the rules that hold a place (under test, or frozen by this call): name, moments, and kind, landing and size.
     # Twins are looked for among rules of one kind at one landing and size: a whale rule on a hunt's moments is the
     # research twin of the rule OKTech runs as scored, and must not take the hunt's place
@@ -450,7 +545,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             except TypeError:
                 seen = set()
             at = ((under.get("trigger") or {}).get("kind"), str(under["position"]), int(under["latency"]),
-                  float(under["buy_sol"]))  # fmt: skip
+                  float(under["buy_sol"]), bid_of(under), bool(under.get("landing_asked")))  # fmt: skip
             taken.append((f"{under.get('label', under['id'])} ({under['id']})", seen, at))
     new: list[dict] = []
     skipped: list[dict] = []
@@ -460,10 +555,14 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             break
         spec = r["trigger_spec"]
         lat, pos = live_landing(spec.get("kind"), copy_pos)
-        sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol)
+        # a copy frozen at the place asked for keeps it: the lab scored it there, and the run will
+        asked = asked_pos is not None and spec.get("kind") not in LAUNCH_LANDINGS
+        if asked:
+            lat, pos = 0, asked_pos
+        sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol, bid, asked)
         label = f"{r['trigger']} | {r['exit']}"
         mine = fired.get(_spec_key(spec), set())
-        rs = records.get(rule_key(spec, pos, lat, buy_sol), [])
+        rs = records.get(rule_key(spec, pos, lat, buy_sol, bid, asked), [])
         under = next((s for s in rs if not s.get("refuted")), None)
         if under is not None:  # its forward record runs, with the exit it was frozen with
             places += 1
@@ -472,7 +571,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 f"({under.get('label', '?')}): one forward record a rule, whichever exit the lab picks "
                                 "today"})  # fmt: skip
             continue
-        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol))
+        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked)
         twin = next((name for name, theirs, where in taken if where == at and _twins(mine, theirs)), None)
         if twin is not None:
             skipped.append({"label": label, "why": f"fires on the same moments as {twin}: the same rule under another "
@@ -497,12 +596,25 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         new.append({"id": sid, "label": label, "trigger": spec, "exit": r["exit_params"],
                     "position": pos, "latency": lat, "buy_sol": buy_sol, "per_tx_sol": per_tx_sol,
                     "per_tx_source": per_tx_source, "from_ts": int(now),
-                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r)), **counts,
-                            **r["test"]}})  # fmt: skip
-        records.setdefault(rule_key(spec, pos, lat, buy_sol), []).append(new[-1])
+                    "lab": {"tape_hours": data["tape_hours"], "landing": landing_key(*scored_at(r), bid), **counts,
+                            **({"places": r["places"]} if r.get("places") else {}), **r["test"]}})  # fmt: skip
+        if bid > 0:  # the bid every forward buy pays once, as the lab charged it
+            new[-1]["buy_bid_sol"] = bid
+        if asked:  # the landing it was asked to be frozen at: the run keeps it there (`pinned`)
+            new[-1]["landing_asked"] = True
+        if pinned(new[-1]):  # the landing and the bid in words, as the report names them
+            new[-1]["landing_words"] = landing_text(lat, pos, spec.get("kind"), bid, asked)
+        records.setdefault(rule_key(spec, pos, lat, buy_sol, bid, asked), []).append(new[-1])
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
-    return {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
-            "landing": landings(copy_pos)}  # fmt: skip
+    out = {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
+           "landing": landings(copy_pos)}  # fmt: skip
+    if own_landing or sell_parts:  # what the hypotheses were asked to be frozen with
+        out["asked"] = {"copy_position": asked_pos or copy_pos, "buy_bid_sol": bid,
+                        "sell_parts": ({"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
+                                       if sell_parts else None)}  # fmt: skip
+    if data.get("bid_landing"):  # at a bid landing: the places the copies got, what was refused for want of a bid
+        out["bid_landing"] = data["bid_landing"]
+    return out
 
 
 def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitParams, costs: Costs, i: int, e: int,
@@ -558,8 +670,12 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
         s["id"]: MIG_CAP for s in strategies
         if (s.get("trigger") or {}).get("kind") in AMM_KINDS and not within_mig_cap([ExitParams(**s["exit"])])
     }  # fmt: skip
-    parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]), Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS))
+    # what a transaction costs, and the bid a rule frozen with one pays once on every buy (`bid_of`)
+    parsed = [(s, Trigger(**s["trigger"]), ExitParams(**s["exit"]),
+               Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS, entry_bid_lamports=bid_of(s) * LAMPORTS))
               for s in strategies if s["id"] not in unscored]  # fmt: skip
+    # our own wallets are nobody's place at a bid landing (`lab.bid_entry`)
+    ours = frozenset(own_wallets(store, cfg)) if any(is_bid(s.get("position")) for s, *_ in parsed) else frozenset()
     mig_runs = any(trig.kind == "mig" for _, trig, _, _ in parsed)
     paid_runs = any(trig.kind == "mig" and trig.dev_paid is not None for _, trig, _, _ in parsed)
     # a curve strategy whose exit sells into the migration: scored only where the PumpSwap tape holds it, as in the lab
@@ -607,6 +723,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 # the lab's landing, exactly as lab.collect computes it, at the live landing for this trigger; a PumpSwap
                 # buy behind PumpSwap trades, only where the tape holds them whole (`lab.mig_moment`)
                 own = None  # a copied wallet's companions, for a copy
+                placed = None  # at a bid landing: the place the bid got
                 if trig.kind in AMM_KINDS:
                     e, why = mig_moment(amm_cov, path, i, migs.get(mint), s["latency"], s["position"], ex.max_hold_secs)
                     if why is not None:
@@ -619,7 +736,15 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                         if who not in mates_of:
                             mates_of[who] = companions(store, who, mates_since)
                         own = mates_of[who]
-                    e = entry_at(trig.kind, path, i, t_slot, s["latency"], s["position"], own)
+                    if is_bid(s["position"]):  # where the rule's bid puts the copy in that block, as in the lab
+                        block = _fix_slot_order(store.block_trades(mint, int(t_slot), int(t_slot) + COPY_LAND_SLOTS))
+                        e, placed = bid_entry(path, i, own, block, ours, bid_of(s), s["position"])
+                        if e is None:  # the tape holds no fee record there: left out and counted, never guessed
+                            skipped.setdefault(s["id"], {})
+                            skipped[s["id"]][placed] = skipped[s["id"]].get(placed, 0) + 1
+                            continue
+                    else:
+                        e = entry_at(trig.kind, path, i, t_slot, s["latency"], s["position"], own)
                 if trig.kind in LAUNCH_KINDS and curve_done(path, e):
                     continue  # a launch sniper's buy fails on a completed curve: no position
                 mig = migs.get(mint)
@@ -634,18 +759,22 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "strategy": s["id"], "mint": mint, "trigger_ts": t, "entry_ts": res.entry_ts, "exit_ts": res.exit_ts,
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
-                             "landing": landing_key(s["latency"], s["position"]), "behind": e - i,
+                             "landing": landing_key(s["latency"], s["position"], bid_of(s)), "behind": e - i,
                              "venue": path.venue, "model": FILL_MODEL,
                              # a copy: how many companions of the copied wallet it was scored behind (rows
                              # without the field were entered before 11 Nov 2026, companions counted as outsiders)
-                             **({"mates": len(own or ())} if trig.kind == "kol" else {})},
+                             **({"mates": len(own or ())} if trig.kind == "kol" else {}),
+                             # the bid this buy paid once, and at a bid landing the place it got
+                             **({"buy_bid_sol": bid_of(s)} if bid_of(s) > 0 else {}),
+                             **({"place": placed["place"]} if placed else {})},
                 })  # fmt: skip
     store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
     # the numbers of the strategies that traded, made now: the operator's report and the live page read them kept
     report(store, cfg, now)
     codes = sorted({c for why in skipped.values() for c in why})
     return {"new_trades": added, "since": since, "until": until, "landing": landings(copy_pos), "unscored": unscored,
-            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, c) for c in codes}, "retired": retired}  # fmt: skip
+            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, BID_SKIP_WORDS.get(c, c)) for c in codes},
+            "retired": retired}  # fmt: skip
 
 
 RESCORE_MIN_BUY = 0.5  # `rescore` without ids: the rules that buy at least this much (where the model matters most)
@@ -685,7 +814,8 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
     spans = [(int(a), int(b)) for a, b in store.tape_spans()]
     kols = label_groups(store)
     parsed = {s["id"]: (s, Trigger(**s["trigger"]), ExitParams(**s["exit"]),
-                        Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS)) for s in chosen}  # fmt: skip
+                        Costs(per_tx_lamports=s["per_tx_sol"] * LAMPORTS, entry_bid_lamports=bid_of(s) * LAMPORTS))
+              for s in chosen}  # fmt: skip
     needs_amm = any(t.kind in AMM_KINDS or ex.migration_sell_frac > 0 for _, t, ex, _ in parsed.values())
     amm_cov = store.coverage(AMM_RECENT_KEY) if needs_amm else {}
     crews = _crew_uris(store, spans)
@@ -864,8 +994,12 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         other, n = nums["other_venue"], nums["n"]
         robust = {k: nums[k] for k in ("mean_capped", "ev_lower_capped", "total_capped", "top5_share")}
         hours = max(((done_until or now) - s["from_ts"]) / 3600, 0)
+        asked = bool(s.get("landing_asked"))
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
-                    "landing": landing_text(lat, pos, kind), "live_landing": (lat, pos) == live_landing(kind, copy_pos),
+                    "landing": landing_text(lat, pos, kind, bid_of(s), asked),
+                    # a place asked for, or bought with a bid, is never where our trades land live (`pinned`)
+                    "live_landing": not pinned(s) and (lat, pos) == live_landing(kind, copy_pos),
+                    "buy_bid_sol": bid_of(s), "landing_asked": asked,
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": n, "mean": nums["mean"],
                     "ev_lower": nums["ev_lower"], "total": nums["total"], "win_rate": nums["win_rate"],
                     "per_hour": n / hours if hours else None, "lab_mean": s["lab"].get("mean"),

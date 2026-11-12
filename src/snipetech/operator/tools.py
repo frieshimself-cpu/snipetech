@@ -596,6 +596,16 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
         "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"].
+        A PLACE THAT FOLLOWS THE BID (wallet rules): "--copy-position", "bid-", "--buy-bid", "0.05" puts each copy
+        where that bid would stand among the wallets that really bought behind the followed one: behind its
+        companions, behind every outsider that bid at least as much (in its block and the ten after it) and behind an
+        outsider in the first two transactions behind the wallet, which no bid beats; a lower bid lands behind us.
+        "bid" is that place; "bid-" stands one buy further back on every moment (the faster wallet the tape cannot
+        show) and is the one the owner's bar uses ("has to be profitable paper trade first"). The result's
+        bid_landing gives the places the copies got (places: first, second, third_or_later, to read beside
+        place-bids), who stood ahead, the moments left out for want of a fee record (before 11 Nov 16:34 UTC) and
+        the hours of tape that carry bids. It is a model, not where our copies land live (live_landing false):
+        ["place-bids", "--model-check", "--json"] compares it with every buy of ours the chain reader placed.
         SIZE (the owner, 12 Nov: money is not the limit, test 1 to 30 SOL a buy): "--buy", "10" sizes every buy of
         the lab; our own buy and every sale of ours move the price in the replay, so a rule that pays at 1 SOL is
         scored again at 1, 2, 5, 10, 20 and 30 SOL (one lab a size, the same trigger and hours) and the size to
@@ -621,6 +631,12 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         followed wallet by its own numbers, so no wallet needs a lab of its own. To test forward, freeze the whole
         family at once: ["paper", "freeze", "--trigger", ..., "--trigger", ..., "--top", "40", "--buy", "2"] keeps up
         to forty rules of one freeze running on paper side by side (the forward run scores them all every round).
+        A plain freeze scores copies at the copy landing. To test a rule forward at the place and bid its lab was
+        scored at, give the freeze the same two flags (and "--sell-parts" if the lab had it): ["paper", "freeze",
+        "--trigger", ..., "--copy-position", "bid-", "--buy-bid", "0.05", "--buy", "2"], or "--copy-position", "+1"
+        (any place the lab takes: "+0", "+N", "+Nx", "bid", "bid-"). The rule keeps that landing and that bid: the
+        forward run scores every trade there and charges the bid once on each buy, it has its own id (another
+        landing or bid is another rule), and the report names both and never calls it where our copies land live.
         Different sizes and bids are separate commands; two labs run at a time, so queue the next two as soon as two
         end. Count what you have in flight in your note: the target is a hundred tests a day.
         WHERE OUR OWN BUYS LANDED: ["landing", "--since-minutes", "120", "--json"] reads every buy of the sniper wallet

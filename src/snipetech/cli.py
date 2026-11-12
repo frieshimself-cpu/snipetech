@@ -600,7 +600,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--copy-position", metavar="POS",
                     help="with --trigger: score copies (kol, momentum) at this place in the followed wallet's slot "
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
-                         "the N-th buy across slots. A closer place is bought with a bid: charge it with --per-tx")  # fmt: skip
+                         "the N-th buy across slots. A closer place is bought with a bid: charge it with --buy-bid. Or "
+                         "a place that follows the bid, for wallet rules: bid (behind the wallet's companions, every "
+                         "outsider that bid at least --buy-bid and an outsider in the first two transactions behind "
+                         "the wallet) or bid- (one buy further back: the cautious one). A model, not where our copies "
+                         "land live; moments before the tape's fee records (11 Nov 16:34 UTC) are left out and "
+                         "counted")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
     sp.add_argument("--buy-bid", type=float, default=0.0, metavar="SOL",
                     help="a bid paid once on every buy, on top of --per-tx (which every transaction pays, the sales "
@@ -808,6 +813,21 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--hours", type=_hours, metavar="N", help="freeze: the lab reads only the newest N hours of tape")
     sp.add_argument("--only-live", action="store_true",
                     help="freeze: keep only strategies the lab scored where they trade live")  # fmt: skip
+    sp.add_argument("--copy-position", metavar="POS",
+                    help="freeze, with --trigger: score and freeze the hypotheses' copies (kol, momentum) at this "
+                         "place instead of the copy landing, as `lab --copy-position`: +0, +N, +Nx, or bid / bid- (the "
+                         "place --buy-bid buys among the buyers of the wallet's block; bid- one buy further back). "
+                         "The rule keeps that landing: the forward run scores it there, under an id of its own, and it "
+                         "is never shown as where our copies land live")  # fmt: skip
+    sp.add_argument("--buy-bid", type=float, default=0.0, metavar="SOL",
+                    help="freeze, with --trigger: a bid paid once on every buy, in the lab and on every forward trade, "
+                         "on top of --per-tx (as `lab --buy-bid`); kept with the rule")  # fmt: skip
+    sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
+                    help="freeze, with --trigger: every exit sells out in N equal parts (2 to 20), as `lab "
+                         "--sell-parts`; the frozen exit keeps it (research only: no live sniper sells in "
+                         "parts)")  # fmt: skip
+    sp.add_argument("--sell-part-secs", type=float, default=15.0, metavar="S",
+                    help="freeze, with --sell-parts: seconds between the parts (0 to 600; default 15)")  # fmt: skip
 
     sp = cmd(
         "vanity",
@@ -1023,6 +1043,10 @@ def build_parser() -> argparse.ArgumentParser:
                     "(what each wallet's own copy sniper copies), not one moment a coin")  # fmt: skip
     sp.add_argument("--wallet", action="append", default=[], help="only moments behind this wallet (repeatable)")
     sp.add_argument("--top", type=int, default=20, help="followed wallets and first-place holders to list")
+    sp.add_argument("--model-check", action="store_true",
+                    help="instead of the table: the bid landing model (lab --copy-position bid / bid-) against every "
+                         "buy of ours the chain reader placed: where the model puts a copy with that bid in that "
+                         "block, where it really landed, and how often they agree")  # fmt: skip
     sp = cmd(
         "landing",
         "where a live buy of ours landed, read from the chain itself (any coin, any program): the blocks between the "
@@ -1578,6 +1602,8 @@ async def _run(args, cfg: Config) -> int:
             from collections import Counter
 
             from .analysis import paper
+            from .analysis.bid_landing import is_bid as lab_is_bid
+            from .analysis.lab import check_bid_landing as lab_check_bid
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import exit_set as lab_exit_set
             from .analysis.lab import in_parts as lab_in_parts
@@ -1588,19 +1614,22 @@ async def _run(args, cfg: Config) -> int:
             from .operator.research import recent_tape
             from .qualify.run import lab_tx_cost_info
 
+            copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             try:  # refused before any tape is read
                 if not args.buy_bid >= 0:
                     raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {args.buy_bid:g}")
                 lab_in_parts(lab_exit_set()[:1], args.sell_parts, args.sell_part_secs)
+                # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no
+                # landing of their own: their copies at the copy landing; the grid's copies at --latency / --position
+                lat, pos = (paper.hypothesis_landing(copy_pos, args.copy_position) if args.trigger
+                            else (args.latency, args.position))  # fmt: skip
+                if lab_is_bid(pos):  # a place that follows the bid: it needs the bid, and wallet rules
+                    copies = [t for t in args.trigger if t.kind not in paper.LAUNCH_LANDINGS]
+                    lab_check_bid(pos, lat, args.buy_bid, copies)
             except ValueError as exc:
                 print(f"lab: {exc}", file=sys.stderr)
                 return 2
             sell_parts = (args.sell_parts, args.sell_part_secs) if args.sell_parts > 1 else None
-            copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
-            # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
-            # of their own: their copies at the copy landing; the grid's copies at --latency / --position
-            lat, pos = (paper.hypothesis_landing(copy_pos, args.copy_position) if args.trigger
-                        else (args.latency, args.position))  # fmt: skip
             # what a transaction costs live, as `paper freeze`, the qualify lab and the strategy search charge it, unless
             # told: every lab of research round 1 (7 Nov) charged the flat 0.0035 against about 0.0045 live, so every
             # mean was 0.002 SOL a trade too kind
@@ -1625,7 +1654,7 @@ async def _run(args, cfg: Config) -> int:
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
-            ranked = [r | paper.landing_fields(r, copy_pos) for r in lab_rank(data, cfg, top)]
+            ranked = [r | paper.landing_fields(r, copy_pos, args.buy_bid) for r in lab_rank(data, cfg, top)]
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
@@ -1637,11 +1666,13 @@ async def _run(args, cfg: Config) -> int:
                 res["copy_companions"] = data["mates"]
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
+            if data.get("bid_landing"):  # the places the bid got, the moments with no fee record, the hours with bids
+                res["bid_landing"] = data["bid_landing"]
             if args.trigger:  # each hypothesis, ranked or not: where it was scored and how often it fired
                 fired = Counter(r["trigger"] for r in data["rows"])
                 res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
                                     **paper.landing_fields({"landing": data["landing_of"][ti], "trigger_spec": t.__dict__},
-                                                           copy_pos),
+                                                           copy_pos, args.buy_bid),
                                     "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked)}
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
             if data.get("amm_tape"):  # MIG: what the PumpSwap tape let it score, and why the rest was skipped
@@ -1707,12 +1738,23 @@ async def _run(args, cfg: Config) -> int:
                     if args.per_tx is not None
                     else lab_tx_cost_info(svc.store, cfg)
                 )
-                rep = await asyncio.to_thread(paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
-                                              cost["per_tx_sol"], args.replace, only_live=args.only_live,
-                                              triggers=args.trigger, hours=args.hours,
-                                              lock_dir=Path(cfg.storage.db_path).resolve().parent,
-                                              per_tx_source=cost["per_tx_source"],
-                                              tape=lambda: svc.tape_store)  # fmt: skip
+                try:  # a landing, a bid or a sale in parts that cannot be frozen: refused in words, nothing read
+                    if not args.buy_bid >= 0:
+                        raise ValueError(f"--buy-bid is a bid in SOL, 0 or more, not {args.buy_bid:g}")
+                    from .analysis.lab import exit_set as lab_exit_set
+                    from .analysis.lab import in_parts as lab_in_parts
+
+                    lab_in_parts(lab_exit_set()[:1], args.sell_parts, args.sell_part_secs)
+                    parts = (args.sell_parts, args.sell_part_secs) if args.sell_parts > 1 else None
+                    rep = await asyncio.to_thread(
+                        paper.freeze, svc.store, cfg, args.top, args.position, args.latency, args.buy,
+                        cost["per_tx_sol"], args.replace, only_live=args.only_live, triggers=args.trigger,
+                        hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent,
+                        per_tx_source=cost["per_tx_source"], tape=lambda: svc.tape_store,
+                        copy_position=args.copy_position, buy_bid_sol=args.buy_bid, sell_parts=parts)  # fmt: skip
+                except ValueError as exc:
+                    print(f"paper freeze: {exc}", file=sys.stderr)
+                    return 2
             elif args.action == "run":
                 rep = await asyncio.to_thread(paper.run, svc.store, cfg)
             elif args.action == "rescore":
@@ -2684,6 +2726,12 @@ def _main(args) -> int:
 
         svc = Service(cfg)
         try:
+            if args.model_check:  # the fills from the live database, the blocks from the tape copy
+                from .analysis.place_bids import model_check
+
+                out = model_check(svc.store, svc.tape_store, cfg, time.time())
+                print(json.dumps(out, indent=1) if args.json else R.render_model_check(out))
+                return 0
             # the trades from the hourly copy, the wallet groups and names from the live database (the copy has none
             # of the labels written since it was taken)
             out = place_bids(svc.tape_store, cfg, time.time(), trigger=args.trigger, hours=args.hours, each=args.each,

@@ -811,6 +811,38 @@ class Store:
             out.append(t)
         return out
 
+    def fee_records_from(self, spans: Iterable[tuple[int, int]]) -> int | None:
+        """The second from which the tape's trades carry their fee record (priority fee and tip; the recorder writes
+        them since 11 Nov 2026 16:34 UTC), on the stretches of tape `spans`: the time of the first trade that has
+        one. None when this file has no such columns, or the newest trades have none. Found by halving the time
+        between the tape's start and its end, a handful of trades read each step: it takes that once the records
+        start they go on, which is how the recorder writes them."""
+        spans = sorted((int(a), int(b)) for a, b in spans)
+        if not spans or not self.has_columns("trades", ("priority", "tip")):
+            return None
+        lo, hi = spans[0][0], spans[-1][1]
+
+        def carried(since: int) -> bool:  # the first trades at or after `since` carry a record (or none came)
+            rows = self._q("SELECT priority FROM trades WHERE ts>=? AND ts<=? ORDER BY ts LIMIT 20", (since, hi))
+            return not rows or any(p is not None for (p,) in rows)
+
+        newest = self._q("SELECT priority FROM trades WHERE ts>=? AND ts<=? ORDER BY ts DESC LIMIT 20", (lo, hi))
+        if not any(p is not None for (p,) in newest):
+            return None
+        if not carried(lo):
+            while hi - lo > 1:
+                mid = (lo + hi) // 2
+                if carried(mid):
+                    hi = mid
+                else:
+                    lo = mid
+            lo = hi
+        rows = self._q(
+            "SELECT ts FROM trades WHERE ts>=? AND ts<=? AND priority IS NOT NULL ORDER BY ts LIMIT 1",
+            (lo, spans[-1][1]),
+        )
+        return int(rows[0][0]) if rows else None
+
     def last_price(self, mint: str) -> float | None:
         """The tape's latest price of a coin in lamports per raw token unit (the reserves after its last trade), or
         None when the tape has never seen it."""

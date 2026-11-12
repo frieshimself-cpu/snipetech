@@ -54,9 +54,14 @@ from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
 from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, run_exit
-from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
+from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
+from .bid_landing import FAST_TXS, NO_BIDS, NOT_LIVE, cautious, is_bid, landing_name, own_wallets
+from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
+from .bid_landing import ahead as bid_ahead
+from .bid_landing import block as read_block
+from .bid_landing import places as bid_places
 from .companions import companions_of
 from .names import category, entity
 from .stats import summarize
@@ -539,10 +544,10 @@ MIG_LAND_SLOTS = 10  # about 2 s at 0.214 s a slot: 2.5 times the slowest 3rd Pu
 
 # why a moment or one exit of it was left out, in the words the lab reports: the PumpSwap tape's reasons, a curve
 # position whose coin left its curve while held when the tape has no migration for it to time a migration sell from,
-# and a MIG buy with no PumpSwap trade to land behind
+# and a MIG buy with no PumpSwap trade to land behind; and a copy at a bid landing whose block holds no fee record
 SKIP_WORDS = {**GAP_WORDS, "no_migration": "left its curve while held, and the tape has no migration for it",
               "no_landing": f"with no PumpSwap trade in the {MIG_LAND_SLOTS} slots (about 2 s) after the migration's slot "
-                            "for a MIG buy to land behind"}  # fmt: skip
+                            "for a MIG buy to land behind", **BID_SKIP_WORDS}  # fmt: skip
 
 
 def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int | None:
@@ -619,6 +624,14 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     if last_own > i:  # the companions' buys in the leader's slot are not buyers ahead of us
         buys = np.array([j for j in buys if not (int(path.slot[j]) == s and path.users[int(j)] in mates)], dtype=int)
     e = last_own if n <= 0 or not len(buys) else max(last_own, int(buys[min(n, len(buys)) - 1]))
+    return _no_cheaper(path, i, e, last_own, latency)
+
+
+def _no_cheaper(path: MarketPath, i: int, e: int, last_own: int, latency: int = 0) -> int:
+    """State `e`, or the closest state a live copy of the buy at state i lands at when that is later or dearer: behind
+    the leader's own entry (`last_own`), behind every trade of the create slot, with `latency` behind every trade of
+    the slots before, and never at a price under the one right there (`copy_entry`)."""
+    s = int(path.slot[i])
     floor = int(path.landing_index(s + int(latency), "start", i)) if latency else i  # the closest a live copy lands
     floor = max(floor, last_own)
     if path.launch is not None:  # behind every trade of the create slot
@@ -626,6 +639,41 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     e = max(e, floor)
     # the worse price for the copy's buy: the higher of the two (reserves are positive, so compare cross-multiplied)
     return e if float(path.q[e]) * float(path.b[floor]) >= float(path.q[floor]) * float(path.b[e]) else floor
+
+
+def bid_entry(path: MarketPath, i: int, mates: Collection[str] | None, trades: Sequence, own: Collection[str],
+              bid_sol: float, position: str = "bid") -> tuple[int | None, Any]:  # fmt: skip
+    """(the state a copy that pays `bid_sol` enters at, what the model says of it) for the followed buy at state i, at
+    the copy position "bid" or "bid-" (`analysis.bid_landing`): in the followed wallet's block behind its companions
+    (`mates`), behind every outsider that bid at least as much there and in the COPY_LAND_SLOTS blocks after it (as
+    far as "+Nx" counts buys), and behind an outsider within FAST_TXS transactions of the wallet's own entry, which no
+    bid beats. `trades`: the coin's trades of those blocks in the order they ran, each with its fee record
+    (`store.block_trades`); `own`: our wallets, nobody's place.
+
+    The copy enters behind the last of them on the tape, so a lower bid that stands ahead of one that beats ours is
+    priced ahead of us too: the worse price, never a place better than the bid buys. "bid-" then stands behind one
+    more buy, the next on the tape within those blocks (the faster wallet the tape cannot show; where no buy came, its
+    place still counts one further back and the price is the same: nothing is there to stand behind). Never cheaper
+    than right behind the wallet's own entry, never in the create slot (`_no_cheaper`, as `copy_entry`).
+
+    The second value: {"place": ours among the outsiders (1 = first; "bid-" one more), "outbid", "fast", "later": how
+    many stood ahead of us for each reason}. A moment the tape holds no fee record for is not placed: (None, the
+    reason: NO_BIDS, BID_UNKNOWN)."""
+    read = read_block(trades, path.sigs[i], mates or (), own)
+    who = NO_BIDS if read is None else bid_ahead(read, bid_sol)
+    if isinstance(who, str):
+        return None, who
+    s = int(path.slot[i])
+    hi = int(np.searchsorted(path.slot, s + COPY_LAND_SLOTS, side="right"))
+    at = {(path.sigs[j], path.users[j]): j for j in range(hi - 1, i, -1) if path.is_buy[j]}  # each one's first buy
+    last_own = own_entry_end(path, i, mates)
+    e = max([last_own] + [at[key] for b in who["ahead"] if (key := (b["sig"], b["user"])) in at])
+    place = int(who["place"])
+    if cautious(position):
+        place += 1
+        e = next((j for j in range(e + 1, hi) if path.is_buy[j] and path.users[j] not in own), e)
+    info = {"place": place, "outbid": int(who["outbid"]), "fast": int(who["fast"]), "later": int(who["later"])}
+    return _no_cheaper(path, i, e, last_own), info
 
 
 def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, position: str,
@@ -1325,6 +1373,9 @@ class _Run:
     # each copied wallet's companions (qualify.gates.companions): a copy counted across slots lands behind their buys
     # in the wallet's block (`copy_entry`)
     mates: dict[str, frozenset] = field(default_factory=dict)
+    # a copy position that follows the bid ("bid", "bid-": `bid_entry`): the bid in SOL, and our own wallets
+    bid_sol: float = 0.0
+    own: frozenset = frozenset()
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -1433,10 +1484,19 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
         for i in fired:
             t_slot, t_ts = fired_at(trig, path, i, mig)
             lat, pos = run.landings.get(trig.kind, (run.latency_slots, run.position))
+            placed = None  # at a bid landing: the place the bid got (`bid_entry`)
             if trig.kind in AMM_KINDS:  # a PumpSwap buy: behind PumpSwap trades, where the tape holds them whole
                 e, why = mig_moment(run.amm_cov, path, i, mig, lat, pos, run.mig_horizon)
                 if why is not None:  # said in the lab's report (`collect`: amm_tape), never scored
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why})
+                    continue
+            elif is_bid(pos):  # a copy where its bid puts it among the buyers of the wallet's block (`bid_entry`)
+                if t_ts > b - 60:
+                    continue
+                block = _fix_slot_order(store.block_trades(mint, int(t_slot), int(t_slot) + COPY_LAND_SLOTS))
+                e, placed = bid_entry(path, i, run.mates.get(path.users[i]), block, run.own, run.bid_sol, pos)
+                if e is None:  # the tape holds no fee record there: said in the lab's report, never guessed
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": placed})
                     continue
             else:  # a copy lands behind the wallet's own companions (analysis.companions)
                 e = entry_at(trig.kind, path, i, t_slot, lat, pos, run.mates.get(path.users[i]))
@@ -1473,7 +1533,9 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 continue
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
-                   "landing": f"{pos}@{int(lat)}"}  # fmt: skip
+                   "landing": landing_name(pos, lat, run.bid_sol)}  # fmt: skip
+            if placed:  # the place the bid got among the outsiders, and who stood ahead of it
+                row |= placed
             if gaps:  # the exits left out on this moment (None in `pnl`), and why
                 row["gaps"] = gaps
             if trig.kind == "kol":  # how many companions of the wallet the copy was scored behind
@@ -1608,6 +1670,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
     `buy_bid_sol`: a bid paid once on every buy, on top of `per_tx_sol` (`Costs.entry_bid_lamports`).
+    `position` "bid" or "bid-" (wallet rules only, latency 0): each copy lands where `buy_bid_sol` puts it among the
+    buyers of the followed wallet's block (`bid_entry`, analysis.bid_landing); a moment whose block has no fee record
+    on the tape is left out, and `bid_landing` in the result says how many and why, the hours of tape that carry
+    bids, and the places the copies got (`_bid_report`); our own wallets (`own_wallets`) are nobody's place.
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
     moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
@@ -1649,7 +1715,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     MIN_PARALLEL_COINS coins, a file another copy has been renamed over since the store opened it, or snipetech code
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
-    costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS, entry_bid_lamports=max(0.0, float(buy_bid_sol)) * LAMPORTS)
+    bid_sol = max(0.0, float(buy_bid_sol))
+    costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS, entry_bid_lamports=bid_sol * LAMPORTS)
     # handed exits score every trigger, MIG included, watched as a live OKTech sniper runs a MIG rule's auto-sell
     mig_exits = [watched(ex) for ex in exits] if exits else mig_exit_set()
     exits = list(exits) if exits else exit_set()
@@ -1668,6 +1735,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     if not within_mig_cap(mig_exits):
         unscored = {t.kind: MIG_CAP for _, t in triggers if t.kind in AMM_KINDS}
         triggers = [(ti, t) for ti, t in triggers if t.kind not in AMM_KINDS]
+    if is_bid(position):
+        check_bid_landing(position, latency_slots, bid_sol,
+                          [t for _, t in triggers if t.kind not in (landings or {})])  # fmt: skip
     amm_runs = any(t.kind in AMM_KINDS for _, t in triggers)
     mig_sell = any(ex.migration_sell_frac > 0 for ex in exits)  # an exit that sells into the migration
     amm_cov = store.coverage(AMM_RECENT_KEY) if amm_runs or mig_sell else {}
@@ -1693,7 +1763,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)),
-               mates={w: frozenset(m) for w, m in (mates or {}).items() if m})  # fmt: skip
+               mates={w: frozenset(m) for w, m in (mates or {}).items() if m},
+               bid_sol=bid_sol if is_bid(position) else 0.0,
+               own=frozenset(own_wallets(store, cfg)) if is_bid(position) else frozenset())  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     if plan_wallets is None and triggers and isinstance(kols, dict) and all(t.kind == "kol" for _, t in triggers):
         # every rule of this lab fires on a buy by one of its group's wallets, of at least its size (`_fire`): a coin
@@ -1725,8 +1797,57 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
            "mates": {"wallets": len(run.mates), "found_by": found_by}}  # fmt: skip
     if amm_runs or mig_sell:
         horizon = run.mig_horizon if amm_runs else run.horizon
-        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)
+        # (a moment a bid landing could not place is the bid report's, below: the PumpSwap tape has no part in it)
+        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows,
+                                      [r for r in skipped if r["skipped"] not in BID_SKIP_WORDS], horizon, mig_sell)
+    if is_bid(position):
+        out["bid_landing"] = _bid_report(store, spans, position, bid_sol, rows, skipped)
     return out
+
+
+def check_bid_landing(position: str, latency: int, bid_sol: float, triggers: Sequence[Trigger]) -> None:
+    """Refuse a bid landing ("bid", "bid-") that cannot be scored, in words, before any tape is read: it needs the bid
+    it follows, it is a place in the followed wallet's own block, and it is a place behind a followed wallet."""
+    if not bid_sol > 0:
+        raise ValueError(f"the copy position {position} follows the bid: name it with --buy-bid (SOL, above 0)")
+    if int(latency) != 0:
+        raise ValueError(f"the copy position {position} is a place in the followed wallet's own block: latency 0, not "
+                         f"{int(latency)}")  # fmt: skip
+    other = sorted({t.kind for t in triggers if t.kind != "kol"})
+    if other:
+        raise ValueError(f"the copy position {position} is a place behind a followed wallet: it takes a wallet rule (a "
+                         f"kol trigger), not {', '.join(other)}")  # fmt: skip
+
+
+def bid_hours(store: Store, spans) -> tuple[int | None, float]:
+    """(the second the tape's fee records start at, the hours of the tape `spans` from then on): the tape a bid
+    landing can be scored on. (None, 0.0) for a tape with no fee record."""
+    since = store.fee_records_from(spans)
+    if since is None:
+        return None, 0.0
+    return int(since), sum(max(0, int(b) - max(int(a), int(since))) for a, b in spans) / 3600
+
+
+def _bid_report(store: Store, spans, position: str, bid_sol: float, rows: list[dict], skipped: list[dict]) -> dict:
+    """What a lab at a bid landing scored: the landing's name, the moments placed and the ones refused for want of a
+    fee record (`skipped`, by reason, `why` in words), the hours of tape that carry bids, the places the copies got
+    among the outsiders (to read beside the playbook's table of the place by the bid) and how often each kind of
+    buyer stood ahead of them. It is a model until real fills calibrate it, and says so."""
+    placed = [r for r in rows if "place" in r]
+    left = Counter(r["skipped"] for r in skipped if r["skipped"] in BID_SKIP_WORDS)
+    since, hours = bid_hours(store, spans)
+    n = len(placed)
+
+    def share(key: str) -> float | None:
+        return round(sum(1 for r in placed if r.get(key)) / n, 3) if n else None
+
+    return {"position": position, "bid_sol": float(bid_sol), "landing": landing_name(position, 0, bid_sol),
+            "cautious": cautious(position), "scored": n, "skipped": dict(sorted(left.items())),
+            "why": {c: BID_SKIP_WORDS[c] for c in sorted(left)}, "bids_from_ts": since, "bid_hours": round(hours, 2),
+            "places": bid_places([int(r["place"]) for r in placed]),
+            "ahead": {"outbid_in_block": share("outbid"), "fast": share("fast"),
+                      "outbid_in_later_blocks": share("later")},
+            "fast_txs": FAST_TXS, "land_slots": COPY_LAND_SLOTS, "calibrated": False, "note": NOT_LIVE}  # fmt: skip
 
 
 def _amm_report(cov: dict[str, Any], spans, triggers, rows: list[dict], skipped: list[dict], horizon: float,
@@ -1869,6 +1990,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
             "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
         })  # fmt: skip
+        if any("place" in r for r in rs):  # at a bid landing: the places the rule's copies got among the outsiders
+            out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
     return out[:top]
 

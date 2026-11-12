@@ -683,6 +683,23 @@ def test_the_agents_are_told_how_to_read_the_table_of_place_against_bid(toolbox)
     assert '"--copy-position", "+0"' in text and "--per-tx" in text
 
 
+def test_the_agents_are_told_how_to_score_and_freeze_a_copy_where_its_bid_puts_it(toolbox):
+    """12 Nov: the owner's rule is a profitable paper trade first. A paper copy stood at a fixed place whatever it
+    bid, and `paper freeze` took no landing and no bid (the analyst's freeze of 18:01 was refused: "a plain freeze
+    would score +6, where the rule loses"). The tool says what `bid` and `bid-` are, that they are a model and not
+    where our copies land live, which one the owner's bar uses, and how to freeze a rule at a landing and bid."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '"--copy-position", "bid-", "--buy-bid", "0.05"' in text
+    assert "every outsider that bid at least as much" in text and "first two transactions behind the wallet" in text
+    assert '"bid-" stands one buy further back' in text and "the one the owner's bar uses" in text
+    assert "bid_landing" in text and "places" in text and "not where our copies land live" in text
+    assert '["place-bids", "--model-check", "--json"]' in text
+    assert ('["paper", "freeze", "--trigger", ..., "--copy-position", "bid-", "--buy-bid", "0.05", "--buy", "2"]'
+            in text)  # fmt: skip
+    assert "keeps that landing and that bid" in text and "its own id" in text
+
+
 def test_the_agents_are_told_how_to_find_the_winning_bots_and_wallets_themselves(toolbox):
     """12 Nov, the owner: "you need to find these people, me having to give you his wallet is insane". `winners` ranks
     every busy wallet by what it made and marks the bots; the tool says how to start it, which numbers to read, that
