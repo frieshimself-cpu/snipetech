@@ -14,7 +14,7 @@
 | `research/` | The cloud session's strategy research rounds: one report per round (outcome, labs, builds, lessons, next angles) and their index; the server's agents read the newest round at every turn | Claude, after every round |
 | `birdeye.md` | What the Birdeye plan gives us, CU costs, where it plugs in | Claude |
 | `jev.md` | TypeSafe's Jev: what it is, why it is not used yet, the measured-first plan | Claude |
-| `superpowers/specs/` | Designs approved before building (operator agent) | Claude, owner approves |
+| `superpowers/specs/` | Designs approved before building (operator agent). `2026-11-12-specialised-agents-design.md`: the analyst split into a wallet scout, a strategy tester and a fee and place analyst; a design, not built | Claude, owner approves |
 | `superpowers/plans/` | Task-by-task implementation plans with their tests | Claude |
 | `inbox/` | The owner's raw notes and screenshots, read-only for Claude | Owner |
 | `../README.md` | How to install and run everything, server included | Claude |
