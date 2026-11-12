@@ -1,0 +1,62 @@
+{
+ "5c5tDrVeQKuxJ3hd2SZBnwo4zjQFESPodLKgbHDw3TfaXvzpMzrADnLusqrissFH3n77S8FRchzBYcwozDYRh3Es": {
+  "priority": 1000000,
+  "tip": 10000000,
+  "venue": "curve"
+ },
+ "5eAsRAEQx4DJ8fNWnc8Wo1dBNnebb3DHCjDDmpsitZ8tpvQ4CWTrYH9rm1BzKxzAnrjJP5TXXiuCEFecQ4JbS6nu": {
+  "priority": 10000000,
+  "tip": 10000000,
+  "venue": "curve"
+ },
+ "3A1ivJC36XsVz7WDnPXW6W7KNuFmNnmmAXYa47h6VVBD2ZkMdyS7j9iAxkoKhwpwNYHMLEjesnituozRS9wm8Mct": {
+  "priority": 10000000,
+  "tip": 10000000,
+  "venue": "curve"
+ },
+ "4EfjXgdEpZohpb8V4ZnTAjZwiyVgFnigRqZaWbdJVsF9dbNrfHJv12axh9dYCSzqG3Tg5x9TABuudXkq3UrWxYT6": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "4XmMrAnnjqgRu91pUWTRpta18U7hg7QKwQLaXgfJKYwB7gPKh39MiQF2xPcyMxCsYrqRRBAPXK4cDXENVN3cS2nQ": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "3FxfyjktWggWXpRQ76wHbmq5MSvrunhyiZGuc9DBEoNyybiovGRuAhHd5hTSnuJVeHUKFA2fhM1rxX1MR2sF6L1z": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "5dKee9pwjmb9ZGMvN8SyXbprnFERfqKU66Lb3SfCfyMPpsKzdAqLU22q3y5avNszEZS1q24xqBUf98rbGRgBDm3B": {
+  "priority": 1000000,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "2qVaDGcHanHCzQeXKKLJYMEc6AhT4Y9RV1ZkeZ6uiWJwspuPbGYZP34bHjnEUsYvTk7Lhu5St9hy3nVA4BQbxAxr": {
+  "priority": 1000000,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "36NTNtXDCFaVcnEJtxXq7xhrKP6eAaFakFde2n6z1DgUrNYJa5AwWaHrHPVqKSThFTrCbjDQWi5Qq4XzJ6Td8jSP": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "5cprb18s2ZUwpokqre7xf1i1z8wtaZgWndXybb5jfvqm4bEWc3Bp5P8y1taCZiKBKsLvNfAM1PUBWMR1ZA3BNPRL": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "iRPWzY5YozKsDHpaHKC6S9eHn3RqYym6ZwoAit23SamGcSaGEsGxrAgCVJVv2mctENr7sGybepceGCDiELYBcTY": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ },
+ "4NBh5zMSVEZ3M1kPGttPiCgKupFZ9ZJbbieVePJMrdnSwmoozmthzzmxa2u9i5f6XWUGhMa6FCejec7LUoLS2z7N": {
+  "priority": 9999999,
+  "tip": 10000000,
+  "venue": "amm"
+ }
+}

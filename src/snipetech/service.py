@@ -1638,6 +1638,8 @@ class Service:
                                max_wallets=gc.max_wallets, exclude=exclude, now=now, log=self.progress)  # fmt: skip
         if gc.label:
             gmgn.label_people(self.store, rows)
+        for row in rows:  # how followed each asked wallet is and who funded it: kept for the verdict's note
+            gmgn.remember_wallet(self.store, row, now=now)
         return rows
 
     async def own_funds_share(self, wallet: str, sample: int = 8) -> float | None:

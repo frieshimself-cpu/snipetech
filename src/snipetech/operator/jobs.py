@@ -33,6 +33,7 @@ RESEARCH_COMMANDS = frozenset(
         "place-bids",
         "gmgn",
         "landing",
+        "tips",
     }
 )
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget

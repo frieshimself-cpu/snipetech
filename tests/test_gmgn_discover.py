@@ -50,7 +50,8 @@ def test_the_people_on_gmgns_lists_with_profit_and_win_rate():
     assert cupsey["name"] == "Cupsey" and cupsey["twitter"] == "cupseyy" and cupsey["lists"] == ["kol", "smartmoney"]
     assert cupsey["realized_usd"] == 15234.52 and cupsey["cost_usd"] == 48000.0 and cupsey["period"] == "30d"
     assert (cupsey["buys"], cupsey["sells"], cupsey["trades"], cupsey["days"]) == (140, 131, 271, 30)
-    assert cupsey["win_rate"] == 0.62 and cupsey["followers"] == 251000 and cupsey["funded_by"] == "Coinbase"
+    assert cupsey["win_rate"] == 0.62 and cupsey["followers"] == 251000 and cupsey["funded_by_name"] == "Coinbase"
+    assert cupsey["funded_by"] == "7RaT4qX2jwLHTxuPUpm5rXfbZHbCtXihfKugoQUegJdk" and cupsey["follow_count"] == 18234
     assert rows[1]["win_rate"] == pytest.approx(0.4318) and rows[1]["tokens"] == 44  # the second of the two asked
     assert "win_rate" not in rows[2]  # stats_top 2: the third wallet's statistics were not asked
     paths = [r.url.path for r in seen]
@@ -226,5 +227,43 @@ def test_a_rate_limit_ends_the_asking_and_keeps_what_was_found(tmp_path):
         assert [r.url.path for r in seen].count("/v1/user/wallet_stats") == 1  # one refusal, no second try
         s = {c["wallet"]: c["stats"]["gmgn"] for c in st.candidates()}
         assert s[K1]["realized_usd"] == 15234.52 and "win_rate" not in s[K1]
+    finally:
+        st.close()
+
+
+# -- on GMGN's real lists (12 Nov 2026) --------------------------------------------------------------------------------
+
+
+def test_the_real_lists_give_sane_candidates_and_name_nobody_by_default(tmp_path):
+    """The KOL list and the smart-money list as GMGN really sent them (tests/fixtures/gmgn/real/, 40 rows each): 27
+    wallets, none twice, three of them bots by GMGN's own tag and left out; the hot coins' eight top traders are all
+    bundlers and add nobody. No label is written: naming stays off until the owner switches it on."""
+    from tests.test_gmgn_real import CUPSEY2, REAL_ROUTES, TRUNOEST
+
+    said: list[str] = []
+    cfg = Config()
+    assert cfg.gmgn.label is False
+    cfg.gmgn.stats_top = 2
+    st = Store(tmp_path / "t.db")
+    svc = Service(cfg, store=st)
+    svc.progress = said.append
+    ctx = DiscoverContext(svc=svc, cfg=cfg, now=NOW, log=said.append, gmgn=_gmgn(routes=REAL_ROUTES))
+    try:
+        out = run_discover(ctx, [GmgnSource()])
+        assert out["errors"] == {} and out["by_source"] == {"gmgn": 24} and out["new"] == 24
+        cands = {c["wallet"]: c["stats"]["gmgn"] for c in st.candidates()}
+        assert len(cands) == 24 and TRUNOEST in cands
+        assert not any(G.BOT_TAGS & set(s["tags"]) for s in cands.values())
+        assert any("3 wallets GMGN tags as bots" in m for m in said)
+        assert _labels(st) == {}  # GMGN's names change no group a lab reads
+        t = cands[TRUNOEST]
+        assert t["lists"] == ["kol"] and t["feed_trades"] == 6 and t["twitter"] == "trunoest"
+        # the wallets whose statistics were asked carry how followed they are, in the candidate's stats and in the
+        # kept look-up the verdict reads
+        asked = {w: s for w, s in cands.items() if s.get("follow_count") is not None}
+        assert len(asked) == 2 and all(isinstance(s["tags"], list) for s in asked.values())
+        for w, s in asked.items():
+            assert G.known_wallet(st, w)["follow_count"] == s["follow_count"]
+        assert G.known_wallet(st, CUPSEY2) is None  # not on a list: never asked
     finally:
         st.close()

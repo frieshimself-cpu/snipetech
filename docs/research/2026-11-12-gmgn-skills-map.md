@@ -802,6 +802,13 @@ The single route under `/v1/trade/` worth allowing is `GET /v1/trade/gas_price`:
 
 ## 6. Open questions only a real call can answer
 
+**12 Nov, 18:45 UTC: answered in part.** The key works; the fee fields are SOL and match our tape (68 transactions of
+68, question 5); `bought_fee`, `sold_fee`, `follow_count` and tags come back (6); Cupsey resolves to five wallets
+(7); a candle's `volume` is the dollars (10); the new-pairs answer is 851 KB and ignores `limit` (11); the read-only
+key reaches the fee presets (14). Questions 2, 3 in full, 8, 9, 12 and 13 are still open. What each real answer
+looked like, and what was wrong in the documents: `2026-11-12-gmgn-api.md`, "Checked against real answers, 12 Nov".
+The commands below are as they were written before the client existed.
+
 Written as server commands in the shape of the client being built (`snipetech gmgn ...`); rename to the client's real
 verbs when it is merged. Run each once, after `gmgn ping` is green, between labs.
 

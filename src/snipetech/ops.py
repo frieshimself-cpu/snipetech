@@ -51,7 +51,7 @@ ALLOWED = frozenset({
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
     "discover-wallets", "list", "export", "vanity", "paper", "sweep", "operate", "birdeye", "solanatracker", "vybe", "discover", "qualify", "measure", "book", "events", "snapshot-db", "db", "tx", "strategist",
     "research", "early-leaders", "dip-buys", "fomo-wallets", "stopped-wallets", "exitrun", "winners", "leaders-of", "copy-context", "playbook", "launch-tools",
-    "history", "rescore", "unwrap", "place-bids", "gmgn", "landing",
+    "history", "rescore", "unwrap", "place-bids", "gmgn", "landing", "tips",
 })  # fmt: skip
 UNITS = (
     "snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-daily",
@@ -178,7 +178,7 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
 HOLDS_DEPLOY = frozenset({
     "lab", "qualify", "paper", "rescore", "snapshot-db", "events", "study", "copy", "copy-rank", "follow",
     "discover-wallets", "early-leaders", "dip-buys", "fomo-wallets", "stopped-wallets", "winners", "leaders-of",
-    "copy-context", "playbook", "launch-tools", "place-bids",
+    "copy-context", "playbook", "launch-tools", "place-bids", "tips",
 })  # fmt: skip
 # The units a timer starts and that end by themselves. One that is mid-run keeps the modules it has loaded and reads
 # the rest from the new files (a command imports its module when it gets there), so an update waits for it too: the

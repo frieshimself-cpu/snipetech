@@ -1,0 +1,57 @@
+{
+ "code": 0,
+ "data": {
+  "wallet_address": "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP",
+  "native_balance": "3184.312898201",
+  "realized_profit": "-60311.51857196262098486028",
+  "realized_profit_pnl": "-0.0273786597882135",
+  "buy": 12279,
+  "sell": 4688,
+  "bought_cost": "1718754.61717081154225072198",
+  "bought_fee": "32160.51142874985798918934",
+  "sold_income": "2134397.34879694125599740614",
+  "sold_fee": "16820.78307855729793185588",
+  "total_cost": "2117869.80409654280954463154",
+  "last_timestamp": 1794506857,
+  "pnl_stat": {
+   "token_num": 2242,
+   "winrate": 0.37145698657384385,
+   "pnl_lt_nd5_num": 515,
+   "pnl_nd5_0x_num": 717,
+   "pnl_0x_2x_num": 968,
+   "pnl_2x_5x_num": 35,
+   "pnl_gt_5x_num": 7,
+   "avg_holding_period": 345858.1350401606
+  },
+  "common": {
+   "avatar": "",
+   "name": "",
+   "ens": "",
+   "tag": "",
+   "tags": [
+    "padre"
+   ],
+   "tag_rank": {
+    "padre": 0
+   },
+   "nick_name": "",
+   "created_at": 1785777120,
+   "twitter_name": "",
+   "twitter_username": "",
+   "is_blue_verified": false,
+   "twitter_bind": false,
+   "twitter_fans_num": 0,
+   "twitter_description": "",
+   "followers_count": 0,
+   "follow_count": 2148,
+   "remark_count": 2511,
+   "created_token_count": 0,
+   "fund_from": "",
+   "fund_from_ts": 1785777120,
+   "fund_tx_hash": "5SnNwvFZGdGnKua6tyiJsaoBGx3FaahffgE7XhdLy7Ykgsz1Vhj9v8nvE3wtZDfUa7xvAMaTWuQ8EUZST3RFo9QY",
+   "wallet_address": "",
+   "fund_from_address": "2fg5QD1eD7rzNNCsvnhmXFm5hqNgwTTG8p7kQ6f3rx6f",
+   "fund_amount": "50"
+  }
+ }
+}

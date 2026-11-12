@@ -266,22 +266,15 @@ def _own_wallets(store: Store, cfg: Config) -> set[str]:
     return own | ({cfg.operator.wallet} if cfg.operator.wallet else set())
 
 
-def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, Any] | str | None = None,
-               hours: float = 48.0, each: bool = False, wallets: Collection[str] | None = None, top: int = 20,
-               min_trades: int = 5, kols: Any = None, labels: Mapping[str, str] | None = None,
-               own: Collection[str] | None = None) -> dict[str, Any]:  # fmt: skip
-    """The table of place against bid for the wallet rule `trigger` (a lab kol trigger; default: idea I51's) over the
-    newest `hours` of tape. `kols` / `labels`: the wallet groups and names (default: this store's; a caller reading
-    the hourly copy hands the live ones). `own`: our wallets (default: the operator's and those with fills)."""
-    spec = (
-        dict(DEFAULT_TRIGGER)
-        if trigger is None
-        else (json.loads(trigger) if isinstance(trigger, str) else dict(trigger))
-    )
-    trig = parse_trigger(spec)
+def read_blocks(store: Store, cfg: Config, now: float, trig: Trigger, *, hours: float, each: bool = False,
+                wallets: Collection[str] | None = None, min_trades: int = 5, kols: Any = None,
+                own: Collection[str] | None = None,
+                ) -> tuple[list[dict], list[dict], dict[str, frozenset[str]], bool]:  # fmt: skip
+    """The moments `trig` follows over the newest `hours` of tape (`moments`) and each one read off its block
+    (`block`): (every moment found, the ones whose block's bids are known, each followed wallet's companions, whether
+    this copy of the tape holds fee records at all). `place_bids` and `tips` are two tables over the same reading."""
     spans = _window(store.tape_spans(), now, hours)
     found = moments(store, trig, spans, each=each, wallets=wallets, min_trades=min_trades, kols=kols)
-    labels = store.labels() if labels is None else labels
     own = _own_wallets(store, cfg) if own is None else set(own)
     fees = store.has_columns("trades", ("priority", "tip"))
     since = min((a for a, _b in spans), default=0)
@@ -295,6 +288,25 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
         read = block(trades, m["sig"], mates_of[who], own)
         if read is not None and read["leader_bid"] is not None:
             scored.append({**m, **read})
+    return found, scored, mates_of, fees
+
+
+def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, Any] | str | None = None,
+               hours: float = 48.0, each: bool = False, wallets: Collection[str] | None = None, top: int = 20,
+               min_trades: int = 5, kols: Any = None, labels: Mapping[str, str] | None = None,
+               own: Collection[str] | None = None) -> dict[str, Any]:  # fmt: skip
+    """The table of place against bid for the wallet rule `trigger` (a lab kol trigger; default: idea I51's) over the
+    newest `hours` of tape. `kols` / `labels`: the wallet groups and names (default: this store's; a caller reading
+    the hourly copy hands the live ones). `own`: our wallets (default: the operator's and those with fills)."""
+    spec = (
+        dict(DEFAULT_TRIGGER)
+        if trigger is None
+        else (json.loads(trigger) if isinstance(trigger, str) else dict(trigger))
+    )
+    trig = parse_trigger(spec)
+    labels = store.labels() if labels is None else labels
+    found, scored, mates_of, fees = read_blocks(store, cfg, now, trig, hours=hours, each=each, wallets=wallets,
+                                                min_trades=min_trades, kols=kols, own=own)  # fmt: skip
     by_wallet: dict[str, list[dict]] = {}
     for m in scored:
         by_wallet.setdefault(m["leader"], []).append(m)
