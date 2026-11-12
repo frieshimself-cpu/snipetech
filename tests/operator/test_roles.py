@@ -483,3 +483,28 @@ def test_the_agent_command_runs_one_role_and_asks_for_one(box, capsys):
     assert cli.main([*db, "operate", "agent", "--role", "scout"]) == 0
     assert json.loads(capsys.readouterr().out) == {"role": "scout", "ran": False,
                                                    "why": "the research agents are off ([operator] role_agents)"}  # fmt: skip
+
+
+def test_the_agents_are_switched_on_and_off_by_a_file_without_a_deploy(box, capsys):
+    """12 Nov: the switch in the settings is off by default, and a default cannot be flipped without a deploy (and
+    half the round's tests rest on it). As the book and the automatic test have, the agents have a file:
+    `operate agent --switch on` writes operator/ROLES_ON, `--switch off` removes it. The file or the setting switches
+    them on; the owner's `/budget every 0` still switches them off either way. With them on, four roles share a
+    limit of five research jobs."""
+    from snipetech import cli
+
+    db = ["--db", str(box.data / "snipetech.db")]
+    assert R.on(box.cfg, box.paths) is True  # this box has the setting on
+    box.cfg.operator.role_agents = False
+    assert R.on(box.cfg, box.paths) is False
+    assert cli.main([*db, "operate", "agent", "--switch", "on"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"agents": "on", "by": "the file operator/ROLES_ON"}
+    assert (box.paths.root / R.SWITCH).exists() and R.on(box.cfg, box.paths) is True
+    assert cli.main([*db, "operate", "agent", "--role", "scout", "--dry-run"]) == 0
+    assert json.loads(capsys.readouterr().out)["on"] is True
+    assert cli.main([*db, "operate", "agent", "--switch", "off"]) == 0
+    assert json.loads(capsys.readouterr().out) == {"agents": "off", "by": "the file operator/ROLES_ON is gone"}
+    assert not (box.paths.root / R.SWITCH).exists() and R.on(box.cfg, box.paths) is False
+    with pytest.raises(SystemExit):
+        cli.main([*db, "operate", "agent", "--switch", "maybe"])
+    assert R.ROLE_MAX_JOBS == 5

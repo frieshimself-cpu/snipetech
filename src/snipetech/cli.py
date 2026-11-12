@@ -927,6 +927,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--role", dest="idea_role",
                     help="idea: the research agent whose queue it goes to (scout, tester, fees, oktech; a research "
                          "idea without one is the tester's); agent: whose turn to run")  # fmt: skip
+    sp.add_argument("--switch", metavar="on|off",
+                    help="agent: switch the research agents on or off by the file operator/ROLES_ON, without a "
+                         "deploy (the owner's /budget every 0 switches them off either way)")  # fmt: skip
     sp.add_argument("--dev-max-zero", dest="dev_max_zero",
                     help="oktech: 'confirmed' once OKTech has confirmed that Hunt's maxDevBuySol 0 skips every launch "
                          "whose creator bought anything, with the owner's word in chat and --words (until then no hunt "
@@ -3240,6 +3243,15 @@ def _main(args) -> int:
         if args.action == "agent":  # one turn of a research agent (operator/roles.py), run further down
             from .operator import roles
 
+            if args.switch is not None:  # on or off by the file, without a deploy
+                from .operator.paths import OperatorPaths
+
+                try:
+                    out = roles.switch(OperatorPaths(Path(cfg.storage.db_path).resolve().parent), args.switch)
+                except ValueError as exc:
+                    raise SystemExit(f"operate agent: {exc}") from None
+                print(json.dumps(out))
+                return 0
             if args.idea_role not in roles.ROLES:
                 raise SystemExit(f"operate agent: --role is one of {', '.join(roles.ROLES)}")
         if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):

@@ -99,15 +99,33 @@ HANDOFF: dict[str, tuple[str, ...]] = {"scout": ("tester", "fees"), "tester": ("
                                        "oktech": ("tester",)}  # fmt: skip
 
 
+SWITCH = "ROLES_ON"  # operator/: the file that switches the agents on (`operate agent --switch on|off`)
+ROLE_MAX_JOBS = 5  # research jobs at once while the agents run: four roles bounce off the analyst's three
+
+
 def on(cfg, paths: OperatorPaths | None) -> bool:
-    """Whether the research agents run: `[operator] role_agents` is true (off by default: a deploy of this code
-    changes nothing until it is switched on) and the owner has not said `/budget every 0` (the analysis once a day
-    only, which also means no role's turn; it switches them off without a deploy). `cfg`: the whole config or its
-    [operator] part."""
+    """Whether the research agents run: the file operator/ROLES_ON is there (`switch`: on and off without a deploy,
+    as the book and the automatic test are switched) or `[operator] role_agents` is true (off by default: a deploy of
+    this code changes nothing), and the owner has not said `/budget every 0` (the analysis once a day only, which
+    also means no role's turn). `cfg`: the whole config or its [operator] part."""
     from .budget_switch import effective_analyst_every_h
 
     op = getattr(cfg, "operator", cfg)
-    return bool(getattr(op, "role_agents", False)) and effective_analyst_every_h(cfg, paths) > 0
+    by_file = paths is not None and (paths.root / SWITCH).exists()
+    return (by_file or bool(getattr(op, "role_agents", False))) and effective_analyst_every_h(cfg, paths) > 0
+
+
+def switch(paths: OperatorPaths, to: str) -> dict[str, str]:
+    """Write or remove the file that switches the agents on; what it did, in words."""
+    if to not in ("on", "off"):
+        raise ValueError(f"--switch is on or off, not {to!r}")
+    paths.ensure()
+    flag = paths.root / SWITCH
+    if to == "on":
+        flag.write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ\n", time.gmtime()))
+        return {"agents": "on", "by": f"the file operator/{SWITCH}"}
+    flag.unlink(missing_ok=True)
+    return {"agents": "off", "by": f"the file operator/{SWITCH} is gone"}
 
 
 def journal_prefix(role: str) -> str:
@@ -424,7 +442,8 @@ def off_reason(cfg, paths: OperatorPaths | None) -> str | None:
     """Why the research agents do not run, in words; None when they do (`on`)."""
     if on(cfg, paths):
         return None
-    if not getattr(getattr(cfg, "operator", cfg), "role_agents", False):
+    by_file = paths is not None and (paths.root / SWITCH).exists()
+    if not by_file and not getattr(getattr(cfg, "operator", cfg), "role_agents", False):
         return "the research agents are off ([operator] role_agents)"
     return "the research agents are off (the owner's /budget every 0)"
 
@@ -511,7 +530,7 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
         notes = NoteSink(paths, now=now)
         notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
         jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch,
-                            max_jobs=cfg.operator.max_jobs)  # fmt: skip
+                            max_jobs=max(int(cfg.operator.max_jobs), ROLE_MAX_JOBS))  # fmt: skip
         snap = Snapshot(ts=t0, jobs_running=running_jobs(paths.jobs), jobs_recent=recent_jobs(paths.jobs, t0))
         saw = seen(role, svc.store)  # as the turn starts: what arrives while it runs is the next turn's news
         # its time first, as the analyst's: a turn the unit ends is not started over by the next round
