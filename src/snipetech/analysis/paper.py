@@ -116,10 +116,17 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     without the delay), and the automatic test treats it and its twin as the one sniper OKTech runs for both (`live_id`).
     A copy's exit did not change, nor did its id."""
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
-    # sell (7 Nov), selling out in parts (12 Nov: one part, one sale)
+    # sell (7 Nov), selling out in parts (12 Nov: one part, one sale), OKTech's ladders and momentum hold (12 Nov: no
+    # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults)
     later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0,
-             "sell_parts": 1, "sell_part_secs": 0.0}  # fmt: skip
-    ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
+             "sell_parts": 1, "sell_part_secs": 0.0, "tp_stages": [], "sl_stages": [], "momentum_hold": 0.0,
+             "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.0}  # fmt: skip
+
+    def unset(k: str, v) -> bool:
+        # a ladder is a tuple in the lab's exit and a list in a rule's record: the one value
+        return k in later and (list(v) if isinstance(v, (list, tuple)) else v) == later[k]
+
+    ex = {k: v for k, v in exit_params.items() if not unset(k, v)}
     # trigger fields added later, at their defaults: OKTech hunt's two, then MIG's paid-creator split (7 Nov), the
     # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
     # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)

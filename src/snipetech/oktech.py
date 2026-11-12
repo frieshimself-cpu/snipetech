@@ -33,6 +33,7 @@ from .config import Config
 from .exits_menu import MENU
 from .fees import FeeChoice
 from .models import is_address as _is_address
+from .sim.exits import stage_pairs
 from .store import Store
 
 KINDS = ("copy", "dev")  # what `oktech plan --only` names; verdict copies are recorded as kind "vcopy"
@@ -259,12 +260,54 @@ def migration_sell(exit_params: dict | None) -> dict | None:
     return {"enabled": True, "sellPercent": _round(frac * 100, 2), "delayMs": round(ms)}
 
 
+MAX_STAGES = 10  # OKTech's auto-sell form takes 1 to 10 stages (docs/oktech-settings.md)
+
+
+def _stage_percents(ladder: list[tuple[float, float]]) -> tuple[list[float], float]:
+    """A ladder of (level, share of the original position) in rising order as each OKTech stage's `sellPercent`, and
+    the share of the position no stage sells. A stage's sellPercent is its share of the original position; the stage
+    that sells the last of the position goes out as 100 (what is left, whichever way OKTech reads sellPercent) and
+    ends the ladder: a stage behind it would have nothing to sell."""
+    out: list[float] = []
+    rest = 1.0
+    for _level, share in ladder:
+        if share >= rest - 1e-9:
+            out.append(100)
+            return out, 0.0
+        out.append(_round(share * 100, 2))
+        rest -= share
+    return out, rest
+
+
+def _ladder_note(notes: list[str], what: str, ladder: list[tuple[float, float]]) -> None:
+    """Say the open question where it matters: from the second stage that leaves a rest on, a share of the original
+    position and a share of what is left are different amounts."""
+    partial, rest = 0, 1.0
+    for _level, share in ladder:
+        if share < rest - 1e-9:
+            partial, rest = partial + 1, rest - share
+    if partial >= 2:
+        notes.append(f"{what} ladder: each stage's sellPercent is sent as a share of the original position, as the lab "
+                     "scored it. Whether OKTech reads it so, or as a share of what is left, is not known until a tiny "
+                     "live test (docs/oktech-features.md): check the size of the first fills' sales on the "
+                     "tape")  # fmt: skip
+
+
 def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0.002, sell_priority_sol: float = 0.0001,
              *, sell_fee_sol: float | None = None) -> dict | None:  # fmt: skip
     """snipetech exit parameters (take_profit / stop_loss as fractions, seconds) -> config.autoSell. A take-profit that
     sells part of the position is followed by an unreachable 100 % stage (OKTech's app: "100 % must be last"). Never
     sends autoStop: it switches the exits off on a fast pump (playbook 9). A migration sell goes out as scored
     (`migration_sell`) and is flagged as never seen live.
+
+    Ladders (`tp_stages`, `sl_stages`: (level, share of the ORIGINAL position) pairs, sim/exits.py) go out as OKTech's
+    stages, one per pair in rising order, `sellPercent` the share of the original position; the single take-profit /
+    stop-loss is the last stage. The stage that sells the last of the position is sent as 100 % (it sells what is left
+    whichever way OKTech reads sellPercent); take-profit stages that leave a rest are followed by the unreachable 100 %
+    stage. Whether OKTech reads sellPercent as a share of the original position or of what is left is not known: the
+    notes say so for a ladder where the two differ. A ladder nobody can read, one of more than OKTech's 10 stages, or
+    an exit with momentum hold (research only: scored on our own reading of OKTech's clock) raises instead of going
+    out as an exit nobody scored.
 
     The sell bid is the tip (`sell_tip_sol`, refunded when a send fails); the priority (`sell_priority_sol`) is what
     each of OKTech's failed twin sends pays, so it is near zero by default (8 Nov: 0.008 SOL of twins on a 0.119 SOL
@@ -282,10 +325,27 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
     hold = float(e.get("max_hold_secs") or 0)
     stale = float(e.get("stale_secs") or 0)
     mig = migration_sell(e)
-    if not (tp or sl or trail or hold or stale or mig):
+    if float(e.get("momentum_hold") or 0) > 0:
+        raise ValueError("an exit with momentum hold is research only: it was scored on our own reading of OKTech's "
+                         "clock, which no live trade has shown yet, and sent without the hold it is another "
+                         "exit")  # fmt: skip
+    tp_ladder, sl_ladder = stage_pairs(e.get("tp_stages"), "tp_stages"), stage_pairs(e.get("sl_stages"), "sl_stages")
+    if not (tp or sl or trail or hold or stale or mig or tp_ladder or sl_ladder):
         return None
     stages = []
-    if tp > 0:
+    if tp_ladder:
+        # the ladder, then the single take-profit as its last stage (sim/exits.py `ExitParams.tp_ladder`)
+        gains = sorted([*tp_ladder, *([(tp, frac)] if tp > 0 else [])], key=lambda g: g[0])
+        sells, rest = _stage_percents(gains)
+        stages = [{"gainPercent": _round(gain * 100, 2), "sellPercent": pct, "delaySellAllSeconds": 0}
+                  for pct, (gain, _share) in zip(sells, gains)]  # fmt: skip
+        if rest:  # the rest stays with the timer and the stops, behind an unreachable gain
+            stages.append(dict(UNREACHABLE_STAGE))
+        if len(stages) > MAX_STAGES:
+            raise ValueError(f"OKTech takes at most {MAX_STAGES} stages, the last 100 % one included: this ladder "
+                             f"needs {len(stages)}")  # fmt: skip
+        _ladder_note(notes, "take-profit", gains)
+    elif tp > 0:
         stages.append(
             {
                 "gainPercent": _round(tp * 100, 2),
@@ -315,7 +375,20 @@ def autosell(exit_params: dict | None, notes: list[str], sell_tip_sol: float = 0
         out |= {"sellAfterSeconds": _round(hold, 1), "sellPercent": 100}
     else:
         out |= {"sellPercent": 0}  # no sell-all timer
-    if sl > 0:
+    if sl_ladder:
+        # the ladder, then the single stop-loss as its last stage, selling everything left
+        losses = sorted([*sl_ladder, *([(sl, 1.0)] if sl > 0 else [])], key=lambda g: g[0])
+        sells, _rest = _stage_percents(losses)
+        if len(sells) > MAX_STAGES:
+            raise ValueError(f"OKTech takes at most {MAX_STAGES} stages: this stop ladder has {len(sells)}")
+        out["stopLoss"] = {
+            "enabled": True,
+            "stages": [{"percentLoss": _round(min(100.0, loss * 100), 2), "sellPercent": pct}
+                       for pct, (loss, _share) in zip(sells, losses)],
+            "confirmMs": 250,
+        }  # fmt: skip
+        _ladder_note(notes, "stop", losses)
+    elif sl > 0:
         out["stopLoss"] = {
             "enabled": True,
             "stages": [{"percentLoss": _round(min(100.0, sl * 100), 2), "sellPercent": 100}],
@@ -452,8 +525,11 @@ EXIT_MIN_TAKE_PROFIT = 0.05  # a take-profit under +5 % sells on noise and pays 
 def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
     """What is unsafe about an exit before a live sniper may run it, in plain words; empty when it may be sent: a
     stop-loss of at most 35 %, a sell-all timer of at most 600 s, a dead exit (if any) of 1 s or more, a take-profit
-    (if any) of +5 % or more. With the config, an exit in the lab's form (it carries `copy_exit_pct`, the copy exit it
-    was scored with) must have the copy exit copy snipers send ([oktech] copy_exit_threshold_percent)."""
+    (if any) of +5 % or more. A ladder (`tp_stages`, `sl_stages`) is held to the same rules: every take-profit stage at
+    +5 % or more, and the stop stages (with the single stop-loss) must have sold the whole position by -35 %. Selling
+    out in parts and momentum hold are research only. With the config, an exit in the lab's form (it carries
+    `copy_exit_pct`, the copy exit it was scored with) must have the copy exit copy snipers send ([oktech]
+    copy_exit_threshold_percent)."""
     e = params or {}
 
     def num(key: str) -> float:
@@ -465,7 +541,26 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
 
     out: list[str] = []
     sl, hold, stale, tp = num("stop_loss"), num("max_hold_secs"), num("stale_secs"), num("take_profit")
-    if not sl > 0:
+    ladders: dict[str, tuple[tuple[float, float], ...]] = {}
+    for key in ("tp_stages", "sl_stages"):
+        try:
+            ladders[key] = stage_pairs(e.get(key), key)
+        except ValueError as exc:
+            ladders[key] = ()
+            out.append(str(exc))
+    if ladders["sl_stages"]:
+        # a stop ladder is a stop where it has sold everything: the loss at which the last of the position goes
+        left, sl_all = 1.0, sl if sl > 0 else None
+        for loss, share in ladders["sl_stages"]:
+            left -= share
+            if left <= 1e-9:
+                sl_all = loss if sl_all is None else min(sl_all, loss)
+                break
+        if sl_all is None:
+            out.append(f"no stop-loss on {left:.0%} of the position (its stop stages sell the rest)")
+        elif sl_all > EXIT_MAX_STOP_LOSS + 1e-9:
+            out.append(f"the last of the position is stopped at -{sl_all:.0%}, wider than -{EXIT_MAX_STOP_LOSS:.0%}")
+    elif not sl > 0:
         out.append("no stop-loss")
     elif sl > EXIT_MAX_STOP_LOSS + 1e-9:
         out.append(f"stop-loss at -{sl:.0%} is wider than -{EXIT_MAX_STOP_LOSS:.0%}")
@@ -477,6 +572,18 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
         out.append(f"dead exit after {stale:g} s: OKTech's shortest is {EXIT_MIN_STALE_SECS:g} s")
     if not tp >= 0 or 0 < tp < EXIT_MIN_TAKE_PROFIT - 1e-9:
         out.append(f"take-profit at +{tp:.0%} sells on noise (at least +{EXIT_MIN_TAKE_PROFIT:.0%})")
+    for gain, _share in ladders["tp_stages"]:
+        if gain < EXIT_MIN_TAKE_PROFIT - 1e-9:
+            out.append(f"take-profit stage at +{gain:.0%} sells on noise (at least +{EXIT_MIN_TAKE_PROFIT:.0%})")
+    # as many stages as OKTech takes: the ladder, the single take-profit, and the 100 % stage that must come last
+    single = [(tp, num("tp_sell_fraction") or 1.0)] if tp > 0 else []
+    gains, rest = _stage_percents(sorted([*ladders["tp_stages"], *single]))
+    if len(gains) + (1 if rest else 0) > MAX_STAGES or len(ladders["sl_stages"]) + (1 if sl > 0 else 0) > MAX_STAGES:
+        out.append(f"more than OKTech's {MAX_STAGES} stages")
+    mom = num("momentum_hold")
+    if not mom <= 0:  # 0 or missing: no hold
+        out.append(f"momentum hold ({mom:g} % a second): research only, scored on our own reading of OKTech's clock; "
+                   "no live sniper is sent it until a tiny live test shows how OKTech times it")  # fmt: skip
     parts = num("sell_parts")
     if not parts <= 1:  # 0 or missing: one sale
         out.append(f"sells out in {parts:g} parts: research only, no OKTech setting sends that yet (its stages are "
@@ -553,11 +660,17 @@ def _describe_exit(e: dict | None) -> str:
     parts = []
     if e.get("stale_secs"):
         parts.append(f"sell once nothing trades for {e['stale_secs']:g}s")
+    if e.get("tp_stages"):
+        parts.append("sell " + ", ".join(f"{share:.0%}{' of the position' if not k else ''} at +{gain:.0%}"
+                                         for k, (gain, share) in enumerate(e["tp_stages"])))  # fmt: skip
     if e.get("take_profit"):
         parts.append(
             f"TP +{e['take_profit']:.0%}"
             + (f" ({e.get('tp_sell_fraction', 1):.0%})" if e.get("tp_sell_fraction", 1) < 1 else "")
         )
+    if e.get("sl_stages"):
+        parts.append("sell " + ", ".join(f"{share:.0%}{' of the position' if not k else ''} at -{loss:.0%}"
+                                         for k, (loss, share) in enumerate(e["sl_stages"])))  # fmt: skip
     if e.get("stop_loss"):
         parts.append(f"SL -{e['stop_loss']:.0%}")
     if e.get("trailing_stop"):

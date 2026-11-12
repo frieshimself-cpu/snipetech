@@ -98,6 +98,82 @@ wallet's funding web, **approved**), `autodeploy` (**approved**), `ctbot`
   (fixed or random SOL range, chance %, gain-stages-only toggle).
 - Saved sell strategies, loadable into any task; auto-sell override per sniper.
 
+### Which of these the lab can score (12 Nov 2026)
+
+The lab is our simulator. It replays the tape and sells a paper position by an exit rule.
+Since 12 Nov it knows three more of OKTech's sells. No lab has run with them yet, so nothing here says they pay.
+
+| OKTech sell | In the lab | Sent to a live sniper |
+|---|---|---|
+| Sell-all timer | yes | yes |
+| One take-profit, whole or part | yes | yes |
+| **Ladder of take-profit stages** | yes, new (`tp_stages`) | yes, with one open question (below) |
+| **Ladder of stop stages** | yes, new (`sl_stages`) | yes, same open question |
+| Trailing stop | yes | yes |
+| Dead exit | yes | yes |
+| Migration sell | yes | yes, never seen firing |
+| **Momentum hold** | yes, new, research only (`momentum_hold`) | no: refused until a live test |
+| Selling out in parts | yes, research only | no |
+| Auto-stop | no | never (it switches the exits off) |
+| Timer extension, stage acceleration, wick mode, per-stage bail timers, confirm windows | no | no |
+
+How a ladder is scored, in plain words:
+
+- A take-profit ladder is a list of steps, for example a quarter at +20 %, a quarter at +50 %, a quarter at +100 %.
+- Each step sells its share of the **first** position when what we still hold is worth that gain.
+- A stop ladder is the same going down, for example 40 % at -25 % and 60 % at -50 %.
+- What no step sold stays with the other exits: the stop, the trailing stop, the dead exit, the copy exit, the timer.
+- Every sale of ours moves the price. The next step is priced in the pool our earlier sales left.
+- Every step pays its own transaction fee.
+- One trade that reaches two steps sells both on that trade.
+- The old "sell part at one gain" exit is a ladder of one step. Its numbers did not change: 60,480 simulations on
+  random markets, old code against new, gave the same result to the last digit.
+
+How momentum hold is scored:
+
+- A take-profit step that fires while the price is still running waits.
+- "Running" means the position's value rose at least X % a second over the last N seconds.
+- It sells at the first of three moments: the rise fades below X, the value falls a set share under its high, or
+  the longest wait is over.
+- A stop is never held back. A stop or trailing stop that fires during the wait sells as it always does.
+
+Every lab now scores 7 such exits next to the 54 it had (MIG: 2 next to 23). Their labels read step by step:
+`TP+20%@25%/+50%@25%/+100%@25%` sells a quarter at each gain; `SL-10%@50%/-25%@50%` is a stop in two halves;
+`MOM2%/s@3s<30s-10%` waits while the price is up 2 % a second over 3 s, at most 30 s, or until 10 % under the high.
+
+Cost in lab time: 13 % more exits. A ladder exit costs more than a plain one, because every step that fires replays
+the pool once more. On synthetic markets, where a step fires on about every second position, the exit simulation
+took 20 to 28 % longer in four runs (about 1.3 s for the 54 old exits, about 1.6 s for all 61, on 240 positions).
+The 54 old exits run as fast as before, within the noise of the measurement. Simulating exits is one part of a lab,
+next to reading the tape and finding the moments, so a whole lab grows by less. On the real tape fewer positions
+reach +20 %, so the extra should be nearer 13 %. That is not measured yet.
+
+### Unknown until a tiny live test
+
+These are guesses the lab makes about OKTech. Each one needs one small live trade to settle.
+
+1. **What does a stage's `sellPercent` mean: a share of the first position, or of what is left?**
+   The docs and the app's help texts do not say. The lab models "of the first position".
+   The two differ from the second step on. With steps of 25 %, 25 %, 25 %: our reading sells 25 % of the first
+   position at the second step; the other reading sells 25 % of the remaining 75 %, which is 18.75 %.
+   The test: one 0.05 SOL buy with three steps close together, then read the size of each sale on the tape.
+   Until then a sniper with a ladder carries a note saying so. The step that sells the last of a position is always
+   sent as 100 %, which is right under both readings.
+   If OKTech reads "of what is left", a live ladder sells smaller parts than the lab scored. It never leaves a
+   position without its stop.
+2. **Is the same true for stop stages?** We send them the same way and assume the same reading.
+3. **"100 % must be last".** We read it as: the last take-profit stage must sell 100 %. So a ladder that leaves a
+   rest is followed by a stage at +10000 % that never fires. If the rule is only about order, that stage is harmless.
+4. **One trade reaches two steps: one transaction or two?** The lab charges two.
+5. **Where does the trailing stop measure from after a step sold?** The lab measures the drop from the high since
+   that sale, and treats the trail as armed once a take-profit step has sold. OKTech may measure from the high since
+   the buy.
+6. **How does OKTech time a momentum hold?** Its settings are `minVelocity`, `lookbackMs`, `maxHoldMs` and
+   `trailingDropPercent`. Not known: whether it checks on a clock or only when a trade arrives, whether the speed is
+   read on price or on market cap, and whether it holds back only take-profit stages. The lab assumes a clock, the
+   price we would sell at, and take-profit stages only. Because of this no live sniper is sent a momentum hold:
+   `oktech.autosell` refuses the exit, so a rule scored with it cannot become a sniper by itself.
+
 ## Mayhem (campaigns)
 
 Dev wallet launches with a dev buy; helper wallets fire random-size buys

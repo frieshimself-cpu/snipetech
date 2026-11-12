@@ -100,6 +100,8 @@ def _as_live(e: Mapping[str, Any], copy_exit_pct: float) -> ExitParams:
         copy_exit_pct=copy_exit_pct,
         migration_sell_frac=float(e.get("migration_sell_frac") or 0),  # autosell sends it as it stands
         migration_sell_delay=float(e.get("migration_sell_delay") or 0),
+        tp_stages=e.get("tp_stages") or (),  # the ladders too (a momentum hold is never sent: research only)
+        sl_stages=e.get("sl_stages") or (),
     )
 
 
@@ -860,9 +862,9 @@ MIG_CAP = (f"not scored: MIG is scored only on exits that sell within {MIG_MAX_H
 
 def mig_exit_set() -> list[ExitParams]:
     """The exits a MIG buy is scored on when the lab is not handed its own: timers alone, a stop, take profit with a
-    stop, trailing, the dead exit and one scale-out, every one selling within MIG_MAX_HOLD_SECS and watched from
-    OKTech's WATCH_SECS after the buy, so each is what OKTech's auto-sell would do (`oktech.autosell` sends each as
-    scored). No migration sell: a MIG buy comes after its coin migrated, so it would never fire."""
+    stop, trailing, the dead exit, one scale-out and two ladders, every one selling within MIG_MAX_HOLD_SECS and
+    watched from OKTech's WATCH_SECS after the buy, so each is what OKTech's auto-sell would do (`oktech.autosell`
+    sends each as scored). No migration sell: a MIG buy comes after its coin migrated, so it would never fire."""
     w, hold = WATCH_SECS, MIG_MAX_HOLD_SECS
     out = [ExitParams(take_profit=0, stop_loss=0, max_hold_secs=h, sell_on_dev_sell=False, watch_secs=w)
            for h in (10, 30, 60, 120, 300)]  # fmt: skip
@@ -876,6 +878,12 @@ def mig_exit_set() -> list[ExitParams]:
     out += [ExitParams(take_profit=0, stop_loss=0.2, max_hold_secs=hold, sell_on_dev_sell=False, stale_secs=stale,
                        watch_secs=w) for stale in (2.0, 5.0)]  # fmt: skip
     out.append(ExitParams(take_profit=0.1, tp_sell_fraction=0.5, stop_loss=0.15, trailing_stop=0.1, max_hold_secs=hold,
+                          sell_on_dev_sell=False, watch_secs=w))  # fmt: skip
+    # OKTech's ladders (12 Nov): two thirds banked in two stages and the rest trailed; a stop in two steps. Sent as
+    # scored but for one open question: how OKTech reads a stage's sellPercent (docs/oktech-features.md)
+    out.append(ExitParams(take_profit=0, tp_stages=((0.1, 0.33), (0.3, 0.33)), stop_loss=0.15, trailing_stop=0.1,
+                          max_hold_secs=hold, sell_on_dev_sell=False, watch_secs=w))  # fmt: skip
+    out.append(ExitParams(take_profit=0, stop_loss=0, sl_stages=((0.1, 0.5), (0.2, 0.5)), max_hold_secs=hold,
                           sell_on_dev_sell=False, watch_secs=w))  # fmt: skip
     return out
 
@@ -921,6 +929,31 @@ def exit_set() -> list[ExitParams]:
     for frac in (0.5, 1.0):
         out.append(ExitParams(take_profit=0, stop_loss=0, max_hold_secs=300, sell_on_dev_sell=False,
                               migration_sell_frac=frac, migration_sell_delay=0.1))  # fmt: skip
+    return out + ladder_exits()
+
+
+def ladder_exits() -> list[ExitParams]:
+    """OKTech's richer sells, a few of each (12 Nov, the owner: "partially sell but hold some", "hold it until it start
+    going down"): every one costs a simulation per moment on the whole tape, so each stands next to an exit the set
+    already has and the difference reads as what the ladder, or the hold, adds.
+
+    A ladder's stage sells a share of the ORIGINAL position (`ExitParams.tp_stages` / `sl_stages`); whether OKTech
+    reads its sellPercent so is not known until a tiny live test (docs/oktech-features.md). Momentum hold is research
+    only: `oktech.autosell` refuses it, so no rule scored with it becomes a sniper."""
+    base = {"take_profit": 0, "max_hold_secs": 300, "sell_on_dev_sell": False}
+    two, three = ((0.2, 0.33), (0.5, 0.33)), ((0.2, 0.25), (0.5, 0.25), (1.0, 0.25))
+    # take-profit ladders, the rest on the trail the scale-outs above use: two stages, three, three with the dead exit
+    out = [ExitParams(tp_stages=stages, stop_loss=0.15, trailing_stop=0.18, **base) for stages in (two, three)]
+    out.append(ExitParams(tp_stages=three, stop_loss=0.15, trailing_stop=0.18, stale_secs=1.0, **base))
+    # a stop ladder: half at -10 %, the other half at -25 %; under the lab exit's dead exit, and under a trail
+    stops = ((0.1, 0.5), (0.25, 0.5))
+    out.append(ExitParams(sl_stages=stops, stop_loss=0, stale_secs=1.0, **base))
+    out.append(ExitParams(sl_stages=stops, stop_loss=0, trailing_stop=0.18, **base))
+    # momentum hold: the set's TP+30% SL-20% hold120s waiting while the price is up 2 % a second over 3 s (30 s at
+    # most, or 10 % under the high); and the two-stage ladder with the same hold
+    hold = {"momentum_hold": 2.0, "momentum_lookback": 3.0, "momentum_max_secs": 30.0, "momentum_peak_drop": 0.1}
+    out.append(ExitParams(take_profit=0.3, stop_loss=0.2, max_hold_secs=120, sell_on_dev_sell=False, **hold))
+    out.append(ExitParams(tp_stages=two, stop_loss=0.15, trailing_stop=0.18, **base, **hold))
     return out
 
 

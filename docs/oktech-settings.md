@@ -69,14 +69,14 @@ inferred from the field names and must be confirmed in the app before money depe
 
 | Setting | What it does | Why |
 |---|---|---|
-| `stages[{gainPercent, sellPercent, sellAfterMs, delaySellAllSeconds, processDelayMs}]` (1–10) | take-profit ladder; per-stage bail timers | scale out of winners |
+| `stages[{gainPercent, sellPercent, sellAfterMs, delaySellAllSeconds, processDelayMs}]` (1–10) | take-profit ladder; per-stage bail timers | scale out of winners. Since 12 Nov the lab scores a ladder (an exit's `tp_stages`: gain and share of the first position per step) and `autosell` sends it, the step that sells the last of the position as 100 %. Whether `sellPercent` is a share of the first position or of what is left is not known (oktech-features.md, "Unknown until a tiny live test") |
 | `sellAfterSeconds` / `sellPercent` | sell-all timer | the lab's max hold (300 s) |
-| `stopLoss {stages[{percentLoss, sellPercent}], confirmMs}` | stop below entry, must hold `confirmMs` | cut losers (lab: −15% / −30%) |
+| `stopLoss {stages[{percentLoss, sellPercent}], confirmMs}` | stop below entry, must hold `confirmMs` | cut losers (lab: −15% / −30%). Since 12 Nov also in steps (an exit's `sl_stages`, e.g. half at −10 %, half at −25 %) |
 | `trailingStopLoss {percentFromPeak, activateAfterGainPercent, confirmMs}` | sell on a drop from the peak | "if it's only going up hold, if it dips get out" (lab: 25% from peak) |
 | `deadExit {staleSeconds}` | sell when nothing trades for N s | the lab's best exit on most triggers (1 s) |
 | `autoStop {percentGain, withinMs}` | a fast pump turns the exits off and lets it run | moonbags on runners |
 | `migrationSell {sellPercent, delayMs}` | sell at migration ("on migration to a new pool, sell % after delay (100 ms - 1 min)") | exit into the graduation pump. Since 7 Nov the lab scores it (an exit's `migration_sell_frac` / `migration_sell_delay`: that share of what is held, that many seconds after the migration the tape records, so behind the pool's first buys; an exit still holding when its coin migrates counts only where the PumpSwap tape holds the migration, `tape:amm_recent`; since 8 Nov an exit that sold before the coin left its curve is scored on the curve tape even where that record lacks the migration, `lab.exit_pnls`) and `autosell` sends it exactly as scored, refusing a delay outside 100 ms - 60 s. A MIG buy comes after its migration, so it never fires there. Never seen fire live (playbook fact 8) |
-| `momentumHold {minVelocity, lookbackMs, maxHoldMs, trailingDropPercent}` | keep holding while the price climbs fast | ride momentum past the timer |
+| `momentumHold {minVelocity, lookbackMs, maxHoldMs, trailingDropPercent}` | keep holding while the price climbs fast | ride momentum past a take-profit. Since 12 Nov the lab scores it (an exit's `momentum_hold`, percent a second) on our own guess of how OKTech times it; research only, never sent |
 | `timerExtension {minGainVelocity, lookbackMs, extensionMs, maxExtensionMs, cancelDropPercent}` | extend the sell timer while gaining | same, finer |
 | `stageAcceleration {minStages, delayMs, releaseOnDropPercent}` | speeds up the ladder | |
 | `wickServer {walletId, wickGainStagesOnly}` | sell into wicks via a separate server | better fills on spikes |
@@ -93,5 +93,7 @@ inferred from the field names and must be confirmed in the app before money depe
 **Exits per wallet (6 Nov):** `src/snipetech/exits_menu.py` holds the exits the book may send (lab, hold60 verified;
 ride unverified). `oktech.validate_exit` refuses an exit without a stop-loss of at most 35 %, a hold over 600 s, a
 dead exit under 1 s or a take-profit under +5 %; a partial take-profit always ends with a final 100 % stage; no
-builder sends `autoStop`. The book sends a wallet's own exit only with `[book] exit_mode = "per_wallet"`, set by the
+builder sends `autoStop`. A ladder is held to the same rules (12 Nov): every take-profit step at +5 % or more, and
+the stop steps must have sold the whole position by -35 %. An exit that sells out in parts or holds on momentum is
+refused: research only. The book sends a wallet's own exit only with `[book] exit_mode = "per_wallet"`, set by the
 owner.
