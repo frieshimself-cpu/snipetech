@@ -116,17 +116,18 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     without the delay), and the automatic test treats it and its twin as the one sniper OKTech runs for both (`live_id`).
     A copy's exit did not change, nor did its id."""
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
-    # sell (7 Nov)
-    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}
+    # sell (7 Nov), selling out in parts (12 Nov: one part, one sale)
+    later = {"watch_secs": 0.0, "copy_exit_pct": 0.0, "migration_sell_frac": 0.0, "migration_sell_delay": 0.0,
+             "sell_parts": 1, "sell_part_secs": 0.0}  # fmt: skip
     ex = {k: v for k, v in exit_params.items() if not (k in later and v == later[k])}
     # trigger fields added later, at their defaults: OKTech hunt's two, then MIG's paid-creator split (7 Nov), the
     # launchpad of a launch-type rule (8 Nov: pump.fun, which every rule frozen before fired on and OKTech buys)
     # the dev-wallet filter of a launch rule (8 Nov evening: "", every launch) and the crew knob (9 Nov: "", skip crews)
     # and a KOL rule's consensus, size and market-cap gates (10 Nov: unset, the first known wallet in at any size)
-    # and a hunt's wallet group (11 Nov: "", any launch)
+    # and a hunt's wallet group (11 Nov: "", any launch) and a KOL rule's market cap past the curve (12 Nov: unset)
     later_trig = {"max_buyers": 0, "dev_max": None, "dev_paid": None, "venue": PUMPFUN, "creators": "",
                   "crew": "", "known": 0, "within": 0.0, "max_sol": 0.0, "min_curve": 0.0, "max_curve": 0.0,
-                  "teams": False, "gap": 0.0, "bots": ""}  # fmt: skip
+                  "teams": False, "gap": 0.0, "bots": "", "min_mcap": 0.0, "max_mcap": 0.0}  # fmt: skip
     trig = {k: v for k, v in trigger.items() if not (k in later_trig and v == later_trig[k])}
     raw = json.dumps([trig, ex, position, latency, buy_sol], sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]

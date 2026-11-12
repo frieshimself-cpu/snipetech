@@ -44,6 +44,13 @@ class ExitParams:
     # curve, `migration_sell_delay` s after that (the app takes 100 ms - 1 min); 0 = off. It has never fired live.
     migration_sell_frac: float = 0.0
     migration_sell_delay: float = 0.0
+    # Selling out in parts (the owner, 12 Nov 2026: one sale of a 10 or 30 SOL position moves the price against
+    # itself): the sale that sells everything left, whichever exit fires it, goes in `sell_parts` equal parts,
+    # `sell_part_secs` apart, the first when the exit fires. Each part is priced at the state the market is in then,
+    # into the pool our earlier parts left, and pays its own transaction. 1 = one sale, as every exit before. Research
+    # only: no live sniper is sent it (oktech.validate_exit).
+    sell_parts: int = 1
+    sell_part_secs: float = 0.0
 
     @classmethod
     def from_config(cls, ec) -> "ExitParams":
@@ -77,6 +84,8 @@ class ExitParams:
             parts.append(f"copy{self.copy_exit_pct:.0%}")
         if self.watch_secs > 0:
             parts.append(f"watch{self.watch_secs:g}s")
+        if self.sell_parts > 1:
+            parts.append(f"parts{int(self.sell_parts)}/{self.sell_part_secs:g}s")
         return " ".join(parts)
 
     def to_dict(self) -> dict:
@@ -296,7 +305,10 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
 
     With `ex.migration_sell_frac` it also sells that share of what it holds `ex.migration_sell_delay` s after the coin
     leaves its pump.fun curve while held (OKTech's migration sell, `_migration_sale`); the rest stays with the other
-    exits."""
+    exits.
+
+    With `ex.sell_parts` above 1 the sale that sells everything left goes in that many equal parts, `ex.sell_part_secs`
+    apart (the class's account of it): the later ones are named "part" in the result's `exit_reason`."""
     path = p.path
     basis = p.spent
     n_rel = len(p.v)
@@ -429,6 +441,20 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         if i is not None:
             sale = ("migration_sell", mig[0], mig[1], lands(mig[0]), ex.migration_sell_frac)
             sales[i:] = [sale] + (sales[i:] if ex.migration_sell_frac < 1.0 else [])
+
+    if int(ex.sell_parts) > 1:
+        # the sale that sells everything left goes in equal parts: the first where it fired, each next one
+        # `sell_part_secs` of the block clock later (never before the one ahead of it; the tape's last state once the
+        # tape has ended), a slot-clock step further on
+        why, at, at_abs, slot, _all = sales.pop()
+        n, step = int(ex.sell_parts), max(0.0, float(ex.sell_part_secs))
+        t0 = float(path.ts[min(at_abs, path.n - 1)])
+        for k in range(n):
+            state = at_abs
+            if k and step > 0:
+                state = max(at_abs, min(int(np.searchsorted(path.ts, t0 + k * step, side="right")) - 1, path.n - 1))
+            lands_in = slot + int(np.floor(k * step / p.slot_secs + 1e-9))
+            sales.append(("part" if k else why, at + k * step, state, lands_in, 1.0 / (n - k)))
 
     proceeds, held, tx_costs = 0.0, p.held, p.fixed_cost
     for _why, _at, at_abs, _slot, share in sales:

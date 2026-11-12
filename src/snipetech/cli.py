@@ -473,6 +473,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
                          "the N-th buy across slots. A closer place is bought with a bid: charge it with --per-tx")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
+    sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
+                    help="every exit sells out in N equal parts (2 to 20) instead of one sale: what selling slowly is "
+                         "worth at a size (--buy 5, 10, 30). Each part is priced into the pool the earlier parts left "
+                         "and pays its own transaction. Run the same lab without it to compare. Research only: no "
+                         "live sniper sells in parts yet")  # fmt: skip
+    sp.add_argument("--sell-part-secs", type=float, default=15.0, metavar="S",
+                    help="with --sell-parts: seconds between the parts (0 to 600; default 15)")  # fmt: skip
 
     sp = cmd(
         "sweep",
@@ -1333,6 +1340,8 @@ async def _run(args, cfg: Config) -> int:
 
             from .analysis import paper
             from .analysis.lab import collect as lab_collect
+            from .analysis.lab import exit_set as lab_exit_set
+            from .analysis.lab import in_parts as lab_in_parts
             from .analysis.lab import label_groups as lab_groups
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
@@ -1340,6 +1349,12 @@ async def _run(args, cfg: Config) -> int:
             from .operator.research import recent_tape
             from .qualify.run import lab_tx_cost_info
 
+            try:  # refused before any tape is read
+                lab_in_parts(lab_exit_set()[:1], args.sell_parts, args.sell_part_secs)
+            except ValueError as exc:
+                print(f"lab: {exc}", file=sys.stderr)
+                return 2
+            sell_parts = (args.sell_parts, args.sell_part_secs) if args.sell_parts > 1 else None
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             # an agent's hypotheses are scored where each trades live (`paper.live_landing`), so they need no landing
             # of their own: their copies at the copy landing; the grid's copies at --latency / --position
@@ -1364,7 +1379,8 @@ async def _run(args, cfg: Config) -> int:
                     # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
                     # nothing and said so nowhere)
                     return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
-                                       triggers=args.trigger, kols=lab_groups(svc.store))  # fmt: skip
+                                       triggers=args.trigger, kols=lab_groups(svc.store),
+                                       sell_parts=sell_parts)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
@@ -1372,6 +1388,8 @@ async def _run(args, cfg: Config) -> int:
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": args.buy, **cost, "hours": args.hours,
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
+            if sell_parts:  # every exit sold out in parts (research only)
+                res["sell_parts"] = {"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
             if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of
                 res["copy_companions"] = data["mates"]
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s

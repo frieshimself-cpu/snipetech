@@ -681,3 +681,15 @@ def test_the_agents_are_told_how_to_read_the_table_of_place_against_bid(toolbox)
     assert '["place-bids", "--hours", "48", "--json"]' in text
     assert "auction.in_bid_order" in text and "win_at" in text and "companions left out" in text
     assert '"--copy-position", "+0"' in text and "--per-tx" in text
+
+
+def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolbox):
+    """12 Nov, the owner: "make sure it tests 1-30 sol buys, especially on bigger influence wallets that buy at higher
+    caps... slowly selling out might be better". The tool says how to size a lab, how to ask for a market cap past
+    the curve, how far past it the tape reaches, and how to compare one sale with a sale in parts."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '"--buy", "10"' in text and "1, 2, 5, 10, 20 and 30 SOL" in text
+    assert '"min_mcap"' in text and '"max_mcap"' in text and "410 SOL" in text
+    assert "30 minutes after it leaves its curve" in text
+    assert '"--sell-parts", "4", "--sell-part-secs", "15"' in text and "research only" in text

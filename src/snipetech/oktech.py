@@ -477,6 +477,10 @@ def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
         out.append(f"dead exit after {stale:g} s: OKTech's shortest is {EXIT_MIN_STALE_SECS:g} s")
     if not tp >= 0 or 0 < tp < EXIT_MIN_TAKE_PROFIT - 1e-9:
         out.append(f"take-profit at +{tp:.0%} sells on noise (at least +{EXIT_MIN_TAKE_PROFIT:.0%})")
+    parts = num("sell_parts")
+    if not parts <= 1:  # 0 or missing: one sale
+        out.append(f"sells out in {parts:g} parts: research only, no OKTech setting sends that yet (its stages are "
+                   "not tested for it)")  # fmt: skip
     if cfg is not None and e.get("copy_exit_pct") is not None:
         scored, sent = num("copy_exit_pct"), float(cfg.oktech.copy_exit_threshold_percent) / 100.0
         if not abs(scored - sent) <= 1e-9:

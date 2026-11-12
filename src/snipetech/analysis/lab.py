@@ -166,6 +166,12 @@ class Trigger:
     max_sol: float = 0.0
     min_curve: float = 0.0
     max_curve: float = 0.0
+    # 12 Nov (the owner: "bigger influence wallets that buy at higher caps"): the coin's market cap in SOL after the
+    # followed buy (`MarketPath.mcap_sol`: a billion coins at the price then), on its curve and past it. A curve ends
+    # near 410 SOL of market cap, so a floor above that is PumpSwap coins only; 0 = no limit. The tape holds a coin's
+    # PumpSwap trades for [live] amm_recent_secs after it leaves its curve, so that is how far past it a rule can look
+    min_mcap: float = 0.0
+    max_mcap: float = 0.0
     # 10 Nov, the owner's tracker (2,630 wallets, 1,626 names): `teams` = wallets whose tracker names share a team
     # (`names.entity`, carried in the groups under TEAMS) count as one known wallet and the rule fires at the team's
     # last back-to-back buy in its block, the first place a copy can land. `gap` = the followed buy comes at least
@@ -220,6 +226,9 @@ class Trigger:
                 + ([f"{self.min_curve:g} to {self.max_curve:g} SOL in the curve"] if self.min_curve and self.max_curve
                    else [f">= {self.min_curve:g} SOL in the curve"] if self.min_curve
                    else [f"<= {self.max_curve:g} SOL in the curve"] if self.max_curve else [])
+                + ([f"market cap {self.min_mcap:g} to {self.max_mcap:g} SOL"] if self.min_mcap and self.max_mcap
+                   else [f"market cap >= {self.min_mcap:g} SOL"] if self.min_mcap
+                   else [f"market cap <= {self.max_mcap:g} SOL"] if self.max_mcap else [])
                 + (["teams count once"] if self.teams else [])
                 + ([f">= {self.gap:g} s after the previous known wallet"] if self.gap else [])
             )  # fmt: skip
@@ -271,11 +280,12 @@ TRIGGERS = (
 
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
+KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap", "min_mcap", "max_mcap")
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
     "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
-    "kol": ("sol", "group", "max_age", "plain", "known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap"),
+    "kol": ("sol", "group", "max_age", "plain", *KOL_GATES),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew", "bots"),
     # OKTech MIG: its Migration Window (migrationExpirySec), and a split OKTech cannot run (dev_paid, research only)
@@ -287,7 +297,7 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
     "sol": (0, 100), "buyers": (0, 200), "window": (0, 60), "max_age": (0, 600), "max_buyers": (0, 200),
     "dev_max": (0, 100), "progress": (0, 1), "holders": (0, 10_000), "ret": (-1, 10),
     "known": (0, 20), "within": (0, 86_400), "max_sol": (0, 100), "min_curve": (0, 85), "max_curve": (0, 85),
-    "gap": (0, 86_400),
+    "gap": (0, 86_400), "min_mcap": (0, 10_000_000), "max_mcap": (0, 10_000_000),
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo", "teams")
@@ -366,6 +376,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
                          f"{trig.sol or KOL_MIN_SOL:g}): no buy fits")  # fmt: skip
     if trig.max_curve and trig.max_curve < trig.min_curve:
         raise ValueError(f"max_curve ({trig.max_curve:g}) is under min_curve ({trig.min_curve:g}): no coin fits")
+    if trig.max_mcap and trig.max_mcap < trig.min_mcap:
+        raise ValueError(f"max_mcap ({trig.max_mcap:g}) is under min_mcap ({trig.min_mcap:g}): no coin fits")
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
@@ -476,9 +488,30 @@ SELL_SLOT_SECS = 1.0  # a sell lands a slot after its exit fires, and block time
 
 
 def exits_horizon(exits: Sequence[ExitParams]) -> float:
-    """How long after its buy a position scored on these exits can still be held: the longest timer among them. Every
-    exit of a lab is scored on the same moments, so the tape must hold that long of each."""
-    return max((float(ex.max_hold_secs) for ex in exits), default=0.0)
+    """How long after its buy a position scored on these exits can still be held: the longest timer among them, with
+    the time its last part takes when it sells out in parts. Every exit of a lab is scored on the same moments, so the
+    tape must hold that long of each."""
+    return max((float(ex.max_hold_secs) + (max(1, int(ex.sell_parts)) - 1) * max(0.0, float(ex.sell_part_secs))
+                for ex in exits), default=0.0)  # fmt: skip
+
+
+MAX_SELL_PARTS = 20
+MAX_SELL_PART_SECS = 600.0
+
+
+def in_parts(exits: Sequence[ExitParams], parts: int, secs: float) -> list[ExitParams]:
+    """Every exit of a lab selling out in `parts` equal parts `secs` apart (`ExitParams.sell_parts`: the owner's
+    "slowly selling out" at size, 12 Nov 2026). One part gives the exits back as they are. The same moments under the
+    same exits with and without parts say what selling in parts is worth at a size; it is research only (no live
+    sniper is sent it)."""
+    parts = int(parts)
+    if parts <= 1:
+        return list(exits)
+    if parts > MAX_SELL_PARTS:
+        raise ValueError(f"--sell-parts takes 2 to {MAX_SELL_PARTS} parts, not {parts}")
+    if not 0 <= float(secs) <= MAX_SELL_PART_SECS:
+        raise ValueError(f"--sell-part-secs takes 0 to {MAX_SELL_PART_SECS:g} s apart, not {float(secs):g}")
+    return [replace(ex, sell_parts=parts, sell_part_secs=float(secs)) for ex in exits]
 
 
 # Where a MIG buy lands (`mig_entry`; no live MIG fill exists yet, playbook fact 8): never in the migration's own slot,
@@ -885,7 +918,8 @@ CURVE_VIRTUAL_SOL = 30.0  # a pump.fun curve's virtual SOL reserve before any bu
 def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -> bool:
     """A KOL trigger's gates beyond the wallet and the smallest buy, at the group wallet's first buy `i`: the buy is
     at most `max_sol`, at least `known` group wallets have made a first buy in the coin (this one included; all within
-    the last `within` seconds when set), and the SOL in the curve after the buy is inside `min_curve` / `max_curve`."""
+    the last `within` seconds when set), the SOL in the curve after the buy is inside `min_curve` / `max_curve`, and
+    the coin's market cap after it inside `min_mcap` / `max_mcap`."""
     if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
         return False
     if trig.known > 1:
@@ -898,6 +932,10 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
     if trig.min_curve or trig.max_curve:
         curve = float(path.q[i]) / LAMPORTS - CURVE_VIRTUAL_SOL
         if curve < trig.min_curve or (trig.max_curve and curve > trig.max_curve):
+            return False
+    if trig.min_mcap or trig.max_mcap:
+        mcap = path.mcap_sol(i)
+        if mcap < trig.min_mcap or (trig.max_mcap and mcap > trig.max_mcap):
             return False
     return True
 
@@ -1518,8 +1556,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             event_kinds: tuple[str, ...] | None = None, exits: list[ExitParams] | None = None,
             kols: dict[str, set[str]] | None = None, landings: Mapping[str, tuple[int, str]] | None = None,
             triggers: Sequence[Trigger] | None = None, workers: int | None = None,
-            mates: Mapping[str, Collection[str]] | None = None) -> dict[str, Any]:  # fmt: skip
+            mates: Mapping[str, Collection[str]] | None = None,
+            sell_parts: tuple[int, float] | None = None) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
+    `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
     With `groups` (e.g. ("cand",)) only those label groups' KOL-type triggers run, on the coins their wallets bought:
     the qualify stage's lab, a small fraction of the full one. There every group wallet's own first buy in a coin is a
     moment (each wallet's sniper copies its own buy); otherwise a trigger fires once per coin. `exits` (default: the
@@ -1565,6 +1605,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     # handed exits score every trigger, MIG included, watched as a live OKTech sniper runs a MIG rule's auto-sell
     mig_exits = [watched(ex) for ex in exits] if exits else mig_exit_set()
     exits = list(exits) if exits else exit_set()
+    if sell_parts and int(sell_parts[0]) > 1:
+        exits, mig_exits = in_parts(exits, *sell_parts), in_parts(mig_exits, *sell_parts)
     by_kind = kind_exits(exits)
     kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip

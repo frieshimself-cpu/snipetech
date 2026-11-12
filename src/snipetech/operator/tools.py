@@ -562,6 +562,19 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         (bids are on the tape since 11 Nov 16:34 UTC: trades.priority + tip), e.g. ["lab",
         "--trigger", '{"kind": "kol", "group": "wallet", "sol": 1, "max_sol": 3, "known": 2}', "--copy-position",
         "+0", "--buy", "2", "--per-tx", "0.035", "--hours", "72", "--json"].
+        SIZE (the owner, 12 Nov: money is not the limit, test 1 to 30 SOL a buy): "--buy", "10" sizes every buy of
+        the lab; our own buy and every sale of ours move the price in the replay, so a rule that pays at 1 SOL is
+        scored again at 1, 2, 5, 10, 20 and 30 SOL (one lab a size, the same trigger and hours) and the size to
+        propose is the one where test_sol_per_day peaks with a lower bound above zero. A kol trigger also takes
+        "min_mcap" / "max_mcap": the coin's market cap in SOL after the followed buy, on the curve and past it (a
+        curve ends near 410 SOL of market cap, so "min_mcap": 410 is coins already on PumpSwap: the bigger wallets'
+        buys at higher caps). The tape holds a coin's PumpSwap trades for 30 minutes after it leaves its curve, so
+        that is how far past the curve any rule can be scored today; older, bigger coins are not on the tape.
+        SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
+        holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
+        each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
+        that size; it is research only (no live sniper sells in parts yet: a winner is a finding for the owner, not a
+        sniper to propose).
 
         Args:
             argv: The snipetech command and its arguments, e.g. ["lab", "--latency", "0", "--position", "+6", "--by-wallet", "--json"],

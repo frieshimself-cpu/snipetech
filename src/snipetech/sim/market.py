@@ -266,7 +266,10 @@ class MarketPath:
         `held` tokens bought at `start` (see the module's account of the model). `until`: the last state to walk to;
         later states keep its value (an exit that cannot hold that long never reads them). `own_sells`: (state, tokens)
         sales of our own on the way; the value at such a state is the one after the sale, so a sale is priced on a
-        series made without it."""
+        series made without it. A sale of ours gives the pool its tokens back whole, so once the buyers behind us hold
+        fewer tokens than on the tape, selling more than the pool is still short of leaves it with MORE tokens than
+        the tape's: the value goes below zero, and what we still hold sells into that fuller pool (until 12 Nov 2026
+        it stopped at zero, which priced the later parts of a sale in parts too high)."""
         n = len(self.q)
         out = np.full(n - start, float(held))
         if getattr(self, "exact_in", None) is None and not own_sells:
@@ -286,20 +289,23 @@ class MarketPath:
         k_own = 0
         for j in todo:
             while k_own < len(own) and own[k_own][0] < j:
-                e = max(0.0, e - own[k_own][1])
+                e -= own[k_own][1]
                 at.append(own[k_own][0])
                 vals.append(e)
                 k_own += 1
             if exact[j]:
                 qj, sj = q[j], quote[j]
-                if e <= 0.0 or not 0.0 < sj < qj:
+                if e == 0.0 or not 0.0 < sj < qj:
                     continue
                 kj = qj * b[j]
                 ours_before = kj / (qj - sj) - e  # the pool's tokens before this buy, with us
                 if ours_before <= 0.0:
                     continue
-                now = max(b[j] - kj / (kj / ours_before + sj), 0.0)
-                if now < e:
+                # the same SOL buys fewer tokens from a pool short of the tape's (e above 0) and more from one that
+                # holds more than the tape's (e below 0: see the own sales below); the shortfall moves towards zero
+                now = b[j] - kj / (kj / ours_before + sj)
+                now = min(max(now, 0.0), e) if e > 0.0 else max(min(now, 0.0), e)
+                if now != e:
                     short[uid[j]] = short.get(uid[j], 0.0) + (e - now)
                     e = now
             else:
@@ -314,7 +320,7 @@ class MarketPath:
         for i, x in own[k_own:]:
             if i > last:
                 break
-            e = max(0.0, e - x)
+            e -= x
             at.append(i)
             vals.append(e)
         if at:
