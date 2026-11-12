@@ -51,6 +51,12 @@ Non-technical, decisive, wants plain words and the numbers that change a decisio
 idea per sentence; no jargon without a gloss. Ask only when the answer changes what you build. Every milestone and
 every live result goes into `docs/` and is pushed, so the next session starts from the record, not from memory.
 
+**Who does what (owner, 12 Nov 2026).** A session in this repo improves the system: code, bugs, speed, tools, the
+agents' instructions, the record. The system itself does the trading and the analysing, on the owner's API credits.
+A research question goes to the server's agents as an idea (`snipetech remote --wait run operate idea ...`), with the
+missing tool built here. A session starts a job on the server only to test or measure its own change, to run a repair
+it built, or to read state.
+
 ## Local-session automations (set these up in `.claude/settings.json` on the owner's PC; a cloud session cannot)
 
 1. Permission allowlist for read-only server commands and tests: `Bash(.venv/bin/snipetech remote status*)`,
