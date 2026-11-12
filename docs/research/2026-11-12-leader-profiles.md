@@ -35,7 +35,7 @@ follow.
   only evidence once a bid is shown to buy it (rule 2 of this repo). Every rule below names its landing and its bid.
   Nothing was started, tested live or changed.
 
-**Read with this in mind (the main session, 12 Nov 19:40 UTC).** Every lab in this study ran before the lab made a
+**Read with this in mind (the main session, 12 Nov 19:20 UTC).** Every lab in this study ran before the lab made a
 wallet rule's exits wait OKTech's 1.3 s watch delay (commit bae5776). A timer of 3 s or more is unchanged by that. A
 take-profit, a stop or a "quiet for 1 s" exit could fire inside the first 1.3 s here, which no sniper of ours can do:
 a row whose exit is one of those is an upper end until it is run again. The rules are to be rerun before they are
