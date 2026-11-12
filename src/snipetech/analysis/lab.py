@@ -53,7 +53,7 @@ from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
 from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
-from ..sim.exits import Costs, ExitParams, prepare, run_exit
+from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, slot_secs_from
 from ..solana.programs import SOL_QUOTES
 from ..store import Store, file_identity
@@ -544,6 +544,72 @@ SKIP_WORDS = {**GAP_WORDS, "no_migration": "left its curve while held, and the t
               "no_landing": f"with no PumpSwap trade in the {MIG_LAND_SLOTS} slots (about 2 s) after the migration's slot "
                             "for a MIG buy to land behind"}  # fmt: skip
 
+# Size (12 Nov 2026; docs/superpowers/specs/2026-11-12-size-honesty-design.md). The replay lets the tape's later
+# traders do what they did beside our position. After a big enough buy they could not have: the moment is left out,
+# said and counted (`size_gap`, the lab's `size` report), by what the buy is against the pool it meets, known before
+# anything after it. So the rule picks no moment by how the coin went, and a live sniper can keep the same gate
+# (OKTech's copy mode: the curve limits of a followed buy).
+#
+# CURVE_FILL_MAX: our buy's SOL over the SOL the pump.fun curve still takes before it completes (85.005 SOL in all).
+# Over one half, we are ourselves the larger part of the way to the migration: every buyer the tape recorded behind
+# us has less room on the curve than we took, and any run the tape shows that brought in more SOL than ours could
+# not have happened on the curve at all (the coin would have migrated on the way, and the tape of a curve that
+# went on says nothing about that). At one half or under, the tape's later buyers still fit behind us for at least as
+# much SOL as our own. On the big wallets' moments of 9-12 Nov (191 on the curve) it leaves out 3 % at 10 SOL,
+# 34 % at 30 SOL (7 % would end the curve) and 99 % at 60 SOL (34 % would end it).
+CURVE_FILL_MAX = 0.5
+# Our coins over the pool's coins at the entry, on the curve and on PumpSwap: above `MarketPath.MAX_SHARE` (a buy of
+# more SOL than the pool holds) the model does not price the position by its own rule even at the entry.
+ENTRY_POOL_SHARE_MAX = MarketPath.MAX_SHARE
+# A score that rests on a price past the curve's end is counted only for a position of at least this share of the
+# pool's coins at its entry (`SimResult.past_curve` is true of every position, however small, held while its coin
+# completes): under 1 % our own effect on any later price is under 2 % (1 / (1 - 0.01)^2), and a 0.2 SOL buy is at
+# most 0.66 % of a pump.fun curve.
+SIZE_FLOOR_SHARE = 0.01
+SIZE_WORDS = {
+    "size_ends_curve": "the buy would have ended the curve (it asks for all the curve has left or more): the coin "
+                       "migrates, and the tape's later trades on the curve could not have happened",
+    "size_curve_fill": f"the buy is more than half ({CURVE_FILL_MAX:.0%}) of the SOL the curve still takes before it "
+                       "completes: the tape's later buyers no longer fit behind it",
+    "size_pool_share": f"the buy takes more than half ({ENTRY_POOL_SHARE_MAX:.0%}) of the pool's coins: more SOL than "
+                       "the pool holds, which the model does not price",
+}  # fmt: skip
+SIZE_SHORT = {"size_ends_curve": "because the buy would have ended the curve",
+              "size_curve_fill": "because it was more than half of the SOL the curve still takes",
+              "size_pool_share": "because it took more than half of the pool's coins"}  # fmt: skip
+OUTSIDE_WORDS = {
+    "fallback": "our coins became more than half the pool's on the way, where the value is read by another rule",
+    "past_curve": "with our coins out of the pool the curve had ended before the sale: the coin would have migrated "
+                  "earlier than the tape says, into a pool that is not short of our coins",
+}  # fmt: skip
+SKIP_WORDS |= SIZE_WORDS
+
+
+def size_gap(prep) -> str | None:
+    """Why a position of this size cannot be replayed on the tape that follows it (a key of SIZE_WORDS), or None when
+    it can. Read from the buy against the pool it met alone (`sim.exits.prepare`), in this order: the buy ends the
+    pump.fun curve; it is more than CURVE_FILL_MAX of the SOL the curve still takes; its coins are more than
+    ENTRY_POOL_SHARE_MAX of the pool's (on the curve, on PumpSwap, on LaunchLab). The lab and the paper test both
+    leave such a moment out and count it; a position opened anywhere else (`prepare` itself) is still filled as the
+    chain fills it, capped at the curve's end."""
+    if prep.ends_curve:
+        return "size_ends_curve"
+    if prep.curve_fill is not None and prep.curve_fill > CURVE_FILL_MAX:
+        return "size_curve_fill"
+    if prep.pool_share > ENTRY_POOL_SHARE_MAX:
+        return "size_pool_share"
+    return None
+
+
+def size_fields(prep) -> dict[str, float]:
+    """What a moment's row says of our buy against the pool it met: how far it moves the price by itself (`impact`,
+    0.5 = +50 %), its coins over the pool's (`pool_share`) and, on a pump.fun curve, its SOL over the SOL the curve
+    still takes (`curve_fill`)."""
+    out = {"impact": float(prep.impact), "pool_share": float(prep.pool_share)}
+    if prep.curve_fill is not None:
+        out["curve_fill"] = float(prep.curve_fill)
+    return out
+
 
 def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int | None:
     """The state a MIG buy enters at, the trigger at state i (the last at or before the migration's slot): behind the
@@ -718,9 +784,13 @@ def exit_gap(cov: Mapping[str, Any], path: MarketPath, prep, res, ex: ExitParams
 
 
 def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[ExitParams], costs: Costs,
-              end_ts: float, mig, gap: str | None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
+              end_ts: float, mig, gap: str | None,
+              outside: dict[int, str] | None = None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
     """Each exit's pnl on a position bought on the curve (`prep`, at state prep.e), None for an exit left out, and the
-    exits left out with why (exit index: a key of SKIP_WORDS). `gap`: `migration_sell_gap` over the longest exit's hold,
+    exits left out with why (exit index: a key of SKIP_WORDS). `outside`, when given, is filled with the scored exits
+    whose result rests on a price outside the model (exit index: a key of OUTSIDE_WORDS; `SimResult.fallback`, and
+    `SimResult.past_curve` for a position of SIZE_FLOOR_SHARE of the pool or more): they stay scored, and the lab says
+    how many they are. `gap`: `migration_sell_gap` over the longest exit's hold,
     None where the PumpSwap tape holds the coin's migration or nothing migrates while held, and then every exit is
     scored, exactly as before 8 Nov. Otherwise an exit whose every sale landed before the coin left its curve is scored
     on the curve tape the lab has (`SimResult.sold_on_curve`), and so is one whose own hold the PumpSwap tape can score
@@ -745,6 +815,11 @@ def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[Ex
                 gaps[j] = why
                 continue
         pnl.append(res.pnl_sol)
+        if outside is not None:
+            if res.fallback:
+                outside[j] = "fallback"
+            elif res.past_curve and prep.pool_share >= SIZE_FLOOR_SHARE:
+                outside[j] = "past_curve"
     return pnl, gaps
 
 
@@ -1325,6 +1400,8 @@ class _Run:
     # each copied wallet's companions (qualify.gates.companions): a copy counted across slots lands behind their buys
     # in the wallet's block (`copy_entry`)
     mates: dict[str, frozenset] = field(default_factory=dict)
+    # every later buyer spends the SOL it spent on the tape and no more (`MarketPath.same_sol`): the tighter upper end
+    same_sol: bool = False
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -1412,6 +1489,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     path = MarketPath.build(trades, launch if launch and a <= launch.ts else None, slot_secs=slot_secs)
     if path.n < run.min_trades or implausible_coin(path):
         return []
+    if run.same_sol:
+        path.same_sol()
     wants_mig = run.mig_sell or any(t.kind in AMM_KINDS for _, t in run.triggers)
     mig = _span_migration(store, mint, a, b) if wants_mig else None
     in_span_launch = launch if (launch and a <= launch.ts) else None
@@ -1465,17 +1544,26 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 if gap is not None:  # left out, and said why, as before 8 Nov: no exit scores it
                     rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
                 continue
+            why = size_gap(prep)
+            if why is not None:  # a buy this size against this pool: the tape after it could not have happened
+                rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": why, **size_fields(prep)})
+                continue
             # MIG: its own exits (watched, `mig_exits`); a launch-type rule: its exits watched (`kind_exits`)
             exits = run.mig_exits if trig.kind in AMM_KINDS else run.kind_exits.get(trig.kind, run.exits)
-            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap)
+            outside: dict[int, str] = {}
+            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap, outside)
             if gaps and len(gaps) == len(exits):  # every exit still held when the coin left its curve: left out whole
                 rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
                 continue
             row = {"mint": mint, "trigger": ti, "ts": int(t_ts), "order": (t_slot, int(i)), "pnl": pnl,
                    "who": path.users[i], "lead_sol": round(float(path.quote[i]) / LAMPORTS, 6),
-                   "landing": f"{pos}@{int(lat)}"}  # fmt: skip
+                   "landing": f"{pos}@{int(lat)}",
+                   # our buy against the pool it met, and what it makes sold straight back (nothing a later buyer adds)
+                   **size_fields(prep), "own_rt": round_trip_pnl(prep, run.costs)}  # fmt: skip
             if gaps:  # the exits left out on this moment (None in `pnl`), and why
                 row["gaps"] = gaps
+            if outside:  # the exits whose score rests on a price outside the model, and which
+                row["outside"] = outside
             if trig.kind == "kol":  # how many companions of the wallet the copy was scored behind
                 row["mates"] = len(run.mates.get(path.users[i]) or ())
             if frac is not None:
@@ -1604,7 +1692,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             kols: dict[str, set[str]] | None = None, landings: Mapping[str, tuple[int, str]] | None = None,
             triggers: Sequence[Trigger] | None = None, workers: int | None = None,
             mates: Mapping[str, Collection[str]] | None = None,
-            sell_parts: tuple[int, float] | None = None, buy_bid_sol: float = 0.0) -> dict[str, Any]:  # fmt: skip
+            sell_parts: tuple[int, float] | None = None, buy_bid_sol: float = 0.0,
+            same_sol: bool = False) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
     `buy_bid_sol`: a bid paid once on every buy, on top of `per_tx_sol` (`Costs.entry_bid_lamports`).
@@ -1643,6 +1732,13 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     how many were skipped and why, how many were scored on some exits only (`partly`) and the exit scores left out
     (`exits_skipped`), where the MIG buys landed (`landing`), and lists the stretches of the scored tape the PumpSwap
     tape does not hold (`amm_recent_holes`).
+    SIZE: a moment whose buy, at `buy_sol`, would end its pump.fun curve, take more than CURVE_FILL_MAX of the SOL the
+    curve still takes or more than ENTRY_POOL_SHARE_MAX of the pool's coins is never scored (`size_gap`: the tape after
+    such a buy could not have happened); every scored row says what the buy was against its pool (`impact`,
+    `pool_share`, `curve_fill`), what it makes sold straight back (`own_rt`) and which exits' scores rest on a price
+    outside the model (`outside`). `size` reports all of it per trigger, with one sentence each (`_size_report`).
+    `same_sol`: every later buyer is replayed spending the SOL it spent on the tape and no more
+    (`MarketPath.same_sol`; `later_buyers` in the result says which reading scored it: "as_taped" or "same_sol").
     `workers` (default `[lab] workers`, read by `lab_workers`): processes the coins are spread over, each with its own
     read-only connection to the store's database file; the rows come back in the serial order, the same numbers. One
     process (`"workers": 1` in the result) for a store without a file (":memory:"), a lab of fewer than
@@ -1693,7 +1789,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)),
-               mates={w: frozenset(m) for w, m in (mates or {}).items() if m})  # fmt: skip
+               mates={w: frozenset(m) for w, m in (mates or {}).items() if m},
+               same_sol=bool(same_sol))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     if plan_wallets is None and triggers and isinstance(kols, dict) and all(t.kind == "kol" for _, t in triggers):
         # every rule of this lab fires on a buy by one of its group's wallets, of at least its size (`_fire`): a coin
@@ -1713,7 +1810,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         n, rows = 1, _chunk_rows(store, run, items)
     else:
         rows, n = _parallel_rows(store, run, items, n, *shared)
-    skipped = [r for r in rows if "skipped" in r]  # moments the PumpSwap tape does not hold whole: never scored
+    sized = [r for r in rows if r.get("skipped") in SIZE_WORDS]  # moments a buy this size cannot be replayed on
+    # moments the PumpSwap tape does not hold whole: never scored
+    skipped = [r for r in rows if "skipped" in r and r["skipped"] not in SIZE_WORDS]
     rows = [r for r in rows if "skipped" not in r]
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
@@ -1722,10 +1821,101 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
            "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,
-           "mates": {"wallets": len(run.mates), "found_by": found_by}}  # fmt: skip
+           "mates": {"wallets": len(run.mates), "found_by": found_by},
+           "size": _size_report(triggers, rows, sized, buy_sol),
+           "later_buyers": "same_sol" if same_sol else "as_taped"}  # fmt: skip
     if amm_runs or mig_sell:
         horizon = run.mig_horizon if amm_runs else run.horizon
         out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows, skipped, horizon, mig_sell)
+    return out
+
+
+def _share(x: float) -> str:
+    """A share in words: 185 %, 41 %, 0.9 %."""
+    return f"{x * 100:.0f} %" if abs(x) >= 0.1 else f"{x * 100:.1f} %"
+
+
+def size_line(buy_sol: float, t: Mapping[str, Any]) -> str:
+    """One trigger's size numbers (`_size_report`) as a sentence the analyst can repeat to the owner."""
+    parts = []
+    if t.get("impact_p50") is not None:
+        parts.append(f"At {buy_sol:g} SOL our own buy moves the price {_share(t['impact_p50'])} at the median "
+                     f"({_share(t['impact_p90'])} at the 90th percentile) and is {_share(t['pool_share_p50'])} of the "
+                     "pool's coins")  # fmt: skip
+    else:
+        parts.append(f"At {buy_sol:g} SOL")
+    left = sum(t["skipped"].values())
+    if left:
+        by_count = sorted(t["skipped"].items(), key=lambda kv: -kv[1])
+        why = ", ".join(f"{n} {SIZE_SHORT.get(code, code)}" for code, n in by_count)
+        parts.append(f"{left} of {t['moments']} moments {'was' if left == 1 else 'were'} left out for size ({why})")
+    else:
+        parts.append(f"none of {t['moments']} moments was left out for size")
+    if t["scored"]:
+        out = t["outside_model"]
+        parts.append(f"{out} of the {t['scored']} scored rest on a price outside the model" if out
+                     else f"none of the {t['scored']} scored rests on a price outside the model")  # fmt: skip
+    return "; ".join(parts) + "."
+
+
+def _size_report(triggers, rows: list[dict], sized: list[dict], buy_sol: float) -> dict[str, Any]:
+    """What the size asked is against the pools each rule met, per trigger that fired: its moments (scored, and left
+    out for size: `sized`, by reason), over all of them the median share of the pool's coins our buy is, how far it
+    moves the price by itself (median and 90th percentile) and, for the moments on a pump.fun curve, the median share
+    of the SOL the curve still takes; how many scored moments have a score that rests on a price outside the model
+    (`outside_model`: an exit of the row is in its `outside`); and all of it as one sentence (`line`). With the
+    limits the moments were held to and the reasons in words."""
+    per: dict[str, dict[str, Any]] = {}
+    for ti, t in triggers:
+        scored = [r for r in rows if r["trigger"] == ti]
+        left = [r for r in sized if r["trigger"] == ti]
+        if not scored and not left:
+            continue
+        one: dict[str, Any] = {"moments": len(scored) + len(left), "scored": len(scored),
+                               "skipped": dict(sorted(Counter(r["skipped"] for r in left).items())),
+                               "outside_model": sum(1 for r in scored if r.get("outside"))}  # fmt: skip
+        seen = [r for r in scored + left if "impact" in r]
+        if seen:
+            impact = [r["impact"] for r in seen]
+            one |= {"pool_share_p50": float(np.median([r["pool_share"] for r in seen])),
+                    "impact_p50": float(np.median(impact)), "impact_p90": float(np.percentile(impact, 90))}  # fmt: skip
+            fills = [r["curve_fill"] for r in seen if "curve_fill" in r]
+            if fills:
+                one |= {"on_curve": len(fills), "curve_fill_p50": float(np.median(fills))}
+        one["line"] = size_line(buy_sol, one)
+        per[t.label()] = one
+    codes = sorted({r["skipped"] for r in sized})
+    outside = sorted({c for r in rows for c in (r.get("outside") or {}).values()})
+    return {"buy_sol": float(buy_sol), "curve_fill_max": CURVE_FILL_MAX, "pool_share_max": ENTRY_POOL_SHARE_MAX,
+            "floor_share": SIZE_FLOOR_SHARE, "triggers": per, "why": {c: SIZE_WORDS[c] for c in codes},
+            "outside_why": {c: OUTSIDE_WORDS.get(c, c) for c in outside}}  # fmt: skip
+
+
+def _size_of(rs: list[dict], test: list[dict], k: int, mean: float | None, left_out: int) -> dict[str, Any]:
+    """A ranked strategy's size numbers. Over all its moments `rs`: how far our own buy moves the price (median and
+    90th percentile) and the median share of the pool's coins it is. Over the newer moments its exit `k` was scored
+    on (`test`), both ends of what the later buyers are worth: `mean` is the result with everything they added (the
+    replay lets every one of them buy as on the tape, however far our buy moved the price), `crowd_free_mean` the one
+    with nothing they added (every win replaced by our own round trip against the pool right after our buy, `own_rt`;
+    every loss kept), and `crowd_needed` the share of what they added that the rule needs to break even (None when
+    it loses with all of it). `outside_model` counts the newer moments whose score rests on a price outside the model
+    (the row's `outside`), `outside_model_sol` is what they add up to and `inside_mean` the mean without them.
+    `left_out_for_size`: the rule's moments never scored for size (`size_gap`)."""
+    out: dict[str, Any] = {"left_out_for_size": int(left_out)}
+    seen = [r for r in rs if "impact" in r]
+    if seen:
+        impact = [r["impact"] for r in seen]
+        out |= {"own_impact_p50": float(np.median(impact)), "own_impact_p90": float(np.percentile(impact, 90)),
+                "pool_share_p50": float(np.median([r["pool_share"] for r in seen]))}  # fmt: skip
+    floors = [(float(r["pnl"][k]), float(r["own_rt"])) for r in test if "own_rt" in r]
+    if floors:
+        free = float(np.mean([min(p, f) for p, f in floors]))
+        out["crowd_free_mean"] = free
+        out["crowd_needed"] = float(-free / (mean - free)) if mean is not None and mean > 0 and free < 0 else None
+    off = [float(r["pnl"][k]) for r in test if k in (r.get("outside") or {})]
+    on = [float(r["pnl"][k]) for r in test if k not in (r.get("outside") or {})]
+    out |= {"outside_model": len(off), "outside_model_sol": float(sum(off)),
+            "inside_mean": float(np.mean(on)) if on else None}  # fmt: skip
     return out
 
 
@@ -1838,7 +2028,12 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     newer moments than that (the other 40 %, or half of them) is not ranked: another exit never takes its place
     (`pick_exit`). `exit_moments` says on how many of the trigger's `moments` the chosen exit was scored, and its test
     numbers are those of its newer moments that were scored. The split stays the trigger's: no moment newer than the
-    cut picks an exit. Rows that score every exit rank exactly as before 8 Nov."""
+    cut picks an exit. Rows that score every exit rank exactly as before 8 Nov.
+
+    `size` (12 Nov) says what each strategy's numbers rest on at the size bought (`_size_of`): how far our own buy
+    moved the price, the result with nothing the later buyers added next to the one with all of it, how many newer
+    moments rest on a price outside the model, and how many moments were never scored for size. It changes no
+    ranking and no other number."""
     rows, curve_exits = data["rows"], data["exits"]
     by_kind = data.get("kind_exits") or {}
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
@@ -1859,6 +2054,9 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         span_h = max((rs[-1]["ts"] - rs[cut]["ts"]) / 3600, 1e-6)
         st = summarize(test, conf, samples)
         ex = by_kind.get(trig.kind, exits)[k]
+        left_out = sum((((data.get("size") or {}).get("triggers") or {}).get(trig.label()) or {})
+                       .get("skipped", {}).values())  # fmt: skip
+        sized = _size_of(rs, [r for r in rs[cut:] if r["pnl"][k] is not None], k, st.get("mean"), left_out)
         # SOL a day: the mean of the newer moments the exit was scored on, over every newer firing, since the rule trades
         # each one live. A firing it was left out on is a ride into a migration, for a hunt buy a big gain by then
         # (research round 3: riders reached 3.6-9x at the migration), so the mean it stretches leans low for a hunt.
@@ -1868,6 +2066,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
             "exit_moments": int((~np.isnan(m[:, k])).sum()), "per_hour": len(rs) / hours,
             "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
+            # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
+            "size": sized,
         })  # fmt: skip
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
     return out[:top]

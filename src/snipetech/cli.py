@@ -613,6 +613,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "live sniper sells in parts yet")  # fmt: skip
     sp.add_argument("--sell-part-secs", type=float, default=15.0, metavar="S",
                     help="with --sell-parts: seconds between the parts (0 to 600; default 15)")  # fmt: skip
+    sp.add_argument("--same-sol", action="store_true",
+                    help="replay every later buyer spending the SOL it spent on the tape and no more (a buyer of an "
+                         "exact number of coins otherwise pays whatever they cost beside our buy): the tighter upper "
+                         "end of a result at size. Run the same lab without it to compare")  # fmt: skip
 
     sp = cmd(
         "sweep",
@@ -1621,7 +1625,8 @@ async def _run(args, cfg: Config) -> int:
                     # nothing and said so nowhere)
                     return lab_collect(tape, cfg, args.buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
                                        triggers=args.trigger, kols=lab_groups(svc.store),
-                                       sell_parts=sell_parts, buy_bid_sol=args.buy_bid)  # fmt: skip
+                                       sell_parts=sell_parts, buy_bid_sol=args.buy_bid,
+                                       same_sol=args.same_sol)  # fmt: skip
 
             data = await asyncio.to_thread(_collect_locked)
             top = max(args.top, len(args.trigger)) if args.trigger else args.top  # --top never hides a hypothesis
@@ -1646,6 +1651,10 @@ async def _run(args, cfg: Config) -> int:
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
             if data.get("amm_tape"):  # MIG: what the PumpSwap tape let it score, and why the rest was skipped
                 res["amm_tape"] = data["amm_tape"]
+            if (data.get("size") or {}).get("triggers"):  # the size asked against the pools each rule met
+                res["size"] = data["size"]
+            if args.same_sol:  # every later buyer spent the SOL it spent on the tape and no more
+                res["later_buyers"] = data["later_buyers"]
             if args.by_wallet:
                 res["wallets"] = lab_rank_wallets(data, cfg, svc.store.labels(), top=max(args.top, 40))
             _out(args, res, R.render_lab)

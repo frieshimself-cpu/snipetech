@@ -47,6 +47,7 @@ from .lab import (
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
+    SIZE_WORDS,
     SKIP_WORDS,
     TRIGGERS,
     WATCH_SECS,
@@ -67,6 +68,7 @@ from .lab import (
     mig_moment,
     migration_sell_gap,
     rank,
+    size_gap,
     span_slot_secs,
     within_mig_cap,
 )
@@ -511,7 +513,9 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
     (the simulated result or None, why the trade is left out or None). An exit that sells into the migration needs the
     PumpSwap tape of it: on a launch-type rule it is scored where every sale landed before the coin left its curve,
     priced on the curve tape, as the lab scores each exit (`lab.exit_pnls`, `lab.exit_gap`); any other rule's trade is
-    left out, as in the lab."""
+    left out, as in the lab. So is a buy too large for its pool to be replayed, at any rule (`lab.size_gap`: it would
+    end its curve, or is most of what the curve still takes or of the pool's coins): its reason is a key of
+    lab.SIZE_WORDS."""
     gated = ex.migration_sell_frac > 0 and trig.kind not in AMM_KINDS
     gap = migration_sell_gap(amm_cov, path, e, mig, ex.max_hold_secs) if gated else None
     res = None
@@ -520,6 +524,9 @@ def _position(amm_cov: dict, path: MarketPath, s: dict, trig: Trigger, ex: ExitP
         prep = prepare(path, e, s["buy_sol"], costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
                        migration_slot=None if mig is None else mig.slot)  # fmt: skip
         if prep is not None:
+            sized = size_gap(prep)  # a buy this size against this pool: left out and counted, as in the lab
+            if sized is not None:
+                return None, sized
             res = run_exit(prep, ex, costs, end_ts=float(end))
             if gated and trig.kind in LAUNCH_KINDS:
                 gap = exit_gap(amm_cov, path, prep, res, ex, mig)
@@ -655,6 +662,7 @@ LEFT_WORDS = {
     "entry": "the state it was entered at cannot be found again",
     "position": "no position can be opened there",
     "gap": "its exit sells into a migration the PumpSwap tape does not hold whole",
+    "size": "the buy is too large for its pool to be replayed (lab.size_gap): the run scores no such moment any more",
 }
 
 
@@ -758,7 +766,7 @@ def rescore(store: Store, cfg: Config, ids: Sequence[str] | None = None, min_buy
                 continue
             res, gap = _position(amm_cov, path, s, trig, ex, costs, i, e, mig, end)
             if gap is not None or res is None:
-                leave(sid, "gap" if gap is not None else "position", row)
+                leave(sid, "size" if gap in SIZE_WORDS else "gap" if gap is not None else "position", row)
                 continue
             tally[sid]["rescored"] += 1
             tally[sid]["after"] += float(res.pnl_sol)

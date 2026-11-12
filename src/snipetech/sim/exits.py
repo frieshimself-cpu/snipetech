@@ -195,6 +195,15 @@ class SimResult:
     # PumpSwap tape of a coin's migration can still score, on the curve tape alone (research round 3, 8 Nov). None when
     # the path does not say where the coin left its curve (paths built by hand).
     sold_on_curve: bool | None = None
+    # What the result rests on at size (sim.market, "Where the model ends at size"). `capped`: the buy asked for more
+    # than its pump.fun curve had left and got only that (spent_sol is what it paid). `fallback`: by its last sale the
+    # position's coins were more than half the pool's, where the value is read by another rule (`MAX_SHARE`).
+    # `past_curve`: by its last sale the replay, with our coins out of the pool, had run past the end of the curve
+    # the position was bought on. Both are read on the position as bought (a sale of ours on the way only lowers
+    # the pool's shortfall), so neither misses a case.
+    capped: bool = False
+    fallback: bool = False
+    past_curve: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -224,10 +233,37 @@ class Prepared:
     # `horizon` (None: a position made by hand, priced as short of exactly what it holds)
     disp: np.ndarray | None = None
     horizon: int = -1
+    # The buy against the pool it met (`prepare`). `asked`: the lamports it was to spend; `spent` is less when the
+    # curve had less left (`capped`). `ends_curve`: it took the curve's last coin. `curve_fill`: its SOL (net of the
+    # fee, as asked) over the SOL the curve still takes before it completes, None off a pump.fun curve.
+    # `pool_share`: its coins over the pool's coins before it. `impact`: how far it moves the price by itself
+    # (0.5 = +50 %).
+    asked: float = 0.0
+    capped: bool = False
+    ends_curve: bool = False
+    curve_fill: float | None = None
+    pool_share: float = 0.0
+    impact: float = 0.0
+    # where the position leaves the model's ground, as states after the entry (`MarketPath.leaves_model`), read as
+    # far as `marked` (the horizon they were made for)
+    switch_at: int | None = None
+    past_at: int | None = None
+    marked: int = -1
 
     @property
     def entry_ts(self) -> float:
         return float(self.path.ts[self.e])
+
+    def off_model(self, upto: int) -> tuple[bool, bool]:
+        """(the pricing rule has switched, the replay is past the curve's end) by state `upto` of the path, on the
+        position as bought (`MarketPath.leaves_model`). `upto` lies inside the horizon the position was walked to."""
+        if self.marked != self.horizon:
+            disp = self.held if self.disp is None else self.disp
+            self.switch_at, self.past_at = self.path.leaves_model(self.e, disp, self.horizon)
+            self.marked = self.horizon
+        rel = int(upto) - self.e
+        return (self.switch_at is not None and self.switch_at <= rel,
+                self.past_at is not None and self.past_at <= rel)  # fmt: skip
 
     @property
     def slot_secs(self) -> float:
@@ -249,16 +285,26 @@ def prepare(
     """A position bought at state `entry_idx` for `spend_sol`. `migration_slot`: the slot of the coin's migration to
     PumpSwap as the tape records it (`migrations`), which a migration sell reacts to; without it the sale is timed
     from where the path leaves its curve. `horizon_secs`: how far past the entry the later trades are replayed with
-    the position in the pool (None: to the end of the path)."""
+    the position in the pool (None: to the end of the path).
+
+    The buy is filled as the chain fills it (`MarketPath.buy_fill`): on a pump.fun curve with less left than the buy
+    asks for, it gets what is left and spends only what that costs (`capped`; `spent` and every cost that follows
+    it are the smaller amounts). Whether a position that large against its pool is worth scoring at all is the
+    caller's question (`analysis.lab.size_gap`): the position says what it was against the pool it met (`curve_fill`,
+    `pool_share`, `impact`)."""
     if path.n == 0 or entry_idx < 0 or entry_idx >= path.n or spend_sol <= 0:
         return None
     e = int(entry_idx)
-    spent = spend_sol * LAMPORTS
+    asked = spend_sol * LAMPORTS
     fee = path.fee_bps[e] / 10_000.0
-    net_in = spent / (1.0 + fee)
-    held = path.buy_tokens(e, net_in)
+    asked_net = asked / (1.0 + fee)
+    held, net_in, ends = path.buy_fill(e, asked_net)
     if not np.isfinite(held) or held <= 0:
         return None
+    capped = net_in < asked_net
+    spent = net_in * (1.0 + fee) if capped else asked  # uncapped: the same number as ever, to the last digit
+    room = path.curve_room(e)
+    q0, b0 = float(path.q[e]), float(path.b[e])
     until = path.n - 1
     if horizon_secs is not None:
         until = int(np.searchsorted(path.ts, float(path.ts[e]) + float(horizon_secs), side="right")) - 1
@@ -290,7 +336,24 @@ def prepare(
         migration_slot=None if migration_slot is None else int(migration_slot),
         disp=disp,
         horizon=until,
+        asked=asked,
+        capped=capped,
+        ends_curve=bool(ends),
+        curve_fill=None if room is None else asked_net / room[1],
+        pool_share=held / b0,
+        impact=((q0 + net_in) / (b0 - held)) / (q0 / b0) - 1.0,
     )
+
+
+def round_trip_pnl(p: Prepared, costs: Costs) -> float:
+    """What the position makes, in SOL, sold whole into the pool right after its own buy: the result with nothing a
+    later buyer adds. The pool pays back the SOL that went in (constant product), so this is minus the venue's two
+    fees, the platform's two, the two transactions and the bid: the floor a strategy's result is read against
+    (`analysis.lab.rank`: `crowd_free_mean`)."""
+    fee = p.path.fee_bps[p.e] / 10_000.0
+    net = p.spent / (1.0 + fee) * (1.0 - fee)
+    proceeds = net - net * costs.platform_fee_bps / 10_000.0
+    return float(proceeds - p.spent - p.fixed_cost - costs.per_tx_lamports) / LAMPORTS
 
 
 def _reach(p: Prepared, upto: int) -> None:
@@ -623,6 +686,12 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         if sold_on_curve and p.migration_slot is not None:
             sold_on_curve = landed <= p.migration_slot
 
+    # what the result rests on at size: read at the latest state a sale was priced on (a sale in parts can be priced
+    # past the state the exits were walked to: the walk goes on to it, which changes no value before it)
+    last_priced = min(max(s[2] for s in sales), path.n - 1)
+    _reach(p, last_priced)
+    switched, past = p.off_model(last_priced)
+
     cost = p.spent + tx_costs
     pnl = proceeds - cost
     hold_rel = exit_abs - p.e
@@ -647,6 +716,9 @@ def run_exit(p: Prepared, ex: ExitParams, costs: Costs, end_ts: float | None = N
         trough_multiple=float(p.v[window].min() / basis),
         sells=sells,
         sold_on_curve=sold_on_curve,
+        capped=p.capped,
+        fallback=switched,
+        past_curve=past,
     )
 
 

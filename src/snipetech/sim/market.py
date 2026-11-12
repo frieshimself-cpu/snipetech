@@ -20,6 +20,23 @@ gives +37.4 %; at 0.2 SOL the difference is 0.4 points (docs/superpowers/specs/2
 An immediate round trip returns exactly what was paid (minus fees), and because each step is read from the trade's own
 amount and the reserves it left, the model stays valid through reserve jumps that are not explained by trade sizes
 (pump.fun mayhem-mode agent, PumpSwap boost / virtual quote reserves) and through migration to PumpSwap.
+
+Where the model ends at size (12 Nov 2026; docs/superpowers/specs/2026-11-12-size-honesty-design.md)
+-----------------------------------------------------------------------------------------------------
+"The others do what they did" needs a market in which they could have. Three places it is not one, each said by
+the code instead of priced in silence:
+
+(a) A pump.fun curve sells 793.1e12 coins and completes at 85.005 SOL. A buy that asks for more gets what is left and
+    spends only what that costs (`buy_fill`, `curve_room`); until 12 Nov it was sold coins past the end, at prices no
+    curve has. This is the fill itself, so it applies to every caller, at every size (`sim.exits.prepare`).
+(b) After a buy that ends the curve, or takes most of what it still takes, the tape's later curve trades could not
+    have happened: the coin would have migrated. No pricing rule mends that, so the lab and the paper test leave the
+    moment out and count it (`analysis.lab.size_gap`): (b) decides whether a moment is scored, (a) what a position is
+    filled at wherever one is opened.
+(c) Later on the path the model can still leave its ground: our coins become more than half the pool's
+    (`MAX_SHARE`: the pricing rule switches), or the replay with our coins out of the pool runs past the curve's end
+    (the migrated pool starts as the protocol makes it, not short of our coins). A result says when it was read
+    there (`SimResult.fallback`, `SimResult.past_curve`); the lab counts those scores and what they carry.
 """
 
 from __future__ import annotations
@@ -70,7 +87,9 @@ def slot_secs_from(slots, ts, min_span_secs: float = 600.0) -> float:
 # A pump.fun curve has completed once its virtual token reserve is down to this (1.073e15 virtual - 793.1e12 sold):
 # the tape's smallest curve b_after, the reserve every completing trade leaves (7 Nov: 59 completions in two hours)
 PUMP_CURVE_DONE_B = 279_900_000_000_000.0
-
+# The virtual SOL reserve of a completed pump.fun curve, in lamports: 115.005 SOL, of which 30 are virtual, so a
+# curve completes holding 85.005 SOL (constant product from 30 SOL against 1.073e15 coins down to PUMP_CURVE_DONE_B)
+PUMP_CURVE_END_Q = float(INITIAL_VIRTUAL_SOL_RESERVES) * float(INITIAL_VIRTUAL_TOKEN_RESERVES) / PUMP_CURVE_DONE_B
 
 
 def _first_state(trades: list[Trade]) -> tuple[float, float]:
@@ -169,6 +188,17 @@ class MarketPath:
             exact_in=np.array(exact, dtype=bool),
         )
 
+    def same_sol(self) -> MarketPath:
+        """This path with every buy replayed as one that spends the SOL it spent on the tape (all of them `exact_in`),
+        and returns itself. The model's own reading lets a buyer of an exact number of coins pay whatever they cost
+        beside a position of ours: behind a buy that moved the price 50 % it pays half as much again, and that SOL
+        is ours when we sell. On the chain such a buy fails once its cost passes the buyer's limit, which no tape
+        records. This is the other reading: nobody pays more SOL than they did (they get fewer coins, and sell
+        fewer). It never values a position higher, and at size it is the tighter upper end (`lab --same-sol`)."""
+        self.exact_in = np.asarray(self.is_buy, dtype=bool) & (np.asarray(self.quote) > 0)
+        self._walk = None
+        return self
+
     # -- landing model -----------------------------------------------------------
 
     def landing_index(self, target_slot: int | np.ndarray, position: str, min_index: int | np.ndarray = 0):
@@ -198,18 +228,67 @@ class MarketPath:
     # -- pricing -------------------------------------------------------------------
 
     def buy_tokens(self, i: int, quote_in: float, held: float = 0.0) -> float:
-        """Tokens received for `quote_in` lamports (net of fees) at state i, already holding `held`."""
+        """Tokens the pool's formula gives for `quote_in` lamports (net of fees) at state i, already holding `held`.
+        The formula alone: it does not know where a curve ends (`buy_fill` does)."""
         k = self.q[i] * self.b[i]
         bc = self.b[i] - held
         qc = k / bc
         return bc - k / (qc + quote_in)
 
+    def curve_room(self, i: int) -> tuple[float, float] | None:
+        """What a pump.fun curve still sells after state i: (the tokens it has left, the lamports net of fees that buy
+        them all), read from the state's own reserves. None where the path knows no end: a state off the curve
+        (completed, or on PumpSwap), a LaunchLab coin (its curve ends where its platform set it, which the tape does
+        not say) and a path built by hand."""
+        oc = self.off_curve
+        if self.venue != PUMPFUN or oc is None or len(oc) != self.n or oc[i] or self.amm[i]:
+            return None
+        b = float(self.b[i])
+        if b <= PUMP_CURVE_DONE_B:
+            return None
+        q = float(self.q[i])
+        return b - PUMP_CURVE_DONE_B, q * b / PUMP_CURVE_DONE_B - q
+
+    def buy_fill(self, i: int, quote_in: float) -> tuple[float, float, bool]:
+        """A buy of `quote_in` lamports (net of fees) at state i as the chain fills it: (tokens received, lamports
+        spent net of fees, whether it ends the curve). On a pump.fun curve a buy that asks for more than the curve
+        has left gets what is left and pays only for that; the rest of its SOL is not spent, and the coin migrates.
+        Anywhere else the pool's formula (`buy_tokens`)."""
+        tokens = self.buy_tokens(i, quote_in)
+        room = self.curve_room(i)
+        if room is not None and tokens >= room[0]:
+            return room[0], min(room[1], float(quote_in)), True
+        return tokens, float(quote_in), False
+
     # Our tokens are modeled as taken out of the recorded reserves (the curve the others traded on, minus what the
     # pool is short of because of us). That breaks down once the shortfall would be a large share of what is left —
     # e.g. a pool or curve whose recorded reserves later fall towards our position — and the shifted price explodes.
     # There the value falls back to selling into the recorded reserves as they are, which can never exceed the SOL in
-    # them.
+    # them. That is another pricing rule, and at the switch the value drops (ours at half the pool's coins: to a
+    # third), so a result read past it says so (`leaves_model`, `SimResult.fallback`), and a buy that is more than
+    # this share of the pool's coins at its entry is not scored by the lab at all (`analysis.lab.size_gap`).
     MAX_SHARE = 0.5
+
+    def leaves_model(self, start: int, disp, until: int) -> tuple[int | None, int | None]:
+        """Where a position bought at state `start` is first read off the model's ground, as states after `start`
+        (0 = the entry), up to state `until`; `disp` is the pool's shortfall from `start` on (`displacement`).
+        (the first state the pricing rule switches at: our coins are more than MAX_SHARE of the pool's, `sell_gross`;
+         the first state the replay is past the end of the pump.fun curve the position was bought on: with our coins
+         out of it the curve had sold its last coin, or the coin trades on off the curve while the pool is still
+         counted short of coins we took from the curve), None for each that never happens. The second is None for a
+        position bought off the curve and for a path that does not say where its curve ends (`curve_room`)."""
+        until = max(start, min(int(until), self.n - 1))
+        b = self.b[start : until + 1]
+        e = np.broadcast_to(np.asarray(disp, dtype=np.float64), (self.n - start,))[: until - start + 1]
+        shifted = b - e
+        hit = np.flatnonzero(shifted < b * (1.0 - self.MAX_SHARE))
+        switch = int(hit[0]) if len(hit) else None
+        past = None
+        if self.curve_room(start) is not None:
+            off = self.off_curve[start : until + 1]
+            hit = np.flatnonzero(np.where(off, e > 0.0, shifted < PUMP_CURVE_DONE_B * (1.0 - 1e-9)))
+            past = int(hit[0]) if len(hit) else None
+        return switch, past
 
     def sell_gross(self, i: int | np.ndarray, sell: float | np.ndarray, held: float | np.ndarray):
         """Gross lamports for selling `sell` tokens at state(s) i (before fees) into a pool that is `held` tokens
