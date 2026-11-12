@@ -836,12 +836,14 @@ def build_parser() -> argparse.ArgumentParser:
         "book",
         "the learning loop's book: which qualified wallets to copy, with what fill and bid arm (dry unless [book] enabled)",
     )
-    sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap", "fresh"],
+    sp.add_argument("action", choices=["run", "on", "off", "status", "bar", "mcap", "fresh", "drop"],
                     help="run: one book pass; on/off: the owner's switch for the live book (no SSH needed); status; "
                          "bar [SOL a trade|default]: the score a wallet needs to be copied; mcap [WALLET SOL|off]: copy "
                          "that wallet's buys only below this market cap in SOL (OKTech maxMcapUsd); fresh WALLET: lift its live pause "
-                         "and judge it only on trips after now")  # fmt: skip
-    sp.add_argument("value", nargs="?", help="bar: SOL a trade (e.g. 0.001) or 'default'; mcap: the wallet")
+                         "and judge it only on trips after now; drop WALLET: the owner's word that this wallet is "
+                         "never copied again, whatever its verdict says (the next pass stops its sniper once it "
+                         "holds nothing)")  # fmt: skip
+    sp.add_argument("value", nargs="?", help="bar: SOL a trade (0.001) or 'default'; mcap, fresh, drop: the wallet")
     sp.add_argument("cap", nargs="?", help="mcap: the cap in SOL, or off")
     sp.add_argument("--live", action="store_true", help="execute the plan (refused unless the book is switched on)")
     sp = cmd(
@@ -2323,6 +2325,23 @@ def _main(args) -> int:
 
             print(f"bar file {book_bar_file(bpaths)} on this machine")
             print(book_bar_reply(cfg, bpaths, args.value, "cli", time.time()))
+            return 0
+        if args.action == "drop":
+            if not args.value:
+                raise SystemExit("book drop: give the wallet")
+            from .store import Store
+
+            wallet, now = args.value.strip(), int(time.time())
+            bpaths.ensure()
+            store = Store(cfg.storage.db_path)
+            try:
+                if not any(c["wallet"] == wallet for c in store.candidates(limit=1_000_000)):
+                    store.upsert_candidate(wallet, "owner", {}, now)  # listed if it never was
+                store.set_candidate_status(wallet, "banned")
+            finally:
+                store.close()
+            print(f"{wallet[:6]}…: dropped. The book never copies it again, whatever its verdict says; its sniper is "
+                  "stopped by the book's next pass once it holds nothing.")  # fmt: skip
             return 0
         if args.action == "fresh":
             from .book.switch import book_fresh, book_fresh_file

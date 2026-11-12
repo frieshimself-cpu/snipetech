@@ -1258,3 +1258,32 @@ def test_a_stray_coin_seen_for_ten_minutes_does_not_keep_a_spent_sniper(tmp_path
         assert out["actions"]["retire"] == 1 and svc.calls[:2] == [("stop", "k1"), ("delete", "k1")]
     finally:
         st.close()
+
+
+def test_a_wallet_the_owner_drops_is_never_copied_again_whatever_its_verdict_says(tmp_path, capsys):
+    """12 Nov: the owner said to stop the two copy snipers that no longer pass the rules (7aPo3n, AG89fn). Stopped by
+    hand at 16:26 UTC, the book started both again within five minutes: their verdicts read qualified (kept) while a
+    sniper buys for them. `snipetech book drop <wallet>` is the owner's word for one wallet: the book leaves it out
+    whatever its verdict says (so its next pass stops that wallet's sniper once it holds nothing), and qualify no
+    longer reviews it."""
+    from snipetech import cli
+    from snipetech.book.run import _bookable
+
+    st, _cfg = _env(tmp_path, enabled=True)
+    db = str(tmp_path / "data" / "snipetech.db")
+    assert {v["wallet"] for v in _bookable(st)} == {L1, L2}
+    st.close()
+    assert cli.main(["--db", db, "book", "drop", L1]) == 0
+    assert L1[:6] in capsys.readouterr().out
+    st = Store(tmp_path / "data" / "snipetech.db")
+    assert {v["wallet"] for v in _bookable(st)} == {L2}
+    assert [c["wallet"] for c in st.candidates(status="banned")] == [L1]
+    assert st.latest_verdicts("qualified")  # its verdict stays as written: the drop is the owner's, not a verdict
+    st.close()
+    # a wallet the system never listed is dropped all the same (the sniper may have been made by hand)
+    assert cli.main(["--db", db, "book", "drop", "Zz" + "q" * 30]) == 0
+    st = Store(tmp_path / "data" / "snipetech.db")
+    assert {c["wallet"] for c in st.candidates(status="banned")} == {L1, "Zz" + "q" * 30}
+    st.close()
+    with pytest.raises(SystemExit, match="give the wallet"):
+        cli.main(["--db", db, "book", "drop"])
