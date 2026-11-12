@@ -18,7 +18,9 @@ reading of such a block (`block`, which `place-bids` reads its table from too) a
 The order follows the bids in 60 % of pairs, not in all (the playbook, docs/research/2026-11-12-winning-bots.md), so
 on the tape a lower bid can stand ahead of one that beats ours. The copy is then priced behind both (`lab.bid_entry`):
 the worse price, never a place better than its bid buys. `bid-` (the cautious variant, the one the owner's bar uses)
-stands one buy further back on every moment, for the faster wallet the tape cannot show.
+stands one buy further back on every moment, for the faster wallet the tape cannot show. Where the price fell between
+the buyers ahead of us (one of them sold off before the next bought), the copy pays the dearest price right behind any
+of them, so it is never priced ahead of one of them, and `bid-` never pays less than `bid`.
 
 A moment whose block holds no fee record is refused with its reason (`NO_BIDS`, `BID_UNKNOWN`), never guessed.
 

@@ -223,6 +223,119 @@ def test_a_copy_never_enters_cheaper_than_right_behind_the_wallet():
     st.close()
 
 
+CROWD = "the crowd"  # in a `_played` step: each of the coin's four early buyers
+
+
+def _played(st, steps, mate=None, at=None):
+    """A coin as `_coin`'s up to the followed wallet's 2 SOL buy at slot +50 (state LEAD_AT, a bid of 0.002; `mate`:
+    its companion's bid, in the very next transaction), then `steps` in the order they ran, each (wallet, SOL, bid,
+    slots later, transactions behind the wallet's own entry). SOL 0: the wallet sells all it holds (CROWD: each of the
+    four early buyers, one transaction apart). The last field counts only in the wallet's own block, where the steps
+    must come in the order of their place. Eight fans buy from slot +100 on, as in `_coin`."""
+    _N[0] += 1
+    k = _N[0]
+    m = Market(st, addr(f"bl-coin-{k}"), addr(f"bl-dev-{k}"), at or NOW - 6000 + (k % 250) * 20, 70_000_000 + k * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    crowd = [addr(f"bl-crowd-{k}-{j}") for j in range(4)]
+    for j, who in enumerate(crowd):
+        m.buy(who, 0.5, 2 + j)
+    lead = _bid(m.buy(LEAD, 2.0, 50), 0.002)
+    lead.pos = end = 100
+    if mate is not None:
+        _bid(m.buy(MATE, 1.0, 50), mate).pos = end = 101
+    for who, sol, bid, slots, behind in steps:
+        for j, w in enumerate(crowd if who == CROWD else [who]):
+            t = _bid(m.buy(w, sol, 50 + slots) if sol else m.sell(w, 1.0, 50 + slots), bid)
+            if not slots:
+                t.pos = end + behind + j
+    for j in range(8):
+        _bid(m.buy(addr(f"bl-fan-{k}-{j}"), 0.5, 100 + 3 * j), 0.0001)
+    m.commit()
+    return m
+
+
+def _price(path, j):
+    return path.q[j] / path.b[j]
+
+
+# an outsider outbids us in the wallet's block and lifts the price; it and the early buyers sell two blocks later
+PUMPED = ((BOT_A, 3.0, 0.03, 0, 20), (BOT_A, 0, 0.0001, 2, 0), (CROWD, 0, 0.0001, 2, 0))
+
+
+def test_a_copy_is_never_priced_ahead_of_an_outbidder_whose_buy_was_sold_off_before_the_next_buy():
+    """The review of 12 Nov: an outsider outbids us in the wallet's block (+18 %), the bots and the holders sell two
+    blocks later (the price falls under the one the wallet's buy left), then one more buy comes within the ten blocks.
+    The copy was entered behind that last buy only, found cheaper than right behind the wallet, and moved to right
+    behind the wallet: ahead of the outbidder, 18 % cheaper than behind it, while its row said place 3. And `bid-`,
+    one buy further back, came out cheaper than `bid`. A copy behind both pays no less than the dearer of the two."""
+    st = _store()
+    m = _played(st, (*PUMPED, (RICH, 0.3, 0.05, 4, 0)))  # the late buy outbids us too
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    a, late = LEAD_AT + 1, LEAD_AT + 7
+    assert (path.users[a], path.users[late]) == (BOT_A, RICH)
+    assert _price(path, a) > 1.15 * _price(path, LEAD_AT) and _price(path, late) < 0.95 * _price(path, LEAD_AT)
+    e, info = _entry(st, m, 0.01)
+    assert e == a and info == {"place": 3, "outbid": 1, "fast": 0, "later": 1}
+    e, info = _entry(st, m, 0.01, "bid-")
+    assert e == a and info["place"] == 4
+    low = _played(st, (*PUMPED, (SLOW, 0.3, 0.001, 4, 0)))  # the late buy bids less than we do: behind us
+    e, info = _entry(st, low, 0.01)
+    assert e == a and info["place"] == 2
+    e, info = _entry(st, low, 0.01, "bid-")  # the buy it stands one further back behind is that cheap one
+    assert e == a and info["place"] == 3
+    st.close()
+
+
+# blocks whose price rises and then falls within the blocks a counted place looks at, with a fast outsider, an
+# outbidder in a later block, a companion, a second rise: (the steps, the companion's bid)
+BLOCKS = {
+    "sold off, then an outbidder later": ((*PUMPED, (RICH, 0.3, 0.05, 4, 0)), None),
+    "sold off, then a low bid later": ((*PUMPED, (SLOW, 0.3, 0.001, 4, 0)), None),
+    "a fast outsider sold off in the block, then two bids": (
+        ((FAST, 3.0, 0.0005, 0, 2), (FAST, 0, 0.0001, 0, 5), (CROWD, 0, 0.0001, 0, 6), (BOT_B, 0.2, 0.005, 0, 20),
+         (BOT_A, 0.2, 0.03, 0, 21), (BOT_C, 0.4, 0.001, 3, 0)), None),
+    "a rise over three blocks, sold off, a small buy": (
+        ((BOT_B, 1.0, 0.005, 0, 20), (RICH, 2.0, 0.05, 1, 0), (BOT_A, 1.5, 0.03, 2, 0), (RICH, 0, 0.0001, 5, 0),
+         (CROWD, 0, 0.0001, 6, 0), (BOT_C, 0.1, 0.02, 8, 0)), None),
+    "sold off, then a buy that lifts it higher": ((*PUMPED, (RICH, 6.0, 0.05, 4, 0), (SLOW, 0.5, 0.001, 5, 0)), None),
+    "a companion, a fast outsider, sold off, an outbidder later": (
+        ((FAST, 2.0, 0.0005, 0, 1), (BOT_A, 2.0, 0.03, 0, 20), (FAST, 0, 0.0001, 1, 0), (BOT_A, 0, 0.0001, 1, 0),
+         (CROWD, 0, 0.0001, 2, 0), (RICH, 0.3, 0.05, 6, 0), (BOT_C, 0.3, 0.001, 9, 0)), 0.002),
+    "sold off before anyone bought": (((CROWD, 0, 0.0001, 0, 5), (BOT_A, 0.2, 0.03, 0, 20), (SLOW, 0.2, 0.001, 2, 0)),
+                                      None),
+    "buys only": (((BOT_A, 3.0, 0.03, 0, 20), (BOT_B, 1.0, 0.005, 0, 21), (RICH, 1.0, 0.05, 2, 0)), None),
+}  # fmt: skip
+
+
+@pytest.mark.parametrize("name", BLOCKS)
+def test_a_bid_landing_is_never_cheaper_than_behind_anyone_ahead_of_it_and_the_cautious_one_never_cheaper_than_it(name):
+    """Whatever the block and the bid: (a) the copy pays no less than the price right behind the wallet's own entry
+    and right behind every buyer the model put ahead of it; (b) `bid-` pays no less than `bid` on the same moment,
+    one place further back."""
+    steps, mate = BLOCKS[name]
+    st = _store()
+    m = _played(st, steps, mate)
+    mates = {MATE} if mate is not None else set()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    own_end = LEAD_AT + len(mates)
+    slot = int(path.slot[LEAD_AT])
+    trades = _fix_slot_order(st.block_trades(m.mint, slot, slot + COPY_LAND_SLOTS))
+    prices = [_price(path, j) for j in range(own_end, own_end + len(steps) + 4)]
+    assert name == "buys only" or min(prices[1:]) < max(prices) * 0.97  # the price fell within those blocks
+    for bid in (0.0005, 0.004, 0.01, 0.04, 0.1):
+        who = BL.ahead(BL.block(trades, path.sigs[LEAD_AT], mates), bid)
+        behind = [next(j for j in range(LEAD_AT + 1, path.n) if (path.sigs[j], path.users[j]) == (b["sig"], b["user"]))
+                  for b in who["ahead"]]  # fmt: skip
+        e, info = _entry(st, m, bid, "bid", mates)
+        assert e >= own_end and info["place"] == len(behind) + 1, (name, bid)
+        for j in (own_end, *behind):  # (a)
+            assert _price(path, e) >= _price(path, j), (name, bid, e, j)
+        back, more = _entry(st, m, bid, "bid-", mates)
+        assert back >= own_end and more["place"] == info["place"] + 1, (name, bid)
+        assert _price(path, back) >= _price(path, e), (name, bid, back, e)  # (b)
+    st.close()
+
+
 def test_a_moment_without_fee_records_is_refused_with_its_reason():
     """Before 11 Nov 16:34 UTC the tape holds no bid: the place is not guessed."""
     st = _store()
@@ -349,6 +462,41 @@ def test_a_bid_landing_needs_a_bid_and_a_wallet_rule():
         _lab(st, "bid", 0.01, triggers=[parse_trigger({"kind": "momentum", "sol": 1})])
     with pytest.raises(ValueError, match="own block"):
         collect(st, Config(), 2.0, 1, "bid", buy_bid_sol=0.01, triggers=[parse_trigger(RULE)], workers=1)
+    st.close()
+
+
+def test_the_lab_and_the_forward_paper_run_price_such_a_copy_behind_the_outbidder_too():
+    """Both place a bid landing with `bid_entry`: a rule frozen at `bid` or `bid-` is scored forward behind the
+    outsider that outbid it, where that one's buy was sold off before the next buy came (one trade behind the wallet,
+    at the place the row names), never right behind the wallet at a place it calls third."""
+    from snipetech.analysis import paper
+
+    cfg = Config()
+    cfg.verdict.bootstrap_samples = 100
+    t0 = NOW - 7500
+    froze, ran = t0 + 3600, t0 + 7200
+    st = Store(":memory:")
+    st.set_label(LEAD, "tracked one", "wallet", "file")
+    for k in range(24):
+        _coin(st, block=AUCTION, at=t0 + 100 + k * 120)
+    st.set_coverage("tape", {"spans": [[t0, froze]]})
+    rules = {}
+    for position in ("bid", "bid-"):
+        (rules[position],) = paper.freeze(st, cfg, top=4, buy_sol=0.2, per_tx_sol=0.0035, now=froze, buy_bid_sol=0.01,
+                                          triggers=[parse_trigger(RULE)], copy_position=position)["frozen"]  # fmt: skip
+    sold_off = (*PUMPED, (RICH, 0.3, 0.05, 4, 0))
+    mints = [_played(st, sold_off, at=froze + 300 + k * 120).mint for k in range(4)]
+    st.set_coverage("tape", {"spans": [[t0, ran]]})
+    data = collect(st, cfg, 0.2, 0, "bid", buy_bid_sol=0.01, triggers=[parse_trigger(RULE)], exits=[HOLD], workers=1)
+    assert {r["place"] for r in data["rows"] if r["mint"] in mints} == {3}
+    at_one = collect(st, cfg, 0.2, 0, "+1", buy_bid_sol=0.01, triggers=[parse_trigger(RULE)], exits=[HOLD], workers=1)
+    assert _made({"rows": [r for r in data["rows"] if r["mint"] in mints]}) == _made(
+        {"rows": [r for r in at_one["rows"] if r["mint"] in mints]})  # fmt: skip
+    assert paper.run(st, cfg, now=ran)["new_trades"] == 8
+    for position, place in (("bid", 3), ("bid-", 4)):
+        rows = st.paper_trades(rules[position]["id"])
+        assert [r["mint"] for r in rows] == mints
+        assert {(r["data"]["behind"], r["data"]["place"]) for r in rows} == {(1, place)}, position
     st.close()
 
 
