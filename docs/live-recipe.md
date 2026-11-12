@@ -29,6 +29,27 @@ about 0.55 SOL for all six buys if every one loses.
 | arm | time (UTC) | coin | landed (blocks after, buys ahead) | our bid | highest bid ahead | price vs Cupsey | result (SOL) |
 |---|---|---|---|---|---|---|---|
 
+**How the table is filled (built 12 Nov, on the server from the deploy of branch `wf/fill-landing` on).** The first
+two copies (17:04-17:06 UTC) bought a coin the tape does not hold (`3dqeBW…Foss`: not on a pump.fun curve, not a coin
+that left one in the last 30 minutes), so the tape could not place them and the measure stage wrote only a failed
+duplicate sell. The landing is now read from the chain itself, on any coin and any program
+(`measure/chain_landing.py`): the blocks between Cupsey's buy and ours, every other wallet that bought the coin in
+between with its bid, who tried and failed, our price against Cupsey's. One command gives the table's columns for
+every buy of the sniper wallet: `snipetech remote --wait run landing --since-minutes 180 --leader
+6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP`. Its last column says what each fill tells of the owner's thesis:
+`fees` (every buyer ahead of us bid more: a higher tip is the lever), `speed` (one bid less and still got in first: no
+tip buys that place), `first` (nobody ahead). The measure stage writes the same numbers into `fills` for a buy the
+tape cannot place (`landing_src = 'chain'`); `measure backfill --since 1794502800 --until 1794504000` brings in the
+two buys of 17:04-17:06. Not yet run against the real chain: the first run on the server is its test.
+
+**A cost the ladder did not count: the buy's priority is paid again on every sell.** A failed duplicate sell of arm A
+paid 0.005 SOL of priority, the buy's (`--priority 0.005`), not the sell's 0.0001. Our payload does not put it there
+(checked field by field); OKTech prices the tipped copy of every sell at the task's buy priority, as on record since
+8 Nov. So in arm A a round trip pays 0.005 on the buy, 0.005 on the landed sell and 0.005 on each tipped duplicate
+that fails, on top of the tips. A bid raised in the tip is paid once and comes back when a send fails. Worth one arm
+of the ladder: priority at the 0.001 minimum, the whole bid in the tip (docs/oktech-features.md, "Unknown until a tiny
+live test").
+
 ## The owner's three answers (11 Nov 2026, about 21:50 UTC): yes, yes, yes
 
 Asked in chat as three yes/no questions, each with its wallet, size and limit; the owner's answers, in their words of

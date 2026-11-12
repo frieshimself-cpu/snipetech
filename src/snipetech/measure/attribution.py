@@ -244,7 +244,7 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     (which are duplicates of which sell) and measure's exit replays; every read is short. `per_tx_sol`: what measure
     charged a fill whose fee is unknown ([costs], CostConfig.per_tx_sol())."""
     from .classify import pair_round_trips
-    from .run import _sells_a_coin, twin_sells
+    from .run import failed_is_sell, twin_sells
 
     out: dict[str, dict | None] = {s["sig"]: None for s in sells}
     todo = [s for s in sells if s.get("pnl_sol") is not None and s.get("mint") and float(s.get("tokens") or 0) > 0]
@@ -265,7 +265,8 @@ def break_down(store, wallet: str, sells: list[dict], *, per_tx_sol: float | Non
     metas = store.tx_meta([f["sig"] for f in failed]) if failed else {}
     by_sig = {f["sig"]: f for f in failed}
     dups: dict[str, list[dict]] = {}
-    for fsig, ssig in twin_sells([f | {"is_sell": _sells_a_coin(metas.get(f["sig"]))} for f in failed], landed).items():
+    flagged = [f | {"is_sell": failed_is_sell(f, metas.get(f["sig"]))} for f in failed]
+    for fsig, ssig in twin_sells(flagged, landed).items():
         dups.setdefault(ssig, []).append(by_sig[fsig])
     replays: dict[str, dict[str, float]] = {}
     buy_sigs = sorted({s["buy_sig"] for s in todo if s.get("buy_sig")})

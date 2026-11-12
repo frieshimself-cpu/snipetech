@@ -1735,3 +1735,30 @@ def test_a_rule_no_sniper_runs_as_scored_is_refused_not_sent_as_every_launch():
     plain = strategy_sniper({"id": "x", "label": "l", "buy_sol": 0.2, "exit": exit_params,
                              "trigger": {"kind": "launch"}}, 10)  # fmt: skip
     assert plain.config["mode"] == "normal" and plain.config["monitorProgram"] is True
+
+
+def test_a_buy_priority_given_by_hand_goes_into_the_buy_field_and_no_sell_field():
+    """12 Nov, the tip ladder: `oktech copylist --priority 0.005 --tip 0.03`, and a failed duplicate sell on the chain
+    paid 5,000,000 lamports of priority, the buy's. The payload is not what carries it there: the priority asked by
+    hand is `priorityFee` (the buy's) and nothing else; the sell's own fields keep the policy's 0.0001 priority and
+    its tip. OKTech itself prices the tipped copy of every sell at the task's `priorityFee` (on record since 8 Nov;
+    docs/oktech-features.md, "Unknown until a tiny live test")."""
+    from snipetech.oktech import list_copy_sniper
+
+    config = list_copy_sniper("6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP", "Cupseyy", 1.0, 0.05, 3, cfg=Config(),
+                              priority_fee=0.005, tip=0.03).config  # fmt: skip
+    assert config["priorityFee"] == 0.005 and config["tipAmount"] == 0.03
+    assert config["autoSell"]["sellPriorityFeeSol"] == 0.0001 and config["autoSell"]["sellTipAmount"] == 0.002
+    assert config["extraParams"]["globalSendCount"] == 1
+
+    def carriers(node, path=""):
+        if isinstance(node, dict):
+            for k, v in node.items():
+                yield from carriers(v, f"{path}.{k}" if path else k)
+        elif isinstance(node, list):
+            for i, v in enumerate(node):
+                yield from carriers(v, f"{path}[{i}]")
+        elif isinstance(node, float) and abs(node - 0.005) < 1e-12:
+            yield path
+
+    assert list(carriers(config)) == ["priorityFee"]  # no other field of the payload holds the buy's priority

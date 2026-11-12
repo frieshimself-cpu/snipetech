@@ -16,6 +16,8 @@ log = logging.getLogger(__name__)
 
 _VERSION_RE = re.compile(r'"maxSupportedTransactionVersion":\s*(\d+)')
 _RETRY_RPC_CODES = {-32005, -32007, -32009, -32014, -32016, 429}
+# getBlock for a slot without a block: skipped (-32007, -32009), not available (-32004), cleaned up (-32001)
+_NO_BLOCK_CODES = frozenset({-32001, -32004, -32007, -32009})
 
 
 class RpcError(Exception):
@@ -101,7 +103,9 @@ class SolanaRpc:
     async def __aexit__(self, *exc) -> None:
         await self.close()
 
-    async def call(self, method: str, params: list[Any] | None = None) -> Any:
+    async def call(self, method: str, params: list[Any] | None = None, final: frozenset[int] = frozenset()) -> Any:
+        """One request, retried while the node says to try again. `final`: error codes that are the answer for this
+        request and never retried (a slot that has no block)."""
         delay = 0.5
         last_exc: Exception | None = None
         throttles = 0
@@ -131,7 +135,7 @@ class SolanaRpc:
                 self.limiter.succeeded()
                 return payload.get("result")
             except RpcError as exc:
-                if exc.code not in _RETRY_RPC_CODES:
+                if exc.code not in _RETRY_RPC_CODES or exc.code in final:
                     raise
                 if exc.code in (429, -32005):
                     self.limiter.throttled()
@@ -214,6 +218,45 @@ class SolanaRpc:
                     continue
                 raise
         return None
+
+    async def get_block(self, slot: int) -> dict[str, Any] | None:
+        """One block with every transaction in full, in the order the block ran them (each as getTransaction gives it,
+        without its slot); None for a slot that has no block (skipped, or not kept by the node). A block is a few
+        megabytes: a study asks for the few it needs."""
+        for _ in range(3):
+            try:
+                return await self.call(
+                    "getBlock",
+                    [
+                        int(slot),
+                        {
+                            "encoding": "json",
+                            "transactionDetails": "full",
+                            "rewards": False,
+                            "maxSupportedTransactionVersion": self.max_tx_version,
+                            "commitment": self._block_commitment(),
+                        },
+                    ],
+                    final=_NO_BLOCK_CODES,
+                )
+            except RpcError as exc:
+                if exc.code in _NO_BLOCK_CODES:
+                    return None
+                match = _VERSION_RE.search(str(exc.error.get("message", "")))
+                if exc.code == -32015 and match and int(match.group(1)) > self.max_tx_version:
+                    self.max_tx_version = int(match.group(1))
+                    continue
+                raise
+        return None
+
+    async def get_blocks(self, start_slot: int, end_slot: int) -> list[int]:
+        """The slots from `start_slot` to `end_slot` that have a block (a slot whose leader produced none has not)."""
+        res = await self.call("getBlocks", [int(start_slot), int(end_slot), {"commitment": self._block_commitment()}])
+        return [int(s) for s in res or []]
+
+    def _block_commitment(self) -> str:
+        """Blocks are served confirmed or finalized, never processed."""
+        return "confirmed" if self.commitment == "processed" else self.commitment
 
     async def get_transactions(self, signatures: list[str]) -> dict[str, dict[str, Any] | None]:
         async def one(sig: str) -> tuple[str, dict[str, Any] | None]:

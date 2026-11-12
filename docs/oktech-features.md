@@ -290,3 +290,45 @@ socialUltimate, fomoTracking.
   maxFundingSol(10), fundingWindowMinutes(15), maxDevTxCount, onMismatch
   skip|log}` — first-ever funding of the deployer inside the band and window.
 - **Chain / Social / Ultimate / FOMO** — pages and streams, not sniper fields.
+
+## Unknown until a tiny live test
+
+### Which field prices the tipped copy of a sell (12 Nov 2026, the tip ladder behind Cupsey)
+
+**What the chain showed.** The ladder's first sniper was made with `oktech copylist --priority 0.005 --tip 0.03`.
+A failed duplicate of one of its sells paid 5,000,000 lamports of priority fee (0.005 SOL): the buy's priority,
+not the sell's.
+
+**What our payload sends** (pinned by `tests/test_oktech.py`,
+`test_a_buy_priority_given_by_hand_goes_into_the_buy_field_and_no_sell_field`):
+
+| field | value | what we mean by it |
+|---|---|---|
+| `priorityFee` | 0.005 | the buy's priority fee, the number given by hand |
+| `tipAmount` | 0.03 | the buy's tip |
+| `autoSell.sellTipAmount` | the fee policy's sell tip (0.002 when nothing raised it) | the sell's tip |
+| `autoSell.sellPriorityFeeSol` | 0.0001 | the sell's priority fee |
+| `extraParams.globalSendCount` | 1 | send each transaction once |
+
+No other field of the payload holds 0.005. The builder does not put the buy's priority into any sell field.
+
+**So it is OKTech's own behaviour, and it is the one already on record** (8 Nov, docs/live-recipe.md "The duplicate
+sells explained"; `measure/exits.fee_pairs`; `fees.py`): every exit goes out as two kinds of send. The tipped one,
+through a relay, carries `sellTipAmount` as its tip and the task's **buy** `priorityFee` as its priority; it is the
+one that lands (47 of 49 on record). The untipped one pays `sellPriorityFeeSol`. A send that fails keeps its priority
+fee and gets its tip back. `sellPriorityFeeSol` therefore prices only the untipped copy.
+
+**What it costs the ladder.** At a buy priority of 0.005 SOL every landed sell pays 0.005 again, and every tipped
+duplicate that fails pays 0.005005 for nothing. At the 0.001 minimum the same two cost 0.001 and 0.001005. A bid
+raised in the **tip** is paid once, on the buy, and comes back when a send fails; a bid raised in the **priority** is
+paid on the buy, again on the sell, and again on each failed tipped duplicate.
+
+**Unknown until a tiny live test:**
+
+1. Whether a buy at the minimum priority (0.001) with the whole bid in the tip (0.03, then 0.1) lands as early behind
+   the copied wallet as 0.005 + 0.03 does. If it does, the ladder's arms should differ in the tip alone. `snipetech
+   landing` reads the place and the bids ahead for both.
+2. Whether any OKTech setting prices the tipped sell apart from the buy (`globalSmartFees`, a per-task sell
+   override): none is in the payload code we have read; a question for OKTech's owner.
+3. Whether the failed duplicate above was the tipped or the untipped kind cannot be told from its priority alone
+   once both fields hold the same number; here they differ (0.005 against 0.0001), so it was a tipped one.

@@ -123,6 +123,58 @@ def _measure(args, cfg) -> int:
     return 0
 
 
+def _landing(args, cfg) -> int:
+    """`snipetech landing`: one buy of ours (--sig) or every buy of a wallet in the last minutes, each placed against
+    the wallet it copied from the chain's own blocks (measure/chain_landing.py). Read-only RPC calls."""
+    import time
+
+    from .measure import chain_landing as CL
+    from .measure.classify import copy_sniper_rows, leaders_at
+    from .service import Service
+
+    wallet = args.wallet or cfg.operator.wallet
+    if not args.sig and not wallet:
+        print("landing: give --sig <a buy of ours>, or --wallet <our wallet> (no [operator] wallet is configured)",
+              file=sys.stderr)  # fmt: skip
+        return 2
+    svc = Service(cfg)
+    now = time.time()
+    tape = svc.tape_store
+    try:
+        since_tape = int(min(a for a, _b in tape.tape_spans()))
+    except ValueError:
+        since_tape = int(now - 7 * 86400)
+    known: dict = {}
+
+    def mates(leader: str):
+        if leader not in known:
+            known[leader] = CL.known_mates(tape, leader, since_tape)
+        return known[leader]
+
+    own = CL.own_wallets(svc.store, cfg) | ({wallet} if wallet else set())
+    common = {"mates": mates, "own": own, "labels": svc.store.labels(), "services": svc.store.labels("service")}
+    rows_copy = copy_sniper_rows(svc.store)
+
+    async def go():
+        try:
+            if args.sig:
+                tx = await svc.rpc.get_transaction(args.sig)
+                ts = (tx or {}).get("blockTime") or now
+                leaders = args.leader or sorted(leaders_at(rows_copy, ts))
+                return [await CL.read_landing(svc.rpc, args.sig, leaders, wallet=args.wallet, tx=tx, **common)]
+            # each buy against the wallets asked for; without any, the wallets our copy snipers copied at its time
+            leaders = args.leader or (lambda ts: sorted(leaders_at(rows_copy, ts)))
+            return await CL.wallet_landings(svc.rpc, wallet, leaders, int(now - args.since_minutes * 60), int(now),
+                                            **common)  # fmt: skip
+        finally:
+            await svc.close()
+            svc.store.close()
+
+    rows = asyncio.run(go())
+    print(json.dumps({"rows": rows}, indent=1, default=str) if args.json else CL.render(rows))
+    return 0
+
+
 def _events(args, cfg) -> int:
     import time
 
@@ -887,6 +939,18 @@ def build_parser() -> argparse.ArgumentParser:
                     "(what each wallet's own copy sniper copies), not one moment a coin")  # fmt: skip
     sp.add_argument("--wallet", action="append", default=[], help="only moments behind this wallet (repeatable)")
     sp.add_argument("--top", type=int, default=20, help="followed wallets and first-place holders to list")
+    sp = cmd(
+        "landing",
+        "where a live buy of ours landed, read from the chain itself (any coin, any program): the blocks between the "
+        "copied wallet's buy and ours, every other buyer in between with its bid, who tried and failed, our bid "
+        "against theirs and our price against the wallet's; --sig for one buy, or every buy of a wallet in the last "
+        "minutes",
+    )
+    sp.add_argument("--sig", help="one buy of ours (its transaction signature)")
+    sp.add_argument("--leader", action="append", default=[], help="the wallet the buy copied (repeatable; default: "
+                    "the wallets our copy snipers copied at the time of each buy)")  # fmt: skip
+    sp.add_argument("--wallet", help="our wallet, for --since-minutes (default: the operator's sniper wallet)")
+    sp.add_argument("--since-minutes", type=float, default=60.0, help="every buy of the wallet in the last N minutes")
     sp = cmd(
         "playbook",
         "a bot's rules read off the tape: what each first buy came right after, who it follows and how often, its "
@@ -1900,6 +1964,7 @@ BATCH_COMMANDS = frozenset(
         "copy-context",
         "playbook",
         "place-bids",
+        "landing",
         "launch-tools",
         "rescore",
     }
@@ -2460,6 +2525,8 @@ def _main(args) -> int:
             svc.store.close()
         print(json.dumps(out, indent=1) if args.json else R.render_place_bids(out))
         return 0
+    if args.cmd == "landing":
+        return _landing(args, cfg)
     if args.cmd == "playbook":
         from .analysis.playbook import playbook
 
