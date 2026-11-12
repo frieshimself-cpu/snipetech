@@ -198,3 +198,95 @@ def test_a_rule_another_job_feeds_is_no_rule_of_the_lab(monkeypatch):
     store.set_coverage("paper_strategies", {"strategies": [fed]})
     out = _freeze(monkeypatch, store, _data({HUNT1: _coins("a", 44)}), [_row(HUNT1, HOLD10, 0.0097, HUNT_AT)])
     assert len(out["frozen"]) == 1 and out["skipped"] == [] and len(_ids(store)) == 2
+
+
+# -- an exit sold in parts is a rule of its own (12 Nov, review) ------------------------------------------------------
+
+PARTS10 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10, sell_on_dev_sell=False, watch_secs=1.3,
+                     sell_parts=4, sell_part_secs=15.0)  # fmt: skip
+PARTS60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3,
+                     sell_parts=2, sell_part_secs=5.0)  # fmt: skip
+
+
+def test_an_exit_in_parts_does_not_take_the_place_of_the_exit_a_sniper_can_run(monkeypatch):
+    """An agent freezes a hunt with a sale in parts (research only: no sniper is sent it). The strategy search then
+    finds the same hunt with an exit OKTech runs: that one is the rule that can reach a live test, and it was skipped
+    as "already in the paper test" for as long as the record in parts stood."""
+    from snipetech.oktech import validate_exit
+
+    store = Store(":memory:")
+    data = _data({HUNT1: _coins("a", 44)})
+    (parts,) = _freeze(monkeypatch, store, data, [_row(HUNT1, PARTS10, 0.0097, HUNT_AT)])["frozen"]
+    assert any("parts" in why for why in validate_exit(parts["exit"]))
+    again = _freeze(monkeypatch, store, data, [_row(HUNT1, HOLD10, 0.0071, HUNT_AT)], now=NOW + 7200)
+    (plain,) = again["frozen"]
+    assert again["skipped"] == [] and plain["exit"] == HOLD10.to_dict() and _ids(store) == [parts["id"], plain["id"]]
+    assert not any("parts" in why for why in validate_exit(plain["exit"]))
+    # each of the two has its one record: another exit of either kind is the rule already under test
+    third = _freeze(monkeypatch, store, data, now=NOW + 14400,
+                    ranked=[_row(HUNT1, HOLD60, 0.006, HUNT_AT), _row(HUNT1, PARTS60, 0.005, HUNT_AT)])  # fmt: skip
+    assert third["frozen"] == [] and len(_ids(store)) == 2
+    assert plain["id"] in third["skipped"][0]["why"] and parts["id"] in third["skipped"][1]["why"]
+    # and the other way round: the runnable record first, the one in parts beside it
+    other = Store(":memory:")
+    _freeze(monkeypatch, other, data, [_row(HUNT1, HOLD10, 0.0071, HUNT_AT)])
+    beside = _freeze(monkeypatch, other, data, [_row(HUNT1, PARTS10, 0.0097, HUNT_AT)], now=NOW + 7200)
+    assert len(beside["frozen"]) == 1 and beside["skipped"] == []
+
+
+def test_a_rule_without_parts_keeps_its_rule_key_and_every_id_stays():
+    import json
+
+    def before(trigger: dict, position: str, latency: int, buy_sol: float, bid=0.0, asked=False) -> str:
+        """`rule_key` as it was until the review."""
+        return json.dumps([Trigger(**trigger).__dict__, str(position), int(latency), float(buy_sol), float(bid),
+                           bool(asked)], sort_keys=True, default=str)  # fmt: skip
+
+    assert paper.rule_key(KOL.__dict__, "+6", 0, 0.2) == before(KOL.__dict__, "+6", 0, 0.2)
+    assert paper.rule_key(HUNT1.__dict__, "+3", 1, 5.0, 0.03, True) == before(HUNT1.__dict__, "+3", 1, 5.0, 0.03, True)
+    s = {"trigger": HUNT1.__dict__, "exit": HOLD10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2}
+    assert paper._rule_of(s) == before(HUNT1.__dict__, "+3", 1, 0.2)
+    in_parts = s | {"exit": PARTS10.to_dict()}
+    assert paper._rule_of(in_parts) != paper._rule_of(s)
+    assert paper._rule_of(in_parts) == paper._rule_of(s | {"exit": PARTS60.to_dict()})  # whatever the parts
+    # the two fields that shape a sale in parts are no sniper's either (oktech.validate_exit refuses each alone)
+    assert paper._rule_of(s | {"exit": HOLD10.to_dict() | {"first_part": 0.4}}) == paper._rule_of(in_parts)
+    assert paper._rule_of(s | {"exit": HOLD10.to_dict() | {"flat_below": 0.5}}) == paper._rule_of(in_parts)
+    # a strategy's id never had the rule key in it
+    assert paper.sid_of(s) == paper.strategy_id(HUNT1.__dict__, HOLD10.to_dict(), "+3", 1, 0.2)
+    assert paper.strategy_id(Trigger("kol", sol=2.0).__dict__, COPY30.to_dict() | {"watch_secs": 0.0}
+                             | {"max_hold_secs": 10}, "+6", 0, 0.2) == "69d1450075"  # as tests/test_paper_own_landing
+
+
+# -- every rule asked for by name is frozen or named (12 Nov, review) -------------------------------------------------
+
+
+def test_every_rule_of_a_recipe_is_frozen_or_named_whatever_top_says(monkeypatch):
+    """`paper freeze --recipe 6z91` at the command's own --top 4: the recipe has five rules, and the fifth was neither
+    frozen nor named in `skipped`."""
+    from snipetech.analysis.lab import recipe
+
+    r = recipe("6z91")
+    assert len(r.triggers) == 5
+    store = Store(":memory:")
+    data = _data({t: _coins(f"r{k}-", 40) for k, t in enumerate(r.triggers)})
+    ranked = [_row(t, r.exit, 0.05 - 0.001 * k, COPY_AT) for k, t in enumerate(r.triggers)]
+    monkeypatch.setattr(paper, "rank", lambda d, cfg, top=10, **_: list(ranked))
+    rep = paper.freeze(store, Config(), top=4, position="+6", data=data, recipe=r, buy_bid_sol=0.0, now=NOW)
+    named = {x["label"].split(" | ")[0] for x in rep["skipped"]}
+    assert {s["label"].split(" | ")[0] for s in rep["frozen"]} | named == {t.label() for t in r.triggers}
+    assert len(rep["frozen"]) == 5 and rep["skipped"] == []
+
+
+def test_a_typed_rule_cut_by_top_is_named(monkeypatch):
+    store = Store(":memory:")
+    kols = [Trigger("kol", sol=float(k)) for k in (1, 2, 3)]
+    data = _data({t: _coins(f"t{k}-", 40) for k, t in enumerate(kols)})
+    ranked = [_row(t, COPY30, 0.05 - 0.01 * k, COPY_AT) for k, t in enumerate(kols)]
+    out = _freeze(monkeypatch, store, data, ranked, top=2, triggers=kols)
+    assert [s["trigger"]["sol"] for s in out["frozen"]] == [1.0, 2.0]
+    (cut,) = out["skipped"]
+    assert cut["label"] == f"{kols[2].label()} | {COPY30.label()}" and "--top 2" in cut["why"]
+    # the strategy search's grid names no row it cut: its rows are the lab's whole table, every two hours
+    grid = _freeze(monkeypatch, Store(":memory:"), data, ranked, top=2)
+    assert len(grid["frozen"]) == 2 and grid["skipped"] == []

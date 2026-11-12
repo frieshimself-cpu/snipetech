@@ -311,3 +311,104 @@ def test_the_big_wallets_the_owner_named_are_a_group_a_rule_can_follow():
     trig = parse_trigger({"kind": "kol", "group": "big", "sol": 1})
     assert trig.group == "big"
     store.close()
+
+
+# -- the forward paper test waits for the last part (12 Nov, review) ---------------------------------------------------
+
+PT0 = 1_794_441_600  # 12 Nov 2026 00:00 UTC
+PARTS4 = ExitParams(max_hold_secs=300.0, sell_parts=4, sell_part_secs=120.0, **HOLD)  # the last part: at 660 s
+WHOLE = ExitParams(max_hold_secs=300.0, **HOLD)
+
+
+def _forward_world(cut: bool):
+    """One coin a followed wallet buys, lifted for seven minutes and sold off from 440 s after that buy, and two rules
+    frozen on the wallet: a 300 s timer in four parts 120 s apart, and the same timer in one sale. `cut`: the tape as
+    it stands 430 s after the buy. Returns (the store, the time of the buy, the trades after the cut, the two rules)."""
+    from snipetech.analysis import paper
+    from snipetech.store import Store
+    from tests.synth import Market, addr
+
+    st = Store(":memory:")
+    lead_wallet = addr("fp-lead")
+    st.set_label(lead_wallet, "tracked", "wallet", "file")
+    m = Market(st, addr("fp-coin"), addr("fp-dev"), PT0, 70_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(4):
+        m.buy(addr(f"fp-crowd-{j}"), 0.5, 2 + j)
+    lead = m.buy(lead_wallet, 2.0, 50)
+    fans = [addr(f"fp-fan-{j}") for j in range(20)]
+    for j, w in enumerate(fans):
+        m.buy(w, 0.5, 100 + 50 * j)
+    for j, w in enumerate(fans):
+        m.sell(w, 1.0, 50 + int((440 + 10 * j) / 0.4))
+    later = [t for t in m.trades if t.ts > lead.ts + 430]
+    if cut:
+        m.trades = [t for t in m.trades if t.ts <= lead.ts + 430]
+    m.commit()
+    st.set_coverage("tape", {"spans": [[PT0 - 10, lead.ts + 430 if cut else PT0 + 5000]]})
+    trig = dict(Trigger("kol", sol=1.0, group="wallet").__dict__)
+    rules = {}
+    for name, ex in (("parts", PARTS4), ("whole", WHOLE)):
+        rules[name] = {"id": paper.strategy_id(trig, ex.to_dict(), "+1", 0, 0.2), "label": name, "trigger": trig,
+                       "exit": ex.to_dict(), "position": "+1", "latency": 0, "buy_sol": 0.2, "per_tx_sol": 0.0035,
+                       "from_ts": PT0 - 5, "lab": {"mean": 0.1, "ev_lower": 0.05}, "landing_asked": True}  # fmt: skip
+    st.set_coverage("paper_strategies", {"strategies": list(rules.values())})
+    return st, lead.ts, later, rules
+
+
+def test_the_forward_paper_run_scores_a_sale_in_parts_once_its_last_part_is_on_the_tape():
+    from snipetech.analysis import paper
+    from snipetech.config import Config
+
+    ref, at, _later, rules = _forward_world(cut=False)  # the whole tape, scored long after
+    paper.run(ref, Config(), now=at + 1500)
+    (want,) = ref.paper_trades(rules["parts"]["id"])
+    (want_whole,) = ref.paper_trades(rules["whole"]["id"])
+    assert want["reason"] == "time+part+part+part" and want["data"]["hold_secs"] > 600
+
+    st, at, later, rules = _forward_world(cut=True)
+    out = paper.run(st, Config(), now=at + 430)
+    # the one sale at 300 s is played out and scored; the sale in parts is not (its last part is due at 660 s): until
+    # the review each part not yet due was priced at the newest trade and the row kept for good (+0.099 for +0.044)
+    assert out["new_trades"] == 1 and st.paper_trades(rules["parts"]["id"]) == []
+    assert st.paper_trades(rules["whole"]["id"])[0]["pnl"] == pytest.approx(want_whole["pnl"])
+    assert out["settles_later"] == {rules["parts"]["id"]: 780.0}
+    st.add_trades(later)
+    st.set_coverage("tape", {"spans": [[PT0 - 10, PT0 + 5000]]})
+    assert paper.run(st, Config(), now=at + 700)["new_trades"] == 0  # 660 s and a slot are not yet the settle time
+    out = paper.run(st, Config(), now=at + 1500)
+    assert out["new_trades"] == 1
+    (got,) = st.paper_trades(rules["parts"]["id"])
+    assert got["pnl"] == pytest.approx(want["pnl"]) and got["exit_ts"] == want["exit_ts"]
+    assert len(st.paper_trades(rules["whole"]["id"])) == 1
+    assert paper.run(st, Config(), now=at + 3000)["new_trades"] == 0  # and once only
+    ref.close()
+    st.close()
+
+
+def test_the_paper_test_asks_the_pumpswap_tape_for_the_last_part_too():
+    """A MIG buy, or a curve position sold into the migration, needs the PumpSwap tape to the end of its exit: the
+    timer and the parts after it (`exits_horizon`), as the lab reads it."""
+    from snipetech.amm_tape import AMM_RECENT_KEY
+    from snipetech.analysis import paper
+    from snipetech.store import Store
+    from tests.test_amm_tape import hm
+    from tests.test_mig_score import MIG10, _cfg, _world_7nov
+
+    store = Store(":memory:")
+    mints = _world_7nov(store)
+    rules = {}
+    in_parts4 = ExitParams(max_hold_secs=30.0, sell_parts=4, sell_part_secs=120.0, **HOLD)
+    for name, ex in (("whole", ExitParams(max_hold_secs=30.0, **HOLD)), ("parts", in_parts4)):
+        rules[name] = {"id": paper.strategy_id(MIG10.__dict__, ex.to_dict(), "+3", 1, 0.2), "label": name,
+                       "trigger": MIG10.__dict__, "exit": ex.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2,
+                       "per_tx_sol": 0.0045, "from_ts": hm(11, 0), "lab": {"mean": 0.0, "ev_lower": 0.0}}  # fmt: skip
+    store.set_coverage("paper_strategies", {"strategies": list(rules.values())})
+    out = paper.run(store, _cfg(), now=hm(16, 50))
+    # the coin that migrated at 13:59: its 30 s are on the tape before the 14:03 stall, its last part (390 s) is not
+    assert mints["hole"] in {r["mint"] for r in store.paper_trades(rules["whole"]["id"])}
+    assert mints["hole"] not in {r["mint"] for r in store.paper_trades(rules["parts"]["id"])}
+    assert out["skipped"][rules["parts"]["id"]]["hole"] == 1
+    assert "hole" not in out["skipped"].get(rules["whole"]["id"], {})
+    assert store.coverage(AMM_RECENT_KEY)  # (the record the check reads)
+    store.close()

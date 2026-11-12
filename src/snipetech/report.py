@@ -998,10 +998,19 @@ def render_paper(action: str, r: dict) -> str:
             if r.get("landing")
             else ""
         )
+        # the trades of rules frozen at a place asked for or with a bid were scored there: never "at the live landing"
+        own = int(r.get("new_trades_own_landing") or 0)
+        if own:
+            asked = " at a place asked for or with a bid of their rule's own (not where our copies land live)"
+            live = int(r["new_trades"]) - own
+            at = f": {live}{at}, {own}{asked}" if live else asked
         line = f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
         words = r.get("why") or {}
         for sid, why in sorted((r.get("skipped") or {}).items()):  # trades the PumpSwap tape does not hold whole
             line += f"\n  {sid}: left out " + ", ".join(f"{n} {words.get(c, c)}" for c, n in sorted(why.items()))
+        for sid, secs in sorted((r.get("settles_later") or {}).items()):  # an exit that ends after the usual 300 s
+            line += (f"\n  {sid}: each trigger is scored {secs:.0f} s after it fired, when the last sale of its "
+                     "exit is due")  # fmt: skip
         return line
     rows = r["strategies"]
     if not rows:
@@ -1010,12 +1019,29 @@ def render_paper(action: str, r: dict) -> str:
     def f(x, nd=4):
         return "-" if x is None else f"{x:+.{nd}f}"
 
+    def rules(some: list[dict]) -> str:
+        heads = ["id", "strategy", "hours", "trades", "mean", "bound", "total", "capped bound", "win", "lab said"]
+        return table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]),
+                       f(s["total"], 3), f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"])]
+                      for s in some], heads)  # fmt: skip
+
+    # a landing asked for at the freeze, or a bid: listed apart, each with its place and bid, and never under the
+    # words for where our trades land live
+    own = [s for s in rows if s.get("landing_asked") or s.get("buy_bid_sol")]
+    live = [s for s in rows if not (s.get("landing_asked") or s.get("buy_bid_sol"))]
     out = ["Forward paper-trading (only tape recorded after each strategy was frozen)", "=" * 72]
-    out += [r["landing_note"]] if r.get("landing_note") else []
-    out.append(table([[s["id"], s["label"][:58], f"{s['hours']:.1f}", s["n"], f(s["mean"]), f(s["ev_lower"]), f(s["total"], 3),
-                       f(s.get("ev_lower_capped")), pct(s["win_rate"]), f(s["lab_mean"])] for s in rows],
-                     ["id", "strategy", "hours", "trades", "mean", "bound", "total", "capped bound", "win", "lab said"]))  # fmt: skip
+    if live:
+        out += [r["landing_note"]] if r.get("landing_note") else []
+        out.append(rules(live))
+    else:
+        out.append("No rule is under test where our trades land live.")
     out.append("")
+    if own:
+        out.append("At a place asked for or with a bid of their own, not where our copies land live (each scored at "
+                   "the place and with the bid named under the table):")  # fmt: skip
+        out.append(rules(own))
+        out += [f"  {s['id']}  {s['landing']}" for s in own]
+        out.append("")
     out.append(
         "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
         " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
@@ -1025,10 +1051,6 @@ def render_paper(action: str, r: dict) -> str:
         out.append(f"{other} trades on another launchpad's coins than their rule's are kept but not counted (until 8 Nov "
                    "launch-type rules also fired on Raydium LaunchLab, which no sniper of ours buys; 'other_venue' in "
                    "--json).")  # fmt: skip
-    own = [s for s in rows if s.get("landing_asked") or s.get("buy_bid_sol")]
-    if own:  # a landing asked for at the freeze, or a bid: named, and never where our copies land live
-        out.append("Frozen at a landing or with a bid of their own, and scored there:")
-        out += [f"  {s['id']}  {s['landing']}" for s in own]
     if r.get("superseded"):
         out.append(
             f"{len(r['superseded'])} earlier run(s) scored at a landing no live trade gets are kept apart (--json)."

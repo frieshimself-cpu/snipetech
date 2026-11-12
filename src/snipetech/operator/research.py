@@ -504,10 +504,14 @@ def _search_line(store: Store, since: float) -> str | None:
 
 
 def _paper_line(store: Store, since: float, now: float) -> str:
+    """The paper test's new trades in the window. "At our landing" counts only the rules frozen where our trades land
+    live; a rule frozen at a place asked for or with a bid (`paper.pinned`) has a sentence of its own that names the
+    place and the bid, and never passes for a result at our landing (CLAUDE.md rule 2; until 12 Nov evening a rule
+    one place behind the wallet at a 0.01 SOL bid was the digest's "best at our landing")."""
     active = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", [])}
     if not active:
         return "Paper test: no rule is being paper-tested yet"
-    from ..analysis.paper import record
+    from ..analysis.paper import bid_of, pinned, record
 
     found: dict[str, list[dict]] = {}
     for sid, mint, pnl, data in store._q("SELECT strategy, mint, pnl, data FROM paper_trades WHERE entry_ts > ? AND "
@@ -517,12 +521,32 @@ def _paper_line(store: Store, since: float, now: float) -> str:
     # only the trades in each rule's record: a launch-type rule's LaunchLab trades never count (paper.record)
     kept = {sid: record(store, active[sid], rs)[0] for sid, rs in found.items()}
     rows = [(sid, len(rs), sum(float(r["pnl"] or 0) for r in rs)) for sid, rs in kept.items() if rs]
-    if not rows:
-        return f"Paper test at our landing: no new trades ({_n(len(active), 'rule')} waiting for their signal)"
-    n, total = sum(int(r[1]) for r in rows), sum(float(r[2] or 0) for r in rows)
-    sid, bn, bt = max(rows, key=lambda r: float(r[2] or 0))
-    return (f"Paper test at our landing: {_n(n, 'trade')}, {total:+.3f} SOL; best {active[sid]['label'][:60]}: "
-            f"{float(bt or 0):+.3f} over {_n(int(bn), 'trade')}")  # fmt: skip
+
+    def result(mine: list[tuple], where) -> str:
+        n, total = sum(int(r[1]) for r in mine), sum(float(r[2] or 0) for r in mine)
+        sid, bn, bt = max(mine, key=lambda r: float(r[2] or 0))
+        return (f"{_n(n, 'trade')}, {total:+.3f} SOL; best {active[sid]['label'][:60]}{where(active[sid])}: "
+                f"{float(bt or 0):+.3f} over {_n(int(bn), 'trade')}")  # fmt: skip
+
+    def place(s: dict) -> str:  # the landing and the bid that buys it, by name
+        bid = bid_of(s)
+        return f" ({s.get('position')}" + (f" with a {bid:g} SOL bid)" if bid > 0 else ", no bid charged)")
+
+    ours = [r for r in rows if not pinned(active[r[0]])]
+    asked = [r for r in rows if pinned(active[r[0]])]
+    own_rules = sum(1 for s in active.values() if pinned(s))
+    if ours:
+        line = "Paper test at our landing: " + result(ours, lambda s: "")
+    elif len(active) > own_rules:
+        line = (f"Paper test at our landing: no new trades ({_n(len(active) - own_rules, 'rule')} waiting for their "
+                "signal)")  # fmt: skip
+    else:
+        line = "Paper test at our landing: no rule is tested there"
+    if asked:
+        line += ". At a place asked for or with a bid, not where our copies land: " + result(asked, place)
+    elif own_rules:
+        line += f". At a place asked for or with a bid: no new trades ({_n(own_rules, 'rule')} waiting)"
+    return line
 
 
 def digest_text(store: Store, cfg: Config, paths: OperatorPaths, now: float, since: float,
