@@ -14,7 +14,7 @@ from ..config import OperatorConfig
 from ..measure.attribution import known_result_sol, trip_result_sol
 from ..ops import _read_only_authorizer, redact
 from ..store import table_columns
-from . import learning
+from . import learning, roles
 from .jobs import OperatorJobs
 from .paths import OperatorPaths, research_dir
 
@@ -304,9 +304,11 @@ def _research_file(research: Path | None, path: str) -> Path | None:
 
 
 def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str, *, ideas: bool = True,
-                        svc=None, wallet: str = "") -> list:  # fmt: skip
+                        svc=None, wallet: str = "", role: str | None = None) -> list:  # fmt: skip
     """The shared memory as tools: read_lessons, add_lesson, list_ideas, and (when `ideas`) upsert_idea; with a
-    service, read_round_trips for the post-mortem. They read and write operator/ files only: no trade, no setting."""
+    service, read_round_trips for the post-mortem. They read and write operator/ files only: no trade, no setting.
+    For a research agent's turn (`role`, operator/roles.py) list_ideas and upsert_idea are its queue's: it lists its
+    own queue unless asked for another, changes only its own ideas and may add one to any queue."""
 
     # the SDK is loaded where a model's tools are made: this module is imported by every stage for NoteSink, and
     # loading the SDK took 3.3 s of processor on the server, once a minute in the commands pass alone (11 Nov)
@@ -422,12 +424,84 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
             return f"error: {type(exc).__name__}: {exc}"
         return redact(json.dumps(out, default=str))
 
+    if role is not None:
+        list_ideas, upsert_idea = _queue_tools(paths, now_fn, source, role)
     tools = [read_lessons, add_lesson, list_ideas] + ([upsert_idea] if ideas else [])
     return tools + ([read_round_trips] if svc is not None else [])
 
 
+def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str, role: str) -> tuple:
+    """list_ideas and upsert_idea for a research agent's turn: the same file, read and written by queue."""
+    from anthropic import beta_async_tool
+
+    acting = role  # the role whose turn this is: upsert_idea's own `role` argument is the queue an idea goes to
+
+    @beta_async_tool(name="list_ideas")
+    async def role_list_ideas(status: str = "open", limit: int = 10, queue: str = "mine") -> str:
+        """The ideas worth testing (operator/ideas.json), by queue: yours unless you ask for another. Each comes with
+        its evidence, test, expected effect, kind, status, whether it needs the owner's yes and its queue (none: an
+        idea of kind code, config or live-test, which waits for the cloud session or the owner), plus the count per
+        status in the queue asked for.
+
+        Args:
+            status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
+            limit: At most this many ideas.
+            queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech.
+        """
+        if queue not in ("mine", "all", *roles.ROLES):
+            return f"error: queue must be mine, all or one of {', '.join(roles.ROLES)}"
+        whose = None if queue == "all" else acting if queue == "mine" else queue
+        try:
+            rows = learning.list_ideas(paths, status, limit=min(100, max(1, int(limit))), role=whose)
+        except ValueError as exc:
+            return f"error: {exc}"
+        counts: dict[str, int] = {}
+        for i in learning.list_ideas(paths, "all", role=whose):
+            counts[str(i.get("status"))] = counts.get(str(i.get("status")), 0) + 1
+        rows = [i | {"queue": learning.role_of(i)} for i in rows]
+        return redact(json.dumps({"queue": whose or "all", "counts": counts, "ideas": rows}))
+
+    @beta_async_tool(name="upsert_idea")
+    async def role_upsert_idea(title: str | None = None, why: str | None = None, test: str | None = None,
+                               expected: str | None = None, kind: str | None = None, status: str | None = None,
+                               owner_needed: bool | None = None, priority: int | None = None,
+                               role: str | None = None, id: str | None = None) -> str:  # fmt: skip
+        """Add an idea worth testing, or update one of your own (by id, or by the same title); fields left out are
+        kept. A new idea needs title, why, test, expected and kind. A research idea you add is your own queue's unless
+        you give role: that is how you hand work to another role (it alone moves or closes it; a queue holds at most
+        15 open ideas, so close or merge before you add). An idea of another role's queue you cannot change. What the
+        owner must decide is an idea of kind live-test, code or config: it is in nobody's queue, always needs the
+        owner's yes, and never changes anything by itself.
+
+        Args:
+            title: What to try, in a few words (under 120 characters).
+            why: The evidence for it, with numbers (under 600 characters).
+            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (under 400).
+            expected: The effect expected if it works, in numbers where possible (under 300).
+            kind: research | config | code | live-test.
+            status: open | testing | adopted | rejected (adopted or rejected only with the result that decided it).
+            owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
+            priority: 1 (low) to 5 (high): what testing it is worth.
+            role: The queue a research idea goes to: scout, tester, fees or oktech (yours when left out).
+            id: The idea's id (e.g. "I3") to update it; omit to add a new one.
+        """
+        fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
+                  "status": status, "owner_needed": owner_needed, "priority": priority, "role": role}  # fmt: skip
+        try:
+            idea = learning.upsert_idea(paths, fields, source=source, now=now_fn(), role=acting)
+        except ValueError as exc:
+            return f"error: {exc}"
+        return json.dumps(idea)
+
+    return role_list_ideas, role_upsert_idea
+
+
 def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: OperatorConfig, notes: NoteSink,
-                        source: str = "operator") -> list:  # fmt: skip
+                        source: str = "operator", role: str | None = None) -> list:  # fmt: skip
+    """The tools of one turn. Without `role`: the operator's and the analyst's, all of them. For a research agent's
+    turn (`role`, operator/roles.py): the ones its role is given (roles.ROLE_TOOLS), with start_job, write_note,
+    write_report and the two idea tools kept to the role (`_role_tools`). A role's list is cut from this one and
+    never longer: nothing here trades, and nothing a role gets does."""
     roots = [paths.reports, paths.root, paths.jobs]
     now_fn = notes.now
 
@@ -467,7 +541,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
             tail: Only the last this many lines (0: the whole file). For a file that only grows, such as
                 operator/notes.md, the last 60 lines are what was written lately.
         """
-        if str(path).startswith("docs/"):  # the checkout's research rounds: read here, no tool writes there
+        if role is not None and str(path) in roles.ROLE_DOCS.get(role, ()):  # a role's own reading in the checkout
+            p = Path(jobs.repo) / str(path)
+        elif str(path).startswith("docs/"):  # the checkout's research rounds: read here, no tool writes there
             research = research_dir(jobs.repo)  # looked up at each call: a deploy may bring it in mid-turn
             if research is None:
                 return "error: this server's checkout has no docs/research"
@@ -960,7 +1036,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         written.add(p.name)
         return f"wrote {p.name}"
 
-    return [
+    tools = [
         read_job_log,
         read_file,
         sql,
@@ -972,5 +1048,99 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         read_fills,
         read_fee_policy,
         read_events,
-        *make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet),
     ]
+    if role is None:
+        return [*tools, *make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet)]
+    own = _role_tools(paths, jobs, notes, role, read_file=read_file, job_text=start_job.description)
+    tools = [{t.name: t for t in own}.get(t.name, t) for t in tools]
+    tools += make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet, role=role)
+    return [t for t in tools if t.name in roles.ROLE_TOOLS[role]]
+
+
+def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role: str, *, read_file,
+                job_text: str) -> list:  # fmt: skip
+    """The tools a research agent's turn gets in place of the analyst's of the same name: start_job for its own
+    commands and an idea of its queue, write_note that is always "info" and once a turn, write_report for its own
+    table and journal, and read_file that names the documents its role may read. `job_text`: the analyst's start_job
+    text, which the role's is cut from."""
+    from anthropic import beta_async_tool
+
+    name, table, journal = roles.NAMES[role], roles.TABLES[role], roles.journal_prefix(role)
+
+    @beta_async_tool(name="start_job", description=roles.job_help(job_text, role))
+    async def role_start_job(argv: list[str], idea: str) -> str:
+        """Start one of your role's research jobs in the background; returns the job id.
+
+        Args:
+            argv: The snipetech command and its arguments, as the description shows each of your commands.
+            idea: The id of the open idea of your own queue that this job tests, e.g. "I12" (list_ideas; add one
+                with upsert_idea first when there is none).
+        """
+        try:
+            return json.dumps(jobs.start(list(argv), role=role, idea=str(idea)))
+        except PermissionError as exc:
+            return redact(f"error: {exc}")
+        except Exception as exc:  # noqa: BLE001
+            return redact(f"error: {type(exc).__name__}: {exc}")
+
+    noted: list[str] = []
+
+    @beta_async_tool(name="write_note")
+    async def role_write_note(text: str) -> str:
+        """Append this turn's one note to the shared notes (operator/notes.md): what you found, in one or two plain
+        sentences with the numbers that matter (n, the landing, the bid). One note a turn; it is always "info" and
+        pages nobody. What the owner must decide is an idea that needs the owner's yes (upsert_idea), which the digest
+        carries; the longer record of the turn goes into your journal (write_report).
+
+        Args:
+            text: One or two plain sentences.
+        """
+        if noted:
+            return ("error: one note a turn, and this turn's is written; put the rest into your journal "
+                    f"(write_report, name {journal}-<YYYY-MM-DD>, append=true)")  # fmt: skip
+        if wallet_line(str(text)):
+            return ("error: what the wallet can pay is not your role's subject (the operator says it once a day): "
+                    "leave it out and write the note again")  # fmt: skip
+        line = notes.write(f"{role}: {text}", "info")
+        noted.append(line)
+        return line
+
+    @beta_async_tool(name="write_report")
+    async def role_write_report(name: str, text: str, append: bool = False) -> str:
+        """Write one of your two reports into operator/. Your table, which the other roles' turns carry (its first
+        2,000 characters: keep it current and short, one row a subject, and write it whole each time), and your
+        journal of the day, which you add to with append.
+
+        Args:
+            name: Your table's name or your journal's (the description's last line names both).
+            text: Markdown.
+            append: Add the text at the end of the report (created when missing) instead of replacing it.
+        """
+        if name != table and not re.fullmatch(re.escape(journal) + r"-\d{4}-\d\d-\d\d", str(name)):
+            return (f"error: the {name} writes {table} (its table) and {journal}-<YYYY-MM-DD> (its "
+                    "journal) and no other report; a finding for another role is an idea in its queue")  # fmt: skip
+        p = paths.report(name)
+        paths.ensure()
+        text = str(text)
+        if append and p.exists():
+            old = p.read_text(errors="replace")
+            with p.open("a") as f:
+                f.write(("\n" if old.endswith("\n") else "\n\n") + text + ("" if text.endswith("\n") else "\n"))
+            return f"appended to {p.name}"
+        text += "\n" if append and not text.endswith("\n") else ""
+        if p.exists() and p.read_text(errors="replace") == text:
+            # not written again: a table that says the same is no news for the other roles (roles.role_due reads
+            # when it last changed)
+            return f"{p.name} already says exactly this: not written again"
+        p.write_text(text)
+        return f"wrote {p.name}"
+
+    role_write_report.description += f"\n\nThe {name}'s table is {table}; its journal is {journal}-<YYYY-MM-DD>."
+    out = [role_start_job, role_write_note, role_write_report]
+    docs = roles.ROLE_DOCS.get(role)
+    if docs:
+        also = (f"\n\nThe {name} also reads these documents of the checkout, read-only, by exactly these paths: "
+                f"{', '.join(docs)} (they are long: read the part you need with tail, or once and keep what matters "
+                "in your table).")  # fmt: skip
+        out.append(beta_async_tool(read_file.func, name="read_file", description=read_file.description + also))
+    return out

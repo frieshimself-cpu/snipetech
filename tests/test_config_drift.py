@@ -158,3 +158,13 @@ def test_the_bot_keeps_plain_sol_for_two_curve_buys_since_the_owners_yes():
     file holds no value for it: the default here is what the server runs. To switch it off: 0 here."""
     assert Config().book.keep_curve_buys == 2
     assert Config.load(SERVER_FILE, overlay=False).book.keep_curve_buys == 2
+
+
+def test_the_research_agents_are_off_until_the_default_here_says_on():
+    """The four specialised research agents (operator/roles.py; the owner asked for them on 12 Nov) are built and
+    switched off: a deploy of their code changes nothing on the server. The server's file holds no value for the
+    switch, so the default here is what the server runs. To switch them on, after the review: True here, in this test
+    and in the deploy that follows; `/budget every 0` switches them off again without a deploy."""
+    assert Config().operator.role_agents is False
+    assert Config.load(SERVER_FILE, overlay=False).operator.role_agents is False
+    assert "operator.role_agents" not in settings_drift(SERVER_FILE)["differs"]

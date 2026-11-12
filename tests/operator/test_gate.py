@@ -597,3 +597,72 @@ def test_a_job_a_remote_session_started_wakes_no_agent(paths):
     own = {"id": "x", "argv": ["lab"], "exit_code": 0}
     d = decide(snap(jobs_ended=[remote, own]), snap(), NOW, CFG, paths)
     assert d.call and d.reasons == ["job ended: x (lab, exit 0)"]
+
+
+# -- while the research agents are on (operator/roles.py): their turns stand where the in-between analyses stood ------
+
+ROLES_ON = OperatorConfig(role_agents=True)
+
+
+def test_no_in_between_analysis_while_roles_are_on(paths):
+    """The four research agents take the analyst's turns between the daily analyses: with them on, the cadence gives
+    none. Off (the default), the cadence is what it was."""
+    from snipetech.operator.gate import analyst_reason, mark_analyst_ran
+
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    due = AT_0630 + 2 * 3600
+    assert _at(paths, due).mode == "analyst" and analyst_reason(paths, due, CFG).startswith("analysis due: every 2 h")
+    assert analyst_reason(paths, due, ROLES_ON) is None
+    assert _at(paths, due, cfg=ROLES_ON).mode == "none"
+    assert _at(paths, due + 6 * 3600, cfg=ROLES_ON).mode == "none"  # however long it has been
+    own = {"id": "x", "argv": ["lab"], "exit_code": 0}  # what calls the operator still does
+    assert _at(paths, due, cfg=ROLES_ON, jobs_ended=[own]).mode == "operator"
+
+
+def test_daily_analysis_and_post_mortem_stay(paths):
+    """The day's report after 06:00 UTC and the post-mortem of live trades stay the analyst's, agents on or off."""
+    d = _at(paths, AT_0630, cfg=ROLES_ON)
+    assert d.mode == "analyst" and d.reasons == ["daily analysis due"]
+    paths.report("analyst-2026-11-06").write_text("x")
+    at = AT_0630 + 4 * 3600
+    quiet = snap(ts=at, tape_last_ts=at - 5)
+    d = decide(quiet, snap(), at, ROLES_ON, paths, new_trips=9, trips_since=at - 3600)
+    assert d.mode == "postmortem" and d.reasons[0].startswith("post-mortem due: 9 new live round trips")
+    assert decide(quiet, snap(), at, CFG, paths, new_trips=9, trips_since=at - 3600).mode in ("analyst", "postmortem")
+
+
+def test_a_roles_job_ending_does_not_call_the_operator(paths):
+    """A job a research agent started is read by that agent's next turn (its own gate calls it for it): the operator
+    is not woken for it. With the agents off the ledger is nobody's and the operator is called as before."""
+    from snipetech.operator import roles
+
+    roles.record_test(paths, NOW - 600, "tester", "I5", "t1", ["lab", "--trigger", "{}"])
+    theirs = {"id": "t1", "argv": ["lab", "--trigger", "{}"], "exit_code": 0}
+    own = {"id": "x", "argv": ["lab"], "exit_code": 0}
+    assert not decide(snap(jobs_ended=[theirs]), snap(), NOW, ROLES_ON, paths).call
+    d = decide(snap(jobs_ended=[theirs, own]), snap(), NOW, ROLES_ON, paths)
+    assert d.call and d.reasons == ["job ended: x (lab, exit 0)"]
+    d = decide(snap(jobs_ended=[theirs]), snap(), NOW, CFG, paths)  # switched off again: somebody has to read it
+    assert d.call and d.reasons == ["job ended: t1 (lab --trigger, exit 0)"]
+    # a role's turn is a stage of the round: its clean end is quiet, its failure is told like any stage's
+    turn = {"id": "a1", "argv": ["operate", "agent", "--role", "scout"], "exit_code": 0}
+    assert not decide(snap(jobs_ended=[turn]), snap(), NOW, ROLES_ON, paths).call
+    d = decide(snap(jobs_ended=[turn | {"exit_code": 1}]), snap(), NOW, ROLES_ON, paths)
+    assert d.call and d.reasons == ["loop stage failed: operate agent --role scout"]
+
+
+def test_budget_every_zero_turns_the_roles_off(paths):
+    """The owner's off switch, without a deploy: `/budget every 0` is the analysis once a day and no role's turn."""
+    from snipetech.operator import roles
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.gate import mark_analyst_ran
+
+    assert roles.on(ROLES_ON, paths) and not roles.on(CFG, paths)
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 0}, "telegram", NOW)
+    assert not roles.on(ROLES_ON, paths)
+    paths.report("analyst-2026-11-06").write_text("x")
+    mark_analyst_ran(paths, AT_0630)
+    assert _at(paths, AT_0630 + 5 * 3600, cfg=ROLES_ON).mode == "none"  # no in-between analysis either: once a day
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 2}, "telegram", NOW)
+    assert roles.on(ROLES_ON, paths)

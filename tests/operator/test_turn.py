@@ -704,3 +704,112 @@ def test_a_job_line_names_an_address_by_its_start_and_counts_a_flag_given_many_t
     assert all(line.startswith("20261111-0") for line in lines)  # the id read_job_log takes stays whole
     text = user_message(replace(env["snap"], jobs_recent=jobs), Decision(True, "operator", ["job ended: j1"]), "")
     assert "6Z91Dgiz9E44" not in text and "(+7 more --mint)" in text
+
+
+# -- a research agent's turn (operator/roles.py): the same runner, its own instructions, tools, cap and ledger name ----
+
+
+def _tool_names(req) -> list[str]:
+    return [t["name"] for t in req["tools"]]
+
+
+def test_role_turn_uses_its_instructions_and_tools(env):
+    from snipetech.operator import learning
+    from snipetech.operator.prompts import ROLE_SYSTEM
+    from snipetech.operator.roles import ROLE_TOOLS
+
+    fields = {"title": "who copies Cupsey", "why": "w", "test": "t", "expected": "e", "kind": "research"}
+    fields["role"] = "scout"
+    idea = learning.upsert_idea(env["paths"], fields, source="cloud", now=NOW)
+    (env["paths"].root / "scout-facts.md").write_text("| wallet | who |\n| W1 | Cupsey |\n")
+    (env["paths"].root / "fees-bids.md").write_text("| place | bid |\n| +0 | 0.05 |\n")
+    env["paths"].inbox.write_text("owner: check the tape")
+    handler, requests = _scripted(
+        ([{"type": "tool_use", "id": "t1", "name": "start_job",
+           "input": {"argv": ["winners", "--hours", "72", "--json"], "idea": idea["id"]}}], "tool_use"),
+        ([{"type": "tool_use", "id": "t2", "name": "write_note", "input": {"text": "started winners"}}], "tool_use"),
+        ([{"type": "text", "text": "done"}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+    req = requests[0]
+    assert out["stopped"] == "end_turn" and out["tool_calls"] == 2
+    assert req["model"] == env["cfg"].operator.analyst_model != env["cfg"].operator.model  # the research thinking
+    assert _system(req) == ROLE_SYSTEM["scout"]
+    assert req["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    assert set(_tool_names(req)) == ROLE_TOOLS["scout"]
+    message = req["messages"][0]["content"]
+    assert message.startswith("Turn of the wallet scout. Called because: first turn.")
+    assert "who copies Cupsey" in message and "| W1 | Cupsey |" in message and "| +0 | 0.05 |" in message
+    for word in ("native_sol", "equity", "snipers", "check the tape"):  # no wallet, no snipers, not the owner's inbox
+        assert word not in message, word
+    assert env["paths"].inbox.read_text() == "owner: check the tape"  # the operator's to read and clear
+    # the job it started is on the ledger under its role, and its one note is info with its name
+    from snipetech.operator import roles
+
+    assert [r["role"] for r in roles.read_tests(env["paths"])] == ["scout"]
+    assert "[info] scout: started winners" in env["paths"].notes.read_text() and env["sent"] == []
+    from snipetech.operator.turnlog import read_turns
+
+    assert read_turns(env["paths"], 1)[0]["mode"] == "scout"
+
+
+def test_role_spend_is_recorded_under_its_role(env):
+    handler, _ = _scripted(([{"type": "text", "text": "nothing new"}], "end_turn",
+                            {"input_tokens": 100_000, "output_tokens": 0}))  # fmt: skip
+    _run(env, Decision(True, "fees", ["a new fill of ours"]), handler, role="fees")
+    assert env["ledger"].spent_today_by(NOW) == pytest.approx({"fees": 0.8})  # the analyst's rate, the role's name
+
+
+def test_role_turn_stops_at_the_role_cap(env):
+    """A role's turn stops at 5 $ whatever the owner allows a turn, and at the owner's dollars a turn when that is
+    less; the tool-call limit is the owner's."""
+    from snipetech.operator.budget_switch import set_budget
+
+    big = {"input_tokens": 700_000, "output_tokens": 0}  # 5.6 $ at the analyst's rates
+
+    def note(i):
+        return [{"type": "tool_use", "id": f"t{i}", "name": "list_ideas", "input": {}}], "tool_use", big
+
+    set_budget(env["paths"], env["cfg"], {"daily_usd": 500, "turn_usd": 25, "max_tool_calls": 40}, "telegram", NOW)
+    handler, requests = _scripted(note(1), note(2), note(3))
+    out = _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")
+    assert out["stopped"] == "turn_usd" and len(requests) == 1 and out["usd"] == pytest.approx(5.6)
+    message = requests[0]["messages"][0]["content"]
+    assert "This turn stops at 40 tool calls or 5 $" in message and "of your share of 175 $" in message
+    set_budget(env["paths"], env["cfg"], {"turn_usd": 2}, "telegram", NOW)  # the owner allows less a turn: that holds
+    small = {"input_tokens": 300_000, "output_tokens": 0}  # 2.4 $
+    handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "list_ideas", "input": {}}], "tool_use",
+                                   small))  # fmt: skip
+    assert _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")["stopped"] == "turn_usd"
+    set_budget(env["paths"], env["cfg"], {"turn_usd": 25}, "telegram", NOW)
+    # the same reply under an analyst turn goes on: its cap is the owner's 25 $
+    handler, requests = _scripted(note(1), note(2))
+    out = _run(env, Decision(True, "analyst", ["analysis due"]), handler)
+    assert out["stopped"] == "end_turn" and len(requests) == 3
+
+
+def test_role_turn_leaves_the_days_analysis_alone(env):
+    """A role's turn is no analysis: the cadence does not count from it, it writes no day's report (not even the stub
+    that marks the day done), and a decision note is not its to send."""
+    from snipetech.operator.gate import analyst_done_today, last_analyst_ts
+
+    handler, _ = _scripted(
+        ([{"type": "tool_use", "id": "t1", "name": "write_report",
+           "input": {"name": "analyst-2026-11-06", "text": "not mine"}}], "tool_use"),
+        ([{"type": "tool_use", "id": "t2", "name": "write_report",
+           "input": {"name": "oktech-facts", "text": "| feature | verified |"}}], "tool_use"),
+        ([{"type": "text", "text": "done"}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "oktech", ["first turn"]), handler, role="oktech")
+    assert out["stopped"] == "end_turn"
+    assert last_analyst_ts(env["paths"], NOW) is None and not env["paths"].analyst_last.exists()
+    assert not analyst_done_today(env["paths"], NOW)
+    assert (env["paths"].root / "oktech-facts.md").read_text() == "| feature | verified |"
+    assert "turn ended without a note" in env["paths"].notes.read_text() and env["sent"] == []
+
+
+def test_a_turn_without_a_role_is_the_analysts_or_the_operators_as_before(env):
+    handler, requests = _scripted(([{"type": "text", "text": "nothing"}], "end_turn"))
+    _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
+    assert _system(requests[0]).startswith(ANALYST_SYSTEM[:40]) and len(requests[0]["tools"]) == 16
+    assert "Round mode: analyst." in requests[0]["messages"][0]["content"]

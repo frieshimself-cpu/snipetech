@@ -9,6 +9,8 @@ from pathlib import Path
 from ..analysis.lab_lock import lab_slots
 from ..jobfiles import jobs_since
 from ..ops import Ops, OpsError, _pid_alive
+from . import learning, roles
+from .paths import OperatorPaths
 from .standin import loop_stage
 
 RESEARCH_COMMANDS = frozenset(
@@ -70,6 +72,11 @@ class OperatorJobs:
         """The checkout the round runs from (the operator's --repo: /opt/snipetech on the server, the checkout `remote
         update` resets to the branch); its docs/research is the research record the agents read."""
         return self.ops.repo
+
+    @property
+    def paths(self) -> OperatorPaths:
+        """The operator's files next to the jobs: the ideas and the ledger of the research agents' jobs."""
+        return OperatorPaths(self.ops.data)
 
     def running(self) -> list[dict]:
         """Jobs whose process is alive, read from the shared metadata files (not from this process's memory)."""
@@ -154,7 +161,61 @@ class OperatorJobs:
                 return meta
         return None
 
-    def start(self, argv: list[str], now: float | None = None) -> dict:
+    def _check_role(self, argv: list[str], role: str, idea: str | None) -> None:
+        """What a research agent's start is held to beyond every agent's: the command is one of its role's
+        (roles.ROLE_COMMANDS), with the flag its role needs for it (roles.ROLE_NEEDS), and the job names an open idea
+        of the role's own queue. The refusal says whose the command is, so the role hands the work on as an idea."""
+        if role not in roles.ROLES:
+            raise PermissionError(f"no such role: {role}")
+        name, command = roles.NAMES[role], roles.command_of(argv)
+        if command not in roles.ROLE_COMMANDS[role]:
+            whose = " and the ".join(roles.NAMES[r] for r in roles.roles_of(command))
+            raise PermissionError(f"{command} is not the {name}'s to start (yours: "
+                                  f"{', '.join(sorted(roles.ROLE_COMMANDS[role]))}). It is the {whose}'s: hand the "
+                                  "work on as an idea in that queue (upsert_idea with role)")  # fmt: skip
+        needs = roles.ROLE_NEEDS.get((role, command))
+        if needs and not any(a == flag or a.startswith(flag + "=") for a in argv for flag in needs):
+            said = ", ".join(needs[:-1]) + (" or " if len(needs) > 1 else "") + needs[-1]
+            raise PermissionError(f"the {name}'s {command} needs {said}: without it the job is another role's "
+                                  f"({' and '.join(r for r in roles.roles_of(command) if r != role)}); hand it on as "
+                                  "an idea in that queue")  # fmt: skip
+        if not idea:
+            raise PermissionError("every job names the idea it tests: give idea, the id of an open idea of your own "
+                                  "queue (add one with upsert_idea first)")  # fmt: skip
+        found = next((i for i in learning.list_ideas(self.paths, "all") if i.get("id") == str(idea).strip()), None)
+        if found is None:
+            raise PermissionError(f"no idea {idea}: give the id of an open idea of your own queue (list_ideas)")
+        queue = learning.role_of(found)
+        if queue != role:
+            whose = f"the {queue}'s" if queue else "nobody's"
+            raise PermissionError(f"{found['id']} is in {whose} queue, not yours: a job tests an idea of your own "
+                                  "queue")  # fmt: skip
+        if found.get("status") not in learning.OPEN:
+            raise PermissionError(f"{found['id']} is closed ({found.get('status')}): a job tests an open idea; add a "
+                                  "new one for a new question")  # fmt: skip
+
+    def _agent_labs(self, running: list[dict]) -> list[tuple[str, str]]:
+        """The running labs a research agent started, as (job id, role): the roles together hold `lab_slots() - 1` of
+        the machine's slots and never fewer than one, so qualify, the strategy search and the freeze keep theirs."""
+        by = roles.job_roles(self.paths)
+        return [(str(m.get("id")), by[str(m.get("id"))]) for m in running
+                if (m.get("argv") or [""])[0] == "lab" and str(m.get("id")) in by]  # fmt: skip
+
+    def record_test(self, now: float, role: str, idea: str, started: dict, argv: list[str]) -> None:
+        """A role's job has started: one line in operator/tests.jsonl, and its idea moves from open to testing."""
+        roles.record_test(self.paths, now, role, str(idea).strip(), str(started.get("id")), argv)
+        try:
+            if any(i.get("id") == str(idea).strip() and i.get("status") == "open"
+                   for i in learning.list_ideas(self.paths, "all")):  # fmt: skip
+                learning.upsert_idea(self.paths, {"id": str(idea).strip(), "status": "testing"}, source=role, now=now,
+                                     role=role)  # fmt: skip
+        except ValueError:
+            pass  # the job runs and is on the ledger; the idea's status is the agent's to set
+
+    def start(self, argv: list[str], now: float | None = None, role: str | None = None,
+              idea: str | None = None) -> dict:  # fmt: skip
+        """Start a research job. `role`: the research agent whose turn asks (None for the operator and the analyst,
+        which nothing below that names a role holds); `idea`: the idea of its queue the job tests."""
         if argv and argv[0] in OWNER_COMMANDS:
             raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
                                   "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
@@ -165,6 +226,8 @@ class OperatorJobs:
             allowed = sorted(RESEARCH_COMMANDS) + [" ".join(a) for a in sorted(RESEARCH_ACTIONS)]
             raise PermissionError(f"not a research command: {argv[:2] if argv[:1] == ['history'] else argv[:1]}; "
                                   f"allowed: {allowed}")  # fmt: skip
+        if role is not None:
+            self._check_role(argv, role, idea)
         if action:
             self._check_backfill(argv)
         if argv[:2] == ["paper", "rescore"]:  # it rewrites the kept trades of frozen rules: run by hand after a model
@@ -184,10 +247,20 @@ class OperatorJobs:
         if argv[0] == "lab" and labs >= slots:
             raise PermissionError(f"{labs} lab{'s are' if labs > 1 else ' is'} already running; this machine runs "
                                   f"{slots} at a time")  # fmt: skip
+        if role is not None and argv[0] == "lab":
+            held, share = self._agent_labs(running), max(1, slots - 1)
+            if len(held) >= share:
+                who = ", ".join(f"job {jid} ({by})" for jid, by in held)
+                raise PermissionError(f"the research agents share {share} lab slot{'s' if share > 1 else ''} of this "
+                                      f"machine's {slots} and {who} holds it: read that lab's result when it ends, or "
+                                      "do the part of the idea that needs no lab")  # fmt: skip
         research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
         if len(research) >= self.max_jobs:
             raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")
         try:
-            return self.ops.op_run(argv)
+            started = self.ops.op_run(argv)
         except OpsError as exc:
             raise PermissionError(str(exc)) from exc
+        if role is not None:
+            self.record_test(now, role, str(idea), started, argv)
+        return started

@@ -11,6 +11,7 @@ from ..book.policy import BOOK_NAME_RE
 from ..book.watch import current_hits
 from ..config import OperatorConfig
 from ..positions import is_active
+from . import roles
 from .budget_switch import effective_analyst_every_h, effective_daily_usd, room_for_extra_analysis
 from .learning import last_postmortem_ts
 from .paths import OperatorPaths
@@ -135,6 +136,8 @@ def analyst_reason(paths: OperatorPaths, now: float, cfg: OperatorConfig, spent_
     needs room in the day (`spent_today`, room_for_extra_analysis): the last turns of the day are the operator's."""
     if daily_analysis_due(paths, now, cfg):
         return "daily analysis due"
+    if roles.on(cfg, paths):  # the research agents' turns stand where the analyses between the daily ones stood
+        return None
     every = effective_analyst_every_h(cfg, paths)
     last = last_analyst_ts(paths, now) if every > 0 else None
     if (
@@ -227,6 +230,9 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
     # a job a session started through the ops endpoint (a deploy, a check, a profile, its own lab) is read by whoever
     # started it; an analysis still finds a research job among the day's (snapshot.recent_jobs)
     ended = [j for j in snap.jobs_ended if loop_stage(j.get("argv")) is None and j.get("by") != "remote"]
+    if ended and roles.on(cfg, paths):  # a job a research agent started is read by that agent's next turn
+        theirs = roles.job_roles(paths)
+        ended = [j for j in ended if str(j.get("id")) not in theirs]
     if ended:
         events.append(
             "job ended: "

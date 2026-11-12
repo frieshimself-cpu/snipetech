@@ -16,7 +16,7 @@ from pathlib import Path
 from ..book.watch import watch_wallet
 from ..config import Config
 from ..ops import _pid_alive, redact
-from . import learning, live_test, outage, plain_sol, postmortem, risk_guard
+from . import learning, live_test, outage, plain_sol, postmortem, risk_guard, roles
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .commands import handle_command, poll_commands
@@ -240,8 +240,11 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
                     snap.errors.append(m)
 
             round_jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch)
+            # the research agents' turns are stages too, each its own job, only while they are switched on ([operator]
+            # role_agents, and not the owner's /budget every 0): off, this is the call it was before they existed
+            agents = {"agents": roles.ROLES} if roles.on(cfg, paths) else {}
             try:
-                start_standins(round_jobs, dict(snap.services or {}), t0, log=standin_log)
+                start_standins(round_jobs, dict(snap.services or {}), t0, log=standin_log, **agents)
             except Exception as exc:  # noqa: BLE001
                 standin_log(f"stand-in: failed: {type(exc).__name__}: {exc}")
             # the owner's wallet-wide guard (7 Nov 09:15): its trip is told once a day for each of its two stops, as a

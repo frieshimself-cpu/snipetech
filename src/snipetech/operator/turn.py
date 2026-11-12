@@ -12,14 +12,29 @@ from anthropic import AsyncAnthropic
 
 from ..config import Config
 from ..ops import redact
+from . import roles
 from .budget import Ledger
-from .budget_switch import effective_daily_usd, effective_max_tool_calls, effective_turn_usd
+from .budget_switch import (
+    effective_daily_usd,
+    effective_max_tool_calls,
+    effective_turn_usd,
+    role_share_usd,
+    role_turn_usd,
+)
 from .gate import Decision, analyst_update_target, mark_analyst_ran
 from .jobs import OperatorJobs
 from .learning import context as learning_context
 from .notify import Notifier
 from .paths import OperatorPaths, research_dir
-from .prompts import ANALYST_SYSTEM, HOUR_CACHE, OPERATOR_SYSTEM, message_content, user_message
+from .prompts import (
+    ANALYST_SYSTEM,
+    HOUR_CACHE,
+    OPERATOR_SYSTEM,
+    ROLE_SYSTEM,
+    message_content,
+    role_message,
+    user_message,
+)
 from .snapshot import Snapshot
 from .tools import NoteSink, make_operator_tools
 from .turnlog import TurnLog
@@ -88,35 +103,51 @@ def api_words(exc: anthropic.APIError) -> str:
 
 async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decision: Decision, ledger: Ledger,
                    notifier: Notifier, notes: NoteSink, *, jobs: OperatorJobs, client: AsyncAnthropic | None = None,
-                   now: Callable[[], float] = time.time) -> dict:  # fmt: skip
+                   now: Callable[[], float] = time.time, role: str | None = None) -> dict:  # fmt: skip
+    """One turn. Without `role`: the operator's, the analyst's or a post-mortem, by `decision.mode`. With `role`
+    (operator/roles.py; `decision.mode` is the role): a research agent's turn, on the analyst's model with the role's
+    instructions and tools, cut off at the role's cap, its spend recorded under the role. It reads no inbox and
+    writes no day's report, and the analyst's cadence does not count from it."""
     op = cfg.operator
     started = now()
     turn_usd, max_calls = effective_turn_usd(cfg, paths), effective_max_tool_calls(cfg, paths)  # the owner's /budget
     analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
     mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
-    # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
-    update_of = analyst_update_target(paths, started, op) if decision.mode == "analyst" else None
-    ceiling = {"tool_calls": max_calls, "turn_usd": turn_usd, "spent_usd": ledger.spent_today(started),
-               "daily_usd": effective_daily_usd(cfg, paths), "minutes": TURN_WALL_SECS // 60}  # fmt: skip
-    inbox = _read_inbox(paths)
-    tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
+    if role is not None:
+        if decision.mode != role or role not in roles.ROLES:
+            raise ValueError(f"a research agent's turn runs in its own mode: {role!r}, not {decision.mode!r}")
+        mode, turn_usd, system_text = role, role_turn_usd(cfg, paths), ROLE_SYSTEM[role]
+        update_of, inbox = None, ""  # the day's report and the owner's inbox are the analyst's and the operator's
+        ceiling = {"tool_calls": max_calls, "turn_usd": turn_usd, "share_usd": role_share_usd(cfg, paths, role),
+                   "spent_usd": ledger.spent_today_by(started).get(role, 0.0)}  # fmt: skip
+        tools = make_operator_tools(svc, paths, jobs, op, notes, source=role, role=role)
+        learned = learning_context(paths, research=research_dir(jobs.repo), role=role)
+        content = role_message(role, snap, decision, learned=learned, table=_report_text(paths, roles.TABLES[role]),
+                               started_by=roles.job_roles(paths), ceiling=ceiling)  # fmt: skip
+    else:
+        system_text = ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM
+        # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
+        update_of = analyst_update_target(paths, started, op) if decision.mode == "analyst" else None
+        ceiling = {"tool_calls": max_calls, "turn_usd": turn_usd, "spent_usd": ledger.spent_today(started),
+                   "daily_usd": effective_daily_usd(cfg, paths), "minutes": TURN_WALL_SECS // 60}  # fmt: skip
+        inbox = _read_inbox(paths)
+        tools = make_operator_tools(svc, paths, jobs, op, notes, source=decision.mode if analyst else "operator")
+        # the research record comes from the checkout the round runs from, where every deploy brings the research
+        # rounds' reports. No agent read them before 8 Nov: 7 Nov 21:16-23:16 the analyst froze two creator-0 hunts
+        # that round 3 (8 Nov 00:00) showed lose on unseen tape
+        learned = learning_context(paths, book=cfg.book, research=research_dir(jobs.repo))
+        text = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
+        # an update turn carries the day's report itself, in blocks the hour's cache serves (prompts.message_content)
+        content = message_content(text, update_of, _report_text(paths, update_of))
     client = client or AsyncAnthropic()
-    # the research record comes from the checkout the round runs from, where every deploy brings the research rounds'
-    # reports. No agent read them before 8 Nov: 7 Nov 21:16-23:16 the analyst froze two creator-0 hunts that round 3
-    # (8 Nov 00:00) showed lose on unseen tape
-    learned = learning_context(paths, book=cfg.book, research=research_dir(jobs.repo))
-    text = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
-    # an update turn carries the day's report itself, in blocks the hour's cache serves (prompts.message_content)
-    content = message_content(text, update_of, _report_text(paths, update_of))
+    big = analyst or role is not None  # the research thinking runs on the analyst's model
     runner = client.beta.messages.tool_runner(
-        model=op.analyst_model if analyst else op.model,
-        max_tokens=op.analyst_max_tokens if analyst else op.max_tokens,
+        model=op.analyst_model if big else op.model,
+        max_tokens=op.analyst_max_tokens if big else op.max_tokens,
         # the tools and the instructions are the same from turn to turn and turns come 15-30 minutes apart: in the
         # five-minute cache every turn wrote them again at the write price; in the hour's the next turn reads them
         # (11 Nov, the pricing page: a read is a fortieth of the input price on the analyst's model)
-        system=[
-            {"type": "text", "text": ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM, "cache_control": dict(HOUR_CACHE)}
-        ],
+        system=[{"type": "text", "text": system_text, "cache_control": dict(HOUR_CACHE)}],
         tools=tools,
         messages=[{"role": "user", "content": content}],
         # the current models return empty thinking text unless asked for its summary; the owner's live page shows it

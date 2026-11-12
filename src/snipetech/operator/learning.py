@@ -22,6 +22,7 @@ from ..exits_menu import EXIT_MENU_VERSION
 from ..ops import redact
 from ..store import _LATEST_VERDICT, Store
 from .paths import OperatorPaths
+from .roles import MAX_OPEN_IDEAS, NAMES, ROLES, TABLE_CHARS, TABLES
 
 LESSONS_FILE = "lessons.md"
 LESSONS_HEADER = "# Lessons (append-only: when, who, n, the lesson | its evidence)\n\n"
@@ -35,7 +36,8 @@ STATUSES = ("open", "testing", "adopted", "rejected")
 OPEN = ("open", "testing")  # what is still to be decided; adopted and rejected ideas are closed
 ALWAYS_OWNER = ("live-test", "code")  # a live test spends SOL; a code change needs a coding session: the owner's yes
 IDEA_TEXT = {"title": 120, "why": 600, "test": 400, "expected": 300}  # each field's size cap in characters
-IDEA_FIELDS = ("id", *IDEA_TEXT, "kind", "status", "owner_needed", "priority")
+# role: whose queue a research idea is in (operator/roles.py); read it with role_of, which knows what none means
+IDEA_FIELDS = ("id", *IDEA_TEXT, "kind", "status", "owner_needed", "priority", "role")
 DEFAULT_PRIORITY = 3  # 1 (low) to 5 (high): the agent's own estimate of what testing the idea is worth
 MAX_IDEAS = 100
 
@@ -241,16 +243,34 @@ def _validated(fields: dict[str, Any]) -> dict[str, Any]:
         clean["priority"] = priority
     if "id" in given:
         clean["id"] = str(given["id"]).strip()
+    if "role" in given:
+        clean["role"] = _choice(given["role"], "role", ROLES)
     return clean
 
 
+def role_of(idea: dict[str, Any]) -> str | None:
+    """Whose queue an idea is in: the role it names; the tester's for a research idea that names none (every idea
+    written before the roles existed); nobody's for an idea of kind code, config or live-test, whatever it names: that
+    one waits for the cloud session or the owner."""
+    if idea.get("kind") != "research":
+        return None
+    role = idea.get("role")
+    return role if role in ROLES else "tester"
+
+
 def upsert_idea(
-    paths: OperatorPaths, fields: dict[str, Any], *, source: str, now: float | None = None
+    paths: OperatorPaths, fields: dict[str, Any], *, source: str, now: float | None = None, role: str | None = None
 ) -> dict[str, Any]:
     """Add an idea, or update one (by `id`, else by the same title): fields not given are kept. A new idea needs a
     title, why (the evidence), test (how to confirm it), expected (the effect) and kind. Live tests and code changes
-    always need the owner. Raises ValueError with what to fix; nothing is written then."""
+    always need the owner. Raises ValueError with what to fix; nothing is written then.
+
+    `role`: the role whose turn writes (None for every other writer, which none of this holds). A role changes only
+    its own queue's ideas and the ideas in nobody's; it may add an idea to any queue (the field `role`: how work is
+    handed on), a research idea it adds without one is its own, and no queue takes an idea from a role's turn while
+    it holds MAX_OPEN_IDEAS open ones."""
     clean = _validated(dict(fields or {}))
+    acting = _choice(role, "role", ROLES) if role is not None else None
     ts = _iso(time.time() if now is None else now)
     with _ideas_lock(paths):
         ideas, readable = _load_ideas(paths)
@@ -263,7 +283,14 @@ def upsert_idea(
         else:
             key = _title_key(clean.get("title", ""))
             idea = next((i for i in ideas if key and _title_key(i.get("title", "")) == key), None)
+        was_open_in = None  # the queue the idea already counts in
         if idea is not None:
+            owner = role_of(idea)
+            if acting and owner not in (None, acting):
+                raise ValueError(f"{idea.get('id')} is in the {owner}'s queue: only the {owner} changes, moves or "
+                                 "closes it. To hand it work, add an idea of your own with role set to its "
+                                 "queue")  # fmt: skip
+            was_open_in = owner if idea.get("status") in OPEN else None
             idea.update({k: v for k, v in clean.items() if k != "id"}, updated=ts)
         else:
             missing = [k for k in (*IDEA_TEXT, "kind") if k not in clean]
@@ -279,9 +306,19 @@ def upsert_idea(
                     "status": clean.get("status", "open"), "owner_needed": clean.get("owner_needed", False),
                     "priority": clean.get("priority", DEFAULT_PRIORITY), "created": ts, "updated": ts,
                     "source": re.sub(r"[^a-z-]", "", str(source).lower()) or "agent"}  # fmt: skip
+            if "role" in clean:
+                idea["role"] = clean["role"]
+            elif acting and idea["kind"] == "research":  # a role's own research idea is its own queue's
+                idea["role"] = acting
             ideas.append(idea)
         if idea.get("kind") in ALWAYS_OWNER:
             idea["owner_needed"] = True
+        queue = role_of(idea) if idea.get("status") in OPEN else None
+        if acting and queue and queue != was_open_in:  # it would newly count in that queue
+            held = sum(1 for i in ideas if i is not idea and i.get("status") in OPEN and role_of(i) == queue)
+            if held >= MAX_OPEN_IDEAS:
+                raise ValueError(f"the {queue}'s queue already holds {held} open ideas (the limit is "
+                                 f"{MAX_OPEN_IDEAS}): close one with its result or merge two before adding")  # fmt: skip
         _write_ideas(paths, ideas)
         return dict(idea)
 
@@ -302,10 +339,13 @@ def _rank_key(idea: dict[str, Any]) -> tuple:
             -_epoch(idea.get("updated")))  # fmt: skip
 
 
-def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | None = None) -> list[dict[str, Any]]:
+def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | None = None,
+               role: str | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """`open` (the default): the open and testing ideas, best first; `all`: every idea in the order they came;
-    or one status."""
+    or one status. With `role`, only that role's queue (role_of)."""
     ideas, _ = _load_ideas(paths)
+    if role is not None:
+        ideas = [i for i in ideas if role_of(i) == role]
     if status in (None, "all"):
         out = ideas
     elif status == "open":
@@ -315,11 +355,12 @@ def list_ideas(paths: OperatorPaths, status: str | None = "open", limit: int | N
     return out[: max(0, int(limit))] if limit is not None else out
 
 
-def untested(paths: OperatorPaths, limit: int = UNTESTED_IDEAS) -> list[dict[str, Any]]:
+def untested(paths: OperatorPaths, limit: int = UNTESTED_IDEAS, role: str | None = None) -> list[dict[str, Any]]:
     """The open ideas no job has tested yet and that need no yes from the owner: the highest priority first, then the
-    one that has waited longest."""
+    one that has waited longest. With `role`, only that role's queue."""
     ideas, _ = _load_ideas(paths)
-    rows = [i for i in ideas if i.get("status") == "open" and not i.get("owner_needed")]
+    rows = [i for i in ideas if i.get("status") == "open" and not i.get("owner_needed")
+            and (role is None or role_of(i) == role)]  # fmt: skip
     rows.sort(key=lambda i: (-_priority(i), _epoch(i.get("created"))))
     return rows[: max(0, int(limit))]
 
@@ -362,22 +403,50 @@ def book_line(book: Any) -> str:
     return "What the book does now (do not propose what is already so): " + "; ".join(parts) + "."
 
 
+def other_tables(paths: OperatorPaths, role: str) -> str:
+    """What a role's turn carries of the other roles' work: each one's table (operator/<name>.md), its first
+    TABLE_CHARS characters, scrubbed like any file these tools did not check; a line for a table not written yet."""
+    out = []
+    for other in ROLES:
+        if other == role:
+            continue
+        where = f"operator/{TABLES[other]}.md"
+        try:
+            text = (paths.root / f"{TABLES[other]}.md").read_text(errors="replace").strip()
+        except OSError:
+            text = ""
+        if not text:
+            out.append(f"The {NAMES[other]}'s table, {where}: not written yet")
+            continue
+        more = f" (its first {TABLE_CHARS:,} characters; read_file for the rest)" if len(text) > TABLE_CHARS else ""
+        out.append(f"The {NAMES[other]}'s table, {where}{more}:\n{_scrub(text[:TABLE_CHARS])}")
+    return "\n".join(out)
+
+
 def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,
-            max_chars: int = CONTEXT_MAX_CHARS, book: Any = None, research: Path | None = None) -> str:  # fmt: skip
+            max_chars: int = CONTEXT_MAX_CHARS, book: Any = None, research: Path | None = None,
+            role: str | None = None) -> str:  # fmt: skip
     """The block every turn's message carries: the book's current settings (when given), the last lessons (newest
     last) and the best open ideas, each line cut short and the whole capped, so a long memory never crowds out the
     round; then, when `research` names docs/research (research_dir in operator/paths.py), the research record on its
-    own cap."""
+    own cap. For a `role`'s turn the ideas are its own queue's, and the other roles' tables follow on their own cap
+    (other_tables)."""
     lines = [book_line(book)] if book is not None else []
     lines.append("What the agents learned so far (operator/lessons.md, newest last; read_lessons for more):")
     rows = read_lessons(paths, lessons)
     lines += [_cut(f"- {x['ts'][:16]}Z {x['source']}, n {x['n']}: {x['text']} (evidence: {x['evidence']})",
                    CONTEXT_LINE) for x in rows] or ["- nothing yet"]  # fmt: skip
-    lines.append("Open ideas, best first (operator/ideas.json; list_ideas for all, upsert_idea to change one):")
+    if role is None:
+        lines.append("Open ideas, best first (operator/ideas.json; list_ideas for all, upsert_idea to change one):")
+    else:
+        lines.append(f"Your queue, best first (the {NAMES[role]}'s open ideas in operator/ideas.json; list_ideas for "
+                     "more and for the other queues, upsert_idea to change one of yours or to add to any "
+                     "queue):")  # fmt: skip
     lines += [_cut(f"- {i.get('id')} [{i.get('kind', '?')}, {i.get('status')}, priority {_priority(i)}"
                    f"{', needs the owner' if i.get('owner_needed') else ''}] {_title(i)}. Why: {i.get('why', '?')} "
-                   f"Test: {i.get('test', '?')}", CONTEXT_LINE) for i in list_ideas(paths, "open", limit=ideas)] or ["- none yet"]  # fmt: skip
-    waiting = untested(paths)
+                   f"Test: {i.get('test', '?')}", CONTEXT_LINE)
+              for i in list_ideas(paths, "open", limit=ideas, role=role)] or ["- none yet"]  # fmt: skip
+    waiting = untested(paths, role=role)
     if waiting:
         lines.append(
             "Not tested yet (open, no yes from the owner needed; the highest priority, then the longest wait):"
@@ -385,6 +454,8 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
         lines += [_cut(f"- {i.get('id')} [priority {_priority(i)}, open since {str(i.get('created') or '?')[:10]}] "
                        f"{_title(i)}. Test: {i.get('test', '?')}", UNTESTED_LINE) for i in waiting]  # fmt: skip
     memory = _cut("\n".join(lines), max_chars)
+    if role is not None:
+        memory += "\n" + other_tables(paths, role)
     record = research_record(research)
     return f"{memory}\n{record}" if record else memory
 
@@ -523,8 +594,29 @@ def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS)
     return _cut("\n".join(top + lesson_lines + older_lines), max_chars)
 
 
-def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:
-    """The owner's digest: what was learned since the last digest and what is tested next, in plain words."""
+def _role_digest(paths: OperatorPaths, week: dict[str, Any]) -> list[str]:
+    """The digest's lines while the research agents are on: one next test for each (the first idea of its queue nobody
+    tested, else its best open one), what waits for the owner's yes, and the week's counts (roles.week_counts)."""
+    out = ["Testing next, one for each research agent:"]
+    for role in ROLES:
+        first = (untested(paths, limit=1, role=role) or list_ideas(paths, "open", limit=1, role=role) or [None])[0]
+        flag = " (being tested)" if first and first.get("status") == "testing" else ""
+        out.append(_cut(f"- {role}: {_title(first) + flag if first else 'nothing in its queue'}", DIGEST_LINE))
+    yours = [i for i in list_ideas(paths, "open") if i.get("owner_needed")][:DIGEST_IDEAS]
+    if yours:
+        out.append("Waits for your yes:")
+        out += [_cut(f"- {_title(i)}", DIGEST_LINE) for i in yours]
+    counts = f"This week: {int(week.get('tests') or 0)} tests started"
+    if week.get("frozen") is not None and week.get("passed") is not None:
+        counts += (f", {int(week['frozen'])} rules frozen for the forward paper test, {int(week['passed'])} passing it "
+                   "(30+ trades, total and lower bound above zero)")  # fmt: skip
+    return out + [counts]
+
+
+def digest_lines(paths: OperatorPaths, since: float, now: float, week: dict[str, Any] | None = None) -> list[str]:
+    """The owner's digest: what was learned since the last digest and what is tested next, in plain words. `week`
+    (roles.week_counts, given while the research agents are on): the next test is named for each agent, with what
+    waits for the owner's yes and the week's counts."""
     hm = time.strftime("%H:%M", time.gmtime(since))
     new = [x for x in _all_lessons(paths) if since < _epoch(x["ts"]) <= now]
     if new:
@@ -535,6 +627,8 @@ def digest_lines(paths: OperatorPaths, since: float, now: float) -> list[str]:
             out.append(f"- and {len(new) - DIGEST_LESSONS} more in operator/lessons.md")
     else:
         out = [f"What it learned: nothing new since {hm} UTC"]
+    if week is not None:
+        return out + _role_digest(paths, week)
     top = list_ideas(paths, "open", limit=DIGEST_IDEAS)
     if not top:
         return out + ["Testing next: no open ideas yet"]

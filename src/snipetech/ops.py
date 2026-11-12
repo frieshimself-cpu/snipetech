@@ -193,16 +193,19 @@ UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # 
 
 def holds_deploy(argv: list[str]) -> bool:
     """Whether a running job with this command line should end before an update goes out (`HOLDS_DEPLOY`; a profiled
-    job is the job it profiles; `research` does but for its idle picker, `research next`). The backfill from the RPC,
-    `history amm-backfill`, holds nothing since 12 Nov evening: it writes trade rows for an hour or more and reports
-    no number; the analyst's first run held a deploy for over 42 minutes while the fix it was itself waiting for sat
-    pushed. Its process has loaded its decoder by its first rows and keeps it (it survives the restart, as every job
-    does), and it goes on where it stopped."""
+    job is the job it profiles; `research` does but for its idle picker, `research next`; of `operate` only a
+    research agent's turn, `operate agent --role <role>`, which the round starts as a job while the agents are on: it
+    is mid-run as the round's own unit is). The backfill from the RPC, `history amm-backfill`, holds nothing since
+    12 Nov evening: it writes trade rows for an hour or more and reports no number; the analyst's first run held a
+    deploy for over 42 minutes while the fix it was itself waiting for sat pushed. Its process has loaded its decoder
+    by its first rows and keeps it (it survives the restart, as every job does), and it goes on where it stopped."""
     command = list(argv[1:] if argv[:1] == ["--profile"] else argv)
     if not command:
         return False
     if command[0] == "research":
         return command[1:2] != ["next"]
+    if command[0] == "operate":  # of the round's own command only a research agent's turn, a job that runs for minutes
+        return command[1:2] == ["agent"]
     return command[0] in HOLDS_DEPLOY
 
 

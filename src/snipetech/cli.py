@@ -908,16 +908,21 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="snipers=N,held=M",
         help="write operator/expected.json (what 'all quiet' means during a live test) and exit",
     )
-    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest", "oktech", "idea"],
+    sp.add_argument("action", nargs="?", choices=["budget", "risk", "autotest", "oktech", "idea", "agent"],
                     help="budget: show or set what the agents may spend (operator/BUDGET, the owner's; no SSH needed); "
                          "risk: show or set the wallet-wide guard (operator/RISK, the owner's); autotest: show, or turn "
                          "on or off, the owner's standing yes for a live test that starts by itself "
                          "(operator/AUTOTEST); oktech: show or record what OKTech has confirmed (operator/OKTECH, the "
                          "owner's); idea: hand the server's agents a piece of research (operator/ideas.json), which "
-                         "they run on the owner's Anthropic API credits")  # fmt: skip
+                         "they run on the owner's Anthropic API credits; agent: one turn of a research agent (--role "
+                         "scout, tester, fees or oktech) when something is new for it; the round starts these itself "
+                         "while [operator] role_agents is on, and with it off this does nothing")  # fmt: skip
     for flag in ("id", "status", "title", "why", "test", "expected", "kind", "priority"):
         sp.add_argument(f"--{flag}", dest=f"idea_{flag}",
                         help=f"idea: its {flag}")  # fmt: skip
+    sp.add_argument("--role", dest="idea_role",
+                    help="idea: the research agent whose queue it goes to (scout, tester, fees, oktech; a research "
+                         "idea without one is the tester's); agent: whose turn to run")  # fmt: skip
     sp.add_argument("--dev-max-zero", dest="dev_max_zero",
                     help="oktech: 'confirmed' once OKTech has confirmed that Hunt's maxDevBuySol 0 skips every launch "
                          "whose creator bought anything, with the owner's word in chat and --words (until then no hunt "
@@ -3203,7 +3208,7 @@ def _main(args) -> int:
             from .operator.learning import upsert_idea
             from .operator.paths import OperatorPaths as _Paths
 
-            keys = ("id", "status", "title", "why", "test", "expected", "kind", "priority")
+            keys = ("id", "status", "title", "why", "test", "expected", "kind", "priority", "role")
             fields = {k: getattr(args, f"idea_{k}") for k in keys}
             fields = {k: v for k, v in fields.items() if v is not None}
             try:
@@ -3212,6 +3217,11 @@ def _main(args) -> int:
                 raise SystemExit(f"operate idea: not added: {exc}") from None
             print(json.dumps({"id": idea.get("id"), "title": idea.get("title"), "status": idea.get("status")}))
             return 0
+        if args.action == "agent":  # one turn of a research agent (operator/roles.py), run further down
+            from .operator import roles
+
+            if args.idea_role not in roles.ROLES:
+                raise SystemExit(f"operate agent: --role is one of {', '.join(roles.ROLES)}")
         if args.action == "risk" or any(v is not None for v in (args.day_stop, args.risk_floor)):
             return risk_guard.risk_cli(cfg, args)
         if (
@@ -3252,6 +3262,11 @@ def _main(args) -> int:
                                                capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip
         svc = Service(cfg)
         try:
+            if args.action == "agent":  # nothing while the agents are off; exit 1 only when a turn failed
+                out = asyncio.run(roles.run_role(cfg, svc, args.idea_role, repo=repo, branch=branch,
+                                                 dry_run=args.dry_run))  # fmt: skip
+                print(json.dumps(out, default=str))
+                return 1 if out.get("failed") else 0
             return asyncio.run(operate(cfg, svc, analyst=args.analyst, dry_run=args.dry_run, repo=repo, branch=branch))
         finally:
             svc.store.close()

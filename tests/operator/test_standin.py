@@ -295,3 +295,97 @@ def test_a_stage_due_every_half_hour_runs_every_second_round_not_every_third():
     score = ("rescore",)
     assert score in [tuple(a) for a in due_standins({}, [_meta(score, NOW - 4 * 15 * 60 + 40)], NOW)]
     assert score not in [tuple(a) for a in due_standins({}, [_meta(score, NOW - 3 * 15 * 60 + 40)], NOW)]
+
+
+# -- the research agents' turns (operator/roles.py): started by the round while they are switched on -------------------
+
+AGENTS = ("scout", "tester", "fees", "oktech")
+
+
+def _agent(role):
+    return ("operate", "agent", "--role", role)
+
+
+def test_role_turns_start_each_round_after_the_idle_research():
+    """Each role's turn is a stage of its own, started every round as its own job with its own lock; the round does
+    not wait for it. They come right after the idle research has looked, so they never take its place in a round."""
+    from snipetech.operator.standin import STAGE_LIMIT_SECS
+    from snipetech.ops import ALLOWED
+
+    argvs = [tuple(a) for a in due_standins({}, [], NOW, agents=AGENTS)]
+    at = argvs.index(("research", "next"))
+    assert argvs[at + 1 : at + 5] == [_agent(r) for r in AGENTS] and argvs[at + 5] == ("research", "digest")
+    assert [a for a in argvs if a[:2] != ("operate", "agent")] == [tuple(a) for a in due_standins({}, [], NOW)]
+    services = {unit: "active" for _, unit, _ in STANDIN if unit}
+    assert [_agent(r) for r in AGENTS] == [a for a in map(tuple, due_standins(services, [], NOW, agents=AGENTS))
+                                           if a[:1] == ("operate",)]  # fmt: skip
+    assert "operate" in ALLOWED
+    for role in AGENTS:  # ended by the job runner after 26 minutes: a turn cuts itself off at 24
+        assert STAGE_LIMIT_SECS[" ".join(_agent(role))] == 26 * 60
+    one_round_ago = [_meta(_agent(r), NOW - 15 * 60 + 40) for r in AGENTS]
+    assert all(_agent(r) in [tuple(a) for a in due_standins({}, one_round_ago, NOW, agents=AGENTS)] for r in AGENTS)
+    assert _agent("scout") not in [tuple(a) for a in due_standins({}, [_meta(_agent("scout"), NOW - 300)], NOW,
+                                                                  agents=AGENTS)]  # fmt: skip
+
+
+def test_role_turn_is_not_started_while_its_last_one_runs():
+    running = _meta(_agent("tester"), NOW - 20 * 60, running=True)
+    argvs = [tuple(a) for a in due_standins({}, [running], NOW, agents=AGENTS)]
+    assert _agent("tester") not in argvs
+    assert _agent("scout") in argvs and _agent("fees") in argvs and _agent("oktech") in argvs  # each role by itself
+
+
+def test_with_the_agents_off_no_role_turn_is_a_stage_to_start():
+    """Off is the default: the stages a round starts are the ones it started before the agents existed, row for row."""
+    assert not any(a[0] == "operate" for a in due_standins({}, [], NOW))
+    assert due_standins({}, [], NOW, agents=()) == due_standins({}, [], NOW)
+    assert not any(row[0][0] == "operate" for row in STANDIN) and len(STANDIN) == 13
+
+
+def test_a_role_turn_is_a_loop_stage_like_the_rounds_others():
+    """So its clean end wakes no operator, it does not count against the research jobs an agent may run, the job list
+    an agent reads leaves it out, and its files are pruned with the other stages'."""
+    from snipetech.operator.standin import loop_stage
+
+    assert loop_stage(["operate", "agent", "--role", "scout"]) == "operate agent --role scout"
+    assert loop_stage(["operate", "agent", "--role", "fees", "--dry-run"]) == "operate agent --role fees"
+    for other in (["operate"], ["operate", "budget"], ["operate", "idea", "--role", "scout"], ["operate", "--analyst"]):
+        assert loop_stage(other) is None, other
+
+
+def test_the_round_starts_the_role_turns_only_while_the_agents_are_on(tmp_path, monkeypatch):
+    import asyncio
+
+    from snipetech.config import Config
+    from snipetech.operator.budget_switch import set_budget
+    from snipetech.operator.paths import OperatorPaths
+    from snipetech.operator.run import operate
+    from snipetech.store import Store
+
+    data = tmp_path / "data"
+    st = Store(data / "snipetech.db")
+    cfg = Config()
+    cfg.storage.db_path = str(data / "snipetech.db")
+    cfg.operator.wallet = "W"
+    asked = []
+    monkeypatch.setattr("snipetech.operator.run.start_standins",
+                        lambda jobs, services, now, log=None, **kw: asked.append(kw) or [])  # fmt: skip
+
+    class Svc:
+        store = st
+
+    kw = {"repo": tmp_path, "branch": "b", "now": lambda: NOW, "balances": lambda w: (1.0, 0.0, []),
+          "services": lambda: {"snipetech-tape": "active", "snipetech-ops": "active"}, "disk_free_gb": lambda: 100.0,
+          "turn": lambda *a, **k: {"usd": 0, "tool_calls": 0, "stopped": "end_turn", "notes": 0},
+          "send": lambda t: True}  # fmt: skip
+    try:
+        asyncio.run(operate(cfg, Svc(), **kw))
+        assert asked == [{}]  # off: the call the round made before the agents existed, argument for argument
+        cfg.operator.role_agents = True
+        asyncio.run(operate(cfg, Svc(), **kw))
+        assert asked[1] == {"agents": AGENTS}
+        set_budget(OperatorPaths(data), cfg, {"analyst_every_h": 0}, "telegram", NOW)  # the owner's /budget every 0
+        asyncio.run(operate(cfg, Svc(), **kw))
+        assert asked[2] == {}
+    finally:
+        st.close()

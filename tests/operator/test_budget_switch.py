@@ -226,3 +226,67 @@ def test_the_budget_line_says_what_the_alert_rounds_keep(paths):
     set_budget(paths, OperatorConfig(), {"daily_usd": 200, "turn_usd": 6}, "telegram", NOW)
     assert "less than 18 $ of the day is left, so the alert rounds keep 12 $" in budget_line(OperatorConfig(), paths, 0)
     assert room_for_extra_analysis(OperatorConfig(), paths, 182.0)
+
+
+# -- the research agents' shares of the day (operator/roles.py) ------------------------------------------------------
+
+ROLES_ON = OperatorConfig(role_agents=True)
+
+
+def test_the_roles_switch_is_the_config_and_the_owners_every_zero(paths):
+    """Off by default: a deploy of the agents' code changes nothing until [operator] role_agents is true. On, the
+    owner's `/budget every 0` (the analysis once a day only) switches them off again without a deploy."""
+    from snipetech.operator.roles import on
+
+    assert on(OperatorConfig(), paths) is False and on(Config(), paths) is False
+    assert on(ROLES_ON, paths) is True
+    cfg = Config()
+    cfg.operator.role_agents = True
+    assert on(cfg, paths) is True  # the whole config or its [operator] part
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 0}, "telegram", NOW)
+    assert on(ROLES_ON, paths) is False
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 0.25}, "telegram", NOW)
+    assert on(ROLES_ON, paths) is True
+    set_budget(paths, OperatorConfig(), {"analyst_every_h": 0.25}, "telegram", NOW)
+    assert on(OperatorConfig(), paths) is False  # the owner's budget alone never switches them on
+
+
+def test_role_stops_at_its_share(paths):
+    from snipetech.operator.budget_switch import role_share_usd, room_for_role
+
+    set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6}, "telegram", NOW)
+    assert [role_share_usd(ROLES_ON, paths, r) for r in ("scout", "tester", "fees", "oktech")] == [100, 175, 100, 50]
+    assert room_for_role(ROLES_ON, paths, "scout", spent_today=120.0, spent_by_role=99.99)
+    assert not room_for_role(ROLES_ON, paths, "scout", spent_today=120.0, spent_by_role=100.0)
+    assert room_for_role(ROLES_ON, paths, "tester", spent_today=300.0, spent_by_role=174.0)  # its own share, not theirs
+    assert not room_for_role(ROLES_ON, paths, "oktech", spent_today=60.0, spent_by_role=50.0)
+    # at the config's 15 $ a day the shares are 3, 5.25, 3 and 1.5 $
+    clear_budget(paths)
+    assert role_share_usd(ROLES_ON, paths, "oktech") == pytest.approx(1.5)
+    assert not room_for_role(ROLES_ON, paths, "oktech", spent_today=2.0, spent_by_role=1.5)
+
+
+def test_no_role_turn_inside_the_alert_reserve(paths):
+    """The last 15 % of the day is for the alert rounds, the daily analysis and the post-mortems: no role's turn
+    starts there, whatever is left of its own share."""
+    from snipetech.operator.budget_switch import room_for_role
+
+    set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6}, "telegram", NOW)
+    assert room_for_role(ROLES_ON, paths, "tester", spent_today=424.99, spent_by_role=10.0)
+    assert not room_for_role(ROLES_ON, paths, "tester", spent_today=425.0, spent_by_role=10.0)
+    assert not room_for_role(ROLES_ON, paths, "scout", spent_today=499.0, spent_by_role=0.0)
+
+
+def test_budget_line_names_the_shares(paths):
+    from snipetech.operator.budget_switch import budget_line
+
+    off = budget_line(OperatorConfig(), paths, 3.2)
+    assert "share" not in off and "scout" not in off  # with the agents off the line is as it was
+    set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6, "analyst_every_h": 0.25}, "telegram", NOW)
+    line = budget_line(ROLES_ON, paths, 3.2)
+    assert ("the research agents share the day: scout 20 % (100 $), tester 35 % (175 $), fees 20 % (100 $), oktech "
+            "10 % (50 $), each turn at most 5 $; the last 15 % (75 $) is kept for the alert rounds, the daily "
+            "analysis and the post-mortems; /budget every 0 switches the research agents off") in line  # fmt: skip
+    assert line.startswith("Claude budget: 500 $ a day (3.20 $ spent today)")
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 0}, "telegram", NOW)
+    assert "share the day" not in budget_line(ROLES_ON, paths, 3.2)  # switched off by the owner: nothing to name

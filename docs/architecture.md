@@ -446,3 +446,72 @@ What changed on 8 Nov (the review of the breakdown):
   ones; fetching those the tape lacks and decoding them (as `Ingestor.ingest` does) would close it, but it writes to
   the tape from measure, and `Ingestor.ingest` skips only signatures in `seen_sigs`, which the recorder never marks,
   so it would fetch every landed transaction of ours again each run.
+
+## The four research agents: built on 12 Nov, switched off
+
+The owner asked on 12 Nov for specialised agents ("lookign for wallets", "an agent soley to analyse that specific
+wallet", "an agent that masters oktech's features an how to apply them"). Four are built. **None runs yet.** The
+switch is `[operator] role_agents` in `config.py`, and it is `False`. The server's settings file holds no value for
+it, so the default in the code is what the server runs. With it off, nothing below starts, and the round, the gate,
+the analyst and the deploy guard do what they did before (tests pin each: `tests/operator/test_roles.py`,
+`test_switched_off_the_server_runs_as_it_did`). The design is
+`docs/superpowers/specs/2026-11-12-specialised-agents-design.md`; its last section says what was built differently.
+
+**Who they are** (`operator/roles.py`). Each is the analyst with a shorter list.
+
+| | wallet scout | strategy tester | fee and place analyst | OKTech features analyst |
+|---|---|---|---|---|
+| in code | `scout` | `tester` | `fees` | `oktech` |
+| question | Who is worth following, and who are they? | Which rule pays where we land? | What is a place worth, and which bid wins it? | Which OKTech feature would make a proven rule land or sell better, and what is its cheapest test? |
+| may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label`, `place-bids --each`, `history amm-backfill` | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
+| its table | `operator/scout-facts.md` | `operator/tester-rules.md` | `operator/fees-bids.md` | `operator/oktech-facts.md` |
+| share of the day's dollars | 20 % | 35 % | 20 % | 10 % |
+
+The last 15 % of the day is the reserve for the alert rounds, the daily analysis and the post-mortems. A role's turn
+stops at 5 $, or at the owner's dollars a turn when that is less.
+
+**What no role can do.** No role has a tool or a command that trades, moves SOL, touches a wallet, the book, the
+guard, the budget or a test, or changes a setting. This is kept by code, not by instructions:
+
+- A role's tools are a subset of the analyst's sixteen (`roles.ROLE_TOOLS`); none is new.
+- `start_job` refuses the owner's commands (`operate`, `oktech`, `sweep`, `unwrap`, `book`, `strategist`, `config`)
+  to every agent, as before. For a role it also refuses every command that is not its role's, and says whose it is.
+- Every job a role starts names an open idea of its own queue. Each start is one line in `operator/tests.jsonl`
+  (when, role, idea, job, command).
+- A role's note is always "info", one a turn, with its name in front. Nothing of a role's goes to Telegram.
+- A role writes two reports: its table and its journal (`<role>-journal-<date>`). It cannot write the day's analysis.
+- The OKTech analyst reads three documents of the checkout (`docs/oktech-playbook.md`, `docs/oktech-features.md`,
+  `docs/oktech-settings.md`) and starts no lab and no freeze. A live test it wants is an idea of kind `live-test`
+  that names the wallet, the size, the cap, the duration and the stop rule. It waits for the owner's yes.
+
+**Queues.** An idea has a `role` field (`operator/ideas.json`). A research idea without one is the tester's. An idea
+of kind code, config or live-test is in nobody's queue and waits for the cloud session or the owner. A role may add
+an idea to any queue: that is how work is handed on. Only a queue's own role changes or closes its ideas. A queue
+takes no new idea from a role's turn while it holds 15 open ones. From the cloud session:
+`snipetech operate idea --role scout ...` puts an idea in a queue, and `--id I22 --role scout` moves one.
+
+**When a turn runs.** While the agents are on, the round starts `snipetech operate agent --role <role>` for each role
+every 15 minutes, right after the idle research, each as its own job with its own lock
+(`operator/agent-<role>.lock`). The round does not wait for them. A turn runs only when something is new for its role
+(`roles.role_due`): a job it started has ended; it was handed an idea; its queue holds an idea nobody tested and none
+of its jobs runs; another role's table changed; its own news came (new verdicts or candidates for the scout; the
+strategy search ended or a paper rule reached 30 more trades for the tester; a new fill of ours for the fee and the
+OKTech analysts); or three hours have passed. Otherwise it writes one log line and costs nothing. After two turns in
+a row that started no test and closed no idea, a role waits an hour, unless a job of its own has ended. A turn does
+not start when the role's share of the day is spent or the day is inside its reserve. Each role's last turn is in
+`operator/agents.json`: when, why, what it cost, how it ended, and what the role has spent of its share today
+(`spent_usd` of `share_usd`). Every turn and every skipped turn is a line in `operator/log.txt` that starts
+`agent <role>:`.
+
+**What changes for the others while they are on.** The analyst keeps the daily analysis (after 06:00 UTC) and the
+post-mortem of live trades, with its instructions and tools unchanged. It gets no analysis between the daily ones:
+the roles' turns stand there. A job a role started does not call the operator when it ends. The roles together hold
+one of the machine's two lab slots, so `qualify`, the strategy search and the freeze keep the other. A role's turn
+holds a deploy as the round does (`ops.holds_deploy`). The six-hourly digest names one next test for each role, what
+waits for the owner's yes, and three counts of the week: tests started, rules frozen, rules passing forward.
+
+**The two switches.** On: `role_agents = True` in `config.py` (and in `tests/test_config_drift.py`), then a deploy.
+Off without a deploy: the owner's `/budget every 0`, which also means the analysis once a day only.
+
+**Not measured.** No role has run a turn against the real model or on the server. Tests an hour, dollars a turn and
+how often a role skips are the design's estimates until a day of numbers exists.
