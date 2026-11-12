@@ -28,21 +28,30 @@ def _progress(msg: str) -> None:
     print(f"  … {msg}", file=sys.stderr, flush=True)
 
 
+def _discover_sources(cfg) -> dict:
+    """The sources `discover run --sources` knows by name, each as a way to make it."""
+    from .discovery.sources import (
+        BirdeyeSource,
+        CoinFirstBuyersSource,
+        OwnerSource,
+        SolanaTrackerSource,
+        TapeSource,  # fmt: skip
+        VybeSource,
+        WinnersSource,
+    )
+
+    return {"tape": TapeSource, "winners": WinnersSource, "owner": OwnerSource,
+            "solanatracker": lambda: SolanaTrackerSource(90), "solanatracker30": lambda: SolanaTrackerSource(30, pages=3),
+            "birdeye": lambda: BirdeyeSource(top_coins=cfg.birdeye.top_coins), "coinfirst": CoinFirstBuyersSource,
+            "vybe": VybeSource}  # fmt: skip
+
+
 def _discover(args, cfg) -> int:
     """`snipetech discover run`: build the data clients the environment has keys for, run every source, print the summary."""
     import time
 
     from .discovery.run import run_discover
-    from .discovery.sources import (
-        BirdeyeSource,
-        CoinFirstBuyersSource,
-        DiscoverContext,
-        OwnerSource,
-        SolanaTrackerSource,
-        TapeSource,  # fmt: skip
-        VybeSource,
-        default_sources,
-    )
+    from .discovery.sources import DiscoverContext, default_sources
     from .service import Service
 
     svc = Service(cfg)
@@ -69,9 +78,7 @@ def _discover(args, cfg) -> int:
             ctx.vybe = Vybe(budget_requests=ctx.budgets["vybe"], counter=_usage(svc, "vybe"))
             clients.append(ctx.vybe)
         if args.sources:
-            table = {"tape": TapeSource, "owner": OwnerSource, "solanatracker": lambda: SolanaTrackerSource(90),
-                     "solanatracker30": lambda: SolanaTrackerSource(30, pages=3), "birdeye": lambda: BirdeyeSource(top_coins=cfg.birdeye.top_coins),
-                     "coinfirst": CoinFirstBuyersSource, "vybe": VybeSource}  # fmt: skip
+            table = _discover_sources(cfg)
             sources = [table[n.strip()]() for n in args.sources.split(",") if n.strip()]
         else:
             sources = default_sources(ctx)
@@ -863,14 +870,20 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--dry-run", action="store_true", help="next: say what it would start; digest: print, send nothing")
     sp = cmd(
         "winners",
-        "how the winners win: every wallet's closed round trips in coins launched in the window, ranked by realized "
-        "SOL, with its style (slots after the create, hold, pieces sold); reads the tape copy (a research job)",
+        "who is winning on the tape, found without a wallet list: every busy wallet's closed round trips in the window, "
+        "ranked by the SOL it made after fees, each marked bot or trader (round trips a day, hold, buys right behind a "
+        "known wallet or right after a create), with a lower bound a round trip; its own fills, not a copy's; reads "
+        "the tape copy twice by time (a research job)",
     )
     sp.add_argument("--hours", type=float, default=72.0)
-    sp.add_argument("--min-trips", type=int, default=30, help="closed round trips a wallet needs to be ranked")
+    sp.add_argument("--min-trips", type=int, default=20, help="closed round trips a wallet needs to be ranked")
+    sp.add_argument("--min-sol-per-day", type=float, default=None, help="only wallets that made this much SOL a day")
+    sp.add_argument("--kind", choices=["bot", "trader"], default=None, help="only the bots, or only the traders")
     sp.add_argument("--top", type=int, default=200)
-    sp.add_argument("--label", type=int, default=0, help="send the N best mid/late traders (no create-slot sniping, "
-                    "no insider sales) to qualify's queue as cand")  # fmt: skip
+    sp.add_argument("--snipe-secs", type=float, default=3.0, help="a buy this soon after the create is sniper-like")
+    sp.add_argument("--label", type=int, default=0, help="label the N best cand and put them first in qualify's queue "
+                    "(made SOL with a lower bound above zero; no insider sales, no buys in the create's own block; a "
+                    "wallet that already has a name keeps it)")  # fmt: skip
     sp = cmd(
         "place-bids",
         "which bid lands first behind a followed wallet: for every moment a wallet rule follows, the buyers behind the "
@@ -2529,21 +2542,26 @@ def _main(args) -> int:
                 print("  " + "  ".join(f"{k} {v}" for k, v in r.items()))
         return 0
     if args.cmd in ("winners", "leaders-of"):
-        from .analysis.winners import leaders_of, winners
+        from .analysis.winners import leaders_of, winners_report, worth_judging
 
         svc = Service(cfg)
         try:
             if args.cmd == "winners":
-                rows = winners(svc.tape_store, time.time(), hours=args.hours, min_trips=args.min_trips, top=args.top)
-                labelled = []
-                for r in [r for r in rows if r["pnl_sol"] > 0 and r["oversold_share"] < 0.5 and r["create_slot_share"]
-                          < 0.4 and r["median_entry_slots"] > 20][: max(0, args.label)]:  # fmt: skip
-                    svc.store.set_label(r["wallet"], f"winner {r['pnl_sol']:+.0f} SOL/{r['trips']}", "cand", "winners")
+                # the trades from the hourly copy, the names from the live database (the copy has none of the labels
+                # written since it was taken)
+                names = svc.store.label_kinds()
+                out = winners_report(svc.tape_store, time.time(), hours=args.hours, min_trips=args.min_trips,
+                                     top=args.top, min_sol_per_day=args.min_sol_per_day, kind=args.kind, labels=names,
+                                     snipe_secs=args.snipe_secs, confidence=cfg.verdict.confidence)  # fmt: skip
+                # a wallet with a name of another kind (a KOL, the owner's list) keeps it: it is judged already
+                fresh = [r for r in out["wallets"] if worth_judging(r) and names.get(r["wallet"], ("cand",))[0] == "cand"]
+                out["labelled"] = []
+                for r in fresh[: max(0, args.label)]:
+                    svc.store.set_label(r["wallet"], f"winner {r['kind']} {r['pnl_sol']:+.0f} SOL/{r['trips']}", "cand",
+                                        "winners")  # fmt: skip
                     svc.store.upsert_candidate(r["wallet"], "winners", r, int(time.time()))  # qualify's queue
-                    labelled.append(r["wallet"])
-                out = {"hours": args.hours, "min_trips": args.min_trips, "wallets": rows, "labelled": labelled}
-                text = "\n".join(f"{r['wallet']}  {r['pnl_sol']:+.3f} SOL over {r['trips']}  win {r['win_rate']:.0%}  "
-                                 f"{r['style']}" for r in rows) or "no wallet has enough closed round trips"  # fmt: skip
+                    out["labelled"].append(r["wallet"])
+                text = R.render_winners(out)
             else:
                 rows = leaders_of(svc.tape_store, args.wallet, time.time(), hours=args.hours, max_slots=args.max_slots,
                                   after_slots=args.after_slots)  # fmt: skip

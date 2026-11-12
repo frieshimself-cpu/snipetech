@@ -147,10 +147,10 @@ def test_solanatracker_and_vybe_sources_filter_pace(tmp_path):
         )
         ctx.vybe = None
         names = [s.name for s in default_sources(ctx)]
-        assert names == ["tape", "owner", "coinfirst"]  # without clients only the free, local sources run
+        assert names == ["tape", "winners", "owner", "coinfirst"]  # without clients only the free, local sources run
         ctx.solanatracker, ctx.birdeye = object(), object()
         names = [s.name for s in default_sources(ctx)]
-        assert names == ["tape", "owner", "solanatracker", "solanatracker30", "birdeye", "coinfirst", "vybe"][:6]
+        assert names == ["tape", "winners", "owner", "solanatracker", "solanatracker30", "birdeye", "coinfirst", "vybe"][:7]
     finally:
         st.close()
 

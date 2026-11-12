@@ -541,8 +541,18 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         volume, age, hour, the leader's size and the buys later in its own block ("--groups", "kol" for KOLs alone;
         "--behind-leader" enters in the leader's own block, where most live copies land;
         "--any-buyer", "--min-sol", "1", "--taken-by", "<bot>,<bot>" scores every wallet's buy and adds the share a
-        named bot followed in the block: which buys the profitable bots take). ["winners", "--hours", "144", "--json"] ranks every wallet's closed round trips by
-        realized SOL with its style (entry slots, hold, pieces sold); ["leaders-of", "<wallet>", "--json"] lists the
+        named bot followed in the block: which buys the profitable bots take). ["winners", "--hours", "72", "--json"]
+        finds who is winning, with no wallet list (the owner, 12 Nov: never wait to be handed a wallet): every busy
+        wallet's closed round trips, ranked by the SOL it made after the venue's fee and its priority fees and tips.
+        Each row: kind (bot or trader) and why, pnl_sol, sol_per_day, trips_per_day, win_rate, lower_sol (the lower
+        bound of the SOL one round trip makes: under zero is luck), median_hold_secs, median_buy_sol, copy_share (its
+        buys in the same block right behind a known wallet), behind_big_share (behind any buy of 1 SOL or more),
+        snipe_share (within 3 s of the create), open_sol (coins it still holds: no result yet), style (insider:
+        supply handed to it, not a trade). These are its own fills at its own place in the block, not a copy's: a
+        copy lands behind it and pays more. "--kind", "bot" lists the bots alone, "--min-sol-per-day", "5" the ones
+        that make that much; "--label", "20" labels the 20 best cand and puts them first in qualify's queue, which
+        measures the copy. For a bot it finds, read its rules next: ["playbook", "<wallet>", "--json"] and
+        ["leaders-of", "<wallet>", "--json"], which lists the
         wallets a copy bot buys right after (6Z91). ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
         ["fomo-wallets", "--days", "3", "--label", "150", "--json"] labels the busiest FOMO app traders cand. A

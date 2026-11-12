@@ -1039,3 +1039,44 @@ def render_place_bids(o: dict) -> str:
         out.append(f"  our own copies: {u['moments']} ({u['same_block']} in the wallet's block), place {q(u['place'])} "
                    f"(median) at a bid of {q(u['bid_sol'])} SOL, {q(u['buy_sol'])} SOL a buy")  # fmt: skip
     return "\n".join(out)
+
+
+def render_winners(o: dict) -> str:
+    """`winners` as a table: who made the most on the tape, bots and traders, and at which landing the numbers hold."""
+    rows = o["wallets"]
+    head = (
+        f"winners: the newest {o['hours']:g} h asked for, {o['days']:.2f} days of tape read ({o['trades_read']:,} "
+        f"trades, {o['wallets_seen']:,} wallets)"
+    )
+    judged = (
+        f"  {o['judged']:,} wallets closed {o['min_trips']} round trips or more; {o['winning']:,} of them made SOL; "
+        f"{len(rows)} listed, the most SOL first"
+    )
+    out = [head, judged]
+    if not rows:
+        return "\n".join(out + ["  no wallet has enough closed round trips"])
+    if not o.get("fees_on_tape"):
+        out.append("  this tape file has no priority fees or tips: the SOL made is before what the wallets paid to land")
+    cells = [
+        [r["wallet"], (r["name"] or "-")[:18], r["kind"], f"{r['pnl_sol']:+.2f}", f"{r['sol_per_day']:+.2f}", r["trips"],
+         f"{r['trips_per_day']:.0f}", pct(r["win_rate"]), "-" if r["lower_sol"] is None else f"{r['lower_sol']:+.4f}",
+         f"{r['median_hold_secs']:g}", f"{r['median_buy_sol']:g}", pct(r["copy_share"]), pct(r["behind_big_share"]),
+         pct(r["snipe_share"]), pct(r["fee_known_share"]), f"{r['open_sol']:+.1f}", r["style"]]
+        for r in rows
+    ]  # fmt: skip
+    out.append(table(cells, ["wallet", "name", "kind", "SOL made", "a day", "trips", "a day", "win", "lower/trip",
+                             "hold s", "buy SOL", "behind known", "behind big", "at create", "fees known", "open SOL",
+                             "style"]))  # fmt: skip
+    out.append(
+        "  lower/trip: the bootstrap lower bound of the SOL one round trip makes. behind known / behind big: the share "
+        "of its buys in the same block right behind a known wallet / behind any buy of 1 SOL or more. at create: "
+        "bought within seconds of the coin's create. open SOL: SOL in less SOL out on coins it still holds (no result "
+        "yet)."
+    )
+    out.append(
+        "  These are each wallet's own trades at its own place in the block, after the venue's fee and (where known) "
+        "its priority fee and tip. A copy of a wallet lands behind it and pays more: qualify measures that."
+    )
+    if o.get("labelled"):
+        out.append(f"  labelled cand and put first in qualify's queue: {', '.join(short(w) for w in o['labelled'])}")
+    return "\n".join(out)
