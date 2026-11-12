@@ -671,3 +671,13 @@ def test_the_remote_command_reads_the_boot_before(monkeypatch, capsys):
     assert cli.main(base) == 0
     assert seen == [("logs", {"unit": "snipetech-ops"}), ("logs", {"unit": "kernel", "boot": -1, "lines": 300}),
                     ("logs", {"unit": "snipetech-tape"})]  # fmt: skip
+
+
+def test_a_gmgn_key_never_shows_in_a_job_s_output(monkeypatch):
+    """12 Nov: the owner bought GMGN's API. Its key lives in /etc/snipetech/env like every other; whatever a job
+    prints, the key is scrubbed."""
+    from snipetech import ops
+
+    monkeypatch.setenv("GMGN_API_KEY", "gmgn_live_0123456789abcdef")
+    assert "GMGN_API_KEY" in ops.REDACT_ENV
+    assert ops.redact("GET /v1/x?key=gmgn_live_0123456789abcdef failed") == "GET /v1/x?key=<redacted> failed"
