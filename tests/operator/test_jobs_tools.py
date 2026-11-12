@@ -696,6 +696,20 @@ def test_the_agents_are_told_how_to_find_the_winning_bots_and_wallets_themselves
     assert '["leaders-of", "<wallet>", "--json"]' in text and '["playbook", "<wallet>", "--json"]' in text
 
 
+def test_the_agents_are_told_how_to_read_where_our_own_buys_landed(toolbox):
+    """12 Nov, the tip ladder behind Cupsey: its first copies bought a coin the tape does not hold, and nothing said
+    where they landed. `landing` reads our own buys from the chain on any coin; the tool says how to start it, what
+    its verdict means for the tip, and where the same numbers are kept."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    assert '["landing", "--since-minutes", "120", "--json"]' in text
+    assert '["landing", "--sig", "<our buy>", "--leader", "<wallet>", "--json"]' in text
+    assert "on any coin" in text and '"fees"' in text and '"speed"' in text and '"first"' in text
+    assert "landing_src = 'chain'" in text and "ahead_bid_max" in text
+    sql = " ".join(tools["sql"].to_dict()["description"].split())
+    assert "landing_src" in sql and "ahead_bids" in sql and "lamports" in sql
+
+
 def test_the_agents_are_told_how_to_test_big_buys_and_selling_out_in_parts(toolbox):
     """12 Nov, the owner: "make sure it tests 1-30 sol buys, especially on bigger influence wallets that buy at higher
     caps... slowly selling out might be better". The tool says how to size a lab, how to ask for a market cap past

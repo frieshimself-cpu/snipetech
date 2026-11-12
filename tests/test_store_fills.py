@@ -126,6 +126,50 @@ def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
     fresh = Store(tmp_path / "fresh.db")
     try:
         assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
-        assert migrated[-4:] == ["exit_name", "crossed", "twin_fee_sol", "leader_progress"]
+        assert migrated[24:28] == ["exit_name", "crossed", "twin_fee_sol", "leader_progress"]
+    finally:
+        fresh.close()
+
+
+LANDING_COLUMNS = ["landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50", "landing_verdict",
+                   "venue"]  # fmt: skip
+
+
+def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
+    """12 Nov: where a buy landed is read from the chain when the tape cannot place it. A database of before gets the
+    columns appended on open (where the landing numbers came from, the blocks after the copied buy, the buyers ahead
+    with their bids, the highest and the median bid ahead, what the fill says of the fee thesis, the venue); its rows
+    stay as they were and read None there; a fresh database ends with the same columns in the same order."""
+    import sqlite3
+
+    Store(tmp_path / "before.db").close()
+    con = sqlite3.connect(tmp_path / "before.db")
+    for col in LANDING_COLUMNS:  # the file as the code of 11 Nov left it
+        con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
+    con.execute("INSERT INTO fills (sig, ts, side, sol, wallet_copied, trades_behind, price_gap_pct, leader_progress) "
+                "VALUES ('B0', ?, 'buy', 0.2, 'LEAD', 2, 25.0, 0.31)", (NOW,))  # fmt: skip
+    con.commit()
+    assert not set(LANDING_COLUMNS) & {r[1] for r in con.execute("PRAGMA table_info(fills)")}
+    con.close()
+    st = Store(tmp_path / "before.db")
+    try:
+        old = st.fill("B0")
+        assert old["trades_behind"] == 2 and old["price_gap_pct"] == 25.0 and old["leader_progress"] == 0.31
+        assert all(old[c] is None for c in LANDING_COLUMNS)
+        st.put_fill(_fill("B1", NOW + 1, landing_src="chain", blocks_after=0, ahead_bid_max=350_000_000,
+                          ahead_bid_p50=175_550_000, landing_verdict="speed", venue="other:Prog",
+                          ahead_bids='[{"w":"RICH","bid":350000000,"sol":2.0,"vs":"more"}]'))  # fmt: skip
+        new = st.fill("B1")
+        assert new["landing_src"] == "chain" and new["blocks_after"] == 0 and new["ahead_bid_max"] == 350_000_000
+        assert new["ahead_bid_p50"] == 175_550_000 and new["landing_verdict"] == "speed"
+        assert new["venue"] == "other:Prog"
+        assert '"RICH"' in new["ahead_bids"]
+        migrated = [r[1] for r in st._q("PRAGMA table_info(fills)")]
+    finally:
+        st.close()
+    fresh = Store(tmp_path / "fresh2.db")
+    try:
+        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
+        assert migrated[-len(LANDING_COLUMNS) :] == LANDING_COLUMNS
     finally:
         fresh.close()

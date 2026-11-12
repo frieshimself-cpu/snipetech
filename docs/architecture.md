@@ -360,6 +360,36 @@ post-mortem's levers carry the same split: the `single_send` lever says the twin
 priority, and the `sell_fee` lever now names `oktech.sell_tip_sol` (`tests/test_fees.py`, `tests/test_measure_run.py`,
 `tests/test_oktech.py`).
 
+## Where a live buy landed: from the tape, or from the chain itself (12 Nov)
+
+The measure stage built `fills` from our trades on the tape, and the tape holds pump.fun's curve and PumpSwap for 30
+minutes after a coin leaves its curve. A copy of a coin on neither was in no row at all (12 Nov 17:04 UTC, the tip
+ladder's first two buys). `measure/chain_landing.py` reads a buy of ours straight from the chain, on any program,
+without decoding a swap:
+
+- **our side** from our own balances before and after (the coin, the SOL, the coins got), the fee and tip with the
+  decoders `fills` has always used;
+- **the copied wallet's buy** of the same coin just before ours, found among its own signatures;
+- **the blocks between the two** (`getBlock`, five at the most; more is said): every other signer whose balance of
+  the coin rose, in the order the blocks ran them, with what it paid and bid; the buys that failed in between, apart;
+  the copied wallet's companions (as the tape knows them) and our own wallets named, never counted;
+- **the price** as the SOL the pool took over the coins it gave, the pool being whoever owns the account the coins
+  came out of.
+
+A bid is the priority fee plus the tips to catalogued landing services. A payment to an account nobody catalogued is a
+tip on our own fills and kept apart on anyone else's (a tip or a bot's fee): when it alone decides, the fill's reading
+is `unclear`, never `fees` or `speed`.
+
+The measure stage walks the wallet's own signatures once a run: a landed transaction the tape does not hold becomes a
+fill (buy or sell), and a buy that a copy sniper could have made, on or off the tape, that the tape cannot place gets
+`trades_behind`, `price_gap_pct`, `blocks_after`, `ahead_bids`, `ahead_bid_max`, `ahead_bid_p50`, `landing_verdict`
+and `venue` from the chain; `landing_src` says `tape`, `chain` or `chain-none`. A failed send on a program we do not
+decode gets its coin from its balances and is charged to the sell it follows, as a pump.fun twin is. `snipetech
+landing --sig <buy> --leader <wallet>` and `landing --wallet <ours> --since-minutes N` print the same reading as a
+table; the agents may start it. Built against fixtures and a fake RPC (`tests/chain.py`, `tests/test_chain_landing.py`,
+`tests/test_measure_chain.py`); the real answers of `getBlock` and of `getSignaturesForAddress` with another wallet's
+transaction as its cursor are first met on the server.
+
 ## What the agents remember: lessons, ideas and, since 8 Nov, the research record
 
 The operator, the analyst and the strategist share one memory, and every turn's message carries it: the book's

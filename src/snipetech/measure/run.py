@@ -1,7 +1,10 @@
 """`run_measure`: our new trades since the last run → fingerprints → `fills` → round trips → the bid model per arm and
 the live expectancy per copied wallet. Failed sends are rows too (cost); a sell's failed twins are charged to its trip.
 Each sell records the exit that closed it and the preset its sniper ran (measure/exits.py), and every copy buy, once
-six minutes old, is replayed under every exit on the menu (exit_shadow). `backfill` replays a past window."""
+six minutes old, is replayed under every exit on the menu (exit_shadow). `backfill` replays a past window.
+A trade of ours the tape does not hold (a coin off pump.fun's curve, a PumpSwap coin past the tape's 30 minutes) is a
+fill too, read off the chain, and a buy the tape cannot place behind the wallet it copied is placed from the blocks
+themselves (measure/chain_landing.py; fills.landing_src says which gave the landing)."""
 
 from __future__ import annotations
 
@@ -17,6 +20,7 @@ from ..config import Config
 from ..exits_menu import EXIT_MENU_VERSION
 from ..solana.programs import PUMP_AMM_PROGRAM
 from ..store import Store
+from .chain_landing import fill_fields, known_mates, own_wallets, read_fill, read_landing, wallet_signatures
 from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
 from .exits import (
     SHADOW_AFTER_SECS,
@@ -248,6 +252,14 @@ def _sells_a_coin(meta) -> bool:
     return meta is not None and any(str(ix.name).startswith("sell") for ix in meta.pump_ixs)
 
 
+def failed_is_sell(row: dict, meta) -> bool:
+    """Whether a failed send of ours may be a sell's twin: it carries a pump.fun sell instruction, or it ran on a
+    program whose instructions we do not read (`venue` on its fills row, from the chain reader: nothing says buy or
+    sell there, so being on the same coin within seconds after a landed sell decides, as `twin_sells` asks of every
+    twin)."""
+    return _sells_a_coin(meta) or bool(row.get("venue") and row["venue"] not in PUMP_VENUES)
+
+
 SELL_SPLIT_MAX_PRIORITY_SOL = 0.0005  # a sniper whose sell priority is at or under this was made after the 8 Nov split
 SELL_DUE_SECS = (
     600.0  # the longest hold a live exit scores (oktech.EXIT_MAX_HOLD_SECS): a younger buy's sell is not due
@@ -368,29 +380,65 @@ def _crossed_line(sell: dict, buy: dict | None) -> str:
             f"{own:g}. Two snipers copy {leader}… from one OKTech wallet.")  # fmt: skip
 
 
-async def _failed_signatures_rpc(svc, wallet: str, since_ts: int) -> list[dict]:
-    """Failed transactions of the wallet since `since_ts` (newest first from the RPC, bounded to a few pages)."""
-    out: list[dict] = []
-    before = None
-    for _ in range(5):
-        page = await svc.rpc.get_signatures(wallet, before=before, limit=1000)
-        if not page:
-            break
-        for s in page:
-            if (s.get("blockTime") or 0) < since_ts:
-                return out
-            if s.get("err") is not None:
-                out.append(s)
-        before = page[-1].get("signature")
-        if len(page) < 1000:
-            break
-    return out
+CHAIN_LANDING = ("chain", "chain-none")  # fills.landing_src of a buy the chain was read for (chain_landing.fill_fields)
+# what a chain reading wrote on a buy and a later read of the same trade from the tape keeps
+CHAIN_KEPT = ("wallet_copied", "trades_behind", "price_gap_pct", "landing_src", "blocks_after", "ahead_bids",
+              "ahead_bid_max", "ahead_bid_p50", "landing_verdict", "venue")  # fmt: skip
+PUMP_VENUES = ("pump.fun curve", "PumpSwap")  # where a failed send's own instruction says whether it was a sell
+
+
+def _chain_context(svc, cfg: Config, now: float) -> dict[str, Any]:
+    """What a chain reading takes from our own records: our wallets, the labelled landing services, and each copied
+    wallet's companions as the tape knows them (read once a wallet, from the tape copy the labs read)."""
+    store: Store = svc.store
+    tape = getattr(svc, "tape_store", store)
+    try:
+        since = int(min(a for a, _b in tape.tape_spans()))
+    except Exception:  # noqa: BLE001 - no tape coverage on record: a week back, as qualify does
+        since = int(now - 7 * 86400)
+    cache: dict[str, Any] = {}
+
+    def mates(leader: str):
+        if leader not in cache:
+            try:
+                cache[leader] = known_mates(tape, leader, since)
+            except Exception:  # noqa: BLE001 - the tape cannot say: unknown, never "none"
+                cache[leader] = None
+        return cache[leader]
+
+    return {"mates": mates, "own": own_wallets(store, cfg), "services": store.labels("service")}
+
+
+def _chain_row(fill: dict, landing: dict | None, arms: dict[str, dict] | None) -> dict[str, Any]:
+    """A `fills` row for a trade of ours the tape does not hold, from the chain reader (`chain_landing.read_fill`;
+    `landing`: a buy's `read_landing`). Its place among the coin's trades in its block (pos_in_slot) and the copied
+    wallet's curve progress are the tape's to give: unset."""
+    row: dict[str, Any] = {
+        "sig": fill["sig"], "ts": int(fill["ts"] or 0), "slot": int(fill["slot"]), "pos_in_slot": None,
+        "slot_txs": None, "wallet": fill["wallet"], "wallet_copied": None, "event_kind": None, "mint": fill["mint"],
+        "side": fill["side"], "sol": round(float(fill["sol"]), 6), "tokens": float(fill["tokens"]),
+        "trades_behind": None, "price_gap_pct": None, "pnl_sol": None, "exit_reason": None, "sniper_id": None,
+        "bid_arm": arm_from_fee(fill["priority_lamports"], fill["tip_lamports"], arms), "buy_sig": None,
+        "leader_progress": None, "priority_lamports": fill["priority_lamports"], "tip_lamports": fill["tip_lamports"],
+        "cu_limit": fill["cu_limit"], "cu_used": fill["cu_used"], "landing_service": fill["landing_service"],
+    }  # fmt: skip
+    row.update(fill_fields(landing if landing is not None else fill))
+    if landing is None:
+        row["landing_src"] = None  # nothing was looked for: a sell, or a buy while no copy sniper was alive
+    return row
 
 
 async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = None, until_ts: int | None = None,
                       ensure_meta: Callable[[list[str]], Awaitable[int]] | None = None,
                       failed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None, move_cursor: bool = True,
-                      reclassify_arms: bool = False, notes=None) -> dict[str, Any]:  # fmt: skip
+                      reclassify_arms: bool = False, notes=None,
+                      landed_sigs: Callable[[str, int], Awaitable[list[dict]]] | None = None
+                      ) -> dict[str, Any]:  # fmt: skip
+    """`failed_sigs` / `landed_sigs`: the wallet's failed and landed signatures since a time (tests hand them in);
+    with neither, one walk of the wallet's own signatures on the RPC gives both. A landed transaction the tape does
+    not hold (a coin off pump.fun's curve, a PumpSwap coin past the tape's 30 minutes) is read off the chain: a buy
+    or a sell there is a fill, and a buy that a copy sniper could have made is placed against the copied wallet from
+    the blocks themselves (measure/chain_landing.py), as is a buy on the tape whose copied buy the tape lacks."""
     store: Store = svc.store
     wallet = cfg.operator.wallet
     m = cfg.measure
@@ -424,6 +472,14 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             if (row["side"] == "buy" and not reclassify_arms and existing.get("bid_arm")
                     and existing.get("priority_lamports") is not None):  # fmt: skip
                 row["bid_arm"] = existing["bid_arm"]
+        if row["side"] == "buy" and row.get("trades_behind") is not None:
+            row["landing_src"] = "tape"
+        elif row["side"] == "buy" and existing and existing.get("landing_src") in CHAIN_LANDING:
+            for k in CHAIN_KEPT:  # the tape has no copied buy beside it: what the chain read stays
+                row[k] = existing.get(k)
+        return put_row(row)
+
+    def put_row(row: dict) -> dict:
         if row["side"] == "buy" and row.get("wallet_copied") and row.get("exit_name") is None:
             # the exit preset of the sniper that made this buy, once: the record of what it ran at the time
             row["exit_name"] = preset_name((buying_sniper(copy_rows, row) or {}).get("payload"))
@@ -431,10 +487,13 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         return row
 
     buys = sells = 0
+    unplaced: list[dict] = []  # buys on the tape that the tape cannot place behind a copied wallet
     for t in trades:
         row = store_fill(t, metas.get(t.sig))
         buys += row["side"] == "buy"
         sells += row["side"] == "sell"
+        if row["side"] == "buy" and row.get("trades_behind") is None:
+            unplaced.append(row)
     # fills whose fingerprint was missing when they were first read: try again while they are in the window
     retry = [f["sig"] for f in store.fills(wallet=wallet, since_ts=look, limit=100_000)
              if f["side"] in ("buy", "sell") and f.get("priority_lamports") is None and f["sig"] not in metas]  # fmt: skip
@@ -449,15 +508,87 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             for t in store.trades_for_user(wallet, oldest):
                 if t.sig in found:
                     store_fill(t, found[t.sig])
-    # failed sends in the window (cost)
+    # the wallet's own signatures in the window: the failed sends (cost) and the landed ones the tape may not hold
     failed_rows: list[dict] = []
+    failed_list: list[dict] = []
+    landed_list: list[dict] = []
     try:
-        fetch_failed = failed_sigs or (lambda w, s: _failed_signatures_rpc(svc, w, s))
-        failed_list = await fetch_failed(wallet, int(since_ts))
+        if failed_sigs is None and landed_sigs is None:
+            listed = await wallet_signatures(svc.rpc, wallet, int(since_ts))
+            failed_list = [s for s in listed if s.get("err") is not None]
+            landed_list = [s for s in listed if s.get("err") is None]
+        else:
+            failed_list = await failed_sigs(wallet, int(since_ts)) if failed_sigs else []
+            landed_list = await landed_sigs(wallet, int(since_ts)) if landed_sigs else []
     except Exception as exc:  # noqa: BLE001
-        failed_list = []
         if hasattr(svc, "progress"):
             svc.progress(f"measure: failed-signature scan failed: {type(exc).__name__}: {exc}")
+    # read from the chain: our landed trades the tape does not hold, and the landing of a buy the tape cannot place
+    from_chain = {"buys": 0, "sells": 0, "placed": 0}
+    # a caller that hands in the failed sends alone (a test) has no RPC to read the chain with
+    read_chain = landed_sigs is not None or failed_sigs is None
+    on_tape = set(sigs)
+    off_tape = [s for s in landed_list if s.get("signature") and s["signature"] not in on_tape
+                and int(since_ts) <= int(s.get("blockTime") or 0) <= until_ts]  # fmt: skip
+    ctx: dict[str, Any] | None = None
+
+    async def place(sig: str, ts: float, tx: dict | None = None) -> dict | None:
+        """Where a buy of ours landed against the wallets our copy snipers copied at the time; None when none did."""
+        leaders = sorted(leaders_at(copy_rows, ts))
+        if not leaders:
+            return None
+        return await read_landing(svc.rpc, sig, leaders, wallet=wallet, mates=ctx["mates"], own=ctx["own"],
+                                  services=ctx["services"], tx=tx)  # fmt: skip
+
+    def chain_error(sig: str, exc: Exception) -> None:
+        if hasattr(svc, "progress"):  # one transaction that cannot be read never fails the run: tried again next run
+            svc.progress(f"measure: chain reading of {sig[:8]}… failed: {type(exc).__name__}: {exc}")
+
+    todo = [s for s in off_tape if reclassify_arms or not (store.fill(s["signature"]) or {}).get("venue")]
+    if todo:
+        ctx = _chain_context(svc, cfg, now)
+        try:
+            txs = await svc.rpc.get_transactions([s["signature"] for s in todo])
+        except Exception as exc:  # noqa: BLE001
+            txs = {}
+            chain_error("our off-tape transactions", exc)
+        for s in sorted(todo, key=lambda s: (int(s.get("slot") or 0), s["signature"])):
+            sig = s["signature"]
+            try:
+                tx = txs.get(sig)
+                fill = read_fill(tx, wallet, ctx["services"], ours=True) if tx else None
+                if fill is None or fill["side"] not in ("buy", "sell"):
+                    continue  # a transfer, a conversion of wrapped SOL: no trade
+                landing = await place(sig, float(fill["ts"] or 0), tx) if fill["side"] == "buy" else None
+                row = _chain_row(fill, landing, cfg.book.bid_arms)
+                existing = store.fill(sig)
+                if existing:  # a re-read keeps what pairing wrote, as a re-read of a tape trade does
+                    for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
+                        row[k] = existing.get(k)
+                    if existing.get("bid_arm") and (row["side"] == "sell" or not reclassify_arms):
+                        row["bid_arm"] = existing["bid_arm"]
+                put_row(row)
+                from_chain["buys" if row["side"] == "buy" else "sells"] += 1
+                from_chain["placed"] += row.get("landing_src") == "chain"
+                buys += row["side"] == "buy"
+                sells += row["side"] == "sell"
+            except Exception as exc:  # noqa: BLE001
+                chain_error(sig, exc)
+    for row in unplaced if read_chain else ():
+        if row.get("landing_src") in CHAIN_LANDING and not reclassify_arms:
+            continue  # the chain was read for it already
+        if not leaders_at(copy_rows, row["ts"]):
+            continue
+        try:
+            ctx = ctx or _chain_context(svc, cfg, now)
+            landing = await place(row["sig"], float(row["ts"]))
+            if landing is None or landing.get("error"):
+                continue
+            fields = fill_fields(landing)
+            put_row({**(store.fill(row["sig"]) or row), **fields})
+            from_chain["placed"] += fields.get("landing_src") == "chain"
+        except Exception as exc:  # noqa: BLE001
+            chain_error(row["sig"], exc)
     fsigs = [f.get("signature") for f in failed_list if f.get("signature")]
     if fsigs:
         ensure_failed = ensure_meta or (lambda sigs: svc.ingestor.ensure_tx_meta(sigs, include_failed=True))
@@ -466,6 +597,16 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         except Exception:  # noqa: BLE001 - a failed send without fee fields is still counted
             pass
     fmetas = store.tx_meta(fsigs) if fsigs else {}
+    # a failed send that carries no pump.fun instruction names its coin in its balances only: read once, off the chain
+    bare = [sg for sg in fsigs if read_chain and (fm := fmetas.get(sg)) is not None and not fm.pump_ixs
+            and fm.fee_payer in ("", wallet)
+            and (reclassify_arms or not (store.fill(sg) or {}).get("venue"))]  # fmt: skip
+    failed_txs: dict[str, Any] = {}
+    if bare:
+        try:
+            failed_txs = await svc.rpc.get_transactions(bare)
+        except Exception as exc:  # noqa: BLE001
+            chain_error("our failed sends", exc)
     for f in failed_list:
         sig = f.get("signature")
         if not sig or (f.get("blockTime") or 0) > until_ts:
@@ -490,12 +631,25 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
                                 (wallet, mint, ts))  # fmt: skip
                 if prev and prev[0][0]:
                     arm = prev[0][0]
+        before = store.fill(sig) or {}
+        venue = before.get("venue")
+        if failed_txs.get(sig):
+            try:
+                named = read_fill(failed_txs[sig], wallet, ours=True)
+            except Exception as exc:  # noqa: BLE001
+                named = None
+                chain_error(sig, exc)
+            if named:
+                mint, venue = mint or named["mint"], fill_fields(named)["venue"]
+        elif mint is None and venue:
+            mint = before.get("mint")  # read off the chain on an earlier run
         cause = failed_cause(f.get("err"), meta.pump_ixs if meta is not None else [])
         why = f"{cause}: {f.get('err')}" if cause else str(f.get("err"))
         row = {"sig": sig, "ts": ts, "slot": f.get("slot"), "wallet": wallet, "side": "failed", "sol": 0.0, "tokens": 0.0, "mint": mint,
                "bid_arm": arm, "priority_lamports": int(meta.priority_lamports) if meta else None,
                "tip_lamports": int(meta.tip_lamports) if meta else None, "cu_limit": meta.cu_limit if meta else None,
-               "cu_used": meta.cu_consumed if meta else None, "exit_reason": why[:FAILED_WHY_CHARS]}  # fmt: skip
+               "cu_used": meta.cu_consumed if meta else None, "exit_reason": why[:FAILED_WHY_CHARS],
+               "venue": venue}  # fmt: skip
         store.put_fill(row)
         failed_rows.append(row)
     # round trips over the lookback window
@@ -506,7 +660,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     # failed twins of each landed sell: their cost is the trip's too, so the live expectancy per wallet includes it
     all_failed = store.fills(wallet=wallet, since_ts=look, side="failed", limit=100_000)
     failed_meta = store.tx_meta([f["sig"] for f in all_failed]) if all_failed else {}
-    failed_flagged = [f | {"is_sell": _sells_a_coin(failed_meta.get(f["sig"]))} for f in all_failed]
+    failed_flagged = [f | {"is_sell": failed_is_sell(f, failed_meta.get(f["sig"]))} for f in all_failed]
     twins = twin_fees_by_sell(failed_flagged, all_sells)
     closed: dict[str, float] = {}
     for t in paired["trips"]:
@@ -611,6 +765,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     return {"fills": buys + sells + len(failed_rows), "buys": buys, "sells": sells, "failed": len(failed_rows), "trips": len(trips),
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
+            "from_chain": from_chain,
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
             "landing_by_progress": landing_by_progress(all_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip

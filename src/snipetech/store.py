@@ -173,7 +173,8 @@ CREATE TABLE IF NOT EXISTS x_accounts (handle TEXT PRIMARY KEY, fetched_at INTEG
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
               "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol",
-              "leader_progress")  # fmt: skip
+              "leader_progress", "landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50",
+              "landing_verdict", "venue")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -201,6 +202,20 @@ _ADDED_COLUMNS = (
     ("trades", "payer", "TEXT"),
     ("trades", "priority", "INTEGER"),
     ("trades", "tip", "INTEGER"),
+    # where a buy of ours landed against the wallet it copied (12 Nov; measure/chain_landing.py). landing_src: where
+    # trades_behind and price_gap_pct came from: "tape", "chain" (the blocks themselves, for a coin or a copied buy
+    # the tape does not hold) or "chain-none" (the chain was read: no copied wallet had bought the coin). From the
+    # chain only: blocks_after (blocks after the copied buy's own, 0 = the same block), ahead_bids (JSON: the buyers
+    # between the copied buy and ours, each with its bid in lamports), the highest and the median bid ahead in
+    # lamports, landing_verdict (first, ahead, fees, speed, unclear: chain_landing.VERDICT_WORDS) and venue (pump.fun
+    # curve, PumpSwap, LaunchLab or other:<program>). NULL on rows written before, and on sells.
+    ("fills", "landing_src", "TEXT"),
+    ("fills", "blocks_after", "INTEGER"),
+    ("fills", "ahead_bids", "TEXT"),
+    ("fills", "ahead_bid_max", "INTEGER"),
+    ("fills", "ahead_bid_p50", "INTEGER"),
+    ("fills", "landing_verdict", "TEXT"),
+    ("fills", "venue", "TEXT"),
 )
 # Columns a reader of the tape does not need: a copy taken before they existed still serves the labs (`schema_gaps`),
 # and a study that wants them asks `has_columns` first.

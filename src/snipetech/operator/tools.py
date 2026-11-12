@@ -51,7 +51,12 @@ SQL_TABLES: dict[str, str] = {
     "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis)",
     "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
-    "trades_behind = trades between the copied buy and ours; pnl_sol = on the sell; ts = unix seconds",
+    "trades_behind = trades between the copied buy and ours; pnl_sol = on the sell; ts = unix seconds; landing_src = "
+    "where trades_behind and price_gap_pct came from: tape, chain (the blocks themselves: a coin or a copied buy the "
+    "tape does not hold) or chain-none (no copied wallet had bought the coin); from the chain only: blocks_after "
+    "(blocks after the copied buy's, 0 = the same), ahead_bids (JSON: the buyers between the copied buy and ours, "
+    "bid in lamports, vs = more or less than our bid), ahead_bid_max and ahead_bid_p50 (lamports), landing_verdict "
+    "(first, fees, speed, unclear, ahead), venue",
     "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
     "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
     "copy_plan, forward, create_slot, kept_armed = JSON",
@@ -514,8 +519,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         """Start a research job in the background; returns the job id.
 
         Only lab, follow, discover-wallets, label, copy-rank, paper, study, copy, early-leaders, dip-buys, fomo-wallets,
-        stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed; one
-        lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
+        stopped-wallets, winners, leaders-of, copy-context, playbook, launch-tools, place-bids and gmgn are allowed, and
+        so is landing; one lab at a time on a machine under 24 GB, two on a bigger one (the refusal names the limit).
         GMGN (the owner's data plan, 12 Nov): GMGN only reads here, it never trades, and each look-up is a job of
         seconds that needs no lab slot. ["gmgn", "kol", "--json"] and ["gmgn", "smart-money", "--json"] list the
         wallets trading on GMGN's KOL list and its smart-money list right now: wallet, name, X handle, tags, profit
@@ -618,6 +623,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         to forty rules of one freeze running on paper side by side (the forward run scores them all every round).
         Different sizes and bids are separate commands; two labs run at a time, so queue the next two as soon as two
         end. Count what you have in flight in your note: the target is a hundred tests a day.
+        WHERE OUR OWN BUYS LANDED: ["landing", "--since-minutes", "120", "--json"] reads every buy of the sniper wallet
+        in the last minutes from the chain itself, on any coin and any program (the tape places only pump.fun coins):
+        the blocks between the copied wallet's buy and ours, every other buyer in between with its bid (priority fee
+        plus tip), who tried and failed, our bid, the highest and the median bid ahead, our price against the wallet's
+        and the result once sold. Its verdict: "fees" = every buyer ahead of us bid more than we did (a higher tip is
+        the lever), "speed" = one bid less and still got in first (no tip buys that place), "first" = nobody was
+        ahead, "unclear" = a buyer ahead paid an account nobody catalogued. The wallet's companions (when the tape
+        knows them) and our own wallets are never counted as buyers ahead. ["landing", "--sig", "<our buy>",
+        "--leader", "<wallet>", "--json"] reads one buy. The measure stage writes the same numbers into fills for a
+        buy the tape cannot place (landing_src = 'chain': trades_behind, price_gap_pct, blocks_after, ahead_bids,
+        ahead_bid_max, ahead_bid_p50, landing_verdict, venue). It only reads; it starts and changes nothing.
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at
