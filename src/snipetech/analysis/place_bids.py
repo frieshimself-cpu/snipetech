@@ -28,11 +28,13 @@ from collections.abc import Collection, Mapping, Sequence
 from typing import Any
 
 from ..config import Config
-from ..models import Trade
 from ..sim.market import MarketPath, _fix_slot_order
 from ..store import Store
+from .bid_landing import BID, CAUTIOUS, ahead, block
+from .bid_landing import own_wallets as _own_wallets
 from .companions import companions
 from .lab import (
+    COPY_LAND_SLOTS,
     KOL_MIN_SOL,
     Trigger,
     _fire,
@@ -73,18 +75,6 @@ READING = (
 )
 
 
-def _bid(t: Trade) -> float | None:
-    return None if t.priority is None else (int(t.priority) + int(t.tip or 0)) / LAMPORTS
-
-
-def _paid(t: Trade) -> float:
-    return (int(t.quote) + int(t.fee or 0)) / LAMPORTS
-
-
-def _price(t: Trade) -> float | None:
-    return int(t.quote) / int(t.base) if int(t.base) > 0 and int(t.quote) > 0 else None
-
-
 def moments(store: Store, trig: Trigger, spans: Sequence[tuple[int, int]], *, each: bool = False,
             wallets: Collection[str] | None = None, min_trades: int = 5, kols: Any = None) -> list[dict[str, Any]]:  # fmt: skip
     """The moments `trig` follows on the stretches of tape `spans`, found as the lab finds them (`lab._coin_rows`):
@@ -123,50 +113,6 @@ def moments(store: Store, trig: Trigger, spans: Sequence[tuple[int, int]], *, ea
                     continue
                 out.append({"mint": mint, "ts": int(ts), "slot": int(slot), "leader": who, "sig": path.sigs[i]})
     return out
-
-
-def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: Collection[str] = ()) -> dict | None:
-    """One moment read off its block. `trades`: the coin's trades from the followed wallet's block on, in the order
-    they ran; `sig`: the followed buy; `mates`: the wallet's companions; `own`: our wallets. Returns the followed
-    buy's size and bid, the outsiders' first buys behind it in its block in order (`buyers`: place, wallet, SOL paid,
-    bid, percent over the followed wallet's price, `adjacent`: the next transaction after the wallet's own entry,
-    `between`: ahead of one of its companions), how many blocks later the first outsider came (`first_later`: 0 in
-    its block, None when nobody came in the blocks read) and our own first buy (`ours`: its place among the outsiders,
-    blocks later, bid, SOL). None when the followed buy is not among `trades`."""
-    k0 = next((k for k, t in enumerate(trades) if t.sig == sig and t.is_buy), None)
-    if k0 is None:
-        return None
-    lead = trades[k0]
-    end = k0  # the wallet's own entry ends at its last companion's buy in the block (lab.own_entry_end)
-    for k in range(k0 + 1, len(trades)):
-        if trades[k].slot != lead.slot:
-            break
-        if trades[k].is_buy and trades[k].user in mates:
-            end = k
-    p0 = _price(lead)
-    seen = {lead.user}
-    buyers: list[dict[str, Any]] = []
-    ours = first_later = None
-    outsiders = 0
-    for k in range(k0 + 1, len(trades)):
-        t = trades[k]
-        if not t.is_buy or t.user in seen or t.user in mates:
-            continue
-        seen.add(t.user)
-        later = int(t.slot) - int(lead.slot)
-        if t.user in own:
-            ours = ours or {"place": outsiders + 1, "slots_later": later, "bid": _bid(t), "sol": _paid(t)}
-            continue
-        outsiders += 1
-        if first_later is None:
-            first_later = later
-        if later == 0:
-            p = _price(t)
-            buyers.append({"place": outsiders, "user": t.user, "sol": _paid(t), "bid": _bid(t),
-                           "gap_pct": (p / p0 - 1.0) * 100 if p and p0 else None,
-                           "adjacent": k > end and int(t.pos) - int(trades[end].pos) == 1, "between": k < end})  # fmt: skip
-    return {"leader_sol": _paid(lead), "leader_bid": _bid(lead), "buyers": buyers, "first_later": first_later,
-            "ours": ours}  # fmt: skip
 
 
 def _share(k: int, n: int) -> float | None:
@@ -260,12 +206,6 @@ def _window(spans: Sequence[tuple[int, int]], now: float, hours: float) -> list[
     return [(max(a, start), b) for a, b in spans if b > start]
 
 
-def _own_wallets(store: Store, cfg: Config) -> set[str]:
-    """Our wallets: the one the operator watches and every wallet a fill of ours was measured for."""
-    own = {w for (w,) in store._q("SELECT DISTINCT wallet FROM fills WHERE wallet IS NOT NULL")}
-    return own | ({cfg.operator.wallet} if cfg.operator.wallet else set())
-
-
 def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, Any] | str | None = None,
                hours: float = 48.0, each: bool = False, wallets: Collection[str] | None = None, top: int = 20,
                min_trades: int = 5, kols: Any = None, labels: Mapping[str, str] | None = None,
@@ -325,3 +265,104 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
                  "bid_sol": _q((o["bid"] for o in mine), 4), "buy_sol": _q(o["sol"] for o in mine)} if mine else None,
         "reading": list(READING),
     }  # fmt: skip
+
+
+# -- the bid landing model against our real fills -------------------------------------------------------------------
+
+MODEL_MIN_FILLS = 30  # under this many placed buys of ours the comparison is a mechanism, not a calibration
+MATES_HOURS = 72  # the stretch of tape a copied wallet's companions are found on (as the paper test)
+VERDICTS = ("agrees", "model too kind", "model too harsh")
+MODEL_READING = (
+    (
+        "real_behind: the outsiders' buys between the copied wallet's and ours, read from the chain. model_behind: how "
+        "many the model puts there for the bid we paid."
+    ),
+    (
+        "basis tape: the whole block was read, so the model can be wrong either way. basis ahead: only the buyers that "
+        "really stood ahead of us are known (the tape does not hold the coin), so the model can only be shown too kind "
+        "there."
+    ),
+    (
+        "model too kind: it puts us closer than we landed, so paper at that landing flatters the rule. model too "
+        "harsh: we landed closer than it says."
+    ),
+)
+
+
+def _verdict(model: int, real: int) -> str:
+    return VERDICTS[0] if model == real else VERDICTS[1] if model < real else VERDICTS[2]
+
+
+def _model_behind(tape: Store, fill: Mapping[str, Any], bid_sol: float, own: Collection[str],
+                  since: int) -> tuple[int | None, str]:  # fmt: skip
+    """(how many outsiders the bid landing model puts ahead of a copy that bid `bid_sol` on this buy of ours, what it
+    was read from). "tape": the copied wallet's block as the tape holds it, the buyers behind us too, so the model can
+    be wrong either way. "ahead": the tape does not hold the coin, and the fills row names only the buyers that really
+    stood ahead of us (`fills.ahead_bids`): those that bid at least as much are the model's, so there it can only be
+    shown too kind, never too harsh."""
+    from ..measure.chain_landing import LEADER_WINDOW_SLOTS
+
+    slot = int(fill.get("slot") or 0)
+    lead = tape._q(
+        "SELECT sig, slot FROM trades WHERE mint=? AND user=? AND is_buy=1 AND slot<=? AND slot>=? "
+        "ORDER BY slot DESC, pos DESC, ev DESC LIMIT 1",
+        (fill["mint"], fill["wallet_copied"], slot, slot - LEADER_WINDOW_SLOTS),
+    )
+    if lead:
+        sig, at = lead[0]
+        trades = _fix_slot_order(tape.block_trades(fill["mint"], int(at), int(at) + COPY_LAND_SLOTS))
+        read = block(trades, sig, companions(tape, fill["wallet_copied"], since), own)
+        who = ahead(read, bid_sol) if read is not None else None
+        if isinstance(who, dict):
+            return int(who["place"]) - 1, "tape"
+    try:
+        named = json.loads(fill.get("ahead_bids") or "[]")
+    except ValueError:
+        return None, "ahead"
+    ours = round(bid_sol * LAMPORTS)
+    return sum(1 for b in named if int(b.get("bid") or 0) >= ours), "ahead"
+
+
+def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: int = 0) -> dict[str, Any]:
+    """The bid landing model (`analysis.bid_landing`) against where our real buys landed. For every buy of ours the
+    chain reader placed behind the wallet it copied (`fills`: landing_src "chain", `trades_behind` the outsiders
+    really ahead of it, `blocks_after`, our own priority fee and tip): how many outsiders the model puts ahead of a
+    copy with that bid in that block (`_model_behind`), against how many there were. `store` holds the fills, `tape`
+    the blocks. Per fill a row with both numbers, what the model was read from and the verdict; in all, how often the
+    model agrees, is too kind (it puts us closer than we landed) or too harsh, for "bid" and for the cautious "bid-"
+    (one further back), and the share of our buys that landed in the copied wallet's own block. Under
+    MODEL_MIN_FILLS fills it is a mechanism, not a calibration, and says so."""
+    fills = [f for f in store.fills(since_ts=since_ts, side="buy", limit=5000)
+             if f.get("landing_src") == "chain" and f.get("trades_behind") is not None
+             and f.get("wallet_copied")]  # fmt: skip
+    own = _own_wallets(store, cfg) | {f["wallet"] for f in fills if f.get("wallet")}
+    since = int(now - MATES_HOURS * 3600)
+    rows: list[dict[str, Any]] = []
+    tally = {key: dict.fromkeys(("agrees", "model_too_kind", "model_too_harsh"), 0) for key in (BID, CAUTIOUS)}
+    for f in sorted(fills, key=lambda f: (int(f.get("ts") or 0), f["sig"])):
+        bid_sol = (int(f.get("priority_lamports") or 0) + int(f.get("tip_lamports") or 0)) / LAMPORTS
+        model, basis = _model_behind(tape, f, bid_sol, own, since)
+        if model is None:
+            continue
+        real = int(f["trades_behind"])
+        verdict = _verdict(model, real)
+        tally[BID][verdict.replace(" ", "_")] += 1
+        tally[CAUTIOUS][_verdict(model + 1, real).replace(" ", "_")] += 1
+        rows.append({"sig": f["sig"], "ts": f.get("ts"), "mint": f["mint"], "leader": f["wallet_copied"],
+                     "bid_sol": bid_sol, "real_behind": real, "model_behind": model, "cautious_behind": model + 1,
+                     "blocks_after": f.get("blocks_after"), "basis": basis, "verdict": verdict})  # fmt: skip
+    n = len(rows)
+    if not n:
+        note = ("no buy of ours has been placed by the chain reader yet (fills.landing_src = 'chain'): nothing to "
+                "compare the model with")  # fmt: skip
+    elif n < MODEL_MIN_FILLS:
+        note = (f"{n} fills: this shows the mechanism works, it is not a calibration (that takes {MODEL_MIN_FILLS} or "
+                "more). A bid landing stays a model, not where our copies land live")  # fmt: skip
+    else:
+        note = (f"{n} fills: read the shares. Whether that calibrates the model is a decision to take on them, and "
+                "nothing here takes it: a bid landing stays reported as a model until the code says otherwise")
+    return {"fills": n, BID: tally[BID], CAUTIOUS: tally[CAUTIOUS],
+            "basis": {k: sum(1 for r in rows if r["basis"] == k) for k in ("tape", "ahead")},
+            "same_block": _share(sum(1 for r in rows if r["blocks_after"] == 0), n),
+            "calibrated": False, "min_fills": MODEL_MIN_FILLS, "note": note, "rows": rows,
+            "reading": list(MODEL_READING)}  # fmt: skip

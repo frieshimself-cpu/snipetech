@@ -774,12 +774,15 @@ def _amm_tape_lines(t: dict) -> list[str]:
 
 def render_lab(r: dict) -> str:
     cost = f" at {r['per_tx_sol']:g} SOL a transaction" if r.get("per_tx_sol") is not None else ""
+    bid = r.get("bid_landing") or {}  # copies scored where their bid puts them (lab --copy-position bid / bid-)
+    where = (f"copies at {bid['landing']} (the place a {bid['bid_sol']:g} SOL bid buys)" if bid
+             else f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)")  # fmt: skip
     out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL{cost}, "
-           f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)", "=" * 72]  # fmt: skip
+           f"{where}", "=" * 72]  # fmt: skip
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
-    here = f"{r['position']}@{r['latency_slots']}"
+    here = bid.get("landing") or f"{r['position']}@{r['latency_slots']}"
     moved = sorted(
         {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
     )
@@ -807,7 +810,9 @@ def render_lab(r: dict) -> str:
                               "cost when it was measured on 6 Nov (0.0094)",
                   "flag": "as --per-tx says"}.get(r.get("per_tx_source"), "source unknown")  # fmt: skip
         out.append(f"Costs: {tx:g} SOL a transaction ({2 * tx:g} a round trip), {source}.")
-    if "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
+    if r.get("bid_landing"):  # copies scored where their bid puts them: a model, the places it gave, what it left out
+        out += _bid_landing_lines(r["bid_landing"])
+    elif "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
         out.append(f"Each hypothesis is scored where it trades live: copies at {r.get('copy_landing', r['position'])} "
                    "(where ours land), launch, hunt, whale and burst triggers where a hunt buy lands.")  # fmt: skip
     else:
@@ -827,6 +832,53 @@ def render_lab(r: dict) -> str:
     return "\n".join(out)
 
 
+def _bid_landing_lines(b: dict) -> list[str]:
+    """A lab's bid landing in words: its name, that it is a model, the places the copies got, and the moments the tape
+    holds no fee record for."""
+
+    def pc(x) -> str:
+        return "-" if x is None else f"{100 * float(x):.0f} %"
+
+    places, ahead = b.get("places") or {}, b.get("ahead") or {}
+    back = ", then one buy further back (the cautious variant)." if b.get("cautious") else "."
+    out = [(f"Copies scored at {b['landing']}: where a bid of {b['bid_sol']:g} SOL puts each copy among the buyers of "
+            f"the followed wallet's block{back}")]  # fmt: skip
+    out.append(f"This is {b['note']}.")
+    out.append(f"Places the copies got ({places.get('n', 0)} moments): first {pc(places.get('first'))}, second "
+               f"{pc(places.get('second'))}, third or later {pc(places.get('third_or_later'))}. Ahead of them: a "
+               f"higher bid in the block on {pc(ahead.get('outbid_in_block'))} of moments, an outsider no bid beats on "
+               f"{pc(ahead.get('fast'))}, a higher bid in the next {b.get('land_slots')} blocks on "
+               f"{pc(ahead.get('outbid_in_later_blocks'))}.")  # fmt: skip
+    since = b.get("bids_from_ts")
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(float(since))) if since else "no time"
+    out.append(f"The tape carries bids for {b.get('bid_hours', 0):g} hours (from {when}).")
+    for code, n in sorted((b.get("skipped") or {}).items()):
+        out.append(f"Left out, {n} moment(s): {(b.get('why') or {}).get(code, code)}.")
+    return out
+
+
+def render_model_check(o: dict) -> str:
+    """`place-bids --model-check` in words: the bid landing model against where our real buys landed."""
+    out = ["The bid landing model against our real buys (lab --copy-position bid / bid-)", "=" * 72, o["note"] + "."]
+    if not o.get("rows"):
+        return "\n".join(out)
+    for key, name in (("bid", "bid"), ("bid-", "bid- (one further back)")):
+        t = o[key]
+        out.append(f"{name}: agrees on {t['agrees']} of {o['fills']} fills, model too kind on {t['model_too_kind']}, "
+                   f"too harsh on {t['model_too_harsh']}.")  # fmt: skip
+    share = o.get("same_block")
+    basis = o["basis"]
+    out.append(f"Landed in the copied wallet's own block: {'-' if share is None else f'{100 * share:.0f} %'} of them. "
+               f"Read from the tape's block: {basis['tape']}; from the buyers ahead only: {basis['ahead']}.")
+    out.append(table([[time.strftime("%d %b %H:%M", time.gmtime(float(r["ts"] or 0))), str(r["mint"])[:8],
+                       f"{r['bid_sol']:g}", r["real_behind"], r["model_behind"], r["blocks_after"], r["basis"],
+                       r["verdict"]] for r in o["rows"]],
+                     ["time (UTC)", "coin", "our bid", "really behind", "model", "blocks after", "read from",
+                      "verdict"]))  # fmt: skip
+    out += [""] + list(o.get("reading") or [])
+    return "\n".join(out)
+
+
 def render_paper(action: str, r: dict) -> str:
     import time as _t
 
@@ -839,10 +891,12 @@ def render_paper(action: str, r: dict) -> str:
         out = [f"Frozen for forward testing ({r['tape_hours']:.1f} h of tape behind the pick):"]
         out += [
             f"  {s['id']}  {s['label']}  (lab: {s['lab'].get('mean') or 0:+.4f}/trade, bound {s['lab'].get('ev_lower') or 0:+.4f}"
-            f"{scored_on(s['lab'])})"
+            f"{scored_on(s['lab'])})" + (f"\n      at {s['landing_words']}" if s.get("landing_words") else "")
             for s in r["frozen"]
         ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
+        if r.get("bid_landing"):
+            out += _bid_landing_lines(r["bid_landing"])
         return "\n".join(out)
     if action == "rescore":
         if r.get("note"):
@@ -890,6 +944,10 @@ def render_paper(action: str, r: dict) -> str:
         out.append(f"{other} trades on another launchpad's coins than their rule's are kept but not counted (until 8 Nov "
                    "launch-type rules also fired on Raydium LaunchLab, which no sniper of ours buys; 'other_venue' in "
                    "--json).")  # fmt: skip
+    own = [s for s in rows if s.get("landing_asked") or s.get("buy_bid_sol")]
+    if own:  # a landing asked for at the freeze, or a bid: named, and never where our copies land live
+        out.append("Frozen at a landing or with a bid of their own, and scored there:")
+        out += [f"  {s['id']}  {s['landing']}" for s in own]
     if r.get("superseded"):
         out.append(
             f"{len(r['superseded'])} earlier run(s) scored at a landing no live trade gets are kept apart (--json)."
