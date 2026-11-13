@@ -568,6 +568,12 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     several, and can `sellPercent` follow the wallet's part sales?
 18. For MIG: how is "no migration window" sent, what is the largest Migration Window it takes (is 86,400 s allowed?),
     and where does the buy land against the migration transaction?
+19. For `ctbotCopyExit` past the curve: does it follow the followed wallet's sell on PumpSwap? The one time it was
+    needed there it did not sell (idea I58, read from our fills and the tape on 13 Nov): 7aPo sold its whole bag
+    (3.60 SOL, one transaction, on PumpSwap) 8 s after our buy of 8Wi8 and no sell of ours followed; ours came 250 s
+    after the buy with the sniper's own fees, by no exit we had sent. Of our 4 live copies bought on PumpSwap none
+    was sold by the copy exit (dead exit 2, stop-loss 1, unknown 1); all 19 copy-exit sells on record are of 6 to
+    8 Nov.
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. The rest can wait a day.
 
