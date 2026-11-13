@@ -832,6 +832,21 @@ def _band_lines(strategies: list[dict]) -> list[str]:
     return out
 
 
+def _hunt_landing_lines(h: dict) -> list[str]:
+    """`lab --hunt-landing`: the landing asked, what it means, how it stands to the live place, and per rule how many
+    trades really stood between the crossing trade and our buy."""
+    note = h["note"].removeprefix("asked with --hunt-landing: ")
+    head = (f"Hunt landing {h['landing']}, asked with --hunt-landing ({', '.join(h['applies_to'])} triggers; the live "
+            f"place is {h['live']}): {h['means']}. {note[0].upper()}{note[1:]}.")  # fmt: skip
+    out = [head]
+    for t in h.get("triggers") or ():
+        if t["moments"]:
+            out.append(f"  {t['trigger']}: {t['behind_p50']:g} trades between the crossing trade and our buy at the "
+                       f"median ({t['behind_min']} to {t['behind_max']}) over {t['moments']} scored moments; fewer "
+                       f"than {h['trades_ahead']} on {t['short']} of them.")  # fmt: skip
+    return out
+
+
 def render_lab(r: dict) -> str:
     cost = f" at {r['per_tx_sol']:g} SOL a transaction" if r.get("per_tx_sol") is not None else ""
     bid = r.get("bid_landing") or {}  # copies scored where their bid puts them (lab --copy-position bid / bid-)
@@ -846,9 +861,14 @@ def render_lab(r: dict) -> str:
     moved = sorted(
         {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
     )
+    asked = r.get("hunt_landing") or {}  # lab --hunt-landing: the hunt, whale and burst rules at a landing asked for
+    off_live = bool(asked) and asked.get("vs_live") != "live"  # ... and that landing is not the live place
     if moved:  # launch-window rules land where an OKTech hunt buy lands, whatever landing the lab was asked for
-        out.append("Scored where they trade live, not at the landing above: "
+        lead = "Scored at a landing of their own" if off_live else "Scored where they trade live"
+        out.append(f"{lead}, not at the landing above: "
                    + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
+    if asked:
+        out += _hunt_landing_lines(asked)
     fewer = [s for s in r["strategies"] if s.get("exit_moments") is not None and s["exit_moments"] < s["moments"]]
     if fewer:  # an exit still holding a coin that left its curve where the PumpSwap tape lacks the migration
         out.append("Scored on fewer moments than their trigger fired (the exit still held a coin that left its curve, "
@@ -873,8 +893,11 @@ def render_lab(r: dict) -> str:
     if r.get("bid_landing"):  # copies scored where their bid puts them: a model, the places it gave, what it left out
         out += _bid_landing_lines(r["bid_landing"])
     elif "triggers" in r:  # an agent's hypotheses: no landing of their own, --latency / --position do not apply
+        hunts = ("a launch a slot after the create. Hunt, whale and burst triggers are not: they are at the landing "
+                 f"asked ({asked['landing']}; live hunt buys landed at {asked['live']})" if off_live
+                 else "launch, hunt, whale and burst triggers where a hunt buy lands")  # fmt: skip
         out.append(f"Each hypothesis is scored where it trades live: copies at {r.get('copy_landing', r['position'])} "
-                   "(where ours land), launch, hunt, whale and burst triggers where a hunt buy lands.")  # fmt: skip
+                   f"(where ours land), {hunts}.")  # fmt: skip
     else:
         out.append(
             "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."

@@ -140,6 +140,43 @@ class OperatorJobs:
                 raise PermissionError(f"--recipe refused, no job started: {exc}") from None
 
     @staticmethod
+    def _check_hunt_landing(argv: list[str]) -> None:
+        """A hunt landing (`lab --hunt-landing +N@D`, `paper freeze --hunt-landing +N@D`) is read with the lab's own
+        reader before anything starts, and refused when no rule of the job could use it. 13 Nov 03:45 (job 6808ed):
+        `--position +7@1` came back as a job id and the job died on start; a whole landing given to --position is
+        refused here with the flag that takes it. (The triggers and the recipe were read by `_check_triggers`.)"""
+        from itertools import pairwise
+
+        from ..analysis import paper
+        from ..analysis.lab import parse_trigger, recipe
+
+        if argv[:1] != ["lab"] and argv[:2] != ["paper", "freeze"]:
+            return
+
+        def given(flag: str) -> list[str]:
+            return ([v for a, v in pairwise(argv) if a == flag]
+                    + [a.split("=", 1)[1] for a in argv if a.startswith(flag + "=")])  # fmt: skip
+
+        for v in given("--position"):
+            if "@" in v:
+                raise PermissionError("--position refused, no job started: --position is start, middle, end or +N "
+                                      "and never moves a hunt, whale or burst trigger; their landing is "
+                                      f"--hunt-landing {v} ({paper.HUNT_LANDING_SYNTAX})")  # fmt: skip
+        landings = given("--hunt-landing") + ([""] if argv[-1] == "--hunt-landing" else [])
+        if not landings:
+            return
+        try:
+            asked = [paper.parse_hunt_landing(v) for v in landings]
+            hypotheses = [parse_trigger(v) for v in given("--trigger")]
+            for name in given("--recipe"):
+                hypotheses += list(recipe(name).triggers)
+            paper.check_hunt_landing(hypotheses or None)
+            if argv[0] == "paper":  # a freeze keeps the landing only on typed rules, and not with --only-live
+                paper.freeze_hunt_landing(asked[-1], hypotheses or None, bool(hypotheses), "--only-live" in argv)
+        except ValueError as exc:
+            raise PermissionError(f"--hunt-landing refused, no job started: {exc}") from None
+
+    @staticmethod
     def _check_backfill(argv: list[str]) -> None:
         """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
         AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
@@ -316,6 +353,7 @@ class OperatorJobs:
                                   "which rule needs pricing again and why")  # fmt: skip
         self._check_paths(argv)
         self._check_triggers(argv)
+        self._check_hunt_landing(argv)
         now = time.time() if now is None else now
         self._check_repeat(argv, now, backfill=action)
         running = self.running()

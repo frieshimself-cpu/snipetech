@@ -258,6 +258,145 @@ def landing_fields(row: dict, copy_pos: str, bid_sol: float = 0.0) -> dict[str, 
     return {"landing": landing_key(lat, pos), "live_landing": live}
 
 
+# -- a hunt's landing as a knob: `lab --hunt-landing +N@D`, `paper freeze --hunt-landing +N@D` (13 Nov 2026) ---------
+# Live hunt buys landed a median of 3 trades behind the trade that crossed the threshold (HUNT_LANDING, "+3@1"), but on
+# busy coins (15 SOL and more already in) the only two live fills landed 7 and 11 behind, and lost: a hunt rule that
+# pays only at +3@1 is no evidence for busy coins. The knob moves every rule OKTech runs through hunt, and only those.
+HUNT_KINDS = ("hunt", "whale", "burst")
+HUNT_LANDING_MAX_TRADES, HUNT_LANDING_MAX_BLOCKS = 99, 10
+HUNT_LANDING_SYNTAX = ("a hunt landing is +N@D: N trades of the coin ahead of our buy (0 to "
+                       f"{HUNT_LANDING_MAX_TRADES}), in the block D blocks after the block of the trade that crossed "
+                       f"the threshold (0 to {HUNT_LANDING_MAX_BLOCKS}), e.g. +7@1; the measured live place is "
+                       f"{landing_name(HUNT_LANDING[1], HUNT_LANDING[0])}")  # fmt: skip
+
+
+def parse_hunt_landing(text: Any) -> tuple[int, str]:
+    """A hunt landing as the lab prints it, "+N@D" ("+7@1"), as the (blocks after the trigger, position) pair the lab
+    lands a trigger with: (1, "+7"). The buy stands behind every trade of the coin in the blocks before block D and
+    behind the first N trades of block D; a block with fewer than N trades: behind its last, never in a later block
+    (`MarketPath.landing_index`, the same rule as the default +3@1). Anything else is refused in words."""
+    digits = str(text).strip().partition("@") if isinstance(text, str) else ("", "", "")
+    n, d = digits[0][1:], digits[2]
+    ok = (digits[0][:1] == "+" and n.isascii() and n.isdigit() and d.isascii() and d.isdigit()
+          and int(n) <= HUNT_LANDING_MAX_TRADES and int(d) <= HUNT_LANDING_MAX_BLOCKS)  # fmt: skip
+    if not ok:
+        raise ValueError(f"{HUNT_LANDING_SYNTAX}; not {text!r}")
+    return int(d), f"+{int(n)}"
+
+
+def hunt_landings(landing: tuple[int, str] | None) -> dict[str, tuple[int, str]]:
+    """The landing of each launch-type kind for a lab pass: LAUNCH_LANDINGS itself when no hunt landing is asked, else
+    a copy with the hunt-run kinds (HUNT_KINDS) at `landing`; a launch snipe and a MIG buy stay where they land."""
+    if landing is None:
+        return LAUNCH_LANDINGS
+    return LAUNCH_LANDINGS | dict.fromkeys(HUNT_KINDS, (int(landing[0]), str(landing[1])))
+
+
+def check_hunt_landing(triggers: Sequence[Trigger] | None) -> None:
+    """Refuse a hunt landing no rule of the run could use (the hypotheses `triggers`; None: the grid, which has
+    hunts): a landing asked for and applied to nothing would read as a result at that landing."""
+    if triggers is not None and not any(t.kind in HUNT_KINDS for t in triggers):
+        raise ValueError("--hunt-landing sets where hunt, whale or burst triggers land, and this run has none: a "
+                         "copy's place is --copy-position, a launch snipe and a MIG buy have no knob")  # fmt: skip
+
+
+def hunt_landing_vs_live(landing: tuple[int, str]) -> str:
+    """How a hunt landing stands to the measured live place (HUNT_LANDING): "live" (the same), "behind" (at least as
+    many trades and at least as many blocks: at or behind the live place on every moment), or "ahead" (fewer trades,
+    or an earlier block: it can land ahead of where live hunt buys landed, CLAUDE.md rule 2). A landing in the
+    crossing trade's own block is at or ahead of the live place on every moment, whatever its trades: the lab's +3@1
+    stands behind every trade of that block."""
+    lat, n = int(landing[0]), int(str(landing[1])[1:])
+    if (lat, f"+{n}") == HUNT_LANDING:
+        return "live"
+    return "behind" if lat >= HUNT_LANDING[0] and n >= int(HUNT_LANDING[1][1:]) else "ahead"
+
+
+def hunt_landing_note(landing: tuple[int, str]) -> str:
+    """One sentence a reader of a row needs about a hunt landing that was asked for."""
+    vs, live = hunt_landing_vs_live(landing), landing_key(*HUNT_LANDING)
+    if vs == "live":
+        return f"asked with --hunt-landing: the measured live place ({live})"
+    if vs == "ahead":
+        return (f"asked with --hunt-landing: better than the measured live place ({live}: live hunt buys landed a "
+                f"median of {HUNT_LANDING[1][1:]} trades behind the crossing trade, a block later). A result here is "
+                "no evidence that the rule pays live")  # fmt: skip
+    return (f"asked with --hunt-landing: at or behind the measured live place ({live}) on every moment. It is a place "
+            "asked for, not one our fills were measured at")  # fmt: skip
+
+
+def hunt_landing_fields(kind: str | None, landing: tuple[int, str] | None) -> dict[str, Any]:
+    """What a lab row of a hunt-run rule says besides its landing when a hunt landing was asked: which way it differs
+    from the live place (`landing_vs_live`) and the sentence about it; nothing for any other rule or with no flag."""
+    if landing is None or kind not in HUNT_KINDS:
+        return {}
+    return {"landing_vs_live": hunt_landing_vs_live(landing), "landing_note": hunt_landing_note(landing)}
+
+
+def hunt_landing_report(landing: tuple[int, str], data: dict) -> dict[str, Any]:
+    """A lab's `hunt_landing` block: the landing asked, the live one, which way it differs (`better_than_live` true
+    for one that can land ahead of the live place), and per hunt-run trigger where the buys really stood: the trades
+    between the crossing trade and our buy over its scored moments (`behind_p50`, `behind_min`, `behind_max`: the
+    crossing block's own later trades count too) and on how many moments fewer than the N asked stood there (`short`:
+    the block was too quiet, so the result there is kinder than the landing's name)."""
+    lat, n = int(landing[0]), int(str(landing[1])[1:])
+    vs = hunt_landing_vs_live(landing)
+    per = []
+    for ti, t in enumerate(data.get("triggers") or ()):
+        if t.kind not in HUNT_KINDS:
+            continue
+        behind = [int(r["behind"]) for r in data.get("rows") or () if r["trigger"] == ti and "behind" in r]
+        per.append({"trigger": t.label(), "moments": len(behind),
+                    "behind_p50": float(np.median(behind)) if behind else None,
+                    "behind_min": min(behind, default=None), "behind_max": max(behind, default=None),
+                    "short": sum(b < n for b in behind)})  # fmt: skip
+    note = hunt_landing_note(landing)
+    short, scored = sum(p["short"] for p in per), sum(p["moments"] for p in per)
+    if short:
+        note += (f". On {short} of {scored} scored moments fewer than {n} trades stood between the crossing trade and "
+                 "our buy (`short`: the block held too few), so the result there is kinder than the landing's "
+                 "name")  # fmt: skip
+    block = ("the crossing trade's own block" if lat == 0 else "the block after the crossing trade's" if lat == 1
+             else f"the block {lat} blocks after the crossing trade's")  # fmt: skip
+    first = "the first trade" if n == 1 else f"the first {n} trades"
+    return {"landing": landing_key(lat, f"+{n}"), "live": landing_key(*HUNT_LANDING), "trades_ahead": n,
+            "blocks_later": lat, "vs_live": vs, "better_than_live": vs == "ahead", "applies_to": sorted(HUNT_KINDS),
+            "means": f"our buy behind every earlier trade of the coin and {first} of {block}; a block with fewer: "
+                     "behind its last trade, never in a later block",
+            "note": note, "triggers": per}  # fmt: skip
+
+
+def apply_hunt_landing(res: dict, data: dict, landing: tuple[int, str] | None) -> None:
+    """Write a hunt landing that was asked into a lab's result: every hunt-run row of `strategies` and `triggers`
+    says which way it differs from the live place, and the run gets its `hunt_landing` block. No landing asked:
+    nothing is written."""
+    if landing is None:
+        return
+    for row in res.get("strategies") or ():
+        row.update(hunt_landing_fields((row.get("trigger_spec") or {}).get("kind"), landing))
+    for row, t in zip(res.get("triggers") or (), data.get("triggers") or (), strict=False):
+        row.update(hunt_landing_fields(t.kind, landing))
+    res["hunt_landing"] = hunt_landing_report(landing, data)
+
+
+def freeze_hunt_landing(landing: tuple[int, str] | None, triggers: Sequence[Trigger] | None, typed: bool,
+                        only_live: bool) -> tuple[int, str] | None:  # fmt: skip
+    """The hunt landing `freeze` keeps its hunt-run hypotheses at, or None for the live place (asked for or not: the
+    plain rule). Refused in words where it could not be kept: without typed triggers (`typed`: the grid's rules and a
+    lab handed in are frozen where they trade live), with no rule it applies to, and with --only-live."""
+    if landing is None:
+        return None
+    if not typed:
+        raise ValueError("--hunt-landing goes with --trigger: the grid's rules are frozen where they trade live")
+    check_hunt_landing(triggers)
+    landing = (int(landing[0]), str(landing[1]))
+    if landing == HUNT_LANDING:
+        return None
+    if only_live:
+        raise ValueError("--only-live keeps the rules scored where they trade live: not with --hunt-landing")
+    return landing
+
+
 def landing_text(latency: int, position: str, kind: str | None = None, bid_sol: float = 0.0,
                  asked: bool = False) -> str:  # fmt: skip
     """The landing in words, for the report; a MIG strategy's (`kind` mig) as `lab.mig_entry` lands it. With a bid
@@ -272,6 +411,8 @@ def landing_text(latency: int, position: str, kind: str | None = None, bid_sol: 
             where = landing_text(latency, position, kind)
             where = where.split(": ", 1)[1] if where.startswith(f"{position}: ") else where
         why = "asked for at the freeze" if asked or is_bid(position) else "a bid charged on every buy"
+        if kind in HUNT_KINDS:  # a hunt frozen at a landing asked for (`freeze`: hunt_landing)
+            return f"{position}{bid}: {where} ({why}: not where live hunt buys landed)"
         return f"{position}{bid}: {where} ({why}: not where our copies land live)"
     latency, position = int(latency), str(position)
     if kind in AMM_KINDS:
@@ -503,7 +644,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
            hours: float | None = None, per_tx_source: str | None = None,
            tape: Callable[[], Store] | None = None, copy_position: str | None = None,
            buy_bid_sol: float | None = None, sell_parts: tuple[int, float] | None = None,
-           recipe: Recipe | None = None) -> dict[str, Any]:  # fmt: skip
+           recipe: Recipe | None = None, hunt_landing: tuple[int, str] | None = None) -> dict[str, Any]:  # fmt: skip
     """Run the lab now (at `latency`/`position`; a launch, hunt, whale or burst trigger where its OKTech hunt buy lands,
     LAUNCH_LANDINGS) and freeze its `top` strategies with a positive lower bound for forward testing, each stored at the
     live landing for its trigger (that is where `run` scores it). `data`: a lab already collected at that landing (no
@@ -525,6 +666,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     `buy_bid_sol`), the forward run scores it there with that bid (`pinned`), it has an id of its own, and it is
     never reported as where our copies land live. A `copy_position` that is today's copy landing, with no bid, is the
     plain rule. `only_live` cannot be asked for with them.
+
+    `hunt_landing` (with `triggers` only; 13 Nov, `--hunt-landing +N@D`, `parse_hunt_landing`): the hypotheses' hunt,
+    whale and burst rules are scored and frozen at this landing instead of where a hunt buy lands (+3@1). Such a rule
+    stores the landing (`landing_asked`), has an id and a forward record of its own beside the same rule at +3@1
+    (`rule_key`), the forward run scores it there (`pinned`), and it is never reported as the live landing, so it
+    never goes to a live test by itself. +3@1 asked for is the plain rule.
 
     One forward record a rule (`rule_key`: a trigger at a landing and size; a rule sold in parts stands beside the
     same rule sold in one sale, which alone a sniper can run). The `top` are the lab's best distinct rules, never
@@ -564,6 +711,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     if own_landing and only_live:
         raise ValueError("--only-live keeps the rules scored where they trade live: not with --copy-position or "
                          "--buy-bid")  # fmt: skip
+    # the landing the hypotheses' hunt-run rules are frozen at, when one other than the live place was asked
+    asked_hunt = freeze_hunt_landing(hunt_landing, triggers, bool(triggers) and data is None, only_live)
     asked_pos = None  # the place the hypotheses' copies were asked to be frozen at, when it is not today's copy landing
     if data is None:
         from .lab_lock import lab_lock
@@ -586,7 +735,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                 source = recent_tape(source, hours)
             # launch-window rules (launch, hunt, whale, burst) are scored in the same pass where their live buy lands
             # (the wallet groups from the live database: the copy has none of the labels written since it was taken)
-            data = collect(source, cfg, buy_sol, latency, position, per_tx_sol, landings=LAUNCH_LANDINGS,
+            data = collect(source, cfg, buy_sol, latency, position, per_tx_sol, landings=hunt_landings(asked_hunt),
                            triggers=triggers, kols=label_groups(store), exits=exits, buy_bid_sol=bid,
                            sell_parts=sell_parts)  # fmt: skip
     every = rank(data, cfg, top=50)
@@ -650,6 +799,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         asked = asked_pos is not None and spec.get("kind") not in LAUNCH_LANDINGS
         if asked:
             lat, pos = 0, asked_pos
+        if asked_hunt is not None and spec.get("kind") in HUNT_KINDS:  # a hunt keeps the landing asked for, likewise
+            (lat, pos), asked = asked_hunt, True
         sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol, bid, asked)
         label = f"{r['trigger']} | {r['exit']}"
         mine = fired.get(_spec_key(spec), set())

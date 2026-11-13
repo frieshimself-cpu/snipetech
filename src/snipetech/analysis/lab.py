@@ -2000,6 +2000,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 row |= _leader_profile(path, i, frac, own)
             if trig.kind in AMM_KINDS:
                 row["mig_landing"] = mig_landing(path, i, e, mig)
+            if trig.kind in LAUNCH_KINDS:  # the trades between the trade that fired the rule and our buy
+                row["behind"] = int(e) - int(i)
             rows.append(row)
     return rows
 
