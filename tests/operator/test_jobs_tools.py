@@ -1373,7 +1373,8 @@ def test_start_job_tells_the_agents_the_tools_of_13_nov(toolbox):
                   "oktech_unconfirmed", '"--hunt-landing", "+7@1"', "landing_vs_live", '"short"',
                   "found on buys of 0.1 SOL or more only", "one line a reason", "is that recipe's rule",
                   '["winners", "--snipers", "--hours", "72", "--json"]', '"group" takes "sniper"',
-                  "No copy lands in a coin's create block"):  # fmt: skip
+                  "No copy lands in a coin's create block", 'the exit\'s name ends "copy50% watch1.3s"',
+                  "listed under not_as_live in a freeze"):  # fmt: skip
         assert words in text, words
 
 

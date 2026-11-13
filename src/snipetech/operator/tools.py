@@ -750,6 +750,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         take-profits, stops and the quiet exit acting from the buy: such a row is an upper end until run again
         (a timer of 3 s or more is unchanged). A wallet rule frozen before it keeps its id and its trades and no
         longer stands for its rule: freeze the rule again and judge the new id.
+        A WALLET RULE'S EXITS FOLLOW THE WALLET'S SALE (13 Nov): every exit a lab scores on a wallet rule also sells
+        everything when the followed wallet sells half its coins in one sale: the copy exit every copy sniper is
+        sent. No new flag: the exit's name ends "copy50% watch1.3s" and the result's copy_exit says the threshold.
+        A lab row or a frozen wallet rule from before (no "copy50%" in its name) is another exit: do not compare
+        it with a new row; run the lab again and freeze the rule again (a new id; the old record keeps its trades,
+        shows exit_note in paper report and is listed under not_as_live in a freeze). Hunt, launch, whale, burst
+        and MIG rules are unchanged and a recipe's own exit has none. The sale is priced one slot after the
+        wallet's sale, ahead of that slot's trades: behind a crowded wallet a live sale can land lower (not
+        measured). Several small sales never add up to the half.
         DUST: place-bids and tips leave out a buy under 0.1 SOL behind the followed wallet: it is no first buyer and
         its bid is no bid to outbid (a 0.00 SOL buy behind Cupseyy had made his first outsider's bid read 0.034 SOL
         instead of 0.305). The bid landing ("--copy-position", "bid" / "bid-") still counts such a transaction: it
