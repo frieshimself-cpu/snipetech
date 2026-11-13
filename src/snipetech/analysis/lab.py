@@ -60,7 +60,15 @@ from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
-from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, MIG_WIDE_WINDOW_SECS, _whole_hunt, _whole_secs
+from ..oktech import (
+    ANY_BUYER_GATES,
+    BOT_GROUPS,
+    EXITS,
+    MIG_MAX_HOLD_SECS,
+    MIG_WIDE_WINDOW_SECS,
+    _whole_hunt,
+    _whole_secs,
+)
 from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -222,6 +230,15 @@ class Trigger:
     vol_secs: float = 0.0
     min_vol: float = 0.0
     max_vol: float = 0.0
+    # whale (13 Nov, idea I84, the bot E2x1's coin filter: "any buy of 0.25 to 0.56 SOL by anyone, on a coin whose
+    # curve holds 7 to 18 SOL before that buy, 20 to 190 slots old"): four of the fields above gate a whale trigger
+    # too (ANY_BUYER_GATES), and make it an any-buyer rule (`any_buyer`). `max_sol`: the trigger buy is at most this
+    # (`sol` is its floor). `min_age`: the coin is at least this many seconds old at the buy (`max_age` the other
+    # end; the chain runs at about 0.215 s a slot, so 20 to 190 slots are about 4 to 41 s, and the tape's clock is
+    # whole seconds). `min_curve` / `max_curve`: the SOL in the curve BEFORE the trigger buy (`curve_before`; on a
+    # kol trigger the same two names read the curve AFTER the followed buy: the labels say which). A buy outside a
+    # gate is passed over and the rule fires on the coin's first buy inside all of them. No sniper of ours runs
+    # such a rule (oktech.strategy_sniper refuses it): research only, ANY_BUYER_NOTE
 
     def label(self) -> str:
         base = self._label()
@@ -252,7 +269,11 @@ class Trigger:
                     + (f", creator's own buy <= {self.dev_max:g} SOL" if self.dev_max is not None else "")
                     + (f", a wallet of the group {self.bots} among the buyers" if self.bots else ""))  # fmt: skip
         if self.kind == "whale":
-            return f"buy >= {self.sol:g} SOL by a non-dev"
+            size = f"buy of {self.sol:g} to {self.max_sol:g} SOL" if self.max_sol else f"buy >= {self.sol:g} SOL"
+            curve = (f"{self.min_curve:g} to {self.max_curve:g}" if self.min_curve and self.max_curve
+                     else f">= {self.min_curve:g}" if self.min_curve
+                     else f"<= {self.max_curve:g}" if self.max_curve else "")  # fmt: skip
+            return f"{size} by a non-dev" + (f", {curve} SOL in the curve before the buy" if curve else "")
         if self.kind == "mig":
             when = f"within {self.window:g} s of the create" if self.window else "any time after the create"
             paid = {True: ", creator paid by an earlier coin's creator",
@@ -400,7 +421,8 @@ KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "g
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
-    "whale": ("sol", "max_age", "plain", "solo", "venue", "crew"),
+    # with the coin gates of an any-buyer rule (ANY_BUYER_GATES: max_sol, min_age, min_curve, max_curve; 13 Nov)
+    "whale": ("sol", "max_sol", "min_age", "max_age", "min_curve", "max_curve", "plain", "solo", "venue", "crew"),
     "kol": ("sol", "group", "min_age", "max_age", "plain", *KOL_GATES),
     "momentum": ("buyers", "sol", "progress", "holders", "ret", "plain"),
     "hunt": ("sol", "buyers", "window", "max_buyers", "dev_max", "venue", "crew", "bots"),
@@ -528,9 +550,10 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"venue must be one of {', '.join(TRIGGER_VENUES)}, not {trig.venue!r}")
     if kind == "kol" and trig.group not in TRIGGER_GROUPS:
         raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
-    if trig.max_sol and trig.max_sol < (trig.sol or KOL_MIN_SOL):
+    floor = trig.sol if kind == "whale" else (trig.sol or KOL_MIN_SOL)  # a whale rule has no floor but its own
+    if trig.max_sol and trig.max_sol < floor:
         raise ValueError(f"max_sol ({trig.max_sol:g}) is under the smallest buy the rule follows (sol, "
-                         f"{trig.sol or KOL_MIN_SOL:g}): no buy fits")  # fmt: skip
+                         f"{floor:g}): no buy fits")  # fmt: skip
     if trig.max_curve and trig.max_curve < trig.min_curve:
         raise ValueError(f"max_curve ({trig.max_curve:g}) is under min_curve ({trig.min_curve:g}): no coin fits")
     if trig.max_mcap and trig.max_mcap < trig.min_mcap:
@@ -1530,6 +1553,38 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
     return _vol_gate(trig, path, i)  # the SOL traded before the followed buy, inside `min_vol` / `max_vol`
 
 
+def _any_buyer_gates(trig: Trigger, path: MarketPath, i: int, launch) -> bool:
+    """A whale trigger's coin gates (ANY_BUYER_GATES) at the buy `i`, already at least `sol`: the buy is at most
+    `max_sol`, the coin at least `min_age` seconds old at it (`launch`: the coin's, which `_fire` has made sure of
+    when an age gate is set), and the SOL in the curve before the buy inside `min_curve` / `max_curve`
+    (`curve_before`; a buy past the curve, on PumpSwap, has no curve and passes neither). 0 = no limit. With no gate
+    set every buy passes: the whale rule as it always was."""
+    if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
+        return False
+    if trig.min_age and path.ts[i] < launch.ts + trig.min_age:
+        return False
+    if trig.min_curve or trig.max_curve:
+        if path.amm[i]:
+            return False
+        curve = curve_before(path, i)
+        if curve < trig.min_curve or (trig.max_curve and curve > trig.max_curve):
+            return False
+    return True
+
+
+def any_buyer_fields(path: MarketPath, i: int, launch) -> dict[str, Any]:
+    """What an any-buyer rule's lab row says of the coin at the trigger buy `i`: the gates' own numbers
+    (`curve_before_sol`: SOL in the curve before the buy; `age_secs`: the coin's age at it on the tape's whole-second
+    clock, what `min_age` / `max_age` read, and `age_slots`: the same in slots; both left out where the tape does
+    not hold the launch) and the two a wallet rule's rows carry for the bands (`mcap_sol`: market cap in SOL after
+    the buy; `vol60_sol`: SOL traded in the BAND_VOL_SECS before it, that buy not counted)."""
+    out = {"curve_before_sol": round(curve_before(path, i), 6), "mcap_sol": round(path.mcap_sol(i), 3),
+           "vol60_sol": round(volume_before(path, i, BAND_VOL_SECS), 6)}  # fmt: skip
+    if launch is not None:
+        out |= {"age_secs": float(path.ts[i]) - float(launch.ts), "age_slots": int(path.slot[i]) - int(launch.slot)}
+    return out
+
+
 def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | None = None, mig=None,
           paid: bool | None = None) -> int | None:  # fmt: skip
     if trig.kind == "event":
@@ -1596,6 +1651,8 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
         if known and first and path.quote[i] >= KOL_MIN_SOL * LAMPORTS and any(path.users[i] in g for g in known):
             known_at.append(float(path.ts[i]))
         if trig.kind == "whale" and path.quote[i] >= trig.sol * LAMPORTS:
+            if not _any_buyer_gates(trig, path, i, launch):
+                continue  # outside a coin gate: passed over, the rule fires on the next buy inside all of them
             if trig.solo:
                 # live (5 Nov): a >= 2 SOL buy inside the create bundle cannot be followed in its own slot; we land
                 # after the whole bundle, at the top, and bundles dump within seconds. Keep only the big buys that
@@ -1662,6 +1719,37 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
         if u in group and path.quote[i] >= floor and _vol_gate(trig, path, i):
             out.append(i)
     return out
+
+
+# An any-buyer rule with coin gates (13 Nov, idea I84: the bot E2x1's coin filter, "any buy of 0.25 SOL or more by
+# anyone, on a coin whose curve holds 7 to 18 SOL before that buy, 20 to 190 slots old"; the bot itself buys one
+# trade behind in the trigger's own block, a place no sniper of ours has): a whale trigger with one of
+# ANY_BUYER_GATES set. No sniper of ours can run one, so its landing is an assumption and every answer says so.
+ANY_BUYER_NOTE = ("research only: no sniper of ours buys behind any wallet's buy on a coin of a given age and curve "
+                  "(OKTech hunt gates on the SOL bought within a window of the launch: it has no floor on a coin's "
+                  "age, no ceiling on one buy and no limit on the SOL in the curve; a copy sniper follows named "
+                  "wallets), so this rule has no live landing. It is scored at the place named in `landing`; from "
+                  "the lab command that is where OKTech hunt buys landed at launches (+3@1: three trades into the "
+                  "slot after the trigger buy, never in the trigger buy's own slot; 5 Nov fills: 1 to 2 slots after, "
+                  "2 to 7 buys ahead). Whether a bot gets that place behind a buy in a coin some seconds old, and "
+                  "what bid buys it, is not measured: a good number here is a reason to measure that landing, not "
+                  "evidence that the rule pays live")  # fmt: skip
+
+
+def any_buyer(trig: Trigger | Mapping[str, Any] | None) -> bool:
+    """Whether a rule is an any-buyer rule with coin gates: a whale trigger with one of ANY_BUYER_GATES set (`max_sol`,
+    `min_age`, `min_curve`, `max_curve`). `trig`: a Trigger, or its fields as a frozen rule stores them."""
+    if not trig:
+        return False
+    get = trig.get if isinstance(trig, Mapping) else (lambda name: getattr(trig, name, None))
+    return get("kind") == "whale" and any(get(name) for name in ANY_BUYER_GATES)
+
+
+def curve_before(path: MarketPath, i: int) -> float:
+    """SOL in the coin's pump.fun curve before the buy at state i: the reserves that buy left, less the SOL it put
+    in and the curve's virtual 30. Read off the buy itself, so it holds where the tape lacks the trade before it
+    (on the real tape it is what the trade before left, tests/test_lab_any_buyer.py). Only for a buy on the curve."""
+    return (float(path.q[i]) - float(path.quote[i])) / LAMPORTS - CURVE_VIRTUAL_SOL
 
 
 TEAMS = "__teams__"  # in the label groups: {address: team} for a KOL trigger with `teams`
@@ -2079,6 +2167,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 # BAND_VOL_SECS before it, both read off the path the moment was found on (no second pass)
                 row["mcap_sol"] = round(path.mcap_sol(i), 3)
                 row["vol60_sol"] = round(volume_before(path, i, BAND_VOL_SECS), 6)
+            if any_buyer(trig):  # the coin at the trigger buy: the gates' numbers, and the bands' two
+                row |= any_buyer_fields(path, i, in_span)
             if frac is not None:
                 row |= _leader_profile(path, i, frac, own)
             if trig.kind in AMM_KINDS:

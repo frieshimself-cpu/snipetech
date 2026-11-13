@@ -1013,6 +1013,10 @@ def venue_refusal(venue: str | None, platforms=STRATEGY_PLATFORMS) -> str | None
 
 # the label kinds a hunt trigger's `bots` can name: wallets sent as OKTech's knownBotWallets (`label --kind bundler`)
 BOT_GROUPS = ("bundler",)
+# The coin gates of a lab whale trigger that make it an any-buyer rule (lab.any_buyer, 13 Nov): a ceiling on the trigger
+# buy, a floor on the coin's age, a floor and a ceiling on the SOL in the curve before the buy. OKTech hunt has none of
+# them (it gates on the SOL bought within a window of the launch), so a rule with one is never built as a sniper
+ANY_BUYER_GATES = ("max_sol", "min_age", "min_curve", "max_curve")
 
 
 def strategy_fee_kind(trigger: dict, via: str = "hunt") -> str:
@@ -1056,6 +1060,11 @@ def strategy_sniper(
     if trig.get("crew") == "only":
         raise ValueError("the rule was scored on serial crews' coins alone (crew only), and OKTech cannot tell a crew's "
                          "coin from any other launch: it would buy every launch; research only")  # fmt: skip
+    gated = [g for g in ANY_BUYER_GATES if trig.get(g)] if kind == "whale" else []
+    if gated:
+        raise ValueError(f"the rule was scored behind any wallet's buy inside coin gates ({', '.join(gated)}), and "
+                         "OKTech hunt has none of them (it gates on the SOL bought within a window of the launch): it "
+                         "would buy launches the rule never fired on; research only")  # fmt: skip
     choice = fees or fee_policy.choose(cfg or Config(), strategy_fee_kind(trig, via), fills=fills, kinds_of=kinds_of)
     notes.append(choice.note())
     config: dict[str, Any] = {"mode": "normal", "platforms": list(STRATEGY_PLATFORMS), "monitorProgram": True, "buyAmount": _round(buy),

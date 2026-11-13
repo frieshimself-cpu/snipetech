@@ -208,8 +208,9 @@ def test_the_smallest_age_is_an_agents_to_set_on_wallet_rules_only():
     assert (t.min_age, t.max_age) == (13.0, 420.0)
     assert "at least 13s after launch" in t.label() and "within 420s of launch" in t.label()
     assert parse_trigger(json.dumps(t.__dict__)) == t  # what the lab prints can be pasted back
-    with pytest.raises(ValueError, match="min_age"):
-        parse_trigger('{"kind": "whale", "sol": 2, "min_age": 13}')
+    # (a whale trigger takes it too since 13 Nov, as one of an any-buyer rule's coin gates: tests/test_lab_any_buyer.py)
+    with pytest.raises(ValueError, match="min_age does not apply to a burst trigger"):
+        parse_trigger('{"kind": "burst", "buyers": 3, "sol": 2, "window": 2, "min_age": 13}')
     with pytest.raises(ValueError, match="min_age"):
         parse_trigger('{"kind": "kol", "min_age": 500, "max_age": 420}')
     with pytest.raises(ValueError, match="min_age"):

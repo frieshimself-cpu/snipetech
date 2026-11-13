@@ -49,6 +49,7 @@ from .bid_landing import SKIP_WORDS as BID_SKIP_WORDS
 from .companions import companions
 from .lab import (
     AMM_KINDS,
+    ANY_BUYER_NOTE,
     COPY_LAND_SLOTS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
@@ -66,6 +67,7 @@ from .lab import (
     _crew_uris,
     _fire,
     amm_buy_gap,
+    any_buyer,
     bid_entry,
     check_bid_landing,
     collect,
@@ -255,6 +257,8 @@ def landing_fields(row: dict, copy_pos: str, bid_sol: float = 0.0) -> dict[str, 
     lat, pos = row["landing"]
     if is_bid(pos):
         return {"landing": landing_key(lat, pos, bid_sol), "live_landing": False, "landing_note": NOT_LIVE}
+    if any_buyer(row.get("trigger_spec")):  # no sniper of ours runs it: the place is an assumption, and says so
+        return {"landing": landing_key(lat, pos), "live_landing": False, "landing_note": ANY_BUYER_NOTE}
     live = live_landing((row.get("trigger_spec") or {}).get("kind"), copy_pos) == (int(lat), str(pos))
     return {"landing": landing_key(lat, pos), "live_landing": live}
 
@@ -616,8 +620,11 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         lat, pos = r.get("landing") or (latency, position)
         return int(lat), str(pos)
 
+    lone: list[dict] = []  # with `only_live`: the any-buyer rules, which trade nowhere live (lab.ANY_BUYER_NOTE)
     if only_live:
         ranked = [r for r in ranked if live_landing(r["trigger_spec"].get("kind"), copy_pos) == scored_at(r)]
+        lone = [r for r in ranked if any_buyer(r["trigger_spec"])]
+        ranked = [r for r in ranked if not any_buyer(r["trigger_spec"])]
     cov = store.coverage("paper_strategies")
     old = [] if replace else cov.get("strategies", [])
     have = {s["id"] for s in old}
@@ -644,6 +651,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     new: list[dict] = []
     skipped: list[dict] = []
     of = recipe.name if recipe is not None else None  # the recipe these rules are frozen as: part of each rule's key
+    skipped += [{"label": f"{r['trigger']} | {r['exit']}",
+                 "why": "an any-buyer rule has no live landing (no sniper of ours runs one), and --only-live keeps "
+                        "the rules scored where they trade live: freeze it without --only-live for a paper record, "
+                        "which never counts as one at a live landing"} for r in lone]  # fmt: skip
     if recipe is not None:  # a recipe's rules are named, so each one left out is named too
         seen_labels = {r["trigger"] for r in every}
         fired_n = _fired_counts(data)
@@ -1215,13 +1226,17 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         out.append({"id": s["id"], "label": s["label"], "position": pos, "latency": lat, "trigger_kind": kind,
                     "landing": landing_text(lat, pos, kind, bid_of(s), asked),
                     # a place asked for, or bought with a bid, is never where our trades land live (`pinned`)
-                    "live_landing": not pinned(s) and (lat, pos) == live_landing(kind, copy_pos),
+                    # (nor is any place of an any-buyer rule: no sniper of ours runs one, lab.ANY_BUYER_NOTE)
+                    "live_landing": (not pinned(s) and not any_buyer(s.get("trigger"))
+                                     and (lat, pos) == live_landing(kind, copy_pos)),
                     "buy_bid_sol": bid_of(s), "landing_asked": asked,
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": n, "mean": nums["mean"],
                     "ev_lower": nums["ev_lower"], "total": nums["total"], "win_rate": nums["win_rate"],
                     "per_hour": n / hours if hours else None, "lab_mean": s["lab"].get("mean"),
                     "lab_ev_lower": s["lab"].get("ev_lower"), "lab_landing": s["lab"].get("landing"),
                     "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
+        if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
+            out[-1]["landing_note"] = ANY_BUYER_NOTE
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         nums = numbers(s, False)
