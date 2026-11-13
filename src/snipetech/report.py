@@ -998,6 +998,16 @@ def render_model_check(o: dict) -> str:
     return "\n".join(out)
 
 
+def _by_note(rows: list[dict], key: str) -> list[tuple[str, list[str]]]:
+    """The rows that carry a note under `key`, as (note, the ids that share it), in the rows' order: one line a note
+    instead of one a strategy."""
+    out: dict[str, list[str]] = {}
+    for row in rows:
+        if row.get(key):
+            out.setdefault(str(row[key]), []).append(str(row["id"]))
+    return list(out.items())
+
+
 def render_paper(action: str, r: dict) -> str:
     import time as _t
 
@@ -1014,6 +1024,9 @@ def render_paper(action: str, r: dict) -> str:
             for s in r["frozen"]
         ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
+        # the records whose exit is not their sniper's (paper.not_as_live): kept, and no longer their rule's record
+        out += [f"  no longer the record of its rule: {', '.join(ids)}: {why}"
+                for why, ids in _by_note(r.get("not_as_live") or [], "why")]  # fmt: skip
         if r.get("bid_landing"):
             out += _bid_landing_lines(r["bid_landing"])
         return "\n".join(out)
@@ -1086,6 +1099,8 @@ def render_paper(action: str, r: dict) -> str:
         "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
         " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
     )
+    # the records whose exit is not their sniper's (paper.not_as_live): what their trades are not
+    out += [f"{', '.join(ids)}: {why}." for why, ids in _by_note(rows, "exit_note")]
     other = sum(int(s.get("other_venue") or 0) for s in rows)
     if other:
         out.append(f"{other} trades on another launchpad's coins than their rule's are kept but not counted (until 8 Nov "

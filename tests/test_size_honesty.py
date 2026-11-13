@@ -349,7 +349,8 @@ def test_each_scored_row_carries_the_size_numbers_and_the_strategy_shows_both_en
     cfg.verdict.bootstrap_samples = 200
     (s,) = rank(data, cfg, top=5, min_train=3)
     rows = sorted(data["rows"], key=lambda r: r["ts"])
-    k = [L.watched(e).label() for e in EXITS].index(s["exit"])  # a wallet rule's exits wait the watch delay
+    # a wallet rule's exits wait the watch delay and carry the copy exit (lab.kind_exits)
+    k = [e.label() for e in L.kind_exits(EXITS)["kol"]].index(s["exit"])
     test = rows[int(len(rows) * L.TRAIN_SHARE) :]
     pnl = np.array([r["pnl"][k] for r in test])
     floor = np.array([r["own_rt"] for r in test])

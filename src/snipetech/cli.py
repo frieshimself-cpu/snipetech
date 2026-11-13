@@ -1829,6 +1829,8 @@ async def _run(args, cfg: Config) -> int:
                 res["sell_parts"] = {"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
             if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of
                 res["copy_companions"] = data["mates"]
+            if data.get("copy_exit"):  # a wallet rule ran: the copy exit its exits carry, and what it is not
+                res["copy_exit"] = data["copy_exit"]
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
             if data.get("bid_landing"):  # the places the bid got, the moments with no fee record, the hours with bids
