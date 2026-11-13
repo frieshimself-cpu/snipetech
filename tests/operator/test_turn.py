@@ -834,3 +834,24 @@ def test_a_second_empty_account_in_one_day_is_told_again(env):
     env["ledger"].record("analyst", {"input_tokens": 100_000}, now=NOW + 3600)  # paid: the agents are answered
     turn_at(NOW + 7200)
     assert env["paths"].notes.read_text().count("api error") == 2 and len(env["sent"]) == 2
+
+
+def test_an_api_refusal_names_the_organisation_the_key_belongs_to(env):
+    """13 Nov: the owner added credit three times and the API went on refusing: the money was on another
+    organisation than the server's key. The API names the key's organisation in every answer's headers
+    (anthropic-organization-id), which is no secret and is what the console shows under Settings, Organization: the
+    refusal says it, so the owner can see which account the credit has to be on."""
+
+    def handler(request):
+        return httpx2.Response(
+            400,
+            headers={"anthropic-organization-id": "0f3b1c2d-aaaa-bbbb-cccc-1234567890ab"},
+            json={"type": "error", "error": {"type": "invalid_request_error",
+                                             "message": "Your credit balance is too low to access the Anthropic API."}},
+        )  # fmt: skip
+
+    out = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out["stopped"] == "api_error"
+    assert out["error"].startswith("400: Your credit balance is too low to access the Anthropic API.")
+    assert "organization ID 0f3b1c2d-aaaa-bbbb-cccc-1234567890ab" in out["error"]
+    assert "0f3b1c2d-aaaa-bbbb-cccc-1234567890ab" in env["sent"][0]

@@ -99,7 +99,24 @@ def api_words(exc: anthropic.APIError) -> str:
         said = getattr(exc, "message", None) or str(exc)
     code = getattr(exc, "status_code", None)
     head = f"{code}: " if isinstance(code, int) else f"{type(exc).__name__}: "
-    return redact(head + " ".join(str(said).split()))[:API_WORDS_MAX]
+    return redact(head + " ".join(str(said).split()))[:API_WORDS_MAX] + key_organisation(exc)
+
+
+def key_organisation(exc: anthropic.APIError) -> str:
+    """Which Anthropic organisation the key belongs to, as the API's answer names it (the anthropic-organization-id
+    header; no secret: the console shows it under Settings, Organization), in words to put behind a refusal; "" where
+    the answer has none. 13 Nov: the owner added credit three times and the API went on refusing ("credit balance is
+    too low"): the money was on another organisation than the server's key, and nothing here said which one the key
+    is in."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    try:
+        org = str(headers.get("anthropic-organization-id") or "").strip() if headers is not None else ""
+    except Exception:  # noqa: BLE001 - a header that cannot be read is no header
+        org = ""
+    if not org or len(org) > 80 or not all(c.isalnum() or c in "-_" for c in org):
+        return ""
+    return (f" (the server's key belongs to the Anthropic organization ID {org}: the credit has to be on that "
+            "organization, console.anthropic.com, Settings, Organization shows the ID)")  # fmt: skip
 
 
 async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decision: Decision, ledger: Ledger,
