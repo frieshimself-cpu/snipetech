@@ -27,6 +27,8 @@ from .gates import (
     verdict_for,
     with_followed_note,
 )
+from .one_actor import GATE as ACTOR_GATE
+from .one_actor import OneActor, same_actor
 
 LabRunner = Callable[[list[str], str], list[dict]]
 LAST_LAB_KEY = "qualify:last_lab"
@@ -118,9 +120,12 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         run.info = {"workers": data.get("workers"), "moments": len(data["rows"]), "mates": len(mates),
                     "secs": {"companions": round(t0 - tc, 1), "collect": round(t1 - t0, 1),
                              "rank": round(time.monotonic() - t1, 1)}}  # fmt: skip
+        # each measured wallet's companions, read once: the one-candidate-an-actor rule takes them (one_actor.OneActor)
+        run.mates = {w: frozenset(mates.get(w) or ()) for w in wallets}
         return rows
 
     run.info = None
+    run.mates = None
     return run
 
 
@@ -312,6 +317,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     # it has not read OKTech within the hour; never the local sniper rows: a book stop leaves the row in place, and the
     # owner's hand-made snipers have rows too (review of 7 Nov)
     copying = copying_now(store, now)
+    # one candidate an actor (one_actor.py): of the wallets one operator buys with, one holds the place
+    one = OneActor(store, tape, since, copying)
 
     def judge(c: dict, row: dict | None) -> None:
         """One measured wallet's verdict, written."""
@@ -336,8 +343,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         copies = with_recorded(record.get("copies"), moments, spans)
         first, latest = pick_times(store, w)
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
-        v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
-                         samples=cfg.verdict.bootstrap_samples, first_picked_at=first)  # fmt: skip
+        # every in-sample gate passed: is another wallet of its actor the candidate already? (never for a wallet a
+        # sniper may copy.) A wallet that yields starts no forward record; one it has runs on, its history its own
+        act = one.decide(w, lower_lab, c.get("verdict"), latest is not None) if v["status"] == "qualified" else None
+        if act is None or not act.same_as or latest is not None:
+            v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
+                             samples=cfg.verdict.bootstrap_samples, first_picked_at=first)  # fmt: skip
+        v = same_actor(v, act, q_eff, now)  # `v` itself unless it yields
         if first is None and v.get("forward") is not None:
             first = int(now)  # picked for the first time now
         if row is not None and first is not None:  # what the next run takes from the record once the tape drops it
@@ -353,10 +365,16 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         # how copied the wallet is by GMGN's count: one more reason on the finished verdict, read by no gate
         followed = _followed(store, c)
         v = with_followed_note(v, followed)
+        one.release(w, v, now)  # it was its actor's candidate and no longer is: the wallets behind it are due at once
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
                                        "computed_at": int(now), "record": record or None,
-                                       **({"gmgn": followed} if followed else {})})  # fmt: skip
+                                       **({"gmgn": followed} if followed else {}),
+                                       **({"actor": act.block} if act is not None else {})})  # fmt: skip
+        if v.get("gate") == ACTOR_GATE and act is not None:  # said in the run's own answer, each with its reason
+            kept = "its own record kept" if v.get("forward") else "none started"
+            out.setdefault("same_actor", []).append({"wallet": w, "same_as": act.same_as, "forward": kept,
+                                                     "why": act.why})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
         fwd = (v.get("forward") or {}).get("status")
@@ -381,7 +399,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
                 t0 = time.monotonic()
                 rows = {r["wallet"]: r for r in runner([c["wallet"] for c in chunk], landing) if r.get("wallet")}
                 t1 = time.monotonic()
-                for c in chunk:
+                one.lab_mates([c["wallet"] for c in chunk], getattr(runner, "mates", None))
+                for c in one.order(chunk, rows, need):  # as they came, unless two of them are one actor
                     judge(c, rows.get(c["wallet"]))
                 secs["lab"] += t1 - t0
                 secs["gates"] += time.monotonic() - t1

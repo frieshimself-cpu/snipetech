@@ -650,6 +650,46 @@ def _sells_as_live(strategy: dict) -> bool:
         return False
 
 
+def actor_under_test(store: Store, spec: dict, strategies: Sequence[dict], now: float,
+                     seen: dict[str, frozenset[str]]) -> tuple[str, str, str] | None:  # fmt: skip
+    """One forward record an actor (idea I66, 13 Nov). For a wallet rule that names its wallets (`only`): a wallet it
+    names that no rule under test names, but that buys with one such a rule does name (one actor, analysis/actors.py,
+    on the last MATES_HOURS of `store`'s tape), as (that wallet, the wallet under test, the id of its rule); None for
+    every other rule. `strategies`: the rules under test (a refuted one and one another job feeds are passed over);
+    `seen`: the companions read so far in this freeze, by wallet. Wallets that buy together fire on the same buys, so
+    a second rule is a second record of one signal. A wallet a rule under test already names is no second wallet:
+    another rule for it (another size, another gate) is frozen as before."""
+    from .actors import actor_of, group_actors
+    from .lab import only_wallets
+
+    if spec.get("kind") != "kol" or not spec.get("only"):
+        return None
+    try:
+        named = only_wallets(Trigger(**spec))
+    except TypeError:
+        return None
+    tested: dict[str, str] = {}  # wallet -> the first rule under test that names it
+    for s in strategies:
+        trig = s.get("trigger") or {}
+        if s.get("refuted") or fed(s) or trig.get("kind") != "kol" or not trig.get("only"):
+            continue
+        for w in str(trig["only"]).split(","):
+            tested.setdefault(w.strip(), s["id"])
+    fresh = [w for w in named if w not in tested]
+    if not fresh or not tested:
+        return None
+    since = int(now - MATES_HOURS * 3600)
+    for w in (*fresh, *tested):
+        if w not in seen:
+            seen[w] = companions(store, w, since)
+    groups = group_actors([*fresh, *tested], seen)
+    for w in fresh:
+        other = next((x for x in actor_of(groups, w).wallets if x in tested), None)
+        if other is not None:
+            return w, other, tested[other]
+    return None
+
+
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0,
            buy_sol: float | None = None,
            per_tx_sol: float = 0.0035, replace: bool = False, now: float | None = None, data: dict | None = None,
@@ -818,6 +858,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 "why": f"its lower bound in the lab is not positive ({low:+.4f} SOL a trade on {n} "
                                 "newer moments): nothing to test forward"})  # fmt: skip
     places = 0
+    mates_seen: dict[str, frozenset[str]] = {}  # companions read for `actor_under_test`, once a wallet
     for k, r in enumerate(ranked):
         if places >= top:
             if triggers:  # rules asked for by name: each one left out is named (the grid's table is not)
@@ -849,6 +890,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                 skipped.append({"label": label, "why": f"this rule is already in the paper test as {under['id']} "
                                 f"({under.get('label', '?')}): one forward record a rule, whichever exit the lab picks "
                                 "today"})  # fmt: skip
+            continue
+        tied = actor_under_test(store, spec, [*old, *new], now, mates_seen)
+        if tied is not None:  # a second wallet of an actor under test: no second record of one signal, and no place
+            skipped.append({"label": label, "why": f"{tied[0]} buys with {tied[1]} (the same actor: one operator's "
+                            f"wallets), which is already in the paper test as {tied[2]}: one forward record an actor, "
+                            "since both fire on the same buys"})  # fmt: skip
             continue
         at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked, parts, of)
         twin = next((name for name, theirs, where in taken if where == at and _twins(mine, theirs)), None)

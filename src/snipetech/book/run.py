@@ -23,6 +23,7 @@ from ..positions import is_active
 from .policy import (
     BOOK_NAME_RE,
     GUARD_KILL,
+    ONE_SNIPER,
     BookInputs,
     BookPlan,
     ExitChoice,
@@ -70,6 +71,24 @@ def _other_copies(store, tasks: list[dict]) -> set[str]:
         if not is_active(t.get("status")) or BOOK_NAME_RE.match(str(t.get("name") or "")):
             continue
         out |= copied_leaders(local.get(t.get("id")) or {"kind": t.get("kind"), "source": t.get("source")})
+    return out
+
+
+def _actor_links(store, qualified: list[dict], tasks: list[dict]) -> dict[str, list[str]]:
+    """Which wallets buy together, for the policy (BookInputs.actors): what qualify kept in each wallet's record
+    (qualify/one_actor.py: its companions, the wallets it was chosen over, the one it yields to), for the qualified
+    wallets and for the leaders our own records name for a sniper OKTech still lists (its tasks carry no config).
+    A wallet whose record ties it to nobody is left out; no record at all says nothing, and the book then books that
+    wallet by itself, as before 13 Nov."""
+    from ..qualify.one_actor import actor_block, actor_links
+
+    local = {r["id"]: r for r in store.oktech_snipers(active=False)}
+    leaders = {w for t in tasks for w in copied_leaders(local.get(t.get("id")) or {})}
+    out: dict[str, list[str]] = {}
+    for w in dict.fromkeys([*(str(v["wallet"]) for v in qualified if v.get("wallet")), *sorted(leaders)]):
+        links = actor_links(actor_block(store, w)) - {w}
+        if links:
+            out[w] = sorted(links)
     return out
 
 
@@ -339,8 +358,16 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # a live row computed before a wallet's fresh start still holds its old trips: not read until measure recomputes it
     live_rows = {r["wallet"]: r for r in store.wallet_live()
                  if not (r["wallet"] in fresh and float(r.get("updated_at") or 0) < fresh[r["wallet"]])}  # fmt: skip
+    bookable = _bookable(store)
+    try:  # which wallets buy together: one sniper an actor (policy.actor_members)
+        actors: dict[str, list[str]] | None = _actor_links(store, bookable, snipers)
+    except Exception as exc:  # noqa: BLE001 - not known this run: nothing new is added below
+        actors = None
+        sig = "[book] could not read which wallets buy together"
+        if not notes.has_today(sig, now):
+            notes.write(f"{sig} ({type(exc).__name__}): no new sniper, start or replacement in such a run", "info")
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
-                     qualified=_bookable(store), live=live_rows,
+                     qualified=bookable, live=live_rows, actors=actors or {},
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers,
                      holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in strays], now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
@@ -352,6 +379,13 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
     plan: BookPlan = plan_book(inp, b)
+    if actors is None:  # who buys with whom could not be read: when in doubt the book adds no sniper
+        plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
+    for a in plan.actions:  # why a qualified wallet gets no sniper of its own, once a day a wallet
+        if a.kind == "skip" and ONE_SNIPER in a.reason:
+            sig = f"[book] {(a.wallet or '')[:6]} gets no sniper of its own"
+            if not notes.has_today(sig, now):
+                notes.write(f"{sig}: {a.reason}", "info")
     if plan.kill_reason == GUARD_KILL and guard is not None:
         # the guard's own line says why the book halts (the book's own stops keep their own line); the owner is paged
         # when the book is on or stops a sniper, an off book with nothing running only notes it

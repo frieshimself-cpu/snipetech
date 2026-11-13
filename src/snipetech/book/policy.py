@@ -12,6 +12,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
+from ..analysis.actors import group_actors
 from ..analysis.lab import EXIT_MIN_TEST
 from ..config import BookConfig
 from ..exits_menu import EXIT_MENU_VERSION, exit_family
@@ -140,12 +141,33 @@ class BookInputs:
     # the book's own floor, day stop and daily cap as they apply (book/switch.book_stops: the owner's /risk values where
     # set); None: the config's [book] values
     stops: BookStops | None = None
+    # which wallets buy together, as qualify kept it (qualify/one_actor.actor_links): wallet -> the wallets its record
+    # ties it to (its companions, the wallets it was chosen over, the one it yields to), by full address, for the
+    # qualified wallets and the leaders of our own snipers. Wallets tied together are one actor (analysis/actors.py)
+    # and get one sniper. {}: nothing known, every wallet is booked by itself as before 13 Nov
+    actors: dict[str, list[str]] = field(default_factory=dict)
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
 
 
 OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one buy per signal per wallet"
+ONE_SNIPER = "one signal, one sniper"  # why no sniper is added for a second wallet of an actor
+
+
+def actor_members(actors: dict[str, list[str]], wallets: list[str]) -> dict[str, frozenset[str]]:
+    """Each of `wallets` with every wallet of its actor (itself among them), from what qualify kept (`actors`,
+    BookInputs.actors). Wallets are one actor when either one's record names the other, or both name a third
+    (analysis.actors.group_actors: up to ACTOR_MAX wallets an actor). A wallet nothing ties to another is absent."""
+    if not actors:
+        return {}
+    out: dict[str, frozenset[str]] = {}
+    for g in group_actors([*wallets, *actors], actors):
+        if len(g.members) > 1:
+            out.update({w: g.members for w in g.wallets})
+    return {w: m for w, m in out.items() if w in set(wallets)}
+
+
 RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
 
 
@@ -427,6 +449,29 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     arms = assign_arms(bookable, inp.bid_model, cfg)
     wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
     seen_w6: set[str] = set()
+    # One sniper an actor (idea I66, 13 Nov): no sniper is made, and no stopped one started, for a wallet while another
+    # wallet of its actor has one. Only ever a refusal to add: every sniper that exists is kept, replaced and stopped
+    # below exactly as before. "Has one": a book sniper that still buys or manages a coin (one this run stops or
+    # retires included: either can fail), one this plan keeps or starts for a ranked wallet, a sniper that is not the
+    # book's, or one this plan makes. A stopped sniper of a wallet the book no longer wants counts for nothing.
+    members = actor_members(inp.actors, [r["wallet"] for r in bookable])
+    armed_w6 = {s["w6"] for s in mine if is_active(s.get("status"))}
+    added_w6: set[str] = set()
+
+    def actor_sniper(wallet: str) -> str | None:
+        """Another wallet of `wallet`'s actor that has a sniper (see above), or None."""
+        for m in sorted(members.get(wallet, ())):
+            if m[:6] == wallet[:6]:
+                continue
+            if m[:6] in armed_w6 or m[:6] in seen_w6 or m[:6] in added_w6 or m in inp.other_copies:
+                return m
+        return None
+
+    def same_actor(wallet: str, other: str, what: str) -> str:
+        plan.notes.append(f"{wallet[:6]} buys with {other[:6]} (the same actor), which has a sniper: {what}. "
+                          f"One signal, one sniper")  # fmt: skip
+        return f"same actor as {other[:6]}, which has a sniper: {ONE_SNIPER}; {what}"
+
     # holder attribution is off (run_book passes holders=None): a sniper is retired only while the wallet holds nothing
     flat = inp.holdings_known and not holding
     relied = relied_buys(cfg)
@@ -477,7 +522,14 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             elif status in SPENT_STATUSES:
                 plan.actions.append(Action("skip", wallet, s["arm"], None, s["id"], "spent; a new sniper replaces it"))
             elif status == "idle":
-                plan.actions.append(Action("start", wallet, s["arm"], None, s["id"], "ranked and idle"))
+                # with nothing held a stopped sniper has no coin to sell: it is not started beside its actor's sniper.
+                # With a coin held (or holdings unread) it may be the one that has to sell it: started as always
+                other = actor_sniper(wallet) if flat else None
+                if other is not None:
+                    why = same_actor(wallet, other, "its stopped sniper is not started")
+                    plan.actions.append(Action("skip", wallet, s["arm"], None, s["id"], why))
+                else:
+                    plan.actions.append(Action("start", wallet, s["arm"], None, s["id"], "ranked and idle"))
                 seen_w6.add(w6)
         else:
             if status == "stopping":
@@ -504,6 +556,12 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         if arm is None:
             plan.actions.append(Action("skip", wallet, None, None, None, "no bid arm can keep its fee under the limit"))
             continue
+        other = actor_sniper(wallet)
+        if other is not None:  # never a second sniper on one signal, whatever the verdicts say
+            why = same_actor(wallet, other, "no sniper is added")
+            plan.actions.append(Action("skip", wallet, None, None, None, why))
+            continue
+        added_w6.add(w6)
         # a new sniper gets the wallet's own floor and exit; a running one keeps those it was made with (no churn)
         plan.actions.append(
             Action(
