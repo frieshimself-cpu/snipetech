@@ -672,7 +672,14 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         supply handed to it, not a trade). These are its own fills at its own place in the block, not a copy's: a
         copy lands behind it and pays more. "--kind", "bot" lists the bots alone, "--min-sol-per-day", "5" the ones
         that make that much; "--label", "20" labels the 20 best cand and puts them first in qualify's queue, which
-        measures the copy. For a bot it finds, read its rules next: ["playbook", "<wallet>", "--json"] and
+        measures the copy. LAUNCH SNIPERS (13 Nov, idea I59): ["winners", "--snipers", "--hours", "72", "--json"]
+        lists the wallets whose first buy of a coin is in its create block or the two blocks after it on 20 coins
+        or more, that made SOL there at their own place (a bag never sold counts as nothing) and are not a
+        launcher's own wallets: "wallets" are the snipers, "launchers" the wallets told apart, each with "why";
+        "--unproven" also shows the ones that did not pay. "--label", "20" labels the best 20 with kind sniper
+        ("labelled"; "kept" already carry another name and are not in the group). The finder's numbers are the
+        snipers' fills at their own place, never what a copy makes. For a bot it finds, read its rules next:
+        ["playbook", "<wallet>", "--json"] and
         ["leaders-of", "<wallet>", "--json"], which lists the
         wallets a copy bot buys right after (6Z91). ["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo (their buys in a coin's first 20
         slots, copied 3 trades behind, 30 s); "--label", "10" labels the best as cand for qualify.
@@ -786,6 +793,17 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         as "pays at +7". A result at "behind" is a place asked for, not one our fills were measured at (only two
         live fills say busy coins land there). A hunt frozen with the flag is a record of its own beside the same
         hunt at +3@1 and never goes to a live test by itself.
+        A RULE ON LAUNCH SNIPERS (13 Nov, idea I59): a kol trigger's "group" takes "sniper" (the wallets labelled by
+        winners --snipers): ["lab", "--trigger", "{\"kind\": \"kol\", \"group\": \"sniper\", \"known\": 2,
+        \"max_age\": 10}", "--buy", "0.5", "--hours", "72", "--json"] fires at the second labelled sniper's first
+        buy in a coin under 10 s old (known 2, 3 and 5 are three triggers). No copy lands in a coin's create block:
+        the lab places a copy of a buy there in the block after the create (with +6: six trades of that block
+        ahead of us) and never under the create block's closing price; this holds for every wallet rule since
+        13 Nov. create_block_moments says how many moments followed a buy in the create block. That place is a
+        model, not measured: live_landing is always false for this group and landing_note says why. A positive
+        lower bound is a reason to ask for one small live copy to measure the place, never proof the rule pays. A
+        hunt can ask for one labelled sniper among the buyers ("bots": "sniper", scored at +3@1); no sniper is
+        built for either form yet.
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when

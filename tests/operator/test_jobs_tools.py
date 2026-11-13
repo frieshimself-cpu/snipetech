@@ -1371,5 +1371,7 @@ def test_start_job_tells_the_agents_the_tools_of_13_nov(toolbox):
     for words in ('"max_sol"', '"min_curve" / "max_curve": SOL in the curve BEFORE the trigger buy',
                   "live_landing is always false", '"window": 0 is a buy after a migration of ANY age, research only',
                   "oktech_unconfirmed", '"--hunt-landing", "+7@1"', "landing_vs_live", '"short"',
-                  "found on buys of 0.1 SOL or more only", "one line a reason", "is that recipe's rule"):  # fmt: skip
+                  "found on buys of 0.1 SOL or more only", "one line a reason", "is that recipe's rule",
+                  '["winners", "--snipers", "--hours", "72", "--json"]', '"group" takes "sniper"',
+                  "No copy lands in a coin's create block"):  # fmt: skip
         assert words in text, words
