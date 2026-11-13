@@ -19,7 +19,14 @@ the order: the bots that copy 4sAUSQ are in its block on up to 24 % of its buys,
 of it in 0 to 6 % of the blocks they share; a wallet the wallet itself copies is never behind it. So a second way to
 be a companion: in the wallet's block on half its first buys, ahead of it in a quarter of those blocks and behind it
 in a quarter. Their buys behind the wallet are part of its own entry wherever they stand in the block
-(lab.own_entry_end)."""
+(lab.own_entry_end).
+
+13 Nov 2026 (review of 12 Nov): the rule counted a buy of any size, so a bot that sends a hundredth of a SOL right
+behind a wallet on most of its buys read as one of the wallet's own wallets: a paper copy was moved behind its buys,
+and the bid tables left it out as no outsider. A buy under COMPANION_DUST_SOL (the bid tables' dust floor,
+lab.DUST_SOL) in the wallet's block is passed over here as it is there: it is not counted toward either habit, and a
+larger buy of the same wallet in that block still is. A wallet whose buys beside the leader are all dust is nobody's
+companion."""
 
 from __future__ import annotations
 
@@ -31,6 +38,9 @@ COMPANION_PLACES = 5  # transactions behind the wallet's buy, in its block
 COMPANION_SHARE = 0.5  # of the wallet's first buys
 COMPANION_MIN = 5  # and on at least this many of them
 COMPANION_MIN_SOL = 0.1  # a first buy under this is no moment a copy follows (lab.KOL_MIN_SOL)
+# another wallet's buy under this, in the wallet's block, is dust and counts toward nothing (lab.DUST_SOL: the lab
+# reads this module, so the number is written here and tests/test_companions_dust.py holds the two equal)
+COMPANION_DUST_SOL = 0.1
 COMPANION_SCAN = 20_000  # buys of the wallet read at most (a bot's hundred thousand say no more about its habit)
 COMPANION_MOMENTS = 300  # and its newest first buys looked at: one small read each
 # the set rule: in its block on COMPANION_SHARE of its first buys, and on each side of it in this share of those blocks
@@ -42,8 +52,9 @@ def companions(store: Store, wallet: str, since_ts: int) -> frozenset[str]:
     them at the least): those that buy the coin in its block one to COMPANION_PLACES transactions behind it on
     COMPANION_SHARE of those buys, and those in its block at any place on COMPANION_SHARE of them that are ahead of it
     in COMPANION_AHEAD_SHARE of the blocks they share and behind it in as many (a set that lands in changing order).
-    A copy lands behind their buys (lab.copy_entry). One read of the wallet's buys and one small read per coin, on
-    indexes."""
+    Only their buys of COMPANION_DUST_SOL or more are counted: a dust buy beside the wallet is no habit of an
+    operator's. A copy lands behind their buys (lab.copy_entry). One read of the wallet's buys and one small read per
+    coin, on indexes."""
     firsts: dict[str, tuple[int, int]] = {}
     for mint, slot, pos, quote in store._q(
         "SELECT mint, slot, pos, quote FROM trades WHERE user=? AND is_buy=1 AND ts>=? ORDER BY slot, pos, ev LIMIT ?",
@@ -57,12 +68,14 @@ def companions(store: Store, wallet: str, since_ts: int) -> frozenset[str]:
     near: dict[str, int] = {}  # in the next places behind it
     shared: dict[str, int] = {}  # in its block, at any place
     ahead: dict[str, int] = {}  # of those: its first buy in the block came before the wallet's
+    floor = round(COMPANION_DUST_SOL * 1e9)  # lamports: a smaller buy in the block is passed over
     for mint, slot, pos in moments:
         first: dict[str, int] = {}
         close: set[str] = set()
         for user, at in store._q(
-            "SELECT user, pos FROM trades WHERE mint=? AND slot=? AND is_buy=1 AND user!=? ORDER BY pos, ev",
-            (mint, slot, wallet),
+            "SELECT user, pos FROM trades WHERE mint=? AND slot=? AND is_buy=1 AND user!=? AND quote>=? "
+            "ORDER BY pos, ev",
+            (mint, slot, wallet, floor),
         ):
             first.setdefault(user, int(at))
             if pos < at <= pos + COMPANION_PLACES:
