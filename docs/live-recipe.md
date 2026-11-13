@@ -4,6 +4,30 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## FLPjyS passed qualify's forward check and the book made it a copy sniper (13 Nov 2026, 21:45-21:50 UTC)
+
+**What happened.** The qualify run of 21:45 UTC gave FLPjyS (FLPjySnxc4LK5Gksd7p6NzDv4J3w1PbCeugGhYrA4iTU) the verdict
+qualified: +0.0204 SOL a copy over 107 copies at +3x on the tape (lower bound +0.0085), and the 22 copies after it was
+picked on 11 Nov 13:46 made +0.0726 a copy (lower +0.039, 59 % up). The book, which is switched on and adds a sniper
+for a qualified wallet by itself (the owner's standing book, 0.2 SOL control copies), created and started the sniper
+6af7860e3601fd350a1cc002 at 21:50: "control 0.2 SOL on its buys of 0.453 SOL or more, exit lab". No session started
+it. By 23:05 UTC it had made no buy (`fills`: none in the last six hours).
+
+**What is known against it** (the agents, the same evening): it is one of a crowd on one signal: i3Sj7y buys 119 of
+its 156 coins, 84 of them within a minute, and about 124 wallets on the tape trade the same coins by the same test;
+eight wallets bought before it on 64 to 136 shared coins. GMGN shows its good week (+2,552 USD in 7 days) on a
+losing month (-1,157 USD in 30 days, win rate 19 %, 528 coins), a history qualify does not read. Its sales are
+crowded: the price ends its own block 10.9 % under its sale. It is 1 pick of 61 where chance gives about 3 with a
+lower bound above zero.
+
+**What was changed the same hour** (aa4c16a, deployed 23:04): wallets that trade one signal a minute apart are one
+actor (twins: each bought at least half of the other's coins, half of those within a minute, on 10 coins or more), so
+i3Sj7y and Byn68j, which were one pass from snipers of their own on the same buys, yield to FLPjyS at their next
+review and the book adds no sniper for them. The book's first run on that code (23:05): keep 1, create none.
+
+**What to read next.** Every fill of that sniper: where it landed behind FLPjyS's buy (trades behind, price paid over
+its price) and which exit sold it. That is the first measured copy landing since 12 Nov.
+
 ## The tip ladder behind Cupsey (12 Nov 2026): which tip lands first
 
 **Why.** The owner: "It all comes down to fees and having higher ones than other bots... look at the fees other
