@@ -64,7 +64,12 @@ SQL_TABLES: dict[str, str] = {
     "copy_plan, forward, create_slot, kept_armed = JSON. A candidate whose reasons say 'same actor as <wallet>: one "
     "signal, one sniper' (13 Nov) passed every gate: another wallet of its operator holds the place, its numbers "
     "stand, it is not a failure; the book adds no sniper for it and paper freeze skips a second wallet of an actor "
-    "under test (scores kind qualify: data.actor = mates, leads, over, same_as, capped)",
+    "under test (scores kind qualify: data.actor = mates, leads, over, same_as, capped). One actor is also two "
+    "TWINS (13 Nov, idea I109): each bought at least half of the other's coins, half of those within a minute of "
+    "each other, on 10 coins or more; the reason then says 'They are twins: ...' with the pair's numbers, "
+    "data.actor.twins = how many wallets that hold a place it trades the same signal with now, twin_with = the "
+    "ones it is one actor with. Twins may be one operator or one service many people use: no proof of either, "
+    "no verdict on the wallet, never a reason to label or retire; no second copy or paper rule for such a wallet",
     "oktech_snipers": "the snipers this code created at OKTech. kind = copy (source = the copied wallet), strategy "
     "(source = the frozen strategy's id) or probe; payload = JSON as sent; created_at, removed_at = unix seconds",
 }

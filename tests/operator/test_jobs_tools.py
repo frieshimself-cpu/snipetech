@@ -1390,6 +1390,7 @@ def test_the_agents_are_told_what_a_same_actor_verdict_is():
     hints = [v["verdicts"] for v in vars(tools).values() if isinstance(v, dict) and "verdicts" in v]
     hint = " ".join(str(h) for h in hints)
     assert "same actor as" in hint and "not a failure" in hint and "data.actor" in hint
+    assert "TWINS" in hint and "They are twins" in hint and "twin_with" in hint  # the twin rule of 13 Nov evening
 
 
 def test_the_agents_use_the_second_lab_slot_while_nothing_else_asks_for_it(jobs, monkeypatch):
