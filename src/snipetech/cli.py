@@ -377,7 +377,18 @@ def _out(args, data, render=None) -> None:
 def _position(v: str) -> str:
     if v in ("start", "middle", "end") or (v.startswith("+") and v[1:].isdigit()):
         return v
-    raise argparse.ArgumentTypeError("start, middle, end or +N (e.g. +1)")
+    raise argparse.ArgumentTypeError("start, middle, end or +N (e.g. +1); a hunt, whale or burst trigger's own "
+                                     "landing is --hunt-landing +N@D (e.g. +7@1)")  # fmt: skip
+
+
+def _hunt_landing(v: str) -> tuple[int, str]:
+    """--hunt-landing +N@D: where the run's hunt, whale and burst triggers land (paper.parse_hunt_landing)."""
+    from .analysis.paper import parse_hunt_landing
+
+    try:
+        return parse_hunt_landing(v)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
 
 
 def _trigger(v: str):
@@ -625,6 +636,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "land live; moments before the tape's fee records (11 Nov 16:34 UTC) are left out and "
                          "counted")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
+    sp.add_argument("--hunt-landing", type=_hunt_landing, default=None, metavar="+N@D",
+                    help="score every hunt, whale and burst trigger of the run at this landing instead of where live "
+                         "hunt buys landed (+3@1): N trades of the coin ahead of our buy, in the block D blocks after "
+                         "the block of the trade that crossed the threshold, e.g. +7@1 or +11@2 for a busy coin "
+                         "(--position never moves a hunt). A block with fewer than N trades: behind its last trade. "
+                         "Every row names the landing; `hunt_landing` in the output says where the buys really stood "
+                         "and whether the landing is better than the measured live place (fewer than 3 trades, or "
+                         "block 0: no evidence that a rule pays live)")  # fmt: skip
     sp.add_argument("--buy-bid", type=float, default=None, metavar="SOL",
                     help="a bid paid once on every buy, on top of --per-tx (which every transaction pays, the sales "
                          "too): what a paid place costs, e.g. --copy-position +0 --buy-bid 2 for the first place "
@@ -861,6 +880,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "place --buy-bid buys among the buyers of the wallet's block; bid- one buy further back). "
                          "The rule keeps that landing: the forward run scores it there, under an id of its own, and it "
                          "is never shown as where our copies land live")  # fmt: skip
+    sp.add_argument("--hunt-landing", type=_hunt_landing, default=None, metavar="+N@D",
+                    help="freeze, with --trigger: score and freeze the hypotheses' hunt, whale and burst rules at "
+                         "this landing instead of where live hunt buys landed (+3@1), as `lab --hunt-landing`: N "
+                         "trades ahead of our buy, D blocks after the crossing trade's block. The rule keeps that "
+                         "landing: the forward run scores it there, under an id of its own beside the same rule at "
+                         "+3@1, and it is never shown as the live landing")  # fmt: skip
     sp.add_argument("--sell-parts", type=int, default=1, metavar="N",
                     help="freeze, with --trigger: every exit sells out in N equal parts (2 to 20), as `lab "
                          "--sell-parts`; the frozen exit keeps it (research only: no live sniper sells in "
@@ -1735,6 +1760,8 @@ async def _run(args, cfg: Config) -> int:
                 if lab_is_bid(pos):  # a place that follows the bid: it needs the bid, and wallet rules
                     copies = [t for t in hypotheses or () if t.kind not in paper.LAUNCH_LANDINGS]
                     lab_check_bid(pos, lat, buy_bid, copies)
+                if args.hunt_landing is not None:  # a landing no rule of the run could use: refused, never a no-op
+                    paper.check_hunt_landing(hypotheses)
             except ValueError as exc:
                 print(f"lab: {exc}", file=sys.stderr)
                 return 2
@@ -1757,7 +1784,9 @@ async def _run(args, cfg: Config) -> int:
                     # the trades from the hourly copy, the wallet groups from the live database: the copy has none of
                     # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
                     # nothing and said so nowhere)
-                    return lab_collect(tape, cfg, buy, lat, pos, per_tx, landings=paper.LAUNCH_LANDINGS,
+                    # (`--hunt-landing`: the hunt, whale and burst rules at the landing asked, `paper.hunt_landings`)
+                    return lab_collect(tape, cfg, buy, lat, pos, per_tx,
+                                       landings=paper.hunt_landings(args.hunt_landing),
                                        triggers=hypotheses, kols=lab_groups(svc.store),
                                        exits=lab_recipe_exits(rec) if rec else None,
                                        sell_parts=sell_parts, buy_bid_sol=buy_bid,
@@ -1795,6 +1824,9 @@ async def _run(args, cfg: Config) -> int:
                                     # a MIG rule of any age is research only; a wide window is not confirmed
                                     **lab_mig_window_fields(t)}
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
+            # a hunt landing asked for: each hunt, whale and burst row says which way it differs from the live place,
+            # and `hunt_landing` where the buys really stood (nothing without the flag)
+            paper.apply_hunt_landing(res, data, args.hunt_landing)
             if data.get("amm_tape"):  # MIG: what the PumpSwap tape let it score, and why the rest was skipped
                 res["amm_tape"] = data["amm_tape"]
             if (data.get("size") or {}).get("triggers"):  # the size asked against the pools each rule met
@@ -1884,7 +1916,7 @@ async def _run(args, cfg: Config) -> int:
                         hours=args.hours, lock_dir=Path(cfg.storage.db_path).resolve().parent,
                         per_tx_source=cost["per_tx_source"], tape=lambda: svc.tape_store,
                         copy_position=args.copy_position, buy_bid_sol=args.buy_bid, sell_parts=parts,
-                        recipe=rec)  # fmt: skip
+                        recipe=rec, hunt_landing=args.hunt_landing)  # fmt: skip
                 except ValueError as exc:
                     print(f"paper freeze: {exc}", file=sys.stderr)
                     return 2
