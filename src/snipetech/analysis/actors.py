@@ -13,7 +13,9 @@ sides say so (`capped`), so one fast bot read as everybody's companion never fol
 capped actor is therefore not known to be whole: its wallets may still be one operator's.
 
 What is not seen: two wallets that both follow a third one nobody asked about, and never land within the companion
-rule's five places of each other, stay apart (the rule looks behind a wallet, not ahead of it).
+rule's five places of each other, stay apart (the rule looks behind a wallet, not ahead of it). Two that buy the same
+coins a minute apart are told another way, by their lists of coins (twins.py), and tied two by two beside the actors
+made here, never through `group_actors`.
 
 Nothing here trades or arms: qualify (qualify/one_actor.py) and the book (book/policy.py) read it to arm fewer wallets,
 never more."""

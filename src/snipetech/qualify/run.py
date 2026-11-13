@@ -381,8 +381,9 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
                                        **({"actor": act.block} if act is not None else {})})  # fmt: skip
         if v.get("gate") == ACTOR_GATE and act is not None:  # said in the run's own answer, each with its reason
             kept = "its own record kept" if v.get("forward") else "none started"
+            how = {"how": act.how} if act.how else {}  # which rule made them one actor, when not the companions'
             out.setdefault("same_actor", []).append({"wallet": w, "same_as": act.same_as, "forward": kept,
-                                                     "why": act.why})  # fmt: skip
+                                                     "why": act.why, **how})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
         fwd = (v.get("forward") or {}).get("status")

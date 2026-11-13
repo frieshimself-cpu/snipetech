@@ -74,19 +74,20 @@ def _other_copies(store, tasks: list[dict]) -> set[str]:
     return out
 
 
-def _actor_links(store, qualified: list[dict], tasks: list[dict]) -> dict[str, list[str]]:
+def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = False) -> dict[str, list[str]]:
     """Which wallets buy together, for the policy (BookInputs.actors): what qualify kept in each wallet's record
     (qualify/one_actor.py: its companions, the wallets it was chosen over, the one it yields to), for the qualified
     wallets and for the leaders our own records name for a sniper OKTech still lists (its tasks carry no config).
     A wallet whose record ties it to nobody is left out; no record at all says nothing, and the book then books that
-    wallet by itself, as before 13 Nov."""
-    from ..qualify.one_actor import actor_block, actor_links
+    wallet by itself, as before 13 Nov. `twins`: the wallets each record names its twins instead
+    (BookInputs.twins; one_actor.twin_links), which the first reading leaves out."""
+    from ..qualify.one_actor import actor_block, actor_links, twin_links
 
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
     leaders = {w for t in tasks for w in copied_leaders(local.get(t.get("id")) or {})}
     out: dict[str, list[str]] = {}
     for w in dict.fromkeys([*(str(v["wallet"]) for v in qualified if v.get("wallet")), *sorted(leaders)]):
-        links = actor_links(actor_block(store, w)) - {w}
+        links = (twin_links if twins else actor_links)(actor_block(store, w)) - {w}
         if links:
             out[w] = sorted(links)
     return out
@@ -359,15 +360,17 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     live_rows = {r["wallet"]: r for r in store.wallet_live()
                  if not (r["wallet"] in fresh and float(r.get("updated_at") or 0) < fresh[r["wallet"]])}  # fmt: skip
     bookable = _bookable(store)
-    try:  # which wallets buy together: one sniper an actor (policy.actor_members)
+    twins: dict[str, list[str]] = {}
+    try:  # which wallets buy together, and which are twins: one sniper an actor (policy.actor_members)
         actors: dict[str, list[str]] | None = _actor_links(store, bookable, snipers)
+        twins = _actor_links(store, bookable, snipers, twins=True)
     except Exception as exc:  # noqa: BLE001 - not known this run: nothing new is added below
         actors = None
         sig = "[book] could not read which wallets buy together"
         if not notes.has_today(sig, now):
             notes.write(f"{sig} ({type(exc).__name__}): no new sniper, start or replacement in such a run", "info")
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
-                     qualified=bookable, live=live_rows, actors=actors or {},
+                     qualified=bookable, live=live_rows, actors=actors or {}, twins=twins,
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers,
                      holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in strays], now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,

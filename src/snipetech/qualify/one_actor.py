@@ -33,7 +33,30 @@ of one actor stay as they are; the book adds no sniper for a second one (book/po
 
 What each wallet's score record keeps (`actor`): `mates` (its companions), and where it applies `leads`, `over` (the
 wallets it was chosen over), `same_as` and `why` (the wallet it yields to), `capped` (its actor hit actors.ACTOR_MAX,
-so it may be larger than shown)."""
+so it may be larger than shown).
+
+Twins (13 Nov, the scout's idea I109; analysis/twins.py). FLPjyS and i3Sj7y buy the same coins a minute apart and
+never in one block, so the companion rule saw two actors: FLPjyS qualified and got its sniper, i3Sj7y was one pass
+from a second sniper on the same coins. Two wallets whose lists of coins say they trade one signal are one actor too.
+How it is applied, so that it can only ever leave fewer candidates than before:
+
+* the companion rule decides first, on the companions' ties alone, exactly as above; what it decides stands;
+* then the wallet is compared with the place-holders that are not of its companions' actor: its twins among them, by
+  the tape now (one read of each wallet's buys a run) or by their own record naming it. If one of them holds a place,
+  the same four rules choose between them, and the reason says "They are twins: ..." with the pair's numbers;
+* a wallet a sniper may copy is never marked here either (`protected` is unchanged), and its record still names its
+  twins, so the book adds no sniper for one of them;
+* its actor takes twins while it has room (ACTOR_MAX wallets, its companions counted), the wallets that hold a place
+  first: in a crowd on one signal it yields to one of them and says `capped`. Nothing is labelled or retired for
+  being in a crowd.
+
+The record then also keeps `twins` (how many place-holders the tape shows as its twins now: "this wallet trades with
+N others") and `twin_with` (the wallets the twin rule made it one actor with). A twin in `over` or `same_as` is named
+in `twin_with` too: `actor_links` leaves those out and `twin_links` gives them, so the companions' grouping (and its
+cap) never sees a twin's tie. A wallet without twins has the record it always had.
+
+What can differ from before for a wallet that is nobody's twin itself: when its companion yields to a twin, it no
+longer has that companion as a rival, and can hold the companions' place (one of the two holds it, as before)."""
 
 from __future__ import annotations
 
@@ -42,8 +65,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from ..analysis.actors import actor_of, group_actors, leader
+from ..analysis.actors import ACTOR_MAX, actor_of, group_actors, leader
 from ..analysis.companions import companions
+from ..analysis.twins import Pair, first_buys, pair, twins
 from ..config import QualifyConfig
 from ..store import _LATEST_VERDICT, Store
 
@@ -54,11 +78,24 @@ GATE = "actor"  # the gate that set such a verdict's status
 @dataclass
 class Decision:
     """What the rule found for one wallet: `block` goes into its score record; `same_as` is the wallet it yields to
-    (None: it is its actor's candidate, or alone) and `why` says how that wallet was chosen."""
+    (None: it is its actor's candidate, or alone) and `why` says how that wallet was chosen. `how`: which rule made
+    the two one actor, as a sentence, when it was not the companion rule (the twin rule: analysis/twins.py)."""
 
     block: dict[str, Any] = field(default_factory=dict)
     same_as: str | None = None
     why: str = ""
+    how: str = ""
+
+
+@dataclass
+class TwinTies:
+    """A wallet's twins among the place-holders (OneActor._twin_ties). `found`: the ones the tape shows now, each with
+    what the two have in common; `joined`: the ones it is one actor with (found now or named by their own record, as
+    many as the actor has room for); `capped`: some were left out."""
+
+    found: dict[str, Pair] = field(default_factory=dict)
+    joined: list[str] = field(default_factory=list)
+    capped: bool = False
 
 
 def same_actor(v: dict[str, Any], decision: Decision | None, cfg: QualifyConfig, now: float) -> dict[str, Any]:
@@ -67,8 +104,8 @@ def same_actor(v: dict[str, Any], decision: Decision | None, cfg: QualifyConfig,
     (its own forward check failed) stays as it is; so does one without a decision to yield."""
     if decision is None or not decision.same_as or v.get("status") == "retired":
         return v
-    said = (f"{SAME_ACTOR} {decision.same_as}: one signal, one sniper. Not armed while that wallet is the actor's "
-            f"candidate ({decision.why})")  # fmt: skip
+    said = (f"{SAME_ACTOR} {decision.same_as}: one signal, one sniper. {decision.how}Not armed while that wallet is "
+            f"the actor's candidate ({decision.why})")  # fmt: skip
     return dict(v, status="candidate", gate=GATE, next_review=int(now) + cfg.review_qualified_h * 3600,
                 reasons=[*list(v.get("reasons") or []), said])  # fmt: skip
 
@@ -96,9 +133,18 @@ def actor_block(store: Store, wallet: str) -> dict[str, Any]:
 
 def actor_links(block: Mapping[str, Any] | None) -> set[str]:
     """The wallets a wallet's `actor` record ties it to: its companions, the wallets it was chosen over and the one it
-    yields to. The book groups on these (book/run._actor_links)."""
+    yields to. The book groups on these (book/run._actor_links). The wallets the twin rule tied it to are not among
+    them (`twin_links`): a record without twins gives exactly what it gave before that rule."""
     b = block or {}
-    return {str(x) for x in [*(b.get("mates") or ()), *(b.get("over") or ()), b.get("same_as")] if x}
+    chosen = {str(x) for x in [*(b.get("over") or ()), b.get("same_as")] if x} - twin_links(b)
+    return {str(x) for x in b.get("mates") or () if x} | chosen
+
+
+def twin_links(block: Mapping[str, Any] | None) -> set[str]:
+    """The wallets a wallet's `actor` record ties it to through the twin rule (`twin_with`). Kept apart from
+    `actor_links`: those are grouped up to actors.ACTOR_MAX wallets, where one tie more can undo another, and a twin
+    must never undo a tie between companions. Twins are tied two by two, on top (book/policy.actor_members)."""
+    return {str(x) for x in (block or {}).get("twin_with") or () if x}
 
 
 def _may_pass(row: dict | None, need: int) -> bool:
@@ -120,6 +166,7 @@ class OneActor:
         self._pool: set[str] | None = None
         self._snipers: set[str] | None = None
         self._chosen: dict[str, tuple[str, str]] = {}  # wallet -> (its actor's leader in this lab, why)
+        self._firsts: dict[str, dict[str, int]] = {}  # first buys read in this run for the twin rule, once a wallet
 
     def lab_mates(self, wallets: list[str], mates: Mapping[str, Any] | None) -> None:
         """The companions the lab read for the wallets it scored (`default_lab_runner`'s `mates`): taken as they are,
@@ -222,15 +269,32 @@ class OneActor:
         if led:  # with the wallets it was chosen over, so they can be told when it gives the place up (`release`)
             block |= {"leads": True} | {k: was[k] for k in ("why", "over") if was.get(k)}
         self.pool().add(w)  # from here on the wallets judged after it see it
-        if self.protected(w, prev):
-            return Decision(block)
         others = sorted(r for r in self.pool() if r != w)
+        if self.protected(w, prev):  # never marked; its record still says which place-holders are its twins
+            ties = self._twin_ties(w, [r for r in others if r not in mine], ACTOR_MAX - 1 - len(mine))
+            return self._with_twins(Decision(block), was, ties)
         if not others:
-            return Decision(block)
+            return self._with_twins(Decision(block), was, None)
         g = actor_of(group_actors([w, *others], {w: mine, **{r: self._links(r) for r in others}}), w)
         if g.capped:
             block["capped"] = True
         rivals = [r for r in g.wallets if r != w and self.holds(r)]
+        # the companion rule first, exactly as it was before the twin rule: what it decides stands
+        first = self._choose(w, rivals, block, led, lower, picked)
+        # then the twin rule, among the place-holders that are not its companions: it can only take the place away
+        ties = self._twin_ties(w, [r for r in others if r not in g.wallets], ACTOR_MAX - len(g.members))
+        more = [r for r in ties.joined if self.holds(r)]
+        if first.same_as or not more:
+            return self._with_twins(first, was, ties)
+        second = self._choose(w, [*rivals, *more], block, led, lower, picked)
+        if second.same_as in ties.joined:
+            second.how = self._twin_words(w, second.same_as, ties)
+        return self._with_twins(second, was, ties)
+
+    def _choose(self, w: str, rivals: list[str], block: dict[str, Any], led: bool, lower: float | None,
+                picked: bool) -> Decision:  # fmt: skip
+        """Which wallet is the candidate, `w` or one of `rivals` (the wallets of its actor that hold a place): the
+        module's four rules, in their order. `block` is not changed."""
         if not rivals:
             return Decision(block)
 
@@ -261,3 +325,44 @@ class OneActor:
         if who == w:
             return Decision(block | {"leads": True, "over": rivals, "why": why})
         return yields(who, why)
+
+    def _twin_ties(self, w: str, others: list[str], room: int) -> TwinTies:
+        """`w`'s twins among `others` (place-holders that are not its companions): the ones the tape shows now
+        (analysis/twins.py: one read of each wallet's buys, kept for the run), and the ones whose own record names
+        `w` their twin (an earlier run's finding stands while that record does, as a companion's does). `room`: how
+        many wallets `w`'s actor can still take before actors.ACTOR_MAX; the wallets that hold a place first, then by
+        address, and the rest are left out (`capped`): `w` joins a crowd one actor's worth at a time."""
+        found = twins(self.tape, w, others, self.since, self._firsts)
+        kept = [r for r in others if r not in found and w in twin_links(actor_block(self.store, r))]
+        ties = sorted([*found, *kept], key=lambda r: (not self.holds(r), r))
+        joined = ties[: max(0, room)]
+        return TwinTies(found, joined, len(ties) > len(joined))
+
+    def _twin_words(self, w: str, other: str, ties: TwinTies) -> str:
+        """How `w` and `other` are twins, as the sentence a verdict's reason carries."""
+        if other in ties.found:
+            return f"They are twins: {ties.found[other].words()}. "
+        for x in (w, other):
+            if x not in self._firsts:
+                self._firsts[x] = first_buys(self.tape, x, self.since)
+        now = pair(self._firsts[w], self._firsts[other])
+        return f"They were found to be twins in an earlier run, and that stands: today {now.words()}. "
+
+    def _with_twins(self, d: Decision, was: Mapping[str, Any], ties: TwinTies | None) -> Decision:
+        """`d` with what the twin rule found in its record: `twins` (how many place-holders the tape shows as its
+        twins now), `twin_with` (the ones it is one actor with: the links `twin_links` reads; a wallet it was chosen
+        over as a twin stays among them while it stays in `over`) and `capped` when not every twin was joined. A
+        wallet without twins keeps the record it always had."""
+        over = set(d.block.get("over") or ())
+        joined = set(ties.joined) if ties else set()
+        tied = sorted(joined | (twin_links(was) & over))
+        extra: dict[str, Any] = {}
+        if ties and ties.found:
+            extra["twins"] = len(ties.found)
+        if tied:
+            extra["twin_with"] = tied
+        if ties and ties.capped:
+            extra["capped"] = True
+        if extra:
+            d.block = d.block | extra
+        return d
