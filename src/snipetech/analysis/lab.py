@@ -60,7 +60,7 @@ from ..config import Config
 from ..exits_menu import COPY_EXIT_MENU, EXIT_MENU_VERSION, MENU, MenuExit
 from ..models import LAUNCHLAB, PUMPFUN
 from ..models import is_address as _is_address
-from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, _whole_hunt, _whole_secs
+from ..oktech import BOT_GROUPS, EXITS, MIG_MAX_HOLD_SECS, MIG_WIDE_WINDOW_SECS, _whole_hunt, _whole_secs
 from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl, run_exit
 from ..sim.market import DEFAULT_SLOT_SECS, MarketPath, _fix_slot_order, slot_secs_from
 from ..solana.programs import SOL_QUOTES
@@ -143,7 +143,9 @@ class Trigger:
     kind: str  # launch | burst | whale | kol | momentum | hunt | mig | event
     buyers: int = 0
     sol: float = 0.0
-    window: float = 0.0  # burst / hunt: seconds counted; mig: OKTech's Migration Window from the create (above 0)
+    # burst / hunt: seconds counted; mig: OKTech's Migration Window from the create, or 0 = a coin of any age, which
+    # no OKTech setting buys (research only: `research_only_why`)
+    window: float = 0.0
     progress: float = 0.0  # momentum: bonding-curve progress at least this
     holders: int = 0  # momentum: holders (from the tape) at least this
     ret: float = 0.0  # momentum: price change over 300 s at least this
@@ -255,7 +257,10 @@ class Trigger:
             when = f"within {self.window:g} s of the create" if self.window else "any time after the create"
             paid = {True: ", creator paid by an earlier coin's creator",
                     False: ", creator not paid by an earlier coin's creator"}.get(self.dev_paid, "")  # fmt: skip
-            return f"OKTech MIG: buy at the migration, {when}{paid}"
+            if not self.window:  # a coin of any age: no OKTech setting buys it, and its name says so first
+                return f"{MIG_ANY_AGE_NAME}: buy at the migration, {when}{paid}"
+            wide = MIG_WIDE_NAME if self.window > MIG_WIDE_WINDOW_SECS else ""
+            return f"OKTech MIG: buy at the migration, {when}{paid}{wide}"
         if self.kind == "event":
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
@@ -495,8 +500,9 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     does not read. A hunt trigger must also be one OKTech runs exactly as scored: sol (minTotalSol) and dev_max
     (maxDevBuySol) whole numbers, the window a whole number of milliseconds (5 Nov 22:11: OKTech ignored 2.5 / 1.0 and
     bought every launch), so every hunt hypothesis that wins can be sent with `oktech strategy` as it was tested; a MIG
-    trigger's window (migrationExpirySec) is whole seconds. Numbers are typed the way the grid's are, so a hypothesis
-    equal to a grid trigger gets the grid's strategy id."""
+    trigger's window (migrationExpirySec) is whole seconds, written out, up to a week; 0 is a coin of any age, which
+    is research only (`research_only_why`). Numbers are typed the way the grid's are, so a hypothesis equal to a grid
+    trigger gets the grid's strategy id."""
     if isinstance(spec, str):
         try:
             spec = json.loads(spec)
@@ -511,7 +517,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     kind = spec.get("kind")
     if not isinstance(kind, str) or kind not in TRIGGER_KNOBS:
         raise ValueError(f"kind must be one of {', '.join(TRIGGER_KNOBS)}, not {kind!r}")
-    trig = Trigger(**{k: _trigger_value(k, v) for k, v in spec.items()})
+    trig = Trigger(**{k: _mig_window(v) if (kind, k) == ("mig", "window") else _trigger_value(k, v)
+                      for k, v in spec.items()})  # fmt: skip
     default = Trigger(kind)
     for name in names:
         if name != "kind" and name not in TRIGGER_KNOBS[kind] and getattr(trig, name) != getattr(default, name):
@@ -556,12 +563,88 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
             raise ValueError("a hunt trigger needs a window above 0 s (OKTech timeWindowMs)")
         if trig.max_buyers and trig.max_buyers < trig.buyers:
             raise ValueError(f"max_buyers {trig.max_buyers} is below buyers {trig.buyers}: the hunt could never fire")
-    # OKTech takes the Migration Window in whole seconds (`oktech strategy` refuses anything else), and above 0
-    if kind == "mig" and _whole_secs(trig.window, "the Migration Window (migrationExpirySec)") <= 0:
-        raise ValueError("a MIG trigger needs a Migration Window above 0 s (OKTech migrationExpirySec): its form "
-                         "defaults to 10 s and cannot be sent 'any time', so an any-time rule would run as another "
-                         "rule live")  # fmt: skip
+    # OKTech takes the Migration Window in whole seconds (`oktech strategy` refuses anything else). 0 is a coin of any
+    # age, research only (`research_only_why`), and it is written out: a rule no sniper runs is asked for by name,
+    # never got by leaving the window out
+    if kind == "mig":
+        if "window" not in spec:
+            raise ValueError(MIG_NEEDS_WINDOW)
+        _whole_secs(trig.window, "the Migration Window (migrationExpirySec)")
     return trig
+
+
+# A MIG rule's window (13 Nov 2026; ideas I86 and I101: "the lab scores MIG only for coins that migrated within 60 s of
+# their create ... the ordinary migration is not measured"; of 729 migrations the tape recorded in the 24 h to 13 Nov
+# 14:20 UTC, 210 came within 60 s of the create, 332 after 1 to 10 minutes, 165 later, 22 had no create on the tape).
+# What OKTech takes: docs/oktech-features.md has "Migration Window (max seconds from CREATE to MIGRATE, default 10 s)"
+# and nothing else: no largest value, no way to send none (docs/oktech-playbook.md, question 18), and MIG has never run
+# on this account. So:
+# - `window` 0, a coin of any age, has no OKTech setting: research only. Its label and every ranked row say so
+#   (`mig_window_fields`), `paper freeze` and the sniper builder (oktech.strategy_sniper) refuse it, the agents' job
+#   runner refuses a freeze of it before a job starts, and the search grid never holds it. It needs no create on the
+#   tape (`_mig`), so it counts the coins older than the tape too.
+# - a window above MIG_WIDE_WINDOW_SECS (60 s, the widest scored before), up to a week, is OKTech's own setting with a
+#   number nobody has sent it: scored and sent as that window, and marked `oktech_unconfirmed` until OKTech answers.
+#   Like every window it counts from a create on the stretch of tape the lab reads (`_coin_rows`), so a coin created
+#   before that stretch gives it no moment.
+# The landing is the MIG landing for every form (`mig_entry`): no window is scored at a better place than another.
+MIG_WINDOW_MAX_SECS = 7 * 86400
+MIG_NEEDS_WINDOW = ("a MIG trigger says its Migration Window: \"window\": N, whole seconds from the create to the "
+                    f"migration (OKTech migrationExpirySec, 10 by default, at most {MIG_WINDOW_MAX_SECS}), or "
+                    "\"window\": 0 for a coin of any age, which is research only (OKTech cannot be sent no window)")
+MIG_ANY_AGE_NAME = "MIG, research only (no OKTech setting buys a coin of any age)"
+MIG_ANY_AGE_WHY = ("research only: OKTech MIG buys a migration only within its Migration Window of the coin's create "
+                   "(migrationExpirySec, 10 s by default) and how to send it no window is not known, so no sniper "
+                   "runs a buy after a migration of any age as scored; a finding to learn from, never frozen, never "
+                   "sent")  # fmt: skip
+MIG_WIDE_NAME = f" (a window above {MIG_WIDE_WINDOW_SECS:g} s: not confirmed by OKTech)"
+MIG_WIDE_WHY = (f"a Migration Window above {MIG_WIDE_WINDOW_SECS:g} s has never been sent to OKTech and its notes give "
+                "no maximum (migrationExpirySec: \"max seconds from CREATE to MIGRATE, default 10 s\"); MIG has never "
+                "run on this account. Scored as that window; whether OKTech takes it is not known until it answers "
+                "or one sniper's settings are read back")  # fmt: skip
+
+
+def _mig_window(value: Any) -> float:
+    """A MIG trigger's `window` as an agent writes it: seconds, 0 (any age, research only) to MIG_WINDOW_MAX_SECS. The
+    other kinds' windows keep their own bound (TRIGGER_BOUNDS: a burst or a hunt counts 60 s at most)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"window must be a number, not {value!r}")  # noqa: TRY004 - every refusal is a ValueError
+    if not 0 <= value <= MIG_WINDOW_MAX_SECS:  # NaN fails here too
+        raise ValueError(f"window must be between 0 and {MIG_WINDOW_MAX_SECS} for a MIG trigger (seconds from the "
+                         f"create to the migration; 0 = a coin of any age, research only), not {value!r}")  # fmt: skip
+    return float(value)
+
+
+def _mig_window_of(trig: Trigger | Mapping[str, Any]) -> float | None:
+    """A MIG rule's window in seconds (0 = any age), from a Trigger or a stored rule's trigger fields; None for any
+    other kind, and for a window that is no number."""
+    get = trig.get if isinstance(trig, Mapping) else lambda key: getattr(trig, key, None)
+    if get("kind") != "mig":
+        return None
+    try:
+        return float(get("window") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
+def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
+    """Why a MIG rule's window makes it research only (no OKTech sniper can be sent it as scored), or None. `trig`: a
+    Trigger or a stored rule's trigger fields. It reads the window alone: a MIG rule of any age (`window` 0). Every
+    other rule answers None here, whatever else the sniper builder refuses of it (the paid-creator split, a crew-only
+    or LaunchLab rule: oktech.strategy_sniper says those)."""
+    return MIG_ANY_AGE_WHY if _mig_window_of(trig) == 0 else None
+
+
+def mig_window_fields(trig: Trigger | Mapping[str, Any]) -> dict[str, Any]:
+    """What a lab's ranked row says about a MIG rule's window besides its numbers: `research_only` with its reason
+    for a rule of any age, `oktech_unconfirmed` with its reason for a window above MIG_WIDE_WINDOW_SECS, nothing for
+    the windows scored before or for any other kind. No field changes a score."""
+    why = research_only_why(trig)
+    if why is not None:
+        return {"research_only": True, "research_only_why": why}
+    if (_mig_window_of(trig) or 0) > MIG_WIDE_WINDOW_SECS:
+        return {"oktech_unconfirmed": MIG_WIDE_WHY}
+    return {}
 
 
 CURVE_REAL_TOKENS = 793_100_000 * 10**6  # tokens a pump.fun curve sells before it completes
@@ -2621,6 +2704,7 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
             # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
             "size": sized,
+            **mig_window_fields(trig),  # a MIG rule of any age is research only; a wide window is not confirmed
         })  # fmt: skip
         if any("place" in r for r in rs):  # at a bid landing: the places the rule's copies got among the outsiders
             out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
@@ -2831,3 +2915,4 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             best[w] = row
     out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)
     return out[:top]
+

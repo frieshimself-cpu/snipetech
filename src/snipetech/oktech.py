@@ -958,6 +958,11 @@ def _whole_hunt(value: Any, name: str) -> int:
 # PumpSwap tape must hold every second of it, and research round 1's coins lost when held 900 s); a MIG plan with a
 # longer exit would be a rule nobody scored.
 MIG_MAX_HOLD_SECS = 300.0
+# The widest Migration Window the lab scored before 13 Nov 2026 (10 s is OKTech's default, 60 s the one it was compared
+# with). OKTech's notes give no largest value for migrationExpirySec and no MIG sniper was ever created here, so a rule
+# with a wider window is sent as scored and its plan says that OKTech has not confirmed it takes one
+# (lab.MIG_WIDE_WHY).
+MIG_WIDE_WINDOW_SECS = 60.0
 
 
 # Hunt's maxDevBuySol 0 (research round 3, priority 1, docs/research/2026-11-07-round-3.md): the lab scores dev_max 0 as
@@ -1164,8 +1169,9 @@ def strategy_sniper(
         if not window:
             # the form's default window is 10 s, and how to send "no window" is not known: an any-time rule sent without
             # one would most likely run as the 10 s rule, which the lab scores as a rule of its own
-            raise ValueError("an any-time MIG rule cannot be sent as scored: OKTech's Migration Window defaults to 10 s, "
-                             "and how to send no window is not known (ask OKTech first)")  # fmt: skip
+            raise ValueError("an any-time MIG rule is research only and cannot be sent as scored: OKTech's Migration "
+                             "Window defaults to 10 s, and how to send no window is not known (ask OKTech "
+                             "first)")  # fmt: skip
         if trig.get("dev_paid") is not None:
             # the lab's paid-creator split (lab.dev_paid_earlier): OKTech MIG has no filter for it. Each coin's creator
             # is a fresh wallet, so blockedCreators cannot do it; web.tracking on the paying creators is untested (7 Nov)
@@ -1184,6 +1190,12 @@ def strategy_sniper(
         config["migrationExpirySec"] = window
         summary.append(f"only coins whose migration comes within {window} s of their create (OKTech MIG's Migration "
                        "Window, as the lab scored it)")  # fmt: skip
+        if window > MIG_WIDE_WINDOW_SECS:
+            notes.append(f"a Migration Window of {window} s has never been sent to OKTech, and its notes give no "
+                         "maximum for migrationExpirySec (the default is 10 s): read the sniper's settings back "
+                         "after it is created, and on the first fills check on the tape how long after its create "
+                         "each coin migrated; a coin older than the window means OKTech did not take it, and so "
+                         "does a run of fills none of which migrated later than 10 s")  # fmt: skip
         notes.append("MIG has never run on this account, and a feature counts as working only after one live trade "
                      "shows it fired (playbook 8): check the first fill on the tape (a PumpSwap buy behind the first 3 "
                      "PumpSwap trades after the migration's slot, a slot or so after it, where the lab assumes it "
