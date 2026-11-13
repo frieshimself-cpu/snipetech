@@ -286,6 +286,8 @@ class Trigger:
             return f"event {self.event} (first trade after it)"
         if self.kind == "kol":
             who = "a KOL" if self.group == "kol" else f"a tracked wallet ({self.group})"
+            if self.group == SNIPER_GROUP:
+                who = "a labelled launch sniper"
             named = [short_wallet(w) for w in only_wallets(self)]
             if named:  # the wallets by name: the group is then only whose buys the consensus gate counts
                 who = (f"the wallet {named[0]}" if len(named) == 1 else f"one of {', '.join(named)}"
@@ -353,7 +355,8 @@ def known_sets(trig: Trigger, kols: Any) -> tuple[Collection[str], ...]:
     named = (frozenset(only_wallets(trig)),) if trig.only else ()
     if not isinstance(kols, dict):
         return (kols, *named)
-    groups = TRIGGER_GROUPS if trig.known_any else (trig.group,)
+    # (a rule on a group outside those, the launch snipers, counts its own group too)
+    groups = dict.fromkeys((*TRIGGER_GROUPS, trig.group)) if trig.known_any else (trig.group,)
     return (*(kols.get(g) or frozenset() for g in groups), *named)
 
 
@@ -458,6 +461,37 @@ def is_big(name: str) -> bool:
     return flat.startswith(BIG_NAMES)
 
 
+# Launch snipers as a group of their own (13 Nov 2026, idea I59: "buy a launch once K proven same-block snipers bought
+# it"): the wallets labelled `sniper` (`winners --snipers --label N`, analysis/launch_snipers.py; or by hand, `label
+# ADDRESS NAME --kind sniper`). A wallet rule can name the group ({"kind": "kol", "group": "sniper", "known": 2} fires
+# at the second labelled sniper's first buy of a coin), and so can a hunt's `bots` in the lab (LAB_BOT_GROUPS; the
+# sniper builder keeps oktech.BOT_GROUPS, so no sniper is built for it). It is not one of TRIGGER_GROUPS: `known_any`
+# on another group's rule and `history amm-backfill --group` read those and are what they were.
+SNIPER_GROUP = "sniper"
+RULE_GROUPS = (*TRIGGER_GROUPS, SNIPER_GROUP)  # what a wallet rule's `group` can name
+LAB_BOT_GROUPS = (*BOT_GROUPS, SNIPER_GROUP)  # what a hunt's `bots` can name in the lab
+# Most buys such a rule follows are in the coin's create block, where no copy lands (`create_block_entry`). Its place
+# is therefore never called live (paper.landing_fields, paper.report), and this is why.
+SNIPER_NOTE = ("a rule on launch snipers follows buys in a coin's create block, and no copy lands in that block "
+               "(OKTech sees a buy there only once the block is out). The lab places such a copy in the block after "
+               "the create, with the N trades of its copy position counted there (+6: six trades of that block ahead "
+               "of us; a place counted across blocks, +Nx, right behind the create block at the earliest), and never "
+               "under the price the create block closed at. That place is a model, shaped like the hunt buys of 5 Nov "
+               "(1 to 2 blocks after the create, 2 to 7 buys ahead); it is not measured: no copy of ours has followed "
+               "a buy in a create block. `create_block_moments` says how many of the rule's moments it is. A good "
+               "number here is a reason for one small live copy to measure that place, not evidence that the rule "
+               "pays live")  # fmt: skip
+
+
+def sniper_rule(trig: Trigger | Mapping[str, Any] | None) -> bool:
+    """Whether a rule is a wallet rule on the launch snipers' group (`group` "sniper"). `trig`: a Trigger, or its
+    fields as a frozen rule stores them."""
+    if not trig:
+        return False
+    get = trig.get if isinstance(trig, Mapping) else (lambda name: getattr(trig, name, None))
+    return get("kind") == "kol" and get("group") == SNIPER_GROUP
+
+
 CREATOR_GROUPS = ("dev",)  # the deployer groups a launch trigger's `creators` can name (`label --kind dev`)
 TRIGGER_EXAMPLE = '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}'
 
@@ -548,8 +582,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
                              + (f": {HUNT_CANNOT}" if kind == "hunt" else ""))  # fmt: skip
     if trig.venue not in TRIGGER_VENUES:
         raise ValueError(f"venue must be one of {', '.join(TRIGGER_VENUES)}, not {trig.venue!r}")
-    if kind == "kol" and trig.group not in TRIGGER_GROUPS:
-        raise ValueError(f"group must be one of {', '.join(TRIGGER_GROUPS)}, not {trig.group!r}")
+    if kind == "kol" and trig.group not in RULE_GROUPS:
+        raise ValueError(f"group must be one of {', '.join(RULE_GROUPS)}, not {trig.group!r}")
     floor = trig.sol if kind == "whale" else (trig.sol or KOL_MIN_SOL)  # a whale rule has no floor but its own
     if trig.max_sol and trig.max_sol < floor:
         raise ValueError(f"max_sol ({trig.max_sol:g}) is under the smallest buy the rule follows (sol, "
@@ -573,8 +607,8 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     if trig.creators and trig.creators not in CREATOR_GROUPS and not _is_address(trig.creators):
         raise ValueError(f"creators must be one of {', '.join(CREATOR_GROUPS)} (a label kind of deployers, "
                          f"`snipetech label --kind dev`) or one deployer's address, not {trig.creators!r}")  # fmt: skip
-    if trig.bots and trig.bots not in BOT_GROUPS:
-        raise ValueError(f"bots must be one of {', '.join(BOT_GROUPS)} (a label kind of wallets, `snipetech label "
+    if trig.bots and trig.bots not in LAB_BOT_GROUPS:
+        raise ValueError(f"bots must be one of {', '.join(LAB_BOT_GROUPS)} (a label kind of wallets, `snipetech label "
                          f"--kind bundler`), not {trig.bots!r}")  # fmt: skip
     if trig.crew not in CREW_CHOICES:
         raise ValueError(f'crew must be "" (skip serial crews\' coins) or "only" (score them alone), not {trig.crew!r}')
@@ -1039,10 +1073,38 @@ def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, pos
     if kind == "kol":
         if across is not None:
             return copy_entry(path, i, across, latency, mates)
-        return int(path.landing_index(t_slot + latency, position, own_entry_end(path, i, mates)))
+        e = int(path.landing_index(t_slot + latency, position, own_entry_end(path, i, mates)))
+        return create_block_entry(path, i, e, latency, position)  # never inside the coin's create block
     if across is not None:
         return copy_entry(path, i, across, latency)
     return int(path.landing_index(t_slot + latency, position, i))
+
+
+def create_block_entry(path: MarketPath, i: int, e: int, latency: int, position: str) -> int:
+    """State `e`, the place of a copy inside the followed wallet's block (`entry_at`), unless the followed buy at
+    state i stands in the coin's create block: no copy lands there (OKTech sees a buy in that block only once the
+    block is out; CLAUDE.md rule 2: launch snipes land a slot after the create), so the copy is placed in the block
+    after the create at `position`, counted from the create block's last trade ("+N": N trades of that block ahead of
+    us, never past its last; start, middle, end: of that block). Until 13 Nov 2026 an in-block place counted on
+    inside the create block: "+6" behind a sniper there stood ahead of every buyer of that block from the seventh on,
+    a place nobody can buy. Nor is the copy priced under what the create block closed at: where the block after it
+    opens lower (a bundle sells first), it pays the dearest price between the create block's end and its place
+    (`_dearest`, as a bid landing does), never the cheaper one.
+
+    Nothing changes for a buy in any other block, for a coin whose create the tape does not hold (no create block
+    is known), or for a landing that names a later block itself (`latency`). A place counted across blocks ("+Nx")
+    has its own floor behind the create block (`copy_entry`) and does not come through here."""
+    launch = path.launch
+    if launch is None or latency or int(path.slot[i]) != int(launch.slot):
+        return e
+    last = int(np.searchsorted(path.slot, int(launch.slot), side="right")) - 1  # the create block's last trade
+    land = int(path.landing_index(int(launch.slot) + 1, position, last))
+    return _dearest(path, last, range(last + 1, land + 1))
+
+
+def in_create_block(path: MarketPath, i: int) -> bool:
+    """Whether the trade at state i stands in the coin's create block (the tape holds the create)."""
+    return path.launch is not None and int(path.slot[i]) == int(path.launch.slot)
 
 
 def mig_gap(cov: Mapping[str, Any], path: MarketPath, e: int | None, mig, horizon: float) -> str | None:
@@ -1768,6 +1830,7 @@ def label_groups(store: Store) -> dict[str, Any]:
             "trader": {a for a in wallet if category(names[a]) not in NOT_TRADERS},
             "big": {a for a, n in names.items() if is_big(n)},
             "dev": set(store.labels("dev")), "bundler": set(store.labels("bundler")),
+            SNIPER_GROUP: set(store.labels(SNIPER_GROUP)),  # the labelled launch snipers (`winners --snipers`)
             TEAMS: {a: entity(n, a) for a, n in names.items()}}  # fmt: skip
 
 
@@ -2167,6 +2230,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 # BAND_VOL_SECS before it, both read off the path the moment was found on (no second pass)
                 row["mcap_sol"] = round(path.mcap_sol(i), 3)
                 row["vol60_sol"] = round(volume_before(path, i, BAND_VOL_SECS), 6)
+                if in_create_block(path, i):  # the followed buy stood in the create block: no copy lands there
+                    row["create_block"] = True
             if any_buyer(trig):  # the coin at the trigger buy: the gates' numbers, and the bands' two
                 row |= any_buyer_fields(path, i, in_span)
             if frac is not None:
@@ -2800,6 +2865,8 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
         })  # fmt: skip
         if any("place" in r for r in rs):  # at a bid landing: the places the rule's copies got among the outsiders
             out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
+        if any(r.get("create_block") for r in rs):  # copies of a buy in a create block, placed a block later
+            out[-1]["create_block_moments"] = sum(1 for r in rs if r.get("create_block"))
         out[-1]["_rows"] = (rs, k)  # for the bands of the rows that are kept
     out.sort(key=lambda r: r["test"].get("ev_lower") or -1e9, reverse=True)
     for j, r in enumerate(out):
