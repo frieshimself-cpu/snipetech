@@ -48,7 +48,9 @@ SQL_TABLES: dict[str, str] = {
     "pnl = SOL the trade made after costs, roi = its share of the buy; trigger_ts, entry_ts, exit_ts = unix seconds; "
     "reason = why it sold; data = JSON (venue, landing, entry_mcap_sol, hold_secs; deployer on a rule of kind dev)",
     "scores": "one row per kind and key. kind = deployer, qualify, follow, copy or study; key = the wallet; "
-    "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis)",
+    "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis; since 13 Nov "
+    "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
+    "verdict.ev_every_launch_sol)",
     "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
     "trades_behind = trades between the copied buy and ours; pnl_sol = on the sell; ts = unix seconds; landing_src = "
@@ -742,6 +744,48 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         its bid is no bid to outbid (a 0.00 SOL buy behind Cupseyy had made his first outsider's bid read 0.034 SOL
         instead of 0.305). The bid landing ("--copy-position", "bid" / "bid-") still counts such a transaction: it
         stood in the block.
+        COMPANIONS (13 Nov): a wallet's own wallets are found on buys of 0.1 SOL or more only: a wallet whose buys
+        beside a followed wallet are all dust is an outsider. A lab or place-bids from before can show more
+        companions: run it again where the place depends on them.
+        AN ANY-BUYER RULE (13 Nov, idea I84): a whale trigger takes coin gates. "max_sol": the trigger buy is at
+        most this ("sol" is its floor). "min_age" / "max_age": the coin's age at the buy in seconds (a slot is
+        about 0.215 s, so 20 to 190 slots are about 4 to 41 s; the clock is whole seconds). "min_curve" /
+        "max_curve": SOL in the curve BEFORE the trigger buy (on a kol trigger the same two read the curve after
+        the followed buy). It fires once a coin, on the first buy by anyone but the creator inside every gate.
+        E2x1's coin filter: ["lab", "--trigger", "{\"kind\": \"whale\", \"sol\": 0.25, \"max_sol\": 0.56,
+        \"min_curve\": 7, \"max_curve\": 18, \"min_age\": 4, \"max_age\": 41}", "--buy", "0.2", "--hours",
+        "72", "--json"]. Rows carry curve_before_sol, age_secs, age_slots, mcap_sol, vol60_sol; a ranked rule has
+        "bands". It is scored at +3@1 (three trades into the slot after the trigger buy, a block late), its
+        live_landing is always false and landing_note says why: no sniper of ours runs such a rule, and nobody has
+        measured that place or the bid that buys it. A positive lower bound means "the filter survives a block
+        late on paper: measure the landing next", never "this pays live", and never a result at the bot's own
+        place. Freeze it without --only-live for a forward record; it never goes to a live test.
+        A MIG RULE'S WINDOW (13 Nov, ideas I86 and I101): a mig trigger's "window" is whole seconds from 1 to
+        604800, OKTech's Migration Window (the migration came within that many seconds of the create); "window": 0
+        is a buy after a migration of ANY age, research only; a mig trigger with no window is refused. One lab compares them: ["lab", "--trigger", "{\"kind\": \"mig\", \"window\": 0}",
+        "--trigger", "{\"kind\": \"mig\", \"window\": 600}", "--trigger", "{\"kind\": \"mig\",
+        \"window\": 60}", "--hours", "48", "--json"]. Every MIG rule lands behind the first 3 PumpSwap trades
+        after the migration's slot (+3@1), only where the PumpSwap tape holds the coin to the end of its exit
+        (amm_tape says what was skipped). A row with research_only true (window 0) is a finding about what bots
+        like 2mRN earn: no sniper can be sent it, and paper freeze refuses it. A row with oktech_unconfirmed (a
+        window above 60 s) is OKTech's own setting with a number nobody has sent it: not runnable until OKTech
+        says its largest window. A window above 0 counts only coins whose create is on the unbroken stretch of
+        tape the lab reads; window 0 needs no create.
+        A HUNT'S LANDING (13 Nov, idea I89): "--hunt-landing", "+7@1" on lab (and on paper freeze with "--trigger")
+        moves every hunt, whale and burst trigger of the job: our buy stands 1 block after the block of the trade
+        that crossed the threshold, behind the first 7 trades of the coin in that block (trades 0 to 99, blocks 0
+        to 10). "--position" never moves a hunt; without the flag a hunt is scored at +3@1, where live hunt buys
+        landed at the median. ["lab", "--trigger", "{\"kind\": \"hunt\", \"sol\": 15, \"window\": 1,
+        \"max_buyers\": 2, \"dev_max\": 1}", "--hunt-landing", "+7@1", "--hours", "168", "--json"]. One landing a
+        job: +7@1 and +11@2 are two jobs. Each hunt row then says landing, live_landing false and landing_vs_live:
+        "behind" (at or behind the live place), "ahead" (fewer than 3 trades, or block 0: better than the measured
+        live place, no evidence that the rule pays) or "live". The job's hunt_landing block says per trigger how
+        many trades really stood between the crossing trade and our buy (behind_p50, behind_min, behind_max) and
+        "short": the moments where fewer than the number asked stood there because the block was quiet or empty.
+        Where short is a large share of the moments the result is kinder than the landing's name: do not read it
+        as "pays at +7". A result at "behind" is a place asked for, not one our fills were measured at (only two
+        live fills say busy coins land there). A hunt frozen with the flag is a record of its own beside the same
+        hunt at +3@1 and never goes to a live test by itself.
         THE BACKFILL (12 Nov): ["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run", "--json"] reads
         the big wallets' PumpSwap buys of the last days from Helius and, for each of 1 SOL or more ("--min-sol"), every
         trade of that pool from 60 s before the buy to 300 s after it ("--after-secs", "300": what is given when
@@ -752,6 +796,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         that is skipped (no_backfill), every one of them after a backfill at 300: "--sell-parts", "4",
         "--sell-part-secs", "15" holds 345 s, so backfill those wallets with "--after-secs", "360" first (a second
         run with the longer time fetches only the seconds that are missing).
+        Without "--json" its text lists what it left out, one line a reason with its count and the result's own key
+        in brackets (on_tape, buys_too_recent, buys_outside_tape, buys_non_coin, no_cursor, no_pool,
+        listing_incomplete, incomplete, too_busy, left; dry_run = stretches a dry run listed and did not fetch):
+        counts of what was not fetched, never a result about a wallet.
         WHAT IT COSTS, MEASURED (the first real run, 12 Nov: Gake Side, 2 days, 21 buys, 19,453 credits in
         3 minutes): about 1,000 credits a buy at 300 s after it; about 38,000 a buy at an hour after it (these coins
         are busy), so ask for more than 300 only for an exit that holds longer, and for few wallets. The month's plan
@@ -860,7 +908,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         everything sold at once after 1 to 2 s). ["paper", "freeze", "--recipe", "6z91"] freezes each trigger of the
         recipe with the bot's
         own exit and bid for the forward test (its skipped list says which fired too rarely or had no positive
-        lower bound). The bot's exit is research only: no sniper is sent it, so a recipe that pays is a finding for
+        lower bound). Since 13 Nov a rule frozen as a recipe is that recipe's rule, with its own id and forward
+        record (each record carries "recipe"): "6z91-quick" freezes beside "6z91"; compare two recipes on their own
+        records over the same hours. The bot's exit is research only: no sniper is sent it, so a recipe that pays
+        is a finding for
         the owner with its landing and bid named, never a sniper to start.
         LADDER EXITS (OKTech's stages, the owner: "partially sell but hold some", "hold it until it start going
         down"): every lab scores a few without being asked; read a row's "exit" label stage by stage.

@@ -1359,3 +1359,17 @@ def test_no_paragraph_of_todays_job_help_is_lost_to_the_roles(rolebox):
     assert {t for t in named if not t.startswith("@")} <= set().union(*roles.ROLE_COMMANDS.values())
     with pytest.raises(ValueError, match="no longer fit"):
         roles.cut_job_help(full.replace("THE BACKFILL (12 Nov):", "THE BACKFILL:"))
+
+
+def test_start_job_tells_the_agents_the_tools_of_13_nov(toolbox):
+    """The agents asked for four tools in their ideas (I84 an any-buyer rule with coin gates, I86 / I101 a MIG buy
+    after a migration of any age, I89 a hunt's landing) and three repairs changed what an answer means (companions
+    without dust, the backfill's left-out lines, one record a recipe). A tool an agent is not told of is a tool it
+    asks for again: the start_job text names each, with the flag or field to use and what not to read into it."""
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    for words in ('"max_sol"', '"min_curve" / "max_curve": SOL in the curve BEFORE the trigger buy',
+                  "live_landing is always false", '"window": 0 is a buy after a migration of ANY age, research only',
+                  "oktech_unconfirmed", '"--hunt-landing", "+7@1"', "landing_vs_live", '"short"',
+                  "found on buys of 0.1 SOL or more only", "one line a reason", "is that recipe's rule"):  # fmt: skip
+        assert words in text, words
