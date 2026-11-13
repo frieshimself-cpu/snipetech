@@ -453,3 +453,29 @@ def test_a_network_state_that_cannot_be_read_is_unknown_and_never_an_alarm(tmp_s
     # a caller that hands no reader (a test, a laptop) gets the row all the same, from the machine itself
     rs = check_resources(Config(), tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
     assert {x.name: x for x in rs}["network"].status in ("ok", "unknown")
+
+
+def test_an_account_the_api_calls_empty_is_an_alarm_until_the_agents_are_answered_again(tmp_store, ledger):
+    """13 Nov 05:32: the API refused every agent ("Your credit balance is too low") for the second time in a day and
+    the round's line went on saying anthropic_credit=unknown. What the API says about the account is known: the row is
+    critical from the refusal, says since when and what to do, and clears with the first answer after it."""
+    from snipetech.operator.resources import credit_refused, says_no_credit
+
+    cfg = Config()
+    assert says_no_credit("400: Your credit balance is too low to access the Anthropic API.")
+    assert says_no_credit("403: An Admin of Owner Org must add credits or raise the spend limit")
+    assert not says_no_credit("529: Overloaded")
+    ledger.record("scout", {"input_tokens": 100_000}, now=NOW - 1000)
+    assert credit_refused(tmp_store, ledger, NOW - 900) is True  # the first refusal: an outage starts
+    ledger.record("fees", {"input_tokens": 100_000}, now=NOW - 899)  # a call already on its way was still answered
+    assert credit_refused(tmp_store, ledger, NOW - 897) is False  # the same outage
+    rows = check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW)
+    r = {x.name: x for x in rows}["anthropic_credit"]
+    assert r.status == "crit" and r.value == 0
+    assert "empty since" in r.message and "console.anthropic.com" in r.message and "/credit" in r.message
+    assert [line for line in alert_lines(rows) if line.startswith("anthropic_credit")]
+    # the owner topped up: the agents are answered again, and the row is the count once more
+    ledger.record("scout", {"input_tokens": 100_000}, now=NOW + 600)
+    rows = check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW + 700)  # fmt: skip
+    assert "empty since" not in {x.name: x for x in rows}["anthropic_credit"].message
+    assert credit_refused(tmp_store, ledger, NOW + 5000) is True  # and the next refusal is a new outage

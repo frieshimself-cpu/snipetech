@@ -35,6 +35,7 @@ from .prompts import (
     role_message,
     user_message,
 )
+from .resources import credit_refused, says_no_credit
 from .snapshot import Snapshot
 from .tools import NoteSink, make_operator_tools
 from .turnlog import TurnLog
@@ -202,7 +203,11 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         stopped = "wall_time"
     except anthropic.APIError as exc:
         stopped, error = "api_error", api_words(exc)
-        if not notes.has_today("api error", now()):
+        outage = False  # an empty account is told once an outage, not once a day (13 Nov: it ran dry twice)
+        if says_no_credit(error):
+            with contextlib.suppress(Exception):  # the record is for the alarm: never a reason to fail the turn
+                outage = credit_refused(svc.store, ledger, now())
+        if outage or not notes.has_today("api error", now()):
             notes.write(f"api error: {error} — no more Claude rounds until this clears", "decision")
     finally:
         close = getattr(

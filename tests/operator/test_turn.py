@@ -813,3 +813,24 @@ def test_a_turn_without_a_role_is_the_analysts_or_the_operators_as_before(env):
     _run(env, Decision(True, "analyst", ["daily analysis due"]), handler)
     assert _system(requests[0]).startswith(ANALYST_SYSTEM[:40]) and len(requests[0]["tools"]) == 16
     assert "Round mode: analyst." in requests[0]["messages"][0]["content"]
+
+
+def test_a_second_empty_account_in_one_day_is_told_again(env):
+    """13 Nov: the account ran dry at 23:16, the owner paid, and it ran dry again at 05:32. The note about an API
+    error is written once a day, so the second time nobody was told. An empty account is told once an outage: again
+    when the agents were answered in between."""
+
+    def refused(request):
+        return httpx2.Response(400, json={"type": "error", "error": {
+            "type": "invalid_request_error", "message": "Your credit balance is too low to access the Anthropic API."}})  # fmt: skip
+
+    def turn_at(ts):
+        return asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], Decision(True, "operator", ["x"]),
+                                    env["ledger"], env["notifier"], env["notes"], jobs=env["jobs"],
+                                    client=_client(refused), now=lambda: ts))  # fmt: skip
+
+    assert turn_at(NOW)["stopped"] == "api_error" and turn_at(NOW + 900)["stopped"] == "api_error"
+    assert env["paths"].notes.read_text().count("api error") == 1 and len(env["sent"]) == 1  # one outage, told once
+    env["ledger"].record("analyst", {"input_tokens": 100_000}, now=NOW + 3600)  # paid: the agents are answered
+    turn_at(NOW + 7200)
+    assert env["paths"].notes.read_text().count("api error") == 2 and len(env["sent"]) == 2

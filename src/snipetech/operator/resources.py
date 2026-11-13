@@ -3,6 +3,7 @@ A critical row becomes one decision note a day with the exact thing to do."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -48,6 +49,40 @@ CREDIT_OVERRUN = 1.05  # spent this many times what was recorded: the record is 
 CREDIT_FIX = "send /credit <dollars the Anthropic console shows> (console.anthropic.com) and the count starts there"
 
 
+# What the API itself says about the account is known, whatever our count says: a turn refused for want of credit
+# (13 Nov: twice in one day) records when (REFUSED_KEY: `since` the outage's first refusal, `last` its latest), and the
+# account is empty until the agents are answered again. Calls already on their way when the balance ran out are still
+# answered seconds after the first refusal: only an answer CREDIT_SETTLE_SECS after the last refusal ends the outage.
+REFUSED_KEY = "resources:anthropic_refused"
+CREDIT_SETTLE_SECS = 120
+CREDIT_TOP_UP = ("add credit at console.anthropic.com (Billing; auto-reload there, when switched on, tops the account "
+                 "up by itself)")  # fmt: skip
+
+
+def says_no_credit(words: str) -> bool:
+    """The API's refusal is about the account's credit ("Your credit balance is too low", "must add credits")."""
+    return "credit" in str(words).lower()
+
+
+def credit_refused(store: Store, ledger: Ledger, now: float) -> bool:
+    """Record that the API refused a turn for want of credit. True when an outage starts with it: the first refusal,
+    or the agents were answered since the last one (the owner paid and it ran dry again)."""
+    rec = store.coverage(REFUSED_KEY)
+    last = float(rec.get("last") or 0)
+    starts = not last or ledger.spent_since(last + CREDIT_SETTLE_SECS) > 0
+    store.set_coverage(REFUSED_KEY, {"since": now if starts else float(rec.get("since") or now), "last": now})
+    return starts
+
+
+def credit_empty_since(store: Store, ledger: Ledger) -> float | None:
+    """When the API began refusing for want of credit, while no turn has been answered since; None otherwise."""
+    rec = store.coverage(REFUSED_KEY)
+    last = float(rec.get("last") or 0)
+    if not last or ledger.spent_since(last + CREDIT_SETTLE_SECS) > 0:
+        return None
+    return float(rec.get("since") or last)
+
+
 def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resource:
     """The credit left by our count, and how long it lasts. The pace is the faster of the week's mean and the last day:
     once the owner raises the agents' budget (/budget, 7 Nov: 200 $ a day against the 4.44 $ spent on 6 Nov) the spend
@@ -59,6 +94,12 @@ def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resourc
     as not known, and is no alarm."""
     rc = cfg.resources
     try:
+        empty = credit_empty_since(store, ledger)
+        if empty is not None:
+            return Resource("anthropic_credit", 0.0, "usd", None, "crit",
+                            f"empty since {time.strftime('%H:%M UTC on %-d %b', time.gmtime(empty))}: the Anthropic API "
+                            "refuses the agents for want of credit, so nothing is analysed until you "
+                            f"{CREDIT_TOP_UP}. Then {CREDIT_FIX}")  # fmt: skip
         rec = store.coverage(CREDIT_KEY)
         credit = float(rec.get("usd", rc.anthropic_credit_usd))
         set_at = float(rec.get("set_at", 0))
