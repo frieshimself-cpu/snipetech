@@ -1209,3 +1209,32 @@ def test_a_wallet_can_be_called_up_for_review_now(tmp_path, capsys):
         st.close()
     a = build_parser().parse_args(["qualify", "run", "--max", "50", "--json"])
     assert a.action == "run" and a.wallets == []
+
+
+def test_qualify_runs_beside_one_lab_on_a_two_slot_machine_and_is_owed_a_slot_when_both_are_taken(tmp_path, monkeypatch):
+    """13 Nov evening: the research agents may hold both lab slots while nothing else asks for one. Qualify used to
+    give up whenever any lab job ran at all (a rule from the one-slot machine), without saying it wanted a slot: with
+    the agents on both slots most of the time it would never have run. Beside one lab it runs (the second slot is
+    free); with every slot taken by lab jobs it gives up and leaves the mark the agents give way to."""
+    from snipetech.analysis import lab_lock
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W1"])
+        st.upsert_candidate("W1", "tape", {"positions": 3}, NOW - 3600)
+        _running_lab(data)
+        second = data / "jobs" / "20261106-100001-fedcba.json"
+        second.write_text(json.dumps({"id": "20261106-100001-fedcba", "argv": ["lab", "--latency", "1"],
+                                      "started": NOW - 50, "ended": None, "exit_code": None, "running": True,
+                                      "pid": os.getpid()}))  # fmt: skip
+        calls = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda wallets, pos: calls.append(wallets) or [])
+        assert out["deferred"] is True and "2 lab jobs are running" in out["reason"] and calls == []
+        assert (lab_lock.wanted(data, now=NOW) or {}).get("who") == "qualify"  # the next free slot is its
+        second.unlink()  # one of the two ended
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda wallets, pos: calls.append(wallets) or [])
+        assert out["deferred"] is False and calls == [["W1"]]  # it ran beside the other lab
+        assert lab_lock.wanted(data) is None  # and nobody is owed a slot on its account any more
+    finally:
+        st.close()

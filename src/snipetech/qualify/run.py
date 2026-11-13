@@ -10,7 +10,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from ..analysis.lab_lock import LabBusy, lab_lock
+from ..analysis.lab_lock import LabBusy, lab_lock, lab_slots
+from ..analysis.lab_lock import want as lab_want
 from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import (
@@ -298,9 +299,16 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     measurable = measurable[:max_wallets]  # the rest stay due: the next lab's
     if not measurable:
         return out
+    # Lab jobs on every slot: nothing to wait for now, and the next free slot is qualify's (lab_lock.want: the research
+    # agents hold every slot only while nobody is owed one). Until 13 Nov any one lab job made qualify give up, a rule
+    # from the one-slot machine: beside one lab on a machine with two slots it runs (the lock below decides).
     labs = [j for j in running_jobs(jobs_dir) if (j.get("argv") or [""])[0] == "lab"]
-    if labs:
-        out["deferred"], out["reason"] = True, f"a lab job is running ({labs[0].get('id')}); retry next tick"
+    if len(labs) >= lab_slots():
+        lab_want(Path(jobs_dir).parent, "qualify", now)
+        n = len(labs)
+        out["deferred"] = True
+        out["reason"] = (f"{'a lab job is' if n == 1 else f'{n} lab jobs are'} running ({labs[0].get('id')}) on "
+                         f"{'the one lab slot' if lab_slots() == 1 else 'every lab slot'}; retry next tick")  # fmt: skip
         return out
     last = store.coverage(LAST_LAB_KEY)
     if not early and last.get("ts") and now - float(last["ts"]) < q.lab_interval_h * 3600:
