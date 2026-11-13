@@ -82,6 +82,7 @@ from .lab import (
     mig_moment,
     migration_sell_gap,
     rank,
+    research_only_why,
     size_gap,
     span_slot_secs,
     within_mig_cap,
@@ -552,7 +553,11 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     bot runs, never the lab's pick of the day, at the bot's size and bid unless told; each record names its recipe,
     and `skipped` says which of its triggers fired too rarely to rank or had no positive lower bound. A recipe follows
     the wallets the bot follows, never the bot, and its exit is research only: no sniper is sent it
-    (oktech.validate_exit; only hunt rules go from paper to a live test, operator/live_test.py)."""
+    (oktech.validate_exit; only hunt rules go from paper to a live test, operator/live_test.py).
+
+    A rule whose trigger no sniper can be sent (`lab.research_only_why`: a MIG buy at any age, `window` 0) is never
+    frozen: among `triggers` it is refused with its reason before any tape is read (ValueError), and in a lab handed
+    over (`data`) its row is left out and named in `skipped`."""
     now = now or time.time()
     copy_pos = copy_landing(store, cfg, now)
     exits = None
@@ -561,6 +566,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             raise ValueError("a recipe brings its own triggers: freeze typed triggers in a command of their own")
         triggers, exits = list(recipe.triggers), [recipe.exit]
         top = max(top, len(triggers))  # a recipe names its rules: each has a place (as `lab` gives every hypothesis)
+    for t in triggers or ():  # refused in words before any tape is read
+        why = research_only_why(t)
+        if why is not None:
+            # a research-only rule (a MIG buy at any age): no sniper is ever sent it, so its forward record would
+            # stand for no trade of ours, and the lab already says what it makes
+            raise ValueError(f"{t.label()} cannot be frozen: {why}. Score it with `lab --trigger`")
     if buy_sol is None:
         buy_sol = recipe.buy_sol if recipe is not None else 0.2
     if buy_bid_sol is None:
@@ -655,6 +666,10 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                     "took them"} for x in ranked[k:]]  # fmt: skip
             break
         spec = r["trigger_spec"]
+        why = research_only_why(spec)
+        if why is not None:  # in a lab it was handed: never frozen, takes no place, and says why
+            skipped.append({"label": f"{r['trigger']} | {r['exit']}", "why": why})
+            continue
         lat, pos = live_landing(spec.get("kind"), copy_pos)
         # a copy frozen at the place asked for keeps it: the lab scored it there, and the run will
         asked = asked_pos is not None and spec.get("kind") not in LAUNCH_LANDINGS

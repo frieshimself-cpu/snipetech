@@ -387,7 +387,7 @@ The owner: "hold it until it start going down, or partially sell but hold some."
 | field | value | why |
 |---|---|---|
 | `mode` | `mig` | buys on PumpSwap once the coin has moved (F:228) |
-| `migrationExpirySec` | 10 (OKTech's default; whole seconds) | only coins that moved within N s of their create. How to send "no window" is not known, so an any-time rule is refused (code) |
+| `migrationExpirySec` | 10 (OKTech's default; whole seconds) | only coins that moved within N s of their create. How to send "no window" is not known, so an any-time rule is refused (code). Since 13 Nov the lab scores a buy after a migration of any age as research only (`{"kind": "mig", "window": 0}`: never frozen, never sent) and a window up to a week as that window. No largest value is written anywhere and no MIG sniper was ever created, so a window above 60 s is marked "not confirmed by OKTech" |
 | `devMigrationCheck` | `{minMigrations: 2, minMigrationRatePct: 20}` | only creators whose coins move often; never sent |
 | `blockedCreators` | our block list | never sent |
 | `metadataFilter` | as for launches | it applies to MIG too (S) |
@@ -566,7 +566,8 @@ For the owner to paste to their support. Each is one sentence, and each changes 
     the buy land?
 17. For `ctbotCopyExit`: is `sellThresholdPercent` the share the wallet sells in one transaction or added up over
     several, and can `sellPercent` follow the wallet's part sales?
-18. For MIG: how is "no migration window" sent, and where does the buy land against the migration transaction?
+18. For MIG: how is "no migration window" sent, what is the largest Migration Window it takes (is 86,400 s allowed?),
+    and where does the buy land against the migration transaction?
 
 Questions 1, 2, 3, 4 and 5 decide the real-size copy. The rest can wait a day.
 

@@ -120,15 +120,21 @@ class OperatorJobs:
         id, the job died on start, and the analyst ended its turn thinking the lab was running."""
         from itertools import pairwise
 
-        from ..analysis.lab import parse_trigger, recipe
+        from ..analysis.lab import parse_trigger, recipe, research_only_why
 
         specs = [v for a, v in pairwise(argv) if a == "--trigger"]
         specs += [a.split("=", 1)[1] for a in argv if a.startswith("--trigger=")]
         for spec in specs:
             try:
-                parse_trigger(spec)
+                trig = parse_trigger(spec)
             except ValueError as exc:
                 raise PermissionError(f"--trigger refused, no job started: {exc}") from None
+            # a rule the lab scores and no sniper can be sent (a MIG buy at any age): `paper freeze` refuses it, so
+            # the refusal comes here, before a job starts and dies on it
+            why = research_only_why(trig) if argv[:2] == ["paper", "freeze"] else None
+            if why is not None:
+                raise PermissionError(f"--trigger refused, no job started: paper freeze does not take this rule "
+                                      f"({why}). Score it with lab --trigger")  # fmt: skip
         # a bot's recipe by name (`lab --recipe`, `paper freeze --recipe`): one the table does not hold is refused
         # here too, with the names there are
         names = [v for a, v in pairwise(argv) if a == "--recipe"]

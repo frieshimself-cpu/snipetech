@@ -105,8 +105,8 @@ def test_every_trigger_the_lab_prints_can_be_pasted_back():
         ({"kind": "hunt", "sol": 2, "window": 1, "solo": True}, "solo"),  # nor see the create transaction
         ({"kind": "hunt", "sol": 2, "window": 1, "buyers": 4, "max_buyers": 3}, "max_buyers"),  # could never fire
         ({"kind": "mig", "window": 10.5}, "whole seconds"),  # OKTech's migrationExpirySec is whole seconds
-        ({"kind": "mig", "window": 0}, "Migration Window"),  # any time: OKTech cannot be sent no window
-        ({"kind": "mig"}, "Migration Window"),
+        # (window 0, a coin of any age, is read since 13 Nov as research only: tests/test_lab_mig_any.py)
+        ({"kind": "mig"}, "Migration Window"),  # a window is written out: none would be the research-only rule
         ({"kind": "mig", "window": 10, "sol": 2}, "sol"),  # MIG reads its window, nothing else
     ],
 )

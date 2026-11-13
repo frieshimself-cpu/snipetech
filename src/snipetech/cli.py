@@ -1704,6 +1704,7 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import exit_set as lab_exit_set
             from .analysis.lab import in_parts as lab_in_parts
             from .analysis.lab import label_groups as lab_groups
+            from .analysis.lab import mig_window_fields as lab_mig_window_fields
             from .analysis.lab import rank as lab_rank
             from .analysis.lab import rank_wallets as lab_rank_wallets
             from .analysis.lab import recipe as lab_recipe
@@ -1790,7 +1791,9 @@ async def _run(args, cfg: Config) -> int:
                 res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
                                     **paper.landing_fields({"landing": data["landing_of"][ti], "trigger_spec": t.__dict__},
                                                            copy_pos, buy_bid),
-                                    "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked)}
+                                    "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked),
+                                    # a MIG rule of any age is research only; a wide window is not confirmed
+                                    **lab_mig_window_fields(t)}
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
             if data.get("amm_tape"):  # MIG: what the PumpSwap tape let it score, and why the rest was skipped
                 res["amm_tape"] = data["amm_tape"]
