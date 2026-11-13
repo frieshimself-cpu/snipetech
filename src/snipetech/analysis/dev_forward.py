@@ -66,6 +66,16 @@ def _frozen(store: Store, wanted: dict[str, Any]) -> dict[str, Any] | None:
     return None if have.get("refuted") else have
 
 
+def _untraded_rows(report: dict) -> list[dict]:
+    """The launches a score left out for want of trading (`deployer._untraded`), as launches of the forward test: a
+    sniper armed on the verdict buys them too, and the trade's result is what that costs, the coin sold straight
+    back. Without them a verdict's forward record would hold its traded launches and none of its dead coins."""
+    buy = float((report.get("settings") or {}).get("buy_sol") or 0.0)
+    return [{"mint": r["mint"], "ts": r["ts"], "pnl_sol": r["counted_pnl_sol"], "hold_secs": 0.0,
+             "roi": r["counted_pnl_sol"] / buy if buy else None, "exit_reason": "untraded"}
+            for r in (report.get("untraded") or {}).get("mints") or []]  # fmt: skip
+
+
 def record(store: Store, cfg: Config, prior: dict | None, report: dict, per_tx_sol: float, now: float) -> int:
     """Write the forward launches of `prior`, the deployer's score as it stood before `report` was made: the launches
     of the report that began after the data `prior` was made on. Returns the trades written.
@@ -78,7 +88,7 @@ def record(store: Store, cfg: Config, prior: dict | None, report: dict, per_tx_s
     until = prior.get("data_until")
     if prior.get("basis") != basis or until is None:
         return 0
-    forward = [row for row in report.get("launches") or []
+    forward = [row for row in [*(report.get("launches") or []), *_untraded_rows(report)]
                if row.get("pnl_sol") is not None and row.get("ts") is not None and int(row["ts"]) > int(until)]  # fmt: skip
     if not forward:
         return 0

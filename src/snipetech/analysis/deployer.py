@@ -9,9 +9,9 @@ import numpy as np
 
 from ..config import Config
 from ..models import PUMPFUN, Launch
-from ..sim.exits import ExitParams
+from ..sim.exits import Costs, ExitParams, prepare, round_trip_pnl
 from ..store import Store
-from .launches import LABELS, build_context, launch_features
+from .launches import LABELS, LaunchContext, build_context, entry_index, launch_features
 from .entry_policies import entry_policies
 from .competition import competition_report, tip_sweep
 from .optimize import best_size, optimize_exits, sweep_latency, sweep_sizes
@@ -63,6 +63,12 @@ def deployer_report(
     closed = [l for l, keep in zip(closed, on_pump) if keep]
     contexts = [ctx for ctx, keep in zip(contexts, on_pump) if keep]
     feats = [launch_features(ctx, cfg) for ctx in contexts]
+    # A launch is scored only when there was a market to sell into after our buy (`_untraded`). The others are
+    # counted and named, and what buying them costs still counts against the deployer (`_apply_untraded`).
+    scored, bought_after, untraded = _untraded(contexts, feats, cfg)
+    contexts = [ctx for ctx, keep in zip(contexts, scored) if keep]
+    feats = [f for f, keep in zip(feats, scored) if keep]
+    bought_after = [bought for bought, keep in zip(bought_after, scored) if keep]
     n = len(feats)
 
     report: dict = {
@@ -73,6 +79,7 @@ def deployer_report(
         "launches_analyzed": n,
         "launches_pending_window": len(pending),
         "launches_other_launchpads": other_launchpads,
+        "launches_untraded": untraded["launches"] if untraded else 0,
         "settings": {
             "buy_sol": cfg.snipe.buy_sol,
             "entry_slot_offset": cfg.snipe.entry_slot_offset,
@@ -86,8 +93,12 @@ def deployer_report(
         "funder": funder,
         "signs_for_creators": store.signer_creators(address),
     }
+    if untraded:
+        report["untraded"] = untraded
     if n == 0:
-        report["verdict"] = _verdict("UNKNOWN", n, reasons=["no launches with a closed analysis window yet"])
+        why = "no launch had enough trading to score" if untraded else "no launches with a closed analysis window yet"
+        report["verdict"] = _verdict("UNKNOWN", n, reasons=[why])
+        _apply_untraded(report, cfg)
         report["launches"] = []
         return report
 
@@ -168,6 +179,8 @@ def deployer_report(
         report["optimizer"] = opt
         rec_exit = ExitParams(**opt["recommended"]["exit"])
         report["size_sweep"] = sweep_sizes(contexts, cfg, rec_exit)
+        for row in report["size_sweep"]:  # how many launches saw at least a buy that size bought after our entry
+            row["launches_traded"] = sum(1 for bought in bought_after if bought >= row["buy_sol"])
         report["latency_sweep"] = sweep_latency(contexts, cfg, rec_exit)
     if optimize and n >= 6:
         report["entry_policies"] = entry_policies(feats, contexts, cfg, rec_exit)
@@ -178,9 +191,103 @@ def deployer_report(
 
     # -- verdict -------------------------------------------------------------------------------
     report["verdict"] = _decide(report, cfg, n, rec_exit)
+    _apply_untraded(report, cfg)
     _apply_entry_rule(report, cfg)
     report["launches"] = [_compact(f) for f in reversed(feats)]
     return report
+
+
+def trading_after_entry(ctx: LaunchContext, cfg: Config) -> tuple[float, int]:
+    """What the tape has of a launch after our simulated buy landed, inside the analysis window: (the SOL other
+    wallets spent buying the coin, the number of sales)."""
+    path = ctx.path
+    e = entry_index(ctx, cfg.snipe.entry_slot_offset, cfg.snipe.entry_position)
+    buys = path.is_buy[e + 1 :]
+    return float(path.quote[e + 1 :][buys].sum()) / 1e9, int((~buys).sum())
+
+
+def _untraded(contexts: list[LaunchContext], feats: list[dict],
+              cfg: Config) -> tuple[list[bool], list[float], dict | None]:  # fmt: skip
+    """Which launches the verdict is scored on: (per launch: scored, per launch: the SOL bought after our entry, the
+    launches left out, counted and named; None when none is).
+
+    A position is sold to the buyers who come after it. Where they spent less than our own buy, or nobody ever sold
+    (`trading_after_entry`), a result better than selling straight back rests on a price that moved without a market
+    (a path that starts at the wrong state, trades the tape missed), not on anybody we could have sold to. Job
+    20261111-063504: seven launches with 0.006 to 0.023 SOL bought and no sale scored +2.9 SOL each on a 0.5 SOL buy,
+    SNIPE, 5 SOL recommended (idea I67). Such a launch is not scored. One kind stays in: a launch the simulation lost
+    more on than selling straight back loses (`round_trip_pnl`: the fees and the transactions). That loss needs no
+    buyer: somebody sold coins bought before us (a rinse on a thin coin), and a sniper takes it whole.
+
+    A live sniper buys the launches left out too, so each still counts AGAINST the deployer (`_apply_untraded`), at
+    `counted_pnl_sol`: what selling straight back makes. `every_launch`: the configured exits over the scored
+    launches and these together, in the order they happened: the result of buying every launch."""
+    s = cfg.snipe
+    costs = Costs.from_config(cfg.costs)
+    keeps, boughts, rows, every = [], [], [], []  # every: (launch time, SOL made) of each launch a sniper bought
+    for ctx, f in zip(contexts, feats):
+        bought, sells = trading_after_entry(ctx, cfg)
+        boughts.append(bought)
+        sim = (f.get("sim") or {}).get("pnl_sol")
+        floor = None
+        if sim is not None and not (bought >= s.buy_sol and sells > 0):
+            e = entry_index(ctx, s.entry_slot_offset, s.entry_position)
+            prep = prepare(ctx.path, e, s.buy_sol, costs, s.exit_latency_slots, s.entry_position)
+            floor = None if prep is None else round_trip_pnl(prep, costs)
+        # scored: it traded; or it lost more than a round trip; or no buy could be placed (as ever: it has no result)
+        keep = sim is None or floor is None or float(sim) < floor - 1e-9
+        keeps.append(keep)
+        if sim is not None:
+            every.append((f["ts"], float(sim) if keep else floor))
+        if not keep:
+            rows.append({"mint": f["mint"], "symbol": f["symbol"], "ts": f["ts"], "trades": f["trades"],
+                         "bought_after_entry_sol": round(bought, 4), "sells_after_entry": sells,
+                         "sim_pnl_sol": float(sim), "counted_pnl_sol": floor})  # fmt: skip
+    if not rows:
+        return keeps, boughts, None
+    in_order = [x for _, x in sorted(every, key=lambda r: r[0])]
+    rule = (f"not scored: after our entry other wallets bought less than {s.buy_sol:g} SOL, or nobody sold, and the "
+            "simulation lost no more on it than buying it and selling straight back loses")  # fmt: skip
+    return keeps, boughts, {
+        "launches": len(rows),
+        "rule": rule,
+        "counted_as": "a sniper buys these too: each counts against the deployer at what selling straight back makes",
+        "mean_counted_pnl_sol": float(np.mean([r["counted_pnl_sol"] for r in rows])),
+        "every_launch": summarize(in_order, cfg.verdict.confidence, cfg.verdict.bootstrap_samples),
+        "mints": rows[::-1],
+    }
+
+
+def _apply_untraded(report: dict, cfg: Config) -> None:
+    """A verdict that left launches out for want of trading (`untraded`) says how many, and leaving them out never
+    makes it better. A sniper armed on this deployer buys every launch, so the result over all of them
+    (`every_launch`) is read too: not above zero there, the deployer is one to AVOID (the live hunt skips its
+    launches); a lower bound not above zero there, a SNIPE is MARGINAL. An entry rule that takes only some launches
+    is judged after this, on its own numbers (`_apply_entry_rule`), as it always was."""
+    un = report.get("untraded")
+    if not un:
+        return
+    v = report["verdict"]
+    k, every = un["launches"], un["every_launch"]
+    warning = (f"{k} launches not scored: almost no trading (after our entry other wallets bought less than "
+               f"{cfg.snipe.buy_sol:g} SOL, or nobody sold)")  # fmt: skip
+    warnings = v.setdefault("warnings", [])
+    if not every.get("n"):
+        warnings.append(warning)
+        return
+    mean, lower = every["mean"], every["ev_lower"]
+    warnings.append(f"{warning}; a sniper buys them too: with them EV {mean:+.4f} SOL/snipe over {every['n']} launches")
+    v["ev_every_launch_sol"], v["ev_every_launch_lower_sol"] = mean, lower
+    said = (f"with the {k} launches nobody traded, which a sniper buys too: EV {mean:+.4f} SOL/snipe over "
+            f"{every['n']} launches, lower bound {lower:+.4f}")  # fmt: skip
+    if every["n"] >= cfg.snipe.min_launches and mean <= 0 and v["verdict"] != "AVOID":
+        v["verdict"] = "AVOID"
+        v.setdefault("reasons", []).append(said)
+        if v.get("recommended"):
+            v["recommended"]["buy_sol"] = v["recommended"]["bribe_sol"] = 0.0
+    elif v["verdict"] == "SNIPE" and lower <= cfg.verdict.min_ev_sol:
+        v["verdict"] = "MARGINAL"
+        v.setdefault("reasons", []).append(said)
 
 
 def _trend(feats: list[dict], chunks: int = 5) -> dict:
@@ -291,7 +398,9 @@ def _decide(report: dict, cfg: Config, n: int, rec_exit: ExitParams) -> dict:
     if comp.get("launches_with_snipers", 0) >= 0.5 and comp.get("fee_order_agreement") is not None and comp["fee_order_agreement"] < 0.55:
         warnings.append("fees barely decided landing order among snipers here — speed matters more than tips")
 
-    size_row = best_size(report.get("size_sweep") or [])
+    # no size the launches never saw bought: a row counts when enough launches had that much buying after our entry
+    size_row = best_size([r for r in report.get("size_sweep") or []
+                          if r.get("launches_traded", n) >= min(n, cfg.snipe.min_launches)])  # fmt: skip
     mean_ev = basis.get("mean", 0.0)
     roi_lo = basis.get("ev_lower", 0.0) / max(cfg.snipe.buy_sol, 1e-9)
     score = float(np.clip(50 + 150 * roi_lo - 30 * rinse_rate, 0, 100)) if n else 0.0
