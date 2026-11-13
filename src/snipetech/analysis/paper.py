@@ -447,24 +447,32 @@ def sold_in_parts(exit_params: dict | None) -> bool:
 
 
 def rule_key(trigger: dict, position: str, latency: int, buy_sol: float, buy_bid_sol: float = 0.0,
-             asked: bool = False, parts: bool = False) -> str:  # fmt: skip
+             asked: bool = False, parts: bool = False, recipe: str | None = None) -> str:  # fmt: skip
     """A frozen strategy's rule: its trigger at a landing and size, whatever exit it sells with. A trigger stored
     before a field existed is read with that field's default, so it is the same rule as today's. A rule frozen with a
     bid, or at a landing asked for, is a rule of its own (`pinned`). So is a rule sold in parts (`parts`:
     `sold_in_parts` of its exit), whatever the parts: no sniper runs that exit, and until 12 Nov evening a hunt frozen
     with one held the hunt's one record, so the same hunt with an exit OKTech runs was skipped as already under test
-    and could not reach a live test. A rule without parts has the key it always had."""
+    and could not reach a live test. A rule without parts has the key it always had.
+
+    `recipe`: the name of the winning bot's recipe the rule was frozen as (lab.RECIPES; a stored rule's `recipe`).
+    A recipe is its exit: `6z91` and `6z91-quick` have the same triggers, size and bid and sell on two clocks, and
+    until 13 Nov the second one frozen found every rule "already in the paper test" under the first one's exit. The
+    same trigger under another recipe is a rule of its own. The name enters the key only when one is set: a rule
+    frozen without a recipe has the key it always had, and a strategy's id (`strategy_id`, what `paper_trades` is
+    keyed by) never held this key."""
     try:
         trig = Trigger(**trigger).__dict__
     except TypeError:  # no lab trigger (a rule another job feeds), or a field this code no longer has
         trig = dict(trigger)
     key = [trig, str(position), int(latency), float(buy_sol), float(buy_bid_sol or 0), bool(asked)]
-    return json.dumps(key + (["parts"] if parts else []), sort_keys=True, default=str)
+    key += (["parts"] if parts else []) + ([f"recipe:{recipe}"] if recipe else [])
+    return json.dumps(key, sort_keys=True, default=str)
 
 
 def _rule_of(s: dict) -> str:
     return rule_key(s["trigger"], s["position"], s["latency"], s["buy_sol"], bid_of(s), bool(s.get("landing_asked")),
-                    sold_in_parts(s.get("exit")))  # fmt: skip
+                    sold_in_parts(s.get("exit")), s.get("recipe"))  # fmt: skip
 
 
 def _spec_key(spec: dict) -> str:
@@ -527,7 +535,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     plain rule. `only_live` cannot be asked for with them.
 
     One forward record a rule (`rule_key`: a trigger at a landing and size; a rule sold in parts stands beside the
-    same rule sold in one sale, which alone a sniper can run). The `top` are the lab's best distinct rules, never
+    same rule sold in one sale, which alone a sniper can run; a recipe's rule stands beside the same trigger frozen
+    as another recipe or as none, since a recipe is its exit). The `top` are the lab's best distinct rules, never
     fewer than a recipe has: a rule already under test keeps the exit it was frozen with and counts among them; a row
     that fires on the moments of a better row or of a rule under test (`TWIN_SHARE`, among rules of its kind at its
     landing and size) is that rule under another setting and takes no place; a rule refuted forward is not frozen
@@ -619,10 +628,11 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                 seen = set()
             at = ((under.get("trigger") or {}).get("kind"), str(under["position"]), int(under["latency"]),
                   float(under["buy_sol"]), bid_of(under), bool(under.get("landing_asked")),
-                  sold_in_parts(under.get("exit")))  # fmt: skip
+                  sold_in_parts(under.get("exit")), under.get("recipe") or None)  # fmt: skip
             taken.append((f"{under.get('label', under['id'])} ({under['id']})", seen, at))
     new: list[dict] = []
     skipped: list[dict] = []
+    of = recipe.name if recipe is not None else None  # the recipe these rules are frozen as: part of each rule's key
     if recipe is not None:  # a recipe's rules are named, so each one left out is named too
         seen_labels = {r["trigger"] for r in every}
         fired_n = _fired_counts(data)
@@ -654,7 +664,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
         label = f"{r['trigger']} | {r['exit']}"
         mine = fired.get(_spec_key(spec), set())
         parts = sold_in_parts(r["exit_params"])  # a sale in parts is a rule of its own (`rule_key`)
-        rs = records.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts), [])
+        rs = records.get(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of), [])
         under = next((s for s in rs if not s.get("refuted")), None)
         if under is not None:  # its forward record runs, with the exit it was frozen with
             places += 1
@@ -663,7 +673,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 f"({under.get('label', '?')}): one forward record a rule, whichever exit the lab picks "
                                 "today"})  # fmt: skip
             continue
-        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked, parts)
+        at = (spec.get("kind"), str(pos), int(lat), float(buy_sol), bid, asked, parts, of)
         twin = next((name for name, theirs, where in taken if where == at and _twins(mine, theirs)), None)
         if twin is not None:
             skipped.append({"label": label, "why": f"fires on the same moments as {twin}: the same rule under another "
@@ -678,6 +688,16 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 f"not frozen again for {RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
                 continue
         if sid in have:  # refuted long ago with this very exit: the same strategy cannot be frozen twice
+            # ... or it is another recipe's rule, exit and all (a recipe told another one's size and bid, or the
+            # same trigger typed by hand): the one strategy has its one record, and the freeze says where it is
+            same = next((s for s in old + new if s["id"] == sid), None)
+            if same is not None and (same.get("recipe") or None) != of:
+                gone = bool(same.get("refuted"))
+                places += 0 if gone else 1
+                skipped.append({"label": label, "why": "this rule with this very exit "
+                                + ("was refuted" if gone else "is already") + f" in the paper test as {sid}"
+                                + (f", frozen as the recipe {same['recipe']}" if same.get("recipe") else "")
+                                + ": one forward record a strategy"})  # fmt: skip
             continue
         places += 1
         have.add(sid)
@@ -698,7 +718,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             new[-1]["landing_asked"] = True
         if pinned(new[-1]):  # the landing and the bid in words, as the report names them
             new[-1]["landing_words"] = landing_text(lat, pos, spec.get("kind"), bid, asked)
-        records.setdefault(rule_key(spec, pos, lat, buy_sol, bid, asked, parts), []).append(new[-1])
+        records.setdefault(rule_key(spec, pos, lat, buy_sol, bid, asked, parts, of), []).append(new[-1])
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     out = {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
            "landing": landings(copy_pos)}  # fmt: skip
