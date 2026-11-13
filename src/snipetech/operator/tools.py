@@ -61,7 +61,10 @@ SQL_TABLES: dict[str, str] = {
     "(first, fees, speed, unclear, ahead), venue",
     "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
     "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
-    "copy_plan, forward, create_slot, kept_armed = JSON",
+    "copy_plan, forward, create_slot, kept_armed = JSON. A candidate whose reasons say 'same actor as <wallet>: one "
+    "signal, one sniper' (13 Nov) passed every gate: another wallet of its operator holds the place, its numbers "
+    "stand, it is not a failure; the book adds no sniper for it and paper freeze skips a second wallet of an actor "
+    "under test (scores kind qualify: data.actor = mates, leads, over, same_as, capped)",
     "oktech_snipers": "the snipers this code created at OKTech. kind = copy (source = the copied wallet), strategy "
     "(source = the frozen strategy's id) or probe; payload = JSON as sent; created_at, removed_at = unix seconds",
 }

@@ -1375,3 +1375,13 @@ def test_start_job_tells_the_agents_the_tools_of_13_nov(toolbox):
                   '["winners", "--snipers", "--hours", "72", "--json"]', '"group" takes "sniper"',
                   "No copy lands in a coin's create block"):  # fmt: skip
         assert words in text, words
+
+
+def test_the_agents_are_told_what_a_same_actor_verdict_is():
+    """13 Nov (idea I66): of the wallets one operator buys with, one is the candidate; the others' verdicts say "same
+    actor as". An agent that reads such a row as a failed wallet would throw away a wallet that passed."""
+    from snipetech.operator import tools
+
+    hints = [v["verdicts"] for v in vars(tools).values() if isinstance(v, dict) and "verdicts" in v]
+    hint = " ".join(str(h) for h in hints)
+    assert "same actor as" in hint and "not a failure" in hint and "data.actor" in hint
