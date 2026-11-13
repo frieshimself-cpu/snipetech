@@ -313,7 +313,10 @@ _PRIORITY_SOURCES = (
 _FORWARD_PENDING = '(v.forward LIKE \'%"status": "pending"%\')'
 _PICKED_AFTER = ("(v.id IS NOT NULL AND COALESCE(CASE WHEN json_valid(c.stats) THEN json_extract(c.stats, '$.picked.at') "
                  "END, 0) > v.computed_at)")  # fmt: skip
-_DUE_CLASS = (f"(CASE WHEN v.status = 'qualified' OR {_FORWARD_PENDING} THEN 0 "
+# 13 Nov: a wallet that yields to another wallet of its actor (qualify/one_actor.py: its verdict says "same actor as")
+# is class 0 too: it takes the place when that wallet stops passing, and must not wait behind the never-judged
+_SAME_ACTOR = "(v.reasons LIKE '%\"same actor as %')"
+_DUE_CLASS = (f"(CASE WHEN v.status = 'qualified' OR {_FORWARD_PENDING} OR {_SAME_ACTOR} THEN 0 "
               f"WHEN {_PICKED_AFTER} OR (v.id IS NULL AND {_PRIORITY_SOURCES} = 0) THEN 1 ELSE 2 END)")  # fmt: skip
 DUE_REVIEW_EVERY = 4
 

@@ -14,6 +14,12 @@ Since research round 2 (7 Nov 2026, docs/research/2026-11-07-round-2.md) a verdi
   the wallet's copies since its first pick (scores "qualify", `record`), so the tape's pruning never drops one. The
   numbers are on the verdict (`forward`).
 
+Since 13 Nov 2026 (idea I66, one_actor.py) the wallets one operator buys with are one actor with one candidate. A
+wallet every in-sample gate passed, whose actor already has a wallet that is copied, qualified or under its forward
+test, gets a verdict of its own that says "same actor as <wallet>: one signal, one sniper": a candidate the book does
+not arm, with no new forward record (one it already had runs on, untouched). A wallet a sniper may be copying is never
+marked. The book adds no sniper for a second wallet of an actor either way (book/policy.actor_members).
+
 The book (book/) is unchanged in what it arms: qualified wallets only. A wallet it copied before these rules is never
 stopped by them while one of its own snipers still buys for it, as its last reading of OKTech shows (book:copying,
 book/state.copying_now; gates.keep_armed): its verdict stays the one the book armed it on, says first that it no
