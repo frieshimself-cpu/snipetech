@@ -88,6 +88,7 @@ def render_deployer(r: dict) -> str:
     out.append(
         f"Launches: {r['launches_total']} found, {r['launches_analyzed']} analyzed"
         + (f", {r['launches_pending_window']} still inside the window" if r.get("launches_pending_window") else "")
+        + (f", {r['launches_untraded']} not scored: almost no trading" if r.get("launches_untraded") else "")
     )
     st = r["settings"]
     out.append(
