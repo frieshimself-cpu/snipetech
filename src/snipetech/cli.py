@@ -575,9 +575,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("name", nargs="?")
     sp.add_argument(
         "--kind",
-        choices=["service", "router", "wallet", "kol", "smart", "dev", "own", "bundler", "cand"],
+        choices=["service", "router", "wallet", "kol", "smart", "dev", "own", "bundler", "cand", "sniper"],
         default="service",
-        help="cand: a wallet picked by hand as a copy candidate; it is queued for qualify ahead of the backlog",
+        help="cand: a wallet picked by hand as a copy candidate; it is queued for qualify ahead of the backlog. "
+             "sniper: a launch sniper, the group a lab wallet rule reads with group sniper (`winners --snipers`)",
     )
     sp.add_argument(
         "--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)"
@@ -1100,7 +1101,24 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--snipe-secs", type=float, default=3.0, help="a buy this soon after the create is sniper-like")
     sp.add_argument("--label", type=int, default=0, help="label the N best cand and put them first in qualify's queue "
                     "(made SOL with a lower bound above zero; no insider sales, no buys in the create's own block; a "
-                    "wallet that already has a name keeps it)")  # fmt: skip
+                    "wallet that already has a name keeps it). With --snipers: label the N best launch snipers "
+                    "`sniper` instead (nothing goes to qualify); without it --snipers only lists")  # fmt: skip
+    sp.add_argument("--snipers", action="store_true",
+                    help="instead: the launch snipers. Wallets whose first buy of a coin is in its create block or the "
+                         "--snipe-slots blocks after it on --min-snipes coins or more, that made SOL on those coins "
+                         "at their own place (a bag never sold counts as nothing) and are not a launcher's own "
+                         "wallets (told apart under `launchers`, each with why). Their own fills, not a copy's: a lab "
+                         'wallet rule on the labelled ones ({"kind": "kol", "group": "sniper", "known": 2}) says '
+                         "what following them makes. Reads --hours, --top and --label; the other flags are the "
+                         "round-trip ranking's")  # fmt: skip
+    sp.add_argument("--snipe-slots", type=int, default=2, help="--snipers: blocks after the create block a first buy "
+                    "still counts in (0 = the create block alone; default 2)")  # fmt: skip
+    sp.add_argument("--min-snipes", type=int, default=20, help="--snipers: snipes a wallet needs to be judged")
+    sp.add_argument("--unproven", action="store_true", help="--snipers: also list the judged wallets that did not "
+                    "pay (to see why a wallet somebody named is missing); they are never labelled")  # fmt: skip
+    sp.add_argument("--relabel", action="store_true", help="--snipers --label: also relabel a wallet that carries our "
+                    "own screens' `cand` label. A name of any other kind (kol, wallet, smart ...) is always kept "
+                    "and listed under `kept`")  # fmt: skip
     sp = cmd(
         "place-bids",
         "which bid lands first behind a followed wallet: for every moment a wallet rule follows, the buyers behind the "
@@ -3097,7 +3115,19 @@ def _main(args) -> int:
 
         svc = Service(cfg)
         try:
-            if args.cmd == "winners":
+            if args.cmd == "winners" and args.snipers:
+                from .analysis import launch_snipers
+
+                # the trades from the hourly copy; the names, the creators' payments and the labels written from the
+                # live database
+                out = launch_snipers.launch_snipers(
+                    svc.tape_store, time.time(), hours=args.hours, max_slots=args.snipe_slots,
+                    min_snipes=args.min_snipes, top=args.top, labels=svc.store.label_kinds(), links=svc.store,
+                    proven=not args.unproven, confidence=cfg.verdict.confidence,
+                    samples=cfg.verdict.bootstrap_samples)  # fmt: skip
+                out |= launch_snipers.label_snipers(svc.store, out["wallets"], args.label, relabel=args.relabel)
+                text = launch_snipers.render(out)
+            elif args.cmd == "winners":
                 # the trades from the hourly copy, the names from the live database (the copy has none of the labels
                 # written since it was taken)
                 names = svc.store.label_kinds()

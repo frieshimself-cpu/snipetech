@@ -59,6 +59,7 @@ from .lab import (
     MIG_LAND_SLOTS,
     SIZE_WORDS,
     SKIP_WORDS,
+    SNIPER_NOTE,
     TRIGGERS,
     WATCH_SECS,
     WATCHED_KINDS,
@@ -86,6 +87,7 @@ from .lab import (
     rank,
     research_only_why,
     size_gap,
+    sniper_rule,
     span_slot_secs,
     within_mig_cap,
 )
@@ -259,6 +261,8 @@ def landing_fields(row: dict, copy_pos: str, bid_sol: float = 0.0) -> dict[str, 
         return {"landing": landing_key(lat, pos, bid_sol), "live_landing": False, "landing_note": NOT_LIVE}
     if any_buyer(row.get("trigger_spec")):  # no sniper of ours runs it: the place is an assumption, and says so
         return {"landing": landing_key(lat, pos), "live_landing": False, "landing_note": ANY_BUYER_NOTE}
+    if sniper_rule(row.get("trigger_spec")):  # a copy of a buy in a create block: its place is a model, and says so
+        return {"landing": landing_key(lat, pos), "live_landing": False, "landing_note": SNIPER_NOTE}
     live = live_landing((row.get("trigger_spec") or {}).get("kind"), copy_pos) == (int(lat), str(pos))
     return {"landing": landing_key(lat, pos), "live_landing": live}
 
@@ -1378,7 +1382,9 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "landing": landing_text(lat, pos, kind, bid_of(s), asked),
                     # a place asked for, or bought with a bid, is never where our trades land live (`pinned`)
                     # (nor is any place of an any-buyer rule: no sniper of ours runs one, lab.ANY_BUYER_NOTE)
+                    # (nor the place of a rule on launch snipers: copies of create-block buys, lab.SNIPER_NOTE)
                     "live_landing": (not pinned(s) and not any_buyer(s.get("trigger"))
+                                     and not sniper_rule(s.get("trigger"))
                                      and (lat, pos) == live_landing(kind, copy_pos)),
                     "buy_bid_sol": bid_of(s), "landing_asked": asked,
                     "buy_sol": s["buy_sol"], "frozen_at": s["from_ts"], "hours": hours, "n": n, "mean": nums["mean"],
@@ -1388,6 +1394,8 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
             out[-1]["landing_note"] = ANY_BUYER_NOTE
+        if sniper_rule(s.get("trigger")):
+            out[-1]["landing_note"] = SNIPER_NOTE
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         nums = numbers(s, False)

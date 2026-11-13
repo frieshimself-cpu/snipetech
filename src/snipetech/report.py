@@ -909,7 +909,10 @@ def render_lab(r: dict) -> str:
     lone: dict[str, dict[str, str]] = {}
     for s in [*r["strategies"], *(r.get("triggers") or ())]:
         # (a rule at a hunt landing asked for carries `landing_vs_live`: the hunt-landing lines above speak for it)
-        if s.get("landing_note") and s.get("landing", here) != here and not s.get("landing_vs_live"):
+        # (a rule on launch snipers stands at the copy landing itself: named here too, unless the whole lab is a
+        # bid landing, whose own lines say that no place of it is live)
+        if (s.get("landing_note") and not s.get("landing_vs_live")
+                and (s.get("landing", here) != here or not r.get("bid_landing"))):  # fmt: skip
             lone.setdefault(s["landing_note"], {})[s["trigger"]] = s["landing"]
     for note, rules in lone.items():
         out.append("No live landing: " + "; ".join(f"{label} (scored at {key})" for label, key in rules.items())
