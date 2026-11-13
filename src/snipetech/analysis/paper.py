@@ -695,16 +695,22 @@ def _sells_as_live(strategy: dict) -> bool:
 
 
 def actor_under_test(store: Store, spec: dict, strategies: Sequence[dict], now: float,
-                     seen: dict[str, frozenset[str]]) -> tuple[str, str, str] | None:  # fmt: skip
+                     seen: dict[str, frozenset[str]],
+                     firsts: dict[str, dict[str, int]] | None = None) -> tuple[str, str, str, str] | None:  # fmt: skip
     """One forward record an actor (idea I66, 13 Nov). For a wallet rule that names its wallets (`only`): a wallet it
     names that no rule under test names, but that buys with one such a rule does name (one actor, analysis/actors.py,
-    on the last MATES_HOURS of `store`'s tape), as (that wallet, the wallet under test, the id of its rule); None for
-    every other rule. `strategies`: the rules under test (a refuted one and one another job feeds are passed over);
+    on the last MATES_HOURS of `store`'s tape), as (that wallet, the wallet under test, the id of its rule, ""); None
+    for every other rule. `strategies`: the rules under test (a refuted one and one another job feeds are passed over);
     `seen`: the companions read so far in this freeze, by wallet. Wallets that buy together fire on the same buys, so
     a second rule is a second record of one signal. A wallet a rule under test already names is no second wallet:
-    another rule for it (another size, another gate) is frozen as before."""
+    another rule for it (another size, another gate) is frozen as before.
+
+    Twins count as one actor too (idea I109; analysis/twins.py: the same coins a minute apart, never in one block):
+    when no companion ties the rule's wallets to one under test, a wallet that is the twin of one is returned the same
+    way, the fourth word saying what the two have in common. `firsts`: the first buys read so far in this freeze."""
     from .actors import actor_of, group_actors
     from .lab import only_wallets
+    from .twins import twins
 
     if spec.get("kind") != "kol" or not spec.get("only"):
         return None
@@ -730,7 +736,12 @@ def actor_under_test(store: Store, spec: dict, strategies: Sequence[dict], now: 
     for w in fresh:
         other = next((x for x in actor_of(groups, w).wallets if x in tested), None)
         if other is not None:
-            return w, other, tested[other]
+            return w, other, tested[other], ""
+    for w in fresh:
+        found = twins(store, w, tested, since, firsts)
+        if found:
+            other = min(found)
+            return w, other, tested[other], found[other].words()
     return None
 
 
@@ -904,6 +915,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 "newer moments): nothing to test forward"})  # fmt: skip
     places = 0
     mates_seen: dict[str, frozenset[str]] = {}  # companions read for `actor_under_test`, once a wallet
+    firsts_seen: dict[str, dict[str, int]] = {}  # and first buys, for its twin rule
     for k, r in enumerate(ranked):
         if places >= top:
             if triggers:  # rules asked for by name: each one left out is named (the grid's table is not)
@@ -936,7 +948,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 f"({under.get('label', '?')}): one forward record a rule, whichever exit the lab picks "
                                 "today"})  # fmt: skip
             continue
-        tied = actor_under_test(store, spec, [*old, *new], now, mates_seen)
+        tied = actor_under_test(store, spec, [*old, *new], now, mates_seen, firsts_seen)
+        if tied is not None and tied[3]:  # the twin of a wallet under test: the same, and it says they are twins
+            skipped.append({"label": label, "why": f"{tied[0]} and {tied[1]} are twins (the same actor: {tied[3]}), "
+                            f"and {tied[1]} is already in the paper test as {tied[2]}: one forward record an actor, "
+                            "since both fire on the same coins a minute apart"})  # fmt: skip
+            continue
         if tied is not None:  # a second wallet of an actor under test: no second record of one signal, and no place
             skipped.append({"label": label, "why": f"{tied[0]} buys with {tied[1]} (the same actor: one operator's "
                             f"wallets), which is already in the paper test as {tied[2]}: one forward record an actor, "

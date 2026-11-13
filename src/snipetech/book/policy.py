@@ -146,6 +146,10 @@ class BookInputs:
     # qualified wallets and the leaders of our own snipers. Wallets tied together are one actor (analysis/actors.py)
     # and get one sniper. {}: nothing known, every wallet is booked by itself as before 13 Nov
     actors: dict[str, list[str]] = field(default_factory=dict)
+    # which wallets are twins, as qualify kept it (qualify/one_actor.twin_links): wallet -> the wallets that trade its
+    # signal a minute apart (analysis/twins.py), for the same wallets as `actors`. A wallet gets no sniper while a twin
+    # of it has one. Kept apart from `actors` and tied two by two (actor_members). {}: no twins known
+    twins: dict[str, list[str]] = field(default_factory=dict)
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
@@ -155,17 +159,27 @@ OVERLAP_REASON = "another sniper on this OKTech wallet already copies it: one bu
 ONE_SNIPER = "one signal, one sniper"  # why no sniper is added for a second wallet of an actor
 
 
-def actor_members(actors: dict[str, list[str]], wallets: list[str]) -> dict[str, frozenset[str]]:
+def actor_members(actors: dict[str, list[str]], wallets: list[str],
+                  twins: dict[str, list[str]] | None = None) -> dict[str, frozenset[str]]:  # fmt: skip
     """Each of `wallets` with every wallet of its actor (itself among them), from what qualify kept (`actors`,
     BookInputs.actors). Wallets are one actor when either one's record names the other, or both name a third
-    (analysis.actors.group_actors: up to ACTOR_MAX wallets an actor). A wallet nothing ties to another is absent."""
-    if not actors:
-        return {}
+    (analysis.actors.group_actors: up to ACTOR_MAX wallets an actor). A wallet nothing ties to another is absent.
+    `twins` (BookInputs.twins) are added after that, two by two: a wallet and each twin either one's record names.
+    They never go through the grouping, where a tie more can push an actor past ACTOR_MAX and undo a join: with them
+    a wallet has every member it had without them, and its twins."""
+    wanted = set(wallets)
     out: dict[str, frozenset[str]] = {}
-    for g in group_actors([*wallets, *actors], actors):
-        if len(g.members) > 1:
-            out.update({w: g.members for w in g.wallets})
-    return {w: m for w, m in out.items() if w in set(wallets)}
+    if actors:
+        for g in group_actors([*wallets, *actors], actors):
+            if len(g.members) > 1:
+                out.update({w: g.members for w in g.wallets})
+    out = {w: m for w, m in out.items() if w in wanted}
+    for a, others in (twins or {}).items():
+        for b in others:
+            for w, twin in ((a, b), (b, a)):
+                if w in wanted and w != twin:
+                    out[w] = out.get(w, frozenset({w})) | {twin}
+    return out
 
 
 RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
@@ -454,7 +468,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     # below exactly as before. "Has one": a book sniper that still buys or manages a coin (one this run stops or
     # retires included: either can fail), one this plan keeps or starts for a ranked wallet, a sniper that is not the
     # book's, or one this plan makes. A stopped sniper of a wallet the book no longer wants counts for nothing.
-    members = actor_members(inp.actors, [r["wallet"] for r in bookable])
+    members = actor_members(inp.actors, [r["wallet"] for r in bookable], inp.twins)
     armed_w6 = {s["w6"] for s in mine if is_active(s.get("status"))}
     added_w6: set[str] = set()
 
