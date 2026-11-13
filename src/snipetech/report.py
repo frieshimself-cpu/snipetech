@@ -1132,6 +1132,52 @@ def render_solanatracker_candidates(rows: list[dict]) -> str:
     return "\n".join(out)
 
 
+def _amm_backfill_left_out(o: dict) -> list[str]:
+    """What a backfill left out, one line a reason with its count and the result's own key for it in brackets
+    (`stretches`' keys; "dry_run" for the stretches a dry run listed and did not fetch). Until 13 Nov the newer
+    reasons (a buy of a non-coin, a stretch too busy, what a limit cut off, a dry run) were in the free `note`
+    alone and the older ones in one clause of the `stretches` line."""
+    s = o.get("stretches") or {}
+    c = o.get("credits") or {}
+
+    def count(n: int, noun: str) -> str:
+        return f"{n} {noun}" if n == 1 else f"{n} {noun}{'es' if noun.endswith('ch') else 's'}"
+
+    busy = o.get("too_busy") or []
+    limit = o.get("max_stretch_txs")
+    over = f"with more than {limit:,} transactions" if limit else "over the size limit"
+    busy_txs, busy_buys = sum(t["transactions"] for t in busy), sum(len(t.get("buys") or []) for t in busy)
+    busy_words = (f"{over}, listed and not fetched: {busy_txs:,} transactions and {count(busy_buys, 'buy')} in "
+                  "them")  # fmt: skip
+    if o.get("stopped") == "month_credits":
+        cut = f"the month's limit of {c['month_max']:,.0f} credits for backfills was reached"
+    elif o.get("stopped"):
+        cut = f"the limit of {c['max']:,.0f} credits was reached"
+    else:
+        cut = "the run ended first"
+    whys = (
+        ("on_tape", "stretch", "already on the recorder's tape"),
+        ("buys_too_recent", "buy", "too recent for a whole stretch"),
+        ("buys_outside_tape", "buy", "outside the tape"),
+        ("buys_non_coin", "buy", "of something that is not a coin (a stablecoin, wrapped SOL): no stretch asked for"),
+        ("no_cursor", "stretch", "with no tape signature to list back from"),
+        ("no_pool", "stretch", "with no pool known"),
+        ("listing_incomplete", "stretch", "whose listing lacked the buy"),
+        ("incomplete", "stretch", "with a transaction that could not be fetched"),
+        ("too_busy", "stretch", busy_words),
+        ("left", "stretch", f"not reached: {cut}"),
+    )  # fmt: skip
+    lines = [f"{count(s[k], noun)} {words} ({k})" for k, noun, words in whys if s.get(k)]
+    e = o.get("estimate") or {}
+    if o.get("dry_run") and "stretches_known" in e:  # every stretch a dry run reaches is listed or named above
+        named = sum(int(s.get(k) or 0) for k in ("no_cursor", "listing_incomplete", "too_busy", "left"))
+        listed = int(e["stretches_known"]) - named
+        if listed > 0:
+            lines.append(f"{count(listed, 'stretch')} listed and not fetched: a dry run fetches nothing "
+                         f"({s.get('transactions', 0):,} pool transactions in them) (dry_run)")  # fmt: skip
+    return lines
+
+
 def render_amm_backfill(o: dict) -> str:
     """`history amm-backfill` in words: what was read, what the tape now holds, what it cost, and why it stopped."""
     s, c = o.get("stretches") or {}, o["credits"]
@@ -1147,16 +1193,12 @@ def render_amm_backfill(o: dict) -> str:
         lost = f", {w['missing']} could not be fetched" if w["missing"] else ""
         out.append(f"  {w['name'] or short(w['wallet'])}: {did}{lost}; {w['buys']} PumpSwap buys of the size known")
     if s:
-        whys = (
-            ("on_tape", "already on the recorder's tape"), ("buys_too_recent", "buys too recent for a whole stretch"),
-            ("buys_outside_tape", "buys outside the tape"), ("no_cursor", "with no tape signature to list back from"),
-            ("no_pool", "with no pool known"), ("listing_incomplete", "whose listing lacked the buy"),
-            ("incomplete", "with a transaction that could not be fetched"), ("left", "not reached"),
-        )  # fmt: skip
-        left = [f"{s[k]} {words}" for k, words in whys if s.get(k)]
         out.append(f"  stretches: {s['wanted']} wanted, {s['held']} held before, {s['fetched']} fetched now "
-                   f"({s['transactions']} pool transactions, {s['trades']} trades)"
-                   + (f"; left out: {', '.join(left)}" if left else ""))  # fmt: skip
+                   f"({s['transactions']} pool transactions, {s['trades']} trades)")  # fmt: skip
+        left = _amm_backfill_left_out(o)
+        if left:
+            out.append("  left out, one line for each reason (in brackets: the result's own name for it):")
+            out += [f"    {line}" for line in left]
     r = o.get("requests") or {}
     out.append(f"  cost: {c['counted']:,} credits counted ({', '.join(f'{n} {m}' for m, n in r.items())}); "
                f"{c['this_month']:,} this month; limit {c['max']:,.0f}")  # fmt: skip
