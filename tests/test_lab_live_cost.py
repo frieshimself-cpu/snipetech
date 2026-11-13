@@ -169,17 +169,25 @@ def test_every_exit_on_a_rule_a_live_sniper_runs_waits_oktechs_watch_delay_a_wal
     ranked = {r["trigger_spec"]["kind"]: r for r in rank(data, _cfg(), top=10, min_train=5)}
     assert set(ranked) == {"launch", "hunt", "whale", "burst", "kol"}
     for kind in ("launch", "hunt", "whale", "burst", "kol"):  # each runs live through an OKTech sniper
-        assert ranked[kind]["exit_params"] == LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}, kind
-        assert ranked[kind]["exit"] == f"{LAB_EXIT.label()} watch{WATCH_SECS:g}s", kind
+        # (a wallet rule's exit also sells when the followed wallet sells, since 13 Nov: tests/test_lab_copy_exit.py)
+        copy = {"copy_exit_pct": 0.5} if kind == "kol" else {}
+        assert ranked[kind]["exit_params"] == LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS} | copy, kind
+        assert ranked[kind]["exit"] == f"{LAB_EXIT.label()}{' copy50%' if copy else ''} watch{WATCH_SECS:g}s", kind
     assert WATCH_SECS == 1.3  # OKTech's measured watch delay (6 Nov copy fills: 1.25-1.4 s)
 
 
 def test_a_wallet_rule_frozen_without_the_watch_delay_does_not_stand_for_its_rule():
     """As for a launch-type rule frozen before 7 Nov: it keeps its id and its trades, and the same rule frozen again,
-    with the delay, is the rule's record."""
+    with the delay, is the rule's record. (Since 13 Nov a wallet rule's record also needs the copy exit every copy
+    sniper is sent: the delay alone, the exit of 12 Nov, no longer stands for the rule. tests/test_lab_copy_exit.py)"""
     kol = {"kind": "kol", "group": "big", "sol": 1.0}
-    assert not paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict()})
-    assert paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}})
+    as_scored = LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS, "copy_exit_pct": 0.5}
+    assert not paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict() | {"copy_exit_pct": 0.5}})
+    assert paper._sells_as_live({"trigger": kol, "exit": as_scored})
+    assert not paper._sells_as_live({"trigger": kol, "exit": LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}})
+    hunt = {"kind": "hunt", "sol": 2.0, "window": 2.0}
+    assert not paper._sells_as_live({"trigger": hunt, "exit": LAB_EXIT.to_dict()})
+    assert paper._sells_as_live({"trigger": hunt, "exit": LAB_EXIT.to_dict() | {"watch_secs": WATCH_SECS}})
     assert paper._sells_as_live({"trigger": {"kind": "momentum"}, "exit": LAB_EXIT.to_dict()})  # no sniper times it
 
 
@@ -241,7 +249,7 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
     # a wallet rule frozen before the delay had this id and keeps it; the same rule ranked now carries the delay and
     # would be frozen under an id of its own
     (copy,) = [r for r in rank(data, _cfg(), top=10) if r["trigger_spec"]["kind"] == "kol"]
-    assert copy["exit_params"]["watch_secs"] == WATCH_SECS
+    assert copy["exit_params"]["watch_secs"] == WATCH_SECS and copy["exit_params"]["copy_exit_pct"] == 0.5  # 13 Nov
     assert paper.strategy_id(KOL.__dict__, LAB_EXIT.to_dict(), "+6", 0, 0.2) == "0035d424be"
     assert paper.strategy_id(KOL.__dict__, copy["exit_params"], "+6", 0, 0.2) != "0035d424be"
 

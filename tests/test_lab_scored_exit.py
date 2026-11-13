@@ -7,12 +7,24 @@ still named the exit as the lab was handed it: "TP+5% SL-30% hold30s" with watch
 exit acting only from 1.3 s on. Someone who froze or replayed the exit as the row named it ran another exit than the
 one behind the numbers, one whose take-profit can fire inside the followed wallet's own block. The numbers were right.
 
-The qualify lab hands the lab the menu's exits, which carry the delay already: its rows do not change."""
+The qualify lab hands the lab the menu's exits, which carry the delay already: its rows do not change.
+
+Since 13 Nov a wallet rule's exits also carry the copy exit every copy sniper is sent (`lab.copy_sold`,
+tests/test_lab_copy_exit.py): the rows name that too, "... copy50% watch1.3s"."""
 
 import pytest
 
 from snipetech.analysis import lab as L
-from snipetech.analysis.lab import WATCH_SECS, collect, exit_scores, parse_trigger, rank, rank_wallets, watched
+from snipetech.analysis.lab import (
+    WATCH_SECS,
+    collect,
+    copy_sold,
+    exit_scores,
+    parse_trigger,
+    rank,
+    rank_wallets,
+    watched,
+)
 from snipetech.config import Config
 from snipetech.sim.exits import ExitParams
 
@@ -22,6 +34,8 @@ from .test_bid_landing import LEAD, LEAD2, RULE, _coin, _store
 TP = ExitParams(take_profit=0.05, stop_loss=0.3, max_hold_secs=30.0, sell_on_dev_sell=False)
 HOLD = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=30.0, sell_on_dev_sell=False)
 MOMENTUM = {"kind": "momentum", "sol": 1}  # no live sniper times such a rule: its exits act from the buy
+# TP as a lab scores it on a wallet rule: OKTech's watch delay, and the copy exit at the snipers' 50 %
+TP_COPY = copy_sold(watched(TP), 0.5)
 
 
 def _cfg() -> Config:
@@ -40,23 +54,24 @@ def _world(leaders=(LEAD,), coins: int = 24):
 def test_a_wallet_row_names_the_exit_its_numbers_were_made_with():
     st = _world()
     data = collect(st, _cfg(), 0.2, 0, "+0", triggers=[parse_trigger(RULE)], mates={}, exits=[TP], workers=1)
-    assert data["exits"] == [TP] and data["kind_exits"]["kol"] == [watched(TP)]  # the columns, and what filled them
+    assert data["exits"] == [TP] and data["kind_exits"]["kol"] == [TP_COPY]  # the columns, and what filled them
     (strategy,) = rank(data, _cfg())
     (w,) = rank_wallets(data, _cfg(), {}, floor=0.1)
     assert w["wallet"] == LEAD and w["n"] == 24
-    assert w["exit"] == strategy["exit"] == f"{TP.label()} watch{WATCH_SECS:g}s"
-    assert w["exit_params"] == strategy["exit_params"] == TP.to_dict() | {"watch_secs": WATCH_SECS}
+    assert w["exit"] == strategy["exit"] == f"{TP.label()} copy50% watch{WATCH_SECS:g}s"
+    assert w["exit_params"] == strategy["exit_params"] == TP_COPY.to_dict()
+    assert TP_COPY.to_dict() == TP.to_dict() | {"watch_secs": WATCH_SECS, "copy_exit_pct": 0.5}
     assert w["mean"] == pytest.approx(sum(r["pnl"][0] for r in data["rows"]) / 24)  # the same numbers as before
     st.close()
 
 
 def test_a_wallet_row_judged_on_a_gate_names_the_gate_as_it_was_scored():
-    """The gate is looked up among the exits the lab was handed (the columns); the row names it with the delay its
-    column was filled with, and so does the exit the wallet's sniper is told to run."""
+    """The gate is looked up among the exits the lab was handed (the columns); the row names it with the delay and
+    the copy exit its column was filled with, and so does the exit the wallet's sniper is told to run."""
     st = _world()
     data = collect(st, _cfg(), 0.2, 0, "+0", triggers=[parse_trigger(RULE)], mates={}, exits=[HOLD, TP], workers=1)
     (w,) = rank_wallets(data, _cfg(), {}, floor=0.1, gate=TP)
-    assert w["exit"] == watched(TP).label() and w["exit_params"] == watched(TP).to_dict()
+    assert w["exit"] == TP_COPY.label() and w["exit_params"] == TP_COPY.to_dict()
     assert w["exit_source"] == "lab" and w["exit_name"] is None  # no exit of the menu
     assert w["mean"] == pytest.approx(sum(r["pnl"][1] for r in data["rows"]) / 24)  # the gate's column
     st.close()
@@ -68,8 +83,9 @@ def test_a_recipes_score_names_the_exit_each_trigger_was_scored_with():
     data = collect(st, _cfg(), 0.2, 0, "+0", triggers=triggers, mates={}, exits=[HOLD, TP], workers=1)
     wallet, momentum = exit_scores(data, _cfg(), TP)
     assert wallet["moments"] == 24 and wallet["all"]["n"] == 24
-    assert wallet["exit"] == f"{TP.label()} watch{WATCH_SECS:g}s"  # a wallet rule: the exit waited OKTech's delay
-    assert wallet["exit_params"] == TP.to_dict() | {"watch_secs": WATCH_SECS}
+    # a wallet rule: the exit waited OKTech's delay and sold when the followed wallet sold
+    assert wallet["exit"] == f"{TP.label()} copy50% watch{WATCH_SECS:g}s"
+    assert wallet["exit_params"] == TP.to_dict() | {"watch_secs": WATCH_SECS, "copy_exit_pct": 0.5}
     assert wallet["all"]["mean"] == pytest.approx(sum(r["pnl"][1] for r in data["rows"] if r["trigger"] == 0) / 24)
     assert momentum["exit"] == TP.label() and momentum["exit_params"] == TP.to_dict()  # as given: nothing waited
     st.close()

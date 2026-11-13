@@ -739,14 +739,78 @@ def watched(ex: ExitParams, secs: float = WATCH_SECS) -> ExitParams:
     return ex if ex.watch_secs >= secs else replace(ex, watch_secs=secs)
 
 
-def kind_exits(exits: Sequence[ExitParams]) -> dict[str, list[ExitParams]]:
+# The watched kinds whose every exit also carries OKTech's copy exit in the lab (`kind_exits`, `copy_sold`): the rules
+# a copy sniper runs. A wallet rule ("kol") is one since 13 Nov. Every copy sniper we build is sent the copy exit
+# switched on (oktech.py: ctbotCopyExit, sellThresholdPercent = [oktech] copy_exit_threshold_percent, sellPercent 100,
+# triggerWalletOnly), and until then only the qualify lab's exits carried it (`_as_live`): a hypothesis lab, the
+# strategy search and a freeze scored a wallet rule on exits that held on when the followed wallet sold, which no copy
+# sniper does, and `oktech.validate_exit` refuses an exit scored with another copy-exit setting than the one sent.
+# The followed wallet's sales are the ones the tape holds (`leader_sell_fractions`, which `_coin_rows` and the paper
+# run hand every wallet rule's position): the copy exit fires on a sale that is on the tape and on nothing else. Where
+# the tape lacks a coin's PumpSwap trades (outside the recorder's runs and the backfilled stretches), nothing changed:
+# a copy that buys there is left out and said (`amm_buy_gap`); one bought on the curve whose coin leaves it while held
+# is left out whole by a lab with a migration sell among its exits (the search set: `migration_sell_gap`), and priced
+# on the trades the tape holds by a lab handed exits without one and by the forward run of such an exit, where the
+# copy exit then sees no sale the wallet made after the coin left its curve.
+COPY_EXIT_KINDS = frozenset({"kol"})
+
+
+def recipes_own(ex: ExitParams) -> bool:
+    """Whether `ex` is a recipe's own exit (RECIPES: a bot's exit, research only), as the recipe holds it or with the
+    watch delay a wallet rule's exits carry."""
+    return replace(ex, watch_secs=0.0) in {r.exit for r in RECIPES.values()}
+
+
+def copy_sold(ex: ExitParams, pct: float) -> ExitParams:
+    """`ex` as a copy sniper sells it: everything left also goes when the followed wallet sells at least `pct` of its
+    coins in one sale (0.5 = half; OKTech's ctbotCopyExit, as `_as_live` gives the qualify lab's exits). An exit that
+    already names a copy exit keeps its own (the qualify menu's), a recipe's own exit is the bot's and gets none
+    (`recipes_own`), and no threshold (`pct` 0) is no copy exit.
+
+    When it sells (sim/exits.py): on the first sale of that size by the wallet that is on the tape after our buy
+    landed and OKTech watches (`watch_secs`), a slot after that sale, like every other exit. A sale of the wallet's
+    before our buy landed is never followed. One inside the watch delay is followed, when the watch starts, only if
+    no other trade came between it and that moment; otherwise the position stays with its other rules (whether OKTech
+    follows such a sale has not been measured on a live fill). Several smaller sales never add up to the threshold."""
+    if not pct > 0 or ex.copy_exit_pct > 0 or recipes_own(ex):
+        return ex
+    return replace(ex, copy_exit_pct=float(pct))
+
+
+COPY_EXIT_NOTE = (
+    "every exit of a wallet rule also sells everything when the followed wallet sells at least this share of its "
+    "coins in one sale, as every copy sniper is sent it; the exit's name says so (\"copy50%\" at 50). A row or a "
+    "frozen wallet rule from before 13 Nov has no copy exit: it is another exit, run or freeze the rule again. A "
+    "recipe's own exit is the bot's and carries none. The sale is priced a slot after the wallet's sale and ahead "
+    "of that slot's trades, like every exit's sale: other bots that copy the same wallet sell then too, so behind a "
+    "crowded wallet a live sale can land lower (not measured). A sale of the wallet's in the first 1.3 s after our "
+    "buy is followed only when no other trade came before OKTech watches; several smaller sales never add up to "
+    "the share")
+
+
+def copy_exit_report(cfg: Config | None = None) -> dict[str, Any]:
+    """What a lab with a wallet rule says about the copy exit it scored (`collect`'s `copy_exit`): the share of its
+    coins the followed wallet sells at once, in percent ([oktech] copy_exit_threshold_percent, what the sniper
+    builders send as sellThresholdPercent), the kinds of rule that carry it, and what it must not be read as."""
+    return {"threshold_percent": float((cfg or Config()).oktech.copy_exit_threshold_percent),
+            "kinds": sorted(COPY_EXIT_KINDS & WATCHED_KINDS), "note": COPY_EXIT_NOTE}  # fmt: skip
+
+
+def kind_exits(exits: Sequence[ExitParams], cfg: Config | None = None) -> dict[str, list[ExitParams]]:
     """The exits each kind a live sniper runs (WATCHED_KINDS: launch, hunt, whale, burst, and a wallet rule, kol) is
     scored with: `exits`, each `watched`, since such a rule runs live through an OKTech sniper whose auto-sell waits
     that long. Every other kind is scored with `exits` as given: momentum and event rules have no live sniper to
     time them. An exit that already carries the delay (the qualify lab's) is unchanged. Every exit keeps its column,
-    so a row's pnl list reads against either."""
+    so a row's pnl list reads against either.
+
+    A wallet rule's exits (COPY_EXIT_KINDS, since 13 Nov) also carry the copy exit every copy sniper is sent, at
+    `cfg`'s [oktech] copy_exit_threshold_percent (`copy_sold`): their names end "copy50% watch1.3s", so a row scored
+    before reads as another exit. No other kind has a followed wallet."""
     live = [watched(ex) for ex in exits]
-    return dict.fromkeys(sorted(WATCHED_KINDS), live)
+    out = dict.fromkeys(sorted(WATCHED_KINDS), live)
+    pct = float((cfg or Config()).oktech.copy_exit_threshold_percent) / 100.0
+    copied = [copy_sold(ex, pct) for ex in live]
+    return out | {kind: copied for kind in sorted(COPY_EXIT_KINDS) if kind in out}
 
 
 def scored_exits(data: Mapping[str, Any], kind: str) -> list[ExitParams]:
@@ -2313,7 +2377,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     the way the live sniper sells: at each span's measured slot time, a slot after the exit fires; on a launch-type
     trigger (launch, hunt, whale, burst) none acts before OKTech's watch delay (`kind_exits`: the exits each such kind
     was scored with, in the result too), nor on a MIG trigger (its exits are watched); on a wallet's buy (KOL triggers)
-    the copy exit follows that wallet's sales. Every row records the trigger buy's size (`lead_sol`); KOL rows also
+    every exit waits likewise and carries the copy exit a copy sniper is sent (since 13 Nov: `kind_exits`,
+    `copy_sold`; `copy_exit` in the result says the threshold and what it is not), which follows that wallet's
+    sales. Every row records the trigger buy's size (`lead_sol`); KOL rows also
     record how that wallet went on in the coin (`_leader_profile`).
     `kols`: the wallets of each label group (default `label_groups(store)`). The qualify stage passes its own: the
     tape may be the hourly read-only copy, which has none of the labels written since it was taken. `landings`: a
@@ -2361,7 +2427,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     exits = list(exits) if exits else exit_set()
     if sell_parts and int(sell_parts[0]) > 1:
         exits, mig_exits = in_parts(exits, *sell_parts), in_parts(mig_exits, *sell_parts)
-    by_kind = kind_exits(exits)
+    by_kind = kind_exits(exits, cfg)  # a wallet rule's with the copy exit at the threshold the snipers are sent
     kols = label_groups(store) if kols is None else kols
     all_triggers = list(TRIGGERS if triggers is None else triggers) + [Trigger("event", event=k) for k in (event_kinds or ())]  # fmt: skip
     triggers = [(ti, t) for ti, t in enumerate(all_triggers)
@@ -2448,6 +2514,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
            "mates": {"wallets": len(run.mates), "found_by": found_by},
            "size": _size_report(triggers, rows, sized, buy_sol),
            "later_buyers": "same_sol" if same_sol else "as_taped"}  # fmt: skip
+    if wallet_runs:  # the copy exit every exit of a wallet rule was scored with, and what it is not
+        out["copy_exit"] = copy_exit_report(cfg)
     if amm_runs or mig_sell or skipped:  # `skipped` alone: a wallet rule's PumpSwap buys the tape does not hold whole
         horizon = run.mig_horizon if amm_runs else run.horizon
         # (a moment a bid landing could not place is the bid report's, below: the PumpSwap tape has no part in it)

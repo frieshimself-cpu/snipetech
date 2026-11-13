@@ -22,9 +22,12 @@ HUNT_AT = (1, "+3")  # where a hunt buy lands
 COPY_AT = (0, "+6")  # where a copy lands
 HOLD10 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=10, sell_on_dev_sell=False, watch_secs=1.3)
 HOLD60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3)
-# a wallet rule's exits wait OKTech's watch delay too, as the lab gives them since 12 Nov (lab.WATCHED_KINDS)
-COPY30 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=30, sell_on_dev_sell=False, watch_secs=1.3)
-COPY60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3)
+# a wallet rule's exits wait OKTech's watch delay too, as the lab gives them since 12 Nov (lab.WATCHED_KINDS), and
+# since 13 Nov they sell when the followed wallet sells half its coins, as every copy sniper does (lab.COPY_EXIT_KINDS)
+COPY30 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=30, sell_on_dev_sell=False, watch_secs=1.3,
+                    copy_exit_pct=0.5)  # fmt: skip
+COPY60 = ExitParams(take_profit=0, stop_loss=0, max_hold_secs=60, sell_on_dev_sell=False, watch_secs=1.3,
+                    copy_exit_pct=0.5)  # fmt: skip
 HUNT1 = Trigger("hunt", sol=5.0, window=1.0, max_buyers=2, dev_max=1.0)
 HUNT2 = Trigger("hunt", sol=5.0, window=2.0, max_buyers=2, dev_max=1.0)  # fires on the same buys as HUNT1
 CROWD = Trigger("hunt", sol=10.0, buyers=10, window=1.0)
@@ -254,8 +257,10 @@ def test_a_rule_without_parts_keeps_its_rule_key_and_every_id_stays():
     assert paper._rule_of(s | {"exit": HOLD10.to_dict() | {"flat_below": 0.5}}) == paper._rule_of(in_parts)
     # a strategy's id never had the rule key in it
     assert paper.sid_of(s) == paper.strategy_id(HUNT1.__dict__, HOLD10.to_dict(), "+3", 1, 0.2)
-    assert paper.strategy_id(Trigger("kol", sol=2.0).__dict__, COPY30.to_dict() | {"watch_secs": 0.0}
-                             | {"max_hold_secs": 10}, "+6", 0, 0.2) == "69d1450075"  # as tests/test_paper_own_landing
+    # (a wallet rule as it was frozen before the watch delay and the copy exit: the id it had then)
+    before_both = COPY30.to_dict() | {"watch_secs": 0.0, "copy_exit_pct": 0.0, "max_hold_secs": 10}
+    assert paper.strategy_id(Trigger("kol", sol=2.0).__dict__, before_both, "+6", 0,
+                             0.2) == "69d1450075"  # as tests/test_paper_own_landing
 
 
 # -- every rule asked for by name is frozen or named (12 Nov, review) -------------------------------------------------

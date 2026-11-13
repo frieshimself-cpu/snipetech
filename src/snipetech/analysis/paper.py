@@ -50,6 +50,7 @@ from .companions import companions
 from .lab import (
     AMM_KINDS,
     ANY_BUYER_NOTE,
+    COPY_EXIT_KINDS,
     COPY_LAND_SLOTS,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
@@ -84,6 +85,7 @@ from .lab import (
     mig_moment,
     migration_sell_gap,
     rank,
+    recipes_own,
     research_only_why,
     size_gap,
     span_slot_secs,
@@ -149,7 +151,9 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     strategy with its own id. One frozen before keeps its id, its stored exit (no delay) and its forward trades, and is
     scored as it was frozen; nothing re-keys or replaces it. It never goes live (live_test refuses a launch-type exit
     without the delay), and the automatic test treats it and its twin as the one sniper OKTech runs for both (`live_id`).
-    A copy's exit did not change, nor did its id."""
+    A copy's exit did not change then, nor did its id. It did on 12 Nov (the watch delay) and on 13 Nov (the copy
+    exit, `copy_exit_pct`, lab.COPY_EXIT_KINDS): a wallet rule frozen from then on stores each as a field that is
+    set, under an id of its own, and one frozen before keeps its id, its exit and its trades (`not_as_live`)."""
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
     # sell (7 Nov), selling out in parts (12 Nov: one part, one sale), OKTech's ladders and momentum hold (12 Nov: no
     # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults), the first part's own
@@ -637,17 +641,53 @@ def _twins(a: set, b: set) -> bool:
     return bool(a) and bool(b) and len(a & b) >= TWIN_SHARE * max(len(a), len(b))
 
 
-def _sells_as_live(strategy: dict) -> bool:
-    """Whether a frozen strategy's exit acts as its live sniper's would. A launch-type rule frozen before 7 Nov
-    evening was scored with exits acting from the buy, before OKTech watches a coin: it keeps its id and its trades and
-    never goes live (`strategy_id`, live_test), and the same rule frozen again, with the watch delay, is a strategy of
-    its own. So it does not stand for its rule: the watched one is the rule's record."""
-    if (strategy.get("trigger") or {}).get("kind") not in WATCHED_KINDS:
+def not_as_live(strategy: dict) -> str | None:
+    """Why a frozen strategy's exit does not act as its live sniper's would, in plain words; None when it does.
+
+    A launch-type rule frozen before 7 Nov evening, and a wallet rule frozen before 12 Nov evening, was scored with
+    exits acting from the buy, before OKTech watches a coin. A wallet rule frozen before 13 Nov was scored with exits
+    that held on when the followed wallet sold: every copy sniper is sent the copy exit switched on, so no copy sniper
+    sells that way (lab.COPY_EXIT_KINDS). A recipe's rule sells with the bot's own exit, which never had the copy
+    exit and is no sniper's (lab.RECIPES): nothing is missing from it. Such a strategy keeps its id, its exit and its
+    trades (`strategy_id`; nothing rewrites them), and the same rule frozen again is a strategy of its own."""
+    kind = (strategy.get("trigger") or {}).get("kind")
+    if kind not in WATCHED_KINDS:
+        return None
+    ex = strategy.get("exit") or {}
+
+    def num(key: str) -> float:
+        try:
+            return float(ex.get(key) or 0.0)
+        except (TypeError, ValueError, AttributeError):
+            return 0.0
+
+    if not num("watch_secs") >= WATCH_SECS - 1e-9:
+        return (f"scored without OKTech's {WATCH_SECS:g} s watch delay (the exit acted from the buy, before OKTech "
+                "watches a coin): these trades are not how the sniper sells. The same rule frozen again is scored "
+                "with the delay, as a strategy of its own")  # fmt: skip
+    if kind in COPY_EXIT_KINDS and not num("copy_exit_pct") > 0 and not _recipes_exit(strategy):
+        return ("scored without the copy exit every copy sniper is sent (frozen before 13 Nov: the exit held on "
+                "when the followed wallet sold): these trades are not how a copy sniper sells. The same rule frozen "
+                "again also sells when the followed wallet sells, as a strategy of its own")  # fmt: skip
+    return None
+
+
+def _recipes_exit(strategy: dict) -> bool:
+    """Whether a frozen strategy sells with a recipe's own exit: frozen as a recipe, or its exit is one's."""
+    if strategy.get("recipe"):
         return True
     try:
-        return float((strategy.get("exit") or {}).get("watch_secs") or 0.0) >= WATCH_SECS - 1e-9
-    except (TypeError, ValueError):
+        return recipes_own(ExitParams(**strategy["exit"]))
+    except (KeyError, TypeError, ValueError):  # no exit the simulator can read
         return False
+
+
+def _sells_as_live(strategy: dict) -> bool:
+    """Whether a frozen strategy's exit acts as its live sniper's would (`not_as_live` says why one does not). One
+    that does not keeps its id and its trades and never goes live (`strategy_id`, live_test), and the same rule frozen
+    again, with the watch delay and for a wallet rule the copy exit, is a strategy of its own. So it does not stand
+    for its rule: the one frozen again is the rule's record."""
+    return not_as_live(strategy) is None
 
 
 def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latency: int = 0,
@@ -695,7 +735,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     again for RETEST_AFTER_SECS and takes no place either. `skipped` names each row left out and why, and with
     `triggers` or a recipe (rules asked for by name) each row `top` cut as well. No limit on new rules a day (owner,
     9 Nov), another size is another rule, and a launch-type rule scored before the watch delay does not stand for its
-    rule (`_sells_as_live`).
+    rule (`_sells_as_live`), nor does a wallet rule scored before the copy exit (13 Nov): each is kept and named
+    under `not_as_live` with what its trades are not, and its rule is frozen again as a strategy of its own.
 
     `buy_sol`: SOL a buy (0.2 unless told; a recipe's own size). `buy_bid_sol`: a bid paid once on every buy, on top
     of `per_tx_sol`: the lab charges it and each rule frozen keeps it (`buy_bid_sol`), so the forward run charges it
@@ -899,6 +940,12 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     out = {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
            "landing": landings(copy_pos)}  # fmt: skip
+    # the strategies still running whose exit is not their sniper's: each keeps its id and trades, holds no rule's
+    # place (so the rule above was frozen again where the lab ranked it), and says why
+    stale = [{"id": s["id"], "label": s.get("label"), "why": not_as_live(s)} for s in old
+             if not fed(s) and not _sells_as_live(s)]  # fmt: skip
+    if stale:
+        out["not_as_live"] = stale
     if own_landing or sell_parts:  # what the hypotheses were asked to be frozen with
         out["asked"] = {"copy_position": asked_pos or copy_pos, "buy_bid_sol": bid,
                         "sell_parts": ({"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
@@ -1388,6 +1435,8 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "venue": strategy_venue(s), "other_venue": other, **robust})  # fmt: skip
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
             out[-1]["landing_note"] = ANY_BUYER_NOTE
+        if not fed(s) and not _sells_as_live(s):  # an exit that is not its sniper's: what its trades are not
+            out[-1]["exit_note"] = not_as_live(s)
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         nums = numbers(s, False)
