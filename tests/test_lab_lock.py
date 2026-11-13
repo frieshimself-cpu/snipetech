@@ -93,3 +93,29 @@ def test_a_waiting_lab_takes_the_first_slot_that_frees(tmp_path):
         outer.__exit__(None, None, None)
         th.join(timeout=5)
     assert got == ["lab.2.lock"]
+
+
+def test_a_lab_that_found_every_slot_held_says_so_until_it_has_run(tmp_path):
+    """13 Nov: the research agents may use the second lab slot while nobody else asks for it. Who asks: qualify, the
+    strategy search and a freeze, which give up or wait when every slot is held. Such a caller names itself (`want`):
+    finding every slot held leaves a mark that says who and when, and getting a slot removes it. A caller that only
+    looks (no `want`: research.lab_held) leaves none, and a mark older than WANT_FRESH_SECS says nothing."""
+    import time as _time
+
+    from snipetech.analysis import lab_lock as L
+
+    assert L.wanted(tmp_path) is None and L.free_slots(tmp_path, slots=2) == 2
+    with L.lab_lock(tmp_path, wait=False, slots=2), L.lab_lock(tmp_path, wait=False, slots=2):
+        assert L.free_slots(tmp_path, slots=2) == 0
+        with pytest.raises(LabBusy), L.lab_lock(tmp_path, wait=False, slots=2):  # only looking: no mark
+            pass
+        assert L.wanted(tmp_path) is None
+        with pytest.raises(LabBusy), L.lab_lock(tmp_path, wait=False, slots=2, want="qualify"):
+            pass
+    mark = L.wanted(tmp_path)
+    assert mark is not None and mark["who"] == "qualify" and abs(mark["ts"] - _time.time()) < 5
+    assert L.wanted(tmp_path, now=_time.time() + L.WANT_FRESH_SECS + 1) is None  # stale: it never came back
+    with L.lab_lock(tmp_path, wait=False, slots=2):  # another lab got a slot: qualify still waits
+        assert L.wanted(tmp_path) is not None and L.free_slots(tmp_path, slots=2) == 1
+    with L.lab_lock(tmp_path, wait=False, slots=2, want="qualify"):  # it has its slot: the mark is gone
+        assert L.wanted(tmp_path) is None

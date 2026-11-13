@@ -243,9 +243,10 @@ def test_the_search_ranks_at_the_live_copy_landing_and_paper_tests_what_pays_the
     locks = []
     real = RS._lab_lock
 
-    def spy(path, wait=True):
+    def spy(path, wait=True, want=None):
         locks.append((str(path), wait))
-        return real(path, wait=wait)
+        assert want == "the strategy search"  # it names itself: a busy machine owes it the next free slot
+        return real(path, wait=wait, want=want)
 
     monkeypatch.setattr(RS, "_lab_lock", spy)
     out = RS.search(Service(cfg, store=st), cfg, data, NOW)

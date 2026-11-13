@@ -6,7 +6,11 @@ import math
 import time
 from pathlib import Path
 
+from ..analysis.lab_lock import free_slots as lab_free_slots
 from ..analysis.lab_lock import lab_slots
+from ..analysis.lab_lock import unwant as lab_unwant
+from ..analysis.lab_lock import want as lab_want
+from ..analysis.lab_lock import wanted as lab_wanted
 from ..jobfiles import jobs_since
 from ..ops import Ops, OpsError, _pid_alive
 from . import learning, roles
@@ -67,6 +71,9 @@ BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's l
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
 LOOKUP_REPEAT_SECS = {"gmgn": 600}
+
+
+ANALYST_WANTS = "the analyst"  # how the analyst's own lab names itself when every slot is held (lab_lock.want)
 
 
 class OperatorJobs:
@@ -365,15 +372,29 @@ class OperatorJobs:
         running = self.running()
         labs, slots = sum(1 for m in running if m.get("argv", [""])[0] == "lab"), lab_slots()
         if argv[0] == "lab" and labs >= slots:
+            if role is None:  # the analyst's own lab is the machine's work: the next free slot is its (lab_lock.want)
+                lab_want(self.ops.data, ANALYST_WANTS, now)
             raise PermissionError(f"{labs} lab{'s are' if labs > 1 else ' is'} already running; this machine runs "
                                   f"{slots} at a time")  # fmt: skip
         if role is not None and argv[0] == "lab":
+            # The roles keep to all but one slot only while the machine's own work is owed one (qualify, the strategy
+            # search, a freeze: lab_lock.want). Until 13 Nov they always did, and the second slot stood empty for all
+            # but qualify's minutes while the agents queued behind one another.
             held, share = self._agent_labs(running), max(1, slots - 1)
             if len(held) >= share:
                 who = ", ".join(f"job {jid} ({by})" for jid, by in held)
-                raise PermissionError(f"the research agents share {share} lab slot{'s' if share > 1 else ''} of this "
-                                      f"machine's {slots} and {who} holds it: read that lab's result when it ends, or "
-                                      "do the part of the idea that needs no lab")  # fmt: skip
+                owed = lab_wanted(self.ops.data)
+                if owed is not None:
+                    at = time.strftime("%H:%M UTC", time.gmtime(float(owed["ts"])))
+                    raise PermissionError(f"the research agents share {share} lab slot{'s' if share > 1 else ''} of "
+                                          f"this machine's {slots} and {who} holds it; {owed['who']} asked for a "
+                                          f"slot at {at} and found every one held, so the next free one is its: "
+                                          "read that lab's result when it ends, or do the part of the idea that "
+                                          "needs no lab")  # fmt: skip
+                if lab_free_slots(self.ops.data) < 1:
+                    raise PermissionError(f"every lab slot is held ({who}, and a lab that is no job of the agents': "
+                                          "qualify's, the search's or a freeze): read that lab's result when it "
+                                          "ends, or do the part of the idea that needs no lab")  # fmt: skip
         research = [m for m in running if loop_stage(m.get("argv")) is None]  # the round's own stages do not count
         if len(research) >= self.max_jobs:
             raise PermissionError(f"{len(research)} jobs running, the limit is {self.max_jobs}")
@@ -383,4 +404,6 @@ class OperatorJobs:
             raise PermissionError(str(exc)) from exc
         if role is not None:
             self.record_test(now, role, str(idea), started, argv)
+        elif argv[0] == "lab":
+            lab_unwant(self.ops.data, ANALYST_WANTS)  # the analyst has its lab: no slot is owed on its account
         return started

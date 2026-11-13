@@ -390,7 +390,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
     out["chunks"], out["left_due"] = 0, 0
     started = time.monotonic()
     try:
-        with lab_lock(Path(jobs_dir).parent, wait=False):
+        with lab_lock(Path(jobs_dir).parent, wait=False, want="qualify"):  # owed the next free slot when busy
             for i in range(0, len(measurable), CHUNK):
                 if i and time.monotonic() - started >= budget_secs:
                     out["left_due"] = len(measurable) - i

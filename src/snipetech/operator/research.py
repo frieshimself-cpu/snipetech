@@ -339,7 +339,7 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     # until one is measured), and where it came from, in the search's record and every strategy it freezes
     cost = Q.lab_tx_cost_info(store, cfg)
     per_tx = cost["per_tx_sol"]
-    with _lab_lock(data_dir, wait=True):
+    with _lab_lock(data_dir, wait=True, want="the strategy search"):
         # launch-window rules (hunt, whale, burst) are scored in the same pass where a hunt buy lands
         # the wallet groups from the live database: the hourly copy has none of the labels written since it was taken
         data = L.collect(recent_tape(svc.tape_store), cfg, buy, 0, copy_pos, per_tx,

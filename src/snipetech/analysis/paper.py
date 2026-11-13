@@ -832,7 +832,7 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                 asked_pos = position
             if is_bid(position):  # refused in words before any tape is read
                 check_bid_landing(position, latency, bid, [t for t in triggers if t.kind not in LAUNCH_LANDINGS])
-        with lab_lock(lock_dir, wait=True) if lock_dir else nullcontext():
+        with lab_lock(lock_dir, wait=True, want="a paper freeze") if lock_dir else nullcontext():
             # the tape store only now, the lock held: freeze may have waited behind the strategy search (41 minutes on
             # 7 Nov) while snapshot-db renamed a new copy over the path, and a copy opened before the wait is the one
             # it replaced, possibly over two hours old by now, whose workers refuse a file no longer at the path (one

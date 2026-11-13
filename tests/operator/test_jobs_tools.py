@@ -1068,7 +1068,9 @@ def test_role_test_needs_an_idea_of_its_queue(jobs):
 
 def test_agents_leave_one_lab_slot_free(jobs, monkeypatch):
     """Two labs run at once on the server and qualify takes a slot too. The roles together hold one (the slots less
-    one, at least one), so the other stays free for qualify, the strategy search and the freeze."""
+    one, at least one) whenever qualify, the strategy search or a freeze has asked for a slot and found none
+    (lab_lock.want): the other is theirs."""
+    from snipetech.analysis import lab_lock
     from snipetech.operator import roles
 
     monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
@@ -1076,7 +1078,9 @@ def test_agents_leave_one_lab_slot_free(jobs, monkeypatch):
     lab = ["lab", "--trigger", KOL, "--copy-position", "+0", "--json"]
     _meta(jobs.ops.data / "jobs", "theirs", ["lab", "--trigger", KOL], running=True, pid=os.getpid())
     roles.record_test(OperatorPaths(jobs.ops.data), 1.0, "tester", tester, "theirs", ["lab", "--trigger", KOL])
-    with pytest.raises(PermissionError, match=r"the research agents share 1 lab slot.*job theirs \(tester\)"):
+    lab_lock.want(jobs.ops.data, "qualify")  # qualify found every slot held and gave up: the next free one is its
+    with pytest.raises(PermissionError, match=r"the research agents share 1 lab slot.*job theirs \(tester\).*"
+                                              r"qualify asked for a slot"):  # fmt: skip
         jobs.start(lab, role="fees", idea=fees)
     assert jobs.start(["tips", "--group", "big", "--json"], role="fees", idea=fees)["id"]  # no lab: no slot
     assert jobs.start(["lab", "--latency", "0"])["id"]  # the analyst's and the machine's own lab takes the other
@@ -1386,3 +1390,54 @@ def test_the_agents_are_told_what_a_same_actor_verdict_is():
     hints = [v["verdicts"] for v in vars(tools).values() if isinstance(v, dict) and "verdicts" in v]
     hint = " ".join(str(h) for h in hints)
     assert "same actor as" in hint and "not a failure" in hint and "data.actor" in hint
+
+
+def test_the_agents_use_the_second_lab_slot_while_nothing_else_asks_for_it(jobs, monkeypatch):
+    """13 Nov evening, the first hour after the credit came back: "No new test started: the one lab slot is held by my
+    consensus lab", "The +0 lab ... could not start (lab slot held)", "the sniper-group lab waits for the lab slot",
+    while the machine's second slot stood empty for all but qualify's few minutes every two hours. The roles take the
+    second slot while nobody else has asked for one; once qualify (or the search, or a freeze) finds every slot held
+    it says so (lab_lock.want) and the roles are back to one until it has run."""
+    from snipetech.analysis import lab_lock
+    from snipetech.operator import roles
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    tester, fees = _queue(jobs, "tester"), _queue(jobs, "fees")
+    lab = ["lab", "--trigger", KOL, "--copy-position", "+0", "--json"]
+    _meta(jobs.ops.data / "jobs", "theirs", ["lab", "--trigger", KOL], running=True, pid=os.getpid())
+    roles.record_test(OperatorPaths(jobs.ops.data), 1.0, "tester", tester, "theirs", ["lab", "--trigger", KOL])
+    with lab_lock.lab_lock(jobs.ops.data, wait=False, slots=2):  # the tester's lab holds its slot
+        second = jobs.start(lab, role="fees", idea=fees)  # nobody asked for the other: the fee analyst's lab starts
+        assert second["id"]
+        full = "already running; this machine runs 2 at a time"  # ... and holds it: the machine is full
+        with lab_lock.lab_lock(jobs.ops.data, wait=False, slots=2), pytest.raises(PermissionError, match=full):
+            jobs.start(["lab", "--trigger", KOL, "--copy-position", "+1", "--json"], role="tester", idea=tester)
+    # a slot some other lab holds (qualify's own, which is no job): no second lab for the roles, and it says why
+    for p in _job_files(jobs):
+        if second["id"] in p.name:
+            p.unlink()
+    data = jobs.ops.data
+    with (lab_lock.lab_lock(data, wait=False, slots=2), lab_lock.lab_lock(data, wait=False, slots=2),
+          pytest.raises(PermissionError, match="every lab slot is held")):  # fmt: skip
+        jobs.start(["lab", "--trigger", KOL, "--copy-position", "+2", "--json"], role="tester", idea=tester)
+
+
+def test_the_analyst_is_owed_the_next_slot_when_the_roles_hold_both(jobs, monkeypatch):
+    """With the roles on every slot the analyst's own lab finds none. It is the machine's work too: its refusal leaves
+    the mark, the roles are back to one slot, and the mark goes when the analyst's lab has started."""
+    from snipetech.analysis import lab_lock
+    from snipetech.operator import roles
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    tester, fees = _queue(jobs, "tester"), _queue(jobs, "fees")
+    for jid, role, idea in (("t1", "tester", tester), ("f1", "fees", fees)):
+        _meta(jobs.ops.data / "jobs", jid, ["lab", "--trigger", KOL], running=True, pid=os.getpid())
+        roles.record_test(OperatorPaths(jobs.ops.data), 1.0, role, idea, jid, ["lab", "--trigger", KOL])
+    with pytest.raises(PermissionError, match="already running; this machine runs 2 at a time"):
+        jobs.start(["lab", "--latency", "0"])  # the analyst's
+    assert (lab_lock.wanted(jobs.ops.data) or {}).get("who") == "the analyst"
+    (jobs.ops.data / "jobs" / "f1.json").unlink()  # the fee analyst's lab ended
+    with pytest.raises(PermissionError, match="the analyst asked for a slot"):
+        jobs.start(["lab", "--trigger", KOL, "--copy-position", "+0", "--json"], role="fees", idea=fees)
+    assert jobs.start(["lab", "--latency", "0"])["id"]  # the analyst's lab starts
+    assert lab_lock.wanted(jobs.ops.data) is None
