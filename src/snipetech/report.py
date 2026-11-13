@@ -844,8 +844,9 @@ def render_lab(r: dict) -> str:
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
     here = bid.get("landing") or f"{r['position']}@{r['latency_slots']}"
     moved = sorted(
-        {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"] if s.get("landing", here) != here}
-    )
+        {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"]
+         if s.get("landing", here) != here and not s.get("landing_note")}
+    )  # fmt: skip
     if moved:  # launch-window rules land where an OKTech hunt buy lands, whatever landing the lab was asked for
         out.append("Scored where they trade live, not at the landing above: "
                    + ", ".join(f"{kind} triggers at {key}" for kind, key in moved) + ".")  # fmt: skip
@@ -879,6 +880,15 @@ def render_lab(r: dict) -> str:
         out.append(
             "Try --latency 1 and --position end: the edge usually depends on landing early in the trigger's own slot."
         )
+    # a rule no sniper of ours runs (an any-buyer rule with coin gates): the place it was scored at, and why that
+    # place is an assumption (lab.ANY_BUYER_NOTE), ranked or not
+    lone: dict[str, dict[str, str]] = {}
+    for s in [*r["strategies"], *(r.get("triggers") or ())]:
+        if s.get("landing_note") and s.get("landing", here) != here:
+            lone.setdefault(s["landing_note"], {})[s["trigger"]] = s["landing"]
+    for note, rules in lone.items():
+        out.append("No live landing: " + "; ".join(f"{label} (scored at {key})" for label, key in rules.items())
+                   + f". {note}")  # fmt: skip
     if r.get("amm_tape"):
         out += [""] + _amm_tape_lines(r["amm_tape"])
     out += _size_lines(r.get("size") or {}, r["strategies"])
@@ -1033,6 +1043,8 @@ def render_paper(action: str, r: dict) -> str:
     if live:
         out += [r["landing_note"]] if r.get("landing_note") else []
         out.append(rules(live))
+        # a rule no sniper of ours runs (an any-buyer rule): under the table, why its place is no live landing
+        out += [f"  {s['id']}  {s['landing_note']}" for s in live if s.get("landing_note")]
     else:
         out.append("No rule is under test where our trades land live.")
     out.append("")
