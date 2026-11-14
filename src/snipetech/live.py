@@ -47,8 +47,10 @@ from .service import Service
 from .solana.base58 import b58decode
 from .solana.laserstream import account_keys
 from .solana.normalize import normalize
+from .solana.pay_dests import MAX_DESTS, PayDests
 from .solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM, WSOL_MINT, pump_pool
-from .solana.tx import TxEvents, extract_from_logs, extract_from_transaction
+from .solana.tx import TxEvents, extract_from_logs, extract_from_transaction, payment_failures
+from .store import PAY_DESTS_MIN_PAYERS
 
 log = logging.getLogger(__name__)
 
@@ -132,6 +134,16 @@ PRUNE_KEY = "prune"
 PRUNE_WALK_SECS = 86_400.0
 PRUNE_REST = 3.0
 PRUNE_REST_MIN_SECS = 0.001
+# The tape learns which accounts trades tip (solana/pay_dests.py; 14 Nov: the fixed list of landing-service accounts
+# misses most services). The stream's handler only counts in memory. Every PAY_DESTS_FLUSH_SECS the destinations paid
+# since the last time are classified and written to the table pay_dests, at most PAY_DESTS_STEP of them a maintenance
+# tick (one short write transaction a tick; measured on the dev box, 14 Nov: 100 destinations with full samples are
+# 29 ms of this loop to classify and 1 ms to write, half a megabyte), and the learned tip accounts are read back. A
+# batch the database turns away PAY_DESTS_GIVE_UP ticks running is let go: its destinations come again with their
+# next payment.
+PAY_DESTS_FLUSH_SECS = 300.0
+PAY_DESTS_STEP = 100
+PAY_DESTS_GIVE_UP = 3
 
 ACTIONS = {
     "SNIPE": "snipe",
@@ -475,6 +487,15 @@ class LiveWatcher:
         self.amm_skipped: list[list[int]] = []  # stretches of chain time it missed (coverage)
         self.started_at = self.clock()
         self.work_at = -math.inf  # when the work record was last written
+        # The destinations trades pay, learned in memory (the tape only), and the tip accounts among them that a
+        # transaction's tip is read with: None while [live] apply_learned_tips is off or nothing is learned, so the
+        # stream's handler reads every transaction exactly as before.
+        self.pay_dests: PayDests | None = PayDests() if tape else None
+        self.learned_tips: dict[str, int] | None = None
+        self.pay_queue: list[str] = []  # destinations of the flush under way, still to classify and write
+        self.pay_flush_at = self.clock()  # when the last flush began
+        self.pay_fails = 0  # ticks running in which the queue's first batch could not be written
+        self._pay_load()
         self.profiler: Any = None  # a cProfile.Profile while the recorder profiles itself (`_profile_tick`)
         self.profile_until, self.profile_secs = 0.0, 0.0
         self.amm_runs: dict[str, list[int]] = {}  # this process's runs of the coverage record: tag -> [from, to]
@@ -732,7 +753,8 @@ class LiveWatcher:
             # the block's time for events that carry none (LaunchLab's): the stream's own is the moment it was
             # received, minutes or hours after the block in a replay
             txj["blockTime"] = self._block_time(int(txj["slot"]))
-        ev = extract_from_transaction(txj)
+        tips = self.learned_tips  # None unless [live] apply_learned_tips is on and something is learned
+        ev = extract_from_transaction(txj) if tips is None else extract_from_transaction(txj, None, tips)
         if ev.failed or not ev.events:
             return
         self.stats["laserstream_txs"] += 1
@@ -908,7 +930,8 @@ class LiveWatcher:
     def _ls_amm(self, txj: dict[str, Any], index: int) -> None:
         """A PumpSwap-only transaction on a recent coin's pool, decoded like every other transaction."""
         try:
-            ev = extract_from_transaction(txj)
+            tips = self.learned_tips
+            ev = extract_from_transaction(txj) if tips is None else extract_from_transaction(txj, None, tips)
             if ev.failed or not ev.events:
                 return
             self._on_tx(ev, index, amm_only=True)
@@ -1217,6 +1240,8 @@ class LiveWatcher:
         if norm.foreign:
             self.fbuffer.extend(norm.foreign)
             self.stats["foreign_trades"] += len(norm.foreign)
+        if (tx.pays or tx.learned_tips) and self.pay_dests is not None:
+            self._pay_feed(tx, norm, amm_only)
         self.cbuffer.extend(norm.completions)
         self.mbuffer.extend(norm.migrations)
         if self.migrated is not None and (norm.completions or norm.migrations):
@@ -1307,6 +1332,98 @@ class LiveWatcher:
                 self._on_tx(tx, pos)
         else:
             self.stats["unresolved_pool_events"] += len(waiting)
+
+    # -- learning the tip accounts -------------------------------------------------------------------------------
+
+    def _pay_failed(self, where: str, exc: BaseException) -> None:
+        """A failure while learning the tip accounts: counted (the first one logged), and the tape goes on. Nothing of
+        this path may cost the tape a transaction or its maintenance tick."""
+        self.stats["pay_dests_errors"] += 1
+        if self.stats["pay_dests_errors"] == 1:
+            log.warning("tape: learning the tip accounts failed (%s: %r); the tape goes on, counted as "
+                        "pay_dests_errors from here on", where, exc)  # fmt: skip
+
+    def _pay_load(self) -> None:
+        """At a start: what the last process learned, from the table, and the tip accounts among it."""
+        if self.pay_dests is None:
+            return
+        try:
+            self.pay_dests.load(self.store.pay_dests(limit=MAX_DESTS))
+            self._pay_tips()
+        except Exception as exc:  # noqa: BLE001 - a start without what was learned is a start that learns again
+            self._pay_failed("load", exc)
+
+    def _pay_tips(self) -> None:
+        """Read the learned tip accounts back from the table. They are applied to a transaction's tip only while
+        [live] apply_learned_tips is on; the count goes into the recorder's counts either way."""
+        tips = self.store.tip_accounts()
+        if tips or "pay_tip_accounts" in self.stats:  # the counts name it once there is one
+            self.stats["pay_tip_accounts"] = len(tips)
+        self.learned_tips = tips if tips and self.cfg.live.apply_learned_tips else None
+
+    def _pay_feed(self, tx: TxEvents, norm: Normalized, amm_only: bool) -> None:
+        """Count what a recorded transaction paid beside its trades: each payment against the transaction's largest
+        SOL-quoted trade, its fee payer and its block time. In memory alone. A transfer to a learned tip account is
+        counted too (it stands in the trade's tip, no longer among the payments): the learning goes on for it. A
+        transaction parked for a pool's lookup is counted when it is handed over again, with its trades."""
+        try:
+            if not norm.trades or (norm.unresolved_pools and not amm_only):
+                return
+            quote = max(t.quote for t in norm.trades)
+            ts = norm.trades[0].ts
+            add = self.pay_dests.add  # type: ignore[union-attr]
+            for dest, lamports in tx.pays:
+                add(dest, lamports, quote, tx.fee_payer, ts)
+            for dest, lamports in tx.learned_tips:
+                add(dest, lamports, quote, tx.fee_payer, ts)
+            self.stats["pay_dests_fed"] += 1
+        except Exception as exc:  # noqa: BLE001 - the trade is in the buffer already: never at its cost
+            self._pay_failed("count", exc)
+
+    def _pay_tick(self) -> None:
+        """Once a maintenance tick. Every PAY_DESTS_FLUSH_SECS a flush begins with the destinations paid since the
+        last one that PAY_DESTS_MIN_PAYERS wallets paid (the others are not stored); each tick classifies at most
+        PAY_DESTS_STEP of them and writes them in one short transaction, and the tick that ends the flush reads the
+        learned tip accounts back. Nothing is written while the database refuses the tape's own rows. This is the one
+        place this path writes: `Store.save_pay_dests`, where the tape's coverage records are written too (the
+        recorder has no writer thread; with one, this call is what moves there)."""
+        pd = self.pay_dests
+        if pd is None:
+            return
+        try:
+            for name, count in (("pay_dests", len(pd)), ("pay_dests_dropped", pd.dropped),
+                                ("pay_extract_errors", payment_failures())):  # fmt: skip
+                if count or name in self.stats:  # the counts name each once there is something to count
+                    self.stats[name] = count
+            now = self.clock()
+            if not self.pay_queue:
+                if now - self.pay_flush_at < PAY_DESTS_FLUSH_SECS:
+                    return
+                self.pay_flush_at = now
+                paid, pd.dirty = pd.dirty, set()
+                self.pay_queue = sorted(a for a in paid if pd.payers_of(a) >= PAY_DESTS_MIN_PAYERS)
+                if not self.pay_queue:
+                    return
+            if self.write_fail_since is not None:
+                return
+            batch = self.pay_queue[:PAY_DESTS_STEP]
+            chain = int(self._chain_now())
+            try:
+                pd.refresh(batch, chain)
+                with self.meter.timed("pay_dests"):
+                    self.stats["pay_dests_saved"] += self.store.save_pay_dests(pd.rows(batch), now=chain)
+            except Exception:
+                self.pay_fails += 1
+                if self.pay_fails >= PAY_DESTS_GIVE_UP:  # let go: these come again with their next payment
+                    del self.pay_queue[: len(batch)]
+                    self.pay_fails = 0
+                raise
+            self.pay_fails = 0
+            del self.pay_queue[: len(batch)]
+            if not self.pay_queue:
+                self._pay_tips()
+        except Exception as exc:  # noqa: BLE001 - the maintenance tick (flushes, the tape's coverage) goes on
+            self._pay_failed("flush", exc)
 
     def _flush(self, hot: bool = False) -> None:
         """Write what the streams handed over since the last flush: pools, launches, completions, migrations, trades,
@@ -1493,6 +1610,7 @@ class LiveWatcher:
                     if not _refused(exc):
                         raise
                     self._write_failed(exc)
+            self._pay_tick()
             if self.migrated is not None:
                 self.migrated.expire(self._chain_now() - EXPIRY_GRACE_SECS)
                 self.stats["amm_recent_coins"] = len(self.migrated)
