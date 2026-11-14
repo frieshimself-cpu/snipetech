@@ -12,9 +12,19 @@ say at a glance whether two runs rest on the same trades (`trades_digest`, `wind
 
 A lab with an end is the lab of a tape that ended there: it reads no trade, create, migration or block after the end,
 and the PumpSwap record and the backfilled stretches as they stood then (tests/test_lab_until.py holds it against a
-database cut at the end). It is still a paper result: every row names its landing as before. What the end does not
-fix, because the lab reads it from the live database when it runs: the wallet groups (labels carry no time), the
-measured cost of a transaction and the measured copy landing (`lab --per-tx` and `--copy-position` pin those two)."""
+database cut at the end). It is still a paper result: every row names its landing as before.
+
+What the end does not fix, because the lab reads it as it stands when the lab runs:
+- the label groups (who is a KOL, a tracked wallet, a bundler, a dev): labels carry no time, and the lab reads them
+  from the live database;
+- the measured cost of a transaction and the measured copy landing, also from the live database: `lab --per-tx` and
+  `lab --copy-position` pin them (on 14 Nov the cost moved from 0.008495 to 0.009341 SOL between two labs);
+- `lab.dev_paid_earlier`: the edges table as the dev-transfer scan had filled it when the lab ran. Only a MIG rule
+  with `dev_paid` reads it.
+And one thing the first rerun can show: a lab without an end read the PumpSwap record as far as the copy held it,
+which is seconds away from where the copy's tape ends. Its rerun with `--until` reads the record up to the end named,
+so the two can differ on PumpSwap moments in the window's last seconds. Two runs with `--until` agree with each
+other."""
 
 from __future__ import annotations
 
@@ -26,7 +36,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from ..amm_tape import AMM_RECENT_KEY
+from ..amm_tape import AMM_RECENT_KEY, OLD_SKIP_SLACK_SECS
 
 UNTIL_FORMS = 'unix seconds or UTC as 2026-11-14T06:00Z or "2026-11-14 06:00"'
 _UNIX = re.compile(r"[0-9]{1,12}")
@@ -146,7 +156,12 @@ def until_tape(store, until: int, hours: float | None = None) -> TapeWindow:
         raise OutsideTape(f"{name} holds no tape: there is no window to end")
     if not found[0] <= until <= found[1]:
         raise _outside(until, *found, name)
-    return TapeWindow(store, None if hours is None else until - float(hours) * 3600, until)
+    view = TapeWindow(store, None if hours is None else until - float(hours) * 3600, until)
+    if not view.tape_spans():  # the tape's first second, or hours that all lie in a hole of the tape
+        back = "" if hours is None else f" and the {float(hours):g} h before it"
+        raise OutsideTape(f"--until {utc(until)} ({until}){back} holds no tape to read: the tape in {name} runs "
+                          f"from {utc(found[0])} to {utc(found[1])} ({found[0]} to {found[1]})")  # fmt: skip
+    return view
 
 
 def check_until(live, until: int) -> None:
@@ -158,17 +173,33 @@ def check_until(live, until: int) -> None:
         raise _outside(int(until), *found, tape_name(live))
 
 
+def check_trades(typed: int, rules: int) -> None:
+    """`lab --trades`, refused in words (ValueError) before anything is read: the trades are listed for hypotheses
+    typed with --trigger (`typed` of them), and for at most MAX_TRADES_TRIGGERS rules a run (`rules`: the typed ones
+    and a recipe's). The command and the agents' job starter both ask here, so both say the same."""
+    if typed < 1:
+        raise ValueError("--trades lists the test trades of hypotheses typed with --trigger: name at least one")
+    if rules > MAX_TRADES_TRIGGERS:
+        raise ValueError(f"--trades lists every test trade of every rule: at most {MAX_TRADES_TRIGGERS} rules a "
+                         f"run, not {rules} (the output would not fit a job log an agent can read)")  # fmt: skip
+
+
 def clip_amm_recent(cov: dict[str, Any], until: int) -> dict[str, Any]:
-    """The PumpSwap tape's coverage record (amm_tape, `tape:amm_recent`) as it stood at `until`: no run that began
-    later, each run ending there at the latest, no stretch skipped later. A lab that ends at `until` reads no trade
-    after it, so a moment whose exits run past it is "too recent", as it was for a lab run then."""
+    """The PumpSwap tape's coverage record (amm_tape, `tape:amm_recent`) as a lab that ends at `until` reads it: no
+    run that began later, each run ending there at the latest, and no skipped stretch that lies wholly after it as
+    the lab reads stretches (`amm_tape._skipped`: those of a run without `slot_secs` OLD_SKIP_SLACK_SECS wider, so
+    one that starts within that much after `until` reaches back before it and is kept). Every stretch of time that
+    ends by `until` then reads as it does on the whole record, and a moment whose exits run past `until` is "too
+    recent", as it was for a lab run then."""
     runs = []
     for run in (cov or {}).get("runs", []):
         if not (isinstance(run, dict) and {"from", "to", "skipped"} <= run.keys()):
             runs.append(run)  # not a run the lab reads (amm_tape._runs): left as it is
         elif run["from"] <= until:
+            slack = 0 if "slot_secs" in run else OLD_SKIP_SLACK_SECS
             runs.append({**run, "to": min(run["to"], until),
-                         "skipped": [[a, min(b, until)] for a, b in run["skipped"] if a <= until]})  # fmt: skip
+                         "skipped": [[a, max(a, min(b, until))] for a, b in run["skipped"]
+                                     if a - slack <= until]})  # fmt: skip
     return {**(cov or {}), "runs": runs} if cov else {}
 
 
