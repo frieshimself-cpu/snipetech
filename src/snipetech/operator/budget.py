@@ -14,10 +14,73 @@ TIERS = {"analyst": "analyst", "postmortem": "analyst", "strategist": "strategis
 TIERS |= {"scout": "analyst", "tester": "analyst", "fees": "analyst", "oktech": "analyst"}
 
 
+# Which rows of the price table (config.DEFAULT_OPERATOR_PRICES) a model's tokens are billed at: the three models the
+# agents are asked to run on. The plain rows are the operator's model's, analyst_* and strategist_* the other two's.
+MODEL_TIERS = {"claude-sonnet-5-5": "", "claude-fable-5-2": "analyst", "claude-opus-5-5": "strategist"}
+# Models the API may serve a declined request on (`fallbacks="default"`, turn.py) that the table has no rows for (the
+# server's settings file is a dump of that table: a new row there would never reach it). USD per million tokens, from
+# the models' reference read on 14 Nov (the claude-api skill's shared/models.md, line 84: Opus 5 "at Opus 4.8's
+# pricing ($5/$25 per MTok)"; shared/prompt-caching.md, line 144: reads at a tenth of the input price, five-minute
+# writes at 1.25 times it, the hour's at twice).
+_OPUS_5 = {"in": 5.0, "out": 25.0, "cache_read": 0.5, "cache_write": 6.25, "cache_write_1h": 10.0}
+MODEL_PRICES = {"claude-opus-5": _OPUS_5, "claude-opus-4-8": _OPUS_5}
+
+
+def _known(model: object, table: dict) -> str | None:
+    """The key of `table` that `model` is: its id, or its id with a date behind it; the longest that fits."""
+    name = str(model or "")
+    fits = [k for k in table if name == k or name.startswith(k + "-")]
+    return max(fits, key=len) if fits else None
+
+
+def _attempts(usage: dict) -> list[dict]:
+    """The attempts of one response (`usage.iterations`) that carry token counts; none when the usage lists none."""
+    rows = usage.get("iterations")
+    counted = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+    return [r for r in rows if isinstance(r, dict) and any(r.get(k) for k in counted)] if isinstance(rows, list) else []
+
+
 def cost_usd(usage: dict, prices: dict, analyst: bool = False, tier: str = "") -> float:
     """Dollars for one response's token counts; missing counts are 0. Each agent runs on its own model, so each has
-    its own rows in the price table: plain names for the operator, analyst_* and strategist_* for the other two."""
+    its own rows in the price table: plain names for the operator, analyst_* and strategist_* for the other two.
+
+    A response the API served after one or more attempts lists them (`usage.iterations`: the API's reference calls it
+    "the per-attempt source of truth; top-level usage covers only the attempt that produced the returned message",
+    and "fallback attempts bill at the fallback model's rates"): then every attempt is counted, each at the rows of
+    the model that ran it (`MODEL_TIERS`, `MODEL_PRICES`), or at `tier`'s rows when the attempt names no model or one
+    nothing here knows. A response that lists no attempts is priced at `tier`'s rows as it always was."""
     tier = tier or ("analyst" if analyst else "")
+    attempts = _attempts(usage)
+    if attempts:
+        return sum(_attempt_usd(a, prices, tier) for a in attempts)
+    return _counts_usd(usage, prices, tier)
+
+
+def _attempt_usd(attempt: dict, prices: dict, tier: str) -> float:
+    """One attempt's dollars at its own model's rows; at `tier`'s when its model is unknown."""
+    model = attempt.get("model")
+    listed, rows = _known(model, MODEL_PRICES), _known(model, MODEL_TIERS)
+    if rows is not None and (listed is None or len(rows) >= len(listed)):
+        return _counts_usd(attempt, prices, MODEL_TIERS[rows])
+    if listed is not None:
+        return _counts_usd(attempt, MODEL_PRICES[listed], "")
+    return _counts_usd(attempt, prices, tier)
+
+
+def served_by(usage: dict, tier: str) -> list[str]:
+    """The models of a response's attempts that were priced at other rows than `tier`'s, in the attempts' order."""
+    out = []
+    for a in _attempts(usage):
+        model = a.get("model")
+        rows = _known(model, MODEL_TIERS)
+        other = _known(model, MODEL_PRICES) is not None or (rows is not None and MODEL_TIERS[rows] != tier)
+        if other and str(model) not in out:
+            out.append(str(model))
+    return out
+
+
+def _counts_usd(usage: dict, prices: dict, tier: str) -> float:
+    """Dollars for one set of token counts at one model's rows of `prices`."""
     key = lambda k: f"{tier}_{k}" if tier else k
     p = lambda k: float(prices.get(key(k), 0.0))
     n = lambda k: int(usage.get(k) or 0)  # the SDK reports unused counters as None
@@ -53,12 +116,19 @@ class Ledger:
     def __init__(self, path: Path, prices: dict):
         self.path, self.prices = Path(path), prices
 
-    def record(self, mode: str, usage: dict, now: float | None = None) -> float:
+    def record(self, mode: str, usage: dict, now: float | None = None, model: str | None = None) -> float:
+        """One line for one response; its dollars. `model`: the model the response names as the one that answered,
+        written on the line when an attempt of the response was priced at another model's rows than the mode's (a
+        fallback served it: `cost_usd`); the token counts on the line are the answering attempt's."""
         now = time.time() if now is None else now
-        usd = cost_usd(usage, self.prices, tier=TIERS.get(mode, ""))
+        tier = TIERS.get(mode, "")
+        usd = cost_usd(usage, self.prices, tier=tier)
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
                 "cache_write_1h": hour_writes(usage), "usd": round(usd, 6)}  # fmt: skip
+        others = served_by(usage, tier)
+        if others:
+            line |= {"model": str(model or others[-1]), "attempts": len(_attempts(usage))}
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a") as f:
             f.write(json.dumps(line) + "\n")

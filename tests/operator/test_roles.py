@@ -194,7 +194,7 @@ def test_role_runs_when_its_own_job_ended(box):
     _state(box.paths, "scout", last=NOW - 900)
     R.record_test(box.paths, NOW - 1000, "scout", idea, "j1", ["winners", "--json"])
     R.record_test(box.paths, NOW - 1000, "tester", "I9", "j2", ["lab", "--json"])
-    _job(box.data, "j1", ["winners", "--json"], NOW - 1000)
+    _job(box.data, "j1", ["winners", "--json"], NOW - 1000, pid=os.getpid())  # it runs
     _job(box.data, "j2", ["lab", "--json"], NOW - 1000, ended=NOW - 300)  # the tester's: not the scout's news
     assert _due(box, "scout") == (False, "nothing new")
     _job(box.data, "j1", ["winners", "--json"], NOW - 1000, ended=NOW - 300)
@@ -222,7 +222,7 @@ def test_role_runs_when_handed_something(box):
     handed = _idea(box.paths, "tester", "score copies of this group", by="scout", status="testing", now=NOW - 300)
     assert _due(box, "tester") == (True, f"handed an idea: {handed} (by the scout)")
     assert _due(box, "scout") == (False, "nothing new")  # what it handed on is not its own news
-    _state(box.paths, "tester", last=NOW - 100)
+    _state(box.paths, "tester", last=NOW - 100, stalled_told=NOW - 100)  # its last turn saw it and left it in testing
     assert _due(box, "tester") == (False, "nothing new")  # seen by its last turn
     table = box.paths.root / "fees-bids.md"
     table.write_text("| place | bid |\n")
@@ -287,24 +287,39 @@ def test_role_runs_after_three_quiet_hours(box):
 
 
 def test_role_waits_after_two_turns_without_a_test(box):
-    """Two turns in a row that neither started a test nor closed an idea: the next one waits an hour, whatever is new,
-    unless a job of its own has ended."""
+    """Two turns in a row that did no work (no test started, no idea closed, no lesson, nothing handed on): the next
+    one waits 45 minutes from the last turn's start, unless a job of its own has ended or an idea was handed to it.
+    45 minutes, not an hour: with rounds a quarter of an hour apart an hour's wait started the next turn 60 or 75
+    minutes on, just past the hour cache's lifetime, and the whole list was paid for again at the hour's price."""
+    assert R.IDLE_WAIT_SECS == 45 * 60 and R.IDLE_WHY.startswith("waits 45 minutes after two turns ")
     _idea(box.paths, "scout", "one", now=NOW - 5 * H)
     assert box.run("scout", now=NOW)["ran"] and R.read_state(box.paths)["scout"]["idle"] == 1
     assert box.run("scout", now=NOW + 900)["ran"] and R.read_state(box.paths)["scout"]["idle"] == 2
     out = box.run("scout", now=NOW + 1800)
-    assert out == {
-        "role": "scout",
-        "ran": False,
-        "why": "waits an hour after two turns without a test or a closed idea",
-    }
+    assert out == {"role": "scout", "ran": False, "why": R.IDLE_WHY}
     assert len(box.calls) == 2
     idea = learning.list_ideas(box.paths, "all")[0]["id"]
     R.record_test(box.paths, NOW + 100, "scout", idea, "j1", ["winners"])
     _job(box.data, "j1", ["winners"], NOW + 100, ended=NOW + 1700)
     assert box.run("scout", now=NOW + 1800)["why"] == "a job of yours ended: j1"  # its own result is always read
-    assert box.run("scout", now=NOW + 1800 + H - 60)["ran"] is False  # still inside the hour after that turn
-    assert box.run("scout", now=NOW + 1800 + H)["ran"]  # and the hour passes
+    last = NOW + 1800
+    assert R.read_state(box.paths)["scout"]["idle"] == 3
+    # the rounds of 14 Nov came 873 to 928 seconds apart: the third round after the turn is on time, never the fourth
+    assert box.run("scout", now=last + 909)["why"] == R.IDLE_WHY
+    assert box.run("scout", now=last + 909 + 873)["why"] == R.IDLE_WHY
+    assert box.run("scout", now=last + 909 + 873 + 873)["ran"]  # 44 min 15 s after its start: the round's slack
+
+
+def test_the_idle_wait_never_holds_an_idea_handed_to_the_role(box):
+    """14 Nov: inside its wait nothing but an ended job called a role, not even the owner's question handed to it by
+    the cloud session; the wait was compared without the round's slack and often lasted 75 minutes."""
+    _state(box.paths, "oktech", last=NOW, idle=2, seen={})
+    table = box.paths.root / "scout-facts.md"
+    table.write_text("| wallet |\n")
+    os.utime(table, (NOW + 60, NOW + 60))
+    assert _due(box, "oktech", NOW + 909) == (False, R.IDLE_WHY)  # a table change waits
+    asked = _idea(box.paths, "oktech", "the owner asks: which exit sells this rule's coin", by="cloud", now=NOW + 120)
+    assert _due(box, "oktech", NOW + 909) == (True, f"handed an idea: {asked} (by the cloud)")
 
 
 def test_a_turn_that_starts_a_test_or_closes_an_idea_is_not_idle(box):
@@ -345,6 +360,52 @@ def test_an_idea_opened_and_closed_in_one_turn_does_not_reset_the_idle_count(box
     box.acts[:] = [lambda jobs: learning.upsert_idea(box.paths, {"id": older, "status": "rejected"}, source="oktech",
                                                       now=NOW + 5 * H + 60, role="oktech")]  # fmt: skip
     assert box.run("oktech", now=NOW + 5 * H)["ran"] and R.read_state(box.paths)["oktech"]["idle"] == 0
+
+
+def test_a_lesson_or_a_hand_on_is_work(box):
+    """The review of 14 Nov: with "an idea opened and closed in one turn is no work" alone, 15 of the OKTech agent's 26
+    turns would have been skipped, and those turns wrote 12 lessons and handed 2 ideas on: less research, not waste.
+    A turn is idle only when it started no job, closed no idea that was there before it, added no lesson and handed
+    nothing to another role."""
+    started = NOW
+
+    def after(act):
+        for name in ("ideas.json", "tests.jsonl", "lessons.md"):
+            if (box.paths.root / name).exists():
+                (box.paths.root / name).write_text("")
+        old = _idea(box.paths, "oktech", "an older idea of its own", by="oktech", now=started - H)
+        act(old)
+        return R._idle_after(box.paths, "oktech", started, 1)
+
+    def own(title="mine now"):
+        new = _idea(box.paths, "oktech", title, by="oktech", now=started + 30)
+        learning.upsert_idea(box.paths, {"id": new, "status": "adopted"}, source="oktech", now=started + 60,
+                             role="oktech")  # fmt: skip
+
+    def lesson(by="oktech", at=started + 30, text="a lesson of this turn"):
+        learning.add_lesson(box.paths, text, "evidence", 12, source=by, now=at)
+
+    assert after(lambda old: None) == 2  # nothing at all (a start_job that was refused leaves nothing either)
+    assert after(lambda old: own()) == 2  # only an idea of its own opened and closed
+    assert after(lambda old: lesson()) == 0
+    assert after(lambda old: (own(), lesson())) == 0  # the self-set study that taught something
+    assert after(lambda old: _idea(box.paths, "tester", "for the tester", by="oktech", now=started + 30)) == 0
+    assert after(lambda old: lesson(by="scout")) == 2  # another role's lesson is not this role's work
+    assert after(lambda old: lesson(at=started - 60, text="a lesson of the turn before")) == 2
+    assert after(lambda old: _idea(box.paths, "tester", "by the scout", by="scout", now=started + 30)) == 2
+    assert after(lambda old: _idea(box.paths, "tester", "handed before", by="oktech", now=started - 60)) == 2
+    assert after(lambda old: learning.upsert_idea(box.paths, {"id": old, "status": "adopted"}, source="oktech",
+                                                  now=started + 60, role="oktech")) == 0  # fmt: skip
+    assert after(lambda old: R.record_test(box.paths, started + 30, "oktech", old, "j8", ["landing", "--json"])) == 0
+    assert after(lambda old: R.join_test(box.paths, started + 30, "oktech", old, "j9", ["landing", "--json"])) == 0
+    # through a turn: the count a lesson leaves is 0, whatever it was
+    _state(box.paths, "oktech", last=NOW + 3 * H - 900, idle=1)
+    box.acts[:] = [lambda jobs: learning.add_lesson(box.paths, "landing +2 pays", "n 31", 31, source="oktech",
+                                                    now=NOW + 3 * H + 60)]  # fmt: skip
+    table = box.paths.root / "scout-facts.md"
+    table.write_text("| wallet |\n")
+    os.utime(table, (NOW + 3 * H - 60, NOW + 3 * H - 60))
+    assert box.run("oktech", now=NOW + 3 * H)["ran"] and R.read_state(box.paths)["oktech"]["idle"] == 0
 
 
 # -- starts that buy nothing (14 Nov: 660 of 667 decisions started a turn of about a dollar) ---------------------------
@@ -416,6 +477,8 @@ def test_a_label_job_is_never_a_job_of_yours_ended(box):
     label = ["label", "W1", "GMGN smart money, 30 d +15k USD", "--kind", "cand"]
     R.record_test(box.paths, NOW - 800, "scout", idea, "l1", label)
     _job(box.data, "l1", label, NOW - 800, ended=NOW - 790)
+    assert _due(box, "scout")[1].startswith(f"your idea {idea} is in testing")  # called for the idea, not the label
+    _state(box.paths, "scout", stalled_told=NOW - 900)
     assert _due(box, "scout") == (False, "nothing new")
     R.record_test(box.paths, NOW - 800, "scout", idea, "l2", label)
     _job(box.data, "l2", label, NOW - 800, ended=NOW - 790)
@@ -458,7 +521,7 @@ def test_while_the_account_is_empty_one_role_a_round_asks(box):
     assert box.paths.log.read_text().count("skip: the account is empty: the ") == 12
     # the role whose round it is has nothing new: the next one that has asks, so a round is never lost
     k = 5
-    first = R.ROLES[int((NOW + k * 900) // R.ROUND_SECS) % len(R.ROLES)]
+    first = R.ROLES[(R.ROLES.index(asked[-1]) + 1) % len(R.ROLES)]  # the turn goes round by who asked last
     _state(box.paths, first, last=NOW + k * 900 - 60, seen=R.seen(first, box.store))
     box.calls.clear()
     outs = {r: box.run(r, now=NOW + k * 900, turn=refused) for r in R.ROLES}
@@ -466,7 +529,7 @@ def test_while_the_account_is_empty_one_role_a_round_asks(box):
     _state(box.paths, first, last=None)
     # the owner adds credit: the role that asks is answered, which ends it at once for the roles that start after it
     k = 6
-    at = R.ROLES.index(R.ROLES[int((NOW + k * 900) // R.ROUND_SECS) % len(R.ROLES)])
+    at = (R.ROLES.index(box.calls[0]["role"]) + 1) % len(R.ROLES)
     box.calls.clear()
     outs = {r: box.run(r, now=NOW + k * 900) for r in R.ROLES}
     assert [r for r in R.ROLES if outs[r]["ran"]] == list(R.ROLES[at:]) == [c["role"] for c in box.calls]
@@ -474,6 +537,64 @@ def test_while_the_account_is_empty_one_role_a_round_asks(box):
     box.calls.clear()
     outs = {r: box.run(r, now=NOW + 7 * 900) for r in R.ROLES}  # and the next round is a round like any other
     assert "the account is empty" not in json.dumps(outs) and [c["role"] for c in box.calls] == list(R.ROLES[:at])
+
+
+def _round(box, order, at, turn_of):
+    """One round with the four roles' processes deciding in `order`, each while the one that asked before it is still
+    waiting for the API's answer (the four start in the same second: 14 Nov). Returns who asked."""
+    asked = []
+
+    async def proc(i):
+        if i == len(order):
+            return
+        went = []
+
+        async def turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, *, jobs, now, role, **kw):
+            went.append(role)
+            asked.append(role)
+            await proc(i + 1)  # the others decide while this request is on its way
+            return turn_of(svc, ledger, now, role)
+
+        await R.run_role(box.cfg, box.svc, order[i], repo=box.data.parent, branch="main", now=lambda: at(order[i]),
+                         turn=turn, client=object())  # fmt: skip
+        if not went:
+            await proc(i + 1)
+
+    asyncio.run(proc(0))
+    return asked
+
+
+def test_one_role_asks_whichever_process_decides_first_and_while_its_request_is_on_its_way(box):
+    """The review of 14 Nov: the four processes decide in the same second. With each one asking its own clock who is
+    first, a role whose request was still on its way was no longer "due" to the next process, which then asked too
+    (1.71 askers a round over every order, up to all four), and two processes on two sides of a quarter-hour could
+    each point at the other. The first to decide writes down who asks (operator/agents-asker.json, under the state's
+    lock); the others read it."""
+    import itertools
+
+    from snipetech.operator import resources
+
+    def refused(svc, ledger, now, role):
+        resources.credit_refused(svc.store, ledger, now())
+        return {"usd": 0.0, "tool_calls": 0, "stopped": "api_error", "notes": 0,
+                "error": "400: Your credit balance is too low to access the Anthropic API."}  # fmt: skip
+
+    resources.credit_refused(box.store, Ledger(box.paths.spend, box.cfg.operator.prices), NOW)
+    for r in R.ROLES:
+        _state(box.paths, r, last=NOW - 4 * H, seen=R.seen(r, box.store))
+    seen = []
+    for k, order in enumerate(itertools.permutations(R.ROLES), start=1):
+        asked = _round(box, order, lambda role, k=k: NOW + k * 900, refused)
+        assert len(asked) == 1, (order, asked)
+        seen.append(asked[0])
+    assert all(seen[i + 1] == R.ROLES[(R.ROLES.index(seen[i]) + 1) % 4] for i in range(len(seen) - 1))  # in turn
+    # two processes on two sides of a quarter of an hour: still one, and the same one for all four
+    edge = (NOW // 900 + 40) * 900
+    asked = _round(box, R.ROLES, lambda role: edge + (2 if role in R.ROLES[:2] else -2), refused)
+    assert len(asked) == 1
+    # a record of an older round names nobody for this one
+    record = json.loads((box.paths.root / R.ASKER_FILE).read_text())
+    assert record["role"] == asked[0] and abs(record["ts"] - edge) <= 2
 
 
 def test_a_table_change_alone_starts_no_turn_when_the_owner_says_so(box):
@@ -531,7 +652,7 @@ def test_the_least_gap_between_a_roles_turns_is_the_owners_every(box):
     table.write_text("| wallet |\n")
 
     def due(last_ago, now=NOW):
-        _state(box.paths, "tester", last=now - last_ago, seen=R.seen("tester", box.store))
+        _state(box.paths, "tester", last=now - last_ago, seen=R.seen("tester", box.store), stalled_told=1)
         os.utime(table, (now - 10, now - 10))
         return R.role_due("tester", box.paths, now, R.read_state(box.paths)["tester"], R.job_metas(box.paths, now),
                           store=box.store, **R.start_rules(box.cfg, box.paths))  # fmt: skip
@@ -569,6 +690,124 @@ def test_the_least_gap_between_a_roles_turns_is_the_owners_every(box):
     assert R.role_due("tester", box.paths, NOW, {}, [], **R.start_rules(box.cfg, box.paths)) == (True, "first turn")
     set_budget(box.paths, box.cfg, {"analyst_every_h": 0}, "telegram", NOW)
     assert box.run("tester")["why"] == "the research agents are off (the owner's /budget every 0)"
+
+
+def test_an_idea_in_testing_with_no_job_running_calls_its_role_once(box):
+    """The review of 14 Nov: a role starts a short job, reads it after it ended in the same turn and ends the turn with
+    the idea still in testing; the next job of the chain came in the next turn. A job read after it ended calls nobody
+    any more, an idea in testing is not "not tested yet", and a table that did not change wakes nobody: the role was
+    not called for three hours. It is called once, at the next round; a turn that then does nothing about it is not
+    called for it again."""
+    idea = _idea(box.paths, "scout", "who leads this wallet", by="scout", now=NOW - 2 * H, status="testing")
+    _state(box.paths, "scout", last=NOW - 900, idle=0, seen=R.seen("scout", box.store))
+    R.record_test(box.paths, NOW - 850, "scout", idea, "j1", ["gmgn", "wallet", "W1", "--json"])
+    _job(box.data, "j1", ["gmgn", "wallet", "W1", "--json"], NOW - 850, pid=os.getpid())
+    assert _due(box, "scout") == (False, "nothing new")  # its job runs: it waits for the result
+    _job(box.data, "j1", ["gmgn", "wallet", "W1", "--json"], NOW - 850, ended=NOW - 840)
+    R.note_job_read(box.paths, "scout", "j1", NOW - 800, '{"ok": true}')  # read in the turn that started it
+    stalled = f"your idea {idea} is in testing and no job of yours runs: start its next job or close it with its result"
+    assert _due(box, "scout") == (True, stalled)
+    off = R.role_due("scout", box.paths, NOW, R.read_state(box.paths)["scout"], R.job_metas(box.paths, NOW),
+                     store=box.store, wake_on_table=False)  # fmt: skip
+    assert off == (True, stalled)  # with the owner's table switch off as well
+    # an idea that waits for the owner's yes is not the role's to move
+    learning.upsert_idea(box.paths, {"id": idea, "owner_needed": True}, source="cloud", now=NOW - 700)
+    assert _due(box, "scout") == (False, "nothing new")
+    learning.upsert_idea(box.paths, {"id": idea, "owner_needed": False}, source="cloud", now=NOW - 700)
+    # the turn it is called for does nothing about it: not called for it again
+    out = box.run("scout")
+    assert out["ran"] and out["why"] == stalled and R.read_state(box.paths)["scout"]["stalled_told"] == NOW
+    for later in (900, 1800, 2 * H):
+        assert _due(box, "scout", NOW + later) == (False, "nothing new")
+    assert _due(box, "scout", NOW + 3 * H)[1] == "three quiet hours since its last turn"
+    # a later turn starts its next job: when that one is read too and nothing runs, the role is called again, once
+    t = NOW + 3 * H
+    box.acts[:] = [lambda jobs: (R.record_test(box.paths, t + 10, "scout", idea, "j2", ["winners", "--json"]),
+                                 _job(box.data, "j2", ["winners", "--json"], t + 10, ended=t + 40),
+                                 R.note_job_read(box.paths, "scout", "j2", t + 60, "its result"))]  # fmt: skip
+    assert box.run("scout", now=NOW + 3 * H)["ran"] and "stalled_told" not in R.read_state(box.paths)["scout"]
+    assert _due(box, "scout", NOW + 3 * H + 900) == (True, stalled)
+    # a turn that closes the idea leaves nothing to call for
+    box.acts[:] = [lambda jobs: learning.upsert_idea(box.paths, {"id": idea, "status": "adopted"}, source="scout",
+                                                    now=NOW + 3 * H + 960, role="scout")]  # fmt: skip
+    assert box.run("scout", now=NOW + 3 * H + 900)["ran"]
+    assert _due(box, "scout", NOW + 3 * H + 1800) == (False, "nothing new")
+
+
+def test_a_job_that_was_killed_or_lost_in_a_restart_is_told(box, tmp_path):
+    """`remote kill` signals the job's whole group: the wrapper that writes the exit file dies with it, and the
+    process that started the job is long gone. The record then never got an end time and nobody was called: not the
+    role that started it, not one that waits for it. Its end is when its log was last written."""
+    import subprocess
+    import sys
+    import time
+
+    from snipetech import ops as O
+
+    data = box.data
+    code = ("import sys;from pathlib import Path;from snipetech import ops as O;"
+            f"o=O.Ops(repo=Path({str(tmp_path)!r}),data=Path({str(data)!r}),db=Path({str(data / 'snipetech.db')!r}),"
+            f"keys_file=Path({str(tmp_path / 'k')!r}),branch='main',"
+            "command=[sys.executable,'-c','import time;time.sleep(120)']);"
+            "print(o.op_run(['winners','--json'])['id']);import os;sys.stdout.flush();os._exit(0)")  # fmt: skip
+    ran = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60, check=True,
+                         env=os.environ | {"PYTHONDONTWRITEBYTECODE": "1"})  # fmt: skip
+    jid = ran.stdout.strip().splitlines()[-1]
+    t0 = time.time()
+    idea = _idea(box.paths, "scout", "a wallet study", by="scout", now=t0 - H, status="testing")
+    waits = _idea(box.paths, "fees", "the same study, for its bid", by="fees", now=t0 - H, status="testing")
+    R.record_test(box.paths, t0, "scout", idea, jid, ["winners", "--json"])
+    R.join_test(box.paths, t0, "fees", waits, jid, ["winners", "--json"])
+    for r in ("scout", "fees"):
+        _state(box.paths, r, last=int(t0) - 5, seen=R.seen(r, box.store))
+    ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=tmp_path / "k", branch="main")
+    assert not R.job_over(box.paths, jid)
+    ops.op_kill(jid)
+    for _ in range(100):
+        if R.job_over(box.paths, jid):
+            break
+        time.sleep(0.1)
+    assert R.job_over(box.paths, jid) and not (data / "jobs" / f"{jid}.exit").exists()
+    (meta,) = [m for m in R.job_metas(box.paths, time.time()) if m["id"] == jid]
+    log_written = (data / "jobs" / f"{jid}.log").stat().st_mtime
+    assert meta["running"] is False and meta["ended"] == log_written and meta["exit_code"] is None
+    for r in ("scout", "fees"):
+        later = time.time() + 900
+        state = R.read_state(box.paths)[r]
+        due = R.role_due(r, box.paths, later, state, R.job_metas(box.paths, later), store=box.store)
+        assert due == (True, f"a job of yours ended: {jid}"), (r, due)
+
+
+def test_a_good_read_stays_when_a_later_turn_that_read_the_job_again_is_cut(box):
+    """The first read of a finished job is the one that counts: a later turn that looks at the same job again and is
+    then refused or cut forgets its own reads, not the good one of the turn before."""
+    R.note_job_read(box.paths, "scout", "j1", NOW - 900, "its result")
+    R.note_job_read(box.paths, "scout", "j1", NOW + 60, "the same result, looked at again")
+    R.note_job_read(box.paths, "scout", "j2", NOW + 60, "read for the first time in the turn that is cut")
+    assert json.loads((box.paths.root / R.READ_FILE).read_text())["scout"] == {"j1": NOW - 900, "j2": NOW + 60}
+    R.forget_reads(box.paths, "scout", NOW)
+    assert R.jobs_read(box.paths, "scout") == {"j1"}
+
+
+def test_a_turn_cut_at_the_output_cap_did_not_finish_with_what_it_read(box):
+    """A reply cut at max_tokens ends the turn with `stopped` "end_turn" (what it is to every other reader); run_turn
+    says so with "cut", and the turn's reads are forgotten as after any turn that did not end by itself."""
+    idea = _idea(box.paths, "scout", status="testing", now=NOW - 2 * H)
+    R.record_test(box.paths, NOW - 5, "scout", idea, "j1", ["winners", "--json"])
+    _job(box.data, "j1", ["winners", "--json"], NOW - 5, ended=NOW + 50)
+
+    def turn(cut):
+        def t(cfg, svc, paths, snap, decision, ledger, notifier, notes, *, jobs, now, role, **kw):
+            R.note_job_read(paths, role, "j1", now() + 60, "its result")
+            return {"usd": 0.3, "tool_calls": 2, "stopped": "end_turn", "notes": 1} | ({"cut": cut} if cut else {})
+
+        return t
+
+    box.run("scout", now=NOW, turn=turn("max_tokens"))
+    assert R.jobs_read(box.paths, "scout") == set()
+    assert _due(box, "scout", NOW + 900) == (True, "a job of yours ended: j1")
+    box.run("scout", now=NOW + 900, turn=turn(None))
+    assert R.jobs_read(box.paths, "scout") == {"j1"}
 
 
 def test_one_role_never_runs_twice_at_once(box):

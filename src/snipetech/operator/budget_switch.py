@@ -79,6 +79,22 @@ def read_budget(paths: OperatorPaths) -> dict[str, float | int]:
     return out
 
 
+EVERY_NAMED = "every_named"  # in the owner's file: `analyst_every_h` there was among the owner's own words
+
+
+def every_named(paths: OperatorPaths | None) -> bool:
+    """Whether the `every` the owner's file holds was named by the owner (`/budget ... every N`, `operate budget
+    --analyst-every-h N`) and not written with the dollars' profile. Only a named one is the least gap between a
+    research agent's turns (roles.start_rules): `/budget 300` alone must not cut the roles to a turn in two hours."""
+    if paths is None:
+        return False
+    try:
+        data = json.loads(budget_file(paths).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get(EVERY_NAMED) is True
+
+
 def _operator(cfg) -> OperatorConfig:
     return getattr(cfg, "operator", cfg)  # the whole Config or its [operator] part
 
@@ -134,12 +150,14 @@ def room_for_role(cfg, paths: OperatorPaths | None, role: str, spent_today: floa
 
 
 def set_budget(
-    paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None
+    paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None, *, named_every: bool = True
 ) -> dict[str, float | int]:
     """Write the owner's `values` over what the file already holds (a value not named keeps the file's, or the
     config's when the file has none) and return what the file holds now. Every value is checked before anything is
     written: one outside its bounds, or a turn that would cost more than the day, raises ValueError in plain words and
-    changes nothing. Atomic (tmp + replace), with when and who, as the book's switch."""
+    changes nothing. Atomic (tmp + replace), with when and who, as the book's switch. `named_every`: whether an
+    `analyst_every_h` among `values` is the owner's own word (false when the dollars' profile brought it): the file
+    keeps that (`every_named`); values without it leave the mark as it is."""
     unknown = sorted(set(values) - set(FIELDS))
     if unknown:
         raise ValueError(f"unknown budget value {', '.join(unknown)} (known: {', '.join(FIELDS)})")
@@ -160,7 +178,9 @@ def set_budget(
     paths.ensure()
     f = budget_file(paths)
     tmp = f.with_name(f.name + ".tmp")
-    tmp.write_text(json.dumps({**new, "ts": int(time.time() if now is None else now), "by": by}))
+    named = bool(named_every) if "analyst_every_h" in values else every_named(paths)
+    mark = {EVERY_NAMED: True} if named and "analyst_every_h" in new else {}
+    tmp.write_text(json.dumps({**new, **mark, "ts": int(time.time() if now is None else now), "by": by}))
     tmp.replace(f)
     return new
 
@@ -284,7 +304,7 @@ def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float
                 raise ValueError(_WAKE)
             roles.set_wake_table(paths, words[2])
             return "budget set: " + budget_line(cfg, paths, spent)
-        set_budget(paths, cfg, parse_budget(words, read_budget(paths)), by, now)
+        set_budget(paths, cfg, parse_budget(words, read_budget(paths)), by, now, named_every="every" in words)
     except ValueError as exc:
         return (f"budget not changed: {exc}. Send /budget 200 (the work-harder profile), /budget 200 turn 4 calls 30 "
                 f"every 3, or /budget default. {budget_line(cfg, paths, spent)}")  # fmt: skip
