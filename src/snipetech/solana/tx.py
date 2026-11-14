@@ -10,12 +10,25 @@ from __future__ import annotations
 
 import base64
 import binascii
+import logging
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from typing import Any
 
 from .base58 import b58decode
-from .programs import EVENT_IX_TAG, LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM, decode_event, instruction_info
+from .programs import (
+    EVENT_IX_TAG,
+    LAUNCHLAB_PROGRAM,
+    PUMP_AMM_PROGRAM,
+    PUMP_PROGRAM,
+    TOKEN_2022_PROGRAM,
+    TOKEN_PROGRAM,
+    decode_event,
+    instruction_info,
+)
 from .tips import BASE_FEE_PER_SIGNATURE, RELAY_TIP_ACCOUNTS, SYSTEM
+
+log = logging.getLogger(__name__)
 
 _TRANSFER = (2).to_bytes(4, "little")  # the System program's transfer: this tag, then the lamports as a u64
 
@@ -23,6 +36,28 @@ WATCHED = (PUMP_PROGRAM, PUMP_AMM_PROGRAM, LAUNCHLAB_PROGRAM)
 AMM_TRADE_IXS = {"buy", "sell", "buy_v2", "sell_v2", "buy_exact_quote_in", "buy_exact_quote_in_v2"}
 LAUNCHLAB_TRADE_IXS = {"buy_exact_in", "buy_exact_out", "sell_exact_in", "sell_exact_out"}
 LAUNCHLAB_INIT_IXS = {"initialize", "initialize_v2", "initialize_with_token_2022"}
+
+
+class _NoPayments(list):
+    """The empty list every transaction without payments shares as its `pays` and `learned_tips`. Two transactions in
+    three pay nobody: building two lists for each of them was a third of what the reading of payments added to such
+    a transaction (14 Nov: 1,360 of 4,000 machine instructions). It reads as an empty list and cannot be changed, so
+    nothing one reader does shows in another transaction: a transaction's payments are set (`tx.pays = [...]`), never
+    appended to."""
+
+    __slots__ = ()
+
+    def _fixed(self, *_args: Any, **_kwargs: Any) -> None:
+        raise TypeError("a transaction without payments shares one empty list: set its pays, do not change them")
+
+    append = extend = insert = remove = pop = clear = sort = reverse = _fixed  # type: ignore[assignment]
+    __setitem__ = __delitem__ = __iadd__ = __imul__ = _fixed  # type: ignore[assignment]
+
+    def __hash__(self) -> int:  # what lets a dataclass take it as a default: it never changes
+        return 0
+
+
+NO_PAYMENTS: list[tuple[str, int]] = _NoPayments()
 
 
 @dataclass(slots=True)
@@ -50,6 +85,21 @@ class TxEvents:
     # (events read from a log subscription come without their transaction), never 0.
     priority: int | None = None
     tip: int | None = None
+    # The transaction's other payments, (destination, lamports) in instruction order: a System transfer of more than
+    # nothing from a signer to an account that is no signer, no listed or learned tip account, no account of any
+    # pump.fun, PumpSwap or LaunchLab instruction of the transaction and no token account (the buy's SOL into the
+    # curve, pump's own fee and creator payments, a new account's rent, the wrap into the wallet's own wrapped-SOL
+    # account are the trade's own money). A platform's share of the trade and a tip to a service the list does not
+    # know both stand here; which is which the amounts say (`solana/pay_dests.py`).
+    pays: list[tuple[str, int]] = NO_PAYMENTS
+    # The transfers to a learned tip account (`extract_from_transaction(tip_accounts=...)`), counted into `tip`: kept
+    # apart so that the learning goes on counting them once they no longer stand in `pays`.
+    learned_tips: list[tuple[str, int]] = NO_PAYMENTS
+    # The part of `tip` that went to learned tip accounts (the sum of `learned_tips`), in lamports. None: read without
+    # learned accounts (`tip` is then the fixed list's alone, as before); 0: read with them, none was paid. Kept apart
+    # because amounts alone do not prove an account is a landing service: what was learned can be taken out again
+    # (`trades.tip_learned`; tip - tip_learned is what went to the documented services).
+    tip_learned: int | None = None
 
 
 def ix_data(ix: dict) -> bytes:
@@ -69,11 +119,72 @@ def _account_keys(tx: dict) -> list[str]:
     return [k["pubkey"] if isinstance(k, dict) else k for k in keys]
 
 
-def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents:
-    """Decode pump events from a `getTransaction` result (encoding="json")."""
+_payment_failures = [0]
+
+
+def payment_failures() -> int:
+    """How often the reading of a transaction's other payments failed in this process (the transaction is recorded
+    all the same, without them); the tape recorder puts it in its counts."""
+    return _payment_failures[0]
+
+
+# An instruction of one of these works on the token account it names first (it syncs it, spends from it, closes it,
+# sets it up; for a mint instruction that is the mint). SOL a signer sends into such an account is wrapped SOL: its own.
+_TOKEN_PROGRAMS = frozenset({TOKEN_PROGRAM, TOKEN_2022_PROGRAM})
+
+
+def _payments(out: TxEvents, paid: list[tuple[int, bytes]], first: dict | None, rest: list[dict] | None,
+              keys: list[str], tip_accounts: Collection[str] | None) -> int:  # fmt: skip
+    """Set `out.pays` and `out.learned_tips` from the transaction's candidate transfers (`paid`: the destination's
+    index and the instruction's data of each System transfer by which a signer sends to an account that is no signer
+    and no listed tip account, outside a watched program's own top-level instruction, and that no token instruction
+    took up right after); returns the lamports sent to learned tip accounts. Only called when there is a candidate: a
+    trade made on pump.fun itself without a tip to an unlisted account has none.
+
+    Left out here, without the call tree and before the amount is read: a transfer into an account of a watched
+    program's instruction (`first`, and `rest` when the transaction has several). A router's call of pump.fun sends
+    the buy's SOL to the curve, pump's fee and the creator's share from the signer, each to an account of that call;
+    so is the rent of an account pump.fun sets up, and the wrap into the wrapped-SOL account a PumpSwap instruction
+    then spends."""
+    own: Collection[int] = () if first is None else (first.get("accounts") or ())
+    if rest:  # one instruction's accounts are a short list, looked through faster than a set of it is built
+        own = set(own)
+        for ix in rest:
+            own.update(ix.get("accounts") or ())
+    pays: list[tuple[str, int]] = []
+    tips: list[tuple[str, int]] = []
+    learned = 0
+    for dest, data in paid:
+        if dest in own or len(data) < 12:
+            continue
+        lamports = int.from_bytes(data[4:12], "little")
+        if not lamports:
+            continue
+        address = keys[dest]
+        if tip_accounts and address in tip_accounts:
+            learned += lamports
+            tips.append((address, lamports))
+        else:
+            pays.append((address, lamports))
+    if pays:
+        out.pays = pays
+    if tips:
+        out.learned_tips = tips
+    return learned
+
+
+def extract_from_transaction(tx: dict, signature: str | None = None,
+                             tip_accounts: Collection[str] | None = None) -> TxEvents:  # fmt: skip
+    """Decode pump events from a `getTransaction` result (encoding="json") or from the stream's form of one
+    (`laserstream.to_rpc_json(raw=True)`). `tip_accounts`: tip accounts learned from amounts (a set, or the dict
+    `Store.tip_accounts` gives; empty counts: read with learned accounts, none known yet); a signer's transfer to one
+    of them counts into `tip` and `tip_learned` and stands in `learned_tips`, not in `pays`. The signers are the
+    first account keys, one a signature (the JSON form says so in its message header, numRequiredSignatures; the
+    stream's form has no header)."""
     meta = tx.get("meta") or {}
     keys = _account_keys(tx)
-    sig = signature or tx["transaction"]["signatures"][0]
+    sigs = tx["transaction"]["signatures"]
+    sig = signature or sigs[0]
     out = TxEvents(
         signature=sig,
         slot=tx["slot"],
@@ -95,36 +206,77 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
     last_ix_name: dict[str, str] = {}
 
     tip = 0
+    # What the other payments are read from, kept for after the walk (`_payments`): the System transfers by which a
+    # signer sends to an account that is no signer and no listed tip account (`paid`: the destination's index, the
+    # data; no list before the first one), and the watched programs' own instructions (`first`, and `rest` for a
+    # transaction with several). This walk runs on every transaction of the tape: a transaction without such a
+    # transfer builds nothing for this, it compares two indexes and keeps one reference.
+    paid: list[tuple[int, bytes]] | None = None
+    first: dict | None = None
+    rest: list[dict] | None = None
+    # The signers are the account keys below this index. It is -1 while the inner instructions of a watched program's
+    # own top-level instruction are walked, so that nothing there is a candidate: what such an instruction sends on
+    # from the signer (the buy's SOL into the curve, pump's fee, the creator's share) is the trade's own money.
+    signers = nsig = len(sigs)
 
-    def visit(ix: dict) -> None:
-        nonlocal tip
+    def visit(ix: dict) -> bool | None:
+        """One instruction; True when it is a watched program's own."""
+        nonlocal tip, paid, first, rest
         program = keys[ix["programIdIndex"]]
         if program not in WATCHED:
             if program == SYSTEM:  # a transfer (instruction 2: u32 tag, u64 lamports) to a landing service's account
                 accs = ix.get("accounts", [])
-                if len(accs) >= 2 and keys[accs[1]] in RELAY_TIP_ACCOUNTS:
-                    try:
-                        data = ix_data(ix)
-                    except ValueError:
-                        return
-                    if len(data) >= 12 and data[:4] == _TRANSFER:
-                        tip += int.from_bytes(data[4:12], "little")
+                if len(accs) >= 2:
+                    if keys[accs[1]] in RELAY_TIP_ACCOUNTS:
+                        try:
+                            data = ix_data(ix)
+                        except ValueError:
+                            return
+                        if len(data) >= 12 and data[:4] == _TRANSFER:
+                            tip += int.from_bytes(data[4:12], "little")
+                    elif accs[0] < signers <= accs[1]:  # from a signer to an account that is none
+                        data = ix.get("data")
+                        if type(data) is not bytes:  # base58 text, the JSON form; the stream hands over the bytes
+                            try:
+                                data = b58decode(data or "")
+                            except ValueError:
+                                return
+                        if data[:4] == _TRANSFER:  # not the setting up of a new account, its rent paid the same way
+                            if paid is None:
+                                paid = [(accs[1], data)]
+                            else:
+                                paid.append((accs[1], data))
+            elif paid and program in _TOKEN_PROGRAMS:
+                # A wrap: the signer sends SOL into its own wrapped-SOL account and a token instruction takes it up
+                # (syncs the account, or sets it up), naming the account first. Seen on every wrap of the real
+                # transactions: the transfer, then the token instruction, no other candidate between them. A wrap for
+                # a route through another exchange is caught only here (no watched instruction names its account).
+                accs = ix.get("accounts")
+                if accs and accs[0] == paid[-1][0]:
+                    paid.pop()
             return
         invoked.add(program)
         try:
             data = ix_data(ix)
         except ValueError:
-            return
+            rest = [*(rest or ()), ix]  # its accounts are the trade's own all the same
+            return True
         if data[:8] == EVENT_IX_TAG:
             decoded = decode_event(program, data[8:])
             if decoded:
                 name, fields = decoded
                 cpi_programs.add(program)
                 cpi_events.append(RawEvent(program, name, fields, len(cpi_events), last_ix_name.get(program, "")))
-            return
+            return True
+        if first is None:
+            first = ix
+        elif rest is None:
+            rest = [ix]
+        else:
+            rest.append(ix)
         info = instruction_info(program, data)
         if info is None:
-            return
+            return True
         ix_name, account_names = info
         last_ix_name[program] = ix_name
         accs = ix.get("accounts", [])
@@ -136,15 +288,36 @@ def extract_from_transaction(tx: dict, signature: str | None = None) -> TxEvents
                 out.ll_pools[keys[accs[4]]] = (keys[accs[9]], keys[accs[10]], keys[accs[0]])
             elif ix_name in LAUNCHLAB_INIT_IXS:  # payer, creator, global, platform, authority, pool(5), base(6), quote(7)
                 out.ll_pools[keys[accs[5]]] = (keys[accs[6]], keys[accs[7]], keys[accs[0]])
+        return True
 
     for i, ix in enumerate(outer):
-        visit(ix)
-        for inner in inner_by_outer.get(i, []):
-            visit(inner)
+        own = visit(ix)
+        group = inner_by_outer.get(i)
+        if group:
+            if own:
+                signers = -1
+                for inner in group:
+                    visit(inner)
+                signers = nsig
+            else:
+                for inner in group:
+                    visit(inner)
     fee = meta.get("fee")
     if fee is not None:
-        out.priority = max(0, int(fee) - BASE_FEE_PER_SIGNATURE * len(tx["transaction"]["signatures"]))
+        out.priority = max(0, int(fee) - BASE_FEE_PER_SIGNATURE * nsig)
+    learned = 0
+    if paid:
+        try:
+            learned = _payments(out, paid, first, rest, keys, tip_accounts)
+            tip += learned
+        except Exception as exc:  # noqa: BLE001 - the trade is recorded all the same: never a transaction lost for it
+            out.pays = out.learned_tips = NO_PAYMENTS
+            _payment_failures[0] += 1
+            if _payment_failures[0] == 1:
+                log.warning("a transaction's other payments could not be read (%r); counted from here on", exc)
     out.tip = tip
+    if tip_accounts is not None:
+        out.tip_learned = learned
 
     # Prefer CPI events; use log events only for programs that had no CPI copy. A program with one is not read from
     # the logs at all (its lines were decoded and dropped: the recorder's second-largest cost on a pump.fun trade),

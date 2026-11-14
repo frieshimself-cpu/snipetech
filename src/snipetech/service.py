@@ -198,7 +198,13 @@ class Service:
 
     @property
     def ingestor(self) -> Ingestor:
-        return Ingestor(self.store, self.rpc, self.progress)
+        return Ingestor(self.store, self.rpc, self.progress, tip_accounts=self.learned_tip_accounts)
+
+    def learned_tip_accounts(self) -> dict[str, int] | None:
+        """The learned tip accounts a transaction's tip is read with by whatever writes `trades.tip` beside the
+        recorder: the tape's applied ones while [live] apply_learned_tips is on, None (the fixed list alone) while
+        it is off."""
+        return self.store.tip_accounts() if self.cfg.live.apply_learned_tips else None
 
     async def close(self) -> None:
         if self._rpc is not None:
