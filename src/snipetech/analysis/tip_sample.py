@@ -48,8 +48,10 @@ TX_SQL = "SELECT MIN(ev), MAX(quote), MIN(ts), MAX(tip), MAX(priority), COUNT(ti
 READING = (
     (
         "A learned tip account is evidence from amounts, not from a service's own documentation: many different "
-        "wallets pay it amounts that do not follow the size of their trades (rank correlation rho under 0.3 between "
-        "lamports paid and the trade's size). A destination whose amounts do follow the trade (rho 0.8 or more) is "
+        "wallets pay it amounts that do not follow the size of their trades (rank correlation rho under 0.6 between "
+        "lamports paid and the trade's size, and under a tenth of its payments at one common share of the trade; on "
+        "14 Nov the tip accounts on the chain measured 0.25 to 0.54 and under 5 %, the fee accounts 0.88 or more "
+        "and 58 % or more). A destination whose amounts do follow the trade (rho 0.8 or more) is "
         "read as a platform's fee, which buys no place in the block. One that gets a common share of the trade on a "
         "tenth of its payments or more and other amounts on the rest is read as mixed, never as tip. Between these "
         "nothing is decided."

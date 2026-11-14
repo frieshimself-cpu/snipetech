@@ -97,28 +97,33 @@ def loosely(rng: random.Random, quotes: list[int], power: float) -> list[tuple[i
 
 
 def test_between_the_two_bars_nothing_is_decided():
-    """Bigger traders tipping more: the amount follows the size loosely. Not a tip by this rule, not a fee:
-    undecided, and said so, never guessed."""
+    """An amount that follows the size more than any tip account measured on the chain did (0.25 to 0.54) and less
+    than any fee account did (0.88 or more): not a tip by a first reading, not a fee: undecided, and said so, never
+    guessed. What it was read as before holds only inside its own keep-band (tip under 0.7, fee from 0.7)."""
     rng = random.Random(7)
     samples = loosely(rng, trades(rng, 256), 0.45)
     kind, info = classify(samples, n=256, payers=50)
-    assert P.TIP_KEEP_RHO <= info["rho"] < P.FEE_KEEP_RHO and kind is None
-    assert classify(samples, n=256, payers=50, previous="tip")[0] is None
+    assert P.TIP_MAX_RHO <= info["rho"] < P.TIP_KEEP_RHO and kind is None  # the band no fresh reading decides
+    assert classify(samples, n=256, payers=50, previous="tip")[0] == "tip"
     assert classify(samples, n=256, payers=50, previous="fee")[0] is None
+    higher = loosely(rng, trades(rng, 256), 0.55)
+    assert P.FEE_KEEP_RHO <= classify(higher, n=256, payers=50)[1]["rho"] < P.FEE_MIN_RHO
+    assert classify(higher, n=256, payers=50)[0] is None
+    assert classify(higher, n=256, payers=50, previous="tip")[0] is None
 
 
 def test_a_learned_tip_account_stays_one_through_an_odd_hour():
-    """Hysteresis: read as a tip (rho under 0.3), it stays one while rho is under 0.5; an account never read as one
-    needs the lower bar."""
+    """Hysteresis: read as a tip (rho under 0.6 since the bars follow the chain, 14 Nov), it stays one while rho is
+    under 0.7; an account never read as one needs the lower bar."""
     rng = random.Random(8)
     quotes = trades(rng, 256)
-    low = loosely(rng, quotes, 0.2)
+    low = loosely(rng, quotes, 0.42)
     rho = classify(low, n=256, payers=30)[1]["rho"]
     assert P.TIP_MAX_RHO <= rho < P.TIP_KEEP_RHO, rho
     assert classify(low, n=256, payers=30)[0] is None
     assert classify(low, n=256, payers=30, previous="tip")[0] == "tip"
     assert classify(low, n=256, payers=30, previous="fee")[0] is None
-    assert (P.TIP_MAX_RHO, P.TIP_KEEP_RHO, P.FEE_MIN_RHO) == (0.3, 0.5, 0.8)
+    assert (P.TIP_MAX_RHO, P.TIP_KEEP_RHO, P.FEE_MIN_RHO) == (0.6, 0.7, 0.8)
 
 
 def test_a_fee_account_stays_one_down_to_point_seven():
@@ -843,3 +848,50 @@ def test_the_module_is_pure_and_light():
             "print('numpy' in sys.modules)")  # fmt: skip
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True).stdout.split("\n")
     assert out[:2] == ["[]", "False"]
+
+
+def _measured_tip_account(seed, wallets=140, payments=180, follow=0.25):
+    """Payments shaped like the tip accounts the recorder saw on 14 Nov (Axiom's rotating ones, 16 accounts, 123-149
+    wallets each in the sample): preset tips of 0.0002 to 0.005 SOL, bigger traders choosing bigger presets often
+    enough for a rank correlation of 0.25 to 0.55 with the trade's size, and no common share of the trade."""
+    import random
+
+    rnd = random.Random(seed)
+    presets = [200_000, 500_000, 750_000, 1_000_000, 2_000_000, 5_000_000]
+    out = []
+    for w in range(wallets):
+        size = rnd.lognormvariate(-1.0, 1.1)  # the wallet's usual trade, SOL
+        lean = min(5, max(0, int(2.5 + follow * 2.2 * (math.log(size) + 1.0) + rnd.gauss(0, 1.3))))
+        for _ in range(max(1, payments // wallets + (rnd.random() < 0.3))):
+            quote = int(size * rnd.uniform(0.5, 1.8) * 1e9)
+            tip = presets[lean] - rnd.randrange(1_000, 60_000)  # the preset less the priority fee
+            out.append((tip, max(quote, 1_000_000), f"wallet{w:04d}"))
+    return out
+
+
+def test_tip_accounts_shaped_like_the_ones_measured_on_the_chain_read_as_tip():
+    """14 Nov, the first reading on the live tape: every fee account had a rank correlation of 0.88 or more and 58 %
+    or more of its payments at one share of the trade (one at 12.5 %); every one of Axiom's sixteen tip accounts had
+    0.25 to 0.54 and under 5 %. Under the first bar (under 0.3) fourteen of the sixteen stayed undecided: bigger
+    traders tip a little more. The bar follows what was measured: under 0.6, and no common share."""
+    from snipetech.solana.pay_dests import TIP_KEEP_RHO, TIP_MAX_RHO, spearman
+
+    assert TIP_MAX_RHO == 0.6 and TIP_KEEP_RHO == 0.7
+    kinds = []
+    for seed in range(40):
+        rows = _measured_tip_account(seed)
+        rho = spearman([r[0] for r in rows], [r[1] for r in rows])
+        kind, info = classify(rows, len(rows), len({r[2] for r in rows}))
+        kinds.append((round(rho, 2), kind, info["common_ratio_share"]))
+    assert all(0.1 < rho < 0.6 for rho, _kind, _share in kinds), kinds  # the shape that was measured
+    assert sum(kind == "tip" for _rho, kind, _share in kinds) >= 38, kinds
+    assert all(share < 0.1 for _rho, _kind, share in kinds)
+    # the fee shapes measured the same hour stay what they were: a share of the trade, with or without tiers
+    import random
+
+    rnd = random.Random(7)
+    fee = [(int(q * rnd.choice((0.009875, 0.010227))), q, f"w{rnd.randrange(150)}")
+           for q in (int(rnd.lognormvariate(-1.0, 1.1) * 1e9) + 1_000_000 for _ in range(250))]  # fmt: skip
+    assert classify(fee, len(fee), 150)[0] == "fee"
+    both = fee[:180] + [(r[0], r[1], r[2]) for r in _measured_tip_account(3)[:70]]  # a fee account that also gets tips
+    assert classify(both, len(both), 150)[0] in ("fee", "mixed")

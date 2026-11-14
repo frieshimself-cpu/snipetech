@@ -69,8 +69,13 @@ TAG_CHARS = 8
 # into the interpreter's own table of strings: on Python 3.12 that is never freed (14 Nov, review: 2,000,000
 # different wallets grew a process by 190 MB).
 TAG_MEMORY = 65_536
-TIP_MAX_RHO = 0.3  # the amount does not follow the trade's size: rank correlation under this
-TIP_KEEP_RHO = 0.5  # a destination already read as a tip stays one while the correlation is under this
+# Measured on the live tape, 14 Nov (the first reading, 40 destinations paid 60 times or more): every fee account had
+# a rank correlation of 0.88 or more and 58 % or more of its payments at one share of the trade (one at 12.5 %); each
+# of Axiom's sixteen rotating tip accounts had 0.25 to 0.54 and under 5 %. Bigger traders tip a little more, so a real
+# tip account is not at 0: under the first bar of 0.3 fourteen of the sixteen stayed undecided. What keeps a fee out
+# is its common share of the trade (MIXED_SHARE below), which is read before this.
+TIP_MAX_RHO = 0.6  # the amount does not follow the trade's size: rank correlation under this
+TIP_KEEP_RHO = 0.7  # a destination already read as a tip stays one while the correlation is under this
 TIP_CONFIRM = 2  # readings in a row before a destination is first called "tip"
 FEE_MIN_RHO = 0.8  # the amount follows the trade's size: rank correlation of this or more
 FEE_KEEP_RHO = 0.7  # a destination already read as a fee stays one down to this
