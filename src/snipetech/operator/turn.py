@@ -117,6 +117,20 @@ def role_waits(paths: OperatorPaths, role: str, started: float) -> list[int]:
     return waits[-WAITS_KEPT:]
 
 
+NO_LIST_HOUR_SECS = 86400
+
+
+def list_hour_refused(paths: OperatorPaths, role: str, at: float) -> bool:
+    """Whether the API refused this role's request for its cache markers within the last day (`no_list_hour` in
+    operator/agents.json, set by run_turn): its turns then go out with the system marker alone, as before 14 Nov."""
+    since = roles.read_state(paths).get(role, {}).get("no_list_hour")
+    return isinstance(since, (int, float)) and at - since < NO_LIST_HOUR_SECS
+
+
+def _names_cache_markers(exc: anthropic.APIError, words: str) -> bool:
+    return getattr(exc, "status_code", None) == 400 and ("cache_control" in words or "ttl" in words.lower().split())
+
+
 def hour_cache_pays(waits: list[int]) -> bool:
     """Whether the hour's marker goes on a role's list: not when its last WAITS_KEPT waits were all over an hour."""
     return len(waits) < WAITS_KEPT or any(w <= HOUR_WAIT_SECS for w in waits[-WAITS_KEPT:])
@@ -225,7 +239,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         record_text = research_record(research_dir(jobs.repo))
         content = role_message(role, snap, decision, learned=learned, table=_report_text(paths, roles.TABLES[role]),
                                started_by=roles.job_roles(paths), ceiling=ceiling, record=record_text,
-                               hour=hour_cache_pays(waits))  # fmt: skip
+                               hour=hour_cache_pays(waits) and not list_hour_refused(paths, role, started))  # fmt: skip
     else:
         system_text = ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM
         # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
@@ -322,7 +336,13 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         if says_no_credit(error):
             with contextlib.suppress(Exception):  # the record is for the alarm: never a reason to fail the turn
                 outage = credit_refused(svc.store, ledger, now())
-        if outage or not notes.has_today("api error", now()):
+        if role is not None and _names_cache_markers(exc, error):
+            # the request's shape was refused: the role's next turns leave the list's hour marker out for a day
+            with contextlib.suppress(Exception):
+                roles.update_state(paths, role, no_list_hour=int(started))
+            notes.write(f"{role}: the API refused the turn's cache markers ({error[:200]}); its turns go out without "
+                        "the hour's cache on its list for a day", "info")  # fmt: skip
+        elif outage or not notes.has_today("api error", now()):
             notes.write(f"api error: {error} — no more Claude rounds until this clears", "decision")
     finally:
         close = getattr(

@@ -1230,3 +1230,43 @@ def test_a_role_turn_ends_at_its_journal_entry_when_the_headline_is_the_note(env
     handler, requests = _scripted(_calls(("write_report", entry)), closing)
     out = _run(env, Decision(True, "fees", ["a new fill of ours"]), handler, role="fees")
     assert len(requests) == 2 and "ended_at" not in out
+
+
+def test_a_request_the_api_refuses_for_its_cache_markers_is_sent_without_the_lists_marker_next_time(env):
+    """The list's hour marker was never sent by a role's turn before 14 Nov, and no request could be tried while the
+    account was empty. Should the API refuse the shape (a 400 that names cache_control or its ttl), every role's every
+    turn would fail until a deploy. So the role remembers the refusal for a day: its next turns go out with the system
+    marker alone, as they did before, and a note says once what happened."""
+    from snipetech.operator import roles
+
+    clock = [NOW]
+
+    def turn(handler):
+        return asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], Decision(True, "fees", ["first turn"]),
+                                    env["ledger"], env["notifier"], env["notes"], jobs=env["jobs"],
+                                    client=_client(handler), now=lambda: clock[0], role="fees"))  # fmt: skip
+
+    said = "messages.0.content.3.cache_control.ttl: a ttl='1h' cache_control block must not come after a ttl='5m' block"
+    refused = []
+
+    def refuse(request):
+        refused.append(json.loads(request.content))
+        return httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error", "message": said}})
+
+    out = turn(refuse)
+    assert out["stopped"] == "api_error" and [m for _, m in _marks(refused[0])] == [{"type": "ephemeral", "ttl": "1h"}]
+    assert roles.read_state(env["paths"])["fees"]["no_list_hour"] == NOW
+    assert "without the hour's cache on its list" in env["paths"].notes.read_text()
+    clock[0] += 900
+    handler, requests = _scripted(([{"type": "text", "text": "nothing new"}], "end_turn"))
+    turn(handler)
+    assert _marks(requests[0]) == [] and requests[0]["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+    clock[0] += 86400  # a day later it is tried again
+    handler, requests = _scripted(([{"type": "text", "text": "nothing new"}], "end_turn"))
+    turn(handler)
+    assert [m for _, m in _marks(requests[0])] == [{"type": "ephemeral", "ttl": "1h"}]
+    # an empty account is no refusal of the shape
+    clock[0] += 900
+    turn(lambda r: httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
+                                                                         "message": "credit balance is too low"}}))
+    assert roles.read_state(env["paths"])["fees"]["no_list_hour"] == NOW
