@@ -365,7 +365,7 @@ def test_the_search_does_not_freeze_again_what_the_paper_test_refuted_without_cr
     assert not {f["label"].split(" | ")[0] for f in fresh} & refuted  # none of the refuted rules comes back
     held = [x for x in again["skipped"] if "refuted without serial crews' coins" in x["why"]]
     assert len(held) == len(launchy), again["skipped"]
-    assert all("400 trades" in x["why"] and "more of the coins that lose" in x["why"] for x in held)
+    assert all("400 trades" in x["why"] and "which lost on the one rule measured" in x["why"] for x in held)
     assert all("7 days" in x["why"] for x in held)
     # refuted eight days ago the hold is over: the default rules are frozen, each under an id the store never held
     aged = [s | {"refuted": s["refuted"] | {"at": NOW + 2 * H - 8 * 86400}} if s.get("refuted") else s for s in before]
@@ -374,6 +374,23 @@ def test_the_search_does_not_freeze_again_what_the_paper_test_refuted_without_cr
     later = RS.search(Service(cfg, store=st), cfg, data, NOW + 2 * H)
     back = {f["label"].split(" | ")[0] for f in later["frozen"]} & refuted
     assert back and not {f["id"] for f in later["frozen"]} & {s["id"] for s in before}
+
+
+def test_the_search_tells_the_freeze_when_its_rules_are_written(env, monkeypatch):
+    """The search hands its START time to the freeze (its rules are tested forward from there), and its lab runs in
+    between. Each record also says when it was written (`stored_at`: the start and what the search took), so a run
+    of old code that began while the lab ran is not taken to have read a rule that was not stored yet."""
+    from snipetech.analysis import paper
+    from snipetech.service import Service
+    from tests.test_lab import whale_world
+
+    st, cfg, data = env
+    whale_world(st)
+    clock = iter([1000.0, 1600.0])  # the search's own clock: ten minutes from its start to its freeze
+    monkeypatch.setattr(RS, "_elapsed_clock", lambda: next(clock))
+    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    frozen = st.coverage("paper_strategies")["strategies"]
+    assert frozen and all((s["from_ts"], s[paper.STORED_AT]) == (NOW, NOW + 600) for s in frozen)
 
 
 def test_the_search_reads_only_the_newest_tape_so_its_cost_stays_flat(env):

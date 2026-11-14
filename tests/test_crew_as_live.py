@@ -1039,3 +1039,223 @@ def test_a_freeze_on_a_store_never_migrated_migrates_it_and_says_which_rules_it_
     flag = store.coverage(paper.CREW_KEY)
     assert flag["done"] is True and flag["moved"] == [OLD_HUNT_ID, "0ld1and1ng"]
     store.close()
+
+
+# == round 3 (the reviewer of round 2) ===============================================================================
+
+
+def test_a_refused_write_of_the_old_code_mark_stops_the_run_and_the_next_run_writes_it():
+    """R1. The write of the old-code mark is refused once (database locked). Until now `settle_rules` swallowed it,
+    the run went on, scored, and wrote its state WITH this code's mark: the window was gone and X read as live for
+    good, crews' coins missing from its record. Now the refusal stops the run: nothing is scored, the state stays
+    without the mark, every reader still sees X marked, and the next run writes the mark."""
+    import sqlite3
+
+    from snipetech.oktech import strategy_sniper
+
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    sid = x["id"]
+    _old_code_run(store, sid, START + 70 * 60 + paper.SETTLE_SECS)
+    real, failed = store.rewrite_coverages, []
+
+    def refused_once(keys, change):
+        if list(keys) == list(paper.RULE_KEYS) and not failed:
+            failed.append(1)
+            raise sqlite3.OperationalError("database is locked")
+        return real(keys, change)
+
+    store.rewrite_coverages = refused_once
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        paper.run(store, _cfg(), now=NOW)
+    assert failed == [1] and "crew" not in store.coverage("paper") and len(store.paper_trades(sid)) == 12
+    seen = paper.frozen(store)["strategies"][-1]
+    assert seen[paper.OLD_CODE] and paper.crew_not_as_live(seen)
+    with pytest.raises(ValueError, match="left serial crews' coins out"):
+        strategy_sniper(seen, 1, "hunt")
+    with pytest.raises(sqlite3.OperationalError):  # a freeze is stopped the same way
+        failed.clear()
+        paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW)
+    out = paper.run(store, _cfg(), now=NOW)  # the next run: its write goes through
+    kept = store.coverage("paper_strategies")["strategies"][-1]
+    assert out["old_code_scored"]["rules"] == [sid] and kept[paper.OLD_CODE] and store.coverage("paper")["crew"] == 1
+    assert paper.crew_not_as_live(kept)
+    store.close()
+
+
+def test_a_run_never_marks_its_state_while_a_run_of_old_code_stands_unmarked_in_the_rules():
+    """R1, the other way in: the old code's state lands while a run of today's code is scoring (two processes). The
+    run settles the rules once more before it writes its own state, so the state never carries this code's mark
+    while a rule the old run scored carries none."""
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    real, landed = store.put_paper_trade, []
+
+    def old_state_lands(rec):
+        if not landed:  # the old code's run ends now: its state, written over ours
+            landed.append(1)
+            store.set_coverage("paper", {"done_until": START + 70 * 60, "last_run": START + 70 * 60 + 420})
+        return real(rec)
+
+    store.put_paper_trade = old_state_lands
+    out = paper.run(store, _cfg(), now=NOW)
+    store.put_paper_trade = real
+    kept = store.coverage("paper_strategies")["strategies"][-1]
+    assert landed == [1] and out["old_code_scored"]["rules"] == [x["id"]]
+    assert kept[paper.OLD_CODE] == [START + 62 * 60, START + 70 * 60] and store.coverage("paper")["crew"] == 1
+    store.close()
+
+
+def test_an_old_run_that_ends_after_a_newer_run_of_todays_code_marks_nothing():
+    """R2. An old-code run O and a run N of today's code overlap; O started first (its window ends earlier) and
+    writes its state last. Everything O scored, N scored too, on every coin: X's record is whole. A window that
+    ends before it starts is no window: nothing is marked."""
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    sid, s = x["id"], paper.SETTLE_SECS
+    t_old, t_new = START + 66 * 60 + s, START + 70 * 60 + s
+    paper.run(store, _cfg(), now=t_new)  # N scores up to minute 70 and finishes first
+    whole = {addr(f"cal-{k}") for k in range(55, 70)}
+    assert {t["mint"] for t in store.paper_trades(sid)} == whole  # every coin, crews' too
+    store.set_coverage("paper", {"done_until": int(t_old - s), "last_run": int(t_old)})  # O writes its state last
+    assert paper.old_code_window(store.coverage(paper.CREW_KEY), store.coverage("paper")) is None
+    assert paper.OLD_CODE not in paper.frozen(store)["strategies"][-1]
+    out = paper.run(store, _cfg(), now=NOW)
+    kept = store.coverage("paper_strategies")["strategies"][-1]
+    assert "old_code_scored" not in out and kept == x and paper.crew_not_as_live(kept) is None
+    assert whole <= {t["mint"] for t in store.paper_trades(sid)}
+    flag = {"done": True, "at": 1000, "scored_until": 900}
+    assert paper.old_code_window(flag, {"done_until": 900, "last_run": 5000}) is None  # ends where it starts
+    assert paper.old_code_window(flag, {"done_until": 901, "last_run": 5000}) == (900, 901)
+    store.close()
+
+
+def test_a_rule_stored_after_the_old_run_began_was_never_read_by_it():
+    """R3. The strategy search hands its START time to the freeze, so what it freezes says it was frozen before the
+    search's lab ran. An old-code run that began while that lab ran never read the rule (it was not stored yet), and
+    the rule has no trade. A record says when it was written (`stored_at`); a rule written after the old run began
+    is not marked, one written before it is, and a record without the time is judged by its freeze time as before."""
+    store = Store(":memory:")
+    world(store, 75, tuple(range(0, 75, 3)))
+    paper.migrate_crew(store, now=START + 40 * 60)
+    old_began = START + 60 * 60 + paper.SETTLE_SECS
+    store.set_coverage("paper", {"done_until": START + 60 * 60, "last_run": old_began})  # the old code's run
+    # the search began at minute 50 and writes its rule after its lab, at minute 68: after the old run began
+    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 50 * 60, stored_at=START + 68 * 60)["frozen"]
+    assert (x["from_ts"], x[paper.STORED_AT]) == (START + 50 * 60, START + 68 * 60)
+    assert store.paper_trades(x["id"]) == [] and paper.frozen(store)["strategies"][-1] == x  # not marked
+    window = (0, START + 60 * 60)
+    early = x | {paper.STORED_AT: old_began - 1}  # written a second before the old run read the rules
+    assert paper.as_frozen(early, window, old_began)[paper.OLD_CODE] == [START + 50 * 60, START + 60 * 60]
+    assert paper.as_frozen(x, window, old_began) is x
+    bare = {k: v for k, v in x.items() if k != paper.STORED_AT}  # no time of writing: its freeze time, as before
+    assert paper.as_frozen(bare, window, old_began)[paper.OLD_CODE] == [START + 50 * 60, START + 60 * 60]
+    # a freeze that is told no time says the time on its own clock: `now` and what it took
+    (y,) = paper.freeze(store, _cfg(), top=4, triggers=[replace(HUNT, sol=3.0)], now=START + 50 * 60)["frozen"]
+    assert START + 50 * 60 <= y[paper.STORED_AT] < START + 52 * 60
+    store.close()
+
+
+def test_a_marked_record_that_is_refuted_holds_its_rule_back_like_any_refuted_record():
+    """R4. A record scored in part by old code is left out of the rule's records (the rule can be made again). Once
+    it is refuted, on a record that was KINDER than live, the rule is held for the seven days like any refuted
+    rule: until now the next freeze made it again an hour later."""
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    _old_code_run(store, x["id"], START + 70 * 60 + paper.SETTLE_SECS)
+    paper.run(store, _cfg(), now=NOW)
+    cov = store.coverage("paper_strategies")
+    assert cov["strategies"][-1][paper.OLD_CODE]
+    cov["strategies"][-1]["refuted"] = {"at": NOW + 60, "trades": 400, "mean_sol": -0.02}
+    store.set_coverage("paper_strategies", cov)
+    out = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW + 3600)
+    assert out["frozen"] == [] and "not frozen again for 7 days" in out["skipped"][0]["why"]
+    assert x["id"] in out["skipped"][0]["why"]
+    later = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW + 60 + 8 * 86400)
+    assert [s.get(paper.AGAIN) for s in later["frozen"]] == [1]  # the hold over: made again
+    store.close()
+
+
+def test_a_marked_record_is_scored_no_more_once_its_rule_was_made_again():
+    """R4. After three runs of old code one rule had four records, all scored by every run. A marked record is the
+    research record of a closed window: once the same rule has a newer making nothing new is scored into it (its
+    trades stay), and the run says which records it left alone."""
+    from snipetech.operator import autotest
+
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    world(store, 100, tuple(range(0, 100, 3)), first=75)  # the tape goes on: a launch a minute up to minute 99
+    ids, now = [x["id"]], START + 63 * 60 + paper.SETTLE_SECS
+    for _round in range(3):  # every ten minutes: the old code scores the newest record, then today's code runs
+        _old_code_run(store, ids[-1], now)
+        paper.run(store, _cfg(), now=now + 60)
+        (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=now + 120)["frozen"]
+        ids.append(new["id"])
+        now += 600
+    assert [s.get(paper.AGAIN) for s in store.coverage("paper_strategies")["strategies"]] == [None, 1, 2, 3]
+    before = {sid: len(store.paper_trades(sid)) for sid in ids}
+    out = paper.run(store, _cfg(), now=NOW)
+    after = {sid: len(store.paper_trades(sid)) for sid in ids}
+    assert all(after[sid] == before[sid] for sid in ids[:3]) and after[ids[3]] > before[ids[3]]
+    assert out["closed"] == ids[:3]
+    assert f"{', '.join(ids[:3])}: scored no more" in R.render_paper("run", out)
+    assert len({autotest.live_ids(store)[sid] for sid in ids}) == 1  # one sniper, whichever making
+    store.close()
+
+
+def test_a_record_moved_to_the_live_landing_starts_without_the_old_code_mark():
+    """R5. A rule at a landing no live trade gets is re-keyed to the live landing, where its record starts with no
+    trade: the mark of a run of old code (and the words in its name) stays with the old record, which holds the
+    trades it is about."""
+    store = Store(":memory:")
+    old = _stored(HUNT, "x", every_coin=True, landing=(0, "+1"), from_ts=START + 10)
+    old |= {paper.AGAIN: 2, paper.OLD_CODE: [START + 20, START + 30],
+            "label": f"{HUNT.label()} (in part scored without serial crews' coins) | timer"}  # fmt: skip
+    old["id"] = paper.sid_of(old)
+    _put(store, [old])
+    (new,) = paper.to_live_landing(store, [old], "+6", START + 100, NOW)
+    assert new["id"] != old["id"] and new["id"] == paper.sid_of(new) and new[paper.AGAIN] == 2
+    assert paper.OLD_CODE not in new and new["label"] == f"{HUNT.label()} | timer"
+    assert paper.crew_not_as_live(new) is None and store.paper_trades(new["id"]) == []
+    (kept,) = store.coverage("paper_strategies")["superseded"]
+    assert kept[paper.OLD_CODE] == old[paper.OLD_CODE] and kept["label"] == old["label"]
+    store.close()
+
+
+def test_a_rule_refuted_without_crews_coins_holds_its_default_twin_whatever_its_exit():
+    """R8. The hold of round 2 looked the refuted "skip" twin up among the records that stand for their rule, and a
+    record frozen before the watch delay stands for none: all of the server's 21 refuted launch rules are such
+    records, so the hold held none of their default twins. A rule refuted forward without crews' coins is not made
+    better by adding coins that lost on the one rule measured, whatever exit its record had: the twin is looked up
+    among all records. On the server's rules of 14 Nov (21:00 UTC) ten default rules are held, none before."""
+    cov = json.loads(gzip.decompress(FIXTURE.read_bytes()))
+    cov.pop("live_ids")
+    store = Store(":memory:")
+    store.set_coverage("paper_strategies", cov)
+    now = 1_794_690_000  # 14 Nov 2026 21:00 UTC
+    paper.migrate_crew(store, now=now)
+    rules = paper.frozen(store)["strategies"]
+    held = paper.refuted_skip_twins(rules, now)
+    refuted = [
+        s for s in rules if s.get("refuted") and s["trigger"].get("kind") in ("launch", "whale", "burst", "hunt")
+    ]
+    assert len(refuted) == 21 and all(not paper._sells_as_live(s) for s in refuted)  # none stands for its rule
+    assert len(held) == 10 and sum(len(v) for v in held.values()) == 21
+    assert all(now - int(last["refuted"]["at"]) < paper.RETEST_AFTER_SECS for last in (v[-1] for v in held.values()))
+    assert not paper.refuted_skip_twins(rules, now + 8 * 86400)  # a week on none is held
+    store.close()
+    # and in a freeze: the old rule frozen before the watch delay and refuted a day ago holds the default back
+    store, _crew, _rules = _legacy_store()
+    cov = store.coverage("paper_strategies")
+    old = cov["strategies"][0]
+    old["exit"] = {k: v for k, v in old["exit"].items() if k != "watch_secs"}  # frozen before 7 Nov evening
+    old["refuted"] = {"at": NOW - 86400, "trades": 400, "mean_sol": -0.02}
+    store.set_coverage("paper_strategies", cov)
+    out = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW)
+    (why,) = [x["why"] for x in out["skipped"]]
+    day = time.strftime("%d %b", time.gmtime(NOW - 86400))
+    assert out["frozen"] == [] and why == (
+        f"refuted without serial crews' coins as {OLD_HUNT_ID} on 400 trades on {day}; on every coin it also buys the "
+        "crews' coins, which lost on the one rule measured: not frozen again for 7 days"
+    )
+    store.close()

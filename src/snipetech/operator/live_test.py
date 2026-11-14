@@ -537,7 +537,8 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
         return (-(float(lower) if lower is not None else -1e9), -int(r.get("n") or 0))
 
     # a research record (paper.crew_note: scored without serial crews' coins, as every launch-type rule frozen before
-    # 14 Nov was) can never qualify: left out of "closest", and counted in one plain line
+    # 14 Nov was; on them alone; or in part by a run of old code) can never qualify: left out of "closest", and
+    # counted in one plain line that says of them only what is true of each
     hunts = [r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")]
     apart = sum(1 for r in rows if r.get("research_only") and r.get("trigger_kind") in ("launch", "hunt", "whale",
                                                                                          "burst"))  # fmt: skip
@@ -554,8 +555,8 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
     elif not apart:
         lines.append("None is frozen in the paper test yet.")
     if apart:
-        lines.append(f"{apart} older launch rule{' was' if apart == 1 else 's were'} scored without a group of coins "
-                     "the live sniper buys: research only.")  # fmt: skip
+        lines.append(f"{apart} launch rule{' is a research record' if apart == 1 else 's are research records'} "
+                     "(not what a sniper would trade).")  # fmt: skip
     return "\n".join(lines)
 
 
