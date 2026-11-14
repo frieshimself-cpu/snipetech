@@ -92,9 +92,12 @@ def _price(t: Trade) -> float | None:
     return int(t.quote) / int(t.base) if int(t.base) > 0 and int(t.quote) > 0 else None
 
 
-def own_wallets(store: Store, cfg: Config) -> set[str]:
-    """Our wallets: the one the operator watches and every wallet a fill of ours was measured for."""
-    own = {w for (w,) in store._q("SELECT DISTINCT wallet FROM fills WHERE wallet IS NOT NULL")}
+def own_wallets(store: Store, cfg: Config, until_ts: int | None = None) -> set[str]:
+    """Our wallets: the one the operator watches and every wallet a fill of ours was measured for. `until_ts`: only
+    the fills up to then (a lab on a window that ends there, lab_window: a wallet that first bought for us later was
+    an outsider in that window)."""
+    upto, end = ("", ()) if until_ts is None else (" AND ts<=?", (int(until_ts),))
+    own = {w for (w,) in store._q(f"SELECT DISTINCT wallet FROM fills WHERE wallet IS NOT NULL{upto}", end)}
     return own | ({cfg.operator.wallet} if cfg.operator.wallet else set())
 
 

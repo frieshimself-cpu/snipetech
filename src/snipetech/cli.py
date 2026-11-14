@@ -654,9 +654,13 @@ def build_parser() -> argparse.ArgumentParser:
                          "the output says from when to when and which file was read, and `--until <window.until_ts>` "
                          "with the same --hours reads that window again. Without it the window ends where the tape "
                          "read ends, which moves with every hourly copy. Refused when T is not on the tape. Still a "
-                         "paper result: every row names its landing as before. The cost of a transaction and the "
-                         "copy landing are measured when the lab runs: pin them with --per-tx and --copy-position "
-                         "to compare two runs")  # fmt: skip
+                         "paper result: every row names its landing as before. Not fixed by T, because the lab "
+                         "reads them as they stand when it runs: the label groups, the measured cost of a "
+                         "transaction and the measured copy landing (pin those two with --per-tx and "
+                         "--copy-position to compare two runs), and for a MIG rule with dev_paid the dev-payment "
+                         "edges. The first --until rerun of a lab that had none can differ from it on PumpSwap "
+                         "moments in the window's last seconds (in a copy the PumpSwap record and the tape end "
+                         "seconds apart); two --until runs agree with each other")  # fmt: skip
     sp.add_argument("--trades", action="store_true",
                     help="with --trigger (at most 8): each ranked hypothesis lists the test trades its numbers rest "
                          "on, oldest first (`test_trades`: [second, coin, SOL made, whether the score rests on a "
@@ -2439,12 +2443,7 @@ def _lab_window_flags(args, hypotheses, live) -> None:
     from .analysis import lab_window
 
     if args.trades:
-        if not args.trigger:
-            raise ValueError("--trades lists the test trades of hypotheses typed with --trigger: name at least one")
-        if len(hypotheses or ()) > lab_window.MAX_TRADES_TRIGGERS:
-            raise ValueError(f"--trades lists every test trade of every rule: at most "
-                             f"{lab_window.MAX_TRADES_TRIGGERS} rules a run, not {len(hypotheses)} (the output "
-                             "would not fit a job log an agent can read)")  # fmt: skip
+        lab_window.check_trades(len(args.trigger or ()), len(hypotheses or ()))
     if args.until is not None:
         lab_window.check_until(live, args.until)
 

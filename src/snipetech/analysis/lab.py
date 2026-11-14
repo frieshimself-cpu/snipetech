@@ -2494,6 +2494,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     # a window with an end (`lab --until`, lab_window.TapeWindow): the lab of a tape that ended there. The spans and
     # every read of one coin are cut by the window itself; the reads below that go past it are cut here
     until = getattr(store, "tape_until", None)
+    upto = {} if until is None else {"until_ts": until}  # for the reads that take an end; none: asked as before
     window = window_fields(store, spans, until)  # from when to when, and which file: said by every lab
     bid_sol = max(0.0, float(buy_bid_sol))
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS, entry_bid_lamports=bid_sol * LAMPORTS)
@@ -2539,9 +2540,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         for _, t in triggers:
             if t.kind == "kol":  # the wallets it fires on: the ones it names (`only`), else its group's
                 followed |= rule_wallets(t, kols)
-        mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0))) if followed else {}
-        if followed and until is not None:  # from the wallets' buys up to the window's end
-            mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0)), until)
+        since = int(min((a for a, _b in spans), default=0))  # (with an end: from the wallets' buys up to it)
+        mates = companions_of(store, sorted(followed), since, **upto) if followed else {}
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
@@ -2550,7 +2550,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                mates={w: frozenset(m) for w, m in (mates or {}).items() if m},
                amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
-               own=frozenset(own_wallets(store, cfg)) if is_bid(position) else frozenset(),
+               own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
                same_sol=bool(same_sol))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)

@@ -190,6 +190,38 @@ class OperatorJobs:
             raise PermissionError(f"--hunt-landing refused, no job started: {exc}") from None
 
     @staticmethod
+    def _check_lab_window(argv: list[str]) -> None:
+        """A lab's window flags (`lab --until T`, `lab --trades`) are read as the lab reads them before anything
+        starts: an end that is no time, and trades asked for without a typed --trigger or for more rules than the
+        lab lists them for, are refused in the lab's own words (analysis/lab_window.py). 14 Nov: each of them came
+        back as a job id and the job died on start. Whether an end is on the tape only the lab can tell, once it has
+        opened the tape. (The triggers and the recipe were read by `_check_triggers`.)"""
+        from itertools import pairwise
+
+        from ..analysis import lab_window
+        from ..analysis.lab import recipe
+
+        if argv[:1] != ["lab"]:
+            return
+
+        def given(flag: str) -> list[str]:
+            return ([v for a, v in pairwise(argv) if a == flag]
+                    + [a.split("=", 1)[1] for a in argv if a.startswith(flag + "=")])  # fmt: skip
+
+        for v in given("--until") + ([""] if argv[-1] == "--until" else []):
+            try:
+                lab_window.parse_until(v)
+            except ValueError as exc:
+                raise PermissionError(f"--until refused, no job started: {exc}") from None
+        if "--trades" in argv:
+            typed = len(given("--trigger"))
+            named = given("--recipe")  # the command reads the last one
+            try:
+                lab_window.check_trades(typed, typed + (len(recipe(named[-1]).triggers) if named else 0))
+            except ValueError as exc:
+                raise PermissionError(f"--trades refused, no job started: {exc}") from None
+
+    @staticmethod
     def _check_backfill(argv: list[str]) -> None:
         """An agent's `history amm-backfill` asks for at most AGENT_BACKFILL_CREDITS, leaves out stretches above
         AGENT_BACKFILL_STRETCH_TXS at the most, and never lifts the month's limit (the owner's: `--month-credits`).
@@ -367,6 +399,7 @@ class OperatorJobs:
         self._check_paths(argv)
         self._check_triggers(argv)
         self._check_hunt_landing(argv)
+        self._check_lab_window(argv)
         now = time.time() if now is None else now
         self._check_repeat(argv, now, backfill=action)
         running = self.running()

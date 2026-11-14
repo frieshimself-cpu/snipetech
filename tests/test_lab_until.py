@@ -12,19 +12,23 @@ trades of each hypothesis, and two short digests say at a glance whether two run
 
 import json
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
 
-from snipetech.amm_tape import AMM_RECENT_KEY, backfill_key
+from snipetech import ops as O
+from snipetech.amm_tape import AMM_RECENT_KEY, amm_recent_gap, backfill_key
 from snipetech.analysis import companions as C
 from snipetech.analysis import lab_window as W
 from snipetech.analysis import paper
 from snipetech.analysis.lab import Trigger, collect, exit_set, rank
 from snipetech.config import Config
+from snipetech.operator.jobs import OperatorJobs
 from snipetech.sim.exits import ExitParams
 from snipetech.store import Store
 
+from . import test_bid_landing as BIDS
 from .synth import Market, addr
 from .test_lab_mig import _graduate, _late_migration
 
@@ -240,6 +244,39 @@ def test_a_store_with_no_tape_has_no_window_to_end():
         W.until_tape(Store(":memory:"), UNTIL)
 
 
+def test_an_end_that_leaves_no_tape_to_read_is_refused_with_the_tapes_range():
+    """Round 2, F7: `--until` at the tape's first second passed the range check and gave an empty lab with exit 0
+    (`window.from_ts` null, 0 moments). So did hours that end inside a hole of the tape."""
+    store = Store(":memory:")
+    store.set_coverage("tape", {"spans": [[T0, T0 + H], [T0 + H + 300, END]]})
+    for until, hours in ((T0, None), (T0, 1), (T0 + H + 200, 0.02)):  # the first second; 72 s that lie in the hole
+        with pytest.raises(W.OutsideTape, match="no tape") as exc:
+            W.until_tape(store, until, hours)
+        said = str(exc.value)
+        assert W.utc(T0) in said and W.utc(END) in said and str(T0) in said and str(END) in said
+    assert W.until_tape(store, T0 + 1).tape_spans() == [(T0, T0 + 1)]  # one second of tape is a window
+
+
+def test_the_pumpswap_record_as_it_stood_keeps_what_an_old_run_skipped_right_after_the_end():
+    """Round 2, F5: a run written before the recorder measured its slot time (no `slot_secs`) has its skipped
+    stretches read 180 s wider on both sides (amm_tape._skipped). One that starts just after the end reaches back
+    before it: the clip dropped it, and a lab with an end scored a PumpSwap moment the same lab without one refuses."""
+    old = {"runs": [{"run": "old", "from": T0, "to": END, "secs": 1800, "skipped": [[UNTIL + 100, UNTIL + 150]]}]}
+    new = {"runs": [{**old["runs"][0], "slot_secs": 0.4}]}  # a run that measured it: read as written
+    far = {"runs": [{**old["runs"][0], "skipped": [[UNTIL + 181, UNTIL + 300]]}]}  # out of the wider reading's reach
+    for cov in (old, new, far):
+        cut = W.clip_amm_recent(cov, UNTIL)
+        assert cut["runs"][0]["to"] == UNTIL
+        for start in range(UNTIL - 900, UNTIL, 50):  # every stretch that ends by UNTIL reads as on the whole record
+            for end in range(start + 10, UNTIL + 1, 40):
+                assert amm_recent_gap(cut, start, end) == amm_recent_gap(cov, start, end), (start, end)
+    assert amm_recent_gap(old, UNTIL - 300, UNTIL - 50) == "skipped"  # the stretch reaches back to UNTIL - 80
+    assert amm_recent_gap(W.clip_amm_recent(old, UNTIL), UNTIL - 300, UNTIL - 50) == "skipped"
+    assert amm_recent_gap(W.clip_amm_recent(new, UNTIL), UNTIL - 300, UNTIL - 50) is None
+    assert W.clip_amm_recent(far, UNTIL)["runs"][0]["skipped"] == []
+    assert W.clip_amm_recent(new, UNTIL)["runs"][0]["skipped"] == []
+
+
 # -- nothing after the end is read ---------------------------------------------------------------------------------------
 
 
@@ -341,6 +378,54 @@ def test_a_wallets_companions_are_read_up_to_the_end():
     assert C.companions(st, w, T0 - 10, until_ts=T0 + 60 * 7 + 30) == frozenset()
     assert C.companions_of(st, [w], T0 - 10) == {w: frozenset({mate})}
     assert C.companions_of(st, [w], T0 - 10, until_ts=T0 + 60 * 7 + 30) == {}
+    st.close()
+
+
+def test_the_companions_are_read_once_and_up_to_the_end(monkeypatch):
+    """Round 2, F2: with an end the lab read every followed wallet's companions over the whole tape, threw the
+    answer away and read them again up to the end. One read; without an end it is asked as it always was."""
+    from snipetech.analysis import lab
+
+    store = Store(":memory:")
+    for i in range(30):
+        _coin(store, i)
+        store.set_label(addr(f"until-whale-{i}"), f"whale-{i}", "kol")
+    store.set_coverage("tape", {"spans": [[T0, T0 + H]]})
+    calls = []
+
+    def spy(*args, **kw):
+        calls.append((len(args), kw))
+        return {}
+
+    monkeypatch.setattr(lab, "companions_of", spy)
+    run = lambda tape: collect(tape, _cfg(), 0.2, 0, "+6", triggers=[KOL], exits=exit_set()[:2], workers=1)
+    run(W.until_tape(store, T0 + H - 600))
+    assert calls == [(3, {"until_ts": T0 + H - 600})]
+    calls.clear()
+    run(store)
+    assert calls == [(3, {})]  # no end: the call of before, argument for argument
+    store.close()
+
+
+def test_a_wallet_of_ours_that_first_bought_after_the_end_was_an_outsider_then():
+    """Round 2, F3: at a bid landing our own wallets are nobody's place (`own_wallets`: every wallet a fill of ours
+    was measured for). The read had no end: a wallet whose first fill came after the window's end was taken out of
+    the buyers ahead of a copy, in a window where nobody could have known it was ours."""
+    st = BIDS._store()
+    for _ in range(3):  # our wallet bids 0.035 SOL behind the followed wallet and its companion on every coin
+        BIDS._coin(st, mate=0.002, block=((BIDS.OURS, 0.2, 0.035, 20),))
+    until = BIDS.NOW - 500  # after every coin's last trade
+    kw = {"triggers": [BIDS.parse_trigger(BIDS.RULE)], "mates": {BIDS.LEAD: {BIDS.MATE}}, "exits": [BIDS.HOLD],
+          "workers": 1, "buy_bid_sol": 0.01}  # fmt: skip
+    places = lambda tape: {r["place"] for r in collect(tape, Config(), 2.0, 0, "bid", **kw)["rows"]}
+    assert places(st) == places(W.until_tape(st, until)) == {2}  # no fill of ours: the wallet is an outsider ahead
+    st.put_fill({"sig": "until-own-late", "ts": until + 100, "wallet": BIDS.OURS, "side": "buy", "sol": 0.2})
+    assert places(st) == {1}  # the whole tape knows the wallet is ours
+    assert places(W.until_tape(st, until)) == {2}  # at the end it had no fill yet
+    st.put_fill({"sig": "until-own-early", "ts": until - 100, "wallet": BIDS.OURS, "side": "buy", "sol": 0.2})
+    assert places(W.until_tape(st, until)) == {1}
+    assert BIDS.BL.own_wallets(st, Config()) == {BIDS.OURS}
+    assert BIDS.BL.own_wallets(st, Config(), until_ts=until - 200) == set()
     st.close()
 
 
@@ -476,6 +561,76 @@ def test_an_end_the_tape_does_not_hold_is_refused_before_any_lab(dbs, capsys, mo
         with pytest.raises(SystemExit) as exc:
             cli.main([*base, "--until", text])
         assert exc.value.code == 2 and "unix seconds or UTC" in capsys.readouterr().err
+
+
+def test_an_end_at_the_tapes_first_second_is_refused_by_the_command(dbs, capsys, monkeypatch):
+    from snipetech import cli
+    from snipetech.analysis import lab
+
+    monkeypatch.setattr(lab, "collect", lambda *a, **k: pytest.fail("a refused lab must not read the tape"))
+    assert cli.main(["--db", str(dbs[0]), "lab", "--trigger", HUNT_JSON, "--until", str(T0)]) == 2
+    err = capsys.readouterr().err
+    assert err.startswith("lab: ") and "no tape" in err and W.utc(T0) in err and W.utc(END) in err
+
+
+@pytest.fixture
+def jobs(tmp_path) -> OperatorJobs:
+    """The agents' job starter over a command that only prints its arguments."""
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+    j = OperatorJobs(repo=tmp_path, data=data, db=data / "snipetech.db", branch="main", max_jobs=3)
+    j.ops = O.Ops(repo=tmp_path, data=data, db=data / "snipetech.db", keys_file=tmp_path / "k", branch="main",
+                  command=[sys.executable, "-c", "import sys; print('ran', sys.argv[1:])"])  # fmt: skip
+    return j
+
+
+def test_an_agent_is_refused_a_lab_that_would_die_on_its_window_flags_before_any_job_starts(jobs):
+    """Round 2, F1: `lab --until garbage` and `lab --trades` without its triggers came back from the agents' job
+    starter as a job id, and the job died on start (7 Nov 11:01 and 13 Nov 03:45 were the same with other flags).
+    The starter reads `--until` with the lab's own parser and applies the two `--trades` rules in the lab's words.
+    Whether an end is on the tape only the lab can know, once it has opened the tape."""
+    for argv in (["lab", "--trigger", HUNT_JSON, "--until", "garbage", "--json"],
+                 ["lab", "--trigger", HUNT_JSON, "--until=2026-11-14", "--json"],
+                 ["lab", "--trigger", HUNT_JSON, "--until", "1794621630", "--until", "06:00", "--json"],
+                 ["lab", "--trigger", HUNT_JSON, "--json", "--until"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--until refused, no job started: .*unix seconds or UTC"):
+            jobs.start(argv)
+    for argv in (["lab", "--trades", "--json"], ["lab", "--hours", "24", "--trades"],
+                 ["lab", "--recipe", "6z91", "--trades", "--json"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="--trades refused, no job started: .*typed with --trigger"):
+            jobs.start(argv)
+    nine = [x for sol in range(2, 11) for x in ("--trigger", json.dumps({"kind": "whale", "sol": sol}))]
+    four = [x for sol in range(2, 6) for x in ("--trigger=" + json.dumps({"kind": "whale", "sol": sol}),)]
+    for argv, n in (
+        (["lab", *nine, "--trades", "--json"], 9),
+        (["lab", "--recipe", "6z91", *four, "--trades", "--json"], 9),
+    ):  # the recipe's five and four typed
+        with pytest.raises(
+            PermissionError, match=f"--trades refused, no job started: .*at most 8 rules a run, not {n}"
+        ):
+            jobs.start(argv)
+    assert not list((jobs.ops.data / "jobs").glob("*.json"))
+    # the words are the command's own
+    from snipetech import cli
+
+    for argv, n in ((["--trades"], None), ([*nine, "--trades"], 9)):
+        with pytest.raises(PermissionError) as exc:
+            jobs._check_lab_window(["lab", *argv])
+        args = cli.build_parser().parse_args(["lab", *argv])
+        with pytest.raises(ValueError) as said:
+            cli._lab_window_flags(args, args.trigger, Store(":memory:"))
+        assert str(exc.value) == f"--trades refused, no job started: {said.value}"
+    # what the lab takes passes, in either spelling; another command's flags are not this check's
+    for ok in (["lab", "--trigger", HUNT_JSON, "--until", "1794621630", "--hours", "168", "--trades", "--json"],
+               ["lab", "--trigger", HUNT_JSON, "--until=2026-11-14T06:00Z", "--json"],
+               ["lab", "--recipe", "6z91", *four[:3], "--trades"],  # eight rules
+               ["lab", "--hours", "24", "--until", "2026-11-14 06:00", "--json"],
+               ["winners", "--until", "garbage", "--trades"]):  # fmt: skip
+        assert jobs._check_lab_window(ok) is None
+    started = jobs.start(
+        ["lab", "--trigger", HUNT_JSON, "--until", "1794621630", "--hours", "168", "--trades", "--json"]
+    )
+    assert started["id"]
 
 
 def test_the_lab_says_which_file_it_read(tmp_path, capsys):
