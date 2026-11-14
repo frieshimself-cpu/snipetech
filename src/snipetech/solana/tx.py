@@ -95,6 +95,11 @@ class TxEvents:
     # The transfers to a learned tip account (`extract_from_transaction(tip_accounts=...)`), counted into `tip`: kept
     # apart so that the learning goes on counting them once they no longer stand in `pays`.
     learned_tips: list[tuple[str, int]] = NO_PAYMENTS
+    # The part of `tip` that went to learned tip accounts (the sum of `learned_tips`), in lamports. None: read without
+    # learned accounts (`tip` is then the fixed list's alone, as before); 0: read with them, none was paid. Kept apart
+    # because amounts alone do not prove an account is a landing service: what was learned can be taken out again
+    # (`trades.tip_learned`; tip - tip_learned is what went to the documented services).
+    tip_learned: int | None = None
 
 
 def ix_data(ix: dict) -> bytes:
@@ -141,11 +146,11 @@ def _payments(out: TxEvents, paid: list[tuple[int, bytes]], first: dict | None, 
     the buy's SOL to the curve, pump's fee and the creator's share from the signer, each to an account of that call;
     so is the rent of an account pump.fun sets up, and the wrap into the wrapped-SOL account a PumpSwap instruction
     then spends."""
-    own: Collection[int] = () if first is None else first.get("accounts", ())
+    own: Collection[int] = () if first is None else (first.get("accounts") or ())
     if rest:  # one instruction's accounts are a short list, looked through faster than a set of it is built
         own = set(own)
         for ix in rest:
-            own.update(ix.get("accounts", ()))
+            own.update(ix.get("accounts") or ())
     pays: list[tuple[str, int]] = []
     tips: list[tuple[str, int]] = []
     learned = 0
@@ -172,9 +177,10 @@ def extract_from_transaction(tx: dict, signature: str | None = None,
                              tip_accounts: Collection[str] | None = None) -> TxEvents:  # fmt: skip
     """Decode pump events from a `getTransaction` result (encoding="json") or from the stream's form of one
     (`laserstream.to_rpc_json(raw=True)`). `tip_accounts`: tip accounts learned from amounts (a set, or the dict
-    `Store.tip_accounts` gives); a signer's transfer to one of them counts into `tip` and stands in `learned_tips`,
-    not in `pays`. The signers are the first account keys, one a signature (the JSON form says so in its message
-    header, numRequiredSignatures; the stream's form has no header)."""
+    `Store.tip_accounts` gives; empty counts: read with learned accounts, none known yet); a signer's transfer to one
+    of them counts into `tip` and `tip_learned` and stands in `learned_tips`, not in `pays`. The signers are the
+    first account keys, one a signature (the JSON form says so in its message header, numRequiredSignatures; the
+    stream's form has no header)."""
     meta = tx.get("meta") or {}
     keys = _account_keys(tx)
     sigs = tx["transaction"]["signatures"]
@@ -299,15 +305,19 @@ def extract_from_transaction(tx: dict, signature: str | None = None,
     fee = meta.get("fee")
     if fee is not None:
         out.priority = max(0, int(fee) - BASE_FEE_PER_SIGNATURE * nsig)
+    learned = 0
     if paid:
         try:
-            tip += _payments(out, paid, first, rest, keys, tip_accounts)
+            learned = _payments(out, paid, first, rest, keys, tip_accounts)
+            tip += learned
         except Exception as exc:  # noqa: BLE001 - the trade is recorded all the same: never a transaction lost for it
             out.pays = out.learned_tips = NO_PAYMENTS
             _payment_failures[0] += 1
             if _payment_failures[0] == 1:
                 log.warning("a transaction's other payments could not be read (%r); counted from here on", exc)
     out.tip = tip
+    if tip_accounts is not None:
+        out.tip_learned = learned
 
     # Prefer CPI events; use log events only for programs that had no CPI copy. A program with one is not read from
     # the logs at all (its lines were decoded and dropped: the recorder's second-largest cost on a pump.fun trade),

@@ -104,7 +104,7 @@ def test_the_payer_is_named_only_when_it_is_not_the_trader():
 def test_the_store_keeps_the_bid_with_the_trade_and_reads_trades_as_before(tmp_path):
     from snipetech.store import Store, table_columns
 
-    assert table_columns()["trades"][-3:] == ("payer", "priority", "tip")
+    assert table_columns()["trades"][-4:] == ("payer", "priority", "tip", "tip_learned")  # the last since 14 Nov
     tx, norm = _normalized("xqo6FRzq")  # our own 6 Nov buy: 2,000,000 lamports to Astralane
     st = Store(tmp_path / "t.db")
     try:

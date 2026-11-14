@@ -1157,18 +1157,29 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--lookups", type=int, default=6, help="--gmgn: requests made to GMGN at most (6)")
     sp.add_argument("--accounts", action="store_true",
                     help="instead of the table: the tip accounts the tape recorder learned from amounts (table "
-                         "pay_dests) as JSON: each destination's kind (tip, fee or undecided), payments, different "
-                         "payers, rank correlation with the trade's size, median amount, first and last seen, and a "
-                         "head: how many of each kind, whether learned tips are applied to trades.tip, since when "
-                         "the table is filled. Reads the live database; no RPC, no lab slot; writes nothing")
-    sp.add_argument("--kind", choices=["tip", "fee", "undecided"], default=None, help="--accounts: only this kind")
+                         "pay_dests) as JSON: each destination's kind (tip, fee, mixed or undecided), whether it "
+                         "passes the higher bar for being counted into trades' tips (applied: 25 wallets, two "
+                         "readings), payments, different payers, rank correlation with the trade's size, median "
+                         "amount, first and last seen, and a head: how many of each kind, whether learned tips are "
+                         "applied to trades.tip and since when, since when the table is filled, what amounts cannot "
+                         "decide. Reads the live database; no RPC, no lab slot; writes nothing")  # fmt: skip
+    sp.add_argument("--kind", choices=["tip", "fee", "mixed", "undecided", "applied"], default=None,
+                    help="--accounts: only this kind (applied: the tip accounts that pass the higher bar for being "
+                         "counted into trades' tips)")  # fmt: skip
     sp.add_argument("--min-n", type=int, default=0, help="--accounts: only destinations paid at least this often")
+    sp.add_argument("--detail", action="store_true",
+                    help="--accounts: read the listed rows' samples too (200 rows at most): the share of a row's "
+                         "payments at one common share of the trade, that share, and its wallets")  # fmt: skip
+    sp.add_argument("--seed", type=int, default=None,
+                    help="--sample: what the draw is a fixed function of (default: the window's start, so the same "
+                         "command gives the same sample while the window stands)")  # fmt: skip
     sp.add_argument("--sample", type=int, default=None, metavar="N",
-                    help="instead of the table: check the learning against the chain. Picks N trades (3000 at most) "
-                         "spread over the newest --hours of tape, fetches each transaction over the RPC (10 at a "
+                    help="instead of the table: check the learning against the chain. Draws N transactions (3000 at "
+                         "most) uniformly from the newest --hours of tape, fetches each over the RPC (10 at a "
                          "time), learns from them in memory and prints what each destination seen 5 times or more "
-                         "reads as, and how many of the trades the tape holds with tip 0 pay a destination the "
-                         "sample reads as a tip account, with the median and 90th percentile paid; writes nothing")
+                         "reads as, and how many of the transactions the tape holds with tip 0 pay a destination "
+                         "the sample reads as a tip account (with a 95 %% interval), and the median and 90th "
+                         "percentile paid; writes nothing")  # fmt: skip
     sp = cmd(
         "landing",
         "where a live buy of ours landed, read from the chain itself (any coin, any program): the blocks between the "
@@ -2455,7 +2466,7 @@ def _amm_backfill(args, cfg: Config) -> int:
                     svc.store, svc.rpc, wallets, time.time(), days=args.days, after_secs=args.after_secs,
                     min_sol=args.min_sol, dry_run=args.dry_run, max_credits=max_credits, names=names,
                     month_credits=ab.MONTH_CREDITS if args.month_credits is None else args.month_credits,
-                    max_stretch_txs=max_txs,
+                    max_stretch_txs=max_txs, tip_accounts=svc.learned_tip_accounts(),
                     progress=lambda msg: print(f"amm-backfill: {msg}", file=sys.stderr, flush=True))  # fmt: skip
             finally:
                 await svc.close()
@@ -2667,22 +2678,23 @@ def _tip_accounts(args, cfg: Config) -> int:
             return 2
         try:
             out = TS.accounts(store, cfg.live.apply_learned_tips, kind=args.kind, min_n=args.min_n,
-                              labels=store.labels())  # fmt: skip
+                              labels=store.labels(), detail=args.detail)  # fmt: skip
         finally:
             store.close()
         print(json.dumps(out, indent=1))
         return 0
     if not 1 <= args.sample <= TS.SAMPLE_MAX:
-        print(f"tips --sample: 1 to {TS.SAMPLE_MAX} trades", file=sys.stderr)
+        print(f"tips --sample: 1 to {TS.SAMPLE_MAX} transactions", file=sys.stderr)
         return 2
     svc = Service(cfg)
 
     async def go() -> dict:
         try:
             # the trades from the tape's copy; what the recorder's own table says from the live database
-            table = {r["address"]: r["kind"] for r in svc.store.pay_dests(samples=False)}
+            table = {r["address"]: {"kind": r["kind"], "applied": bool(r["applied"])}
+                     for r in svc.store.pay_dests(samples=False)}  # fmt: skip
             return await TS.tip_sample(svc.tape_store, svc.rpc, time.time(), args.sample, _tips_hours(args),
-                                       table=table or None)  # fmt: skip
+                                       table=table or None, seed=args.seed)  # fmt: skip
         finally:
             await svc.close()
 

@@ -110,7 +110,7 @@ def normalize(
     if tx.priority is not None or tx.tip is not None:  # the transaction's fee record, on each of its trades
         payer = tx.fee_payer
         for t in (*out.trades, *out.foreign):
-            t.priority, t.tip = tx.priority, tx.tip
+            t.priority, t.tip, t.tip_learned = tx.priority, tx.tip, tx.tip_learned
             if payer and payer != t.user:
                 t.payer = payer
     return out
