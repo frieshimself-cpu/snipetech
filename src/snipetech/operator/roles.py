@@ -485,7 +485,7 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
     from .budget_switch import effective_daily_usd, role_share_usd, room_for_role
     from .gate import Decision
     from .jobs import OperatorJobs
-    from .snapshot import Snapshot, recent_jobs, running_jobs
+    from .snapshot import ROLE_JOBS_HOURS, Snapshot, recent_jobs, running_jobs
 
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     t0 = now()
@@ -534,7 +534,8 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
         notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
         jobs = OperatorJobs(repo=repo, data=paths.data, db=Path(cfg.storage.db_path), branch=branch,
                             max_jobs=max(int(cfg.operator.max_jobs), ROLE_MAX_JOBS))  # fmt: skip
-        snap = Snapshot(ts=t0, jobs_running=running_jobs(paths.jobs), jobs_recent=recent_jobs(paths.jobs, t0))
+        snap = Snapshot(ts=t0, jobs_running=running_jobs(paths.jobs),
+                        jobs_recent=recent_jobs(paths.jobs, t0, hours=ROLE_JOBS_HOURS))
         saw = seen(role, svc.store)  # as the turn starts: what arrives while it runs is the next turn's news
         # its time first, as the analyst's: a turn the unit ends is not started over by the next round
         update_state(paths, role, last=int(t0), reason=reason)

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+from pathlib import Path
 
 import httpx2
 import pytest
@@ -715,7 +716,7 @@ def _tool_names(req) -> list[str]:
 
 def test_role_turn_uses_its_instructions_and_tools(env):
     from snipetech.operator import learning
-    from snipetech.operator.prompts import ROLE_SYSTEM
+    from snipetech.operator.prompts import ROLE_SYSTEM, message_text
     from snipetech.operator.roles import ROLE_TOOLS
 
     fields = {"title": "who copies Cupsey", "why": "w", "test": "t", "expected": "e", "kind": "research"}
@@ -733,12 +734,13 @@ def test_role_turn_uses_its_instructions_and_tools(env):
     out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
     req = requests[0]
     assert out["stopped"] == "end_turn" and out["tool_calls"] == 2
+    assert len(requests) == 2  # the turn ended at its note (14 Nov): the closing reply was never asked for
     assert req["model"] == env["cfg"].operator.analyst_model != env["cfg"].operator.model  # the research thinking
     assert _system(req) == ROLE_SYSTEM["scout"]
     assert req["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
     assert set(_tool_names(req)) == ROLE_TOOLS["scout"]
-    message = req["messages"][0]["content"]
-    assert message.startswith("Turn of the wallet scout. Called because: first turn.")
+    message = message_text(req["messages"][0]["content"])  # content blocks since 14 Nov, the reason in the last
+    assert "Turn of the wallet scout. Called because: first turn." in req["messages"][0]["content"][-1]["text"]
     assert "who copies Cupsey" in message and "| W1 | Cupsey |" in message and "| +0 | 0.05 |" in message
     for word in ("native_sol", "equity", "snipers", "check the tape"):  # no wallet, no snipers, not the owner's inbox
         assert word not in message, word
@@ -774,7 +776,7 @@ def test_role_turn_stops_at_the_role_cap(env):
     handler, requests = _scripted(note(1), note(2), note(3))
     out = _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")
     assert out["stopped"] == "turn_usd" and len(requests) == 1 and out["usd"] == pytest.approx(5.6)
-    message = requests[0]["messages"][0]["content"]
+    message = requests[0]["messages"][0]["content"][-1]["text"]  # the last block: what moves from turn to turn
     assert "This turn stops at 40 tool calls or 5 $" in message and "of your share of 175 $" in message
     set_budget(env["paths"], env["cfg"], {"turn_usd": 2}, "telegram", NOW)  # the owner allows less a turn: that holds
     small = {"input_tokens": 300_000, "output_tokens": 0}  # 2.4 $
@@ -855,3 +857,351 @@ def test_an_api_refusal_names_the_organisation_the_key_belongs_to(env):
     assert out["error"].startswith("400: Your credit balance is too low to access the Anthropic API.")
     assert "organization ID 0f3b1c2d-aaaa-bbbb-cccc-1234567890ab" in out["error"]
     assert "0f3b1c2d-aaaa-bbbb-cccc-1234567890ab" in env["sent"][0]
+
+
+# -- 14 Nov: a role's opening message in blocks the hour's cache serves, and a role's turn that ends at its note -------
+# 105 paid role turns, about a dollar each. A quarter of a turn was its opening message, written fresh to the
+# five-minute cache every time (a role's turns are 15 minutes or more apart). And 99 of the 105 did nothing after the
+# calls that held the note, yet each paid for one more reply: a closing summary of what the note had just said.
+
+
+def cache_rule_breaks(request: dict) -> list[str]:
+    """What a request breaks of the prompt-caching rules as the API's reference states them (read 14 Nov): at most
+    four breakpoints a request, the top-level automatic one counted; a marker is {"type": "ephemeral"} with no
+    duration (five minutes) or "5m" or "1h"; in the order the request is rendered (tools, system, messages) a longer
+    duration stands before a shorter one, and the automatic breakpoint is on the last block; an explicit marker on the
+    last block with another duration than the top-level field is refused; a text block is never empty."""
+    out: list[str] = []
+    top = request.get("cache_control")
+    system = request.get("system")
+    blocks = list(request.get("tools") or []) + (system if isinstance(system, list) else [])
+    for message in request.get("messages") or []:
+        content = message.get("content")
+        blocks += content if isinstance(content, list) else [{"type": "text", "text": content}]
+    ttl = lambda mark: mark.get("ttl", "5m")
+    marks = [(i, b["cache_control"]) for i, b in enumerate(blocks) if isinstance(b, dict) and b.get("cache_control")]
+    for _, mark in [*marks, *([(None, top)] if top else [])]:
+        if mark.get("type") != "ephemeral" or ttl(mark) not in ("5m", "1h") or set(mark) - {"type", "ttl"}:
+            out.append(f"not a cache marker: {mark}")
+    last = len(blocks) - 1
+    if top and marks and marks[-1][0] == last:
+        if ttl(marks[-1][1]) != ttl(top):
+            out.append("a marker on the last block with another duration than the top-level field")
+        top = None  # the same duration: the automatic breakpoint does nothing more
+    order = [ttl(mark) for _, mark in marks] + ([ttl(top)] if top else [])
+    if len(order) > 4:
+        out.append(f"{len(order)} breakpoints: the API takes four")
+    if "5m" in order and "1h" in order[order.index("5m") :]:
+        out.append("a one-hour marker behind a five-minute one")
+    if any(b.get("type") == "text" and not str(b.get("text") or "").strip() for b in blocks if isinstance(b, dict)):
+        out.append("an empty text block")
+    return out
+
+
+def test_the_checker_knows_the_documented_cache_rules():
+    hour, five = {"type": "ephemeral", "ttl": "1h"}, {"type": "ephemeral"}
+    text = lambda t, mark=None: {"type": "text", "text": t} | ({"cache_control": mark} if mark else {})
+    ok = {"system": [text("s", hour)], "cache_control": five,
+          "messages": [{"role": "user", "content": [text("a"), text("b", hour), text("c")]}]}  # fmt: skip
+    assert cache_rule_breaks(ok) == []
+    assert cache_rule_breaks(ok | {"messages": [{"role": "user", "content": "plain"}]}) == []
+    on_last = ok | {"messages": [{"role": "user", "content": [text("a"), text("c", hour)]}]}
+    assert cache_rule_breaks(on_last) == ["a marker on the last block with another duration than the top-level field"]
+    behind = ok | {"system": [text("s", five)]}
+    assert cache_rule_breaks(behind) == ["a one-hour marker behind a five-minute one"]
+    four = [text("a", hour), text("b", hour), text("c", hour), text("d")]
+    many = ok | {"messages": [{"role": "user", "content": four}]}
+    assert cache_rule_breaks(many) == ["5 breakpoints: the API takes four"]
+    assert cache_rule_breaks(ok | {"messages": [{"role": "user", "content": [text(" ")]}]}) == ["an empty text block"]
+    assert cache_rule_breaks(ok | {"cache_control": {"type": "ephemeral", "ttl": "2h"}}) != []
+
+
+def _marks(req) -> list[tuple[int, dict]]:
+    content = req["messages"][0]["content"]
+    assert isinstance(content, list)
+    return [(i, b["cache_control"]) for i, b in enumerate(content) if "cache_control" in b]
+
+
+def _many_jobs(n: int, newest: float) -> list[dict]:
+    return [{"id": f"20261105-{k:06d}-aaaaaa", "argv": ["winners", "--hours", str(k), "--json"], "exit_code": 0,
+             "ended": newest - (n - k) * 300} for k in range(n)][::-1]  # fmt: skip
+
+
+def test_a_role_turns_request_carries_the_system_marker_one_message_marker_and_the_five_minute_field(env):
+    """What a role's turn sends: the instructions under the hour's marker as before; the opening message in blocks,
+    the research record and the list of ended jobs in front with the hour's marker on the last whole block of the
+    list; the request's own five-minute field for the rest of the message and the turn's growing tail. Three
+    breakpoints of the four the API takes, the longer durations first, none on the last block; and the same holds for
+    every later request of the turn."""
+    from dataclasses import replace
+
+    from snipetech.operator.prompts import HOUR_CACHE, message_text
+
+    research = env["jobs"].repo / "docs" / "research"
+    research.mkdir(parents=True)
+    (research / "2026-11-07-round-3.md").write_text(
+        "# Research round 3\n\n## Report\n\nOUTCOME: the creator-0 hunts lose on unseen tape.\n\n## Lessons\n\n- one\n"
+    )
+    env["snap"] = replace(env["snap"], jobs_recent=_many_jobs(34, NOW - 60))
+    handler, requests = _scripted(
+        ([{"type": "tool_use", "id": "t1", "name": "list_ideas", "input": {}}], "tool_use"),
+        ([{"type": "tool_use", "id": "t2", "name": "write_note", "input": {"text": "nothing new"}}], "tool_use"),
+    )
+    _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")
+    assert len(requests) == 2
+    req = requests[0]
+    assert [b.get("cache_control") for b in req["system"]] == [HOUR_CACHE]
+    content = req["messages"][0]["content"]
+    assert len(content) == 5 and _marks(req) == [(3, HOUR_CACHE)]  # record + heading, three blocks of ten, the rest
+    for req in requests:  # a later request continues the first on the server, or sends the whole conversation again
+        assert cache_rule_breaks(req) == [] and req["cache_control"] == {"type": "ephemeral"}
+        if "system" in req:
+            assert req["system"][0]["cache_control"] == HOUR_CACHE and _marks(req) == [(3, HOUR_CACHE)]
+    assert content[0]["text"].startswith("Research record")
+    assert "OUTCOME: the creator-0 hunts lose" in content[0]["text"]
+    text = message_text(content)
+    assert text.count("OUTCOME: the creator-0 hunts lose") == 1 and text.count(" exit 0 at ") == 34
+    assert "Turn of the strategy tester. Called because: first turn." in content[-1]["text"]
+    assert "What the agents learned so far" in content[-1]["text"] and "Research record" not in content[-1]["text"]
+
+
+def test_a_role_whose_last_two_waits_were_over_an_hour_gets_no_hour_marker_on_the_list(env):
+    """The hour's cache costs twice the input price to write, the five-minute one 1.25 times: a role whose next turn
+    comes after the hour has run out pays the difference for nothing. operator/agents.json keeps when the role's last
+    turn ended and its last two waits (from the end of one turn to the start of the next); when both were over an hour
+    the list gets no hour marker. One short wait brings it back. The instructions' marker stays as it is."""
+    from snipetech.operator import roles
+
+    clock = [NOW]
+
+    def turn():
+        handler, requests = _scripted(([{"type": "text", "text": "nothing new"}], "end_turn"))
+        asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], Decision(True, "fees", ["first turn"]),
+                             env["ledger"], env["notifier"], env["notes"], jobs=env["jobs"], client=_client(handler),
+                             now=lambda: clock[0], role="fees"))  # fmt: skip
+        assert requests[0]["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        assert cache_rule_breaks(requests[0]) == []
+        return [mark for _, mark in _marks(requests[0])]
+
+    hour = [{"type": "ephemeral", "ttl": "1h"}]
+    assert turn() == hour  # the first turn: nothing known, the marker is there
+    assert roles.read_state(env["paths"])["fees"]["turn_end"] == NOW
+    clock[0] += 2 * 3600
+    assert turn() == hour  # one long wait is not two
+    clock[0] += 61 * 60
+    assert turn() == []  # two waits over an hour: the five-minute cache alone
+    assert roles.read_state(env["paths"])["fees"]["waits"] == [7200, 3660]
+    clock[0] += 3 * 3600
+    assert turn() == []
+    clock[0] += 15 * 60
+    assert turn() == hour  # it comes every round again
+    assert roles.read_state(env["paths"])["fees"]["waits"] == [10800, 900]
+    assert "waits" not in roles.read_state(env["paths"]).get("tester", {})  # each role its own
+
+
+def test_a_turn_the_api_refused_is_no_turn_for_the_waits(env):
+    from snipetech.operator import roles
+
+    def refused(request):
+        return httpx2.Response(529, json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}})
+
+    out = _run(env, Decision(True, "scout", ["first turn"]), refused, role="scout")
+    assert out["stopped"] == "api_error" and "turn_end" not in roles.read_state(env["paths"]).get("scout", {})
+
+
+GOLDEN = Path(__file__).parent.parent / "fixtures" / "agent_requests_before_14nov.json"
+
+
+def _first_requests(env) -> dict:
+    """The first request of an operator round, of the day's analysis and of an analyst's update turn (the day's report
+    in blocks), each without its tools and with its instructions named, not spelled out: what the opening-message
+    change must not move."""
+    from dataclasses import replace
+
+    from snipetech.operator import learning
+
+    research = env["jobs"].repo / "docs" / "research"
+    research.mkdir(parents=True)
+    (research / "2026-11-07-round-3.md").write_text(
+        "# Research round 3\n\n## Report\n\nOUTCOME: the creator-0 hunts lose on unseen tape.\n\n## Lessons\n\n- one\n"
+    )
+    learning.add_lesson(env["paths"], "Fees ate the small wins", "6 of 9 wins under 0.009 SOL", 9, source="analyst",
+                        now=NOW - 60)  # fmt: skip
+    idea = {"title": "Copy only leader buys of 0.5 SOL or more", "why": "7 of 9 losses", "test": "lab --by-wallet",
+            "expected": "+0.004 SOL a trade", "kind": "research"}  # fmt: skip
+    learning.upsert_idea(env["paths"], idea, source="analyst", now=NOW - 60)
+    jobs = _many_jobs(12, NOW - 60) + [{"id": "20261105-999999-bbbbbb", "argv": ["paper", "run"], "exit_code": 0,
+                                        "ended": NOW - 30}]  # fmt: skip
+    env["snap"] = replace(env["snap"], jobs_recent=jobs, jobs_running=[{"id": "r1", "argv": ["lab", "--json"]}])
+    env["paths"].inbox.write_text("owner: check the tape")
+    out = {}
+
+    def first(name, mode, reasons):
+        handler, requests = _scripted(([{"type": "text", "text": "ok"}], "end_turn"))
+        _run(env, Decision(True, mode, reasons), handler)
+        req = {k: v for k, v in requests[0].items() if k != "thread"}  # how the SDK continues a turn is the SDK's
+        system = req.pop("system")
+        named = {OPERATOR_SYSTEM: "OPERATOR_SYSTEM", ANALYST_SYSTEM: "ANALYST_SYSTEM"}
+        req["system"] = [{k: (named[v] if k == "text" else v) for k, v in block.items()} for block in system]
+        req["tools"] = len(req.pop("tools"))
+        op = env["cfg"].operator  # which setting names the model, not its name
+        req["model"] = {op.model: "[operator] model", op.analyst_model: "[operator] analyst_model"}[req["model"]]
+        out[name] = req
+
+    first("operator", "operator", ["job ended: j1"])
+    first("analyst", "analyst", ["daily analysis due"])
+    report = env["paths"].report("analyst-2026-11-06")
+    body = "".join(f"line {i:05d} of the morning's analysis\n" for i in range(550))
+    report.write_text("# analyst 2026-11-06\n\n" + body)
+    first("analyst update", "analyst", ["analysis due: every 0.5 h, the last one 0.5 h ago"])
+    return out
+
+
+def test_the_analysts_and_the_operators_requests_are_byte_for_byte_what_they_were(env):
+    """The roles' opening message changed on 14 Nov; the operator's and the analyst's did not. The file holds their
+    first requests as the code before the change built them (written by this test with SNIPETECH_WRITE_GOLDEN=1 on
+    that code, commit edec9a3); the code of today builds the same bytes. A change on purpose to what the operator or
+    the analyst is sent writes the file again the same way."""
+    import os
+
+    built = json.dumps(_first_requests(env), indent=1, sort_keys=True, ensure_ascii=False) + "\n"
+    if os.environ.get("SNIPETECH_WRITE_GOLDEN"):
+        GOLDEN.write_text(built)
+    assert built == GOLDEN.read_text()
+    held = json.loads(built)
+    assert isinstance(held["operator"]["messages"][0]["content"], str)  # one plain message, as before
+    assert "20261105-000011-aaaaaa exit 0 at 00:54: winners" in held["analyst"]["messages"][0]["content"]  # no day
+    assert len(held["analyst update"]["messages"][0]["content"]) == 3
+
+
+# the turn ends at the note
+
+
+def _calls(*calls):
+    return [{"type": "tool_use", "id": f"c{abs(hash(str(c))) % 10**8}", "name": name, "input": args}
+            for c in calls for name, args in [c]], "tool_use"  # fmt: skip
+
+
+def test_a_role_turn_ends_at_its_note_without_asking_for_a_closing_reply(env):
+    """Once the calls of a reply held the note and it was written, the turn is over: the rest of that reply's calls
+    have run (the table, the journal), and no further request asks the model for a summary of what the note says. The
+    ledger and the turn's record add up as for any turn."""
+    from snipetech.operator.turnlog import read_turns
+
+    usage = {"input_tokens": 1000, "output_tokens": 500}
+    handler, requests = _scripted(
+        (*_calls(("list_ideas", {})), usage),
+        (*_calls(("write_report", {"name": "scout-facts", "text": "| wallet | who |\n| W1 | Cupsey |"}),
+                 ("write_report", {"name": "scout-journal-2026-11-06", "text": "read winners", "append": True}),
+                 ("write_note", {"text": "W1 is Cupsey: 31 round trips, +4.2 SOL at its own place"})), usage),
+        ([{"type": "text", "text": "A closing summary nobody needs."}], "end_turn", usage),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+    assert len(requests) == 2  # no request after the note's calls
+    assert out == {"usd": pytest.approx(0.056), "tool_calls": 4, "stopped": "end_turn", "notes": 1, "ended_at": "note"}
+    # the whole reply ran: the table, the journal and the note are written
+    assert (env["paths"].root / "scout-facts.md").read_text() == "| wallet | who |\n| W1 | Cupsey |"
+    assert "read winners" in (env["paths"].root / "scout-journal-2026-11-06.md").read_text()
+    notes = env["paths"].notes.read_text()
+    assert notes.count("\n") == 1 and "[info] scout: W1 is Cupsey" in notes  # its one note, and no "without a note"
+    # the ledger: one line a response, and their dollars are the turn's
+    lines = [json.loads(line) for line in env["paths"].spend.read_text().splitlines()]
+    assert len(lines) == 2 and sum(r["usd"] for r in lines) == pytest.approx(out["usd"])
+    assert {r["mode"] for r in lines} == {"scout"}
+    # the record of the turn for the owner's page: every call with what came back, and the note where the closing
+    # reply stood (the page's "What the agents said last")
+    (row,) = read_turns(env["paths"], 1)
+    tools = [s for s in row["steps"] if s["kind"] == "tool"]
+    assert row["stopped"] == "end_turn" and row["tool_calls"] == len(tools) == 4 and row["usd"] == out["usd"]
+    assert [s["name"] for s in tools] == ["list_ideas", "write_report", "write_report", "write_note"]
+    assert all(s["result"] for s in tools)
+    last = row["steps"][-1]
+    assert last["kind"] == "say" and last["ended_at"] == "note"
+    assert last["text"] == "scout: W1 is Cupsey: 31 round trips, +4.2 SOL at its own place"
+
+
+def test_a_refused_note_does_not_end_the_turn(env):
+    """A note the tool refused (a role's note that speaks of what the wallet can pay) is no note: the turn goes on, the
+    model writes it again, and that one ends the turn."""
+    handler, requests = _scripted(
+        _calls(("write_note", {"text": "the wallet cannot pay a buy"})),
+        _calls(("write_note", {"text": "no new fill since 00:45"})),
+        ([{"type": "text", "text": "done"}], "end_turn"),
+    )
+    out = _run(env, Decision(True, "fees", ["first turn"]), handler, role="fees")
+    assert len(requests) == 2 and out["ended_at"] == "note" and out["tool_calls"] == 2 and out["notes"] == 1
+    refused = requests[1]["messages"][-1]["content"][0]["content"]
+    assert "not your role's subject" in str(refused)
+    assert "fees: no new fill since 00:45" in env["paths"].notes.read_text()
+
+
+def test_a_call_that_failed_beside_the_note_lets_the_turn_go_on_until_it_is_repaired(env):
+    """In 25 of the 105 recorded turns a call in the note's own reply was refused (26 idea updates over a field's
+    length, one job with the lab slots full), and in 6 the next reply repaired it. A turn that ended there would never
+    show the model the refusal. So the turn ends after the first reply, at or after the note, whose calls all came
+    back without an error: here the reply that writes the idea again, and still no closing reply."""
+    from snipetech.operator import learning
+    from snipetech.operator.turnlog import read_turns
+
+    idea = learning.upsert_idea(env["paths"], {"title": "price the first place behind FvHwFe", "why": "w", "test": "t",
+                                               "expected": "e", "kind": "research", "role": "fees"},
+                                source="cloud", now=NOW)  # fmt: skip
+    handler, requests = _scripted(
+        _calls(("upsert_idea", {"id": idea["id"], "test": "x" * 2000}),  # refused: over the field's length
+               ("write_note", {"text": "the first place behind FvHwFe: not measured yet"})),
+        _calls(("upsert_idea", {"id": idea["id"], "test": "place-bids --wallet FvHwFe, then the lab at +0"})),
+        ([{"type": "text", "text": "A closing summary nobody needs."}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "fees", ["first turn"]), handler, role="fees")
+    results = [b["content"] for b in requests[1]["messages"][-1]["content"]]
+    assert str(results[0]).count("error") and "fees: the first place behind FvHwFe" in str(results[1])
+    assert len(requests) == 2 and out["ended_at"] == "note" and out["tool_calls"] == 3 and out["notes"] == 1
+    assert learning.list_ideas(env["paths"], "open", role="fees")[0]["test"].startswith("place-bids --wallet FvHwFe")
+    last = read_turns(env["paths"], 1)[0]["steps"][-1]
+    assert last == {"kind": "say", "text": "fees: the first place behind FvHwFe: not measured yet", "ended_at": "note"}
+
+
+def test_a_failed_call_beside_the_note_that_the_model_leaves_ends_the_turn_as_before(env):
+    handler, requests = _scripted(
+        _calls(("upsert_idea", {"id": "I999", "status": "adopted"}),  # no such idea: refused
+               ("write_note", {"text": "nothing new"})),
+        ([{"type": "text", "text": "I999 does not exist; nothing to close."}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "fees", ["first turn"]), handler, role="fees")
+    assert len(requests) == 2 and out["stopped"] == "end_turn" and "ended_at" not in out and out["notes"] == 1
+
+
+def test_a_role_turn_that_never_writes_its_note_ends_as_before(env):
+    handler, requests = _scripted(_calls(("list_ideas", {})), ([{"type": "text", "text": "nothing new"}], "end_turn"))
+    out = _run(env, Decision(True, "oktech", ["first turn"]), handler, role="oktech")
+    assert len(requests) == 2 and out["stopped"] == "end_turn" and "ended_at" not in out
+    assert "turn ended without a note" in env["paths"].notes.read_text()
+
+
+def test_the_analyst_and_the_operator_still_get_their_closing_reply(env):
+    """Only a research agent's turn ends at its note: the analyst writes notes mid-turn, and the operator's reply after
+    its note is one short line."""
+    for mode in ("analyst", "operator", "postmortem"):
+        handler, requests = _scripted(_note_call(1), _note_call(2), ([{"type": "text", "text": "done"}], "end_turn"))
+        out = _run(env, Decision(True, mode, ["job ended: j1"]), handler)
+        assert len(requests) == 3 and out["stopped"] == "end_turn" and "ended_at" not in out, mode
+        assert out["tool_calls"] == 2 and out["notes"] == 2, mode
+
+
+def test_which_calls_end_a_role_turn_is_a_set_of_tool_names(env):
+    """The turn ends at a call of one of the named tools that wrote a note, and at no other: with another tool in the
+    set (the journal entry that carries the note) a call of it that wrote no note leaves the turn running; with an
+    empty set the turn is asked for its closing reply as before."""
+    from snipetech.operator import turn as T
+
+    assert T.NOTE_ENDS_TURN == frozenset({"write_note"})
+    script = (_calls(("write_report", {"name": "oktech-facts", "text": "| feature | verified |"})),
+              _calls(("write_note", {"text": "no fill verifies the ladder yet"})),
+              ([{"type": "text", "text": "done"}], "end_turn"))  # fmt: skip
+    handler, requests = _scripted(*script)
+    out = _run(env, Decision(True, "oktech", ["first turn"]), handler, role="oktech",
+               ends_at=frozenset({"write_note", "write_report"}))  # fmt: skip
+    assert len(requests) == 2 and out["ended_at"] == "note"  # the table's write wrote no note; the note's call ended it
+    handler, requests = _scripted(*script)
+    out = _run(env, Decision(True, "oktech", ["a new fill of ours"]), handler, role="oktech", ends_at=frozenset())
+    assert len(requests) == 3 and "ended_at" not in out

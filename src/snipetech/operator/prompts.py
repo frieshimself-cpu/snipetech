@@ -8,7 +8,7 @@ import time
 
 from ..playbook import OKTECH_PLAYBOOK
 from .gate import Decision
-from .snapshot import Snapshot
+from .snapshot import Snapshot, role_jobs_since
 
 _RULES = """\
 Hard rules (the tools enforce them too):
@@ -512,6 +512,35 @@ def _job_lines(jobs: list[dict], started_by: dict[str, str] | None = None) -> li
     return out
 
 
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+
+def _day_time(ts: float) -> str:
+    """A time with its day, UTC: "14 Nov 07:32" (the same on every machine: no locale's month names)."""
+    t = time.gmtime(ts)
+    return f"{t.tm_mday} {_MONTHS[t.tm_mon - 1]} {t.tm_hour:02d}:{t.tm_min:02d}"
+
+
+def _role_job_lines(jobs: list[dict], started_by: dict[str, str] | None = None, since: float = 0.0) -> list[str]:
+    """The ended research jobs of a research agent's message (`role_message`), one line each as `_job_lines` writes
+    them, but the oldest first (by when a job ended, then its id), only those that ended at or after `since`, and with
+    the day in each line: a line is the same bytes for as long as it is listed, and a new job is a new line at the end,
+    so the list in front of it can be read from the prompt cache. The loop's own stages are left out."""
+    from .standin import loop_stage
+
+    rows = []
+    for j in jobs or []:
+        argv = [str(a) for a in (j.get("argv") or [])]
+        ended = j.get("ended")
+        if loop_stage(argv) is not None or (ended is not None and ended < since):
+            continue
+        by = (started_by or {}).get(str(j.get("id")))
+        when = _day_time(ended) if ended is not None else "?"
+        line = f"{j.get('id')} exit {j.get('exit_code')} at {when}{f', by the {by}' if by else ''}: {_ran(argv)}"
+        rows.append((float("inf") if ended is None else float(ended), str(j.get("id")), line))
+    return [line for _, _, line in sorted(rows)]
+
+
 def _compact_snapshot(snap: Snapshot) -> dict:
     d = {
         "time_utc": time.strftime("%Y-%m-%d %H:%M", time.gmtime(snap.ts)),
@@ -611,14 +640,37 @@ def user_message(snap: Snapshot, decision: Decision, inbox: str, learned: str = 
 
 
 ROLE_TABLE_CHARS = 6000  # what a role's message carries of its own table (it is told to keep it short)
+JOB_BLOCK_LINES = 10  # the ended jobs of a role's message go in blocks of this many whole lines (`role_message`)
+
+
+def message_text(content: str | list[dict]) -> str:
+    """A message's plain text, whether it was built as one string or as content blocks (`message_content`,
+    `role_message`): what a test or a reader of the turn's first request reads."""
+    return content if isinstance(content, str) else "".join(str(block.get("text") or "") for block in content)
 
 
 def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "", table: str | None = None,
-                 started_by: dict[str, str] | None = None, ceiling: dict | None = None) -> str:  # fmt: skip
-    """A research agent's message: why its turn was called, the research jobs running and ended in the last day with
-    the role that started each, its memory (learning.context for its role: lessons, its queue, the other roles' tables,
-    the research record), its own table as it stands, and where the turn stops. No wallet, no balance, no held coin,
-    no sniper and no inbox: none of them is a role's business, and what is not in the message is not written about."""
+                 started_by: dict[str, str] | None = None, ceiling: dict | None = None, record: str = "",
+                 hour: bool = True) -> list[dict]:  # fmt: skip
+    """A research agent's message, as content blocks (`message_text` gives its plain text): the research jobs that
+    ended and that run with the role that started each, its memory (`learned`: learning.context for its role without
+    the research record: lessons, its queue, the other roles' tables; `record`: learning.research_record), its own
+    table as it stands, why its turn was called, and where the turn stops. No wallet, no balance, no held coin, no
+    sniper and no inbox: none of them is a role's business, and what is not in the message is not written about.
+
+    The order is what the prompt cache needs (14 Nov: every turn wrote the whole message, 20 to 26 thousand tokens, to
+    the five-minute cache, a role's turns are 15 minutes or more apart, and its first two lines were the reason and the
+    time). What stays the same from turn to turn comes first, in blocks that are the same bytes as long as it does:
+    (1) the research record (a deploy changes it) and the list's heading; (2) the jobs that ended since
+    `snapshot.role_jobs_since` (a start that moves in six-hour steps), the oldest first, each line with its day, in
+    blocks of JOB_BLOCK_LINES whole lines: a job that ends is a new line at the end and a full block never changes.
+    With `hour`, the last of these blocks carries the hour's cache marker (HOUR_CACHE): the next turn reads everything
+    up to it, and writes only the blocks that became whole since. (3) One last block with everything that moves: the
+    list's last lines that fill no block yet, the running jobs, the memory, the role's table, then the reason, the
+    time, the ceiling and what to do. The marker is never on the last block (a marker there with another duration than
+    the request's five-minute field is refused), and a request holds three of the API's four breakpoints: the
+    instructions, this one, the automatic one. `hour` false (`turn.hour_cache_pays`: the role comes less than once an
+    hour): the same blocks without the marker."""
     from .roles import NAMES, TABLES, journal_prefix
     from .standin import loop_stage
 
@@ -630,14 +682,17 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
         return f"{jid}{', by the ' + by[jid] if jid in by else ''}: {_ran([str(a) for a in (j.get('argv') or [])])}"
 
     running = [runs(j) for j in snap.jobs_running or [] if loop_stage(j.get("argv")) is None]
-    ended = _job_lines(snap.jobs_recent, by)
+    since = role_jobs_since(snap.ts)
+    ended = _role_job_lines(snap.jobs_recent, by, since)
+    whole = len(ended) // JOB_BLOCK_LINES
+    front = [(record.strip() + "\n" if record.strip() else "")
+             + f"Research jobs that ended since {_day_time(since)} UTC, the oldest first, the newest last (read one "
+             "with read_job_log and its id):\n"]  # fmt: skip
+    front += ["\n".join(ended[i * JOB_BLOCK_LINES : (i + 1) * JOB_BLOCK_LINES]) + "\n" for i in range(whole)]
     parts = [
-        f"Turn of the {name}. Called because: " + "; ".join(decision.reasons) + ".",
-        f"Time: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(snap.ts))} UTC.",
+        *(ended[whole * JOB_BLOCK_LINES :] if ended else ["none"]),
         "Research jobs running now (id, who started it, what runs):",
         *(running or ["none"]),
-        "Research jobs that ended in the last 24 h, newest first (read one with read_job_log and its id):",
-        *(ended or ["none"]),
     ]
     if learned.strip():
         parts.append(learned.strip())
@@ -648,6 +703,10 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
         parts += [f"Your table as it stands, {own}{more}:", text[:ROLE_TABLE_CHARS]]
     else:
         parts.append(f"Your table, {own}: not written yet. Write it this turn, even with one row.")
+    parts += [
+        f"Turn of the {name}. Called because: " + "; ".join(decision.reasons) + ".",
+        f"Time: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(snap.ts))} UTC.",
+    ]
     if ceiling:
         parts.append(f"This turn stops at {ceiling['tool_calls']} tool calls or {ceiling['turn_usd']:g} $ "
                      f"({ceiling['spent_usd']:.2f} $ of your share of {ceiling['share_usd']:g} $ spent today); keep "
@@ -655,4 +714,7 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
     parts.append(f"Do your role's turn: read what is new for you, start the next test or close an idea with its "
                  f"numbers, write your table ({TABLES[role]}), add to your journal ({journal_prefix(role)}-"
                  f"{time.strftime('%Y-%m-%d', time.gmtime(snap.ts))}, append=true), then write_note.")  # fmt: skip
-    return "\n".join(parts)
+    blocks = [{"type": "text", "text": t} for t in (*front, "\n".join(parts))]
+    if hour:
+        blocks[-2]["cache_control"] = dict(HOUR_CACHE)
+    return blocks
