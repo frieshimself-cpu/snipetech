@@ -962,6 +962,21 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         holds (parts - 1) x part-secs longer than the 300 s of its longest exit (345 s for 4 parts 15 s apart), and
         a backfill at the 300 s given when nothing is said keeps 330 s after a buy, so every such moment comes back
         skipped (no_backfill) until the wallets are backfilled with "--after-secs", "360" (THE BACKFILL).
+        A LAB ON A FIXED WINDOW (14 Nov, your idea I161): a lab's window ends where the hourly copy it reads ends,
+        which moves, and its test is the newest 40 % of a rule's moments, so two labs hours apart score different
+        trades. In I161 labs 0d62a3 and c56cb7 read windows 3 h apart (ends 02:00:30 and 05:01:03 UTC) and the
+        measured cost of a transaction had moved from 0.008495 to 0.009341: the rule's total over ALL its moments
+        was +34.6 and +35.3 SOL in the two runs while the test part read +12.8 and +20.1, almost the same trades
+        cut in another place. Every lab output now carries window (from_utc, until_utc, until_ts, which file) and
+        every ranked strategy train.n, test_from_utc, test_digest and window_digest. To run a lab again on the
+        same trades add "--until", "<window.until_ts>" (unix seconds, or UTC as "--until", "2026-11-14T06:00Z")
+        with the same "--hours", and pin "--per-tx" (and "--copy-position" for wallet rules) to the first run's
+        values: two runs rest on the same trades exactly when both digests agree. When they differ, add "--trades"
+        (with "--trigger", 8 rules at most) and read strategies.0.test_trades with a tail of six lines a trade:
+        each is [second, coin, SOL made, outside the model]; left_out lists the test moments the exit was not
+        scored on. A lab on a past window is still a paper result at the landing each row names; a test total
+        rests on where the cut falls, so judge a rule on its lower bound and on what it is without its five best
+        trades, not on one run's total.
         A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
         filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
         bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s

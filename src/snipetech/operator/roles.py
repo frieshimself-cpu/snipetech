@@ -185,6 +185,7 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ("Different sizes and bids are separate commands;", frozenset({"lab"})),
     ("WHERE OUR OWN BUYS LANDED:", frozenset({"landing"})),
     ("SELLING OUT IN PARTS:", frozenset({"lab"})),
+    ("A LAB ON A FIXED WINDOW (14 Nov, your idea I161):", frozenset({"lab"})),
     ("A WINNING BOT'S RECIPE BY NAME", frozenset({"lab"})),
     ('["paper", "freeze", "--recipe", "6z91"] freezes each trigger', frozenset({"paper"})),
     ("The bot's exit is research only: no sniper is sent it, so a recipe that pays", frozenset({"lab"})),

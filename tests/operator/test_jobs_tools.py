@@ -1463,3 +1463,22 @@ def test_the_agents_are_told_of_the_learned_tips_and_of_wallets_that_trade_a_non
                   '["tips", "--sample", "1000", "--hours", "24", "--json"]', "UNDERSTATES what rivals pay",
                   "not_decided_by_amounts", "A wallet that trades a dollar coin is not copied"):
         assert words in text, words
+
+
+def test_the_agents_are_told_how_to_run_a_lab_twice_on_the_same_trades(toolbox):
+    """14 Nov, their idea I161: two labs of one rule read windows three hours apart and gave test totals of +12.8 and
+    +20.1 SOL; nothing let a lab be repeated. An agent that is not told of `--until`, the window and the digests
+    compares two different samples again and calls the lab unrepeatable."""
+    from snipetech.operator import roles
+
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    text = " ".join(full.split())
+    for words in ("A LAB ON A FIXED WINDOW (14 Nov, your idea I161):", '"--until", "2026-11-14T06:00Z"',
+                  "window.until_ts", '"--per-tx"', "test_digest", "window_digest", '"--trades"',
+                  "strategies.0.test_trades", "+34.6 and +35.3", "still a paper result"):
+        assert words in text, words
+    parts = dict(roles.cut_job_help(full))
+    assert any("A LAB ON A FIXED WINDOW" in words for tags, words in roles.cut_job_help(full)
+               if not isinstance(tags, str) and "lab" in tags)
+    assert parts  # the cut list still fits the text
