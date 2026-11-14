@@ -82,6 +82,9 @@ class Trade:
     payer: str = ""
     priority: int | None = None
     tip: int | None = None
+    # The part of `tip` that went to tip accounts the tape learned itself, in lamports (14 Nov). None: read without
+    # learned accounts applied; `tip` is then the fixed list's alone, as before.
+    tip_learned: int | None = None
 
     @property
     def order(self) -> tuple[int, int, int]:

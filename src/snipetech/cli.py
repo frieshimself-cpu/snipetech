@@ -1149,12 +1149,37 @@ def build_parser() -> argparse.ArgumentParser:
                     "wallet, trader, cand")  # fmt: skip
     sp.add_argument("--wallet", action="append", default=[], help="only this followed wallet, whatever group it is "
                     "in (repeatable)")  # fmt: skip
-    sp.add_argument("--hours", type=float, default=30.0, help="the newest hours of tape (bids are on it since 11 Nov "
-                    "16:34 UTC)")  # fmt: skip
+    sp.add_argument("--hours", type=float, default=None, help="the newest hours of tape (bids are on it since 11 Nov "
+                    "16:34 UTC): 30 for the table, 24 for --sample")  # fmt: skip
     sp.add_argument("--top", type=int, default=40, help="wallets to list, most blocks with outsiders first")
     sp.add_argument("--gmgn", action="store_true", help="add GMGN's count of the users who follow each wallet and "
                     "what its most regular copiers pay by GMGN's history (a few look-ups, kept a day)")  # fmt: skip
     sp.add_argument("--lookups", type=int, default=6, help="--gmgn: requests made to GMGN at most (6)")
+    sp.add_argument("--accounts", action="store_true",
+                    help="instead of the table: the tip accounts the tape recorder learned from amounts (table "
+                         "pay_dests) as JSON: each destination's kind (tip, fee, mixed or undecided), whether it "
+                         "passes the higher bar for being counted into trades' tips (applied: 25 wallets, two "
+                         "readings), payments, different payers, rank correlation with the trade's size, median "
+                         "amount, first and last seen, and a head: how many of each kind, whether learned tips are "
+                         "applied to trades.tip and since when, since when the table is filled, what amounts cannot "
+                         "decide. Reads the live database; no RPC, no lab slot; writes nothing")  # fmt: skip
+    sp.add_argument("--kind", choices=["tip", "fee", "mixed", "undecided", "applied"], default=None,
+                    help="--accounts: only this kind (applied: the tip accounts that pass the higher bar for being "
+                         "counted into trades' tips)")  # fmt: skip
+    sp.add_argument("--min-n", type=int, default=0, help="--accounts: only destinations paid at least this often")
+    sp.add_argument("--detail", action="store_true",
+                    help="--accounts: read the listed rows' samples too (200 rows at most): the share of a row's "
+                         "payments at one common share of the trade, that share, and its wallets")  # fmt: skip
+    sp.add_argument("--seed", type=int, default=None,
+                    help="--sample: what the draw is a fixed function of (default: the window's start, so the same "
+                         "command gives the same sample while the window stands)")  # fmt: skip
+    sp.add_argument("--sample", type=int, default=None, metavar="N",
+                    help="instead of the table: check the learning against the chain. Draws N transactions (3000 at "
+                         "most) uniformly from the newest --hours of tape, fetches each over the RPC (10 at a "
+                         "time), learns from them in memory and prints what each destination seen 5 times or more "
+                         "reads as, and how many of the transactions the tape holds with tip 0 pay a destination "
+                         "the sample reads as a tip account (with a 95 %% interval), and the median and 90th "
+                         "percentile paid; writes nothing")  # fmt: skip
     sp = cmd(
         "landing",
         "where a live buy of ours landed, read from the chain itself (any coin, any program): the blocks between the "
@@ -2441,7 +2466,7 @@ def _amm_backfill(args, cfg: Config) -> int:
                     svc.store, svc.rpc, wallets, time.time(), days=args.days, after_secs=args.after_secs,
                     min_sol=args.min_sol, dry_run=args.dry_run, max_credits=max_credits, names=names,
                     month_credits=ab.MONTH_CREDITS if args.month_credits is None else args.month_credits,
-                    max_stretch_txs=max_txs,
+                    max_stretch_txs=max_txs, tip_accounts=svc.learned_tip_accounts(),
                     progress=lambda msg: print(f"amm-backfill: {msg}", file=sys.stderr, flush=True))  # fmt: skip
             finally:
                 await svc.close()
@@ -2624,6 +2649,64 @@ def _history(args, cfg: Config) -> int:
                     "credits_spent": got["downloaded"], **pfd.compare(rows, sigs)}  # fmt: skip
 
     print(json.dumps(asyncio.run(go()), indent=1, default=str))
+    return 0
+
+
+def _tips_hours(args) -> float:
+    """`tips --hours`: 30 for the tip table (its default always), a day for `--sample`, or what was asked for."""
+    if args.hours is not None:
+        return float(args.hours)
+    from .analysis.tip_sample import SAMPLE_HOURS
+
+    return SAMPLE_HOURS if args.sample is not None else 30.0
+
+
+def _tip_accounts(args, cfg: Config) -> int:
+    """`snipetech tips --accounts` (the tip accounts the tape recorder learned, from the table pay_dests, read-only:
+    no service, no RPC, no lab slot) and `snipetech tips --sample N` (the check of the learning against the chain:
+    one job, the trades from the tape's copy, each transaction over the RPC). Both print JSON; neither writes."""
+    import sqlite3
+
+    from .analysis import tip_sample as TS
+    from .store import Store
+
+    if args.sample is None:
+        try:
+            store = Store(cfg.storage.db_path, readonly=True)  # never creates or changes the file
+        except (OSError, sqlite3.Error) as exc:
+            print(f"tips --accounts: cannot read {cfg.storage.db_path}: {exc}", file=sys.stderr)
+            return 2
+        try:
+            out = TS.accounts(store, cfg.live.apply_learned_tips, kind=args.kind, min_n=args.min_n,
+                              labels=store.labels(), detail=args.detail)  # fmt: skip
+        finally:
+            store.close()
+        print(json.dumps(out, indent=1))
+        return 0
+    if not 1 <= args.sample <= TS.SAMPLE_MAX:
+        print(f"tips --sample: 1 to {TS.SAMPLE_MAX} transactions", file=sys.stderr)
+        return 2
+    svc = Service(cfg)
+
+    async def go() -> dict:
+        try:
+            # the trades from the tape's copy; what the recorder's own table says from the live database
+            table = {r["address"]: {"kind": r["kind"], "applied": bool(r["applied"])}
+                     for r in svc.store.pay_dests(samples=False)}  # fmt: skip
+            return await TS.tip_sample(svc.tape_store, svc.rpc, time.time(), args.sample, _tips_hours(args),
+                                       table=table or None, seed=args.seed)  # fmt: skip
+        finally:
+            await svc.close()
+
+    try:
+        out = asyncio.run(go())
+    except ValueError as exc:
+        print(f"tips --sample: {exc}", file=sys.stderr)
+        return 2
+    finally:
+        svc.store.close()
+    out["sample"]["learned_tips_applied"] = bool(cfg.live.apply_learned_tips)
+    print(json.dumps(out, indent=1))
     return 0
 
 
@@ -2994,6 +3077,8 @@ def _main(args) -> int:
             svc.store.close()
         print(json.dumps(out, indent=1) if args.json else R.render_place_bids(out))
         return 0
+    if args.cmd == "tips" and (args.accounts or args.sample is not None):
+        return _tip_accounts(args, cfg)
     if args.cmd == "tips":
         from .analysis import tips as T
         from .analysis.lab import label_groups
@@ -3010,7 +3095,7 @@ def _main(args) -> int:
                     asked = {"error": str(exc)}
             # the trades from the hourly copy; the groups, the names and what GMGN said from the live database
             out = T.tips(svc.tape_store, cfg, time.time(), group=args.group, wallets=args.wallet or None,
-                         hours=args.hours, top=args.top, kols=label_groups(svc.store), labels=svc.store.labels(),
+                         hours=_tips_hours(args), top=args.top, kols=label_groups(svc.store), labels=svc.store.labels(),
                          gmgn=client, live=svc.store, max_lookups=args.lookups)  # fmt: skip
             if asked:
                 out["gmgn"] = asked

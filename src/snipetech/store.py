@@ -168,6 +168,12 @@ CREATE TABLE IF NOT EXISTS exit_shadow (
 CREATE TABLE IF NOT EXISTS launch_marks (mint TEXT NOT NULL, mark TEXT NOT NULL, PRIMARY KEY (mint, mark));
 CREATE INDEX IF NOT EXISTS launch_marks_mark ON launch_marks(mark);
 CREATE TABLE IF NOT EXISTS x_accounts (handle TEXT PRIMARY KEY, fetched_at INTEGER, data TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pay_dests (
+    address TEXT PRIMARY KEY, kind TEXT, n INTEGER, payers INTEGER, rho REAL, median_lamports INTEGER,
+    median_pct REAL, first_ts INTEGER, last_ts INTEGER, tip_since INTEGER, samples TEXT
+);
+CREATE INDEX IF NOT EXISTS pay_dests_last ON pay_dests(last_ts);
+CREATE INDEX IF NOT EXISTS pay_dests_kind ON pay_dests(kind);
 """
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
@@ -216,10 +222,51 @@ _ADDED_COLUMNS = (
     ("fills", "ahead_bid_p50", "INTEGER"),
     ("fills", "landing_verdict", "TEXT"),
     ("fills", "venue", "TEXT"),
+    # the part of a trade's tip that went to tip accounts the tape learned itself (14 Nov; solana/pay_dests.py), in
+    # lamports. `tip` stays the whole bid; `tip - coalesce(tip_learned, 0)` is what went to the fixed list of
+    # documented services. NULL: written without learned accounts applied ([live] apply_learned_tips off, or before).
+    ("trades", "tip_learned", "INTEGER"),
+    # the learned destinations (14 Nov, round 2): whether an account passes the bar for being applied to a trade's
+    # tip, since when the recorder has had it in its applied set, its readings as "tip" in a row, and how many
+    # different wallets its sample holds
+    ("pay_dests", "applied", "INTEGER"),
+    ("pay_dests", "applied_since", "INTEGER"),
+    ("pay_dests", "tip_streak", "INTEGER"),
+    ("pay_dests", "sample_payers", "INTEGER"),
 )
+# indexes on columns of _ADDED_COLUMNS: created after those are added
+_ADDED_INDEXES = ("CREATE INDEX IF NOT EXISTS pay_dests_applied ON pay_dests(applied, address, applied_since)",)
 # Columns a reader of the tape does not need: a copy taken before they existed still serves the labs (`schema_gaps`),
 # and a study that wants them asks `has_columns` first.
-OPTIONAL_COLUMNS = frozenset({("trades", "payer"), ("trades", "priority"), ("trades", "tip")})
+OPTIONAL_COLUMNS = frozenset(
+    {("trades", "payer"), ("trades", "priority"), ("trades", "tip"), ("trades", "tip_learned")}
+)
+# Tables a reader of the tape does not need either: the destinations the recorder learned to be tip accounts
+# (14 Nov; solana/pay_dests.py). The recorder writes it and `tips --accounts` reads it from the live database; on a
+# file without it `pay_dests` and `tip_accounts` answer that nothing is learned.
+OPTIONAL_TABLES = frozenset({"pay_dests"})
+# A destination is stored once this many different wallets paid it. Most destinations the recorder sees are a
+# wallet's own transfers, one payer each: none of what the table is for, and most of what it would hold.
+PAY_DESTS_MIN_PAYERS = 3
+_PAY_DEST_COLS = ("address", "kind", "n", "payers", "rho", "median_lamports", "median_pct", "first_ts", "last_ts",
+                  "tip_since", "samples", "applied", "applied_since", "tip_streak", "sample_payers")  # fmt: skip
+_PAY_DEST_WRITTEN = tuple(c for c in _PAY_DEST_COLS if c != "applied_since")  # the recorder marks that one itself
+_PAY_DEST_KINDS = ("tip", "fee", "mixed")
+# tip_since: set the first time a destination is written as a tip account (the row's own value, else the caller's
+# now), kept while it stays one, cleared when it is written as anything else. applied_since: kept while the row stays
+# applied, cleared when it is written as not applied (`mark_applied` sets it). A row is never written over one that
+# holds more payments: a destination that came back into memory young does not undo what the table knows.
+_PAY_DEST_UPSERT = (
+    f"INSERT INTO pay_dests ({', '.join(_PAY_DEST_WRITTEN)}) VALUES ({','.join('?' * len(_PAY_DEST_WRITTEN))}) "
+    "ON CONFLICT(address) DO UPDATE SET kind=excluded.kind, n=excluded.n, payers=excluded.payers, rho=excluded.rho, "
+    "median_lamports=excluded.median_lamports, median_pct=excluded.median_pct, first_ts=excluded.first_ts, "
+    "last_ts=excluded.last_ts, samples=excluded.samples, applied=excluded.applied, tip_streak=excluded.tip_streak, "
+    "sample_payers=excluded.sample_payers, "
+    "tip_since=CASE WHEN excluded.kind='tip' THEN "
+    "COALESCE(CASE WHEN pay_dests.kind='tip' THEN pay_dests.tip_since END, excluded.tip_since) END, "
+    "applied_since=CASE WHEN excluded.applied=1 THEN pay_dests.applied_since END "
+    "WHERE excluded.n >= pay_dests.n"
+)
 # a verdict the lab wrote before it simulated the live sniper: it measured the wallet on the tape but has no copy plan
 _OLD_LAB = "(v.id IS NOT NULL AND v.copy_plan IS NULL AND COALESCE(v.n_tape, 0) > 0 AND v.status IN ('qualified', 'candidate'))"
 _LIVE_COLS = ("wallet", "n", "mean_sol", "lower_sol", "last_fill", "status", "updated_at")
@@ -364,6 +411,8 @@ class Store:
                 except sqlite3.OperationalError as e:  # another process opening it added the column first
                     if "duplicate column name" not in str(e):
                         raise
+        for sql in _ADDED_INDEXES:
+            self.conn.execute(sql)
 
     def schema_gaps(self) -> list[str]:
         """What this code's schema has and the file lacks: tables, and columns as `table.column`; none when the file is
@@ -376,8 +425,8 @@ class Store:
             fresh.close()
         with self.lock:
             have = _tables(self.conn)
-        missing = [(t, c) for t, cols in want.items() if t in have for c in cols - have[t]]
-        return sorted(t for t in want if t not in have) + sorted(
+        missing = [(t, c) for t, cols in want.items() if t in have and t not in OPTIONAL_TABLES for c in cols - have[t]]
+        return sorted(t for t in want if t not in have and t not in OPTIONAL_TABLES) + sorted(
             f"{t}.{c}" for t, c in missing if (t, c) not in OPTIONAL_COLUMNS
         )
 
@@ -666,11 +715,12 @@ class Store:
 
     def add_trades(self, trades: Iterable[Trade]) -> None:
         self._many(
-            f"INSERT OR IGNORE INTO trades ({_TRADE_COLS}, payer, priority, tip) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            f"INSERT OR IGNORE INTO trades ({_TRADE_COLS}, payer, priority, tip, tip_learned) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             [
                 (t.sig, t.ev, t.slot, t.pos, t.ts, t.mint, t.venue, t.user, int(t.is_buy), t.quote, t.base, t.fee,
-                 t.fee_bps, t.q_after, t.b_after, t.r_base_after, t.ix, t.payer or None, t.priority, t.tip)
+                 t.fee_bps, t.q_after, t.b_after, t.r_base_after, t.ix, t.payer or None, t.priority, t.tip,
+                 t.tip_learned)
                 for t in trades
             ],
         )  # fmt: skip
@@ -798,12 +848,14 @@ class Store:
 
     def block_trades(self, mint: str, slot_from: int, slot_to: int) -> list[Trade]:
         """A coin's trades in the blocks `slot_from` to `slot_to`, in tape order, each with its transaction's fee record
-        (who paid, the priority fee, the tip) when this file holds those columns (a copy taken before 11 Nov does not:
-        the three stay unset). One small read on the coin's index: a study asks it for one moment's block."""
+        (who paid, the priority fee, the tip, and the part of the tip that went to learned tip accounts) when this
+        file holds those columns (a copy taken before 11 Nov has none: they stay unset; one taken before 14 Nov lacks
+        the learned part alone). One small read on the coin's index: a study asks it for one moment's block."""
         fees = self.has_columns("trades", ("payer", "priority", "tip"))
+        learned = fees and self.has_columns("trades", ("tip_learned",))
+        cols = (", payer, priority, tip" if fees else "") + (", tip_learned" if learned else "")
         rows = self._q(
-            f"SELECT {_TRADE_COLS}{', payer, priority, tip' if fees else ''} FROM trades "
-            "WHERE mint=? AND slot>=? AND slot<=? ORDER BY slot, pos, ev",
+            f"SELECT {_TRADE_COLS}{cols} FROM trades WHERE mint=? AND slot>=? AND slot<=? ORDER BY slot, pos, ev",
             (mint, int(slot_from), int(slot_to)),
         )
         out = []
@@ -811,6 +863,8 @@ class Store:
             t = _trade(r[:17])
             if fees:
                 t.payer, t.priority, t.tip = r[17] or "", r[18], r[19]
+            if learned:
+                t.tip_learned = r[20]
             out.append(t)
         return out
 
@@ -1236,6 +1290,115 @@ class Store:
     def missing_tx_meta(self, sigs: list[str]) -> list[str]:
         have = set(self.tx_meta(sigs))
         return [s for s in dict.fromkeys(sigs) if s not in have]
+
+    def save_pay_dests(self, rows: Iterable[dict[str, Any]], now: int | None = None) -> int:
+        """Write what the recorder learned about the destinations trades pay (`solana.pay_dests.PayDests.rows`), a
+        short transaction per WRITE_BATCH rows; returns the rows written. Only a destination PAY_DESTS_MIN_PAYERS
+        wallets paid is stored; a row that cannot be read is left out, never the others with it; a row is not written
+        over a stored one that holds more payments. `tip_since` is kept by the table: `now` (or the row's own) the
+        first time a destination is written as a tip account, unchanged while it stays one, empty once it is written
+        as anything else. `applied` (only a tip account can be) is written as given; `applied_since` is kept while a
+        row stays applied and emptied when it no longer is (`mark_applied` sets it)."""
+        now = int(time.time()) if now is None else int(now)
+        out = []
+        for r in rows:
+            try:
+                address, payers = r["address"], int(r["payers"])
+                if not address or not isinstance(address, str) or payers < PAY_DESTS_MIN_PAYERS:
+                    continue
+                kind = r.get("kind") if r.get("kind") in _PAY_DEST_KINDS else None
+                since = (int(r["tip_since"]) if r.get("tip_since") is not None else now) if kind == "tip" else None
+                samples = r.get("samples")
+                out.append((
+                    address, kind, int(r["n"]), payers, None if r.get("rho") is None else float(r["rho"]),
+                    None if r.get("median_lamports") is None else int(r["median_lamports"]),
+                    None if r.get("median_pct") is None else float(r["median_pct"]),
+                    int(r["first_ts"]), int(r["last_ts"]), since,
+                    samples if isinstance(samples, str) or samples is None else json.dumps(samples),
+                    1 if r.get("applied") and kind == "tip" else 0,
+                    int(r.get("tip_streak") or 0),
+                    None if r.get("sample_payers") is None else int(r["sample_payers"]),
+                ))  # fmt: skip
+            except (KeyError, TypeError, ValueError):
+                continue
+        return self._many(_PAY_DEST_UPSERT, out) if out else 0
+
+    def pay_dests(self, kind: str | None = None, min_n: int = 0, limit: int | None = None, samples: bool = True,
+                  addresses: Iterable[str] | None = None) -> list[dict[str, Any]]:  # fmt: skip
+        """The learned destinations as rows, the most paid first: all, or of one `kind` ("tip", "fee", "mixed", or
+        "undecided" for the ones without a kind), with at least `min_n` payments, or the ones named (`addresses`).
+        `limit`: the last paid ones up to so many AND every row read as a tip account or applied, however long ago
+        it was paid: what a recorder takes at its start. Those rows are picked by index (the times', the kinds', the
+        applied ones') and only they are read (14 Nov, review: the whole table was, 2.7 s cold at 234,000 rows before
+        the streams connect). `samples` False
+        leaves the samples out (None): the rows are read without their long tail. None on a file without the table,
+        or with the table as the first version made it (a copy, read-only)."""
+        where, params = ["n >= ?"], [int(min_n)]
+        if kind == "undecided":
+            where.append("kind IS NULL")
+        elif kind:
+            where.append("kind = ?")
+            params.append(kind)
+        if limit is not None:
+            where.append("rowid IN (SELECT rowid FROM (SELECT rowid FROM pay_dests ORDER BY last_ts DESC LIMIT ?) "
+                         "UNION SELECT rowid FROM pay_dests WHERE kind = 'tip' "
+                         "UNION SELECT rowid FROM pay_dests WHERE applied = 1)")  # fmt: skip
+            params.append(int(limit))
+        cols = ", ".join(c if c != "samples" or samples else "NULL" for c in _PAY_DEST_COLS)
+        named = None if addresses is None else list(dict.fromkeys(addresses))
+        chunks = [None] if named is None else [named[i : i + 500] for i in range(0, len(named), 500)]
+        rows: list[tuple] = []
+        try:
+            for chunk in chunks:
+                extra = [] if chunk is None else [f"address IN ({','.join('?' * len(chunk))})"]
+                rows += self._q(
+                    f"SELECT {cols} FROM pay_dests WHERE {' AND '.join(where + extra)} ORDER BY n DESC, address",
+                    params + (chunk or []),
+                )
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc) and "no such column" not in str(exc):
+                raise
+            return []
+        return [dict(zip(_PAY_DEST_COLS, r)) for r in rows]
+
+    TIP_ACCOUNTS_SQL = "SELECT address, applied_since FROM pay_dests WHERE applied = 1"
+
+    def tip_accounts(self) -> dict[str, int]:
+        """The learned tip accounts a trade's tip is read with: the applied rows (a higher bar than the kind "tip":
+        `solana.pay_dests`), address -> since when the recorder has had it in its applied set (unix seconds; 0: not
+        yet). Read from the index alone (`pay_dests_applied`): the recorder asks every few minutes on its event loop.
+        Empty on a file without the table."""
+        try:
+            rows = self._q(self.TIP_ACCOUNTS_SQL)
+        except sqlite3.OperationalError as exc:
+            if "no such table" not in str(exc) and "no such column" not in str(exc):
+                raise
+            return {}
+        return {address: int(since or 0) for address, since in rows}
+
+    def mark_applied(self, addresses: Iterable[str], now: int) -> int:
+        """The recorder reads trades' tips with these accounts from `now` on: `applied_since` is set on each applied
+        row that has none yet. Returns how many were marked."""
+        rows = [(int(now), a) for a in dict.fromkeys(addresses)]
+        if not rows:
+            return 0
+        return self._many(
+            "UPDATE pay_dests SET applied_since=? WHERE address=? AND applied=1 AND applied_since IS NULL", rows
+        )
+
+    PRUNE_PAY_DESTS_SQL = (
+        "SELECT rowid FROM pay_dests WHERE last_ts < ? "
+        "AND NOT ((kind IS 'tip' OR applied IS 1) AND last_ts >= ?) LIMIT ?"  # IS: a row without a kind
+    )
+
+    def prune_pay_dests(self, before_ts: int, learned_before_ts: int) -> int:
+        """Delete destinations last paid before `before_ts` (the tape's own cutoff): ONE batch of at most WRITE_BATCH
+        rows, one short transaction; returns how many went (0: nothing left to go). A row read as a tip account or
+        applied goes only when it was last paid before `learned_before_ts` too. The caller calls again until 0 and
+        rests between the calls (14 Nov, review: all the batches in one call were 265,341 rows and 23.9 s of the
+        recorder's event loop when the cutoff moved by days at once)."""
+        ids = self._q(self.PRUNE_PAY_DESTS_SQL, (int(before_ts), int(learned_before_ts), self.WRITE_BATCH))
+        return self._many("DELETE FROM pay_dests WHERE rowid=?", ids) if ids else 0
 
     def set_label(self, address: str, label: str, kind: str = "service", source: str = "user") -> None:
         self._exec(

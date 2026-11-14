@@ -60,10 +60,16 @@ def assign_positions(infos: list[dict[str, Any]]) -> dict[str, tuple[int, int]]:
 
 
 class Ingestor:
-    def __init__(self, store: Store, rpc: SolanaRpc, progress=None):
+    def __init__(self, store: Store, rpc: SolanaRpc, progress=None, tip_accounts=None):
+        """`tip_accounts`: a call that gives the learned tip accounts a transaction's tip is read with (the tape's
+        applied ones, `Store.tip_accounts`), or None for none; asked at each `ingest`, so an account applied since
+        is used. Without it a trade's tip is the fixed list's alone. The recorder, this and the backfill are the
+        three writers of `trades.tip`: with [live] apply_learned_tips on they read with the same accounts, so a row
+        means the same whoever wrote it first."""
         self.store = store
         self.rpc = rpc
         self.progress = progress or (lambda msg: None)
+        self.tip_accounts = tip_accounts
 
     # -- core ------------------------------------------------------------------
 
@@ -79,6 +85,7 @@ class Ingestor:
             return result
         known_pools = self.store.pools()
         services = self.store.labels("service")
+        learned = self.tip_accounts() if self.tip_accounts is not None else None
         for start in range(0, len(todo), FETCH_CHUNK):
             chunk = todo[start : start + FETCH_CHUNK]
             txs = await self.rpc.get_transactions(chunk)
@@ -89,7 +96,7 @@ class Ingestor:
                 tx = txs.get(sig)
                 if tx is None:
                     continue
-                events = extract_from_transaction(tx, sig)
+                events = extract_from_transaction(tx, sig, learned)
                 pos = positions.get(sig, (tx["slot"], 0))[1]
                 norm = normalize(events, pos, known_pools, foreign=True)
                 missing_pools |= norm.unresolved_pools

@@ -198,7 +198,16 @@ class Service:
 
     @property
     def ingestor(self) -> Ingestor:
-        return Ingestor(self.store, self.rpc, self.progress)
+        return Ingestor(self.store, self.rpc, self.progress, tip_accounts=self.learned_tip_accounts)
+
+    def learned_tip_accounts(self) -> dict[str, int] | None:
+        """The learned tip accounts a transaction's tip is read with by whatever writes `trades.tip` beside the
+        recorder: the applied ones the recorder itself reads with (marked: `applied_since` set), so the three
+        writers count the same accounts, while [live] apply_learned_tips is on; None (the fixed list alone) while it
+        is off."""
+        if not self.cfg.live.apply_learned_tips:
+            return None
+        return {address: since for address, since in self.store.tip_accounts().items() if since}
 
     async def close(self) -> None:
         if self._rpc is not None:

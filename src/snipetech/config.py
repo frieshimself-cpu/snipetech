@@ -122,6 +122,12 @@ class LiveConfig:
     funder_lookup: bool = True  # resolve who funded brand-new deployer wallets
     source: str = "auto"  # auto (LaserStream for the tape when HELIUS_API_KEY is set) | laserstream | logs
     laserstream_endpoint: str = "laserstream-mainnet-fra.helius-rpc.com:443"
+    # The tape learns from amounts which accounts trades tip (table pay_dests; `snipetech tips --accounts`). False:
+    # it only learns, and a trade's tip is written from the fixed list of landing-service accounts, as before. True:
+    # a transfer to an APPLIED learned account (25 wallets in a full sample, read as tip at two flushes in a row)
+    # counts into the trade's tip too, and is written apart as trades.tip_learned. The history backfills read with the
+    # same accounts. Switched on after the table has been read.
+    apply_learned_tips: bool = False
 
 
 @dataclass

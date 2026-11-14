@@ -160,8 +160,11 @@ def _chunks(items: list, size: int) -> list[list]:
 class _Run:
     def __init__(self, store: Store, rpc, now: float, days: float, after_secs: float, min_sol: float, dry_run: bool,
                  max_credits: float, names: dict[str, str] | None, progress: Callable[[str], None] | None,
-                 max_stretch_txs: int = MAX_STRETCH_TXS):  # fmt: skip
+                 max_stretch_txs: int = MAX_STRETCH_TXS, tip_accounts=None):  # fmt: skip
         self.store, self.rpc, self.now, self.dry = store, rpc, float(now), bool(dry_run)
+        # the learned tip accounts the rows' tips are read with (the recorder's applied ones while its switch is on):
+        # a row written here means what a row the recorder wrote means. None: the fixed list alone.
+        self.tip_accounts = tip_accounts
         self.max_stretch_txs = int(max_stretch_txs)
         self.after, self.min_quote = float(after_secs), round(float(min_sol) * LAMPORTS)
         self.names = names or {}
@@ -223,10 +226,11 @@ class _Run:
         return txs, missing
 
     @staticmethod
-    def _trades(sig: str, tx: dict, fallback_pos: int = 0):
-        """A transaction as the recorder reads it: its events and its SOL trades. The place in the block is the
-        transaction's own index, the number the recorder writes; an answer without one gets `fallback_pos`."""
-        events = extract_from_transaction(tx, sig)
+    def _trades(sig: str, tx: dict, fallback_pos: int = 0, tip_accounts=None):
+        """A transaction as the recorder reads it: its events and its SOL trades, its tip read with `tip_accounts`
+        (the learned accounts the recorder applies; None: none). The place in the block is the transaction's own
+        index, the number the recorder writes; an answer without one gets `fallback_pos`."""
+        events = extract_from_transaction(tx, sig, tip_accounts)
         if events.failed:
             return events, []
         index = tx.get("transactionIndex")
@@ -324,7 +328,7 @@ class _Run:
         own: list[Trade] = []
         pools: dict[str, tuple[str, str]] = {}
         for sig, tx in txs:
-            events, trades = self._trades(sig, tx)
+            events, trades = self._trades(sig, tx, 0, self.tip_accounts)
             mine = [t for t in trades if t.venue == AMM and t.user == wallet]
             own += mine
             wanted = {t.mint for t in mine}
@@ -449,7 +453,7 @@ class _Run:
             rows: list[Trade] = []
             for sig in chunk:
                 if txs.get(sig) is not None:
-                    _events, trades = self._trades(sig, txs[sig], places.get(sig, (0, 0))[1])
+                    _events, trades = self._trades(sig, txs[sig], places.get(sig, (0, 0))[1], self.tip_accounts)
                     rows += [t for t in trades if t.mint == p["mint"] and t.venue == AMM]
             self.store.add_trades(rows)
             self.counts["trades"] += len(rows)
@@ -501,7 +505,7 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
                    min_sol: float = 1.0, dry_run: bool = False, max_credits: float = DEFAULT_MAX_CREDITS,
                    names: dict[str, str] | None = None, progress: Callable[[str], None] | None = None,
                    month_credits: float = MONTH_CREDITS,
-                   max_stretch_txs: int = MAX_STRETCH_TXS) -> dict[str, Any]:  # fmt: skip
+                   max_stretch_txs: int = MAX_STRETCH_TXS, tip_accounts=None) -> dict[str, Any]:  # fmt: skip
     """Backfill the PumpSwap trades around `wallets`' buys of the last `days` days (module docstring). `rpc`: the
     repo's client (`SolanaRpc`); every request waits for its limiter. `dry_run`: lists signatures only (a request a
     thousand signatures, each counted in the month's number like a real run's: about 37,000 for 7 days of a wallet
@@ -516,7 +520,7 @@ async def backfill(store: Store, rpc, wallets: list[str], now: float, days: floa
     left = max(0.0, float(month_credits) - store.usage_month(USAGE, now))
     by_month = left < float(max_credits)  # the month's limit is the nearer one
     run = _Run(store, rpc, now, days, after_secs, min_sol, dry_run, left if by_month else max_credits, names, progress,
-               max_stretch_txs)  # fmt: skip
+               max_stretch_txs, tip_accounts=tip_accounts)  # fmt: skip
     wallets = list(dict.fromkeys(wallets))
     out: dict[str, Any] = {"dry_run": bool(dry_run), "days": days, "after_secs": after_secs, "min_sol": min_sol,
                            "max_stretch_txs": run.max_stretch_txs, "cut_off": run.cut, "tape_from": run.tape_from,

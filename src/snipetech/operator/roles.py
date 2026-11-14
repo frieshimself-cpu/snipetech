@@ -164,6 +164,8 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ('["place-bids", "--hours", "48", "--json"] says which bid lands first', frozenset({"place-bids"})),
     ('["tips", "--group", "big", "--hours", "30", "--json"] is the tip table', frozenset({"tips"})),
     ('["copy-context", "--hours", "72", "--json"] scores every known', frozenset({"copy-context"})),
+    # 14 Nov: what a recorded tip is worth, for everyone who reads a bid (the fee tables, a lab at a bid place, SQL)
+    ("THE TAPE'S TIPS (14 Nov, your idea I144):", frozenset({"tips", "place-bids", "lab", "landing"})),
     ('["winners", "--hours", "72", "--json"] finds who is winning', frozenset({"winners"})),
     ("For a bot it finds, read its rules next:", frozenset({"leaders-of"})),
     ('["early-leaders", "--hours", "72", "--json"] ranks wallets like 7aPo', frozenset({"early-leaders"})),
