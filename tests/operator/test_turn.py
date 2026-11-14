@@ -1309,7 +1309,7 @@ def test_a_table_row_that_was_not_applied_is_shown_before_the_turn_ends(env):
     )  # fmt: skip
     out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
     shown = [b["content"] for b in requests[1]["messages"][-1]["content"] if b.get("type") == "tool_result"]
-    assert len(requests) == 2 and str(shown[0]).startswith("error: not done: FLPjyS fits 2 rows")
+    assert len(requests) == 2 and str(shown[0]).startswith("error: not done: no row FLPjyS. Rows whose first cell")
     assert "| FLPjyS: QUALIFIED | herd buyer | NEW RESULT |" in p.read_text().split("\n")
     assert out["ended_at"] == "note" and out["notes"] == 1 and out["tool_calls"] == 3
 

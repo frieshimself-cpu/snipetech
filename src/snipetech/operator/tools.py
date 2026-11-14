@@ -605,26 +605,25 @@ def _blocks(lines: list[str]) -> list[tuple[int, int, int]]:
 
 
 class _Found(NamedTuple):
-    """What a key finds in a table: `i` the row's line and `block` its table, when it finds one row; `several` the
-    first cells of the rows it is the start of, when it is the start of several and the first cell of none; `twins`
-    the lines of the rows whose first cell it is, when that first cell stands more than once; `start` when the row was
-    found by the start of its first cell only."""
+    """What a key finds in a table: `i` the row's line and `block` its table, when it is one row's whole first cell;
+    `starts` the whole first cells of the rows it is only the start of (up to the end of a word), when it is no row's
+    first cell (they are named in the answer, never changed); `twins` the lines of the rows whose first cell it is,
+    when that first cell stands more than once."""
 
     i: int | None
     block: tuple[int, int, int] | None
-    several: list[str]
+    starts: list[str]
     twins: list[int]
-    start: bool
 
 
-def _find_row(lines: list[str], key: Any, whole: bool = False) -> _Found:
-    """The row whose first cell is `key`, or the ONE row whose first cell starts with it up to the end of a word
-    ("efe459e8a2" finds "efe459e8a2 (frozen 13 Nov 21:31)": the real first cells are long and change). With `whole`
-    only a row whose first cell is the key whole (a row said to be new: 14 Nov, round 4, "A1eN4E" beside "A1eN4E +
-    HVM33j (I122)"). Two rows with the key as their first cell are found as twins, never as the first of them."""
+def _find_row(lines: list[str], key: Any) -> _Found:
+    """The row whose first cell is `key`, whole, as _row_key normalises both (bold, code marks, pipes, spacing,
+    capitals). Round 6 (14 Nov): no row is ever found by a part of its first cell. Rounds 3 to 5 found the one row a
+    key was the start of, and in each round another form of it replaced or dropped a row nobody named ("A1eN4E" took
+    the place of "A1eN4E, Byn68j, AtifzK"). Two rows with the key as their first cell are found as twins."""
     want, exact, starts = _row_key(key), [], []
     if not want:
-        return _Found(None, None, [], [], False)
+        return _Found(None, None, [], [])
     for block in _blocks(lines):
         for i in range(block[1], block[2]):
             cells = _cells(lines[i])
@@ -632,16 +631,21 @@ def _find_row(lines: list[str], key: Any, whole: bool = False) -> _Found:
             if cells and have == want:
                 exact.append((i, block))
             elif have.startswith(want) and not have[len(want)].isalnum():
-                starts.append((i, block, cells[0]))
+                starts.append(_whole(cells[0]))
     if len(exact) == 1:
-        return _Found(exact[0][0], exact[0][1], [], [], False)
+        return _Found(exact[0][0], exact[0][1], [], [])
     if exact:
-        return _Found(None, None, [], [i for i, _ in exact], False)
-    if whole:
-        return _Found(None, None, [], [], False)
-    if len(starts) == 1:
-        return _Found(starts[0][0], starts[0][1], [], [], True)
-    return _Found(None, None, [first for _, _, first in starts], [], False)
+        return _Found(None, None, [], [i for i, _ in exact])
+    return _Found(None, None, starts, [])
+
+
+def _whole(first_cell: str) -> str:
+    """A first cell as an answer names it when it asks for it as a key: uncut, without bold or code marks."""
+    return " ".join(re.sub(r"[*`]", "", str(first_cell)).split())
+
+
+def _quoted(cells: Iterable[str]) -> str:
+    return "; ".join(f'"{c}"' for c in cells)
 
 
 def _alike(lines: list[str], first_cell: str) -> list[str]:
@@ -695,8 +699,8 @@ def _twins(lines: list[str], at: list[int]) -> str:
     """What to say for a first cell that stands more than once: the one call that will work."""
     many = {2: "two", 3: "three"}.get(len(at), str(len(at)))
     where = ", ".join(str(i + 1) for i in at[:-1]) + f" and {at[-1] + 1}"
-    first = _short(re.sub(r"[*`]", "", _cells(lines[at[0]])[0]))
-    return (f"{many} rows have the first cell {first} (lines {where}): send the table whole with "
+    first = _whole(_cells(lines[at[0]])[0])
+    return (f"{many} rows have the first cell \"{first}\" (lines {where}): send the table whole with "
             "update_table(text, whole=true) and give each its own first cell")  # fmt: skip
 
 
@@ -710,12 +714,13 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
     rounds 3 and 4: a reply to repair costs cents; a misplaced, doubled or lost row in a table three other agents read
     costs research). In every other case NOTHING is written for that row and the reason goes into the third list,
     with the one call that will work:
-    - its key is some row's first cell, or the start of exactly one: that row is replaced where it stands, or moved
-      when `before` / `after` names the row it goes by; a move needs the row's whole first cell. A key that is the
-      start of several rows fits none; a first cell that stands twice in the table fits none either.
-    - a row said to be new (`"new": true`) is matched by the whole first cell only: no row has it, it is new. A key
-      that fits no row is a new row only when the call says so (`"new": true`, or `before` / `after`). It goes by
-      the row named, else to the end of the first table that has its number of columns.
+    - its key is some row's whole first cell (round 6: never a part of one): that row is replaced where it stands,
+      or moved when `before` / `after` names the row it goes by. A key that is only the start of rows' first cells
+      finds none of them, and the answer names them whole; a first cell that stands twice fits none either. The same
+      for a `before` / `after` target and a `drop`.
+    - a key that is no row's first cell is a new row only when the call says so (`"new": true`, or `before` /
+      `after` for a key that is the start of no row's first cell). It goes by the row named, else to the end of the
+      first table, whose columns it must have.
     - never written: a row with another number of cells than its table has columns (or than any table has, for a new
       one): the text is the row whole, nothing is put in front of it; a row whose first cell is another row's
       already; a header or a separator line; a row that is also in `drop`, or that finds a row in `drop`; a row
@@ -730,10 +735,14 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
         cells = _cells(lines[i])
         return _short(re.sub(r"[*`]", "", cells[0] if cells else "?"))
 
-    def fits(k: Any, cells: list[str], new: bool) -> str:
-        named = "; ".join(_short(c) for c in cells[:4])
-        more = f'; to add a new row {_short(k)} send "new": true' if new else ""
-        return f"{_short(k)} fits {len(cells)} rows ({named}): give more of the first cell{more}"
+    def starts(k: Any, cells: list[str], drop_: bool = False) -> str:
+        """A key that is no row's first cell and only the start of some (round 6: such a key finds no row)."""
+        head = (f"no row {_short(k)}{' to drop' if drop_ else ''}. Rows whose first cell starts with it: "
+                f"{_quoted(cells)}")  # fmt: skip
+        if drop_:
+            return f"{head}: to drop one give its whole first cell as the key"
+        return (f"{head}: to change, move or drop one give its whole first cell as the key; to add a new row "
+                f'{_short(k)} send "new": true (with "after" for a place)')  # fmt: skip
 
     def columns(block: tuple[int, int, int]) -> int:
         return len(_cells(lines[block[0]]))
@@ -742,19 +751,27 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
         """A table of the file by its header's first cell: "the table Wallet" (with its place among the tables when
         two headers begin alike: "the second table (Wallet)")."""
         tables = _blocks(lines)
-        first = _short(re.sub(r"[*`]", "", (_cells(lines[block[0]]) or ["?"])[0]))
-        alike = [t for t in tables if _row_key((_cells(lines[t[0]]) or [""])[0]) == _row_key(first)]
+        whole = (_cells(lines[block[0]]) or ["?"])[0]
+        first = _short(re.sub(r"[*`]", "", whole))
+        # uncut, and short: two headers whose first cells are alike, or alike as far as an answer shows them, are told
+        # apart by their place (round 6: "Wallet or bot with a very long header f…" named two tables as one)
+        alike = [t for t in tables if _row_key((_cells(lines[t[0]]) or [""])[0]) == _row_key(whole)
+                 or _short(re.sub(r"[*`]", "", (_cells(lines[t[0]]) or [""])[0])) == first]  # fmt: skip
         if len(alike) < 2:
             return f"the table {first}"
         at = next(n for n, t in enumerate(tables) if t[0] == block[0])
-        return f"the {('first', 'second', 'third')[at] if at < 3 else f'table number {at + 1}'} table ({first})"
+        nth = ("first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth")
+        return f"the {nth[at]} table ({first})" if at < len(nth) else f"table {at + 1} ({first})"
 
     def miscount(k: str, n: int, where: str, home: tuple[int, int, int], place: bool = True) -> str:
         """A row with another number of cells than its table has columns, with the advice for its cause (round 5:
         "send the row whole" was said to a row that was whole, and sending it again gave the same answer)."""
         m = columns(home)
         other = next((t for t in _blocks(lines) if place and t[0] != home[0] and columns(t) == n), None)
-        if other is not None:
+        if other is not None and other[1] == other[2]:  # a table with no row has no key to name (round 6)
+            how = (f"it has the columns of {label(other)}, and {label(other)} has no row: send the table whole with "
+                   "update_table(text, whole=true)")  # fmt: skip
+        elif other is not None:
             how = f'it has the columns of {label(other)}: for {label(other)} give "after" with a key of that table'
         elif n < m:
             how = f"send all {m} cells of the row, its first cell first"
@@ -776,7 +793,7 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
     # Found on the table as it stands before any row of this call moves it: a key named in rows and in drop (a "move"
     # written as both lost the row), and two rows of the call for one row of the table (the last one won and the
     # answer said "replaced 2 (K; K)"): nothing is changed for those rows.
-    first_found = [_find_row(lines, key_of(r), whole=bool(r.get("new"))) if key_of(r) else None for r in rows]
+    first_found = [_find_row(lines, key_of(r)) if key_of(r) else None for r in rows]
     dropped_lines = {f.i for f in (_find_row(lines, key) for key in drop) if f.i is not None}
     skip: set[int] = set()
     both: list[int] = []
@@ -806,8 +823,8 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
         f = _find_row(lines, key)
         if f.twins:
             wrong.append(_twins(lines, f.twins))
-        elif f.several:
-            wrong.append(fits(key, f.several, False))
+        elif f.starts:
+            wrong.append(starts(key, f.starts, drop_=True))
         elif f.i is None:
             wrong.append(f"no row {_short(key)} to drop: nothing to do for it; leave it out")
         elif f.i not in both and f.i not in to_drop:
@@ -816,7 +833,7 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
     headers = {tuple(_row_key(c) for c in _cells(lines[start])) for start, first, _ in _blocks(lines) if first > start}
 
     written: list[int] = []  # the lines this call has written (round 5: a later row of the call overwrote one)
-    added_to: list[tuple[str, str]] = []  # each added row's key and its table, for a file of several tables
+    added_to: list[tuple[str, int, str]] = []  # each added row's key, its table's place and name (several tables)
 
     def shifted(at: int, by: int) -> None:  # a line went in or out at `at`: the lines kept by number follow
         to_drop[:] = [i + by if i >= at else i for i in to_drop]
@@ -842,12 +859,12 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
                          "its key")  # fmt: skip
             continue
         new = bool(row.get("new"))
-        f = _find_row(lines, key, whole=new)
+        f = _find_row(lines, key)
         if f.twins:
             wrong.append(_twins(lines, f.twins))
             continue
-        if f.several:
-            wrong.append(fits(key, f.several, True))
+        if f.starts and not new:  # the start of rows' first cells, and no row's: a guess either way (round 6)
+            wrong.append(starts(key, f.starts))
             continue
         i, block = f.i, f.block
         if i is not None and i in written:
@@ -865,10 +882,9 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             if g.twins:
                 wrong.append(f"{k} not put {side} {_short(row[side])}: {_twins(lines, g.twins)}")
                 continue
-            if g.several:
-                wrong.append(f"{k} not put {side} {_short(row[side])}: that key fits {len(g.several)} rows "
-                             f"({'; '.join(_short(c) for c in g.several[:4])}): give more of that key's first "
-                             "cell")  # fmt: skip
+            if g.starts:
+                wrong.append(f"no row {_short(row[side])} to put {k} {side}. Rows whose first cell starts with it: "
+                             f"{_quoted(g.starts)}: give the whole first cell of the row to put it {side}")  # fmt: skip
                 continue
             if by is None or by == i:
                 wrong.append(f"no row {_short(row[side])} to put {k} {side}: nothing was written; give \"{side}\" "
@@ -876,20 +892,13 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
                 continue
         line, was, n = _row_line(row["text"])
         if i is not None:  # a row that is there: replaced where it stands, or moved
-            if new and lines[i] == line and not side:  # sent again as it stands (round 5: a repair resends all)
+            if new and lines[i] == line:  # sent again as it stands, with or without a place (rounds 5 and 6)
                 same.append(name(i))
                 continue
             if new:
-                wrong.append(f"{k} is said to be new but there is a row {name(i)}: nothing was written; leave "
-                             '"new" out to change that row, or give the new row a first cell of its own')  # fmt: skip
-                continue
-            if f.start and (side or _row_key(sent[0]) == _row_key(key)):
-                # a move by the start of a first cell, or a row named by that start alone (round 5: "A1eN4E" with
-                # "| A1eN4E | ..." replaced "A1eN4E + HVM33j (I122)"): which row is meant is a guess
-                x, with_ = name(i), f' with "{side}"' if side else ""
-                what = "move or change" if side else "change"
-                wrong.append(f"{k} is the start of the row {x}: to {what} {x} give its whole first cell; to add a "
-                             f'new row {k} send "new": true{with_}')  # fmt: skip
+                wrong.append(f"{k} is said to be new but there is a row \"{_whole(_cells(lines[i])[0])}\": nothing "
+                             'was written; leave "new" out to change that row, or give the new row a first cell of '
+                             "its own")  # fmt: skip
                 continue
             home = by_block if side else block
             if n != columns(home):
@@ -901,7 +910,7 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
                              f"{TABLE_ROW_CHARS:,}: nothing was written; give it a short first cell")  # fmt: skip
                 continue
             if taken(_cells(line)[0], i):
-                wrong.append(f"{k}: the first cell {_short(_cells(line)[0])} is another row's already: nothing "
+                wrong.append(f"{k}: the first cell \"{_whole(_cells(line)[0])}\" is another row's already: nothing "
                              "was written; give the row a first cell of its own, or change that row by its "
                              "key")  # fmt: skip
                 continue
@@ -921,8 +930,8 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             written.append(at)
             continue
         if not side and not new:  # no such row, and the call does not say it is a new one
-            alike = [_short(c) for c in _alike(lines, key)][:4]
-            wrong.append(f"no row {k}" + (f" (rows that start alike: {'; '.join(alike)})" if alike else "")
+            alike = [_whole(c) for c in _alike(lines, key)][:4]
+            wrong.append(f"no row {k}" + (f" (rows that start alike: {_quoted(alike)})" if alike else "")
                          + ': nothing was written; to add it send it with "new": true (or "after"/"before"); to change '
                          "a row give its first cell as it is now")  # fmt: skip
             continue
@@ -960,7 +969,7 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             same.append(name(twin))
             continue
         if twin is not None:
-            wrong.append(f"{k}: the first cell {_short(_cells(line)[0])} is another row's already: nothing was "
+            wrong.append(f"{k}: the first cell \"{_whole(_cells(line)[0])}\" is another row's already: nothing was "
                          "written; give the row a first cell of its own, or change that row by its key")  # fmt: skip
             continue
         if was:
@@ -970,16 +979,17 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
         shifted(at, 1)
         written.append(at)
         added.append(k)
-        added_to.append((k, where))
+        added_to.append((k, next(n for n, t in enumerate(tables) if t[0] == home[0]), where))
     for i in sorted(to_drop, reverse=True):
         del lines[i]
     done = (("replaced", replaced), ("moved", moved), ("added", added), ("dropped", dropped),
             ("the same already", same))  # fmt: skip
     for word, keys in done:  # the first eight by name: an answer is one line, not the call sent back
         groups = [(keys, "")]
-        if word == "added" and any(w for _, w in added_to):  # a file of several tables: which table each went to
-            tables_named = list(dict.fromkeys(w for _, w in added_to))
-            groups = [([k for k, w in added_to if w == t], f" to {t}") for t in tables_named]
+        if word == "added" and any(w for _, _, w in added_to):  # a file of several tables: which table each went to
+            places = list(dict.fromkeys(n for _, n, _ in added_to))  # by the table itself, never by its name alone
+            groups = [([k for k, n, _ in added_to if n == at], f" to {next(w for _, n, w in added_to if n == at)}")
+                      for at in places]  # fmt: skip
         for these, to in groups:
             more = f"; +{len(these) - 8} more" if len(these) > 8 else ""
             did += [f"{word} {len(these)} ({'; '.join(these[:8])}{more}){to}"] if these else []
@@ -2342,15 +2352,19 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         if len(text) > JOURNAL_ENTRY_CHARS:
             was, text = len(text), text[:JOURNAL_ENTRY_CHARS]
             text = text[: text.rfind("\n") + 1] if "\n" in text[JOURNAL_ENTRY_CHARS // 2 :] else text  # at a line
-            cuts.append(f"the entry {CUT_NOTE} {JOURNAL_ENTRY_CHARS:,} characters (it was {was:,})")
+            # let stand: a shortened entry sent again would stand beside the cut one (round 6)
+            cuts.append(f"the entry {CUT_NOTE} {JOURNAL_ENTRY_CHARS:,} characters (it was {was:,}): it stands as it "
+                        "is: write the rest as a second entry")  # fmt: skip
         said, was = short_note(headline)
         if headline is not None and not said:
             return ("error: not done: the headline is empty: nothing was written; send the entry again with its "
                     "headline (one or two sentences with the numbers that matter), or without the "
                     "argument")  # fmt: skip
         wallet = bool(said) and not noted and wallet_line(said)
+        body = text.rstrip("\n")  # the entry without its "In short:" line
         if said and not wallet:  # the entry closes with its headline: the finding is written once
             text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + f"In short: {said}"
+            headlines.append(said)  # also after a write_note (round 6)
         if not text.strip():
             why = ("the headline speaks of what the wallet can pay, which is not your role's subject" if wallet
                    else "give the entry's text, a headline, or both")  # fmt: skip
@@ -2359,6 +2373,8 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         old = p.read_text(errors="replace") if p.exists() else None
         tail, entry = (old or "").rstrip("\n"), text.rstrip("\n")
         ends = [entry, *(f"{entry}\n\nIn short: {x}" for x in headlines)]  # sent again without its headline too
+        if body.strip():  # sent again with another headline, or without one, in this turn (round 6)
+            ends += [body, *(f"{body}\n\nIn short: {x}" for x in headlines)]
         if old is not None and any(tail == e or tail.endswith("\n" + e) for e in ends):  # whole lines
             # the entry sent again beside the repair of a refused call (round 4, 14 Nov: it stood twice): the
             # journal has it; the headline goes its way below
@@ -2381,7 +2397,6 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
                     "the note with write_note, without the wallet, and do not send the entry again")  # fmt: skip
         notes.write(f"{role}: {said}", "info")
         noted.append("headline")
-        headlines.append(said)
         cut = f"; the note was shortened to {NOTE_CHARS} characters (the headline was {was:,})" if was else ""
         return f"{did}; the headline is written as this turn's note{cut}"
 
@@ -2394,17 +2409,17 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         not: read it.
 
         Args:
-            rows: The rows that changed or are new, each {"key": the row's first cell as it stands in the table (or
-                enough of its start to tell it from every other row), "text": the row whole, its first cell and
-                every other, "| a | b | c |" (cut at 1,200 characters)}. A key that is in the table replaces that
-                row (a text with another first cell renames it); a key that is only the start of a row's first cell
-                needs the text's whole first cell. A new row says that it is new, and its key is its first cell or
-                the start of it: {"key", "text", "new": true} goes to the end of the first table (its cells must fit
-                that table), {"key", "text", "new": true, "after": the key of the row it goes behind} (or "before")
+            rows: The rows that changed or are new, each {"key": the row's first cell, whole, as it stands in the
+                table (bold, code marks, spacing and letter case do not matter), "text": the row whole, its first
+                cell and every other, "| a | b | c |" (cut at 1,200 characters)}. A key that is a row's first cell
+                replaces that row (a text with another first cell renames it). A new row says that it is new, and
+                its key names it (its first cell, or the first words of that cell): {"key", "text", "new": true}
+                goes to the end of the first table (its cells must fit that table), {"key", "text", "new": true,
+                "after": the key of the row it goes behind} (or "before")
                 where you say (a row for another table: give "after" with a key of that table); "before" or "after"
                 without "new" moves the row whose whole first cell is the key. One row once a call. A row that fits
                 nothing is not written: the answer says what to send.
-            drop: The keys of the rows to remove.
+            drop: The keys of the rows to remove: each the row's first cell, whole, as it stands in the table.
             above: The paragraph above the table, whole, when it changed: what holds for every row, not this turn's
                 news (cut at 1,200 characters).
             below: The paragraph under the first table, whole, when it changed (cut at 800 characters).
