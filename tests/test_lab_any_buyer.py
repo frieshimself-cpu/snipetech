@@ -304,7 +304,8 @@ def test_no_sniper_is_built_for_an_any_buyer_rule():
     buy every launch with enough SOL in its first `max_age` seconds: refused, with the gates named."""
     from snipetech.oktech import strategy_sniper
 
-    strat = {"id": "x", "label": "any buyer", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+    strat = {"id": "x", "every_coin": True,
+             "label": "any buyer", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
              "trigger": RULE.__dict__}  # fmt: skip
     with pytest.raises(ValueError, match="max_sol, min_age, min_curve, max_curve.*research only"):
         strategy_sniper(strat, 5)

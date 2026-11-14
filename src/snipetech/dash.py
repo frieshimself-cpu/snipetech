@@ -106,6 +106,18 @@ def _latest_report(paths: OperatorPaths) -> str:
     return _tail(reports[-1], REPORT_CHARS) if reports else ""
 
 
+def _research_only(strategies: list) -> set:
+    """The ids of the frozen rules that are research records (analysis.paper.crew_note: scored without serial crews'
+    coins, on them alone, or in part by other code). The paper module is loaded only here, at the page's first read
+    of the paper test; a page that cannot load it marks nothing."""
+    try:
+        from .analysis.paper import crew_note
+
+        return {s.get("id") for s in strategies if isinstance(s, dict) and crew_note(s)}
+    except Exception:  # noqa: BLE001 - the page shows the rules without the mark
+        return set()
+
+
 def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
     """Every frozen paper strategy with its record so far, the running ones first, and the newest paper trades.
 
@@ -122,6 +134,7 @@ def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
         strategies = (json.loads(row[0]) or {}).get("strategies", []) if row else []
         row = con.execute("SELECT data FROM coverage WHERE key = 'paper:report'").fetchone()
         kept = (json.loads(row[0]) or {}).get("rows") or {} if row else {}
+        research = _research_only(strategies)
         for st in strategies:
             nums = (kept.get(st.get("id")) or {}).get("numbers") or {}
             if "last_entry" in nums:
@@ -135,7 +148,10 @@ def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
                                       "mean_pct": None if mean is None else round(float(mean) * 100, 2),
                                       "last_trade": last,
                                       # dropped by the paper test (losing, with enough trades): scored no more
-                                      "refuted": st.get("refuted") or None})  # fmt: skip
+                                      "refuted": st.get("refuted") or None,
+                                      # a record no sniper would trade (scored without serial crews' coins, as every
+                                      # launch-type rule frozen before 14 Nov was): never a rule to go live with
+                                      "research_only": st.get("id") in research})  # fmt: skip
         out["strategies"].sort(key=lambda r: (r["refuted"] is None, r["last_trade"] or 0), reverse=True)
         out["recent"] = [{"strategy": sid, "mint": m, "entry_ts": e, "exit_ts": x, "pnl": p, "roi": r, "reason": why}
                          for sid, m, e, x, p, r, why in con.execute(

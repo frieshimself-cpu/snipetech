@@ -1060,14 +1060,17 @@ def strategy_sniper(
     # a rule scored on serial crews' coins alone would, sent to OKTech, buy every launch; one scored without them
     # (what every launch-type rule frozen before 14 Nov was) would buy the coins its record leaves out. OKTech cannot
     # tell such a coin, so neither is ever built (the lab imports this module: its words are read at the call).
-    # A stored record (it says when it was frozen, `from_ts`) is read as it was scored: one frozen before 14 Nov says
-    # crew "" and passed over those coins (paper.as_frozen). The callers read the stored rules that way already
-    # (paper.frozen); this is the same check once more, at the last place before a sniper exists
+    # A stored record (it has an id, or says when it was frozen) is read as it was scored: one frozen before 14 Nov
+    # says crew "" and passed over those coins (paper.as_frozen), and it is as live only with the exact default and
+    # the mark of a rule scored on every coin (paper.crew_not_as_live). The callers read the stored rules that way
+    # already (paper.frozen); this is the same check once more, at the last place before a sniper exists. A dict
+    # that is no stored record (a lab's row) is judged by its trigger's own words
     from .analysis.lab import crew_why
     from .analysis.paper import crew_not_as_live
 
     lab_crew = (strategy.get("lab") or {}).get("crew") if isinstance(strategy.get("lab"), dict) else None
-    crews = crew_not_as_live(strategy) if "from_ts" in strategy else crew_why(trig, lab_crew)
+    stored = "id" in strategy or "from_ts" in strategy
+    crews = crew_not_as_live(strategy) if stored else crew_why(trig, lab_crew)
     if crews is not None:
         raise ValueError(f"the rule is {crews}; no sniper")
     gated = [g for g in ANY_BUYER_GATES if trig.get(g)] if kind == "whale" else []

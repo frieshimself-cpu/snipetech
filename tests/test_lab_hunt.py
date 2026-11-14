@@ -106,7 +106,7 @@ def test_hunt_label_reads_as_the_oktech_settings():
 
 
 def test_strategy_sniper_sends_a_hunt_trigger_exactly_as_scored():
-    strat = {"id": "h1", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT,
+    strat = {"id": "h1", "every_coin": True, "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT,
              "trigger": Trigger("hunt", sol=3.0, window=2.0, max_buyers=5, dev_max=1.0).__dict__}  # fmt: skip
     cfg = strategy_sniper(strat, 1).config
     assert cfg["mode"] == "hunt" and cfg["totalSnipes"] == 1 and cfg["buyAmount"] == 0.1
@@ -122,7 +122,8 @@ def test_strategy_sniper_refuses_a_hunt_setting_oktech_would_ignore(field, value
     # 5 Nov 22:11: a batch sent 2.5 / 1.0 / nulls and bought every launch as if no threshold were set
     trig = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__ | {field: value}
     with pytest.raises(ValueError, match="whole"):
-        strategy_sniper({"id": "h", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
+        strategy_sniper({"id": "h", "every_coin": True,
+                         "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
 
 
 def test_every_hunt_trigger_the_search_ranks_is_one_oktech_can_run():
@@ -130,7 +131,8 @@ def test_every_hunt_trigger_the_search_ranks_is_one_oktech_can_run():
     assert len(hunts) >= 6
     for t in hunts:
         assert not t.plain  # OKTech has no switch for mayhem / holder-reward coins
-        strategy_sniper({"id": "h", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}, 1)
+        strategy_sniper({"id": "h", "every_coin": True,
+                         "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}, 1)
 
 
 def test_a_hunt_strategy_lands_a_slot_after_its_trigger():
@@ -210,7 +212,7 @@ def test_the_search_scores_what_oktech_runs_for_the_best_paper_strategy():
     # 9b2bd6f664 (7 Nov forward paper: +0.0096 SOL a trade over 1,156 trades) is a whale rule OKTech cannot run as
     # scored; `oktech strategy` sends an approximation of it, and that approximation must be scored as such
     whale = Trigger("whale", sol=1.0, max_age=1.0, plain=True, solo=True)
-    strat = {"id": "w", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": whale.__dict__}
+    strat = {"id": "w", "every_coin": True, "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": whale.__dict__}
     sent = strategy_sniper(strat, 1).config["hunt"]
     th = sent["thresholds"]
     as_sent = Trigger("hunt", sol=float(th["minTotalSol"]), window=sent["timeWindowMs"] / 1000,
@@ -376,7 +378,7 @@ def test_a_hunt_on_a_wallet_group_is_a_new_rule_and_older_rules_keep_their_ids()
 
 def test_strategy_sniper_sends_the_groups_wallets_as_the_known_bots_and_refuses_without_them():
     trig = Trigger("hunt", sol=15.0, window=2.0, bots="bundler").__dict__
-    strat = {"id": "hc", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": trig}
+    strat = {"id": "hc", "every_coin": True, "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": trig}
     wallets = [addr("crew-a"), addr("crew-b")]
     cfg = strategy_sniper(strat, 5, bot_wallets=wallets).config
     hunt = cfg["hunt"]

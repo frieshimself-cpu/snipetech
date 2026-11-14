@@ -336,8 +336,71 @@ def test_a_hunt_strategy_scored_without_serial_crews_coins_never_goes_live(env):
     assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
     assert "without serial crews' coins" in _refused(env, THIRD, "go")
     assert "serial crews' coins alone" in _refused(env, FOURTH, "go")
+    for sid in (BEST, THIRD, FOURTH):  # in the owner's chat: plain words, none of the code's
+        assert "(crew" not in _refused(env, sid, "go") and 'crew ""' not in _refused(env, sid, "go")
     assert _send(env).splitlines()[-1] == f"/test {SECOND} go"
     assert env.svc.created == []  # nothing was created for any of them
+
+
+def test_the_live_tests_own_check_names_the_crew_reason_first(env):
+    """A rule frozen before 14 Nov with too few forward trades is not told "has 10 forward trades of the 100
+    needed", which reads as if waiting made it eligible: it is research only, and that comes first."""
+    _freeze(env.store, BEST, n=10, pnl=0.03, every_coin=False)
+    _ok, why, _rows = LT._survey(env.store, env.cfg, NOW)
+    assert why[BEST].startswith("is research only: scored without serial crews' coins"), why[BEST]
+
+
+def test_the_owner_is_told_of_research_records_in_plain_words_and_shown_the_rules_that_can_qualify(env):
+    """/test with nothing eligible listed the three "closest" rules, all three research records that can never
+    qualify, each with the code's own words (crew "", crew skip), and the one rule ten trades short was not shown.
+    Research records are left out of the list; one plain line says how many there are. No reply to the owner holds
+    a code word, also not for /test <id> and /test <id> go on such a rule."""
+    f98 = {"kind": "hunt", "sol": 5.0, "window": 1.0, "max_buyers": 2, "dev_max": 1.0, "crew": "", "bots": ""}
+    for k, sid in enumerate(("f98f8abd6a", "c5ca340caf", "0123456789")):  # frozen before 14 Nov
+        _freeze(env.store, sid, n=600, pnl=0.03 - k * 0.001, trigger={**f98, "window": 1.0 + k}, every_coin=False)
+    _freeze(env.store, "dddddddddd", n=90, pnl=0.02, trigger={**f98, "sol": 6.0})  # as live, ten trades short
+    reply = _send(env)
+    assert reply.startswith("No hunt strategy qualifies") and "Closest now:\ndddddddddd " in reply
+    assert "has 90 forward trades of the 100 needed" in reply
+    assert not any(sid in reply for sid in ("f98f8abd6a", "c5ca340caf", "0123456789"))
+    assert ("3 older launch rules were scored without a group of coins the live sniper buys: research only"
+            in reply)  # fmt: skip
+    for text in (reply, _refused(env, "f98f8abd6a", "go"), _send(env, "f98f8abd6a")):
+        assert 'crew ""' not in text and "(crew" not in text and "crew skip" not in text, text
+    assert "without serial crews' coins" in _send(env, "f98f8abd6a")
+    env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
+    _freeze(env.store, BEST, n=600, pnl=0.03, every_coin=False)  # one, and nothing else frozen
+    alone = _send(env)
+    assert "1 older launch rule was scored without a group of coins the live sniper buys: research only" in alone
+    assert "Closest now" not in alone and BEST not in alone
+
+
+def test_the_owners_digest_and_the_weeks_count_keep_research_records_apart(env):
+    """The digest's "Paper test at our landing ... best ..." named a research-only rule as the best at our landing,
+    and the week's "passed" counted it. A rule whose record is not what a sniper would trade is never "at our
+    landing", never "best" and never "passed"; such rules have one sentence of their own. Before the stored rules
+    are migrated and after."""
+    from snipetech.operator import research, roles
+
+    old = _freeze(env.store, BEST, pnl=0.03, every_coin=False)  # frozen before 14 Nov: 150 trades, +4.5 SOL
+    new = _freeze(env.store, SECOND, pnl=0.01, n=40)  # frozen since: 40 trades, +0.4 SOL
+    env.store._exec("UPDATE paper_trades SET entry_ts = trigger_ts")  # the digest reads when each trade was bought
+    for s, n in ((old, 150), (new, 40)):  # each trade's launchpad, as the run tags it: the report keeps its numbers
+        env.store.set_paper_venues((s["id"], f"{s['id']}-{k}", "pumpfun") for k in range(n))
+    for migrated in (False, True):
+        if migrated:
+            assert paper.migrate_crew(env.store, now=NOW) == 1
+        line = research._paper_line(env.store, NOW - 24 * 3600, NOW)
+        assert line.startswith("Paper test at our landing: 40 trades, +0.400 SOL; best " + new["label"][:60]), line
+        assert "Research records, not what a sniper would trade: 1 rule, 150 trades, +4.500 SOL" in line
+        assert old["label"][:20] not in line.split("Research records")[0]
+        paper.report(env.store, env.cfg, now=NOW)  # writes the kept rows the count reads
+        counts = roles.week_counts(env.paths, NOW, env.store)
+        assert (counts["frozen"], counts["passed"]) == (2, 1), counts
+    env.store.set_coverage("paper_strategies", {"strategies": [paper.frozen(env.store)["strategies"][0]]})
+    only = research._paper_line(env.store, NOW - 24 * 3600, NOW)
+    assert only.startswith("Paper test at our landing: no rule is tested there. Research records, not what a sniper "
+                           "would trade: 1 rule, 150 trades, +4.500 SOL")  # fmt: skip
 
 
 def test_a_hunt_on_a_wallet_group_frozen_before_is_not_refused_for_crews_coins(env):

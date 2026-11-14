@@ -177,7 +177,8 @@ def test_a_hypothesis_names_its_venue_and_only_a_launch_type_rule_takes_one():
 
 
 def test_no_sniper_is_built_for_a_rule_its_platforms_cannot_buy():
-    s = {"id": "x", "label": "x", "trigger": HUNT_LL.__dict__, "exit": EXIT.to_dict(), "buy_sol": 0.2}
+    s = {"id": "x", "every_coin": True,
+         "label": "x", "trigger": HUNT_LL.__dict__, "exit": EXIT.to_dict(), "buy_sol": 0.2}
     with pytest.raises(ValueError, match="LaunchLab"):
         strategy_sniper(s, 1, "hunt")
     assert strategy_sniper(s | {"trigger": HUNT.__dict__}, 1, "hunt").config["platforms"] == ["pumpfun"]

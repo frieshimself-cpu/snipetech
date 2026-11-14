@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from snipetech import report as R
 from snipetech.analysis import paper
 from snipetech.analysis.lab import (
     CREW_CHOICES,
@@ -56,11 +57,12 @@ URI = "ipfs://one-file-many-coins"
 FIXTURE = Path(__file__).parent / "fixtures" / "paper_strategies_14nov.json.gz"
 
 
-def world(store: Store, n: int, crew: tuple[int, ...]) -> list[str]:
+def world(store: Store, n: int, crew: tuple[int, ...], first: int = 0) -> list[str]:
     """`n` launches a minute apart, each crossing the 2 SOL hunt threshold with a 2.5 SOL buy five blocks in, bought
     up for some seconds and sold off. The coins numbered in `crew` share one metadata file and come from two
-    creators taking turns: a serial crew. Returns the crew's coins."""
-    for k in range(n):
+    creators taking turns: a serial crew. Returns the crew's coins. `first`: the coins before it are there already
+    (a tape that grew)."""
+    for k in range(first, n):
         m = Market(store, addr(f"cal-{k}"), addr(f"cal-dev-{k}"), START + k * 60, 40_000_000 + k * 1000)
         m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
         m.buy(addr(f"cal-small-{k}"), 0.2, 2)
@@ -239,7 +241,7 @@ def test_every_ranked_launch_rule_says_how_many_of_its_moments_are_crews_coins()
     assert "25 of its 75 moments (33 %) are serial crews' coins" in every["crew"]["line"]
     assert skip["crew"]["moments"] == 0 and skip["crew"]["share"] == 0 and skip["crew"]["hindsight"] is True
     assert skip["crew"]["left_out"] == 25 and skip["crew"]["left_out_share"] == pytest.approx(1 / 3)
-    assert "left out" in skip["crew"]["line"] and "25" in skip["crew"]["line"]
+    assert skip["crew"]["fired"] == 75 and "passed over 25 of the 75 coins it fired on" in skip["crew"]["line"]
     assert only["crew"]["moments"] == 25 and only["crew"]["share"] == 1 and "alone" in only["crew"]["line"]
     assert "research_only" not in every
     assert skip["research_only"] is True and skip["research_only_why"] == crew_why(SKIP)
@@ -295,7 +297,7 @@ def test_the_sniper_builder_refuses_skip_and_only_and_builds_the_default():
         return {"id": "x", "label": "hunt", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
                 "trigger": dict(trig.__dict__)} | more  # fmt: skip
 
-    built = strategy_sniper(strat(HUNT))
+    built = strategy_sniper(strat(HUNT, every_coin=True))  # a stored record (it has an id), frozen since 14 Nov
     assert built.config["mode"] == "hunt" and built.config["hunt"]["thresholds"]["minTotalSol"] == 2
     with pytest.raises(ValueError, match="without serial crews' coins") as exc:
         strategy_sniper(strat(SKIP))
@@ -303,7 +305,7 @@ def test_the_sniper_builder_refuses_skip_and_only_and_builds_the_default():
     with pytest.raises(ValueError, match="crew only"):
         strategy_sniper(strat(ONLY))
     # a rule frozen with its lab's own count says its own share, not the general one
-    own = strat(SKIP, lab={"crew": {"moments": 0, "of": 50, "left_out": 25, "left_out_share": 1 / 3}})
+    own = strat(SKIP, lab={"crew": {"moments": 0, "of": 50, "left_out": 25, "fired": 75, "left_out_share": 1 / 3}})
     with pytest.raises(ValueError, match="25 of the 75 coins it fired on") as exc:
         strategy_sniper(own)
     assert "33 %" in str(exc.value)
@@ -477,7 +479,9 @@ def test_the_migration_keeps_a_rules_id_trades_and_place_and_marks_it_research_o
     assert [s["id"] for s in after["strategies"]] == [s["id"] for s in before["strategies"]]
     hunt = after["strategies"][0]
     assert hunt["id"] == OLD_HUNT_ID and hunt["trigger"]["crew"] == "skip"
-    assert hunt == rules["hunt"] | {"trigger": rules["hunt"]["trigger"] | {"crew": "skip"}}  # nothing else moved
+    # its crew and, so that it is told from the same trigger frozen anew, its name: nothing else of the record moved
+    assert hunt == rules["hunt"] | {"trigger": rules["hunt"]["trigger"] | {"crew": "skip"},
+                                    "label": f"{HUNT.label()} (without serial crews' coins) | timer"}  # fmt: skip
     assert after["strategies"][1:] == before["strategies"][1:]  # the bundlers' hunt, the copy and the MIG rule
     assert after["superseded"][0]["id"] == "0ld1and1ng" and after["superseded"][0]["trigger"]["crew"] == "skip"
     assert store.paper_trades(OLD_HUNT_ID) == trades
@@ -523,8 +527,8 @@ def test_the_forward_run_migrates_first_and_the_old_rule_goes_on_as_it_was_score
     assert [r["id"] for r in rep["strategies"]] == place
     row = rep["strategies"][0]
     assert row["id"] == OLD_HUNT_ID and row["n"] == 30
-    assert "without serial crews' coins" in row["exit_note"] and row["research_only"] is True
-    assert "serial crews' coins" in row["crew_note"]
+    assert row["exit_note"] == "research only: scored without serial crews' coins" and row["research_only"] is True
+    assert "OKTech cannot tell" in rep["research_only_why"][row["exit_note"]]  # the reason, once in the answer
     assert all("exit_note" not in r and "research_only" not in r for r in rep["strategies"][1:])
     store.close()
 
@@ -642,3 +646,396 @@ def test_the_default_and_the_old_rule_are_one_sniper_live():
     assert paper.live_id(old) == paper.live_id(new) == OLD_UNWATCHED_ID
     only = _stored(ONLY, OLD_ONLY_ID, every_coin=False)
     assert paper.live_id(only) not in (OLD_UNWATCHED_ID, paper.live_id(new))
+
+
+# == round 2 (14 Nov, five reviews) ====================================================================================
+# -- A. a forward run of the old code after the migration --------------------------------------------------------------
+
+
+def _old_code_run(store: Store, sid: str, now: float) -> dict:
+    """A forward run as the code before 14 Nov does it on this store (a rollback, or a job of the old code that
+    outlives a deploy): it passes over serial crews' coins for the rule `sid` whatever its record says, writes none
+    of the stored rules, and leaves the run's state without the mark of the code that scores every coin."""
+    cov, flag = store.coverage("paper_strategies"), store.coverage(paper.CREW_KEY)
+    as_old = [s | {"trigger": s["trigger"] | {"crew": "skip"}} if s["id"] == sid else s for s in cov["strategies"]]
+    store.set_coverage("paper_strategies", cov | {"strategies": as_old})
+    out = paper.run(store, _cfg(), now=now)
+    state = store.coverage("paper")
+    store.set_coverage("paper_strategies", cov)
+    store.set_coverage(paper.CREW_KEY, flag)
+    store.set_coverage("paper", {"done_until": state["done_until"], "last_run": state["last_run"]})
+    return out
+
+
+def _frozen_default(store: Store) -> tuple[dict, set[str]]:
+    """75 launches, every third a serial crew's; the store migrated at minute 50, the default hunt frozen at minute
+    55 by today's code (X), and one run of today's code over the launches of minutes 55 to 61."""
+    crew = set(world(store, 75, tuple(range(0, 75, 3))))
+    paper.migrate_crew(store, now=START + 50 * 60)
+    (x,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)["frozen"]
+    paper.run(store, _cfg(), now=START + 62 * 60 + paper.SETTLE_SECS)
+    assert {t["mint"] for t in store.paper_trades(x["id"])} == {addr(f"cal-{k}") for k in range(55, 62)}
+    return x, crew
+
+
+def test_a_run_of_old_code_after_the_migration_makes_the_rules_it_scored_research_only():
+    """Two reviewers, one proof. `every_coin` says who FROZE a rule, not who scored its forward trades. Old code that
+    runs `paper run` after today's code froze a default rule X passes over crews' coins for X and moves the run's
+    mark on: X's record is then kinder than its sniper, and nothing in X says so. The run's state carries the mark
+    of the code that wrote it; a state without it, written after the migration, is a run of other code: every
+    default rule it scored is marked, keeps its id and its `every_coin`, and is research only everywhere, before
+    the mark is written (any reader) and after (the next run writes it, and says so)."""
+    from snipetech.oktech import strategy_sniper
+    from snipetech.operator import autotest, live_test
+
+    store = Store(":memory:")
+    x, crew = _frozen_default(store)
+    sid = x["id"]
+    assert store.coverage("paper")["crew"] == 1  # the state today's code writes
+    assert _old_code_run(store, sid, START + 70 * 60 + paper.SETTLE_SECS)["new_trades"] == 5  # 62 to 69, no crew coin
+    coins = {t["mint"] for t in store.paper_trades(sid)}
+    assert len(coins) == 12 and coins & crew == {addr("cal-57"), addr("cal-60")}  # 63, 66 and 69 are missing
+    window = [START + 62 * 60, START + 70 * 60]
+    # any reader of the stored rules sees it at once, nothing written yet
+    seen = paper.frozen(store)["strategies"][-1]
+    assert seen["id"] == sid and seen[paper.EVERY_COIN] is True and seen[paper.OLD_CODE] == window
+    assert paper.OLD_CODE not in store.coverage("paper_strategies")["strategies"][-1]
+    why = paper.crew_not_as_live(seen)
+    assert "left serial crews' coins out" in why and "research only" in why and "freeze" in why.lower()
+    assert paper.not_as_live(seen) == why
+    row = next(r for r in paper.report(store, _cfg(), NOW)["strategies"] if r["id"] == sid)
+    assert row["research_only"] is True and "left serial crews' coins out" in row["exit_note"]
+    assert live_test._why_not(row, seen).startswith("is research only")
+    with pytest.raises(ValueError, match="left serial crews' coins out"):
+        strategy_sniper(seen, 1, "hunt")
+    assert autotest.live_ids(store)[sid] == paper.live_id(x)  # the sniper it is does not change
+    # the next run of today's code writes the mark, says so, and goes on scoring X on every coin
+    out = paper.run(store, _cfg(), now=NOW)
+    assert out["old_code_scored"] == {"from": window[0], "until": window[1], "rules": [sid]}
+    kept = store.coverage("paper_strategies")["strategies"][-1]
+    assert kept["id"] == sid and kept[paper.EVERY_COIN] is True and kept[paper.OLD_CODE] == window
+    assert kept == x | {paper.OLD_CODE: window, "label": kept["label"]} and kept["label"] != x["label"]
+    assert "in part scored without serial crews' coins" in kept["label"]
+    assert store.coverage("paper")["crew"] == 1 and addr("cal-72") in {t["mint"] for t in store.paper_trades(sid)}
+    assert not {addr(f"cal-{k}") for k in (63, 66, 69)} & {t["mint"] for t in store.paper_trades(sid)}
+    again = paper.run(store, _cfg(), now=NOW + 60)
+    assert "old_code_scored" not in again
+    assert "left serial crews' coins out" in paper.crew_not_as_live(paper.frozen(store)["strategies"][-1])
+    text = R.render_paper("run", out)
+    assert "left serial crews' coins out" in text and sid in text
+    store.close()
+
+
+def test_a_rule_scored_in_part_by_old_code_can_be_frozen_again_under_an_id_of_its_own():
+    """ "Freeze it again" has to work: one forward record a rule, and the same trigger with the same exit is the same
+    id. A record marked as scored in part by old code no longer stands for its rule, and the same rule frozen again
+    is a second making of it (`again`: 1), with an id of its own and a record that starts empty; it is the same
+    sniper live (paper.live_id), so what the automatic test learnt of it holds."""
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    _old_code_run(store, x["id"], START + 70 * 60 + paper.SETTLE_SECS)
+    paper.run(store, _cfg(), now=NOW)
+    old = store.coverage("paper_strategies")["strategies"][-1]
+    out = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW)
+    (new,) = out["frozen"]
+    assert (new["trigger"], new["exit"], new["position"], new["latency"]) == (x["trigger"], x["exit"], "+3", 1)
+    assert new["id"] != x["id"] and new[paper.AGAIN] == 1 and new["id"] == paper.sid_of(new)
+    assert paper.not_as_live(new) is None and paper.live_id(new) == paper.live_id(x)
+    assert store.paper_trades(new["id"]) == [] and len(store.paper_trades(x["id"])) > 12
+    assert [s["id"] for s in store.coverage("paper_strategies")["strategies"]] == [x["id"], new["id"]]
+    assert store.coverage("paper_strategies")["strategies"][0] == old  # the marked record is as it was
+    third = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=NOW + 60)
+    assert third["frozen"] == []  # the rule has its one record again
+    store.close()
+
+
+def test_a_store_only_todays_code_ran_on_is_untouched_by_the_old_code_check():
+    """Nothing is marked while every run's state carries the mark, however many runs and freezes there were; nor on a
+    store never migrated, whose state the old code wrote before the change."""
+    store = Store(":memory:")
+    x, _crew = _frozen_default(store)
+    for now in (START + 70 * 60 + paper.SETTLE_SECS, NOW):
+        assert "old_code_scored" not in paper.run(store, _cfg(), now=now)
+    (kept,) = store.coverage("paper_strategies")["strategies"]
+    assert kept == x and paper.frozen(store)["strategies"] == [x] and paper.not_as_live(kept) is None
+    assert {addr(f"cal-{k}") for k in (63, 66, 69)} <= {t["mint"] for t in store.paper_trades(x["id"])}
+    assert store.coverage(paper.CREW_KEY)["scored_until"] == store.coverage("paper")["done_until"]
+    store.close()
+    old, _crew, _rules = _legacy_store()  # the state as the old code left it, before any migration
+    assert "crew" not in old.coverage("paper")
+    assert "old_code_scored" not in paper.run(old, _cfg(), now=NOW)
+    assert all(paper.OLD_CODE not in s for s in old.coverage("paper_strategies")["strategies"])
+    old.close()
+
+
+# -- B3 / B4 / D. what a research record is called, and how often its reason is said ----------------------------------
+
+
+def test_a_rule_frozen_before_is_told_apart_by_its_name():
+    """A migrated rule kept its stored label, and the same trigger frozen anew got the identical one: two rows that
+    differed only by id on the live page, in the report, the digest and /test. The old rule's label says "(without
+    serial crews' coins)" after its trigger part, as a reader sees it (`as_frozen`) and as the migration writes
+    it, once."""
+    old = _stored(HUNT, OLD_HUNT_ID, every_coin=False)
+    want = f"{HUNT.label()} (without serial crews' coins) | timer"
+    assert paper.as_frozen(old)["label"] == want and old["label"] == f"{HUNT.label()} | timer"
+    assert paper.as_frozen(paper.as_frozen(old))["label"] == want
+    bare = _stored(HUNT, OLD_HUNT_ID, every_coin=False) | {"label": "a rule with no exit part"}
+    assert paper.as_frozen(bare)["label"] == "a rule with no exit part (without serial crews' coins)"
+    store, _crew, _rules = _legacy_store()
+    paper.migrate_crew(store, now=NOW)
+    paper.migrate_crew(store, now=NOW + 60)
+    stored = store.coverage("paper_strategies")
+    assert stored["strategies"][0]["label"] == want and stored["superseded"][0]["label"] == want
+    (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)["frozen"]
+    assert "serial crews" not in new["label"] and new["label"].split(" | ")[0] == HUNT.label()
+    labels = [r["label"] for r in paper.report(store, _cfg(), NOW)["strategies"]]
+    assert len(labels) == len(set(labels))
+    store.close()
+
+
+def test_the_report_and_a_freeze_say_the_long_reason_once_and_each_row_a_short_note():
+    """On the server's rules the 444-character reason stood twice in every row (exit_note and crew_note): 40 kB more
+    in each paper report. The reason stands once at the top of the answer (`research_only_why`, by its short note);
+    a row carries `research_only` and the short note. A freeze's `not_as_live` leaves refuted rules out."""
+    store, _crew, _rules = _legacy_store()
+    paper.migrate_crew(store, now=NOW)
+    cov = store.coverage("paper_strategies")
+    gone = _stored(replace(HUNT, sol=9.0), "9e9e9e9e9e", every_coin=False) | {
+        "refuted": {"at": NOW - 3600, "trades": 400, "mean_sol": -0.02}
+    }
+    store.set_coverage("paper_strategies", cov | {"strategies": [*cov["strategies"], gone]})
+    rep = paper.report(store, _cfg(), NOW)
+    note = "research only: scored without serial crews' coins"
+    rows = {r["id"]: r for r in rep["strategies"]}
+    for sid in (OLD_HUNT_ID, "9e9e9e9e9e"):
+        assert rows[sid]["research_only"] is True and rows[sid]["exit_note"] == note and "crew_note" not in rows[sid]
+    assert set(rep["research_only_why"]) == {note}
+    assert len(rep["research_only_why"][note]) > 300 and "OKTech cannot tell" in rep["research_only_why"][note]
+    assert json.dumps(rep).count("OKTech cannot tell such a coin") == 1
+    out = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)
+    assert [x["id"] for x in out["not_as_live"]] == [OLD_HUNT_ID]  # the refuted one is not listed
+    assert out["not_as_live"][0] == {"id": OLD_HUNT_ID, "label": rows[OLD_HUNT_ID]["label"], "why": note,
+                                     "research_only": True}  # fmt: skip
+    assert out["research_only_why"] == rep["research_only_why"]
+    assert json.dumps(out).count("OKTech cannot tell such a coin") == 1
+    store.close()
+
+
+def test_the_reports_text_lists_research_records_apart_and_the_run_does_not_count_them_as_live():
+    """`paper report` listed research-only rules in the table headed "Scored where live trades land", and `paper
+    run` counted their new trades "at the live landing". They have a group of their own, as the rules at a place
+    asked for have, and the run counts their trades apart."""
+    store, _crew, _rules = _legacy_store()
+    (new,) = paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)["frozen"]
+    out = paper.run(store, _cfg(), now=NOW)
+    assert out["new_trades"] == 17 + 20 and out["new_trades_research"] == 17
+    line = R.render_paper("run", out).splitlines()[0]
+    assert "20 at the live landing" in line and "17 on research records" in line and "no sniper trades them" in line
+    text = R.render_paper("report", paper.report(store, _cfg(), NOW))
+    live, research = text.split("Research records", 1)
+    assert new["id"] in live and OLD_HUNT_ID not in live.split("=" * 72, 1)[1]
+    assert research.startswith(": scored without serial crews' coins, or on them alone; no sniper trades them")
+    assert OLD_HUNT_ID in research and new["id"] not in research.split("mean / bound", 1)[0]
+    assert text.count("OKTech cannot tell such a coin") == 1  # the reason once, under the tables
+    only_research, _c, _r = _legacy_store()
+    paper.migrate_crew(only_research, now=NOW)
+    solo = paper.run(only_research, _cfg(), now=NOW)
+    assert solo["new_trades"] == solo["new_trades_research"] == 17
+    assert "at the live landing" not in R.render_paper("run", solo).splitlines()[0]
+    store.close()
+    only_research.close()
+
+
+def test_the_freeze_text_names_the_research_only_records():
+    """What `paper freeze` prints, without --json, for a rule scored without serial crews' coins: its own line, never
+    "no longer the record of its rule", and the long reason once."""
+    note = "research only: scored without serial crews' coins"
+    text = R.render_paper("freeze", {"tape_hours": 1.0, "frozen": [], "kept": [],
+                                     "not_as_live": [{"id": "d4cbfb7ae1", "label": "hunt", "why": note,
+                                                      "research_only": True},
+                                                     {"id": "f98f8abd6a", "label": "hunt 5", "why": note,
+                                                      "research_only": True}],
+                                     "research_only_why": {note: crew_why(SKIP)}})  # fmt: skip
+    assert "research only, never goes live: d4cbfb7ae1, f98f8abd6a: scored without serial crews' coins" in text
+    assert "no longer the record of its rule" not in text and text.count("OKTech cannot tell") == 1
+
+
+def test_the_flag_names_each_moved_rule_once():
+    """A stale write-back (a job of the old code writes the rules as it read them) makes the next pass move the same
+    rules again: the flag's `moved` list names each id once."""
+    store, _crew, _rules = _legacy_store()
+    before = store.coverage("paper_strategies")
+    assert paper.migrate_crew(store, now=NOW) == 2
+    store.set_coverage("paper_strategies", before)  # written back as it was read before the migration
+    assert paper.migrate_crew(store, now=NOW + 60) == 2
+    assert store.coverage(paper.CREW_KEY)["moved"] == [OLD_HUNT_ID, "0ld1and1ng"]
+    store.close()
+
+
+def test_a_pass_with_nothing_to_do_takes_no_write_lock():
+    """Every paper run and every freeze asks the migration first. Once it has run, the question is a plain read: no
+    write transaction is opened (it took the database's write lock for 1.3 ms each time)."""
+    store, _crew, _rules = _legacy_store()
+    writes: list[int] = []
+    real = store._write
+
+    def counted(fn, immediate=True):
+        writes.append(1)
+        return real(fn, immediate)
+
+    store._write = counted
+    assert paper.migrate_crew(store, now=NOW) == 2 and len(writes) == 1
+    assert paper.migrate_crew(store, now=NOW + 60) == 0 and paper.migrate_crew(store, now=NOW + 120) == 0
+    assert len(writes) == 1
+    store.close()
+
+
+def test_a_stored_rule_is_as_live_only_with_the_exact_default_and_its_mark():
+    """`crew_not_as_live` passes a stored launch-type rule (not a hunt on a wallet group) only when its crew is
+    exactly "" and it carries `every_coin`. Any other value, "Skip" or a number among them, is refused, and the
+    sniper builder reads every dict with an id or a freeze time as a stored record."""
+    from snipetech.oktech import strategy_sniper
+
+    ok = _stored(HUNT, "aaaaaaaaaa", every_coin=True)
+    assert paper.crew_not_as_live(ok) is None
+    for crew in ("Skip", "SKIP", " ", "all", 0, 1, None, False):
+        odd = ok | {"trigger": ok["trigger"] | {"crew": crew}}
+        assert paper.crew_not_as_live(odd), crew
+        with pytest.raises(ValueError, match="research only"):
+            strategy_sniper(odd)
+    no_key = ok | {"trigger": {k: v for k, v in ok["trigger"].items() if k != "crew"}}
+    assert paper.crew_not_as_live(no_key) is None  # no crew named, and the mark: every coin
+    by_id = {k: v for k, v in _stored(HUNT, OLD_HUNT_ID, every_coin=False).items() if k != "from_ts"}
+    with pytest.raises(ValueError, match="without serial crews' coins"):
+        strategy_sniper(by_id)  # an id and no freeze time: a stored record all the same
+    by_time = {k: v for k, v in _stored(HUNT, OLD_HUNT_ID, every_coin=False).items() if k != "id"}
+    with pytest.raises(ValueError, match="without serial crews' coins"):
+        strategy_sniper(by_time)
+    lab_row = {"trigger": dict(HUNT.__dict__), "exit": {"stop_loss": 0.2, "max_hold_secs": 5}, "buy_sol": 0.2}
+    assert strategy_sniper(lab_row).config["mode"] == "hunt"  # no stored record: the trigger's own words decide
+
+
+# -- E. the scoring's own words ----------------------------------------------------------------------------------------
+
+
+def test_a_skip_rules_share_is_over_the_coins_it_fired_on():
+    """`left_out` counted every crew coin the rule fired on and `of` only scored moments, so at a size where moments
+    are left out for size the line said "of the N coins it fired on" with N too small (at 60 SOL here: 3 left out
+    "of 3", 100 %). `fired` is the coins the rule fired on (scored, left out for size or for the PumpSwap tape, or
+    passed over as a crew's), and the share is over that: the same 3 of 33 at any size, the default rule's own
+    share where every moment is scored."""
+    store = Store(":memory:")
+    world(store, 33, (5, 15, 25))
+    for buy in (0.2, 60.0):
+        data = collect(store, _cfg(), buy, 0, "+6", 0.0045, landings=paper.LAUNCH_LANDINGS, triggers=[HUNT, SKIP],
+                       exits=[TIMER], kols={})  # fmt: skip
+        size = data["size"]["triggers"][SKIP.label()]
+        assert (size["scored"], sum(size["skipped"].values())) == ((30, 0) if buy < 1 else (0, 30))
+        skip = data["crew"]["triggers"][SKIP.label()]
+        assert (skip["of"], skip["left_out"], skip["fired"]) == (size["scored"], 3, 33)
+        assert skip["left_out_share"] == pytest.approx(3 / 33)
+        assert "3 of the 33 coins it fired on (9.1 %)" in skip["line"]
+        own = crew_why(SKIP, skip)
+        assert "3 of the 33 coins it fired on, 9.1 %" in own and "37 %" not in own
+    every = data["crew"]["triggers"].get(HUNT.label())
+    assert every is None or every["of"] == 0  # at 60 SOL the default has no scored moment to count crews' coins in
+    assert crew_why(SKIP, {"left_out": 3, "of": 30}) == crew_why(SKIP)  # no fired count kept: the general share
+    store.close()
+
+
+def test_forward_a_crew_is_known_only_once_its_third_coin_has_launched_and_the_words_say_so():
+    """The lab knows a crew over its whole window; the forward run when it scores. A crew's third launch after the
+    rule fired on its first two: the default is scored on the same 33 coins on both sides, whenever the crew became
+    one. A "skip" record holds the crew's two earlier coins forward (lab 30, forward 32) and an "only" record lacks
+    them (lab 3, forward 1). The reasons say it, and the run says how many coins each rule passed over."""
+    from snipetech.analysis.lab import CREW_ONLY_WHY, CREW_SKIP_WHY
+
+    store = Store(":memory:")
+    world(store, 20, ())
+    for j, k in enumerate((5, 15)):  # two launches on one file: no crew yet
+        store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", (URI, addr(f"crew-dev-{j}"), addr(f"cal-{k}")))
+    mid = START + 19 * 60 + 30 + paper.SETTLE_SECS
+    store.set_coverage("tape", {"spans": [[START - 100, mid]]})
+    rules = [_stored(HUNT, "aaaaaaaaaa", every_coin=True), _stored(SKIP, "bbbbbbbbbb", every_coin=False),
+             _stored(ONLY, "cccccccccc", every_coin=False)]  # fmt: skip
+    _put(store, rules)
+    first = paper.run(store, _cfg(), now=mid)
+    assert first["crew_passed"] == {"cccccccccc": 20}  # no crew is known: "only" passes over every coin
+    world(store, 33, (5, 15, 25), first=20)  # thirteen more launches, coin 25 the crew's third
+    out = paper.run(store, _cfg(), now=NOW)
+    assert out["crew_passed"] == {"bbbbbbbbbb": 1, "cccccccccc": 13}  # coin 19 still traded, and twelve new ones
+    forward = [{t["mint"] for t in store.paper_trades(s["id"])} for s in rules]
+    lab = [_coins(_lab(store, [HUNT, SKIP, ONLY]), ti) for ti in range(3)]
+    every, crew = {addr(f"cal-{k}") for k in range(33)}, {addr(f"cal-{k}") for k in (5, 15, 25)}
+    assert lab[0] == forward[0] == every  # the default: the same coins, whenever the crew became one
+    assert lab[1] == every - crew and lab[2] == crew  # the lab: hindsight
+    assert forward[1] == every - {addr("cal-25")} and forward[2] == {addr("cal-25")}  # forward: once it is known
+    said = "a crew is known only once its third coin has launched"
+    assert said in CREW_SKIP_WHY and "holds the crews' earlier coins" in CREW_SKIP_WHY
+    assert said in CREW_ONLY_WHY and "lacks the crews' earlier coins" in CREW_ONLY_WHY
+    assert said in crew_why(SKIP) and said in paper.crew_not_as_live(_stored(HUNT, OLD_HUNT_ID, every_coin=False))
+    assert "hindsight" in crew_skips.__doc__ and "its third coin" in crew_skips.__doc__
+    store.close()
+
+
+def test_an_only_rule_passes_over_a_coin_whose_launch_the_tape_does_not_hold():
+    """A whale or burst rule fires on a coin whose launch the tape does not hold. With crew "only" such a coin was
+    scored (it is no known crew's coin), and the block then said "all 4 of its moments" with 3 of 4 crews' coins.
+    For "only", a coin without a known launch is not a crew's coin: passed over, and moments equal `of`."""
+    store = Store(":memory:")
+    world(store, 8, (0, 1, 2))
+    store._exec("DELETE FROM launches WHERE mint=?", (addr("cal-5"),))
+    only, skip, plain = (Trigger("whale", sol=2.0, crew=c) for c in ("only", "skip", ""))
+    assert crew_skips(only, None, {URI}) and not crew_skips(skip, None, {URI}) and not crew_skips(plain, None, {URI})
+    data = collect(store, _cfg(), 0.2, 0, "+6", 0.0045, landings=paper.LAUNCH_LANDINGS, triggers=[only, plain],
+                   exits=[TIMER], kols={})  # fmt: skip
+    assert _coins(data, 0) == {addr(f"cal-{k}") for k in (0, 1, 2)}
+    assert addr("cal-5") in _coins(data, 1)  # the default still scores it: the sniper buys it
+    block = data["crew"]["triggers"][only.label()]
+    assert block["moments"] == block["of"] == 3 and "all 3 of its moments" in block["line"]
+    store.close()
+
+
+# -- F. promises no test held ------------------------------------------------------------------------------------------
+
+
+def test_the_id_of_a_rule_frozen_on_every_coin_is_written_down():
+    """Every launch-type rule frozen since 14 Nov hangs its record on this id: a change to how the default is hashed
+    would move them all, and the suite said of the new id only that it is not the old one."""
+    assert paper.strategy_id(HUNT.__dict__, EXIT, "+3", 1, 0.2) == "0a05047ff5"
+    assert paper.strategy_id(HUNT.__dict__, EXIT, "+3", 1, 0.2, again=1) != "0a05047ff5"
+    assert paper.strategy_id(HUNT.__dict__, EXIT, "+3", 1, 0.2, again=0) == "0a05047ff5"
+
+
+def test_rescore_prices_a_default_rules_crew_coins_again_and_leaves_a_skip_rules():
+    """`paper rescore` asks the same function as the lab and the run. Twelve coins, no crew yet, both rules trade
+    every one; three turn out to be one crew's. Priced again: the default rule's twelve are its moments still; the
+    "skip" rule would not fire on the three today, so they are left as they were and counted."""
+    store = Store(":memory:")
+    world(store, 12, ())
+    rules = [_stored(HUNT, "aaaaaaaaaa", every_coin=True), _stored(SKIP, "bbbbbbbbbb", every_coin=False)]
+    _put(store, rules)
+    paper.run(store, _cfg(), now=NOW)
+    assert [len(store.paper_trades(s["id"])) for s in rules] == [12, 12]
+    for j, k in enumerate((2, 5, 8)):
+        store._exec(
+            "UPDATE launches SET uri=?, creator=? WHERE mint=?", (URI, addr(f"crew-dev-{j % 2}"), addr(f"cal-{k}"))
+        )
+    store._exec("UPDATE paper_trades SET data=json_remove(data, '$.model')")  # rows another model priced
+    out = paper.rescore(store, _cfg(), ids=["aaaaaaaaaa", "bbbbbbbbbb"], now=NOW)
+    by = {s["id"]: s for s in out["strategies"]}
+    assert by["aaaaaaaaaa"]["rescored"] == 12 and not by["aaaaaaaaaa"].get("left")
+    assert by["bbbbbbbbbb"]["rescored"] == 9 and by["bbbbbbbbbb"]["left"] == {"moment": 3}
+    store.close()
+
+
+def test_a_freeze_on_a_store_never_migrated_migrates_it_and_says_which_rules_it_moved():
+    """`paper freeze` asks the migration before it reads a rule: the flag, the one record of which ids were moved, is
+    written by the freeze that finds the store as the old code left it."""
+    store, _crew, _rules = _legacy_store()
+    assert store.coverage(paper.CREW_KEY) == {}
+    paper.freeze(store, _cfg(), top=4, triggers=[HUNT], now=START + 55 * 60)
+    flag = store.coverage(paper.CREW_KEY)
+    assert flag["done"] is True and flag["moved"] == [OLD_HUNT_ID, "0ld1and1ng"]
+    store.close()

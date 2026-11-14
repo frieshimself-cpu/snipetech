@@ -515,11 +515,16 @@ def _paper_line(store: Store, since: float, now: float) -> str:
     """The paper test's new trades in the window. "At our landing" counts only the rules frozen where our trades land
     live; a rule frozen at a place asked for or with a bid (`paper.pinned`) has a sentence of its own that names the
     place and the bid, and never passes for a result at our landing (CLAUDE.md rule 2; until 12 Nov evening a rule
-    one place behind the wallet at a 0.01 SOL bid was the digest's "best at our landing")."""
-    active = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", [])}
+    one place behind the wallet at a 0.01 SOL bid was the digest's "best at our landing"). Nor does a rule whose
+    record is not what a sniper would trade (`paper.not_as_live`: every launch-type rule frozen before 14 Nov was
+    scored without serial crews' coins, which the live sniper buys): never "at our landing", never "best"; such
+    rules have one sentence of their own."""
+    from ..analysis.paper import bid_of, frozen, not_as_live, pinned, record
+
+    # each rule as it was scored (a rule frozen before 14 Nov reads as research only, migrated or not)
+    active = {s["id"]: s for s in frozen(store).get("strategies", [])}
     if not active:
         return "Paper test: no rule is being paper-tested yet"
-    from ..analysis.paper import bid_of, pinned, record
 
     found: dict[str, list[dict]] = {}
     for sid, mint, pnl, data in store._q("SELECT strategy, mint, pnl, data FROM paper_trades WHERE entry_ts > ? AND "
@@ -540,20 +545,26 @@ def _paper_line(store: Store, since: float, now: float) -> str:
         bid = bid_of(s)
         return f" ({s.get('position')}" + (f" with a {bid:g} SOL bid)" if bid > 0 else ", no bid charged)")
 
-    ours = [r for r in rows if not pinned(active[r[0]])]
-    asked = [r for r in rows if pinned(active[r[0]])]
-    own_rules = sum(1 for s in active.values() if pinned(s))
+    apart = {sid for sid, s in active.items() if not_as_live(s) is not None}  # records no sniper would trade
+    ours = [r for r in rows if r[0] not in apart and not pinned(active[r[0]])]
+    asked = [r for r in rows if r[0] not in apart and pinned(active[r[0]])]
+    research = [r for r in rows if r[0] in apart]
+    own_rules = sum(1 for sid, s in active.items() if sid not in apart and pinned(s))
     if ours:
         line = "Paper test at our landing: " + result(ours, lambda s: "")
-    elif len(active) > own_rules:
-        line = (f"Paper test at our landing: no new trades ({_n(len(active) - own_rules, 'rule')} waiting for their "
-                "signal)")  # fmt: skip
+    elif len(active) - len(apart) > own_rules:
+        line = (f"Paper test at our landing: no new trades ({_n(len(active) - len(apart) - own_rules, 'rule')} "
+                "waiting for their signal)")  # fmt: skip
     else:
         line = "Paper test at our landing: no rule is tested there"
     if asked:
         line += ". At a place asked for or with a bid, not where our copies land: " + result(asked, place)
     elif own_rules:
         line += f". At a place asked for or with a bid: no new trades ({_n(own_rules, 'rule')} waiting)"
+    if research:  # counted, never ranked and never named the best: no sniper would make these trades
+        n, total = sum(int(r[1]) for r in research), sum(float(r[2] or 0) for r in research)
+        line += (f". Research records, not what a sniper would trade: {_n(len(research), 'rule')}, {_n(n, 'trade')}, "
+                 f"{total:+.3f} SOL")  # fmt: skip
     return line
 
 

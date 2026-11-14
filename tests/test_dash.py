@@ -302,6 +302,25 @@ def test_the_page_shows_each_rules_record_as_the_agents_report_does(ops):
     assert page["copy1"]["trades"] == 5 and page["copy1"]["total_sol"] == -0.02
 
 
+def test_the_page_says_which_rules_are_research_records(ops):
+    """A launch-type rule frozen before 14 Nov was scored without serial crews' coins, which the live sniper buys: the
+    page marks it (`research_only`), so it is not read as a rule a sniper could trade. A copy rule is not marked,
+    nor a launch-type rule frozen since."""
+    from snipetech.store import Store
+
+    _paper_world(ops)
+    st = Store(ops.db)
+    try:
+        cov = st.coverage("paper_strategies")
+        since = dict(cov["strategies"][1]) | {"id": "hunt2", "label": "hunt2", "every_coin": True}
+        st.set_coverage("paper_strategies", cov | {"strategies": [*cov["strategies"], since]})
+    finally:
+        st.close()
+    page = {p["id"]: p for p in dash_state(ops, now=NOW)["paper"]["strategies"]}
+    assert page["hunt1"]["research_only"] is True and page["gone"]["research_only"] is True
+    assert page["copy1"]["research_only"] is False and page["hunt2"]["research_only"] is False
+
+
 def test_a_rule_the_paper_test_dropped_is_said_to_be_stopped_and_listed_last(ops):
     """18 of the 36 rules on the page were refuted (losing with enough trades; scored no more) and looked running."""
     _paper_world(ops)

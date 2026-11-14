@@ -57,6 +57,7 @@ from .lab import (
     ANY_BUYER_NOTE,
     COPY_EXIT_KINDS,
     COPY_LAND_SLOTS,
+    CREW_CHOICES,
     CREW_SKIP,
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
@@ -101,6 +102,7 @@ from .lab import (
     span_slot_secs,
     within_mig_cap,
 )
+from .lab import crew_note as trigger_crew_note
 from .stats import summarize
 
 # A trigger is scored once its exit has played out on the tape: SETTLE_SECS after it for an exit that is over within
@@ -148,7 +150,7 @@ def settle_secs(ex: ExitParams) -> float:
 
 
 def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, buy_sol: float,
-                buy_bid_sol: float = 0.0, asked: bool = False) -> str:  # fmt: skip
+                buy_bid_sol: float = 0.0, asked: bool = False, again: int = 0) -> str:  # fmt: skip
     """A short id for a trigger x exit at a landing and size. An exit field added later counts only when it is set,
     so a strategy frozen before it existed keeps its id and is not frozen a second time. So do the two things a
     hypothesis can be frozen with since 12 Nov: `buy_bid_sol`, a bid charged once on every buy, and `asked`, a landing
@@ -171,7 +173,11 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     had. "" is every coin, a different rule: it is hashed as a field that is set, so the same trigger frozen now has
     an id the store never held. Left as they always were: "only"; a trigger that names no crew at all (frozen before
     9 Nov: the old id); a hunt on a wallet group (`bots`), which never passed over a crew's coin, so its "" is the
-    rule it always was; and every rule that is no launch-type rule."""
+    rule it always was; and every rule that is no launch-type rule.
+
+    `again` (a stored rule's AGAIN): how many times the very same rule was frozen anew because its record no longer
+    stood for it (a record scored in part by old code, OLD_CODE). 0, every rule there is, is no part of the hash;
+    the first new making is 1, with an id of its own and a record that starts empty."""
     # exit fields added later, at their defaults: the watch delay and the copy exit (6 Nov evening), OKTech's migration
     # sell (7 Nov), selling out in parts (12 Nov: one part, one sale), OKTech's ladders and momentum hold (12 Nov: no
     # stages, no hold; the hold's lookback, longest wait and peak drop at ExitParams' defaults), the first part's own
@@ -209,6 +215,8 @@ def strategy_id(trigger: dict, exit_params: dict, position: str, latency: int, b
     extra: dict[str, Any] = {"buy_bid_sol": float(buy_bid_sol)} if float(buy_bid_sol or 0) > 0 else {}
     if asked:
         extra["asked"] = True
+    if int(again or 0) > 0:
+        extra["again"] = int(again)
     raw = json.dumps([trig, ex, position, latency, buy_sol] + ([extra] if extra else []), sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:10]
 
@@ -244,7 +252,27 @@ def pinned(strategy: dict) -> bool:
 # - A hunt on a wallet group (`bots`) never passed over a crew's coin: it is what it was, and stays as live.
 # - A rule frozen now with crew "" carries EVERY_COIN: the one way a stored launch-type "" counts as every coin.
 EVERY_COIN = "every_coin"  # on a stored launch-type rule: frozen by code that scores serial crews' coins for crew ""
-CREW_KEY = "paper:crew"  # coverage: the stored rules were migrated ({"done", "at", "moved": [ids], "last"})
+CREW_KEY = "paper:crew"  # coverage: the stored rules were migrated ({"done", "at", "moved": [ids], "last", ...})
+# -- a run of other code after the migration (14 Nov, two reviews) ---------------------------------------------------
+# EVERY_COIN says who FROZE a rule, not who scored its forward trades. If the code before 14 Nov runs `paper run`
+# after today's code froze a default rule (a rollback, or a job of the old code that outlives a forced deploy), it
+# passes over serial crews' coins for that rule and moves the run's mark on; the record is then kinder than the
+# sniper, and the rule's own fields would not say so. So:
+# - the run's state (coverage "paper") carries STATE_MARK when today's code wrote it; the old code rewrites the
+#   record without it. The flag keeps where today's code last scored up to (`scored_until`).
+# - a state without the mark whose run is later than the migration is a run of other code (`old_code_window`). Every
+#   default launch-type rule it scored gets OLD_CODE: [from, until] (trigger seconds), in the eyes of every reader at
+#   once (`frozen`) and in the store at the next run or freeze (`settle_rules`). It keeps its id, its EVERY_COIN and
+#   its trades, its name says so, and it is research only (`crew_not_as_live`).
+# - "freeze it again" works: such a record no longer stands for its rule, and the same rule frozen again is a new
+#   making of it (AGAIN: 1, 2, ...) under an id of its own; live it is the same sniper (`live_id`).
+STATE_MARK = "crew"  # in coverage "paper": written by code that scores serial crews' coins for crew ""
+OLD_CODE = "old_code_scored"  # on a stored rule: [from, until], the trigger seconds a run of other code scored
+AGAIN = "again"  # on a stored rule: which new making of its rule it is (absent: the first)
+OLD_CODE_NOTE = "research only: in part scored by code that left serial crews' coins out"
+CREW_ODD_NOTE = "research only: a crew choice the lab does not know"
+SKIP_LABEL, OLD_CODE_LABEL = "without serial crews' coins", "in part scored without serial crews' coins"
+RULE_KEYS = ("paper_strategies", CREW_KEY, "paper")  # the stored rules, the migration's flag, the run's state
 
 
 def crew_legacy(strategy: dict) -> bool:
@@ -256,77 +284,201 @@ def crew_legacy(strategy: dict) -> bool:
     return not trig.get("crew") and not strategy.get(EVERY_COIN)
 
 
-def as_frozen(strategy: dict) -> dict:
-    """A stored rule as it was scored: one frozen before 14 Nov with its trigger's crew read as "skip" (`crew_legacy`;
-    a copy, the stored record is not written to), every other rule itself. Its id is the same either way."""
-    if not crew_legacy(strategy):
+def _labelled(strategy: dict, words: str) -> dict:
+    """The rule with `words` in brackets after the trigger part of its label ("trigger | exit"), once: a research
+    record is told from the same trigger frozen anew by its name, wherever a label is shown."""
+    label = strategy.get("label")
+    if not isinstance(label, str) or words in label:
         return strategy
-    return strategy | {"trigger": strategy["trigger"] | {"crew": CREW_SKIP}}
+    head, bar, tail = label.partition(" | ")
+    return strategy | {"label": f"{head} ({words}){bar}{tail}"}
+
+
+def old_code_window(flag: dict, state: dict) -> tuple[int, int] | None:
+    """(from, until), the trigger seconds a forward run of other code scored after the migration, or None: the run's
+    state carries no STATE_MARK and is later than the migration (`flag`: coverage CREW_KEY; `state`: coverage
+    "paper"). `from` is where today's code last scored up to (0 when it never ran since), `until` the state's own
+    mark."""
+    if not flag.get("done") or state.get(STATE_MARK):
+        return None
+    try:
+        last, until = float(state.get("last_run") or 0), int(state.get("done_until") or 0)
+        at, since = float(flag.get("at") or 0), int(flag.get("scored_until") or 0)
+    except (TypeError, ValueError):
+        return None
+    return (since, until) if last > at and until > 0 else None
+
+
+def _scored_by(strategy: dict, window: tuple[int, int]) -> bool:
+    """Whether a run of the old code over `window` scored this rule otherwise than today's code does: a default
+    launch-type rule frozen by today's code (the old code passes over serial crews' coins for it), frozen before
+    the window's end, not refuted (a refuted rule is not scored) and fed by no other job."""
+    trig = strategy.get("trigger")
+    if not isinstance(trig, dict) or trig.get("kind") not in LAUNCH_KINDS or trig.get("bots"):
+        return False
+    try:
+        frozen_at = int(strategy.get("from_ts") or 0)
+    except (TypeError, ValueError):
+        frozen_at = 0
+    return (trig.get("crew", "") == "" and bool(strategy.get(EVERY_COIN)) and not strategy.get("refuted")
+            and not fed(strategy) and frozen_at < int(window[1]))  # fmt: skip
+
+
+def as_frozen(strategy: dict, window: tuple[int, int] | None = None) -> dict:
+    """A stored rule as it was scored (a copy where anything differs; the stored record is not written to; every
+    other rule itself). One frozen before 14 Nov (`crew_legacy`): its trigger's crew read as "skip" and its label
+    saying so. With `window` (`old_code_window`): a default rule a run of other code scored since the migration
+    carries OLD_CODE over that window (joined with a window it already carries) and its label says so. Its id is the
+    same in every case."""
+    if crew_legacy(strategy):
+        return _labelled(strategy | {"trigger": strategy["trigger"] | {"crew": CREW_SKIP}}, SKIP_LABEL)
+    if window is None or not _scored_by(strategy, window):
+        return strategy
+    a, b = max(int(window[0]), int(strategy.get("from_ts") or 0)), int(window[1])
+    had = strategy.get(OLD_CODE)
+    if isinstance(had, list) and len(had) == 2:
+        a, b = min(a, int(had[0])), max(b, int(had[1]))
+    return strategy if had == [a, b] else _labelled(strategy | {OLD_CODE: [a, b]}, OLD_CODE_LABEL)
+
+
+def _views(records: dict[str, dict]) -> tuple[dict[str, Any], list[str], list[str], tuple[int, int] | None]:
+    """(the coverage `paper_strategies` with every rule as it was scored, the ids `as_frozen` read as frozen before
+    14 Nov, the ids it marked as scored by other code, that run's window) from the three records RULE_KEYS."""
+    cov = records.get("paper_strategies") or {}
+    window = old_code_window(records.get(CREW_KEY) or {}, records.get("paper") or {})
+    out, moved, marked = dict(cov), [], []
+    for name in ("strategies", "superseded"):
+        rows = cov.get(name)
+        if not isinstance(rows, list):
+            continue
+        seen = []
+        for s in rows:
+            if not isinstance(s, dict):
+                seen.append(s)
+                continue
+            legacy = crew_legacy(s)
+            v = as_frozen(s, window if name == "strategies" else None)
+            if v is not s:
+                (moved if legacy else marked).append(str(s.get("id")))
+            seen.append(v)
+        out[name] = seen
+    return out, moved, marked, window
 
 
 def frozen(store: Store) -> dict[str, Any]:
     """The coverage `paper_strategies` with every rule as it was scored (`as_frozen`), the superseded ones too. Every
     reader that parses a stored trigger, works out an id, or decides whether a rule may go live reads the rules here:
     a store that was not migrated yet (a read-only copy taken before, a rule an old job wrote after) reads the same
-    as one that was."""
-    cov = store.coverage("paper_strategies")
-    out = dict(cov)
-    for name in ("strategies", "superseded"):
-        if isinstance(cov.get(name), list):
-            out[name] = [as_frozen(s) if isinstance(s, dict) else s for s in cov[name]]
-    return out
+    as one that was, and a rule a run of other code scored since the migration is marked at once (OLD_CODE)."""
+    return _views(store.coverages(list(RULE_KEYS)))[0]
+
+
+def settle_rules(store: Store, now: float | None = None) -> dict[str, Any]:
+    """Write into the store what `frozen` reads: crew "skip" (and the label's words) into every launch-type rule
+    frozen before 14 Nov, the superseded ones too, and OLD_CODE into every default rule a run of other code scored
+    since the migration. Nothing else of any record moves: the ids, the order, every other field and every paper
+    trade stay. Returns {"moved": the ids migrated by this call, "old_code": {"from", "until", "rules"} when it
+    marked any}. The coverage CREW_KEY says the migration ran (`done`), when first (`at`), which ids it moved
+    (`moved`, each once), when a later pass last found any (`last`), and the last run of other code it met
+    (`old_code`).
+
+    A call that finds nothing to write opens no write transaction: the three records are read first, plainly (every
+    paper run and freeze asks). What is written is read again and written in one transaction
+    (`Store.rewrite_coverages`), so no freeze or run of another process falls between. A store that cannot be
+    written (the hourly read-only copy) is left as it is and reads the same through `frozen`."""
+    done: dict[str, Any] = {"moved": [], "old_code": None}
+    if getattr(store, "readonly", False):
+        return done
+    at = int(now or time.time())
+
+    def change(records: dict[str, dict]) -> dict[str, dict]:
+        cov, moved, marked, window = _views(records)
+        flag = records.get(CREW_KEY) or {}
+        done.update(moved=moved, old_code=None)
+        if not moved and not marked and flag.get("done"):
+            return {}
+        new_flag = flag | {"done": True, "at": int(flag.get("at") or at),
+                           "moved": list(dict.fromkeys([*(flag.get("moved") or []), *moved]))}  # fmt: skip
+        if flag.get("done") and moved:
+            new_flag["last"] = at
+        if marked and window is not None:
+            done["old_code"] = {"from": int(window[0]), "until": int(window[1]), "rules": marked}
+            new_flag["old_code"] = done["old_code"] | {"at": at}
+        return ({"paper_strategies": cov} if moved or marked else {}) | {CREW_KEY: new_flag}
+
+    try:
+        if change(store.coverages(list(RULE_KEYS))):  # a plain read first: nothing to write, no write lock taken
+            store.rewrite_coverages(list(RULE_KEYS), change)
+    except sqlite3.Error:
+        return {"moved": [], "old_code": None}  # a store that cannot be written: `frozen` reads the same
+    return done
 
 
 def migrate_crew(store: Store, now: float | None = None) -> int:
-    """Write crew "skip" into every stored launch-type rule frozen before 14 Nov (`crew_legacy`), the superseded ones
-    too, and nothing else of any record: the ids, the order, every other field and every paper trade stay. Returns
-    the rules moved. The coverage CREW_KEY says the pass ran (`done`), when first (`at`), which ids it moved
-    (`moved`) and, if a later pass found a rule an old job wrote meanwhile, when last (`last`).
-
-    It runs once: a pass that finds nothing to move writes nothing (the first one still writes the flag). The rules
-    are read and written in one transaction with the flag (`Store.rewrite_coverages`), so no freeze or run of another
-    process falls between. A store that cannot be written (the hourly read-only copy) is left as it is and reads the
-    same through `frozen`. Called by everything that writes or scores the stored rules (`freeze`, `run`), before it
-    reads them."""
-    if getattr(store, "readonly", False):
-        return 0
-    at = int(now or time.time())
-    moved: list[str] = []
-
-    def change(records: dict[str, dict]) -> dict[str, dict]:
-        moved.clear()
-        cov, flag = records.get("paper_strategies") or {}, records.get(CREW_KEY) or {}
-        out = dict(cov)
-        for name in ("strategies", "superseded"):
-            rows = cov.get(name)
-            if not isinstance(rows, list):
-                continue
-            moved.extend(str(s.get("id")) for s in rows if isinstance(s, dict) and crew_legacy(s))
-            out[name] = [as_frozen(s) if isinstance(s, dict) else s for s in rows]
-        if not moved and flag.get("done"):
-            return {}
-        new_flag = {"done": True, "at": int(flag.get("at") or at), "moved": [*(flag.get("moved") or []), *moved]}
-        if flag.get("done"):
-            new_flag["last"] = at
-        return ({"paper_strategies": out} if moved else {}) | {CREW_KEY: new_flag}
-
-    try:
-        store.rewrite_coverages(["paper_strategies", CREW_KEY], change)
-    except sqlite3.Error:
-        return 0  # a store that cannot be written: read through `frozen`, which says the same
-    return len(moved)
+    """`settle_rules`, answering how many rules frozen before 14 Nov this call moved to crew "skip". It runs once:
+    a pass that finds nothing to move writes nothing (the first one still writes the flag). Called by everything
+    that writes or scores the stored rules (`freeze`, `run`), before it reads them."""
+    return len(settle_rules(store, now)["moved"])
 
 
-def crew_not_as_live(strategy: dict) -> str | None:
+def _utc(ts: Any) -> str:
+    return time.strftime("%d %b %H:%M UTC", time.gmtime(float(ts)))
+
+
+def crew_not_as_live(strategy: dict, plain: bool = False) -> str | None:
     """Why a frozen rule's record is not what its live sniper would trade, for the coins it was scored on; None when
-    it was scored on every coin the sniper would buy. A rule scored without serial crews' coins (crew "skip", and
-    every launch-type rule frozen before 14 Nov, `as_frozen`) or on them alone (crew "only"): OKTech cannot tell such
-    a coin, so no sniper trades that record. It keeps its id, its trades and its place, and never goes live; the same
-    trigger frozen now with crew "" is a rule of its own, scored on every coin."""
+    it was scored on every coin the sniper would buy. `strategy`: a stored launch-type rule; any other kind, and a
+    hunt on a wallet group, answers None. It is as live only when its crew is exactly "" and it carries EVERY_COIN
+    and no OLD_CODE. Otherwise research only: scored without serial crews' coins (crew "skip", and every launch-type
+    rule frozen before 14 Nov, `as_frozen`), on them alone (crew "only"), under a crew choice the lab does not know
+    (any other value: nothing says which coins its record holds), or in part by a run of other code that left
+    crews' coins out (OLD_CODE). Such a rule keeps its id, its trades and its place, and never goes live; the same
+    trigger frozen again is a rule, or a making, of its own. `plain`: the owner's words, none of the code's."""
     seen = as_frozen(strategy)
+    trig = seen.get("trigger")
+    if not isinstance(trig, dict) or trig.get("kind") not in LAUNCH_KINDS:
+        return None
     lab = seen.get("lab")
-    why = crew_why(seen.get("trigger"), lab.get("crew") if isinstance(lab, dict) else None)
-    return why
+    why = crew_why(trig, lab.get("crew") if isinstance(lab, dict) else None, plain)
+    if why is not None or trig.get("bots"):
+        return why
+    raw = trig.get("crew", "")
+    if not isinstance(raw, str) or raw not in CREW_CHOICES:
+        words = "an unknown choice of coins" if plain else f"its crew choice is {raw!r}"
+        return (f"{CREW_ODD_NOTE} ({words}): nothing says which coins its record holds, so it is not known to be "
+                "what a sniper would trade")  # fmt: skip
+    mark = seen.get(OLD_CODE)
+    if isinstance(mark, list) and len(mark) == 2:
+        return (f"{OLD_CODE_NOTE}: its forward trades between {_utc(mark[0])} and {_utc(mark[1])} were scored by "
+                "code that left serial crews' coins out (a run of the code of before 14 Nov), so its record is "
+                "kinder than what its sniper would trade. Freeze the same rule again: it starts a record of its "
+                "own")  # fmt: skip
+    if mark:
+        return f"{OLD_CODE_NOTE}; freeze the same rule again: it starts a record of its own"
+    return None
+
+
+def crew_note(strategy: dict) -> str | None:
+    """`crew_not_as_live` in a few words: what a row carries where the reason itself is said once (`report`,
+    `freeze`). None for a rule scored on every coin its sniper would buy."""
+    if crew_not_as_live(strategy) is None:
+        return None
+    seen = as_frozen(strategy)
+    return (trigger_crew_note(seen.get("trigger")) or (OLD_CODE_NOTE if seen.get(OLD_CODE) else CREW_ODD_NOTE))
+
+
+def _crew_reason(strategy: dict) -> str:
+    """The reason behind a rule's `crew_note` as an answer says it once: the general words for its kind of record
+    (a "skip" rule's own share of crews' coins is in its `lab.crew`)."""
+    seen = as_frozen(strategy)
+    return crew_why(seen.get("trigger")) or crew_not_as_live(seen) or ""
+
+
+def row_note(strategy: dict) -> str | None:
+    """What a row says of a record that is not what its sniper would trade: why its exit is not the sniper's
+    (`exit_not_as_live`), and in a few words which coins it was scored on (`crew_note`); both when both."""
+    exit_why, short = exit_not_as_live(strategy), crew_note(strategy)
+    return f"{exit_why}. Also {short}" if exit_why and short else exit_why or short
 
 
 def sid_of(strategy: dict, **over) -> str:
@@ -334,7 +486,7 @@ def sid_of(strategy: dict, **over) -> str:
     scored (`as_frozen`): a rule frozen before 14 Nov works out to the id it is stored under."""
     s = as_frozen(strategy) | over
     return strategy_id(s["trigger"], s["exit"], str(s["position"]), int(s["latency"]), s["buy_sol"], bid_of(s),
-                       bool(s.get("landing_asked")))  # fmt: skip
+                       bool(s.get("landing_asked")), int(s.get(AGAIN) or 0))  # fmt: skip
 
 
 def rule_costs(strategy: dict) -> Costs:
@@ -647,7 +799,7 @@ def to_live_landing(store: Store, strategies: list[dict], copy_pos: str, done_un
             continue  # never re-keyed
         s = as_frozen(s)  # (a rule frozen before 14 Nov: its crew read as "skip", so the id is its rule's)
         moved.append(s | {"superseded_at": int(now)})
-        sid = strategy_id(s["trigger"], s["exit"], pos, lat, s["buy_sol"])
+        sid = strategy_id(s["trigger"], s["exit"], pos, lat, s["buy_sol"], again=int(s.get(AGAIN) or 0))
         if sid in have:
             continue
         start = int(s["from_ts"])
@@ -702,13 +854,14 @@ def live_id(strategy: dict) -> str:
     Nor can OKTech tell a serial crew's coin (14 Nov): a launch-type rule scored without crews' coins (crew "skip",
     and every such rule frozen before 14 Nov) and the same rule scored on every coin (crew "") are two strategies of
     the paper test and one sniper live. Both answer the id the rule had before 14 Nov, so a sniper dropped under its
-    old id is never armed again as the rule frozen anew, and its live record is carried."""
+    old id is never armed again as the rule frozen anew, and its live record is carried. The same for a rule frozen
+    again after a run of other code spoilt its record (AGAIN): one sniper, whichever making."""
     s = as_frozen(strategy)
     ex = {k: v for k, v in dict(s["exit"]).items() if k != "watch_secs"}
     trig = s["trigger"]
     if isinstance(trig, dict) and trig.get("kind") in LAUNCH_KINDS and not trig.get("crew"):
         trig = trig | {"crew": CREW_SKIP}  # every coin or without the crews': the one sniper (hashed as before 14 Nov)
-    return sid_of(s, exit=ex, trigger=trig)
+    return sid_of(s, **{"exit": ex, "trigger": trig, AGAIN: 0})
 
 
 # One forward record a rule. 11 Nov: the strategy search (every two hours) froze its four best rows whatever was under
@@ -920,7 +1073,13 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     frozen before were scored without them: `migrate_crew` runs first, they say "skip" from then on under their old
     ids, each is listed under `not_as_live` as research only, and the same trigger with today's default is another
     rule (`rule_key`, `strategy_id`) that this call freezes beside it. A rule's crew choice is never "another
-    setting of the same rule": the twin check keeps to rules of one crew choice.
+    setting of the same rule": the twin check keeps to rules of one crew choice. One hold reaches across: a rule
+    refuted forward WITHOUT crews' coins in the last RETEST_AFTER_SECS holds back its default twin (scored on every
+    coin it buys more of the coins that lose), named in `skipped`; a "skip" record under test and not refuted holds
+    nothing back. A record a run of other code scored in part (OLD_CODE) no longer stands for its rule: the same rule
+    frozen again is a new making of it (AGAIN) under an id of its own. `not_as_live` lists the running records that
+    are not what their sniper would trade (refuted ones are left out), each with a short note, and
+    `research_only_why` says the reason behind each kind of research record once.
 
     `copy_position`, `buy_bid_sol`, `sell_parts` (with `triggers` only; 12 Nov, the analyst: "a plain freeze would
     score +6, where the rule loses"): the hypotheses' copies (kol, momentum) are scored and frozen at this place
@@ -1033,7 +1192,9 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     fired = _moments(data)
     records: dict[str, list[dict]] = {}  # rule -> the strategies frozen on it, oldest first
     for s in old:
-        if not fed(s) and _sells_as_live(s):  # a rule another job feeds carries no lab trigger
+        # (a rule another job feeds carries no lab trigger; a record a run of other code scored in part, OLD_CODE,
+        # no longer stands for its rule: the same rule frozen again is a new making of it, below)
+        if not fed(s) and _sells_as_live(s) and not s.get(OLD_CODE):
             records.setdefault(_rule_of(s), []).append(s)
     # the rules that hold a place (under test, or frozen by this call): name, moments, and kind, landing and size.
     # Twins are looked for among rules of one kind at one landing and size: a whale rule on a hunt's moments is the
@@ -1133,6 +1294,34 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
                                 f"{mark.get('trades', '?')} trades ({float(mark.get('mean_sol') or 0):+.4f} SOL a trade): "
                                 f"not frozen again for {RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
                 continue
+        # The default rule of a trigger whose record WITHOUT serial crews' coins was refuted forward in the last
+        # RETEST_AFTER_SECS: held back like the rule itself. A rule's key holds its crew choice, so the hold above
+        # does not reach it, and scored on every coin the rule buys more of the coins that lose (the server on 14
+        # Nov: 21 refuted launch-type rules, each a default rule the search would have frozen anew, four a search).
+        # A "skip" record that is under test and not refuted holds nothing back: the default record is the one
+        # that is wanted
+        if spec.get("kind") in LAUNCH_KINDS and crew_of(spec) == "" and not spec.get("bots"):
+            twin = records.get(rule_key(spec | {"crew": CREW_SKIP}, pos, lat, buy_sol, bid, asked, parts, of), [])
+            if twin and all(s.get("refuted") for s in twin):
+                last = max(twin, key=lambda s: int((s.get("refuted") or {}).get("at") or 0))
+                mark = last.get("refuted") or {}
+                if now - int(mark.get("at") or 0) < RETEST_AFTER_SECS:
+                    day = time.strftime("%d %b", time.gmtime(int(mark.get("at") or 0)))
+                    skipped.append({"label": label, "why": f"refuted without serial crews' coins as {last['id']} on "
+                                    f"{mark.get('trades', '?')} trades on {day} "
+                                    f"({float(mark.get('mean_sol') or 0):+.4f} SOL a trade); scored on every coin it "
+                                    "buys more of the coins that lose: not frozen again for "
+                                    f"{RETEST_AFTER_SECS // 86400} days"})  # fmt: skip
+                    continue
+        # the very strategy is stored, but a run of other code scored its record in part (OLD_CODE): this is a new
+        # making of the same rule, under an id of its own (`strategy_id`: again), with a record that starts empty
+        again = 0
+        while sid in have:
+            same = next((s for s in old + new if s["id"] == sid), None)
+            if same is None or not same.get(OLD_CODE):
+                break
+            again += 1
+            sid = strategy_id(spec, r["exit_params"], pos, lat, buy_sol, bid, asked, again)
         if sid in have:  # refuted long ago with this very exit: the same strategy cannot be frozen twice
             # ... or it is another recipe's rule, exit and all (a recipe told another one's size and bid, or the
             # same trigger typed by hand): the one strategy has its one record, and the freeze says where it is
@@ -1163,6 +1352,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
             # scored on every coin the live sniper would buy, serial crews' coins too: the mark a stored launch-type
             # rule with crew "" needs to count as that (`crew_legacy`: without it, it is one frozen before 14 Nov)
             new[-1][EVERY_COIN] = True
+        if again:  # the same rule frozen again after a run of other code spoilt its record: which making it is
+            new[-1][AGAIN] = again
         if bid > 0:  # the bid every forward buy pays once, as the lab charged it
             new[-1]["buy_bid_sol"] = bid
         if recipe is not None:  # the winning bot's recipe the rule is of
@@ -1180,12 +1371,22 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     # the strategies still running whose exit is not their sniper's: each keeps its id and trades, holds no rule's
     # place (so the rule above was frozen again where the lab ranked it), and says why. And the ones scored on other
     # coins than their sniper buys (without serial crews' coins, or on them alone: `research_only`), which keep
-    # their own rule's place and never go live
-    stale = [{"id": s["id"], "label": s.get("label"), "why": not_as_live(s),
-              **({"research_only": True} if crew_not_as_live(s) else {})} for s in old
-             if not fed(s) and not_as_live(s) is not None]  # fmt: skip
+    # their own rule's place and never go live. A row says it in a few words (`row_note`); the reason behind a
+    # research-only record stands once, under `research_only_why` (on the server's rules the same 444 characters stood
+    # in every row). A refuted rule is scored no more and is not listed
+    stale, whys = [], {}
+    for s in old:
+        note = None if fed(s) or s.get("refuted") else row_note(s)
+        if note is None:
+            continue
+        stale.append({"id": s["id"], "label": s.get("label"), "why": note})
+        if crew_note(s):
+            stale[-1]["research_only"] = True
+            whys.setdefault(crew_note(s), _crew_reason(s))
     if stale:
         out["not_as_live"] = stale
+    if whys:
+        out["research_only_why"] = whys
     if own_landing or sell_parts:  # what the hypotheses were asked to be frozen with
         out["asked"] = {"copy_position": asked_pos or copy_pos, "buy_bid_sol": bid,
                         "sell_parts": ({"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
@@ -1259,11 +1460,21 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     the rule's exit, as in the lab (`wallet_amm_gap`; until 12 Nov evening the run priced such a buy on whatever the
     tape held, and wrote the fees of a position nothing traded after as a loss). `skipped` counts, per strategy, the
     trades left out, `why` says why in words; a MIG strategy whose exit holds past 300 s is not scored at all
-    (`unscored`)."""
+    (`unscored`).
+
+    Serial crews' coins (14 Nov): the stored rules are settled first (`settle_rules`: the migration, and the mark of
+    a run of other code, `old_code_scored` in the answer when this run found one). `new_trades_research` of the new
+    trades belong to research records, which no sniper trades (`crew_note`); `crew_passed` says, per rule, how many
+    coins its crew choice passed over in this run's window, with the crews known now (forward a crew is one once its
+    third coin has launched: a "skip" record holds its first two coins, an "only" record lacks them). The state this
+    run leaves carries STATE_MARK."""
     now = now or time.time()
     # the rules frozen before 14 Nov were scored without serial crews' coins: written as crew "skip" once, before any
     # of them is read (`migrate_crew`), and read that way in a store that cannot be written (`frozen`)
-    migrate_crew(store, now)
+    settled = settle_rules(store, now)
+    # a run of other code scored since the migration (a state without this code's mark): the default rules it scored
+    # are marked and research only from here on (OLD_CODE), and every answer of this run says so
+    old_code = {"old_code_scored": settled["old_code"]} if settled.get("old_code") else {}
     strategies = frozen(store).get("strategies", [])
     if not strategies:
         return {"new_trades": 0, "note": "nothing frozen yet: run `snipetech paper freeze`"}
@@ -1276,12 +1487,14 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     strategies = [s for s in strategies if not fed(s)]
     if not strategies:
         report(store, cfg, now)  # the fed rules' numbers still follow their trades
-        return {"new_trades": 0, "retired": retired, "note": "nothing left for the run to score: freeze new ones"}
+        return {"new_trades": 0, "retired": retired, "note": "nothing left for the run to score: freeze new ones",
+                **old_code}  # fmt: skip
     tag_venues(store)  # the rows scored before the venue knob, once: each new row is tagged as it is written
     since = max(int(state.get("done_until", 0)), min(s["from_ts"] for s in strategies))
     until = int(now - SETTLE_SECS)
     if until <= since:
-        return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos), "retired": retired}
+        return {"new_trades": 0, "since": since, "until": until, "landing": landings(copy_pos), "retired": retired,
+                **old_code}  # fmt: skip
     kols = label_groups(store)
     unscored = {  # a MIG strategy whose exit holds past MIG_MAX_HOLD_SECS: the lab never scored one, nor does this
         s["id"]: MIG_CAP for s in strategies
@@ -1311,7 +1524,9 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
     # later: its window is the run's, moved back by its lag. The one mark `done_until` serves every rule: both ends of
     # each run's window move back by the same lag, so a rule's windows follow one another with no moment left between
     lag = {s["id"]: math.ceil(settle_secs(ex) - SETTLE_SECS) for s, _, ex, _ in parsed}
-    added = own_added = 0
+    added = own_added = research_added = 0
+    research = {s["id"] for s, *_ in parsed if crew_note(s)}  # records no sniper trades: counted apart
+    passed: dict[str, int] = {}  # strategy -> coins its crew choice passed over in this run's window (`crew_skips`)
     for a, b in store.tape_spans():
         windows = {d: (max(a, since - d), min(b, until - d)) for d in sorted(set(lag.values()))}
         windows = {d: w for d, w in windows.items() if w[1] > w[0]}
@@ -1345,7 +1560,10 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                 if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
                     continue
                 if crew_skips(trig, launch, crews):
-                    continue  # a serial crew's coin for crew "skip" (or, for crew "only", any other), as in the lab
+                    # a serial crew's coin for crew "skip" (or, for crew "only", any other), as in the lab; with the
+                    # crews known now, where a crew is one once its third coin has launched (lab.CREW_FORWARD_WORDS)
+                    passed[s["id"]] = passed.get(s["id"], 0) + 1
+                    continue
                 i = _fire(trig, path, in_span, kols, mig=migs.get(mint), paid=paid)
                 if i is None:
                     continue
@@ -1407,18 +1625,34 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                              **({"place": placed["place"]} if placed else {})},
                 })  # fmt: skip
                 added += wrote
-                if pinned(s):  # at a place asked for or with a bid: never counted as a trade at the live landing
+                if s["id"] in research:  # a research record: never counted as a trade at the live landing
+                    research_added += wrote
+                elif pinned(s):  # at a place asked for or with a bid: never counted as a trade at the live landing
                     own_added += wrote
-    store.set_coverage("paper", {"done_until": until, "last_run": int(now)})
+    # In the migration's flag, where this code scored up to; then the run's state, with the mark of the code that
+    # scored (STATE_MARK: the code before 14 Nov rewrites the record without it, `old_code_window`). Two short
+    # writes, the flag first: stopped between them, the trades up to `until` are written and the next run scores the
+    # window again (a trade is written once)
+
+    def scored(records: dict[str, dict]) -> dict[str, dict]:
+        flag = records.get(CREW_KEY) or {}
+        return {CREW_KEY: flag | {"scored_until": until}} if flag.get("done") else {}
+
+    store.rewrite_coverages([CREW_KEY], scored)
+    store.set_coverage("paper", {"done_until": until, "last_run": int(now), STATE_MARK: 1})
     # the numbers of the strategies that traded, made now: the operator's report and the live page read them kept
     report(store, cfg, now)
     codes = sorted({c for why in skipped.values() for c in why})
     # `landing` is where a rule frozen plainly is scored; `new_trades_own_landing` of the new trades belong to rules
     # frozen at a place asked for or with a bid (`pinned`), scored there and not where our copies land live
-    out = {"new_trades": added, "new_trades_own_landing": own_added, "since": since, "until": until,
+    # `new_trades_research` of them belong to research records (scored without serial crews' coins, on them alone,
+    # or in part by other code: `crew_note`), which no sniper trades; `crew_passed`: per rule, the coins its crew
+    # choice passed over in this run's window
+    out = {"new_trades": added, "new_trades_own_landing": own_added, "new_trades_research": research_added,
+           "since": since, "until": until,
            "landing": landings(copy_pos), "unscored": unscored,
            "skipped": skipped, "why": {c: SKIP_WORDS.get(c, BID_SKIP_WORDS.get(c, c)) for c in codes},
-           "retired": retired}  # fmt: skip
+           "retired": retired, "crew_passed": passed, **old_code}  # fmt: skip
     late = {s["id"]: settle_secs(ex) for s, _, ex, _ in parsed if lag[s["id"]] > 0}
     if late:  # the rules scored later than `until`: seconds after its trigger each one's moment is scored
         out["settles_later"] = late
@@ -1658,6 +1892,7 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         return nums
 
     out = []
+    whys: dict[str, str] = {}  # the short note of each kind of research record -> the reason, said once
     for s in cov.get("strategies", []):
         kind = (s.get("trigger") or {}).get("kind")
         lat, pos = int(s.get("latency", 0)), str(s.get("position"))
@@ -1684,13 +1919,14 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
             out[-1]["landing_note"] = ANY_BUYER_NOTE
         if sniper_rule(s.get("trigger")):
             out[-1]["landing_note"] = SNIPER_NOTE
-        if not fed(s) and not_as_live(s) is not None:
-            # a record that is not what its sniper would trade: an exit that is not the sniper's, or other coins
-            # than the sniper buys (`not_as_live` says which, and both when both). The second also on its own keys
-            out[-1]["exit_note"] = not_as_live(s)
-            crews = crew_not_as_live(s)
-            if crews is not None:  # scored without serial crews' coins, or on them alone: never goes live
-                out[-1] |= {"research_only": True, "crew_note": crews}
+        note = None if fed(s) else row_note(s)
+        if note is not None:
+            # a record that is not what its sniper would trade: an exit that is not the sniper's (why, in full), or
+            # other coins than the sniper buys (in a few words; the reason once, under `research_only_why`)
+            out[-1]["exit_note"] = note
+            if crew_note(s):  # scored without serial crews' coins, on them alone, or in part by other code
+                out[-1]["research_only"] = True
+                whys.setdefault(crew_note(s), _crew_reason(s))
     superseded = []
     for s in cov.get("superseded", []):  # the record only: count, mean and total, no bounds
         nums = numbers(s, False)
@@ -1704,4 +1940,5 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
         except sqlite3.Error:
             pass  # a store that cannot be written (a read-only copy): the report is the same, computed each time
     return {"strategies": out, "scored_until": done_until, "landing": landings(copy_pos),
-            "landing_note": landing_note(copy_pos), "superseded": superseded}  # fmt: skip
+            "landing_note": landing_note(copy_pos), "superseded": superseded,
+            **({"research_only_why": whys} if whys else {})}  # fmt: skip

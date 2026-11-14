@@ -531,8 +531,10 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "errors": snap.errors,
     }  # fmt: skip
     if snap.paper:
-        strategies = sorted(snap.paper.get("strategies", []), key=lambda s: -(s.get("total") or 0))[:6]
+        rows = snap.paper.get("strategies", [])
+        strategies = sorted((s for s in rows if not s.get("research_only")), key=lambda s: -(s.get("total") or 0))[:6]
         d["paper_top"] = strategies
+        d["paper_research_only"] = sum(1 for s in rows if s.get("research_only"))
     return d
 
 
