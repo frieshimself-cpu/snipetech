@@ -686,7 +686,10 @@ def test_the_maintenance_tick_runs_the_flush_and_survives_it(tmp_path):
         await asyncio.sleep(0.3)
         alive = not tick.done()
         other.execute("ROLLBACK")
-        await asyncio.sleep(0.4)
+        for _ in range(200):  # until the task has written them, not a fixed wait: 0.4 s was too short on a loaded machine
+            await asyncio.sleep(0.05)
+            if len(st.pay_dests()) == 2:
+                break
         tick.cancel()
         with pytest.raises(asyncio.CancelledError):
             await tick

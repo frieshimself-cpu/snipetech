@@ -21,7 +21,10 @@ What the keys mean:
 - book.bid_arms.control.tip: the buy tip in SOL. A bid is raised only through the tip: OKTech charges the buy
   priority fee again on every exit, so the priority fee is never tunable, and the paid arm is retired (paying 20
   times the fee landed no earlier on 6 Nov). Arms are compared only on separate OKTech wallets: one wallet buys a
-  coin once, so two arms on one wallet never give a paired comparison.
+  coin once, so two arms on one wallet never give a paired comparison. A row named `other` in the bid model or the
+  arms' evidence holds fills sent at a bid far above every arm's (a live test at another tip): it is no arm, nothing
+  is tuned from it, and a retired arm's row can hold such test buys too. `non_coin_failed` counts failed sends on a
+  dollar coin: they are in no arm's cost.
 - fees.tune.<kind>.<number>.max (kind: copy, hunt, launch, mig, probe; number: buy_tip, sell_tip, sell_priority,
   buy_priority): the fee policy's per-kind caps (the evidence's fee_policy says its choice per kind and why). The
   policy itself picks each number inside them: the owner's minimum unless 10+ fills at a higher tip landed measurably

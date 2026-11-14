@@ -1160,3 +1160,65 @@ def test_buys_at_another_bid_never_set_the_measured_landing(tmp_path):
         assert out["landing_pos"] is None and not st.coverage("measure:landing_pos")
     finally:
         st.close()
+
+
+def test_a_buy_stored_under_the_low_bid_at_another_bid_is_moved_by_the_next_ordinary_run(tmp_path):
+    """Between a deploy and a backfill the timer's own run comes first. A stored buy keeps its arm on a re-read, so that
+    run would count the four tip-test buys in the low bid's row once more and keep the cost it measured as counted the
+    new way (review of 14 Nov: 0.011 SOL kept with the new basis, charged as "last measured" from then on). Every run
+    looks at the stored buys and failed sends of its window: one far above the bid of the arm it is stored under is
+    moved, on the server's real arms (the low bid and the retired paid arm), before anything is measured."""
+    from snipetech.measure.classify import OTHER_BID
+    from snipetech.qualify.run import lab_tx_cost_info
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 4
+        assert set(cfg.book.bid_arms) == {"control", "paid"}  # as every settings file loads them
+        sigs = _copy_world(st, coins=4)
+        metas = {b: _meta(b) for b, _ in sigs[:3]} | {sigs[3][0]: _meta(sigs[3][0], priority=5_000_000, tip=30_000_000)}
+        run = lambda t: asyncio.run(run_measure(svc, cfg, t, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                                failed_sigs=_no_failed))  # fmt: skip
+        run(NOW)
+        st._exec("UPDATE fills SET bid_arm='control'")  # as the code before 14 Nov stored them
+        st.put_fill({"sig": "TWIN", "ts": NOW - 500, "slot": SLOT + 9000, "wallet": ME, "side": "failed", "sol": 0.0,
+                     "tokens": 0.0, "mint": addr("c3"), "bid_arm": "control", "priority_lamports": 5_000_000})  # fmt: skip
+        st._exec("DELETE FROM coverage WHERE key='measure:tx_cost'")
+        out = run(NOW + 300)  # the timer's run: no backfill
+        assert st.fill(sigs[3][0])["bid_arm"] == OTHER_BID and st.fill("TWIN")["bid_arm"] == OTHER_BID
+        assert out["arms"]["control"]["n"] == 3 and out["arms"]["control"]["failed_n"] == 0
+        assert not st.coverage("measure:tx_cost")  # three buys at the low bid: nothing measured, nothing kept
+        assert lab_tx_cost_info(st, cfg)["per_tx_source"] == "estimate"
+    finally:
+        st.close()
+
+
+def test_the_measured_landing_comes_only_from_an_arm_the_book_hands_out(tmp_path):
+    """The landing is where the busiest arm's buys land, and the qualify lab scores copies there. A retired arm (the
+    paid arm stays written so its old fills can be told) and a row that is no arm of the settings never set it, however
+    many buys they hold: 30 buys of a live test at the retired arm's bid would have moved every lab's landing."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 3
+        assert cfg.book.bid_arms["paid"].get("retired")
+        sigs = _copy_world(st, coins=3)
+        metas = {b: _meta(b, priority=1_000_000, tip=39_000_000) for b, _ in sigs}  # the retired paid arm as it is sent
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                      failed_sigs=_no_failed))  # fmt: skip
+        assert out["arms"]["paid"]["n"] == 3
+        assert out["landing_pos"] is None and not st.coverage("measure:landing_pos")
+    finally:
+        st.close()
+
+
+def test_a_landed_buy_of_a_non_coin_is_in_no_arms_row():
+    """A copy that follows a wallet into a dollar coin and lands is no coin trade either: it is not one of the buys an
+    arm's fee, place and overhead a buy are counted over."""
+    from snipetech.measure.run import bid_model_rows
+
+    usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    buy = {"bid_arm": "control", "priority_lamports": 1_000_000, "tip_lamports": 2_000_000}
+    buys = [buy | {"mint": addr("coin")}, buy | {"mint": None}, buy | {"mint": usdc, "trades_behind": 9}]
+    failed = [{"bid_arm": "control", "priority_lamports": 1_000_000, "mint": addr("coin")}]
+    (row,) = bid_model_rows(buys, failed, NOW)
+    assert row["n"] == 2 and row["mean_behind"] is None and row["mean_overhead_sol"] == round(1_005_000 / 1e9 / 2, 6)

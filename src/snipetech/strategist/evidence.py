@@ -10,6 +10,7 @@ from typing import Any
 from ..config import Config
 from ..measure.attribution import trip_result_sol
 from ..measure.exits import crossed_sells, exit_reason_counts
+from ..positions import NON_COIN_MINTS
 from ..store import Store
 
 BASE_FEE = 5000
@@ -25,6 +26,7 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
                 "buys": 0,
                 "sells": 0,
                 "failed": 0,
+                "non_coin_failed": 0,
                 "realised_sol": 0.0,
                 "fees_sol": 0.0,
                 "sell_fees_sol": 0.0,
@@ -47,6 +49,8 @@ def _arm_rows(fills: list[dict]) -> dict[str, dict[str, Any]]:
             result = trip_result_sol(f)  # the whole result: the sell's failed duplicate sends in it once (7 Nov)
             if result is not None:
                 d["realised_sol"] += result
+        elif side == "failed" and f.get("mint") in NON_COIN_MINTS:
+            d["non_coin_failed"] += 1  # a send that failed on a dollar coin is no cost of a coin trade at this bid
         elif side == "failed":
             d["failed"] += 1
             d["fees_sol"] += ((f.get("priority_lamports") or 0) + BASE_FEE) / 1e9

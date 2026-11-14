@@ -233,7 +233,12 @@ def test_a_fill_sent_far_above_an_arms_bid_is_not_that_arms_fill():
     assert arm_from_fee(700_000, 1_333_333, only) == "control"  # a smaller bid than the arm's is still the low bid
     assert arm_from_fee(2_000_000, 4_000_000, only) == "control"  # up to twice the arm's bid (a setting moved since)
     assert arm_from_fee(2_000_001, 0, only) == OTHER_BID
-    # where the retired paid arm (0.04 SOL a buy) is still written, a 0.035 bid is nearest it and within its bid
-    assert arm_from_fee(5_000_000, 30_000_000, ARMS) == "paid"
+    # where the retired paid arm is still written (every settings file loads it: config merges [book] bid_arms over the
+    # defaults), the test bid is nearest the paid arm as it is SENT (0.001 + 0.039) and is held to that shape: a
+    # priority of 0.005 is five times its 0.001, so it is no arm's. The paid arm's own fills stay the paid arm's.
+    assert arm_from_fee(5_000_000, 30_000_000, ARMS) == OTHER_BID
+    assert arm_from_fee(5_000_000, 0, ARMS) == OTHER_BID
+    assert arm_from_fee(20_000_000, 20_000_000, ARMS) == "paid" and arm_from_fee(1_000_000, 39_000_000, ARMS) == "paid"
+    assert arm_from_fee(20_000_000, 0, ARMS) == "paid"
     assert arm_from_fee(50_000_000, 100_000_000, ARMS) == OTHER_BID
     assert arm_from_fee(None, None, only) == "control"  # an unknown fee, as before

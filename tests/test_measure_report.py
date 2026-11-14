@@ -92,3 +92,15 @@ def test_verdict_is_blunt_without_pairs():
 def test_cli_measure_report_parses():
     a = build_parser().parse_args(["measure", "report", "--since", "123"])
     assert a.cmd == "measure" and a.action == "report" and a.since == 123
+
+
+def test_a_failed_send_on_a_dollar_coin_is_no_arms_cost_in_the_fee_report():
+    """The fee report's arms hold coin trades: a failed send on a dollar coin (the USDC swap of 14 Nov) is counted
+    apart, as in the bid model."""
+    from snipetech.measure.report import _arm_totals
+
+    usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    fills = [{"side": "failed", "bid_arm": "control", "priority_lamports": 1_000_000, "mint": "COIN"},
+             {"side": "failed", "bid_arm": "control", "priority_lamports": 967_000, "mint": usdc}]  # fmt: skip
+    row = _arm_totals(fills)["control"]
+    assert row["failed"] == 1 and row["fees_sol"] == 0.001005 and row["non_coin_failed"] == 1

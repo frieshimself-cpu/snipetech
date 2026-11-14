@@ -80,6 +80,20 @@ OTHER_BID = "other"  # the arm of a fill sent at a bid far above every arm's: a 
 OTHER_BID_TIMES = 2.0
 
 
+def off_its_arm(fill: dict, arms: dict[str, dict] | None) -> str | None:
+    """The arm a STORED buy or failed send belongs to instead of the one it is stored under, when its fee is far above
+    that arm's bid (None: it stays). A re-read keeps a stored fill's arm, so one stored before fills were told apart
+    (the four tip-test buys of 12 Nov, stored as the low bid's) would stay there until a backfill: every run asks this
+    of its window's fills before it measures anything."""
+    held = fill.get("bid_arm") or "control"
+    if not arms or held not in arms or fill.get("priority_lamports") is None:
+        return None
+    fee = (fill["priority_lamports"], fill.get("tip_lamports"))
+    if arm_from_fee(*fee, {held: arms[held]}) != OTHER_BID:
+        return None
+    return arm_from_fee(*fee, arms)
+
+
 def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: dict[str, dict] | None) -> str:
     """The bid arm a fill paid for: the arm whose priority fee is nearest (tip as the tiebreaker: one send in three
     carries no tip). Both arms copy the same leaders from one wallet and OKTech's task documents carry no fills, so
@@ -106,9 +120,11 @@ def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: 
         return min((abs(prio - p), abs(tip - t)) for p, t in shapes(name))
 
     arm = min(arms, key=distance)
-    most_priority, bid = max(p for p, _ in shapes(arm)), max(p + t for p, t in shapes(arm))
+    # held to the shape it is nearest, not to the larger of the two: 0.005 + 0.03 is nearest the paid arm as SENT
+    # (0.001 + 0.039), whose priority it is five times; against the written 0.02 + 0.02 it would have passed
+    its_priority, its_tip = min(shapes(arm), key=lambda s: (abs(prio - s[0]), abs(tip - s[1])))
     over = OTHER_BID_TIMES + 1e-9
-    return OTHER_BID if prio > most_priority * over or prio + tip > bid * over else arm
+    return OTHER_BID if prio > its_priority * over or prio + tip > (its_priority + its_tip) * over else arm
 
 
 def arm_for(store: Store, sniper_id: str | None) -> str:

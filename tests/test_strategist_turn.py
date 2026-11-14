@@ -295,3 +295,16 @@ def test_the_strategist_never_turns_a_rounds_build_into_a_patch(tmp_path):
     for words in ("research record", "never propose what a round refuted", "builds and its questions for the owner",
                   "belong to the cloud session and the owner", "never turn a proposed build into a patch"):  # fmt: skip
         assert words in system, words
+
+
+def test_a_failed_send_on_a_dollar_coin_is_no_arms_cost_in_the_evidence():
+    """14 Nov: 50 failed sends of one USDC swap sat in the low bid's round-trip cost the strategist reads (0.0106 SOL a
+    round trip against the bid model's 0.0087). They are no cost of a coin trade at that bid: counted apart."""
+    from snipetech.strategist.evidence import _arm_rows
+
+    usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    fills = [{"side": "failed", "bid_arm": "control", "priority_lamports": 1_000_000, "mint": "COIN"},
+             {"side": "failed", "bid_arm": "control", "priority_lamports": 967_000, "mint": usdc},
+             {"side": "failed", "bid_arm": "control", "priority_lamports": 967_000, "mint": usdc}]  # fmt: skip
+    row = _arm_rows(fills)["control"]
+    assert row["failed"] == 1 and row["fees_sol"] == 0.001005 and row["non_coin_failed"] == 2

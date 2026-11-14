@@ -23,11 +23,11 @@ from ..solana.programs import PUMP_AMM_PROGRAM
 from ..store import Store
 from .chain_landing import fill_fields, known_mates, own_wallets, read_fill, read_landing, wallet_signatures
 from .classify import (
-    OTHER_BID,
     arm_from_fee,
     classify_trade,
     copy_sniper_rows,
     leaders_at,
+    off_its_arm,
     pair_round_trips,
     snipers_at,
 )
@@ -98,18 +98,19 @@ def wallet_live_rows(trips: list[dict], now: float, half_life_days: float,
     return sorted(out, key=lambda r: -r["mean_sol"])
 
 
-def on_coins(failed: list[dict]) -> list[dict]:
-    """The failed sends that were on a coin, or on nothing that is known: a send that failed on a dollar coin or
-    wrapped SOL (positions.NON_COIN_MINTS) is no bid's overhead. No lab scores a non-coin, and the book makes no sniper
-    for a wallet that trades one (qualify/non_coin.py), so charging every coin's transaction for them charges a cost a
-    rule does not have (14 Nov: 50 failed sends of one USDC swap were 37 % of the low bid's overhead for a week)."""
-    return [f for f in failed if f.get("mint") not in NON_COIN_MINTS]
+def on_coins(fills: list[dict]) -> list[dict]:
+    """The fills that were on a coin, or on nothing that is known: a send that failed on a dollar coin or wrapped SOL
+    (positions.NON_COIN_MINTS) is no bid's overhead, and a buy of one that landed is no coin trade of an arm. No lab
+    scores a non-coin, and the book makes no sniper for a wallet that trades one (qualify/non_coin.py), so charging
+    every coin's transaction for them charges a cost a rule does not have (14 Nov: 50 failed sends of one USDC swap
+    were 37 % of the low bid's overhead for a week)."""
+    return [f for f in fills if f.get("mint") not in NON_COIN_MINTS]
 
 
 def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dict[str, Any]]:
     """One row per bid arm from its landed buys and its failed sends on coins (`on_coins`). A fill sent at another bid
     than any arm's is its own row (classify.OTHER_BID), so an arm's fee and place are those of its own bid."""
-    failed = on_coins(failed)
+    buys, failed = on_coins(buys), on_coins(failed)
     arms = sorted({b.get("bid_arm") or "control" for b in buys} | {f.get("bid_arm") or "control" for f in failed})
     out = []
     for arm in arms:
@@ -789,7 +790,12 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         shadowed = 0
         if hasattr(svc, "progress"):
             svc.progress(f"measure: exit shadow failed: {type(exc).__name__}: {exc}")
-    # aggregates
+    # aggregates. First the stored fills an earlier code filed under an arm they were far above (classify.off_its_arm)
+    for f in (*all_buys, *all_failed):
+        moved = off_its_arm(f, cfg.book.bid_arms)
+        if moved:
+            f["bid_arm"] = moved
+            store.put_fill(f)
     arms = bid_model_rows(all_buys, all_failed, now)
     for row in arms:
         store.put_bid_model(row)
@@ -807,7 +813,11 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.put_wallet_live(row)
     store.prune_wallet_live([row["wallet"] for row in live])
     landing = None
-    best = max((a for a in arms if a["arm"] != OTHER_BID), key=lambda a: a["n"], default=None)  # an arm, not a mix
+    from ..book.policy import arm_retired
+
+    # an arm the book hands out: not a mix of other bids, not a retired arm, not a name the settings do not hold
+    given = {name for name, arm in (cfg.book.bid_arms or {}).items() if not arm_retired(arm)}
+    best = max((a for a in arms if a["arm"] in given), key=lambda a: a["n"], default=None)
     if best and best["n"] >= m.min_arm_fills:
         behind = sorted(int(b["trades_behind"]) for b in all_buys if (b.get("bid_arm") or "control") == best["arm"]
                         and b.get("trades_behind") is not None)  # fmt: skip
