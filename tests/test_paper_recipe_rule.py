@@ -69,7 +69,9 @@ def test_a_rule_without_a_recipe_has_the_key_of_today():
             KOL.__dict__, "+6", 0, 2.0, 0.03, False, True
         )
     # a stored rule: with no `recipe` field its rule is the one it was, in parts or not
-    s = {"trigger": HUNT1.__dict__, "exit": PARTS10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2}
+    # (frozen since 14 Nov, scored on every coin: a launch-type rule frozen before is the crew "skip" rule)
+    s = {"trigger": HUNT1.__dict__, "exit": PARTS10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2,
+         paper.EVERY_COIN: True}  # fmt: skip
     assert paper._rule_of(s) == _before(HUNT1.__dict__, "+3", 1, 0.2, parts=True)
 
 

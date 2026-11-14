@@ -276,6 +276,106 @@ def test_the_search_ranks_at_the_live_copy_landing_and_paper_tests_what_pays_the
     assert again["frozen"] == [] and len(st.coverage("paper_strategies")["strategies"]) == len(frozen)
 
 
+def test_the_search_freezes_launch_rules_on_every_coin_beside_the_ones_frozen_before(env):
+    """14 Nov: until then a launch-type rule passed over serial crews' coins, in the lab and forward, and the live
+    sniper bought them. The rules the search froze then keep their ids and their place and are never frozen a second
+    time; they are research records now. The search scores the grid on every coin, so the same triggers are new
+    rules: frozen once, each under a new id, marked as scored on every coin, with the share of crews' coins in the
+    search's record."""
+    from snipetech.analysis import paper
+    from snipetech.analysis.lab import LAUNCH_KINDS
+    from snipetech.service import Service
+    from tests.test_lab import whale_world
+
+    st, cfg, data = env
+    whale_world(st)
+    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    picked = st.coverage("paper_strategies")["strategies"]
+    launchy = [s for s in picked if s["trigger"]["kind"] in LAUNCH_KINDS]
+    assert launchy and all(s[paper.EVERY_COIN] is True and s["trigger"]["crew"] == "" for s in launchy)
+    assert all(paper.EVERY_COIN not in s for s in picked if s["trigger"]["kind"] not in LAUNCH_KINDS)
+    rows = st.coverage(RS.SEARCH_KEY)["strategies"]
+    assert all(set(r["crew"]) == {"moments", "of", "share"} and r["crew"]["moments"] == 0
+               for r in rows if r["trigger"].startswith(("OKTech hunt", "buy >=", "burst")))  # fmt: skip
+    # the same rules as the code before 14 Nov stored them: no mark, and the id the rule had then
+    before = []
+    for s in picked:
+        old = {k: v for k, v in s.items() if k != paper.EVERY_COIN}
+        if s in launchy:
+            old["id"] = paper.strategy_id(s["trigger"] | {"crew": "skip"}, s["exit"], s["position"], s["latency"],
+                                          s["buy_sol"])  # fmt: skip
+            assert old["id"] != s["id"]
+        before.append(old)
+    st.set_coverage("paper_strategies", {"strategies": before, "superseded": []})
+    st.set_coverage(paper.CREW_KEY, {})
+    for s in before:
+        st.put_paper_trade({"strategy": s["id"], "mint": "kept", "trigger_ts": NOW - 50, "pnl": 0.01, "data": {}})
+    again = RS.search(Service(cfg, store=st), cfg, data, NOW + 2 * H)
+    after = st.coverage("paper_strategies")["strategies"]
+    assert [s["id"] for s in after[: len(before)]] == [s["id"] for s in before]  # each in its place, under its id
+    for was, now in zip(before, after, strict=False):
+        if was["trigger"]["kind"] in LAUNCH_KINDS:  # its crew, and its name (told from the rule frozen anew)
+            head, _bar, tail = was["label"].partition(" | ")
+            assert now == was | {"trigger": was["trigger"] | {"crew": "skip"},
+                                 "label": f"{head} (without serial crews' coins) | {tail}"}  # fmt: skip
+            assert paper.not_as_live(now)
+        else:
+            assert now == was
+        assert len(st.paper_trades(was["id"])) == 1  # its record is where it was
+    fresh = after[len(before) :]
+    assert sorted(s["id"] for s in fresh) == sorted(s["id"] for s in launchy)  # the grid's rules, on every coin
+    assert all(s[paper.EVERY_COIN] is True and paper.not_as_live(s) is None for s in fresh)
+    assert [f["id"] for f in again["frozen"]] == [s["id"] for s in fresh]
+    third = RS.search(Service(cfg, store=st), cfg, data, NOW + 4 * H)
+    assert third["frozen"] == [] and st.coverage("paper_strategies")["strategies"] == after
+
+
+def test_the_search_does_not_freeze_again_what_the_paper_test_refuted_without_crews_coins(env):
+    """A rule's key holds its crew choice, so the search's "refuted in the last 7 days" hold did not reach the
+    default rule of a trigger whose record without serial crews' coins was refuted: the server's 21 refuted launch
+    rules could have come back four a search, every two hours. Scored on every coin a rule buys more of the coins
+    that lose: a rule refuted without them holds back its default twin for the same seven days, in its own words. (A
+    rule under test and NOT refuted does not hold its twin back: that record is the one that is wanted; the test
+    above.)"""
+    from snipetech.analysis import paper
+    from snipetech.analysis.lab import LAUNCH_KINDS
+    from snipetech.service import Service
+    from tests.test_lab import whale_world
+
+    st, cfg, data = env
+    whale_world(st)
+    RS.search(Service(cfg, store=st), cfg, data, NOW)
+    picked = st.coverage("paper_strategies")["strategies"]
+    launchy = [s for s in picked if s["trigger"]["kind"] in LAUNCH_KINDS]
+    assert launchy
+    before = []  # the same rules as the code before 14 Nov stored them, each refuted by the paper test a day ago
+    for s in picked:
+        old = {k: v for k, v in s.items() if k != paper.EVERY_COIN}
+        if s in launchy:
+            old["id"] = paper.strategy_id(s["trigger"] | {"crew": "skip"}, s["exit"], s["position"], s["latency"],
+                                          s["buy_sol"])  # fmt: skip
+            old["refuted"] = {"at": NOW + 2 * H - 86400, "trades": 400, "mean_sol": -0.02}
+        before.append(old)
+    st.set_coverage("paper_strategies", {"strategies": before, "superseded": []})
+    st.set_coverage(paper.CREW_KEY, {})
+    again = RS.search(Service(cfg, store=st), cfg, data, NOW + 2 * H)
+    after = st.coverage("paper_strategies")["strategies"]
+    fresh = after[len(before) :]
+    refuted = {s["label"].split(" | ")[0] for s in launchy}
+    assert not {f["label"].split(" | ")[0] for f in fresh} & refuted  # none of the refuted rules comes back
+    held = [x for x in again["skipped"] if "refuted without serial crews' coins" in x["why"]]
+    assert len(held) == len(launchy), again["skipped"]
+    assert all("400 trades" in x["why"] and "more of the coins that lose" in x["why"] for x in held)
+    assert all("7 days" in x["why"] for x in held)
+    # refuted eight days ago the hold is over: the default rules are frozen, each under an id the store never held
+    aged = [s | {"refuted": s["refuted"] | {"at": NOW + 2 * H - 8 * 86400}} if s.get("refuted") else s for s in before]
+    st.set_coverage("paper_strategies", {"strategies": aged, "superseded": []})
+    st.set_coverage(paper.CREW_KEY, {})
+    later = RS.search(Service(cfg, store=st), cfg, data, NOW + 2 * H)
+    back = {f["label"].split(" | ")[0] for f in later["frozen"]} & refuted
+    assert back and not {f["id"] for f in later["frozen"]} & {s["id"] for s in before}
+
+
 def test_the_search_reads_only_the_newest_tape_so_its_cost_stays_flat(env):
     """The tape keeps growing for weeks; a search over all of it would run longer every day and hold the lab lock
     (and the qualify lab behind it) for hours. It reads the newest SEARCH_TAPE_H hours only."""

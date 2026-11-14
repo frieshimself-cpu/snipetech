@@ -194,7 +194,7 @@ def test_taking_the_answer_back_ends_a_creator_0_run_at_its_next_block_and_stops
 def test_the_plans_notes_say_it_while_the_answer_is_not_recorded():
     """`oktech strategy` sends the rule exactly as scored either way (maxDevBuySol 0) and says in its notes that the live
     test and the automatic test wait for OKTech's answer; with the answer recorded it names it instead."""
-    strat = {"id": BEST, "label": "creator 0", "buy_sol": 0.2, "trigger": CREATOR0,
+    strat = {"id": BEST, "label": "creator 0", "buy_sol": 0.2, "trigger": CREATOR0, "every_coin": True,
              "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}  # fmt: skip
     plain = strategy_sniper(strat, 1)
     assert plain.config["hunt"]["thresholds"]["maxDevBuySol"] == 0
@@ -217,7 +217,7 @@ def test_oktech_strategy_reads_the_owners_record_for_its_note(tmp_path):
     cfg.storage.db_path = str(data / "snipetech.db")
     store.set_coverage("paper_strategies", {"strategies": [
         {"id": BEST, "label": "creator 0", "buy_sol": 0.2, "trigger": CREATOR0,
-         "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}]})  # fmt: skip
+         "exit": {"stop_loss": 0.3, "max_hold_secs": 300}, "every_coin": True}]})  # fmt: skip
     svc = Service(cfg, store=store)
     try:
         notes = asyncio.run(svc.oktech_strategy(BEST, "SNIPER"))["snipers"][0]["notes"]

@@ -196,6 +196,16 @@ def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None, de
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
         return "is not a hunt strategy (OKTech runs only its hunt launch gate exactly as the lab scored it)"
+    from ..analysis.paper import crew_not_as_live
+
+    # 14 Nov: until then a launch-type rule was scored without serial crews' coins (one metadata file on many
+    # creators' launches), in the lab and forward, and the live sniper bought them: OKTech cannot tell such a coin
+    # (37 % of one hunt rule's moments, and they lost). A rule frozen then keeps its id and its trades and never goes
+    # live, migrated or not (paper.as_frozen); nor does one frozen on purpose without them or on them alone. The
+    # same trigger frozen since is scored on every coin the sniper would buy, under an id of its own
+    crews = crew_not_as_live(frozen, plain=True)  # (the owner reads this in Telegram: none of the code's words)
+    if crews is not None:
+        return f"is {crews}"
     from ..oktech import STRATEGY_PLATFORMS, venue_refusal
 
     # research round 4: the lab can score a rule on Raydium LaunchLab launches, which no sniper of ours can buy
@@ -263,7 +273,9 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
     from ..qualify.run import lab_tx_cost_info
 
     rows = paper.report(store, cfg, now=now)["strategies"]
-    frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
+    # each rule as it was scored: one frozen before 14 Nov reads as scored without serial crews' coins, whether or
+    # not the stored rules were migrated yet (paper.frozen), and is refused below
+    frozen = {s["id"]: s for s in paper.frozen(store).get("strategies", []) if isinstance(s, dict)}
     # the measured cost of a transaction, the last one measured after a week without enough fills, 0.0045 before any
     cost = lab_tx_cost_info(store, cfg)
     # OKTech's answer on maxDevBuySol 0, as the owner recorded it next to the database (operator/OKTECH)
@@ -280,7 +292,9 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
 
 def eligible(store, cfg: Config, now: float) -> list[dict]:
     """The frozen paper strategies a live test may run, best lower bound first (paper.report rows): hunt strategies (the
-    one kind OKTech runs exactly as the lab scored it), scored at the live landing, with OKTech's watch delay and at no
+    one kind OKTech runs exactly as the lab scored it), scored on every coin the sniper would buy (never without serial
+    crews' coins, as every launch-type rule frozen before 14 Nov was), at the live landing, with OKTech's watch delay
+    and at no
     less than the measured cost of a transaction (0.0045 while none is measured), with MIN_FORWARD_N forward trades or
     more and a lower bound above zero, also with each gain capped. The forward test at the real landing and the real
     cost is the evidence, never the lab."""
@@ -522,7 +536,12 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
         lower = r.get("ev_lower")
         return (-(float(lower) if lower is not None else -1e9), -int(r.get("n") or 0))
 
-    near = sorted((r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")), key=closeness)[:SHOWN]
+    # a research record (paper.crew_note: scored without serial crews' coins, as every launch-type rule frozen before
+    # 14 Nov was) can never qualify: left out of "closest", and counted in one plain line
+    hunts = [r for r in rows if r.get("trigger_kind") == "hunt" and r.get("live_landing")]
+    apart = sum(1 for r in rows if r.get("research_only") and r.get("trigger_kind") in ("launch", "hunt", "whale",
+                                                                                         "burst"))  # fmt: skip
+    near = sorted((r for r in hunts if not r.get("research_only")), key=closeness)[:SHOWN]
     lines = [(f"No hunt strategy qualifies for a live test yet: one needs at least {MIN_FORWARD_N} forward paper "
               "trades where a live hunt fill lands, at the cost a trade has live, and a lower bound above "
               "zero.")]  # fmt: skip
@@ -532,8 +551,11 @@ def _none_words(rows: list[dict], why: dict[str, str]) -> str:
             lines.append(f"{r['id']} {r['label']}: {int(r.get('n') or 0):,} forward trades, mean "
                          f"{float(r.get('mean') or 0):+.4f}, lower bound {float(r.get('ev_lower') or 0):+.4f} "
                          f"({why.get(r['id'], '')})")  # fmt: skip
-    else:
+    elif not apart:
         lines.append("None is frozen in the paper test yet.")
+    if apart:
+        lines.append(f"{apart} older launch rule{' was' if apart == 1 else 's were'} scored without a group of coins "
+                     "the live sniper buys: research only.")  # fmt: skip
     return "\n".join(lines)
 
 

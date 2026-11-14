@@ -5,6 +5,7 @@ whose creator bought more than maxDevBuySol with it, counts distinct buyers, tak
 a non-SOL-quoted coin (pump error 6010)."""
 
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -105,7 +106,7 @@ def test_hunt_label_reads_as_the_oktech_settings():
 
 
 def test_strategy_sniper_sends_a_hunt_trigger_exactly_as_scored():
-    strat = {"id": "h1", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT,
+    strat = {"id": "h1", "every_coin": True, "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT,
              "trigger": Trigger("hunt", sol=3.0, window=2.0, max_buyers=5, dev_max=1.0).__dict__}  # fmt: skip
     cfg = strategy_sniper(strat, 1).config
     assert cfg["mode"] == "hunt" and cfg["totalSnipes"] == 1 and cfg["buyAmount"] == 0.1
@@ -121,7 +122,8 @@ def test_strategy_sniper_refuses_a_hunt_setting_oktech_would_ignore(field, value
     # 5 Nov 22:11: a batch sent 2.5 / 1.0 / nulls and bought every launch as if no threshold were set
     trig = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__ | {field: value}
     with pytest.raises(ValueError, match="whole"):
-        strategy_sniper({"id": "h", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
+        strategy_sniper({"id": "h", "every_coin": True,
+                         "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": trig}, 1)
 
 
 def test_every_hunt_trigger_the_search_ranks_is_one_oktech_can_run():
@@ -129,7 +131,8 @@ def test_every_hunt_trigger_the_search_ranks_is_one_oktech_can_run():
     assert len(hunts) >= 6
     for t in hunts:
         assert not t.plain  # OKTech has no switch for mayhem / holder-reward coins
-        strategy_sniper({"id": "h", "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}, 1)
+        strategy_sniper({"id": "h", "every_coin": True,
+                         "label": "t", "buy_sol": 0.1, "exit": LAB_EXIT, "trigger": t.__dict__}, 1)
 
 
 def test_a_hunt_strategy_lands_a_slot_after_its_trigger():
@@ -145,9 +148,14 @@ def test_a_hunt_strategy_lands_a_slot_after_its_trigger():
 def test_strategies_frozen_before_hunt_keep_their_ids():
     old = {"kind": "whale", "buyers": 0, "sol": 1.0, "window": 0.0, "progress": 0.0, "holders": 0, "ret": 0.0,
            "max_age": 1.0, "plain": True, "group": "kol", "solo": True, "event": ""}  # fmt: skip
-    now = Trigger(**old).__dict__
+    # as the rule reads today: every field added since at its default, and crew "skip", which is what a launch-type
+    # rule did until 14 Nov (today's default, every coin, is a rule of its own: test_crew_as_live.py)
+    now = Trigger(**old, crew="skip").__dict__
     assert set(now) > set(old)  # the new hunt fields are there, at their defaults
     assert paper.strategy_id(now, LAB_EXIT, "+6", 0, 0.2) == paper.strategy_id(old, LAB_EXIT, "+6", 0, 0.2)
+    assert paper.strategy_id(Trigger(**old).__dict__, LAB_EXIT, "+6", 0, 0.2) != paper.strategy_id(
+        old, LAB_EXIT, "+6", 0, 0.2
+    )
     hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
     assert paper.strategy_id(hunt, LAB_EXIT, "+3", 1, 0.2) != paper.strategy_id(
         hunt | {"dev_max": None}, LAB_EXIT, "+3", 1, 0.2
@@ -204,7 +212,7 @@ def test_the_search_scores_what_oktech_runs_for_the_best_paper_strategy():
     # 9b2bd6f664 (7 Nov forward paper: +0.0096 SOL a trade over 1,156 trades) is a whale rule OKTech cannot run as
     # scored; `oktech strategy` sends an approximation of it, and that approximation must be scored as such
     whale = Trigger("whale", sol=1.0, max_age=1.0, plain=True, solo=True)
-    strat = {"id": "w", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": whale.__dict__}
+    strat = {"id": "w", "every_coin": True, "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": whale.__dict__}
     sent = strategy_sniper(strat, 1).config["hunt"]
     th = sent["thresholds"]
     as_sent = Trigger("hunt", sol=float(th["minTotalSol"]), window=sent["timeWindowMs"] / 1000,
@@ -370,7 +378,7 @@ def test_a_hunt_on_a_wallet_group_is_a_new_rule_and_older_rules_keep_their_ids()
 
 def test_strategy_sniper_sends_the_groups_wallets_as_the_known_bots_and_refuses_without_them():
     trig = Trigger("hunt", sol=15.0, window=2.0, bots="bundler").__dict__
-    strat = {"id": "hc", "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": trig}
+    strat = {"id": "hc", "every_coin": True, "label": "t", "buy_sol": 0.2, "exit": LAB_EXIT, "trigger": trig}
     wallets = [addr("crew-a"), addr("crew-b")]
     cfg = strategy_sniper(strat, 5, bot_wallets=wallets).config
     hunt = cfg["hunt"]
@@ -407,9 +415,10 @@ def test_the_bundler_label_kind_reaches_the_lab_and_the_command_takes_it(tmp_pat
 def test_a_hunt_on_a_wallet_group_scores_the_groups_launches_serial_crew_or_not():
     """11 Nov: the first lab of the crew rule fired on 2 launches in 137 hours of tape; the tape held 31 launches the
     crew bundled, each with about 41 SOL in its create block. The crew launches from fresh creators on one metadata
-    uri, which is what marks a serial crew (`store.crew_uris`), and launch-type rules pass over those coins. A rule on
-    a wallet group buys what the group's wallets bought, as OKTech's known-bot gate does (it cannot tell a crew's
-    coin): the uri never skips a coin for it. Crew "only" still limits it to the crews' coins."""
+    uri, which is what marks a serial crew (`store.crew_uris`), and launch-type rules passed over those coins (since
+    14 Nov only with crew "skip"). A rule on a wallet group buys what the group's wallets bought, as OKTech's
+    known-bot gate does (it cannot tell a crew's coin): the uri never skips a coin for it. Crew "only" still limits
+    it to the crews' coins."""
     from snipetech.analysis.lab import crew_skips
 
     store = Store(":memory:")
@@ -422,7 +431,9 @@ def test_a_hunt_on_a_wallet_group_scores_the_groups_launches_serial_crew_or_not(
     crews = {"ipfs://crew"}
     plain = Trigger("hunt", sol=2.0, window=1.0)
     group = Trigger("hunt", sol=2.0, window=1.0, bots="bundler")
-    assert crew_skips(plain, store.launch(theirs.mint), crews)  # a plain hunt still passes over a serial crew's coin
+    # a plain hunt scored without crews' coins still passes over a serial crew's coin; the default scores it
+    assert crew_skips(replace(plain, crew="skip"), store.launch(theirs.mint), crews)
+    assert not crew_skips(plain, store.launch(theirs.mint), crews)
     assert not crew_skips(group, store.launch(theirs.mint), crews)  # the group's wallets decide, not the uri
     assert not crew_skips(group, store.launch(other.mint), crews)
     only = Trigger("hunt", sol=2.0, window=1.0, bots="bundler", crew="only")

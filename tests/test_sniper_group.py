@@ -721,7 +721,8 @@ def test_a_hunt_can_ask_for_a_labelled_sniper_among_the_buyers_and_no_sniper_is_
     with pytest.raises(ValueError, match="bots must be one of bundler, sniper"):
         parse_trigger({"kind": "hunt", "sol": 2, "window": 2, "bots": "snipers"})
     assert BOT_GROUPS == ("bundler",)
-    strat = {"id": "x", "label": "hunt on snipers", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+    strat = {"id": "x", "every_coin": True,
+             "label": "hunt on snipers", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
              "trigger": trig.__dict__}  # fmt: skip
     with pytest.raises(ValueError, match="'sniper' is not a wallet group a hunt can be limited to"):
         strategy_sniper(strat, 5, bot_wallets=[A])

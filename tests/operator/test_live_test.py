@@ -43,17 +43,21 @@ def _rule_sol(sid: str) -> float:
 
 
 def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=0.2, trigger=None, outliers=(0, 0.0),
-            per_tx=0.0047, watch=WATCH_SECS):  # fmt: skip
+            per_tx=0.0047, watch=WATCH_SECS, every_coin=True):  # fmt: skip
     """A frozen paper strategy with `n` forward trades of `pnl` SOL each: with one value the lower bound is that value.
     (1, "+3") is where a live hunt fill lands (paper.HUNT_LANDING). `outliers`: (count, pnl) of extra big trades.
     `per_tx`: the SOL a transaction its trades were scored at (`paper freeze --per-tx`; by default 0.0047, the cost the
     measure stage measured on 6 Nov). `watch`: its exit's watch delay, OKTech's 1.3 s by default as the lab scores every
-    exit of a launch-type rule since 7 Nov evening (0: frozen before that). Its rule is its own (_rule_sol)."""
+    exit of a launch-type rule since 7 Nov evening (0: frozen before that). Its rule is its own (_rule_sol).
+    `every_coin`: frozen since 14 Nov, when a launch-type rule that names no crew choice is scored on every coin the
+    sniper would buy, serial crews' coins too, and its record says so (False: frozen before, scored without them)."""
     trig = trigger or ({**HUNT, "sol": _rule_sol(sid)} if kind == "hunt" else {"kind": kind, "sol": _rule_sol(sid)})
     ex = {"stop_loss": 0.3, "max_hold_secs": 300} | ({"watch_secs": watch} if watch else {})
     s = {"id": sid, "label": f"{kind} {sid[:4]} | lab exit", "trigger": trig, "exit": ex, "position": landing[1],
          "latency": landing[0], "buy_sol": buy, "per_tx_sol": per_tx, "from_ts": NOW - 20 * 3600,
          "lab": {"mean": 0.01, "ev_lower": 0.004}}  # fmt: skip
+    if every_coin:
+        s["every_coin"] = True
     cov = store.coverage("paper_strategies")
     store.set_coverage("paper_strategies", {"strategies": cov.get("strategies", []) + [s], "superseded": []})
     for k in range(n):
@@ -308,6 +312,107 @@ def test_a_hunt_strategy_scored_without_oktechs_watch_delay_never_goes_live(env)
     assert "watch delay" in reply and "1.3 s" in reply
     assert "watch delay" in _refused(env, SECOND, "go")
     assert _send(env).splitlines()[-1] == f"/test {new} go"
+
+
+def test_a_hunt_strategy_scored_without_serial_crews_coins_never_goes_live(env):
+    """Until 14 Nov the lab and the paper test passed over serial crews' coins (one metadata file on many creators'
+    launches) for every launch-type rule, and the live sniper bought them: OKTech cannot tell such a coin. A rule
+    frozen then keeps its id and its trades and never goes live, however good its record, before the stored rules
+    are migrated and after; the same rule frozen since is scored on every coin and may. A rule frozen on purpose
+    without crews' coins ("skip") or on them alone ("only") never goes live either."""
+    old = _freeze(env.store, BEST, pnl=0.03, every_coin=False)  # frozen before 14 Nov: the kinder bound
+    _freeze(env.store, SECOND, pnl=0.02)  # frozen since: scored on every coin the sniper would buy
+    assert old["trigger"].get("crew", "") == ""  # as the old code stored it
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    reply = _refused(env, BEST, "go")
+    assert "without serial crews' coins" in reply and "OKTech cannot tell" in reply
+    assert paper.migrate_crew(env.store, now=NOW) == 1
+    stored = env.store.coverage("paper_strategies")["strategies"]
+    assert [s["id"] for s in stored] == [BEST, SECOND] and stored[0]["trigger"]["crew"] == "skip"
+    assert len(env.store.paper_trades(BEST)) == 150  # its record is whole
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    assert "without serial crews' coins" in _refused(env, BEST, "go")
+    _freeze(env.store, THIRD, pnl=0.05, trigger={**HUNT, "sol": 7.0, "crew": "skip"}, every_coin=False)
+    _freeze(env.store, FOURTH, pnl=0.06, trigger={**HUNT, "sol": 8.0, "crew": "only"}, every_coin=False)
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    assert "without serial crews' coins" in _refused(env, THIRD, "go")
+    assert "serial crews' coins alone" in _refused(env, FOURTH, "go")
+    for sid in (BEST, THIRD, FOURTH):  # in the owner's chat: plain words, none of the code's
+        assert "(crew" not in _refused(env, sid, "go") and 'crew ""' not in _refused(env, sid, "go")
+    assert _send(env).splitlines()[-1] == f"/test {SECOND} go"
+    assert env.svc.created == []  # nothing was created for any of them
+
+
+def test_the_live_tests_own_check_names_the_crew_reason_first(env):
+    """A rule frozen before 14 Nov with too few forward trades is not told "has 10 forward trades of the 100
+    needed", which reads as if waiting made it eligible: it is research only, and that comes first."""
+    _freeze(env.store, BEST, n=10, pnl=0.03, every_coin=False)
+    _ok, why, _rows = LT._survey(env.store, env.cfg, NOW)
+    assert why[BEST].startswith("is research only: scored without serial crews' coins"), why[BEST]
+
+
+def test_the_owner_is_told_of_research_records_in_plain_words_and_shown_the_rules_that_can_qualify(env):
+    """/test with nothing eligible listed the three "closest" rules, all three research records that can never
+    qualify, each with the code's own words (crew "", crew skip), and the one rule ten trades short was not shown.
+    Research records are left out of the list; one plain line says how many there are. No reply to the owner holds
+    a code word, also not for /test <id> and /test <id> go on such a rule."""
+    f98 = {"kind": "hunt", "sol": 5.0, "window": 1.0, "max_buyers": 2, "dev_max": 1.0, "crew": "", "bots": ""}
+    for k, sid in enumerate(("f98f8abd6a", "c5ca340caf", "0123456789")):  # frozen before 14 Nov
+        _freeze(env.store, sid, n=600, pnl=0.03 - k * 0.001, trigger={**f98, "window": 1.0 + k}, every_coin=False)
+    _freeze(env.store, "dddddddddd", n=90, pnl=0.02, trigger={**f98, "sol": 6.0})  # as live, ten trades short
+    reply = _send(env)
+    assert reply.startswith("No hunt strategy qualifies") and "Closest now:\ndddddddddd " in reply
+    assert "has 90 forward trades of the 100 needed" in reply
+    assert not any(sid in reply for sid in ("f98f8abd6a", "c5ca340caf", "0123456789"))
+    assert ("3 older launch rules were scored without a group of coins the live sniper buys: research only"
+            in reply)  # fmt: skip
+    for text in (reply, _refused(env, "f98f8abd6a", "go"), _send(env, "f98f8abd6a")):
+        assert 'crew ""' not in text and "(crew" not in text and "crew skip" not in text, text
+    assert "without serial crews' coins" in _send(env, "f98f8abd6a")
+    env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
+    _freeze(env.store, BEST, n=600, pnl=0.03, every_coin=False)  # one, and nothing else frozen
+    alone = _send(env)
+    assert "1 older launch rule was scored without a group of coins the live sniper buys: research only" in alone
+    assert "Closest now" not in alone and BEST not in alone
+
+
+def test_the_owners_digest_and_the_weeks_count_keep_research_records_apart(env):
+    """The digest's "Paper test at our landing ... best ..." named a research-only rule as the best at our landing,
+    and the week's "passed" counted it. A rule whose record is not what a sniper would trade is never "at our
+    landing", never "best" and never "passed"; such rules have one sentence of their own. Before the stored rules
+    are migrated and after."""
+    from snipetech.operator import research, roles
+
+    old = _freeze(env.store, BEST, pnl=0.03, every_coin=False)  # frozen before 14 Nov: 150 trades, +4.5 SOL
+    new = _freeze(env.store, SECOND, pnl=0.01, n=40)  # frozen since: 40 trades, +0.4 SOL
+    env.store._exec("UPDATE paper_trades SET entry_ts = trigger_ts")  # the digest reads when each trade was bought
+    for s, n in ((old, 150), (new, 40)):  # each trade's launchpad, as the run tags it: the report keeps its numbers
+        env.store.set_paper_venues((s["id"], f"{s['id']}-{k}", "pumpfun") for k in range(n))
+    for migrated in (False, True):
+        if migrated:
+            assert paper.migrate_crew(env.store, now=NOW) == 1
+        line = research._paper_line(env.store, NOW - 24 * 3600, NOW)
+        assert line.startswith("Paper test at our landing: 40 trades, +0.400 SOL; best " + new["label"][:60]), line
+        assert "Research records, not what a sniper would trade: 1 rule, 150 trades, +4.500 SOL" in line
+        assert old["label"][:20] not in line.split("Research records")[0]
+        paper.report(env.store, env.cfg, now=NOW)  # writes the kept rows the count reads
+        counts = roles.week_counts(env.paths, NOW, env.store)
+        assert (counts["frozen"], counts["passed"]) == (2, 1), counts
+    env.store.set_coverage("paper_strategies", {"strategies": [paper.frozen(env.store)["strategies"][0]]})
+    only = research._paper_line(env.store, NOW - 24 * 3600, NOW)
+    assert only.startswith("Paper test at our landing: no rule is tested there. Research records, not what a sniper "
+                           "would trade: 1 rule, 150 trades, +4.500 SOL")  # fmt: skip
+
+
+def test_a_hunt_on_a_wallet_group_frozen_before_is_not_refused_for_crews_coins(env):
+    """A hunt on a wallet group (`bots`) was always scored on every coin its group's wallets bought, a serial crew's
+    or not: the 14 Nov change takes nothing from it. Such a rule frozen before is refused for the wallets nobody
+    handed over (as it always was by this path), never for crews' coins, and the migration leaves it as it is."""
+    old = _freeze(env.store, BEST, pnl=0.03, trigger={**HUNT, "bots": "bundler"}, every_coin=False)
+    assert paper.migrate_crew(env.store, now=NOW) == 0
+    assert env.store.coverage("paper_strategies")["strategies"] == [old]
+    _ok, why, _rows = LT._survey(env.store, env.cfg, NOW)
+    assert "serial crews" not in why[BEST] and "bundler" in why[BEST]
 
 
 def test_the_plan_caps_size_count_and_time_and_keeps_the_floor_below_all_of_it():
