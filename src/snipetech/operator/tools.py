@@ -1797,8 +1797,8 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         """Add this turn's entry to your journal of the day (append=true): what the turn did and found, the longer
         record. With a headline the entry carries the turn's note: the headline is written as this turn's note for
         the owner (operator/notes.md, exactly as write_note writes it: one a turn, always "info") and closes the
-        entry in the journal, so the finding is written once and write_note is not called. Your table is not
-        written here: update_table changes it by rows.
+        entry in the journal, so the finding is written once and write_note is not called. Your table is changed
+        by rows with update_table, not here.
 
         Args:
             name: Your journal's name (the description's last line names it).
@@ -1807,8 +1807,13 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
             headline: The turn's finding in one or two plain sentences with the numbers that matter (n, the landing,
                 the bid): it becomes this turn's note. Do not repeat it in the text.
         """
-        if name == table:  # the table whole, as this tool wrote it until 14 Nov: still the way a first table goes in
-            return write_table(table_file.read_text(errors="replace") if table_file.exists() else None, text=text)
+        if name == table:
+            # The table whole, as this tool wrote it until 14 Nov and as the instructions then said. It is still
+            # taken: a refusal here would make the turn write all 5,500 characters a second time. The answer says
+            # the cheaper way.
+            old = table_file.read_text(errors="replace") if table_file.exists() else None
+            done = write_table(old, text=text, whole=True)
+            return done if old is None else f"{done}. Next time send only the rows that changed: update_table"
         if not re.fullmatch(re.escape(journal) + r"-\d{4}-\d\d-\d\d", str(name)):
             return (f"error: the {name} writes {table} (its table) and {journal}-<YYYY-MM-DD> (its "
                     "journal) and no other report; a finding for another role is an idea in its queue")  # fmt: skip

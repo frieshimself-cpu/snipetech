@@ -200,20 +200,25 @@ def test_a_table_past_what_a_turn_carries_is_said(rolebox):
     assert "6,000" not in _call(update, drop=[f"W{i}" for i in range(20)])
 
 
-def test_a_roles_report_is_its_journal_and_its_table_is_update_tables(rolebox):
-    """write_report wrote the table whole until 14 Nov. It still takes a table that is not there yet (the same first
-    write as update_table's); a table that is there it no longer replaces: it says update_table, in one line."""
+def test_write_report_still_writes_the_table_whole_and_says_how_to_change_rows(rolebox):
+    """write_report wrote the table whole until 14 Nov, and the agents' instructions said so. It still does, so that
+    a turn that sends its table the old way loses nothing and writes nothing twice (a refusal here would cost the
+    whole table again); the answer is one line and says that rows go through update_table. The title's clock is
+    the code's there too, and a table that says the same is not written again."""
     tools, paths, _ = rolebox
     report = tools("scout")["write_report"]
     assert _call(report, name="scout-facts", text=TABLE).startswith("scout-facts.md: written whole")
     p = paths.root / "scout-facts.md"
     assert p.read_text() == TABLE.replace(TABLE.split("\n")[0], TITLE_NOW)
     os.utime(p, (NOW - 3600, NOW - 3600))
+    out = _call(report, name="scout-facts", text=TABLE.replace("08:05 UTC", "09:20 UTC"))
+    assert "not written again" in out and p.stat().st_mtime == NOW - 3600  # only the clock differed
     out = _call(report, name="scout-facts", text=TABLE.replace("HjuSth", "HjuSth2"))
-    assert out.startswith("error") and "update_table" in out and "whole=true" in out and "\n" not in out
-    assert "HjuSth2" not in p.read_text() and p.stat().st_mtime == NOW - 3600
+    assert out.startswith("scout-facts.md: written whole") and "update_table" in out and "\n" not in out
+    assert "HjuSth2" in p.read_text() and p.stat().st_mtime > NOW - 60
     assert _call(report, name="scout-journal-2026-11-06", text="looked at winners", append=True) == (
-        "wrote scout-journal-2026-11-06.md")  # fmt: skip
+        "wrote scout-journal-2026-11-06.md"
+    )
     assert _call(report, name="scout-journal-2026-11-06", text="and at playbook", append=True).startswith("appended")
 
 
