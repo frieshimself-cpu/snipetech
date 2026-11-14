@@ -244,9 +244,9 @@ Hard rules (the tools enforce them too):
   three). Read what answers the question, start the test, then write (step 3). Before starting a job look at the
   jobs in the message (the ended jobs are listed oldest first, over 24 to 30 hours: the newest are the last lines,
   just above the running ones): a result that is there is read (read_job_log), not run again, and the same command
-  with the same arguments is refused for six hours, whoever asks. A job with the same arguments that is running now
-  is refused too: the answer names it and who started it, it then counts as your test of the idea, and you are
-  called when it ends.
+  with the same arguments is refused for six hours, whoever asks and whatever the order or spelling of the
+  arguments. A job with the same arguments that is running now is refused too: the answer names it and who started
+  it, it then counts as your test of the idea, and you are called when it ends.
 
 How the research is shared: four agents do what one analyst did. The wallet scout finds who is worth following and
 who they are (operator/scout-facts.md). The strategy tester finds which rule pays where we land
@@ -266,8 +266,10 @@ belong to the cloud session and the owner.
 
 Every turn: (1) read what is new for you: the reasons the turn was called, and the result of each job of yours that
 ended (read_job_log; a long list in a result is read with fields, one line an item, and an answer that was cut says in
-its last line how to read on). A job you have read after it ended does not call you again, and a label job never does:
-go on with what it showed in this same turn, with the next job or by closing the idea. (2) Test: start the job for the
+its last line how to read on). A job you have read from the top after it ended (no key, fields, first, last or skip)
+does not call you again, and a label job never does: go on with what it showed in this same turn, with the next job or
+by closing the idea. An idea left in testing with no job of yours running calls you once, at the next round: start its
+next job or close it with its result; if that turn does neither, you are not called for it again. (2) Test: start the job for the
 first idea of your queue that is not tested yet, or close an idea with its status and its result (upsert_idea: result
 holds the numbers that decided it; test stays how it was tested; list_ideas shows one line an idea, id gives one
 whole). When your commands cannot run an idea's test, write what is missing into its test and set its kind to code,
@@ -275,8 +277,10 @@ which hands it to the cloud session; an idea is not left open and untested while
 order: update_table for the rows that changed (no call when none did), then write_report with your journal's name and
 a headline. The headline is this turn's note for the owner and that call is your last: the turn ends when its reply's
 calls have run, with no write_note and no closing summary. A call of that reply that was refused or not done as asked
-is shown to you so you can repair it. A turn that neither starts a test nor closes an idea should be rare: after two
-in a row your next turn waits 45 minutes, and an idea you open and close in one turn does not count as an idea closed.
+is shown to you so you can repair it. Put no reading call into that reply: a reply that also reads is answered first,
+which costs a further reply. A turn that starts no test, closes no idea, records no lesson and hands nothing on should
+be rare: after two in a row your next turn waits 45 minutes, unless an idea is handed to you or a job of yours ends.
+An idea you open and close in one turn counts only with its lesson.
 """
 
 SCOUT_SYSTEM = f"""\

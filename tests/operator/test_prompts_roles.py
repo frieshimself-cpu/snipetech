@@ -337,13 +337,20 @@ def test_the_role_rules_say_how_a_turn_is_written_once_and_as_the_code_does_it()
             "it.") in rules  # fmt: skip
     assert "Read what answers the question, start the test, then write (step 3)." in rules
     assert "after two in a row your next turn waits 45 minutes" in rules and "waits an hour" not in rules
-    assert "an idea you open and close in one turn does not count as an idea closed" in rules
+    # what counts as work since the reviews of 14 Nov (roles._worked): a lesson and a hand-on do, and a role that is
+    # handed an idea or whose job ends is called inside the wait
+    assert ("A turn that starts no test, closes no idea, records no lesson and hands nothing on should be rare: after "
+            "two in a row your next turn waits 45 minutes, unless an idea is handed to you or a job of yours ends. An "
+            "idea you open and close in one turn counts only with its lesson.") in rules  # fmt: skip
+    assert "Put no reading call into that reply" in rules and "calls you once, at the next round" in rules
     # what the round-1 words said that the code does not do, or said more than once
     for gone in ("one more reply", "never the whole table", "append=true", "rows, drop, headline"):
         assert gone not in rules, gone
     assert rules.count("write_note") == 1 and rules.count("update_table") == 1
     # steps 1 and 2 keep what they said
-    for kept in ("A job you have read after it ended does not call you again", "list_ideas shows one line an idea",
+    read = ("A job you have read from the top after it ended (no key, fields, first, last or skip) does not call you "
+            "again")  # fmt: skip
+    for kept in (read, "list_ideas shows one line an idea",
                  "a long list in a result is read with fields", "result holds the numbers that decided"):  # fmt: skip
         assert kept in rules, kept
     # the operator and the analyst are told how a job's result reads as read_job_log gives it

@@ -464,7 +464,7 @@ class OperatorJobs:
         which nothing below that names a role holds); `idea`: the idea of its queue the job tests."""
         if argv and argv[0] in OWNER_COMMANDS:
             raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
-                                  "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
+                                  "settings are the owner's call); put the case in an idea with owner_needed")  # fmt: skip
         action = tuple(argv[:2]) in RESEARCH_ACTIONS
         if action and not AGENT_BACKFILL_OPEN:
             raise PermissionError(BACKFILL_CLOSED)

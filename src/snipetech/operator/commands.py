@@ -40,7 +40,7 @@ HELP = (
     "/book on|off (the live book, no SSH needed)  /book bar <SOL a trade>|default (which wallets it copies)  "
     "/sell <coin address> (sell all of that coin now; /sell alone lists the coins held, /sell all sells every one)  "
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend; every N hours is "
-    "how often the analyst runs and the least gap between a research agent's turns)  /budget wake table on|off "
+    "how often the analyst runs and, only when you name it, the least gap between a research agent's turns)  /budget wake table on|off "
     "(whether another agent's table change alone starts an agent's turn)  /credit <dollars> (what the Anthropic console shows, after a top-up: the count of the credit "
     "starts there; /credit alone says the count)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
     "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
