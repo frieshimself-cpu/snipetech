@@ -577,6 +577,87 @@ def test_the_hourly_prune_takes_the_rows_not_paid_since_before_the_tape_begins(m
     st.close()
 
 
+def test_the_hourly_prune_of_the_learned_rows_goes_a_batch_at_a_time_and_rests_between(monkeypatch):
+    """Round 3, F1: with the cutoff moved by days at once the prune of the learned rows held the event loop for as
+    long as all its batches took (23.9 s measured). A batch a call, and the loop's turn after each, as for trades."""
+    import time
+
+    st = Store(":memory:")
+    w = watcher(store=st)
+    now = time.time()
+    w.cfg.storage.retain_days = 14.0
+    monkeypatch.setattr(Store, "WRITE_BATCH", 50)
+    st.save_pay_dests([applied_row(f"OLD{k:04d}", kind=None, applied=0, last_ts=int(now - 20 * 86_400) + k)
+                       for k in range(230)], now=int(now))  # fmt: skip
+    events = []
+    real_prune, real_sleep = st.prune_pay_dests, asyncio.sleep
+
+    def prune(*a, **k):
+        gone = real_prune(*a, **k)
+        events.append(gone)
+        return gone
+
+    async def sleep(secs, *a, **k):
+        events.append("rest")
+        assert secs >= L.PRUNE_REST_MIN_SECS
+        await real_sleep(0)
+
+    monkeypatch.setattr(st, "prune_pay_dests", prune)
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    asyncio.run(w._prune(now))
+    learned = events[events.index(50) :]  # what came before is the tape's own prune
+    assert learned == [50, "rest", 50, "rest", 50, "rest", 50, "rest", 30, "rest", 0]
+    assert w.stats["pay_dests_pruned"] == 230 and st.pay_dests() == []
+    st.close()
+
+
+@pytest.mark.parametrize("refusals", [1, 2, 3])
+def test_a_flush_whose_write_is_refused_is_still_one_reading(refusals):
+    """Round 3, F4: the classification sat inside the block that is tried again when the write fails, so one flush
+    the database refused counted as up to three readings: `tip_streak` 1, 2, 3 within 20 seconds, and an account
+    written applied at its second flush. A batch is read once; only its write is tried again."""
+
+    def two_flushes(refused: int) -> tuple[dict, dict, list]:
+        w = watcher()
+        w.pay_flush_at = 0.0
+        market(w, 400, wallets=60)  # 400 buys by 60 wallets, a flat tip and a one percent fee each
+        real_save, left, streaks = w.store.save_pay_dests, [refused], []
+
+        def save(rows, now=None):
+            if left[0]:
+                left[0] -= 1
+                raise sqlite3.OperationalError("database is locked")
+            return real_save(rows, now=now)
+
+        w.store.save_pay_dests = save
+        for k in range(max(1, refused)):  # the first flush: its batch is tried at this many ticks
+            tick_at(w, 300.0 + 10 * k)
+            streaks.append(w.pay_dests.get(TIP_ACC)["tip_streak"])
+        if 0 < refused < L.PAY_DESTS_GIVE_UP:
+            tick_at(w, 300.0 + 10 * refused)  # the tick whose write goes through
+            streaks.append(w.pay_dests.get(TIP_ACC)["tip_streak"])
+        market(w, 5, start=400, ts=T0 + 400, wallets=60)
+        tick_at(w, 300.0 + L.PAY_DESTS_FLUSH_SECS)  # the second flush, the database fine
+        row = next(r for r in w.store.pay_dests(samples=False) if r["address"] == TIP_ACC)
+        return (
+            {k: row[k] for k in ("kind", "applied", "tip_streak", "n", "sample_payers")},
+            w.store.tip_accounts(),
+            streaks,
+        )
+
+    control, control_tips, _ = two_flushes(0)
+    assert control | {"sample_payers": 0} == {
+        "kind": "tip",
+        "applied": 0,
+        "tip_streak": 2,
+        "n": 405,
+        "sample_payers": 0,
+    }
+    row, tips, streaks = two_flushes(refusals)
+    assert set(streaks) == {1}, streaks  # however often the write was tried, the first flush is one reading
+    assert (row, tips) == (control, control_tips) and tips == {}
+
+
 def test_the_maintenance_tick_runs_the_flush_and_survives_it(tmp_path):
     """The real maintenance task with the database held by another writer: the recorder's task goes on, and once the
     other writer lets go the learned rows are written."""

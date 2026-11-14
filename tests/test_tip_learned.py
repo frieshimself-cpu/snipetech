@@ -34,6 +34,7 @@ def applied(st: Store, address: str = ATIFZK_TIP) -> None:
     st.save_pay_dests([{"address": address, "kind": "tip", "n": 900, "payers": 64, "rho": 0.01,
                         "median_lamports": 790_000, "median_pct": 0.1, "first_ts": 1, "last_ts": 2, "samples": "[]",
                         "applied": 1, "tip_streak": 9, "sample_payers": 60}], now=3)  # fmt: skip
+    st.mark_applied([address], now=3)  # the recorder reads with it: only then do the other writers
 
 
 # ---- the transaction -------------------------------------------------------------------------------------------------
@@ -180,6 +181,38 @@ def test_ingest_reads_with_the_learned_accounts_only_while_the_switch_is_on(tmp_
         svc.store.close()
 
 
+def test_an_applied_account_the_recorder_does_not_read_with_yet_is_not_handed_to_the_other_writers(tmp_path):
+    """Round 3, F5: the recorder reads only with accounts it has marked (`applied_since`); the ingest and the
+    backfill were handed every applied row, so for a while one column had two meanings. They get the marked ones."""
+    from snipetech.service import Service
+
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "t.db")
+    cfg.live.apply_learned_tips = True
+    svc = Service(cfg)
+    try:
+        row = {
+            "kind": "tip",
+            "n": 900,
+            "payers": 64,
+            "rho": 0.01,
+            "median_lamports": 790_000,
+            "median_pct": 0.1,
+            "first_ts": 1,
+            "last_ts": 2,
+            "samples": "[]",
+            "applied": 1,
+            "tip_streak": 9,
+            "sample_payers": 60,
+        }
+        svc.store.save_pay_dests([row | {"address": "Marked"}, row | {"address": "NotYet"}], now=3)
+        svc.store.mark_applied(["Marked"], now=50)
+        assert svc.store.tip_accounts() == {"Marked": 50, "NotYet": 0}
+        assert svc.learned_tip_accounts() == {"Marked": 50}
+    finally:
+        svc.store.close()
+
+
 def test_ingest_asks_for_the_learned_accounts_each_time():
     """The recorder's process keeps one service for days: an account applied since the last call is used."""
     st = Store(":memory:")
@@ -238,5 +271,5 @@ def test_the_backfill_command_hands_the_applied_accounts_over_only_while_the_swi
     assert cli.main(["--db", str(db), "history", "amm-backfill", "--wallet", wallet, "--dry-run"]) == 0
     assert cli.main(["--config", str(cfg), "--db", str(db), "history", "amm-backfill", "--wallet", wallet,
                      "--dry-run"]) == 0  # fmt: skip
-    assert seen == [None, {ATIFZK_TIP: 0}]
+    assert seen == [None, {ATIFZK_TIP: 3}]
     assert json.loads("{}") == {} and capsys.readouterr().out.count("ok") == 2

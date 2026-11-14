@@ -40,9 +40,8 @@ from __future__ import annotations
 
 import heapq
 import json
-import sys
 from array import array
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any
 
 PAYERS_CAP = 64  # different wallets counted per destination over its life; beyond that the count stays at the cap
@@ -65,6 +64,11 @@ PER_PAYER_FLOOR = 3
 # stored row carries 11 bytes a wallet instead of 47. Two wallets sharing a tag count as one: that can only make the
 # bars harder to reach.
 TAG_CHARS = 8
+# One string object a wallet for all the destinations it pays, through a mapping the table keeps itself and empties
+# when it holds this many (the destinations keep the objects they hold; the sharing starts again). Nothing is put
+# into the interpreter's own table of strings: on Python 3.12 that is never freed (14 Nov, review: 2,000,000
+# different wallets grew a process by 190 MB).
+TAG_MEMORY = 65_536
 TIP_MAX_RHO = 0.3  # the amount does not follow the trade's size: rank correlation under this
 TIP_KEEP_RHO = 0.5  # a destination already read as a tip stays one while the correlation is under this
 TIP_CONFIRM = 2  # readings in a row before a destination is first called "tip"
@@ -294,9 +298,8 @@ def payer_cap(size: int) -> int:
 
 
 def tag_of(payer: str) -> str:
-    """The tag a wallet is kept by in a sample: the first TAG_CHARS characters of its address. One string object a
-    wallet for the whole process (interned): a bot that pays a thousand accounts costs one tag, not a thousand."""
-    return sys.intern(payer[:TAG_CHARS])
+    """The tag a wallet is kept by in a sample: the first TAG_CHARS characters of its address."""
+    return payer[:TAG_CHARS]
 
 
 class _Dest:
@@ -373,6 +376,17 @@ class PayDests:
         self._dests: dict[str, _Dest] = {}
         self.dirty: set[str] = set()  # paid since the caller last took them (to classify and store)
         self.dropped = 0  # destinations dropped because the table was full
+        self._tags: dict[str, str] = {}  # a wallet's tag -> the one object kept for it (at most TAG_MEMORY)
+
+    def _shared(self, tag: str) -> str:
+        """The one object kept for this tag, so a wallet that pays a thousand accounts costs one string."""
+        known = self._tags
+        got = known.get(tag)
+        if got is None:
+            if len(known) >= TAG_MEMORY:
+                known.clear()
+            got = known[tag] = tag
+        return got
 
     def __len__(self) -> int:
         return len(self._dests)
@@ -395,7 +409,7 @@ class PayDests:
             d.last_ts = int(ts)
         elif ts < d.first_ts:
             d.first_ts = int(ts)
-        tag = sys.intern(payer[:TAG_CHARS])
+        tag = self._shared(payer[:TAG_CHARS])
         if tag and len(d.wallets) < PAYERS_CAP:
             d.wallets.add(tag)
         d.put(lamports, quote, tag)
@@ -499,7 +513,7 @@ class PayDests:
         return out
 
     @staticmethod
-    def _from_row(row: dict[str, Any]) -> _Dest:
+    def _from_row(row: dict[str, Any], shared: Callable[[str], str] = str) -> _Dest:
         """A stored row as a destination; raises (KeyError, TypeError, ValueError, OverflowError) on one that cannot
         be read. Round 1 wrote the sample as a flat list lamports, quote, ... without wallets: those pairs load as one
         unknown wallet's, so the wallet bars have to be met again by wallets seen from now on."""
@@ -508,7 +522,7 @@ class PayDests:
         stored = row.get("samples")
         stored = json.loads(stored) if isinstance(stored, str) else (stored or [])
         if isinstance(stored, dict):
-            names = [sys.intern(str(w)[:TAG_CHARS]) for w in stored.get("w") or ()]
+            names = [shared(str(w)[:TAG_CHARS]) for w in stored.get("w") or ()]
             flat = [int(v) for v in (stored.get("p") or ())[: 3 * SAMPLES_CAP]]
             triples = [(flat[i], flat[i + 1], names[flat[i + 2]]) for i in range(0, len(flat) - 2, 3)]
         else:
@@ -542,7 +556,7 @@ class PayDests:
                 address = row["address"]
                 if not address or not isinstance(address, str):
                     continue
-                d = self._from_row(row)
+                d = self._from_row(row, self._shared)
             except (KeyError, TypeError, ValueError, OverflowError, IndexError):
                 continue
             learned = d.kind == "tip" or d.applied
@@ -567,7 +581,7 @@ class PayDests:
                 young = self._dests.get(address)
                 if young is None or young.synced:
                     continue
-                d = self._from_row(row)
+                d = self._from_row(row, self._shared)
             except (KeyError, TypeError, ValueError, OverflowError, IndexError):
                 continue
             d.first_ts, d.last_ts = min(d.first_ts, young.first_ts), max(d.last_ts, young.last_ts)

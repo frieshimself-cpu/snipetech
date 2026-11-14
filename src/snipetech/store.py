@@ -173,6 +173,7 @@ CREATE TABLE IF NOT EXISTS pay_dests (
     median_pct REAL, first_ts INTEGER, last_ts INTEGER, tip_since INTEGER, samples TEXT
 );
 CREATE INDEX IF NOT EXISTS pay_dests_last ON pay_dests(last_ts);
+CREATE INDEX IF NOT EXISTS pay_dests_kind ON pay_dests(kind);
 """
 
 _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_copied", "event_kind", "mint", "side", "sol", "tokens",
@@ -1326,8 +1327,10 @@ class Store:
                   addresses: Iterable[str] | None = None) -> list[dict[str, Any]]:  # fmt: skip
         """The learned destinations as rows, the most paid first: all, or of one `kind` ("tip", "fee", "mixed", or
         "undecided" for the ones without a kind), with at least `min_n` payments, or the ones named (`addresses`).
-        `limit`: the last paid ones up to so many (picked by their times alone, off an index) AND every row read as a
-        tip account or applied, however long ago it was paid: what a recorder takes at its start. `samples` False
+        `limit`: the last paid ones up to so many AND every row read as a tip account or applied, however long ago
+        it was paid: what a recorder takes at its start. Those rows are picked by index (the times', the kinds', the
+        applied ones') and only they are read (14 Nov, review: the whole table was, 2.7 s cold at 234,000 rows before
+        the streams connect). `samples` False
         leaves the samples out (None): the rows are read without their long tail. None on a file without the table,
         or with the table as the first version made it (a copy, read-only)."""
         where, params = ["n >= ?"], [int(min_n)]
@@ -1337,8 +1340,9 @@ class Store:
             where.append("kind = ?")
             params.append(kind)
         if limit is not None:
-            where.append("(address IN (SELECT address FROM pay_dests ORDER BY last_ts DESC LIMIT ?) "
-                         "OR kind = 'tip' OR applied = 1)")  # fmt: skip
+            where.append("rowid IN (SELECT rowid FROM (SELECT rowid FROM pay_dests ORDER BY last_ts DESC LIMIT ?) "
+                         "UNION SELECT rowid FROM pay_dests WHERE kind = 'tip' "
+                         "UNION SELECT rowid FROM pay_dests WHERE applied = 1)")  # fmt: skip
             params.append(int(limit))
         cols = ", ".join(c if c != "samples" or samples else "NULL" for c in _PAY_DEST_COLS)
         named = None if addresses is None else list(dict.fromkeys(addresses))
@@ -1382,20 +1386,19 @@ class Store:
             "UPDATE pay_dests SET applied_since=? WHERE address=? AND applied=1 AND applied_since IS NULL", rows
         )
 
+    PRUNE_PAY_DESTS_SQL = (
+        "SELECT rowid FROM pay_dests WHERE last_ts < ? "
+        "AND NOT ((kind IS 'tip' OR applied IS 1) AND last_ts >= ?) LIMIT ?"  # IS: a row without a kind
+    )
+
     def prune_pay_dests(self, before_ts: int, learned_before_ts: int) -> int:
-        """Delete the destinations last paid before `before_ts` (the tape's own cutoff), WRITE_BATCH a transaction;
-        a row read as a tip account or applied goes only when it was last paid before `learned_before_ts` too.
-        Returns how many went."""
-        gone = 0
-        while True:
-            ids = self._q(
-                "SELECT rowid FROM pay_dests WHERE last_ts < ? "
-                "AND NOT ((kind IS 'tip' OR applied IS 1) AND last_ts >= ?) LIMIT ?",  # IS: a row without a kind
-                (int(before_ts), int(learned_before_ts), self.WRITE_BATCH),
-            )
-            if not ids:
-                return gone
-            gone += self._many("DELETE FROM pay_dests WHERE rowid=?", ids)
+        """Delete destinations last paid before `before_ts` (the tape's own cutoff): ONE batch of at most WRITE_BATCH
+        rows, one short transaction; returns how many went (0: nothing left to go). A row read as a tip account or
+        applied goes only when it was last paid before `learned_before_ts` too. The caller calls again until 0 and
+        rests between the calls (14 Nov, review: all the batches in one call were 265,341 rows and 23.9 s of the
+        recorder's event loop when the cutoff moved by days at once)."""
+        ids = self._q(self.PRUNE_PAY_DESTS_SQL, (int(before_ts), int(learned_before_ts), self.WRITE_BATCH))
+        return self._many("DELETE FROM pay_dests WHERE rowid=?", ids) if ids else 0
 
     def set_label(self, address: str, label: str, kind: str = "service", source: str = "user") -> None:
         self._exec(
