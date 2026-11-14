@@ -79,6 +79,7 @@ from .bid_landing import ahead as bid_ahead
 from .bid_landing import block as read_block
 from .bid_landing import places as bid_places
 from .companions import companions_of
+from .lab_window import clip_backfill, cut_at, trades_digest, trades_of, utc, window_digest, window_fields
 from .names import category, entity
 from .stats import summarize
 
@@ -2102,6 +2103,9 @@ class _Run:
     own: frozenset = frozenset()
     # every later buyer spends the SOL it spent on the tape and no more (`MarketPath.same_sol`): the tighter upper end
     same_sol: bool = False
+    # the end of the lab's window when one was named (`lab --until`, lab_window): a worker's own connection reads no
+    # trade, create or migration after it (`_chunk_rows`)
+    until: int | None = None
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2309,7 +2313,9 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
 
 
 def _chunk_rows(store: Store, run: _Run, items) -> list[dict]:
-    """The rows of (start, end, seconds per slot, coin) items, in their order."""
+    """The rows of (start, end, seconds per slot, coin) items, in their order. In a lab with an end (`run.until`) the
+    store is read no further than it, whichever connection this is (`lab_window.cut_at`)."""
+    store = cut_at(store, run.until)
     return [row for a, b, slot_secs, mint in items for row in _coin_rows(store, run, a, b, slot_secs, mint)]
 
 
@@ -2485,6 +2491,10 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     MIN_PARALLEL_COINS coins, a file another copy has been renamed over since the store opened it, or snipetech code
     on disk that is no longer the code this process imported (`remote update`): workers would import the new code."""
     spans = store.tape_spans()
+    # a window with an end (`lab --until`, lab_window.TapeWindow): the lab of a tape that ended there. The spans and
+    # every read of one coin are cut by the window itself; the reads below that go past it are cut here
+    until = getattr(store, "tape_until", None)
+    window = window_fields(store, spans, until)  # from when to when, and which file: said by every lab
     bid_sol = max(0.0, float(buy_bid_sol))
     costs = Costs(per_tx_lamports=per_tx_sol * LAMPORTS, entry_bid_lamports=bid_sol * LAMPORTS)
     # handed exits score every trigger, MIG included, watched as a live OKTech sniper runs a MIG rule's auto-sell
@@ -2530,13 +2540,15 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             if t.kind == "kol":  # the wallets it fires on: the ones it names (`only`), else its group's
                 followed |= rule_wallets(t, kols)
         mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0))) if followed else {}
+        if followed and until is not None:  # from the wallets' buys up to the window's end
+            mates = companions_of(store, sorted(followed), int(min((a for a, _b in spans), default=0)), until)
     run = _Run(triggers=triggers, kols=kols, events_by_mint=events_by_mint, groups=groups,
                landings=dict(landings or {}), latency_slots=latency_slots, position=position, buy_sol=buy_sol,
                costs=costs, exits=exits, kind_exits=by_kind, min_trades=min_trades, amm_cov=amm_cov,
                horizon=exits_horizon(exits), mig_sell=mig_sell, mig_exits=mig_exits,
                mig_horizon=exits_horizon(mig_exits), crew_uris=frozenset(_crew_uris(store, spans)),
                mates={w: frozenset(m) for w, m in (mates or {}).items() if m},
-               amm_backfill=backfill_spans(store) if wallet_runs else {},
+               amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg)) if is_bid(position) else frozenset(),
                same_sol=bool(same_sol))  # fmt: skip
@@ -2573,7 +2585,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
     out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "tape_hours": sum(b - a for a, b in spans) / 3600,
-           "triggers": all_triggers,
+           "window": window, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,
            "mates": {"wallets": len(run.mates), "found_by": found_by},
@@ -2590,6 +2602,12 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     if is_bid(position):
         out["bid_landing"] = _bid_report(store, spans, position, bid_sol, rows, skipped)
     return out
+
+
+def _backfill(store: Store, until: int | None) -> dict[str, list]:
+    """The stretches the history backfill holds whole, by coin; in a lab with an end, as far as that end."""
+    held = backfill_spans(store)
+    return held if until is None else clip_backfill(held, until)
 
 
 def check_bid_landing(position: str, latency: int, bid_sol: float, triggers: Sequence[Trigger]) -> None:
@@ -2874,7 +2892,7 @@ def bands(rs: Sequence[Mapping[str, Any]], k: int, conf: float, samples: int) ->
             "vol60_sol": split(VOL_BAND_NAMES, _vol_band, "vol60_sol")}  # fmt: skip
 
 
-def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) -> list[dict]:
+def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, trades: bool = False) -> list[dict]:
     """Every trigger x exit, picked on the older 60% of each trigger's moments, judged on the newer 40%. Each row
     names the exit its moments were scored with: on a launch-type trigger the watched one (`collect`'s `kind_exits`),
     which is what `paper freeze` stores and the paper test then scores; a MIG trigger is ranked on the exits its
@@ -2894,11 +2912,21 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
     moved the price, the result with nothing the later buyers added next to the one with all of it, how many newer
     moments rest on a price outside the model, and how many moments were never scored for size. It changes no
     ranking and no other number. Nor does `bands` (12 Nov): a wallet rule's chosen exit on all its moments, by
-    market-cap band and by volume band (`bands`)."""
+    market-cap band and by volume band (`bands`).
+
+    Where the cut fell (14 Nov, idea I161: two labs hours apart gave one rule +12.8 and +20.1 SOL and neither said
+    which trades it rested on): `train` {"n"} is how many older moments the chosen exit was scored on, beside `test`;
+    `test_from_ts` / `test_from_utc` the second of the first newer moment; `test_digest` twelve hex digits over the
+    newer moments the exit was scored on (second, coin, SOL made to six places: `lab_window.trades_digest`) and
+    `window_digest` over the lab's window (`data["window"]`, when it has one) and the rule's moments: two runs agree
+    exactly when both agree. `trades`: each row also lists those newer moments one by one (`test_trades`: [second,
+    coin, SOL made, outside the model]) and the newer moments its exit was not scored on (`left_out`: [second, coin,
+    why]); the digest is the digest of that list. None of it changes a ranking or another number."""
     rows, curve_exits = data["rows"], data["exits"]
     by_kind = data.get("kind_exits") or {}
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
     hours = max(data["tape_hours"], 1e-6)
+    window = data.get("window") or {}
     out = []
     for ti, trig in enumerate(data.get("triggers") or TRIGGERS):
         rs = sorted((r for r in rows if r["trigger"] == ti), key=lambda r: r["ts"])
@@ -2925,12 +2953,21 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15) 
             "trigger": trig.label(), "trigger_spec": trig.__dict__, "exit": ex.label(), "exit_params": ex.to_dict(),
             "landing": (data.get("landing_of") or {}).get(ti), "moments": len(rs),
             "exit_moments": int((~np.isnan(m[:, k])).sum()), "per_hour": len(rs) / hours,
-            "train_mean": float(train_means[k]), "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
+            "train_mean": float(train_means[k]), "train": {"n": int((~np.isnan(m[:cut, k])).sum())},
+            "test": {x: st.get(x) for x in ("n", "mean", "ev_lower", "win_rate", "total")},
+            "test_from_ts": int(rs[cut]["ts"]), "test_from_utc": utc(rs[cut]["ts"]),
             "test_sol_per_day": float(st.get("mean", 0) * len(rs[cut:]) / span_h * 24),
             # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
             "size": sized,
             **mig_window_fields(trig),  # a MIG rule of any age is research only; a wide window is not confirmed
         })  # fmt: skip
+        # the newer moments one by one: their digest always, the list when asked for (`lab --trades`)
+        listed, left = trades_of(rs[cut:], k)
+        out[-1]["test_digest"] = trades_digest(listed)
+        if window.get("from_ts") is not None:
+            out[-1]["window_digest"] = window_digest(window["from_ts"], window["until_ts"], len(rs))
+        if trades:
+            out[-1] |= {"test_trades": listed, "left_out": left}
         if any("place" in r for r in rs):  # at a bid landing: the places the rule's copies got among the outsiders
             out[-1]["places"] = bid_places([int(r["place"]) for r in rs if "place" in r])
         if any(r.get("create_block") for r in rs):  # copies of a buy in a create block, placed a block later

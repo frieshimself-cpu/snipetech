@@ -858,6 +858,10 @@ def render_lab(r: dict) -> str:
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
+    win = r.get("window") or {}
+    if win.get("from_ts") is not None:  # from when to when the lab read, and which file: --until reads it again
+        out.append(f"Window: {win['from_utc']} to {win['until_utc']} ({win['from_ts']} to {win['until_ts']}), read "
+                   f"from {win['tape']}.")  # fmt: skip
     here = bid.get("landing") or f"{r['position']}@{r['latency_slots']}"
     moved = sorted(
         {(s["trigger_spec"]["kind"], s["landing"]) for s in r["strategies"]

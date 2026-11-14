@@ -1008,6 +1008,8 @@ def freeze(store: Store, cfg: Config, top: int = 4, position: str = "+1", latenc
     store.set_coverage("paper_strategies", {"strategies": old + new, "superseded": list(cov.get("superseded", []))})
     out = {"frozen": new, "kept": old, "skipped": skipped, "tape_hours": data["tape_hours"],
            "landing": landings(copy_pos)}  # fmt: skip
+    if data.get("window"):  # from when to when the lab read, and which file (lab_window.window_fields)
+        out["window"] = data["window"]
     # the strategies still running whose exit is not their sniper's: each keeps its id and trades, holds no rule's
     # place (so the rule above was frozen again where the lab ranked it), and says why
     stale = [{"id": s["id"], "label": s.get("label"), "why": not_as_live(s)} for s in old

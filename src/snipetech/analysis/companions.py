@@ -47,18 +47,20 @@ COMPANION_MOMENTS = 300  # and its newest first buys looked at: one small read e
 COMPANION_AHEAD_SHARE = 0.25
 
 
-def companions(store: Store, wallet: str, since_ts: int) -> frozenset[str]:
+def companions(store: Store, wallet: str, since_ts: int, until_ts: int | None = None) -> frozenset[str]:
     """The wallets `wallet`'s operator buys with, from its first buys of a coin since `since_ts` (COMPANION_MIN of
     them at the least): those that buy the coin in its block one to COMPANION_PLACES transactions behind it on
     COMPANION_SHARE of those buys, and those in its block at any place on COMPANION_SHARE of them that are ahead of it
     in COMPANION_AHEAD_SHARE of the blocks they share and behind it in as many (a set that lands in changing order).
     Only their buys of COMPANION_DUST_SOL or more are counted: a dust buy beside the wallet is no habit of an
     operator's. A copy lands behind their buys (lab.copy_entry). One read of the wallet's buys and one small read per
-    coin, on indexes."""
+    coin, on indexes. `until_ts`: only its buys up to then (a lab on a window that ends there, lab_window)."""
     firsts: dict[str, tuple[int, int]] = {}
+    upto, end = ("", ()) if until_ts is None else (" AND ts<=?", (int(until_ts),))
     for mint, slot, pos, quote in store._q(
-        "SELECT mint, slot, pos, quote FROM trades WHERE user=? AND is_buy=1 AND ts>=? ORDER BY slot, pos, ev LIMIT ?",
-        (wallet, int(since_ts), COMPANION_SCAN),
+        f"SELECT mint, slot, pos, quote FROM trades WHERE user=? AND is_buy=1 AND ts>=?{upto} "
+        "ORDER BY slot, pos, ev LIMIT ?",
+        (wallet, int(since_ts), *end, COMPANION_SCAN),
     ):
         if mint not in firsts:  # its first buy of the coin: the one a copy follows, when it is large enough
             firsts[mint] = (int(slot), int(pos)) if quote >= COMPANION_MIN_SOL * 1e9 else (-1, -1)
@@ -95,11 +97,12 @@ def companions(store: Store, wallet: str, since_ts: int) -> frozenset[str]:
     return frozenset(out)
 
 
-def companions_of(store: Store, wallets: Iterable[str], since_ts: int) -> dict[str, frozenset[str]]:
+def companions_of(store: Store, wallets: Iterable[str], since_ts: int,
+                  until_ts: int | None = None) -> dict[str, frozenset[str]]:  # fmt: skip
     """`companions` for each of `wallets`: only the wallets that have any."""
     out: dict[str, frozenset[str]] = {}
     for w in dict.fromkeys(wallets):
-        mates = companions(store, w, since_ts)
+        mates = companions(store, w, since_ts, until_ts)
         if mates:
             out[w] = mates
     return out
