@@ -39,7 +39,23 @@ SQL_TABLES: dict[str, str] = {
     "seconds; slot = the block, pos = the transaction's place in it; venue = 'curve' (pump.fun), 'amm' (PumpSwap) or "
     "'launchlab'; q_after / b_after = the reserves after the trade (their ratio is the price); sig = the transaction; "
     "priority, tip = what the transaction bid for its place, in lamports (the same on each trade of one sig), and "
-    "payer = who paid its fee when that was not the trader: all three NULL (not known) on rows before 11 Nov 2026",
+    "payer = who paid its fee when that was not the trader: all three NULL (not known) on rows before 11 Nov 2026. "
+    "tip counts transfers to a fixed list of landing services, and (14 Nov) to the tip accounts the tape learned "
+    "from amounts once those are applied (table pay_dests): tip_learned = that learned part in lamports, so "
+    "tip - coalesce(tip_learned, 0) is the part paid to the documented services. tip_learned NULL = the row was "
+    "written without learned accounts: its tip is the fixed list's alone and may be too low (measured 14 Nov: 19 of "
+    "70 trades recorded with tip 0 paid an account the list lacks, Axiom's users above all)",
+    "pay_dests": "the accounts trades pay beside the trade itself, learned by the tape recorder from amounts (14 Nov; "
+    "`snipetech tips --accounts`). address; kind = tip (many wallets pay it amounts that do not follow the size of "
+    "their trades), fee (the amount is a share of the trade: a platform's cut, it buys no place in the block), mixed "
+    "(a tenth or more of its payments are one common share of the trade: never treated as a tip) or NULL (undecided, "
+    "not 'no tip'); n = payments, payers = different wallets ever, sample_payers = different wallets in the sample "
+    "of 256 it is judged on, rho = rank correlation of amount with trade size, median_lamports, median_pct, "
+    "first_ts, last_ts, tip_since. applied = 1 is the higher bar a tip account must pass before it counts into "
+    "trades.tip: a full sample from 25 wallets, no wallet more than a tenth of it, tip at two readings in a row; "
+    "applied_since = from when the recorder counted it. This is evidence from amounts, not from a service's "
+    "documentation: an operator's own wallets tipping their own account read as tip, a tip set as a percentage "
+    "reads as fee. Quote n, sample_payers and applied with any learned account you rely on",
     "launches": "one row per coin. mint = the coin; user = the wallet that signed the create, creator = the wallet "
     "its creator fees go to (the deployer); slot, ts = the create (unix seconds); sig = the create transaction",
     "labels": "address = a wallet; label = its name; kind = its group (kol, cand, wallet, bundler, own, dev, ...); "
@@ -69,7 +85,12 @@ SQL_TABLES: dict[str, str] = {
     "each other, on 10 coins or more; the reason then says 'They are twins: ...' with the pair's numbers, "
     "data.actor.twins = how many wallets that hold a place it trades the same signal with now, twin_with = the "
     "ones it is one actor with. Twins may be one operator or one service many people use: no proof of either, "
-    "no verdict on the wallet, never a reason to label or retire; no second copy or paper rule for such a wallet",
+    "no verdict on the wallet, never a reason to label or retire; no second copy or paper rule for such a wallet. "
+    "A candidate whose last reason starts 'trades a non-coin' (14 Nov) swapped USDC, USDT, USD1 or wrapped SOL on "
+    "the tape in the last 7 days: OKTech's copy mode follows a wallet into such a swap and cannot be told not to "
+    "(FvHwFe, 14 Nov 06:41: 50 failed sends, 0.05 SOL), so it is not qualified and the book gives it no sniper "
+    "whatever its paper numbers, which leave those swaps out; it is due again when the swap is 7 days old, and it "
+    "is never a reason to arm it by hand or to freeze a copy rule on it as if it were copyable",
     "oktech_snipers": "the snipers this code created at OKTech. kind = copy (source = the copied wallet), strategy "
     "(source = the frozen strategy's id) or probe; payload = JSON as sent; created_at, removed_at = unix seconds",
 }
@@ -670,7 +691,21 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         volume, age, hour, the leader's size and the buys later in its own block ("--groups", "kol" for KOLs alone;
         "--behind-leader" enters in the leader's own block, where most live copies land;
         "--any-buyer", "--min-sol", "1", "--taken-by", "<bot>,<bot>" scores every wallet's buy and adds the share a
-        named bot followed in the block: which buys the profitable bots take). ["winners", "--hours", "72", "--json"]
+        named bot followed in the block: which buys the profitable bots take).
+        THE TAPE'S TIPS (14 Nov, your idea I144): until then trades.tip held only transfers to a fixed list of
+        landing services, and every bid table built on it (tips, place-bids, the bid landing: bid = priority + tip)
+        UNDERSTATES what rivals pay. The recorder now learns from amounts which accounts are tip accounts.
+        ["tips", "--accounts", "--kind", "applied", "--detail", "--json"] lists the ones counted into trades.tip
+        (drop "--kind" for all; "tip" = listed only); read head.learned_tips_applied every time: while it is false
+        nothing learned is counted and the tables stand as understated; head.applied_since says from when they are
+        right, and rows before it keep the old tip (tip_learned NULL). head.not_decided_by_amounts says what the
+        learning cannot tell. ["tips", "--sample", "1000", "--hours", "24", "--json"] checks it against the chain
+        (it fetches 1,000 transactions, 3,000 at most, and writes nothing): tape_tip_zero says how many
+        transactions recorded with tip 0 pay an account read as a tip account, with the count and its interval.
+        Neither takes a lab slot. A table of tips or place-bids over hours before applied_since is not evidence
+        that a bid wins.
+        A wallet that trades a dollar coin is not copied (14 Nov): see the verdicts hint ('trades a non-coin').
+        ["winners", "--hours", "72", "--json"]
         finds who is winning, with no wallet list (the owner, 12 Nov: never wait to be handed a wallet): every busy
         wallet's closed round trips, ranked by the SOL it made after the venue's fee and its priority fees and tips.
         Each row: kind (bot or trader) and why, pnl_sol, sol_per_day, trips_per_day, win_rate, lower_sol (the lower

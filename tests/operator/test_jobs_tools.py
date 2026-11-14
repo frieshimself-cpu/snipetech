@@ -1442,3 +1442,24 @@ def test_the_analyst_is_owed_the_next_slot_when_the_roles_hold_both(jobs, monkey
         jobs.start(["lab", "--trigger", KOL, "--copy-position", "+0", "--json"], role="fees", idea=fees)
     assert jobs.start(["lab", "--latency", "0"])["id"]  # the analyst's lab starts
     assert lab_lock.wanted(jobs.ops.data) is None
+
+
+def test_the_agents_are_told_of_the_learned_tips_and_of_wallets_that_trade_a_non_coin(toolbox):
+    """14 Nov: the tape's tip was the fixed list's alone (their idea I144), so every bid table understated rivals; and
+    a copied wallet swapped into USDC and the copy followed (their I158, I162). An agent that is not told what
+    `tip_learned` is reads half a bid as the whole one; one that is not told why a wallet 'trades a non-coin' asks
+    for it to be armed again."""
+    from snipetech.operator import tools as T
+
+    trades, verdicts, pay = T.SQL_TABLES["trades"], T.SQL_TABLES["verdicts"], T.SQL_TABLES["pay_dests"]
+    for words in ("tip_learned", "tip - coalesce(tip_learned, 0)", "tip_learned NULL", "may be too low"):
+        assert words in trades, words
+    for words in ("applied = 1", "evidence from amounts", "mixed", "sample_payers", "applied_since"):
+        assert words in pay, words
+    assert "trades a non-coin" in verdicts and "never a reason to arm it by hand" in verdicts
+    tools, _, _ = toolbox
+    text = " ".join(tools["start_job"].to_dict()["description"].split())
+    for words in ('["tips", "--accounts", "--kind", "applied", "--detail", "--json"]', "learned_tips_applied",
+                  '["tips", "--sample", "1000", "--hours", "24", "--json"]', "UNDERSTATES what rivals pay",
+                  "not_decided_by_amounts", "A wallet that trades a dollar coin is not copied"):
+        assert words in text, words
