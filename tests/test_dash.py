@@ -302,6 +302,51 @@ def test_the_page_shows_each_rules_record_as_the_agents_report_does(ops):
     assert page["copy1"]["trades"] == 5 and page["copy1"]["total_sol"] == -0.02
 
 
+def test_the_page_says_which_rules_are_research_records(ops):
+    """A launch-type rule frozen before 14 Nov was scored without serial crews' coins, which the live sniper buys: the
+    page marks it (`research_only`), so it is not read as a rule a sniper could trade. A copy rule is not marked,
+    nor a launch-type rule frozen since."""
+    from snipetech.store import Store
+
+    _paper_world(ops)
+    st = Store(ops.db)
+    try:
+        cov = st.coverage("paper_strategies")
+        since = dict(cov["strategies"][1]) | {"id": "hunt2", "label": "hunt2", "every_coin": True}
+        st.set_coverage("paper_strategies", cov | {"strategies": [*cov["strategies"], since]})
+    finally:
+        st.close()
+    page = {p["id"]: p for p in dash_state(ops, now=NOW)["paper"]["strategies"]}
+    assert page["hunt1"]["research_only"] is True and page["gone"]["research_only"] is True
+    assert page["copy1"]["research_only"] is False and page["hunt2"]["research_only"] is False
+
+
+def test_the_page_marks_a_rule_old_code_scored_before_the_mark_is_written(tmp_path):
+    """A rule a run of the old code scored after the migration is research only for every reader at once; the mark
+    is written into the store by the next run or freeze. The page read the stored rules raw and showed such a rule
+    unmarked until then. It reads them as every other reader does."""
+    from snipetech import dash
+    from snipetech.analysis import paper
+    from snipetech.store import Store
+    from tests import test_crew_as_live as T
+
+    path = tmp_path / "d.db"
+    store = Store(path)
+    x, _crew = T._frozen_default(store)
+    T._old_code_run(store, x["id"], T.START + 70 * 60 + paper.SETTLE_SECS)
+    assert paper.OLD_CODE not in store.coverage("paper_strategies")["strategies"][-1]  # not written yet
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        (row,) = dash._paper(con, dash._tables(con))["strategies"]
+        assert row["research_only"] is True and "in part scored without serial crews' coins" in row["label"]
+        paper.run(store, T._cfg(), now=T.NOW)
+        (row,) = dash._paper(con, dash._tables(con))["strategies"]
+        assert row["research_only"] is True
+    finally:
+        con.close()
+        store.close()
+
+
 def test_a_rule_the_paper_test_dropped_is_said_to_be_stopped_and_listed_last(ops):
     """18 of the 36 rules on the page were refuted (losing with enough trades; scored no more) and looked running."""
     _paper_world(ops)

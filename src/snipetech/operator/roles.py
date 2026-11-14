@@ -186,6 +186,9 @@ JOB_HELP_CUTS: tuple[tuple[str, str | frozenset[str]], ...] = (
     ("WHERE OUR OWN BUYS LANDED:", frozenset({"landing"})),
     ("SELLING OUT IN PARTS:", frozenset({"lab"})),
     ("A LAB ON A FIXED WINDOW (14 Nov, your idea I161):", frozenset({"lab"})),
+    # 14 Nov: what a launch rule's record means now, and which two days' labs were charged twice a transaction's cost
+    ("SERIAL CREWS' COINS (14 Nov):", frozenset({"lab", "paper"})),
+    ("THE COST A LAB CHARGES (14 Nov):", frozenset({"lab", "paper"})),
     ("A WINNING BOT'S RECIPE BY NAME", frozenset({"lab"})),
     ('["paper", "freeze", "--recipe", "6z91"] freezes each trigger', frozenset({"paper"})),
     ("The bot's exit is research only: no sniper is sent it, so a recipe that pays", frozenset({"lab"})),
@@ -376,6 +379,19 @@ def seen(role: str, store) -> dict[str, Any]:
     return {}
 
 
+def _research_records(store) -> set[str]:
+    """The ids of the frozen rules whose record is not what a sniper would trade (analysis.paper.not_as_live: a rule
+    scored without serial crews' coins, as every launch-type rule frozen before 14 Nov was, among them). Empty when
+    the paper test cannot be read."""
+    try:
+        from ..analysis import paper
+
+        return {str(s.get("id")) for s in paper.frozen(store).get("strategies") or []
+                if isinstance(s, dict) and paper.not_as_live(s) is not None}  # fmt: skip
+    except Exception:  # noqa: BLE001 - a turn's timing and a digest's count never fail on it
+        return set()
+
+
 def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict[str, Any]]) -> str | None:
     """A role's own news since its last turn, in words, or None."""
     was = state.get("seen") if isinstance(state.get("seen"), dict) else {}
@@ -389,8 +405,9 @@ def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict
                 return f"the strategy search ended: {m.get('id')}"
         before = was.get("paper") if isinstance(was.get("paper"), dict) else None
         if before is not None:
+            apart = _research_records(store)  # (no sniper trades them: their readings are no news)
             for sid, row in sorted(store.paper_counts().items()):
-                if int(row[0]) // PAPER_READING > int(before.get(sid) or 0):
+                if sid not in apart and int(row[0]) // PAPER_READING > int(before.get(sid) or 0):
                     return f"a paper rule reached its next reading: {sid} ({int(row[0])} trades)"
     elif store.fills(since_ts=int(last) + 1, limit=1):  # the fee and the OKTech analysts: our own fills are the truth
         return "a new fill of ours (read_fills)"
@@ -598,7 +615,10 @@ def week_counts(paths: OperatorPaths, now: float, store=None) -> dict[str, int |
     older = [s for s in cov.get("superseded") or [] if lab_rule(s)]
     out["frozen"] = sum(1 for s in active + older if float(s.get("from_ts") or 0) >= now - WEEK_SECS)
     passed = 0
+    apart = _research_records(store)  # a record no sniper would trade never "passes"
     for s in active:
+        if str(s.get("id")) in apart:
+            continue
         nums = (kept.get(str(s.get("id"))) or {}).get("numbers") or {}
         if (int(nums.get("n") or 0) >= FORWARD_PASS_TRADES and float(nums.get("total") or 0) > 0
                 and float(nums.get("ev_lower") or 0) > 0):  # fmt: skip

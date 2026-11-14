@@ -18,6 +18,7 @@ launch, hunt, whale or burst rule now waits the watch delay; copies keep the exi
 
 import json
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -226,7 +227,9 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
     carries the delay too (12 Nov), so it is new as well, and one frozen before keeps the id it had."""
     store = Store(":memory:")
     _pause_world(store)
-    old_id = paper.strategy_id(HUNT.__dict__, LAB_EXIT.to_dict(), "+3", 1, 0.2)
+    # (frozen then, it also passed over serial crews' coins: crew "skip" since 14 Nov, under the same id; stored as
+    # the old code stored it, it reads that way by itself, `paper.as_frozen`)
+    old_id = paper.strategy_id(replace(HUNT, crew="skip").__dict__, LAB_EXIT.to_dict(), "+3", 1, 0.2)
     assert old_id == "0dd52c0607"  # the id this strategy had before the watch delay existed
     old = {"id": old_id, "label": "frozen before", "trigger": HUNT.__dict__, "exit": LAB_EXIT.to_dict(),
            "position": "+3", "latency": 1, "buy_sol": 0.2, "per_tx_sol": 0.0035, "from_ts": NOW - 3100,
@@ -236,7 +239,12 @@ def test_strategies_frozen_before_keep_their_ids_and_a_launch_type_one_frozen_no
                    exits=[LAB_EXIT])  # fmt: skip
     rep = paper.freeze(store, _cfg(), top=4, position="+6", latency=0, buy_sol=0.2, now=NOW, data=data, only_live=True)
     (new,) = rep["frozen"]  # the hunt pays here with the delay; the copy, six places back, does not
-    assert new["exit"]["watch_secs"] == WATCH_SECS and new["id"] == "4f7915097e" != old_id
+    # frozen now it carries the delay and is scored on every coin: an id of its own on both counts ("4f7915097e" was
+    # the id with the delay alone, and still is the id of the rule with the delay and without crews' coins)
+    # (its id written down: every launch-type rule frozen since 14 Nov hangs its record on how the default is hashed)
+    assert new["exit"]["watch_secs"] == WATCH_SECS and new["id"] == "de039d6895" != old_id
+    assert paper.strategy_id(replace(HUNT, crew="skip").__dict__, new["exit"], "+3", 1, 0.2) == "4f7915097e"
+    assert paper.sid_of(old) == old_id and new["id"] == paper.sid_of(new)
     assert [s["id"] for s in rep["kept"]] == [old_id]
     paper.run(store, _cfg(), now=NOW)
     strategies = {s["id"]: s for s in store.coverage("paper_strategies")["strategies"]}
@@ -261,7 +269,8 @@ def test_the_watch_delay_is_how_oktech_sells_not_a_setting_it_is_sent():
     from snipetech.oktech import strategy_sniper
 
     def sniper(exit_params: dict):
-        return strategy_sniper({"id": "s", "label": "t", "buy_sol": 0.2, "trigger": HUNT.__dict__, "exit": exit_params},
+        return strategy_sniper({"id": "s", "every_coin": True,
+                                "label": "t", "buy_sol": 0.2, "trigger": HUNT.__dict__, "exit": exit_params},
                                1, "hunt")  # fmt: skip
 
     before, now = sniper(LAB_EXIT.to_dict()), sniper(watched(LAB_EXIT).to_dict())

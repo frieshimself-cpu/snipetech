@@ -577,10 +577,11 @@ def test_the_search_ranks_only_mig_windows_oktech_runs_as_scored():
 def test_strategies_frozen_before_the_mig_trigger_keep_their_ids():
     # ids as frozen before MIG existed (computed at d769561): the MIG trigger adds no trigger field (its window is the
     # hunt's `window`), so nothing frozen earlier gets a new id and is frozen a second time
-    hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
-    solo = Trigger("whale", sol=1.0, max_age=1.0, plain=True, solo=True).__dict__
+    # (a launch-type rule frozen then passed over serial crews' coins: crew "skip" since 14 Nov, under the same id)
+    hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0, crew="skip").__dict__
+    solo = Trigger("whale", sol=1.0, max_age=1.0, plain=True, solo=True, crew="skip").__dict__
     assert paper.strategy_id(hunt, LAB_EXIT, "+3", 1, 0.2) == "17cdc5b5b8"
     assert paper.strategy_id(solo, LAB_EXIT, "+3", 1, 0.2) == "7cc735b14f"
-    assert paper.strategy_id(Trigger("launch").__dict__, LAB_EXIT, "start", 1, 0.2) == "2203ea0926"
+    assert paper.strategy_id(Trigger("launch", crew="skip").__dict__, LAB_EXIT, "start", 1, 0.2) == "2203ea0926"
     ids = {paper.strategy_id(Trigger("mig", window=w).__dict__, LAB_EXIT, "+3", 1, 0.2) for w in (10.0, 60.0, 0.0)}
     assert len(ids) == 3  # each window is a strategy of its own

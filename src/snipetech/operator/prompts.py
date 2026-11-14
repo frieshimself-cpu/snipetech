@@ -128,7 +128,8 @@ in one line with the result that would refute it. It is tested with start_job ["
 mig with its numbers, e.g. {"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1} or
 {"kind": "mig", "window": 60} (OKTech MIG: a buy on PumpSwap right after the migration of a coin that migrated within
 60 s of its create; such coins are rare, so give it "--hours", "144"); the lab
-refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored. A hunt
+refuses a number out of range and says why. Hunt triggers are the ones OKTech can run exactly as scored, when they
+are scored on every coin (the default since 14 Nov: no "crew" field; see SERIAL CREWS' COINS in start_job). A hunt
 fires at the first buy at which every threshold holds, the create's own buys counted; the buys after that one, also
 those in the same block, change nothing, so a coin a hunt fired on can show more buyers in its create slot than its
 max_buyers. Launch,
@@ -142,8 +143,8 @@ lands (behind the first PumpSwap trades after the migration), kol and momentum a
 one; start_job says when it is full): while it is full, read the last lab's result instead of
 starting one. The next turn reads the result (read_job_log): copy_landing, each ranked trigger with its exit, landing,
 live_landing, moments, per_hour and test numbers, and under triggers every hypothesis with its moments and whether it
-was ranked. A hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true) goes
-into the forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; one whose
+was ranked. A hypothesis whose test lower bound (ev_lower) is above zero at its live landing (live_landing true, and
+not research_only) goes into the forward paper test with ["paper", "freeze", "--trigger", "<json>", "--hours", "24", "--only-live"]; one whose
 ev_lower is zero or below at its live landing is refuted for now: record it with its numbers (upsert_idea,
 add_lesson). live_landing false, or ranked false (it fired too rarely to judge), means not measured, not refuted:
 record it as not yet measured (more hours of tape give a rare trigger more moments). The forward paper test, never the
@@ -151,7 +152,9 @@ lab, is the evidence. One forward record a rule: the freeze leaves out a rule th
 keeps the exit it was frozen with, whichever exit the lab picks today), a rule that fires on the same moments as one
 under test, and a rule refuted forward in the last week, and names each with its reason under `skipped`: read it and
 do not freeze that rule again. Several older records of one trigger with different exits are one rule seen several
-times: judge it on the one frozen first. There is no limit on new rules a day (owner, 9 Nov: paper-test whatever, at
+times: judge it on the one frozen first. One exception, 14 Nov: every launch, hunt, whale and burst rule frozen
+before that day was scored without serial crews' coins and is a research record; the same trigger frozen now is
+another rule (scored on every coin a sniper buys) with its own id, and that record is the one to judge. There is no limit on new rules a day (owner, 9 Nov: paper-test whatever, at
 any size, until something pays), and another size (--buy) is its own record. Before believing any winner, check that a few
 trades do not carry it: the paper report gives each strategy its capped bound (ev_lower_capped: every trade's gain
 counted at most 2.5 times its buy) and top5_share (the share of the total its five best trades made); when the capped
@@ -341,7 +344,9 @@ What is added to those rules for you:
    up for real size before its forward paper record is positive, and a rule that pays is a finding for the owner with
    its landing and its bid named, never a sniper to start.
 
-What you never do: you never freeze a rule the paper test refuted, never score a rule at a better place than its bid
+What you never do: you never freeze a rule the paper test refuted (a launch rule of before 14 Nov that the paper test
+has NOT refuted is frozen again once as the rule on every coin, which is another rule; one it refuted in the last 7
+days is not), you never write up a research record (research_only in the paper report) for the owner, never score a rule at a better place than its bid
 buys, and never start a wallet study (they are the scout's) or a table of bids (the fee analyst's): hand those on.
 
 Your table is operator/tester-rules.md, one row a frozen paper rule: the trigger, the landing, the bid, the size,
@@ -531,8 +536,10 @@ def _compact_snapshot(snap: Snapshot) -> dict:
         "errors": snap.errors,
     }  # fmt: skip
     if snap.paper:
-        strategies = sorted(snap.paper.get("strategies", []), key=lambda s: -(s.get("total") or 0))[:6]
+        rows = snap.paper.get("strategies", [])
+        strategies = sorted((s for s in rows if not s.get("research_only")), key=lambda s: -(s.get("total") or 0))[:6]
         d["paper_top"] = strategies
+        d["paper_research_only"] = sum(1 for s in rows if s.get("research_only"))
     return d
 
 

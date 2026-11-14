@@ -302,7 +302,9 @@ def test_token_program_ids_are_real_addresses():
 def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
     from snipetech.oktech import strategy_sniper
 
-    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0}, "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
+    strat = {"id": "x", "every_coin": True,
+             "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+             "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
              "buy_sol": 0.2}  # fmt: skip
     cfg = strategy_sniper(strat, 10).config
     assert cfg["extraParams"]["seedAccount"] is False  # 6023 NotEnoughTokensToSell: a stop-loss raced the seed sweep
@@ -314,7 +316,8 @@ def test_strategy_sniper_buys_into_the_wallet_after_a_local_dry_run():
 def test_strategy_sniper_hunt_variant_thresholds():
     from snipetech.oktech import strategy_sniper
 
-    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
+    strat = {"id": "x", "every_coin": True,
+             "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
              "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
     hunt = strategy_sniper(strat, 5).config
     assert "hunt" in hunt and hunt["mode"] == "hunt"
@@ -388,7 +391,8 @@ def test_builders_send_once_and_ask_for_preconfs_by_default():
     assert p.config["extraParams"]["globalSendCount"] == 2 and "preconf" not in p.config
     for s in speedtest_snipers(0.01, 3, None):
         assert s.config["extraParams"]["globalSendCount"] == 1 and s.config["preconf"] is True
-    s = strategy_sniper({"id": "x", "label": "whale 2", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+    s = strategy_sniper({"id": "x", "every_coin": True,
+                         "label": "whale 2", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
                          "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}, 5, "hunt", True, 60)  # fmt: skip
     assert s.config["extraParams"]["globalSendCount"] == 1 and s.config["preconf"] is True
 
@@ -400,7 +404,9 @@ def _every_builder():
     cfg = Config()
     study = {"wallet": TARGET, "entries": 10, "skipped_samples": 100, "tape_hours": 1.0, "entry": {"numeric": [], "categorical": []},
              "exit": {"numeric": []}, "entry_profile": []}  # fmt: skip
-    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0}, "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
+    strat = {"id": "x", "every_coin": True,
+             "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+             "exit": {"stop_loss": 0.15, "max_hold_secs": 300},
              "buy_sol": 0.2}  # fmt: skip
     return {
         "list_copy": list_copy_sniper("W" * 32, "lead", 0.5, 0.2, cfg=cfg),
@@ -476,7 +482,8 @@ def test_replica_is_capped_and_never_sends_crowd_buys_outside_shapes_mode():
     p = replica_from_study(study, Config(), 0.05, sol_usd=100.0, max_buys=4)
     assert p.config["singleSnipe"] is True and p.config["totalSnipes"] == 4
     assert "crowdBuys" not in p.config and any("burst" in n and "shapes" in n for n in p.notes)
-    strat = {"id": "x", "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
+    strat = {"id": "x", "every_coin": True,
+             "label": "t", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0, "plain": True},
              "exit": {"stop_loss": 0.15, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
     with pytest.raises(ValueError, match="shapes"):
         strategy_sniper(strat, 5, via="crowd")
@@ -984,6 +991,32 @@ HUNT_STRATEGY = {"id": "a1b2c3d4e5", "label": "OKTech hunt: >= 2 SOL bought with
                  "exit": {"stop_loss": 0.3, "max_hold_secs": 300}, "buy_sol": 0.2}  # fmt: skip
 
 
+def test_the_service_builds_no_sniper_for_a_stored_rule_frozen_before(monkeypatch):
+    """`oktech strategy --create` (and the live test's own create) reads the stored rules as they were scored
+    (paper.frozen). A launch rule frozen before 14 Nov, stored as the old code stored it and with no freeze time on
+    its record: nothing is created, and the answer says why."""
+    from snipetech.service import Service
+
+    created: list[str] = []
+
+    class Client:
+        async def create(self, name, config, wallet=None, external_id=None, start=False):
+            created.append(external_id)
+            return {"task": {"id": "task1", "status": "idle"}}
+
+        async def close(self):
+            pass
+
+    store = Store(":memory:")
+    store.set_coverage("paper_strategies", {"strategies": [dict(HUNT_STRATEGY)]})
+    svc = Service(Config(), store=store)
+    monkeypatch.setattr(svc, "_oktech", lambda: Client())
+    out = asyncio.run(svc.oktech_strategy("a1b2c3d4e5", "SNIPER", create=True, buy_sol=0.2, max_buys=1))
+    assert created == [] and store.oktech_snipers() == []
+    assert "without serial crews' coins" in out["snipers"][0]["error"]
+    store.close()
+
+
 def test_a_salt_gives_each_live_test_its_own_strategy_sniper(monkeypatch):
     """OKTech refuses a second task with the same externalId (409, and the body carries no task), and a strategy
     sniper's externalId comes from its settings: without a salt a second live test of one strategy could never create
@@ -1001,7 +1034,8 @@ def test_a_salt_gives_each_live_test_its_own_strategy_sniper(monkeypatch):
             pass
 
     store = Store(":memory:")
-    store.set_coverage("paper_strategies", {"strategies": [HUNT_STRATEGY]})
+    # (frozen since 14 Nov, scored on every coin the sniper would buy: one frozen before gets no sniper)
+    store.set_coverage("paper_strategies", {"strategies": [HUNT_STRATEGY | {"every_coin": True}]})
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: Client())
 
@@ -1515,7 +1549,8 @@ def test_partial_take_profit_ends_with_a_100_percent_stage():
     # the scale-out ladder the lab found on 6Z91, frozen as a paper strategy, goes out with the final stage too
     ladder = {"take_profit": 0.1, "tp_sell_fraction": 0.35, "stop_loss": 0.08, "trailing_stop": 0.1,
               "max_hold_secs": 300}  # fmt: skip
-    s = strategy_sniper({"id": "x", "label": "ladder", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+    s = strategy_sniper({"id": "x", "every_coin": True,
+                         "label": "ladder", "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
                          "exit": ladder, "buy_sol": 0.2}, 5)  # fmt: skip
     stages = s.config["autoSell"]["stages"]
     assert stages[0]["sellPercent"] == 35.0
@@ -1616,7 +1651,8 @@ def test_the_oktech_sell_settings_reach_every_builder():
     assert a["sellTipAmount"] == 0.0025 and a["sellPriorityFeeSol"] == 0.0002
     # the sell priority reaches every kind; the [oktech] sell tip is the copy kind's bid, so a hunt or a probe keeps
     # its own kind's minimum (0.001) rather than the copies' 0.0025
-    s = strategy_sniper({"id": "x", "label": "t", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
+    s = strategy_sniper({"id": "x", "every_coin": True,
+                         "label": "t", "buy_sol": 0.2, "trigger": {"kind": "whale", "sol": 2.0, "max_age": 1.0},
                          "exit": {"stop_loss": 0.15, "max_hold_secs": 300}}, 5, cfg=cfg)  # fmt: skip
     assert s.config["autoSell"]["sellTipAmount"] == 0.001 and s.config["autoSell"]["sellPriorityFeeSol"] == 0.0002
     for p in speedtest_snipers(0.01, 3, None, cfg=cfg):
@@ -1641,7 +1677,8 @@ def test_builders_take_the_fee_policys_numbers_and_say_why():
     p = list_copy_sniper(leader, "lead", 0.5, 0.2, cfg=cfg, fees=raised, priority_fee=0.02, tip=0.02)
     assert p.config["priorityFee"] == 0.02 and p.config["tipAmount"] == 0.02
     assert any("asked for by hand" in n for n in p.notes)
-    s = strategy_sniper({"id": "x", "label": "t", "buy_sol": 0.2, "trigger": {"kind": "hunt", "sol": 2.0, "window": 1.0},
+    s = strategy_sniper({"id": "x", "every_coin": True,
+                         "label": "t", "buy_sol": 0.2, "trigger": {"kind": "hunt", "sol": 2.0, "window": 1.0},
                          "exit": {"stop_loss": 0.15, "max_hold_secs": 300}}, 5, cfg=cfg)  # fmt: skip
     assert (
         any("fees (hunt)" in n for n in s.notes) and s.config["priorityFee"] == 0.001 and s.config["tipAmount"] == 0.002
@@ -1655,7 +1692,8 @@ def test_a_launch_strategy_limited_to_one_dev_wallet_is_a_dev_wallet_sniper_and_
     from snipetech.oktech import strategy_sniper
 
     dev = "7qS94nqG8TXifQ7ptKrFWs9aU34uh6RssdJ5QBYAQDk5"
-    strat = {"id": "x", "label": "dev launch", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+    strat = {"id": "x", "every_coin": True,
+             "label": "dev launch", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
              "trigger": {"kind": "launch", "creators": dev}}  # fmt: skip
     s = strategy_sniper(strat, 10)
     assert s.config["devWallets"] == [dev]
@@ -1669,7 +1707,8 @@ def test_a_crew_only_rule_is_refused_live_since_oktech_cannot_tell_a_crews_coin(
     """A rule scored on serial crews' coins alone would, sent to OKTech, buy every launch: it is refused."""
     from snipetech.oktech import strategy_sniper
 
-    strat = {"id": "x", "label": "crew", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
+    strat = {"id": "x", "every_coin": True,
+             "label": "crew", "buy_sol": 0.2, "exit": {"stop_loss": 0.2, "max_hold_secs": 5},
              "trigger": {"kind": "hunt", "sol": 4, "window": 1, "crew": "only"}}  # fmt: skip
     with pytest.raises(ValueError, match="crew"):
         strategy_sniper(strat, 10)
@@ -1743,8 +1782,9 @@ def test_a_rule_no_sniper_runs_as_scored_is_refused_not_sent_as_every_launch():
                  {"kind": "momentum", "ret": 0.2, "window": 5.0},
                  {"kind": "event", "event": "trending"}):  # fmt: skip
         with pytest.raises(ValueError, match="every launch"):
-            strategy_sniper({"id": "x", "label": "l", "buy_sol": 0.2, "exit": exit_params, "trigger": trig}, 10)
-    plain = strategy_sniper({"id": "x", "label": "l", "buy_sol": 0.2, "exit": exit_params,
+            strategy_sniper({"id": "x", "every_coin": True,
+                             "label": "l", "buy_sol": 0.2, "exit": exit_params, "trigger": trig}, 10)
+    plain = strategy_sniper({"id": "x", "every_coin": True, "label": "l", "buy_sol": 0.2, "exit": exit_params,
                              "trigger": {"kind": "launch"}}, 10)  # fmt: skip
     assert plain.config["mode"] == "normal" and plain.config["monitorProgram"] is True
 

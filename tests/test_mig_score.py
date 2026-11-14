@@ -342,7 +342,8 @@ def test_the_paid_knob_is_a_mig_knob_of_true_false_or_none_and_keeps_old_ids():
             raise AssertionError(bad)
     assert parse_trigger({"kind": "mig", "window": 10, "dev_paid": None}) == MIG10
     # a strategy frozen before the knob keeps its id: unset, it is no part of the id
-    hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
+    # (a hunt frozen then passed over serial crews' coins: crew "skip" since 14 Nov, under the same id)
+    hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0, crew="skip").__dict__
     lab_exit = {"stop_loss": 0.3, "max_hold_secs": 300, "stale_secs": 1.0}
     assert paper.strategy_id(hunt, lab_exit, "+3", 1, 0.2) == "17cdc5b5b8"
     assert paper.strategy_id(PAID.__dict__, lab_exit, "+3", 1, 0.2) != paper.strategy_id(MIG10.__dict__, lab_exit,

@@ -509,6 +509,41 @@ def test_a_dropped_strategy_is_never_started_again_and_it_waits_for_another(env)
     assert [d["strategy"] for d in _seq(env)["dropped"]] == [BEST]  # the record carries the drop with it
 
 
+def test_nothing_starts_by_itself_on_a_rule_scored_without_serial_crews_coins(env):
+    """With no human in the loop: a rule frozen before 14 Nov was scored without serial crews' coins, which its live
+    sniper buys (OKTech cannot tell them). It ranks first on paper and never starts, before the stored rules are
+    migrated and after; the next rule, scored on every coin, does."""
+    LTT._freeze(env.store, BEST, pnl=0.05, every_coin=False)
+    _on(env)
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and env.svc.created == [] and _seq(env) is None
+    assert paper.migrate_crew(env.store, now=NOW + 100) == 1
+    _round(env, NOW + 960)
+    assert LT.load(env.paths) is None and env.svc.created == [] and _seq(env) is None
+    LTT._freeze(env.store, SECOND, pnl=0.01)  # frozen since: scored on every coin
+    _round(env, NOW + 1860)
+    assert LT.load(env.paths)["id"] == SECOND and LT.load(env.paths)["state"] == "running"
+
+
+def test_a_rule_dropped_live_never_comes_back_as_the_same_rule_scored_on_every_coin(env):
+    """A drop is the verdict on a sniper's live trades. The rule scored without serial crews' coins and the same rule
+    scored on every coin are two strategies on paper and one sniper on OKTech, which cannot tell a crew's coin: a
+    rule dropped under its old id is never armed again under its new one (paper.live_id)."""
+    old = paper.strategy_id({**LTT.HUNT, "crew": "skip"}, TWIN_EXIT | {"watch_secs": 1.3}, "+3", 1, 0.2)
+    new = paper.strategy_id({**LTT.HUNT, "crew": ""}, TWIN_EXIT | {"watch_secs": 1.3}, "+3", 1, 0.2)
+    assert old != new
+    LTT._freeze(env.store, old, trigger=dict(LTT.HUNT), pnl=0.03, every_coin=False)  # as the old code stored it
+    LT._history(env.paths, {"kind": "sequence", "id": "seq-1", "strategy": old, "label": "hunt 2 SOL", "dropped": True,
+                            "why": "live below half of paper", "blocks": [], "ended_at": NOW - HOUR})  # fmt: skip
+    LTT._freeze(env.store, new, trigger={**LTT.HUNT, "crew": ""}, pnl=0.02)  # frozen again, on every coin
+    _on(env)
+    _round(env, NOW + 60)
+    assert LT.load(env.paths) is None and env.svc.created == []
+    LTT._freeze(env.store, SECOND, pnl=0.01)  # another rule
+    _round(env, NOW + 960)
+    assert LT.load(env.paths)["id"] == SECOND
+
+
 TWIN_EXIT = {"stop_loss": 0.3, "max_hold_secs": 300}  # LTT._freeze's exit, with its watch delay left out
 
 
