@@ -1477,8 +1477,9 @@ def test_a_journal_entry_sent_again_is_not_written_twice(rolebox):
     out = _call(other["write_report"], **entry)
     assert out.startswith("the journal ends with this entry already: not written again")
     assert "the headline is written as this turn's note" in out
-    # another entry is written as always
-    assert _call(other["write_report"], name=name, text="## 02:00 UTC\n\nmore").startswith("appended to")
+    # another entry is written as always, and so is one that is only the end of the last line
+    assert _call(other["write_report"], name=name, text="## 02:00 UTC\n\nall done").startswith("appended to")
+    assert _call(other["write_report"], name=name, text="done").startswith("appended to")
 
 
 def test_a_wrong_argument_type_is_answered_in_words(rolebox):

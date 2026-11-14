@@ -2276,7 +2276,8 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
             return f"error: not done: nothing was written: {why}"
         text += "" if text.endswith("\n") else "\n"
         old = p.read_text(errors="replace") if p.exists() else None
-        if old is not None and old.rstrip("\n").endswith(text.rstrip("\n")):
+        tail, entry = (old or "").rstrip("\n"), text.rstrip("\n")
+        if old is not None and (tail == entry or tail.endswith("\n" + entry)):  # whole lines, not a line's end
             # the entry sent again beside the repair of a refused call (round 4, 14 Nov: it stood twice): the
             # journal has it; the headline goes its way below
             did = "the journal ends with this entry already: not written again"
