@@ -28,6 +28,7 @@ from .gates import (
     verdict_for,
     with_followed_note,
 )
+from .non_coin import non_coin_traders, not_a_coin_trader
 from .one_actor import GATE as ACTOR_GATE
 from .one_actor import OneActor, same_actor
 
@@ -373,6 +374,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         # how copied the wallet is by GMGN's count: one more reason on the finished verdict, read by no gate
         followed = _followed(store, c)
         v = with_followed_note(v, followed)
+        if v["status"] == "qualified":  # a copy sniper follows a wallet into every swap, a dollar coin included
+            try:
+                swaps = non_coin_traders(tape, [w], now).get(w)
+            except Exception:  # noqa: BLE001 - not known this run: the verdict stands, the book reads the tape itself
+                swaps = None
+            v = not_a_coin_trader(v, swaps, q_eff, now)
+            out["non_coin"] = out.get("non_coin", 0) + (v["status"] != "qualified")
         one.release(w, v, now)  # it was its actor's candidate and no longer is: the wallets behind it are due at once
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,

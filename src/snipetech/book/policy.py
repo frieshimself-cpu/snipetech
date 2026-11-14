@@ -19,6 +19,7 @@ from ..exits_menu import EXIT_MENU_VERSION, exit_family
 from ..fees import sent_bid
 from ..oktech import validate_exit
 from ..positions import SPENT_STATUSES, is_active
+from ..qualify.non_coin import reason as non_coin_reason
 
 # the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
 # "snipetech copy book <wallet6> arm:<arm>"; measure.arm_for reads the same tag
@@ -150,6 +151,11 @@ class BookInputs:
     # signal a minute apart (analysis/twins.py), for the same wallets as `actors`. A wallet gets no sniper while a twin
     # of it has one. Kept apart from `actors` and tied two by two (actor_members). {}: no twins known
     twins: dict[str, list[str]] = field(default_factory=dict)
+    # qualified wallets that traded a non-coin (a dollar coin, wrapped SOL) on the tape in the last week, each with
+    # what it traded in words (qualify/non_coin.non_coin_traders). OKTech's copy mode follows a wallet into such a swap
+    # and cannot be told not to (14 Nov: 50 failed sends), so such a wallet gets no sniper and the one it has is
+    # stopped like any wallet that left the ranking (never while our wallet holds a coin). {}: none known
+    non_coin: dict[str, str] = field(default_factory=dict)
 
 
 GUARD_KILL = "wallet-wide guard"  # the kill reason while the owner's guard holds (its own line says why)
@@ -432,6 +438,13 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     kept_paused: set[str] = set()
     for q in inp.qualified:
         w = q.get("wallet")
+        if w and inp.non_coin.get(w):  # before any pause: it is not a wallet a copy sniper can follow at all
+            why = non_coin_reason(inp.non_coin[w])
+            plan.actions.append(Action("skip", w, None, None, None, why))
+            plan.notes.append(f"{w[:6]} is not copied: it {inp.non_coin[w]}")
+            dropped[w[:6]] = why
+            kept_paused.add(w)
+            continue
         why = live_pause_reason(inp.live.get(w) if w else None, cfg)
         if w and not why and still_paused(q, inp.paused.get(w)):
             rec = inp.paused[w]

@@ -20,6 +20,7 @@ from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
 from ..positions import is_active
+from ..qualify.non_coin import NON_COIN_REASON, non_coin_traders
 from .policy import (
     BOOK_NAME_RE,
     GUARD_KILL,
@@ -369,8 +370,15 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         sig = "[book] could not read which wallets buy together"
         if not notes.has_today(sig, now):
             notes.write(f"{sig} ({type(exc).__name__}): no new sniper, start or replacement in such a run", "info")
+    non_coin: dict[str, str] = {}
+    try:  # which of them swap into a dollar coin or wrapped SOL: a copy sniper follows them there (qualify/non_coin.py)
+        non_coin = non_coin_traders(store, [str(v["wallet"]) for v in bookable if v.get("wallet")], now)
+    except Exception as exc:  # noqa: BLE001 - not known this run: the book books as it did before 14 Nov, and says so
+        sig = "[book] could not read which wallets trade a non-coin"
+        if not notes.has_today(sig, now):
+            notes.write(f"{sig} ({type(exc).__name__}): none is refused for it in such a run", "info")
     inp = BookInputs(equity_sol=equity, day_realised_sol=acc["realised_sol"], day_risk_used_sol=acc["risk_used_sol"],
-                     qualified=bookable, live=live_rows, actors=actors or {}, twins=twins,
+                     qualified=bookable, live=live_rows, actors=actors or {}, twins=twins, non_coin=non_coin,
                      bid_model={r["arm"]: r for r in store.bid_model()}, snipers=snipers,
                      holdings=[h for h in holdings or [] if str(h.get("mint") or "") not in strays], now=now,
                      stopped=paths.stop_flag.exists(), switched_on=live_mode, holders=None,
@@ -384,6 +392,11 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     plan: BookPlan = plan_book(inp, b)
     if actors is None:  # who buys with whom could not be read: when in doubt the book adds no sniper
         plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
+    for a in plan.actions:  # a qualified wallet the book will not copy at all, once a day a wallet
+        if a.kind == "skip" and a.reason.startswith(NON_COIN_REASON):
+            sig = f"[book] {(a.wallet or '')[:6]} is not copied"
+            if not notes.has_today(sig, now):
+                notes.write(f"{sig}: {a.reason}", "decision")
     for a in plan.actions:  # why a qualified wallet gets no sniper of its own, once a day a wallet
         if a.kind == "skip" and ONE_SNIPER in a.reason:
             sig = f"[book] {(a.wallet or '')[:6]} gets no sniper of its own"
