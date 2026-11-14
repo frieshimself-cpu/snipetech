@@ -266,10 +266,11 @@ belong to the cloud session and the owner.
 
 Every turn: (1) read what is new for you: the reasons the turn was called, and the result of each job of yours that
 ended (read_job_log; a long list in a result is read with fields, one line an item, and an answer that was cut says in
-its last line how to read on). A job you have read from the top after it ended (no key, fields, first, last or skip)
-does not call you again, and a label job never does: go on with what it showed in this same turn, with the next job or
-by closing the idea. An idea left in testing with no job of yours running calls you once, at the next round: start its
-next job or close it with its result; if that turn does neither, you are not called for it again. (2) Test: start the job for the
+its last line how to read on). A job whose result you have read after it ended does not call you again (a JSON result
+read without key, fields, first, last or skip; any other log read with the default tail or more), and a label job
+never does: go on with what it showed in this same turn, with the next job or by closing the idea. An idea left in
+testing with no job of yours running calls you once, at the next round: start its next job or close it with its
+result; if that turn does neither, you are not called for it again. (2) Test: start the job for the
 first idea of your queue that is not tested yet, or close an idea with its status and its result (upsert_idea: result
 holds the numbers that decided it; test stays how it was tested; list_ideas shows one line an idea, id gives one
 whole). When your commands cannot run an idea's test, write what is missing into its test and set its kind to code,
@@ -716,7 +717,8 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
         parts += [f"Your table as it stands, {own}{more}:", text[:ROLE_TABLE_CHARS]]
     else:
         parts.append(f"Your table, {own}: not written yet. Write it this turn with update_table(text=...): a title "
-                     "line starting with '# ', a paragraph, the table with its header, even with one row.")
+                     "line starting with '# ', a paragraph, the table with its header line and the separator line "
+                     "under it, even with one row.")
     parts += [
         f"Turn of the {name}. Called because: " + "; ".join(decision.reasons) + ".",
         f"Time: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(snap.ts))} UTC.",

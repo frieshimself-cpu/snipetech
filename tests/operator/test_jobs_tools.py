@@ -1332,12 +1332,14 @@ def test_role_writes_only_its_own_table_and_journal(rolebox):
     file."""
     tools, paths, _ = rolebox
     report, update = tools("scout")["write_report"], tools("scout")["update_table"]
-    assert _call(report, name="scout-facts", text="| wallet | who |").startswith("scout-facts.md: written whole")
-    out = _call(update, text="| wallet | who |\n| W1 | Cupsey |", whole=True)
-    assert out.startswith("scout-facts.md: written whole") and "2 rows" in out  # no header line: both count
+    # round 3 (14 Nov): a table is written whole only with a title line, a header and its separator
+    table = "# t\n\n| wallet | who |\n|---|---|\n| W1 | Cupsey |"
+    assert _call(report, name="scout-facts", text=table.replace("W1", "W0")).startswith("scout-facts.md: written whole")
+    out = _call(update, text=table, whole=True)
+    assert out.startswith("scout-facts.md: written whole") and "1 row" in out
     stamp = (paths.root / "scout-facts.md").stat().st_mtime_ns
     # the same table again is not written again: an unchanged table is no news that calls the other roles' turns
-    assert "not written again" in _call(update, text="| wallet | who |\n| W1 | Cupsey |", whole=True)
+    assert "not written again" in _call(update, text=table, whole=True)
     assert "not written again" in _call(update, rows=[{"key": "W1", "text": "| W1 | Cupsey |"}])
     assert (paths.root / "scout-facts.md").stat().st_mtime_ns == stamp
     assert _call(report, name="scout-journal-2026-11-06", text="looked at winners", append=True)
@@ -1348,7 +1350,7 @@ def test_role_writes_only_its_own_table_and_journal(rolebox):
         out = _call(report, name=name, text="x")
         assert out.startswith("error") and "scout-journal-2026-11-06" in out and "update_table" in out, name
         assert not (paths.root / f"{name}.md").exists()
-    assert _call(tools("oktech")["write_report"], name="oktech-facts", text="| feature |").startswith(
+    assert _call(tools("oktech")["write_report"], name="oktech-facts", text=table).startswith(
         "oktech-facts.md: written whole")  # fmt: skip
     assert "scout-journal" in _help(report) and "scout-facts" not in _help(report)  # the table is update_table's
     assert "operator/scout-facts.md" in _help(update) and "tester-rules" not in _help(update)

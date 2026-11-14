@@ -396,8 +396,8 @@ class OperatorJobs:
                 return
             raise PermissionError(f"job {dup.get('id')} stopped at the month's limit for backfills "
                                   f"({ab.MONTH_CREDITS:,} credits) and nothing is left of it: the same run would stop "
-                                  "at its first request. The limit is the owner's to lift: say so in a note or an "
-                                  "idea with owner_needed")  # fmt: skip
+                                  "at its first request. The limit is the owner's to lift: say so in an idea "
+                                  "with owner_needed")  # fmt: skip
         raise PermissionError(
             f"already ran: job {dup.get('id')} with {_same_words(dup.get('argv') or [], argv)} finished "
             f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"

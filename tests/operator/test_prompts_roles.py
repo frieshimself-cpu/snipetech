@@ -348,8 +348,11 @@ def test_the_role_rules_say_how_a_turn_is_written_once_and_as_the_code_does_it()
         assert gone not in rules, gone
     assert rules.count("write_note") == 1 and rules.count("update_table") == 1
     # steps 1 and 2 keep what they said
-    read = ("A job you have read from the top after it ended (no key, fields, first, last or skip) does not call you "
-            "again")  # fmt: skip
+    # round 3 (14 Nov): what counts for a plain log is its default tail or more, not "from the top" (it is read from
+    # its end): tools.read_counts
+    read = ("A job whose result you have read after it ended does not call you again (a JSON result read without key, "
+            "fields, first, last or skip; any other log read with the default tail or more), and a label job never "
+            "does:")  # fmt: skip
     for kept in (read, "list_ideas shows one line an idea",
                  "a long list in a result is read with fields", "result holds the numbers that decided"):  # fmt: skip
         assert kept in rules, kept
