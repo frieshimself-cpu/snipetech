@@ -30,6 +30,11 @@ TABLE_ROW_CHARS = 1200
 TABLE_HEADLINE_CHARS = 1200
 TABLE_BELOW_CHARS = 800
 TABLE_WARN_CHARS = 6000  # what a role's own message carries of its table (prompts.ROLE_TABLE_CHARS): said when past
+# Hard caps (14 Nov safety review: a journal entry of 300,000 characters and a table of 323,542 were accepted). An
+# entry and a table sent whole are cut there, at a line, with a notice; a note is one or two sentences.
+TABLE_MAX_CHARS = 20_000
+JOURNAL_ENTRY_CHARS = 12_000
+NOTE_CHARS = 700
 RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the research rounds, in the checkout
 
 
@@ -621,15 +626,22 @@ def _paragraph(text: Any, cap: int) -> tuple[str, int]:
     return (para, 0) if len(para) <= cap else (para[: cap - 1].rstrip() + "…", len(para))
 
 
-def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), headline: str | None = None,
-                 below: str | None = None) -> tuple[str, list[str]]:  # fmt: skip
+def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), above: str | None = None,
+                 below: str | None = None) -> tuple[str, list[str], list[str]]:  # fmt: skip
     """A role's table with rows replaced, added and dropped and its paragraphs replaced: (the new text, what was done
-    in a few words each). Every line not named stays as it is, byte for byte, and so does the title. A row whose key
-    is some row's first cell (or the start of exactly one) replaces that row; a new key goes to the end of the first
-    table, or right behind the row its `after` names, or in front of the row its `before` names (in whichever table
-    that is). A row equal to the one there changes nothing; a key that fits several rows changes none."""
+    in a few words each, what was NOT done as asked). Every line not named stays as it is, byte for byte, and so does
+    the title. A row whose key is some row's first cell (or the start of exactly one) replaces that row; a new key
+    goes to the end of the first table, or right behind the row its `after` names, or in front of the row its
+    `before` names (in whichever table that is). A row equal to the one there changes nothing.
+
+    Not done as asked, and said apart (a role's turn ends at a reply none of whose answers starts with "error", so
+    what is only mentioned is never read: 14 Nov review): a key that fits several rows, a row without key or text, a
+    drop of a row that is not there, a row put at the table's end because the row it should stand by was not found, a
+    paragraph for a file with no table; and two things that were done and need a look: a row written with another
+    number of cells than its table has columns, and a new row that starts like the one row it may have been meant to
+    replace. A row or paragraph cut at its cap is done, with its notice."""
     lines, did = text.split("\n"), []
-    replaced, added, same, dropped, missing, cut, notes = [], [], [], [], [], [], []
+    replaced, added, same, dropped, cut, notes, wrong = [], [], [], [], [], [], []
 
     def short(k: Any) -> str:
         return learning._cut(" ".join(str(k).split()), 40)
@@ -641,11 +653,11 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
     for row in rows or ():
         key = str(row.get("key") or "").strip() if isinstance(row, dict) else ""
         if not key or not str(row.get("text") or "").strip():
-            notes.append("a row without key and text was left out")
+            wrong.append("a row has no key or no text" + (f" ({short(key)})" if key else ""))
             continue
         i, block, several = _find_row(lines, key)
         if several:
-            notes.append(fits(key, several))
+            wrong.append(fits(key, several))
             continue
         behind = None
         if i is None:  # a new row: where it goes
@@ -653,7 +665,7 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             if where:
                 behind, block, _ = _find_row(lines, where)
                 if behind is None:
-                    notes.append(f"no one row {short(where)}: {short(key)} went to the end of the first table")
+                    wrong.append(f"{short(key)} went to the end of the first table (no one row {short(where)})")
                 elif row.get("before"):
                     behind -= 1
             if behind is None:
@@ -665,12 +677,14 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
         if was:
             cut.append(f"{short(key)} ({was:,})")
         if columns and n != columns:
-            notes.append(f"{short(key)} has {n} cells, its table {columns} columns")
+            wrong.append(f"{short(key)} has {n} cells, its table {columns} columns: it is written so, send it again")
         if i is None:
-            alike = [short(c) for c in _alike(lines, _cells(line)[0])][:3]
-            if alike:
-                notes.append(f"{short(key)} starts like the row{'s' if len(alike) > 1 else ''} {'; '.join(alike)}: "
-                             "drop one if it took its place")  # fmt: skip
+            alike = [short(c) for c in _alike(lines, _cells(line)[0])]
+            if len(alike) == 1:  # most likely the same subject under a changed first cell
+                wrong.append(f"{short(key)} was added as a NEW row and starts like the row {alike[0]}: drop that row "
+                             "if this one took its place")  # fmt: skip
+            elif alike:
+                notes.append(f"{short(key)} starts like {len(alike)} rows ({'; '.join(alike[:3])})")
         if i is not None:
             (same if lines[i] == line else replaced).append(short(key))
             lines[i] = line
@@ -684,23 +698,25 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
     for key in drop or ():
         i, _, several = _find_row(lines, key)
         if several:
-            notes.append(fits(key, several))
+            wrong.append(fits(key, several))
         elif i is None:
-            missing.append(short(key))
+            wrong.append(f"no row {short(key)} to drop")
         else:
             del lines[i]
             dropped.append(short(key))
     done = (("replaced", replaced), ("added", added), ("dropped", dropped), ("the same already", same))
-    did += [f"{word} {len(keys)} ({'; '.join(keys)})" for word, keys in done if keys]
-    for name, given, cap in (("headline", headline, TABLE_HEADLINE_CHARS), ("the paragraph below", below,
-                                                                           TABLE_BELOW_CHARS)):  # fmt: skip
+    for word, keys in done:  # the first eight by name: an answer is one line, not the call sent back
+        more = f"; +{len(keys) - 8} more" if len(keys) > 8 else ""
+        did += [f"{word} {len(keys)} ({'; '.join(keys[:8])}{more})"] if keys else []
+    for name, given, cap in (("the paragraph above", above, TABLE_HEADLINE_CHARS),
+                             ("the paragraph below", below, TABLE_BELOW_CHARS)):  # fmt: skip
         if given is None:
             continue
         tables = _blocks(lines)
         if not tables:
-            notes.append(f"{name} not replaced: the file has no table")
+            wrong.append(f"{name} not replaced: the file has no table")
             continue
-        if name == "headline":  # from under the title, when the text above the table begins with one
+        if name == "the paragraph above":  # from under the title, when the text above the table begins with one
             end = tables[0][0]
             top = next((i for i in range(end) if lines[i].strip()), None)
             start = top + 1 if top is not None and lines[top].startswith("#") else 0
@@ -713,25 +729,59 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             did.append(f"{name} the same already")
             continue
         new = [para, ""] if para else []  # a blank line on each side; under the last table that is the file's end
-        lines[start:end] = new if name == "headline" and not start else ["", *new]
+        lines[start:end] = new if name == "the paragraph above" and not start else ["", *new]
         did.append(f"{name} replaced")
-    if missing:
-        did.append("not in the table: " + "; ".join(missing))
     if cut:
         did.append(f"cut at {TABLE_ROW_CHARS:,} characters: " + "; ".join(cut))
-    return "\n".join(lines), did + list(dict.fromkeys(notes))
+    return "\n".join(lines), did + list(dict.fromkeys(notes)), list(dict.fromkeys(wrong))
 
 
 def whole_table(text: str) -> tuple[str, list[str]]:
-    """A table sent whole, as it is stored: as it came, but a row over TABLE_ROW_CHARS is cut there."""
-    lines, cut = str(text).split("\n"), []
+    """A table sent whole, as it is stored: as it came, but a row over TABLE_ROW_CHARS is cut there, and a table over
+    TABLE_MAX_CHARS at the last line that fits (with room for the clock the code writes into the title)."""
+    lines, cut, said = str(text).split("\n"), [], []
     for _, first, end in _blocks(lines):
         for i in range(first, end):
             if len(lines[i]) > TABLE_ROW_CHARS:
                 cells = _cells(lines[i])
                 cut.append(f"{learning._cut(cells[0] if cells else '?', 40)} ({len(lines[i]):,})")
                 lines[i] = lines[i][: TABLE_ROW_CHARS - 3] + "… |"
-    return "\n".join(lines), ([f"cut at {TABLE_ROW_CHARS:,} characters: " + "; ".join(cut)] if cut else [])
+    if cut:
+        said.append(f"cut at {TABLE_ROW_CHARS:,} characters: " + "; ".join(cut))
+    was = sum(len(line) + 1 for line in lines)
+    if was > TABLE_MAX_CHARS:
+        keep = used = 0
+        for line in lines:
+            if used + len(line) + 1 > TABLE_MAX_CHARS - 40:
+                break
+            used, keep = used + len(line) + 1, keep + 1
+        said.append(f"the table was cut at {TABLE_MAX_CHARS:,} characters (it was {was:,}): its last "
+                    f"{len(lines) - keep:,} lines are gone")  # fmt: skip
+        lines = [*lines[:keep], ""]
+    return "\n".join(lines), said
+
+
+def is_whole_table(text: str) -> bool:
+    """Whether a text is a table whole: its first line is a "# " title and it holds a table header with its separator
+    line. Anything else sent for a table is some of its rows (14 Nov review: write_report with the table's name and one
+    changed row replaced the real scout table, 5,607 characters, with 54)."""
+    lines = str(text).split("\n")
+    first = next((line for line in lines if line.strip()), "")
+    return first.startswith("# ") and any(first_row > start for start, first_row, _ in _blocks(lines))
+
+
+def text_rows(text: str, table: str) -> list[dict[str, str]]:
+    """The lines of `text` that are table rows, as rows for `change_table` (the key is the first cell). A separator
+    line and a line that says what a header of `table` says are no rows."""
+    old = table.split("\n")
+    headers = {tuple(_row_key(c) for c in _cells(old[start])) for start, first, _ in _blocks(old) if first > start}
+    rows = []
+    for line in str(text).split("\n"):
+        line = line.strip()
+        cells = _cells(line) if line.startswith("|") and not _SEPARATOR.match(line) else []
+        if cells and cells[0] and tuple(_row_key(c) for c in cells) not in headers:
+            rows.append({"key": cells[0], "text": line})
+    return rows
 
 
 def _no_clock(text: str) -> str:
@@ -816,7 +866,7 @@ def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, 
 
 def idea_answer(done: dict[str, Any]) -> str:
     """What upsert_idea returns for learning.upsert_idea_detail's result: `<id> created: ...` or `<id> updated: the
-    fields that changed`, and each text that was cut at its cap with how long it was."""
+    fields that changed`, and for each text that was cut at its cap how many of its last characters are gone."""
     idea = done["idea"]
     if done["created"]:
         queue = learning.role_of(idea)
@@ -827,9 +877,9 @@ def idea_answer(done: dict[str, Any]) -> str:
         out = f"{idea['id']} created: {', '.join(what)}"
     else:
         out = f"{idea['id']} updated: {', '.join(done['changed']) or 'nothing changed'}"
-    cut = [f"{f} cut at {learning.IDEA_CAPS[f]} characters (it was {was})" for f, was in done["cut"].items()]
-    if cut:
-        out += "; " + ", ".join(cut) + ": the idea keeps the cut text, the full text belongs in your journal"
+    for f, was in done["cut"].items():  # the cut takes the END, where "what is missing" is written: say how much
+        out += (f"; {f} was cut at {learning.IDEA_CAPS[f]} characters: its last {was - len(str(idea.get(f, ''))) + 1} "
+                "characters are gone")  # fmt: skip
     return out
 
 
@@ -1049,7 +1099,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         ends with a line that says exactly how to read on; an answer without those two lines is the whole.
 
         Args:
-            id: The job id as listed in the snapshot (e.g. 20261106-053520-7b96d8).
+            id: The job id as listed in the message (e.g. 20261106-053520-7b96d8).
             tail: How many lines to return (of a plain log, the last ones).
             key: One part of a JSON result, dotted for a part inside a part: "strategies", "strategies.0",
                 "groups.crowding", "amm_tape.unscored".
@@ -1165,7 +1215,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         candles; ["gmgn", "gas", "--json"] the fees GMGN's own users pick; ["gmgn", "created", "<wallet>", "--json"]
         the coins a wallet launched. "--raw" prints GMGN's answer as it came. The field names were checked against
         real answers on 12 Nov (docs/research/2026-11-12-gmgn-api.md says what was wrong and is fixed); where a
-        number still looks wrong, read the same look-up with "--raw" and say so in a note. One trade can be two or
+        number still looks wrong, read the same look-up with "--raw" and say so in what you write. One trade can be
+        two or
         three rows on GMGN's lists (a coin bought with another token): this client counts it once. A wallet found
         there is a candidate to score in a lab at our
         landing, never a wallet to copy on GMGN's word. ["stopped-wallets", "--json"] says
@@ -1454,7 +1505,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         forward run scores every trade there and charges the bid once on each buy, it has its own id (another
         landing or bid is another rule), and the report names both and never calls it where our copies land live.
         Different sizes and bids are separate commands; two labs run at a time, so queue the next two as soon as two
-        end. Count what you have in flight in your note: the target is a hundred tests a day.
+        end. Count what you have in flight in what you write: the target is a hundred tests a day.
         WHERE OUR OWN BUYS LANDED: ["landing", "--since-minutes", "120", "--json"] reads every buy of the sniper wallet
         in the last minutes from the chain itself, on any coin and any program (the tape places only pump.fun coins):
         the blocks between the copied wallet's buy and ours, every other buyer in between with its bid (priority fee
@@ -1731,10 +1782,10 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
 def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role: str, *, read_file,
                 job_text: str) -> list:  # fmt: skip
     """The tools a research agent's turn gets in place of the analyst's of the same name: start_job for its own
-    commands and an idea of its queue, write_note that is always "info" and once a turn, write_report for its own
-    journal (with the headline that is the turn's note), and read_file that names the documents its role may read;
-    and the one tool only a role has, update_table, which changes its own table by rows. `job_text`: the analyst's
-    start_job text, which the role's is cut from."""
+    commands and an idea of its queue, write_note that is always "info" and once a turn, write_report for today's
+    journal of its own (with the headline that is the turn's note), and read_file that names the documents its role
+    may read; and the one tool only a role has, update_table, which changes its own table by rows. `job_text`: the
+    analyst's start_job text, which the role's is cut from."""
     from anthropic import beta_async_tool
 
     name, table, journal = roles.NAMES[role], roles.TABLES[role], roles.journal_prefix(role)
@@ -1755,140 +1806,189 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         except Exception as exc:  # noqa: BLE001
             return redact(f"error: {type(exc).__name__}: {exc}")
 
-    noted: list[str] = []
+    noted: list[str] = []  # who wrote this turn's note: "headline" (the journal entry's) or "note" (write_note)
     table_file = paths.report(table)
+    born = time.strftime("%Y-%m-%d", time.gmtime(notes.now()))  # the day the turn began: its journal's, past midnight
 
-    def write_table(old: str | None, new: str | None = None, did: list[str] | None = None, *, text: Any = None,
-                    whole: bool = False) -> str:  # fmt: skip
-        """Write the role's table and say in one line what was done: `new` (the table after a change by rows, with
-        what was `did`), or `text` (the table sent whole: taken when there is none yet, or with `whole`). `old`: the
-        table on disk, None when there is none. The file is written only when the table differs from the one there
-        by more than the clock in its title: its time is what tells the other roles that it changed
-        (roles.role_due), and the code stamps the title when it writes."""
-        if new is None:
-            if old is not None and not whole:
-                return (f"error: {table_file.name} is there and was not replaced: change it with update_table (rows, "
-                        "drop, headline, below), or rebuild it with update_table(text=..., whole=true)")  # fmt: skip
-            new, did = whole_table(str(text))
-            did = ["written whole", *did]
-        if old is not None and _no_clock(new).rstrip("\n") == _no_clock(old).rstrip("\n"):
-            same = "it says exactly this already" if text is not None else "; ".join(did or []) or "nothing asked"
-            return f"{table_file.name}: {same}: not written again; {table_size(old)}"
-        new = table_stamped(new, notes.now())
-        paths.ensure()
-        tmp = table_file.with_name(f"{table_file.name}.{os.getpid()}.tmp")
-        tmp.write_text(new)
-        os.replace(tmp, table_file)  # a turn that reads the table sees the old one or the new one, never half of one
-        return f"{table_file.name}: {'; '.join(did or [])}; {table_size(new)}"
+    # Every answer below that is not "done as asked" starts with "error". A role's turn ends right after the reply that
+    # held its note, as soon as no answer of that reply starts with that word (turn._calls_failed): what is said in
+    # any other words is never read by the model, and the work is lost without a trace (14 Nov, four reviews).
+
+    def put_table(old: str | None, new: str, done: list[str], wrong: Iterable[str] = (), same: str = "") -> str:
+        """Write the role's table as `new` and say in one line what was done; what was not done as asked (`wrong`)
+        leads the answer behind "error". `old`: the table on disk, None when there is none. The file is written only
+        when the table differs from the one there by more than the clock in its title: its time is what tells the
+        other roles that it changed (roles.role_due), and the code stamps the title when it writes. `same`: the words
+        for a table that says the same already."""
+        wrong = list(wrong)
+        if old is not None and len(new) > TABLE_MAX_CHARS:  # rows never cut off what is there: nothing is changed
+            over = (f"the table would be {len(new):,} characters, the limit is {TABLE_MAX_CHARS:,}: nothing was "
+                    "changed; drop or shorten rows first")  # fmt: skip
+            wrong, done, new = [over], [], old
+        unchanged = old is not None and _no_clock(new).rstrip("\n") == _no_clock(old).rstrip("\n")
+        if not unchanged:
+            new = table_stamped(new, notes.now())
+            paths.ensure()
+            tmp = table_file.with_name(f"{table_file.name}.{os.getpid()}.tmp")
+            tmp.write_text(new)
+            os.replace(tmp, table_file)  # a turn that reads the table sees the old one or the new one, never half
+        size = table_size(old if unchanged else new)
+        if wrong:
+            return f"error: not done: {'; '.join(wrong)}; done: {'; '.join(done) or 'nothing'}; {size}"
+        if unchanged:
+            return f"{table_file.name}: {same or '; '.join(done) or 'nothing asked'}: not written again; {size}"
+        return f"{table_file.name}: {'; '.join(done)}; {size}"
+
+    def take_text(old: str | None, text: Any, whole: bool = False) -> str:
+        """A text sent for the table. It is the table whole when there is none yet or when it looks like one
+        (`is_whole_table`; `whole` makes it one only where the table on disk has no title and header itself). Any
+        other text is some of its rows, by their first cells: a fragment never replaces a table. A whole table that
+        nobody asked to rebuild is answered with the cheaper way."""
+        text = str(text)
+        if old is None or is_whole_table(text) or (whole and not is_whole_table(old)):
+            new, said = whole_table(text)
+            done = put_table(old, new, ["written whole", *said], same="it says exactly this already")
+            return done if old is None or whole else f"{done}. Next time send only the rows that changed (update_table)"
+        rows = text_rows(text, old)
+        if not rows:
+            return ('error: not done: the text holds no table row (a line that starts with "|") and is no whole table '
+                    '(a "# " title line, then the table with its header): nothing was changed')  # fmt: skip
+        new, done, wrong = change_table(old, rows)
+        other = sum(1 for line in text.split("\n") if line.strip() and not line.strip().startswith("|"))
+        if other:  # a paragraph sent along with rows: not written, and said
+            lines = "line of the text is" if other == 1 else "lines of the text are"
+            wrong.insert(0, f"{other} {lines} no table row and was left out (the paragraph above the table is "
+                            "`above`, the one under it `below`)")  # fmt: skip
+        return put_table(old, new, ["taken as rows (no whole table: no title line and header)", *done], wrong)
+
+    def short_note(text: Any) -> tuple[str, int]:
+        """A note as it is written: one line, NOTE_CHARS at most (how long it was, when it was cut)."""
+        said = " ".join(str(text or "").split())
+        return (said, 0) if len(said) <= NOTE_CHARS else (said[: NOTE_CHARS - 1].rstrip() + "…", len(said))
 
     @beta_async_tool(name="write_note")
     async def role_write_note(text: str) -> str:
-        """Append this turn's one note to the shared notes (operator/notes.md): what you found, in one or two plain
-        sentences with the numbers that matter (n, the landing, the bid). One note a turn; it is always "info" and
-        pages nobody. What the owner must decide is an idea that needs the owner's yes (upsert_idea), which the digest
-        carries; the longer record of the turn goes into your journal (write_report). A journal entry written with a
-        headline has written this turn's note already: do not write it again here. This tool is for a turn that
-        writes no journal entry; it is then the turn's last call, and the turn ends when it is written.
+        """This turn's note for the owner, only for a turn that writes no journal entry (a journal entry's headline is
+        the note). One or two plain sentences with the numbers that matter; always "info". It is the turn's last
+        call.
 
         Args:
-            text: One or two plain sentences.
+            text: The note.
         """
-        if noted:
-            return ("error: one note a turn, and this turn's is written; put the rest into your journal "
-                    f"(write_report, name {journal}-<YYYY-MM-DD>, append=true)")  # fmt: skip
+        if noted:  # no "error" and no advice: that word asked for one more reply, and the advice for a second entry
+            by = " (the journal's headline)" if noted[0] == "headline" else ""
+            return f"this turn's note is written already{by}: nothing to add"
         if wallet_line(str(text)):
             return ("error: what the wallet can pay is not your role's subject (the operator says it once a day): "
                     "leave it out and write the note again")  # fmt: skip
-        noted.append(notes.write(f"{role}: {text}", "info"))
-        return "noted: this turn's note is written"  # not the line again: the turn has just written it
+        said, was = short_note(text)
+        notes.write(f"{role}: {said}", "info")
+        noted.append("note")
+        # not the line again: the turn has just written it
+        cut = f"; cut at {NOTE_CHARS} characters (it was {was:,})" if was else ""
+        return f"noted: this turn's note is written{cut}"
 
     @beta_async_tool(name="write_report")
-    async def role_write_report(name: str, text: str, append: bool = False, headline: str | None = None) -> str:
-        """Add this turn's entry to your journal of the day (append=true): what the turn did and found, the longer
-        record. With a headline the entry carries the turn's note: the headline is written as this turn's note for
-        the owner (operator/notes.md, exactly as write_note writes it: one a turn, always "info") and closes the
-        entry in the journal, so the finding is written once and write_note is not called. Your table is changed
-        by rows with update_table, not here.
+    async def role_write_report(name: str, text: str = "", append: bool = True, headline: str | None = None) -> str:
+        """Add this turn's entry to your journal of the day: what the turn did and found, the longer record. With
+        `headline` it also writes this turn's one note for the owner (operator/notes.md, always "info"), and the turn
+        ends.
 
         Args:
-            name: Your journal's name (the description's last line names it).
-            text: Markdown.
-            append: Add the text at the end of the journal (created when missing) instead of replacing it.
-            headline: The turn's finding in one or two plain sentences with the numbers that matter (n, the landing,
-                the bid): it becomes this turn's note. Do not repeat it in the text.
+            name: Your journal's name, with today's date.
+            text: The entry, markdown.
+            append: Not needed: an entry is always added at the journal's end.
+            headline: The finding in one or two plain sentences with the numbers that matter (n, the landing, the
+                bid); not repeated in the text.
         """
+        today = time.strftime("%Y-%m-%d", time.gmtime(notes.now()))
         if name == table:
-            # The table whole, as this tool wrote it until 14 Nov and as the instructions then said. It is still
-            # taken: a refusal here would make the turn write all 5,500 characters a second time. The answer says
-            # the cheaper way.
-            old = table_file.read_text(errors="replace") if table_file.exists() else None
-            done = write_table(old, text=text, whole=True)
-            return done if old is None else f"{done}. Next time send only the rows that changed: update_table"
-        if not re.fullmatch(re.escape(journal) + r"-\d{4}-\d\d-\d\d", str(name)):
-            return (f"error: the {name} writes {table} (its table) and {journal}-<YYYY-MM-DD> (its "
-                    "journal) and no other report; a finding for another role is an idea in its queue")  # fmt: skip
+            # The table, as this tool wrote it until 14 Nov. It is still taken (a refusal would make the turn write it
+            # all a second time): whole when it is a whole table, else as the rows it holds. A headline given with it
+            # writes no note, and that is said.
+            done = take_text(table_file.read_text(errors="replace") if table_file.exists() else None, text)
+            if not str(headline or "").strip():
+                return done
+            no_note = f"no note was written (a headline goes with your journal, {journal}-{today}, not your table)"
+            if done.startswith("error: not done: "):
+                return f"error: not done: {no_note}; {done.removeprefix('error: not done: ')}"
+            return f"error: not done: {no_note}; done: {done}"
+        if str(name) not in (f"{journal}-{today}", f"{journal}-{born}"):
+            return (f"error: write_report takes only your journal, {journal}-{today}; your table is update_table's; a "
+                    "finding for another role is an idea in its queue")  # fmt: skip
         p = paths.report(name)
         paths.ensure()
-        text, said = str(text), " ".join(str(headline or "").split())
-        if said:
-            text = text.rstrip("\n") + f"\n\nIn short: {said}"
-        if append and p.exists():
+        text, cuts = str(text or ""), []
+        if len(text) > JOURNAL_ENTRY_CHARS:
+            was, text = len(text), text[:JOURNAL_ENTRY_CHARS]
+            text = text[: text.rfind("\n") + 1] if "\n" in text[JOURNAL_ENTRY_CHARS // 2 :] else text  # at a line
+            cuts.append(f"the entry was cut at {JOURNAL_ENTRY_CHARS:,} characters (it was {was:,})")
+        said, was = short_note(headline)
+        wallet = bool(said) and not noted and wallet_line(said)
+        if said and not wallet:  # the entry closes with its headline: the finding is written once
+            text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + f"In short: {said}"
+        if not text.strip():
+            why = ("the headline speaks of what the wallet can pay, which is not your role's subject" if wallet
+                   else "give the entry's text, a headline, or both")  # fmt: skip
+            return f"error: not done: nothing was written: {why}"
+        text += "" if text.endswith("\n") else "\n"
+        if p.exists():  # always added: a call without append=true replaced the day's journal until 14 Nov
             old = p.read_text(errors="replace")
             with p.open("a") as f:
-                f.write(("\n" if old.endswith("\n") else "\n\n") + text + ("" if text.endswith("\n") else "\n"))
+                f.write(("\n" if old.endswith("\n") else "\n\n") + text)
             did = f"appended to {p.name}"
         else:
-            text += "\n" if append and not text.endswith("\n") else ""
-            if p.exists() and p.read_text(errors="replace") == text:
-                return f"{p.name} already says exactly this: not written again"
             p.write_text(text)
             did = f"wrote {p.name}"
+        did = "; ".join([did, *cuts])
         if not said:
             return did
         if noted:
             return f"{did}; the headline is not written as a note: this turn's note is written already"
-        if wallet_line(said):
-            return (f"{did}; the headline is not written as a note: what the wallet can pay is not your role's "
-                    "subject (the operator says it once a day). Write the note with write_note, without "
-                    "it")  # fmt: skip
-        noted.append(notes.write(f"{role}: {said}", "info"))
-        return f"{did}; the headline is written as this turn's note"
+        if wallet:
+            return ("error: not done: the headline was not written as this turn's note (what the wallet can pay is "
+                    "not your role's subject: the operator says it once a day); the entry is in the journal: write "
+                    "the note with write_note, without the wallet, and do not send the entry again")  # fmt: skip
+        notes.write(f"{role}: {said}", "info")
+        noted.append("headline")
+        cut = f"; the note was cut at {NOTE_CHARS} characters (the headline was {was:,})" if was else ""
+        return f"{did}; the headline is written as this turn's note{cut}"
 
     @beta_async_tool
-    async def update_table(rows: list[dict] | None = None, drop: list[str] | None = None, headline: str | None = None,
+    async def update_table(rows: list[dict] | None = None, drop: list[str] | None = None, above: str | None = None,
                            below: str | None = None, text: str | None = None, whole: bool = False) -> str:  # fmt: skip
-        """Change your table by rows: the one table your role keeps, of which the other roles' turns carry the first
-        2,000 characters (keep it current and short, one row a subject). Send only what changed, never the whole
-        table. A row is known by its first cell, its key. The code keeps every other line as it is, writes the time
-        of the change into the title itself (never write a clock time only to say when the table was written), and
-        writes the file only when something differs: a call that changes nothing tells nobody. The answer is one
-        line: what changed and how big the table is now.
+        """Change your table by rows (the other roles' turns carry its first 2,000 characters: one row a subject,
+        short). A row is known by its first cell, its key. Every other line stays as it is, the code stamps the time
+        into the title, and a call that changes nothing writes nothing. The answer says what was done and what was
+        not: read it.
 
         Args:
-            rows: The rows that changed or are new, each {"key": the row's first cell as it stands in the table, or
-                enough of its start to tell it from every other row, "text": the row whole as one markdown line
-                ("| a | b | c |"; a longer one is cut at 1,200 characters)}. A known key replaces that row (the text
-                may give it a new first cell); a new key is added at the end of the first table, or where you say:
-                {"key": ..., "text": ..., "before": the key of the row it goes in front of} or "after": the key of
-                the row it goes behind.
+            rows: The rows that changed or are new, each {"key": the row's first cell as it stands in the table (or
+                enough of its start to tell it from every other row), "text": the row whole, "| a | b | c |" (cut at
+                1,200 characters)}. A known key replaces that row; a new key is added at the end of the first table,
+                or where "before" or "after" says: {"key", "text", "before": the key of the row it goes in front of}.
             drop: The keys of the rows to remove.
-            headline: The paragraph above the table, whole, when it changed: what holds for every row, not this
-                turn's news, which is the journal's (1,200 characters).
+            above: The paragraph above the table, whole, when it changed: what holds for every row, not this turn's
+                news (1,200 characters).
             below: The paragraph under the first table, whole, when it changed.
-            text: The whole table as markdown (a title line starting with "# ", the paragraph, the table), for a
-                table that is not written yet, or with whole=true for a rebuild (other columns, another order).
-            whole: True to replace the table that is there with `text`.
+            text: The whole table as markdown (a title line starting with "# ", a paragraph, the table with its
+                header), alone: only for a table that is not written yet or a rebuild (other columns, another order).
+            whole: True with `text` for a rebuild.
         """
         old = table_file.read_text(errors="replace") if table_file.exists() else None
         if text is not None and str(text).strip():
-            return write_table(old, text=text, whole=whole)
+            if rows or drop or above is not None or below is not None:
+                return ("error: not done: text is the table whole and stands alone: send rows, drop, above and below "
+                        "without text, or the whole table without them; nothing was changed")  # fmt: skip
+            return take_text(old, text, whole)
         if old is None:
-            return (f"error: {table_file.name} is not written yet: send it whole first (update_table with text: a "
-                    "title line, a paragraph, the table with its header), then change it by rows")  # fmt: skip
-        return write_table(old, *change_table(old, rows or (), drop or (), headline, below))
+            return (f"error: not done: {table_file.name} is not written yet: send it whole first (update_table with "
+                    "text: a title line, a paragraph, the table with its header), then change it by rows")  # fmt: skip
+        new, done, wrong = change_table(old, rows or (), drop or (), above, below)
+        return put_table(old, new, done, wrong)
 
-    role_write_report.description += f"\n\nThe {name}'s journal is {journal}-<YYYY-MM-DD>; its table is {table}."
-    update_table.description += f"\n\nThe {name}'s table is operator/{table}.md."
+    role_write_report.description += f" The {name}'s journal is {journal}-<YYYY-MM-DD>."
+    update_table.description += f" The {name}'s table is operator/{table}.md."
     out = [role_start_job, role_write_note, role_write_report, update_table]
     docs = roles.ROLE_DOCS.get(role)
     if docs:

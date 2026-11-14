@@ -26,7 +26,7 @@ Hard rules (the tools enforce them too):
 - Research jobs: start_job accepts only the research commands its description names (lab, paper, the wallet and coin
   studies) and nothing that trades. One lab at a time; at most a few jobs at once. Before starting anything, look at `jobs_recent` in the snapshot: the research jobs
   that ended in the last 24 h, one line each (id, how it ended, when, what ran) — read one with read_job_log and its id
-  (the JSON is the last part of the log) instead of running the same job again. A wallet or coin address in a line
+  (a JSON result is read from the top) instead of running the same job again. A wallet or coin address in a line
   is cut to its first 8 characters and a flag given many times is counted; the job's log has them whole. `copy-rank` over the RPC takes hours for 60 wallets; do not start it unless a day's
   worth of time is available.
 - Spend: the round has a dollar cap. Do the minimum reading that answers the question, then write the note.
@@ -241,12 +241,12 @@ Hard rules (the tools enforce them too):
 - Plain words: one idea a sentence, the numbers that change a decision, each with its sample size and its time
   window. Secrets never appear in a note, a report, an idea or a lesson.
 - Spend: the turn has a dollar cap and a tool-call cap, and your role has a share of the day (the message says all
-  three). Read what answers the question, start the test, change the rows of your table that changed and write the
-  journal entry with its headline. Before starting a job look at the jobs in the message (the ended jobs are listed
-  oldest first, over 24 to 30 hours: the newest are the last lines, just above the running ones): a result that is
-  there is read (read_job_log), not run again, and the same command with the same arguments is refused for six hours,
-  whoever asks. A job with the same arguments that is running now is refused too: the answer names it and who started
-  it, it then counts as your test of the idea, and you are called when it ends.
+  three). Read what answers the question, start the test, then write (step 3). Before starting a job look at the
+  jobs in the message (the ended jobs are listed oldest first, over 24 to 30 hours: the newest are the last lines,
+  just above the running ones): a result that is there is read (read_job_log), not run again, and the same command
+  with the same arguments is refused for six hours, whoever asks. A job with the same arguments that is running now
+  is refused too: the answer names it and who started it, it then counts as your test of the idea, and you are
+  called when it ends.
 
 How the research is shared: four agents do what one analyst did. The wallet scout finds who is worth following and
 who they are (operator/scout-facts.md). The strategy tester finds which rule pays where we land
@@ -271,15 +271,12 @@ go on with what it showed in this same turn, with the next job or by closing the
 first idea of your queue that is not tested yet, or close an idea with its status and its result (upsert_idea: result
 holds the numbers that decided it; test stays how it was tested; list_ideas shows one line an idea, id gives one
 whole). When your commands cannot run an idea's test, write what is missing into its test and set its kind to code,
-which hands it to the cloud session; an idea is not left open and untested while turns pass. (3) Write, in this order.
-The rows of your table that changed (update_table: rows, drop, headline; never the whole table, and no call when no row
-changed; the table's headline says what holds for every row, this turn's news is not in it, and the code stamps the
-time). Then one journal entry with its headline (write_report with your journal's name, append=true, headline = one or
-two sentences with the numbers): the headline is this turn's note and that call is your last. Do not call write_note
-as well, do not repeat the finding in the entry's text, and write no closing summary: the turn ends once that call has
-run. If a call in the same reply was refused you get one more reply to repair it, and the turn ends after it. A turn
-that neither starts a test nor closes an idea should be rare: after two in a row your next turn waits an hour, and an
-idea you open and close in one turn does not count as an idea closed.
+which hands it to the cloud session; an idea is not left open and untested while turns pass. (3) Write, in this
+order: update_table for the rows that changed (no call when none did), then write_report with your journal's name and
+a headline. The headline is this turn's note for the owner and that call is your last: the turn ends when its reply's
+calls have run, with no write_note and no closing summary. A call of that reply that was refused or not done as asked
+is shown to you so you can repair it. A turn that neither starts a test nor closes an idea should be rare: after two
+in a row your next turn waits 45 minutes, and an idea you open and close in one turn does not count as an idea closed.
 """
 
 SCOUT_SYSTEM = f"""\
@@ -714,8 +711,8 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
         more = f" (its first {ROLE_TABLE_CHARS:,} characters: it has grown too long, cut it)" if long else ""
         parts += [f"Your table as it stands, {own}{more}:", text[:ROLE_TABLE_CHARS]]
     else:
-        parts.append(f"Your table, {own}: not written yet. Write it this turn with update_table(text=..., whole=true): "
-                     "a title line starting with '# ', a paragraph, the table with its header, even with one row.")
+        parts.append(f"Your table, {own}: not written yet. Write it this turn with update_table(text=...): a title "
+                     "line starting with '# ', a paragraph, the table with its header, even with one row.")
     parts += [
         f"Turn of the {name}. Called because: " + "; ".join(decision.reasons) + ".",
         f"Time: {time.strftime('%Y-%m-%d %H:%M', time.gmtime(snap.ts))} UTC.",
@@ -723,12 +720,9 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
     if ceiling:
         parts.append(f"This turn stops at {ceiling['tool_calls']} tool calls or {ceiling['turn_usd']:g} $ "
                      f"({ceiling['spent_usd']:.2f} $ of your share of {ceiling['share_usd']:g} $ spent today); keep "
-                     "the last calls for your table's rows and the journal entry.")  # fmt: skip
-    parts.append(f"Do your role's turn: read what is new for you, start the next test or close an idea with its "
-                 f"result, change the rows of your table that changed (update_table, {TABLES[role]}), then add your "
-                 f"journal entry with its headline ({journal_prefix(role)}-"
-                 f"{time.strftime('%Y-%m-%d', time.gmtime(snap.ts))}, append=true): the headline is your note and "
-                 "ends the turn.")  # fmt: skip
+                     "the last calls for step 3.")  # fmt: skip
+    parts.append(f"Do your role's turn (steps 1 to 3). Your table: {TABLES[role]}. Your journal today: "
+                 f"{journal_prefix(role)}-{time.strftime('%Y-%m-%d', time.gmtime(snap.ts))}.")  # fmt: skip
     blocks = [{"type": "text", "text": t} for t in (*front, "\n".join(parts))]
     if hour:
         blocks[-2]["cache_control"] = dict(HOUR_CACHE)

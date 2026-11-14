@@ -1270,3 +1270,56 @@ def test_a_request_the_api_refuses_for_its_cache_markers_is_sent_without_the_lis
     turn(lambda r: httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
                                                                          "message": "credit balance is too low"}}))
     assert roles.read_state(env["paths"])["fees"]["no_list_hour"] == NOW
+
+
+# -- round 2 of the cheaper turn (14 Nov): what a write tool did not do must reach the model before the turn ends -----
+
+
+def _scout_table(env, text=None):
+    p = env["paths"].root / "scout-facts.md"
+    p.write_text(text or ("# Who is worth following (wallet scout), 14 Nov 08:05 UTC\n\n"
+                          "Two wallets clear every gate.\n\n| Wallet | Who | Qualify |\n|---|---|---|\n"
+                          "| FLPjyS: QUALIFIED | herd buyer | +0.0204 / 107 |\n"
+                          "| FLPjyS twin i3Sj7y | same signal | candidate |\n"
+                          "| AtifzK | hand trader | candidate |\n"))  # fmt: skip
+    return p
+
+
+_ENTRY = {"name": "scout-journal-2026-11-06", "text": "## 01:00 UTC\n\nread winners.",
+          "headline": "W1 is Cupsey: 31 round trips, +4.2 SOL at its own place"}  # fmt: skip
+
+
+def test_a_table_row_that_was_not_applied_is_shown_before_the_turn_ends(env):
+    """The words reviewer's finding (14 Nov): update_table with a key that fits several rows, and the journal entry
+    with its headline, in one reply. The row was not written, the answer said so without the word "error", the note
+    was written and the turn ended: the model never read it. The answer now starts with "error", so one more request
+    is made, the model repairs the row, and the turn ends there."""
+    p = _scout_table(env)
+    new = "| FLPjyS: QUALIFIED | herd buyer | NEW RESULT |"
+    handler, requests = _scripted(
+        _calls(("update_table", {"rows": [{"key": "FLPjyS", "text": new}]}), ("write_report", _ENTRY)),
+        _calls(("update_table", {"rows": [{"key": "FLPjyS: QUALIFIED", "text": new}]})),
+        ([{"type": "text", "text": "closing"}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    shown = [b["content"] for b in requests[1]["messages"][-1]["content"] if b.get("type") == "tool_result"]
+    assert len(requests) == 2 and str(shown[0]).startswith("error: not done: FLPjyS fits 2 rows")
+    assert "| FLPjyS: QUALIFIED | herd buyer | NEW RESULT |" in p.read_text().split("\n")
+    assert out["ended_at"] == "note" and out["notes"] == 1 and out["tool_calls"] == 3
+
+
+def test_a_note_written_again_beside_the_journal_headline_costs_no_further_reply(env):
+    """The old habit (105 of 105 recorded turns ended with write_note): the table's rows, the journal entry with its
+    headline AND write_note in one reply. The second note answered "error: one note a turn ...", which asked for one
+    more reply. It is answered without that word: one request, one note line."""
+    _scout_table(env)
+    handler, requests = _scripted(
+        _calls(("update_table", {"rows": [{"key": "AtifzK", "text": "| AtifzK | hand trader | candidate +0.09 |"}]}),
+               ("write_report", _ENTRY),
+               ("write_note", {"text": "W1 is Cupsey: 31 round trips"})),
+        ([{"type": "text", "text": "closing"}], "end_turn"),
+    )  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    assert len(requests) == 1 and out["ended_at"] == "note" and out["notes"] == 1
+    assert env["paths"].notes.read_text().count("\n") == 1
+    assert (env["paths"].root / "scout-journal-2026-11-06.md").read_text().count("W1 is Cupsey") == 1

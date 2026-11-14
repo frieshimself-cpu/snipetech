@@ -866,3 +866,27 @@ def test_a_secret_across_an_idea_texts_cap_is_refused_not_cut_in_half(paths, mon
             with pytest.raises(ValueError, match="looks like it carries a secret"):
                 L.upsert_idea(paths, idea | {field: text}, source="scout", now=NOW)
     assert not L.list_ideas(paths, "all")
+
+
+def test_a_role_that_runs_labs_is_told_how_many_lab_slots_are_free(paths, monkeypatch):
+    """ "every lab slot is held" and "labs are already running" were at least 28 of the refusals in 108 recorded turns:
+    a role wrote a lab's whole command to learn that no slot was free. Its message says it (one line, in the part of
+    the message that changes every turn), from the locks start_job's refusal reads; a role with no command that takes
+    a slot is told nothing."""
+    from snipetech.analysis import lab_lock
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    line = "Lab slots: 2 of 2 free (a lab, a freeze and qualify each take one)."
+    assert L.lab_slots_line(paths, "tester") == line
+    for role in ("tester", "fees", "scout"):
+        assert line in L.context(paths, role=role).splitlines(), role
+    assert L.lab_slots_line(paths, "oktech") == "" and "Lab slots" not in L.context(paths, role="oktech")
+    assert "Lab slots" not in L.context(paths)  # the operator's and the analyst's message: as it was
+    with lab_lock.lab_lock(paths.data, wait=False):
+        assert L.lab_slots_line(paths, "fees") == "Lab slots: 1 of 2 free (a lab, a freeze and qualify each take one)."
+        with lab_lock.lab_lock(paths.data, wait=False):
+            lab_lock.want(paths.data, "qualify")
+            assert L.lab_slots_line(paths, "tester") == (
+                "Lab slots: 0 of 2 free (a lab, a freeze and qualify each take one); qualify waits for the next free "
+                "one and gets it before a lab of yours."
+            )

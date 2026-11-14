@@ -79,8 +79,9 @@
   </section>
   <section data-panel="agents" hidden>
     <p class="what">Every time an agent wakes up: why it woke, what it thought, each thing it looked at and what came back, and
-      what it decided. The Operator checks health every 15 minutes; the Analyst runs the research every 30. Newest first; tap a
-      turn to open it.</p>
+      what it decided. The Operator checks health every 15 minutes; the Analyst runs the research every 30; the four
+      research agents (wallet scout, strategy tester, fee and place analyst, OKTech features analyst) take a turn when
+      something is new for them, and a turn of theirs ends with its note. Newest first; tap a turn to open it.</p>
     <div id="agents"></div>
   </section>
   <section data-panel="tests" hidden>
@@ -122,6 +123,8 @@
   const signed = (v, d) => v == null || isNaN(v) ? "—" : `<span class="${v > 0 ? "pos" : v < 0 ? "neg" : ""}">${v > 0 ? "+" : ""}${Number(v).toFixed(d)}</span>`;
   const dot = (cls) => `<span class="dot ${cls}"></span>`;
   const short = (a) => esc(String(a || "").slice(0, 8));
+  // rules-begin: how a turn is titled and a step is labelled and shown. Plain functions with no page around them, so
+  // tests/test_dash.py can run them as they are.
   const TOOL_WORDS = { sql: "Queried the database", read_file: "Read a file", read_job_log: "Read a job's output",
     start_job: "Started a job", write_note: "Wrote a note for you", write_report: "Wrote the report",
     update_table: "Changed rows of its table",
@@ -129,6 +132,29 @@
     add_lesson: "Recorded a lesson", read_round_trips: "Read live round trips", set_candidates: "Updated the candidate list",
     read_verdicts: "Read wallet verdicts", read_fills: "Read live fills", read_fee_policy: "Read the fee policy",
     read_events: "Read market events" };
+  const ROLE_WORDS = { operator: "Operator", analyst: "Analyst", postmortem: "Post-mortem", scout: "Wallet scout",
+    tester: "Strategy tester", fees: "Fee and place analyst", oktech: "OKTech features analyst" };
+  const turnTitle = (t) => ROLE_WORDS[t.mode] || t.mode || "Operator";
+  // a research agent's journal entry whose headline is the turn's note: by its input, or (a long input is kept cut) by
+  // what the tool answered
+  const wroteNote = (step) => step.name === "write_report" && (!!(step.input || {}).headline
+    || /headline is written as this turn's note/.test(String(step.result || "")));
+  const stepLabel = (step) => wroteNote(step) ? "Wrote its journal entry and the note for you" : (TOOL_WORDS[step.name] || step.name);
+  // the turn's record keeps an input over 1,500 characters as {"(cut)": the start of its JSON}: show the text in it
+  function cutText(cut) {
+    const m = /"(?:text|query|headline)": "((?:[^"\\]|\\.)*)/.exec(cut);
+    if (!m) return cut;
+    for (let body = m[1]; body; body = body.slice(0, -1)) { try { return JSON.parse('"' + body + '"'); } catch (e) { /* cut inside an escape */ } }
+    return cut;
+  }
+  function stepMain(step) {
+    const inp = step.input || {};
+    if (typeof inp["(cut)"] === "string") return cutText(inp["(cut)"]);
+    const rows = Array.isArray(inp.rows) ? inp.rows.map((r) => (r && r.text) || "").filter(Boolean).join("\n") : "";
+    return inp.query || inp.sql || inp.path || [inp.headline, inp.above, inp.text, rows, inp.below].filter(Boolean).join("\n\n")
+      || inp.job_id || inp.id || inp.title || (inp.argv ? [].concat(inp.argv).join(" ") : "") || "";
+  }
+  // rules-end
 
   // tab switching, remembered in the address (#agents) so a link opens the same tab
   function show(tab) {
@@ -166,7 +192,7 @@
       <div class="card"><h2>Services</h2><div class="big">${down ? dot("crit") + down + " failed" : dot("ok") + "all fine"}</div><div class="dim">${svcs.filter((v) => v === "active" || v === "activating").length} running now, the rest wait for their timer</div></div>
     </div>
     <div class="card" style="margin-top:12px"><h2>What the agents said last</h2>
-      ${lastSay ? `<div class="txt">${esc(lastSay.text)}</div><div class="dim" style="margin-top:6px">${esc(lastTurn.mode)} · ${clock(lastTurn.ts)}</div>` : '<div class="dim">no recorded turn yet: the next agent turn appears here</div>'}</div>
+      ${lastSay ? `<div class="txt">${esc(lastSay.text)}</div><div class="dim" style="margin-top:6px">${esc(turnTitle(lastTurn))} · ${clock(lastTurn.ts)}</div>` : '<div class="dim">no recorded turn yet: the next agent turn appears here</div>'}</div>
     <div class="card" style="margin-top:12px"><h2>Latest notes for you</h2><ul class="feed">${(op.notes || []).slice(-6).reverse().map((l) => `<li>${esc(l.replace(/^- /, ""))}</li>`).join("") || '<li class="dim">none</li>'}</ul></div>`;
   }
 
@@ -174,10 +200,9 @@
     if (step.kind === "thinking") return `<div class="step thinking"><div class="lbl">Thinking</div><div class="txt">${esc(step.text)}</div></div>`;
     if (step.kind === "say") return `<div class="step say"><div class="lbl">Said</div><div class="txt">${esc(step.text)}</div></div>`;
     const inp = step.input || {};
-    const rows = Array.isArray(inp.rows) ? inp.rows.map((r) => (r && r.text) || "").filter(Boolean).join("\n") : "";
-    const main = inp.query || inp.sql || inp.path || [inp.headline, inp.text, rows].filter(Boolean).join("\n\n") || inp.job_id || inp.title || (inp.argv ? [].concat(inp.argv).join(" ") : "") || "";
+    const main = stepMain(step);
     const rest = JSON.stringify(inp, null, 1);
-    return `<div class="step tool"><div class="lbl">${esc(TOOL_WORDS[step.name] || step.name)}${step.error ? ' <span class="chip crit">error</span>' : ""}</div>
+    return `<div class="step tool"><div class="lbl">${esc(stepLabel(step))}${step.error ? ' <span class="chip crit">error</span>' : ""}</div>
       ${main ? `<pre>${esc(main)}</pre>` : ""}
       <details class="sub" data-key="${key}-in"${openAttr(key + "-in")}><summary>full request</summary><pre>${esc(rest)}</pre></details>
       <details class="sub" data-key="${key}-out"${openAttr(key + "-out")}><summary>what came back</summary><pre>${esc(step.result == null ? "(nothing)" : step.result)}</pre></details></div>`;
@@ -191,7 +216,7 @@
       const isNew = !firstRender && !seenTurns.has(key); seenTurns.add(key);
       const nTools = (t.steps || []).filter((x) => x.kind === "tool").length;
       return `<details class="turn${isNew ? " new" : ""}" data-key="${key}"${openAttr(key) || (i === 0 && !opened.size ? " open" : "")}>
-        <summary><b>${t.mode === "analyst" ? "Analyst" : t.mode === "postmortem" ? "Post-mortem" : "Operator"}</b>
+        <summary><b>${esc(turnTitle(t))}</b>
           <span class="dim">${clock(t.ts)} · ${ago(t.ended || t.ts, now)}</span>
           <span class="chip">${nTools} step${nTools === 1 ? "" : "s"}</span><span class="chip">${num(t.usd, 2)} $</span>
           ${t.stopped && t.stopped !== "end_turn" ? `<span class="chip warn">${esc(t.stopped)}</span>` : ""}
