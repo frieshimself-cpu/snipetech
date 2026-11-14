@@ -133,11 +133,13 @@ def test_a_new_idea_needs_every_field_and_valid_choices(paths):
         L.upsert_idea(paths, IDEA | {"priority": 9}, source="analyst", now=NOW)
     with pytest.raises(ValueError, match="secret"):
         L.upsert_idea(paths, IDEA | {"why": "key sk-ant-api03-abcdefghij"}, source="analyst", now=NOW)
-    with pytest.raises(ValueError, match="600"):
-        L.upsert_idea(paths, IDEA | {"why": "x" * 601}, source="analyst", now=NOW)
     with pytest.raises(ValueError, match="size"):
         L.upsert_idea(paths, IDEA | {"size": 2.0}, source="analyst", now=NOW)
     assert L.list_ideas(paths, status="all") == []
+    # since 14 Nov a text over its cap is no refusal: it is cut there and kept (57 of 207 idea writes had been refused
+    # for length, and each was written again whole)
+    kept = L.upsert_idea(paths, IDEA | {"why": "7 of 9 losses were small buys. " * 25}, source="analyst", now=NOW)
+    assert len(kept["why"]) <= 600 and kept["why"].endswith("…") and kept["why"].startswith("7 of 9 losses were")
 
 
 def test_open_ideas_are_ranked_and_closed_ones_left_out(paths):
@@ -477,12 +479,16 @@ def test_the_operator_and_the_analyst_can_read_and_write_what_was_learned(toolbo
     assert lesson["source"] == "postmortem" and lesson["n"] == 9 and lesson["ts"] == "2026-11-06T18:00:00Z"
     assert "Fees ate the small wins" in (paths.root / "lessons.md").read_text()
     assert _call(tools["add_lesson"], text="x", evidence="", n=3).startswith("error: evidence")
-    idea = json.loads(_call(tools["upsert_idea"], **IDEA))
+    # since 14 Nov a write is answered with what it did, not with what was written, and a list is one line an idea
+    assert _call(tools["upsert_idea"], **IDEA) == "I1 created: research, open, priority 3, queue tester"
+    (idea,) = L.list_ideas(paths, "all")
     assert idea["id"] == "I1" and idea["source"] == "postmortem"
-    moved = json.loads(_call(tools["upsert_idea"], id="I1", status="testing"))
+    assert _call(tools["upsert_idea"], id="I1", status="testing") == "I1 updated: status"
+    (moved,) = L.list_ideas(paths, "all")
     assert moved["status"] == "testing" and moved["title"] == IDEA["title"]
     assert _call(tools["upsert_idea"], title="half an idea").startswith("error: a new idea needs")
-    listed = json.loads(_call(tools["list_ideas"]))
+    assert _call(tools["list_ideas"]).splitlines()[1].startswith(f"I1 [testing, priority 3, tester] {IDEA['title']}.")
+    listed = json.loads(_call(tools["list_ideas"], full=True))
     assert [i["id"] for i in listed["ideas"]] == ["I1"] and listed["counts"] == {"testing": 1}
     assert _call(tools["list_ideas"], status="bogus").startswith("error")
 
