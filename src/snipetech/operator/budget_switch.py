@@ -230,10 +230,12 @@ def _number(word: str) -> float:
         raise ValueError("not a number") from None
 
 
-def parse_budget(words: list[str]) -> dict[str, float]:
+def parse_budget(words: list[str], held: dict | None = None) -> dict[str, float]:
     """`200`, `200 turn 4 calls 30 every 3`, `turn 4`: the values named. Dollars a day given (first, or after "daily")
     bring the work-harder profile for every value not named, the turn cut to the day when the day is smaller. A word
-    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log."""
+    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log.
+    `held`: what the owner's file holds now. The gap it holds (`every`) stays unless `every` is named: it is also the
+    least gap between a research agent's turns (roles.start_rules), and new dollars a day must not move it unsaid."""
     rest, values = [w.lower() for w in words], {}
     try:
         values["daily_usd"] = _number(rest[0])
@@ -253,6 +255,8 @@ def parse_budget(words: list[str]) -> dict[str, float]:
         rest = rest[2:]
     if "daily_usd" in values:
         for name, v in WORK_HARDER.items():
+            if name == "analyst_every_h" and name not in values and name in (held or {}):
+                continue  # the owner's own gap stays
             values.setdefault(name, min(v, values["daily_usd"]) if name == "turn_usd" else v)
     return values
 
@@ -278,7 +282,7 @@ def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float
                 raise ValueError(_WAKE)
             roles.set_wake_table(paths, words[2])
             return "budget set: " + budget_line(cfg, paths, spent)
-        set_budget(paths, cfg, parse_budget(words), by, now)
+        set_budget(paths, cfg, parse_budget(words, read_budget(paths)), by, now)
     except ValueError as exc:
         return (f"budget not changed: {exc}. Send /budget 200 (the work-harder profile), /budget 200 turn 4 calls 30 "
                 f"every 3, or /budget default. {budget_line(cfg, paths, spent)}")  # fmt: skip

@@ -348,3 +348,23 @@ def test_the_budget_line_says_the_least_gap_between_a_roles_turns(paths):
     set_budget(paths, ROLES_ON, {"analyst_every_h": 2}, "telegram", NOW)
     assert ("each research agent's turns at least 2 h apart (sooner only to read a job of its own that ended) and "
             "the analysis once a day after") in budget_line(ROLES_ON, paths, 0)  # fmt: skip
+
+
+def test_new_dollars_a_day_keep_the_gap_the_owner_chose(paths):
+    """`/budget 300` brings the work-harder profile for what is not named, `every 2` among it. Since 14 Nov the owner's
+    `every` is also the least gap between a research agent's turns: the owner who lowers the day's dollars must not cut
+    the agents to a turn in two hours without saying so. A gap the owner's file already holds stays unless `every` is
+    named; with no file the profile's applies as before."""
+    from snipetech.operator.budget_switch import budget_reply
+
+    cfg = Config()
+    budget_reply(cfg, paths, ["300"], "telegram", 1.0)
+    assert read_budget(paths)["analyst_every_h"] == 2.0  # no file before: the profile's, as before
+    budget_reply(cfg, paths, ["500", "every", "0.25"], "telegram", 2.0)
+    assert read_budget(paths)["analyst_every_h"] == 0.25
+    budget_reply(cfg, paths, ["300"], "telegram", 3.0)
+    held = read_budget(paths)
+    assert held["daily_usd"] == 300 and held["analyst_every_h"] == 0.25  # the dollars moved, the gap did not
+    assert held["turn_usd"] == 6.0 and held["max_tool_calls"] == 40  # the rest of the profile as before
+    budget_reply(cfg, paths, ["300", "every", "1"], "telegram", 4.0)
+    assert read_budget(paths)["analyst_every_h"] == 1.0

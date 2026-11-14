@@ -1782,7 +1782,8 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         sentences with the numbers that matter (n, the landing, the bid). One note a turn; it is always "info" and
         pages nobody. What the owner must decide is an idea that needs the owner's yes (upsert_idea), which the digest
         carries; the longer record of the turn goes into your journal (write_report). A journal entry written with a
-        headline has written this turn's note already: do not write it again here.
+        headline has written this turn's note already: do not write it again here. This tool is for a turn that
+        writes no journal entry; it is then the turn's last call, and the turn ends when it is written.
 
         Args:
             text: One or two plain sentences.

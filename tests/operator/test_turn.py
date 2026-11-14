@@ -3,6 +3,7 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 import httpx2
@@ -1154,7 +1155,9 @@ def test_a_call_that_failed_beside_the_note_lets_the_turn_go_on_until_it_is_repa
     )  # fmt: skip
     out = _run(env, Decision(True, "fees", ["first turn"]), handler, role="fees")
     results = [b["content"] for b in requests[1]["messages"][-1]["content"]]
-    assert str(results[0]).count("error") and "fees: the first place behind FvHwFe" in str(results[1])
+    # the idea update is refused; the note is taken and answers in one line (it no longer echoes the note's text)
+    assert str(results[0]).startswith("error") and str(results[1]).startswith("noted")
+    assert "fees: the first place behind FvHwFe" in env["paths"].notes.read_text()
     assert len(requests) == 2 and out["ended_at"] == "note" and out["tool_calls"] == 3 and out["notes"] == 1
     assert learning.list_ideas(env["paths"], "open", role="fees")[0]["test"].startswith("place-bids --wallet FvHwFe")
     last = read_turns(env["paths"], 1)[0]["steps"][-1]
@@ -1194,7 +1197,7 @@ def test_which_calls_end_a_role_turn_is_a_set_of_tool_names(env):
     empty set the turn is asked for its closing reply as before."""
     from snipetech.operator import turn as T
 
-    assert T.NOTE_ENDS_TURN == frozenset({"write_note"})
+    assert T.NOTE_ENDS_TURN == frozenset({"write_note", "write_report"})
     script = (_calls(("write_report", {"name": "oktech-facts", "text": "| feature | verified |"})),
               _calls(("write_note", {"text": "no fill verifies the ladder yet"})),
               ([{"type": "text", "text": "done"}], "end_turn"))  # fmt: skip
@@ -1205,3 +1208,25 @@ def test_which_calls_end_a_role_turn_is_a_set_of_tool_names(env):
     handler, requests = _scripted(*script)
     out = _run(env, Decision(True, "oktech", ["a new fill of ours"]), handler, role="oktech", ends_at=frozenset())
     assert len(requests) == 3 and "ended_at" not in out
+
+
+def test_a_role_turn_ends_at_its_journal_entry_when_the_headline_is_the_note(env):
+    """As the roles are told to end a turn since 14 Nov: the rows of the table, then one journal entry whose headline
+    is the turn's note. That call ends the turn: no closing reply is asked for. A journal entry without a headline
+    wrote no note and ends nothing."""
+    from snipetech.operator.turnlog import read_turns
+
+    journal = f"fees-journal-{time.strftime('%Y-%m-%d', time.gmtime(NOW))}"
+    entry = {"name": journal, "append": True, "text": "## 01:00 UTC: I20\n\nThe lab at +0 against +6."}
+    closing = ([{"type": "text", "text": "A closing summary nobody needs."}], "end_turn")
+    handler, requests = _scripted(
+        _calls(("write_report", entry | {"headline": "place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)"})),
+        closing,
+    )
+    out = _run(env, Decision(True, "fees", ["first turn"]), handler, role="fees")
+    assert len(requests) == 1 and out["ended_at"] == "note" and out["notes"] == 1 and out["stopped"] == "end_turn"
+    assert "place +0 behind Cupsey" in env["paths"].notes.read_text()
+    assert read_turns(env["paths"], 1)[0]["steps"][-1]["ended_at"] == "note"
+    handler, requests = _scripted(_calls(("write_report", entry)), closing)
+    out = _run(env, Decision(True, "fees", ["a new fill of ours"]), handler, role="fees")
+    assert len(requests) == 2 and "ended_at" not in out

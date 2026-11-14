@@ -94,7 +94,7 @@ def _read_inbox(paths: OperatorPaths) -> str:
 # In the other 6 the next reply repaired a call the note's own reply had failed at (an idea update refused for its
 # length); a call beside the note was refused in 25 turns at most. So the turn ends after the first reply, at or
 # after the note, whose calls all came back without an error: a refusal is always shown to the model once.
-NOTE_ENDS_TURN = frozenset({"write_note"})
+NOTE_ENDS_TURN = frozenset({"write_note", "write_report"})  # a journal entry whose headline wrote the note, or the note
 
 # When the hour's cache loses (14 Nov): it is written at twice the input price, the five-minute one at 1.25 times, and
 # an entry nobody reads within the hour was paid for nothing. A role whose last two waits between turns were both over
