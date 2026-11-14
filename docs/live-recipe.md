@@ -4,6 +4,28 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## A copied wallet swapped into USDC and the copy followed: 54 failed sends, 0.05 SOL; the book now refuses such wallets (14 Nov 2026, 06:00-07:10 UTC)
+
+**What happened.** Not a test: the owner's standing book, by its own rules.
+
+- 06:00 qualify passed FvHwFe (FvHwFeRcGUU14qsi2a5Zbu1b5MMWQvgjJ8CwXpsndZkW): its 58 copies on the tape since it was picked on 13 Nov made +0.0040 SOL each on paper.
+- 06:05 the book made a copy sniper for it (6af7fa2a3601fd350a2ff8b5): 0.2 SOL a copy, on its buys of 0.711 SOL or more, the control bid, the lab exit.
+- 06:09 to 06:39: four copies of its buys were sent and failed on chain (two on DxavSL, one on HE8Jwv, one on F85GKk; each paid 0.001 SOL of priority fee; the reason is in `fills.exit_reason`). Nothing was bought.
+- 06:40 the book replaced the sniper (6af802563601fd350a312ca6).
+- 06:41:03 FvHwFe swapped 1.197 SOL into USDC on PumpSwap. 06:41:04 our copy of that buy was sent and failed. 06:41:07 to 06:41:26: 49 sells of USDC were sent, about one a block, and all failed (48 with "the program expected this account to be already initialized": we held no USDC; one "sell of coins the wallet no longer held").
+- 06:50 the book replaced the sniper again (6af804ae3601fd350a318584).
+- In all: 54 failed sends, 0 fills, 0.0522 SOL of priority fees (the `fills` rows also carry 0.004 SOL of tips).
+
+**Why.** OKTech's copy mode has no setting that refuses a coin by its address. Every copy sniper carries the two nearest things (`oktech.keep_to_coins`: the platforms and a market-cap ceiling). Neither stops the send. FvHwFe swaps into USDC often: 161 trades on the tape in the last 7 days, 84 of them buys. The lab and the paper run leave such trades out, because they score coins. So the paper record of +0.0040 a copy could not see this cost.
+
+**The fix (commit 8a642d1, deployed 07:09 UTC with --force: the change touches the book and qualify only, no lab code).** The tape holds these trades. The book reads them every run: a qualified wallet with a trade of USDC, USDT, USD1 or wrapped SOL in the last 7 days gets no sniper, and the one it has is stopped like any wallet that left the ranking, never while our wallet holds a coin. Qualify leaves such a wallet a candidate and says why (`src/snipetech/qualify/non_coin.py`, `tests/test_book_non_coin.py`).
+
+**Seen at 07:10 UTC, the first run on the new code.** "FvHwFe is not copied: it trades USDC (161 trades on the tape in the last 7 days, 84 of them buys, the last at 06:46 UTC on 14 Nov)". The book stopped 6af804ae (our wallet held nothing) and kept FLPjyS's sniper. Of the four wallets qualified at that moment (7aPo3n, AG89fn, FLPjyS, FvHwFe) only FvHwFe has such a trade.
+
+**Not known.** Why OKTech sent 49 sells for a coin it never bought, and whether it retries every block until something stops it: question for OKTech (docs/oktech-playbook.md). Whether a wallet's first swap into a dollar coin, before the tape has one, can still be followed: yes, once; the next book run then refuses it.
+
+(Written 07:11 UTC.)
+
 ## FLPjyS passed qualify's forward check and the book made it a copy sniper (13 Nov 2026, 21:45-21:50 UTC)
 
 **What happened.** The qualify run of 21:45 UTC gave FLPjyS (FLPjySnxc4LK5Gksd7p6NzDv4J3w1PbCeugGhYrA4iTU) the verdict
