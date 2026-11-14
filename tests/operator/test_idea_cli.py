@@ -44,7 +44,9 @@ def test_idea_cli_sets_the_role(tmp_path):
     _cli(tmp_path, "idea", "--title", "Who copies Cupsey", "--why", "w", "--test", "t", "--expected", "e", "--kind",
          "research", "--role", "scout")  # fmt: skip
     _cli(tmp_path, "idea", "--title", "Old", "--why", "w", "--test", "t", "--expected", "e", "--kind", "research")
-    scout, old = list_ideas(OperatorPaths(tmp_path / "data"))
+    # in the order they came: the open list puts the newer idea first whenever the two fall into different seconds
+    # (14 Nov: this failed once in a full run for that reason alone)
+    scout, old = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
     assert role_of(scout) == "scout" and role_of(old) == "tester"
     assert _cli(tmp_path, "idea", "--id", old["id"], "--role", "fees") == 0
     assert [role_of(i) for i in list_ideas(OperatorPaths(tmp_path / "data"), status=None)] == ["scout", "fees"]
