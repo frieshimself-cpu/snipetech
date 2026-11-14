@@ -62,7 +62,9 @@ SQL_TABLES: dict[str, str] = {
     "source = what wrote it",
     "paper_trades": "the forward paper test, one row per strategy and coin. strategy = the frozen strategy's id; "
     "pnl = SOL the trade made after costs, roi = its share of the buy; trigger_ts, entry_ts, exit_ts = unix seconds; "
-    "reason = why it sold; data = JSON (venue, landing, entry_mcap_sol, hold_secs; deployer on a rule of kind dev)",
+    "reason = why it sold; data = JSON (venue, landing, entry_mcap_sol, hold_secs; deployer on a rule of kind dev). "
+    "A launch, hunt, whale or burst rule frozen before 14 Nov holds no trade on a serial crew's coin (a research "
+    "record: the paper report says research_only)",
     "scores": "one row per kind and key. kind = deployer, qualify, follow, copy or study; key = the wallet; "
     "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis; since 13 Nov "
     "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
@@ -730,7 +732,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         strategy hypothesis of your own is a lab with --trigger: one trigger as a JSON object (kind launch, burst,
         whale, kol, momentum, hunt or mig, with its numbers), refused at once with its reason, before any job starts,
         when a number is out of range or OKTech could not run it (a hunt's sol and dev_max are whole numbers). Hunt
-        triggers are the ones OKTech can run exactly as scored. {"kind": "mig", "window": 60} is OKTech MIG: a buy on
+        triggers are the ones OKTech can run exactly as scored, when they are scored on every coin (no "crew" field:
+        SERIAL CREWS' COINS below). {"kind": "mig", "window": 60} is OKTech MIG: a buy on
         PumpSwap right after a coin's migration, only when it migrated within `window` seconds of its create (0 to 60;
         0: any migration), scored behind the first PumpSwap trades after the migration. A kol trigger takes the gates OKTech's copy mode has: "known"
         (fire only once that many group wallets have made a first buy in the coin, this one included: 2 = the second
@@ -796,7 +799,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         A lab row or a frozen wallet rule from before (no "copy50%" in its name) is another exit: do not compare
         it with a new row; run the lab again and freeze the rule again (a new id; the old record keeps its trades,
         shows exit_note in paper report and is listed under not_as_live in a freeze). Hunt, launch, whale, burst
-        and MIG rules are unchanged and a recipe's own exit has none. The sale is priced one slot after the
+        and MIG rules keep their exits (an exit_note on one of them has another reason: SERIAL CREWS' COINS below)
+        and a recipe's own exit has none. The sale is priced one slot after the
         wallet's sale, ahead of that slot's trades: behind a crowded wallet a live sale can land lower (not
         measured). Several small sales never add up to the half.
         DUST: place-bids and tips leave out a buy under 0.1 SOL behind the followed wallet: it is no first buyer and
@@ -825,7 +829,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         "--trigger", "{\"kind\": \"mig\", \"window\": 600}", "--trigger", "{\"kind\": \"mig\",
         \"window\": 60}", "--hours", "48", "--json"]. Every MIG rule lands behind the first 3 PumpSwap trades
         after the migration's slot (+3@1), only where the PumpSwap tape holds the coin to the end of its exit
-        (amm_tape says what was skipped). A row with research_only true (window 0) is a finding about what bots
+        (amm_tape says what was skipped). A MIG row with research_only true (window 0) is a finding about what bots
         like 2mRN earn: no sniper can be sent it, and paper freeze refuses it. A row with oktech_unconfirmed (a
         window above 60 s) is OKTech's own setting with a number nobody has sent it: not runnable until OKTech
         says its largest window. A window above 0 counts only coins whose create is on the unbroken stretch of
@@ -977,6 +981,36 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         scored on. A lab on a past window is still a paper result at the landing each row names; a test total
         rests on where the cut falls, so judge a rule on its lower bound and on what it is without its five best
         trades, not on one run's total.
+        SERIAL CREWS' COINS (14 Nov): a launch, hunt, whale or burst rule is scored on every coin a live sniper would
+        buy, a serial crew's among them (one metadata file on 3 or more launches by 2 or more creators). Until 14 Nov
+        such coins were left out, which OKTech cannot do; on one hunt they were 633 of 1,715 coins (37 %) and they lost.
+        "crew": "" or no crew field means every coin. "crew": "skip" leaves crews' coins out (what the default did
+        before); "crew": "only" keeps them alone. Skip and only are research only: no sniper is built for either and
+        neither goes to a live test. Every launch, hunt, whale and burst rule frozen before 14 Nov was scored without
+        crews' coins: it keeps its id and its trades, its label says "(without serial crews' coins)", the paper report
+        lists it under "Research records" with research_only and a short exit_note (the reason once, under
+        research_only_why), it is not in paper_top (paper_research_only counts them), it is never "at our landing" or
+        "passed", and it is no evidence for a live test. For an as-live record freeze the same trigger again without a
+        crew field: a new rule with a new id, from zero trades. A rule refuted in the last 7 days without crews' coins
+        is not frozen again as the default (the freeze says so under skipped): with the coins that lose it is no better.
+        To repeat an old result to the digit add "crew": "skip". Each lab row of such a rule has `crew`: `moments` of
+        `of` are crews' coins; a skip rule shows `left_out` of `fired`. `hindsight` is always true: the lab knows a crew
+        from its whole window, a sniper knows nothing and buys them all, so the share is no filter anyone could run.
+        Forward, a crew is known only once its third coin has launched: a skip record holds a crew's first two coins and
+        an only record lacks them; the default is the same in the lab and forward. If a paper run's answer has
+        old_code_scored, the rules it names were scored for a while by old code and are research only: freeze each
+        again. A default lab scores the crews' coins too and takes about half as long again. A hunt on a wallet group
+        (bots) is unchanged.
+        THE COST A LAB CHARGES (14 Nov): from 12 Nov 17:24 to 14 Nov 18:26 UTC every lab, freeze and qualify verdict
+        charged 0.0085 to 0.0093 SOL a transaction, twice the low bid's real cost (about 0.0044): four buys of the tip
+        test at 0.035 SOL and 50 failed sends of one USDC swap had been counted in it. That was about 0.009 SOL a round
+        trip too much: a rule or a wallet that failed by less than that in those two days is NOT refuted, test it again;
+        a rule frozen on 14 Nov before 18:26 (per_tx_sol 0.008495 in its record) is charged too much forward, freeze it
+        again. The labs now charge 0.0045 and say per_tx_source "estimate" until the low bid has its 30 buys of a week
+        again; a bid above the low bid is charged on top with "--buy-bid" as before. The hunt {"kind": "hunt", "sol": 5,
+        "window": 1, "max_buyers": 2, "dev_max": 1} at this cost on every coin, 168 h to 14 Nov 05:01 UTC (labs 7299bb
+        and 346941; each half on its own best exit, so rough): at 0.2 SOL -0.002 SOL a trade over 687 test trades; at 1
+        SOL +0.030 a trade (+20.5 SOL), +0.013 without its five best trades, four trades (+6.7 SOL) outside the model.
         A WINNING BOT'S RECIPE BY NAME (the owner, 12 Nov: "we cant copy a wallet that is copying because we are
         filled above, we can learn from it"): ["lab", "--recipe", "6z91", "--hours", "24", "--json"] runs the copy
         bot 6Z91's playbook without typing its triggers: a followed wallet's first buy of 1 to 3 SOL in a coin 13 s
