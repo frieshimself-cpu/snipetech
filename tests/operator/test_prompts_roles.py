@@ -323,3 +323,39 @@ def test_the_marker_stays_within_the_apis_look_back_of_the_turn_before():
     assert len(before) == 25 and len(after) == 45  # a long list: 23 and 43 whole blocks
     assert _marked(after)[0] - _marked(before)[0] == 20
     assert [b["text"] for b in after[: _marked(before)[0] + 1]] == [b["text"] for b in before[:-1]]
+
+
+# -- round 2 (14 Nov): the words a role is told say each thing once and agree with what the code does ------------------
+
+
+def test_the_role_rules_say_how_a_turn_is_written_once_and_as_the_code_does_it():
+    rules = _flat(P.ROLE_RULES)
+    assert ("(3) Write, in this order: update_table for the rows that changed (no call when none did), then "
+            "write_report with your journal's name and a headline. The headline is this turn's note for the owner and "
+            "that call is your last: the turn ends when its reply's calls have run, with no write_note and no closing "
+            "summary. A call of that reply that was refused or not done as asked is shown to you so you can repair "
+            "it.") in rules  # fmt: skip
+    assert "Read what answers the question, start the test, then write (step 3)." in rules
+    assert "after two in a row your next turn waits 45 minutes" in rules and "waits an hour" not in rules
+    assert "an idea you open and close in one turn does not count as an idea closed" in rules
+    # what the round-1 words said that the code does not do, or said more than once
+    for gone in ("one more reply", "never the whole table", "append=true", "rows, drop, headline"):
+        assert gone not in rules, gone
+    assert rules.count("write_note") == 1 and rules.count("update_table") == 1
+    # steps 1 and 2 keep what they said
+    for kept in ("A job you have read after it ended does not call you again", "list_ideas shows one line an idea",
+                 "a long list in a result is read with fields", "result holds the numbers that decided"):  # fmt: skip
+        assert kept in rules, kept
+    # the operator and the analyst are told how a job's result reads as read_job_log gives it
+    for text in (P.OPERATOR_SYSTEM, P.ANALYST_SYSTEM):
+        assert "the JSON is the last part of the log" not in _flat(text) and "read from the top" in _flat(text)
+
+
+def test_a_roles_message_ends_with_one_line_on_what_to_do():
+    now = DAY0 + 30 * H + 17 * 60
+    last = _message(now, [])[-1]["text"]
+    lines = last.splitlines()
+    assert lines[-1] == "Do your role's turn (steps 1 to 3). Your table: tester-rules. Your journal today: " \
+                        "tester-journal-2026-11-07."  # fmt: skip
+    assert lines[-2].endswith("; keep the last calls for step 3.")
+    assert "append=true" not in last and "headline" not in last

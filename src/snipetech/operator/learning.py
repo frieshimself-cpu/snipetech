@@ -468,6 +468,26 @@ def other_tables(paths: OperatorPaths, role: str) -> str:
     return "\n".join(out)
 
 
+LAB_COMMANDS = frozenset({"lab", "paper", "stopped-wallets"})  # a role's commands that take one of the lab slots
+
+
+def lab_slots_line(paths: OperatorPaths, role: str) -> str:
+    """One line for a role's message: how many of the machine's lab slots are free at this moment, and who is owed the
+    next one. From the same locks and the same mark start_job's refusals read (analysis/lab_lock: a lab, a freeze and
+    qualify's own lab each hold a slot; the mark is left by the machine's own work when it found every slot held, and
+    the roles then give way: operator/jobs.py). "" for a role none of whose commands takes a slot. 14 Nov: "every lab
+    slot is held" and "labs are already running" were at least 28 of the refusals in 108 recorded turns."""
+    from ..analysis.lab_lock import free_slots, lab_slots, wanted
+    from .roles import ROLE_COMMANDS
+
+    if not ROLE_COMMANDS.get(role, frozenset()) & LAB_COMMANDS:
+        return ""
+    slots = lab_slots()
+    line = f"Lab slots: {free_slots(paths.data, slots)} of {slots} free (a lab, a freeze and qualify each take one)"
+    owed = wanted(paths.data)
+    return line + (f"; {owed['who']} waits for the next free one and gets it before a lab of yours." if owed else ".")
+
+
 def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,
             max_chars: int = CONTEXT_MAX_CHARS, book: Any = None, research: Path | None = None,
             role: str | None = None) -> str:  # fmt: skip
@@ -500,7 +520,8 @@ def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = C
                        f"{_title(i)}. Test: {i.get('test', '?')}", UNTESTED_LINE) for i in waiting]  # fmt: skip
     memory = _cut("\n".join(lines), max_chars)
     if role is not None:
-        memory += "\n" + other_tables(paths, role)
+        slots = lab_slots_line(paths, role)
+        memory += ("\n" + slots if slots else "") + "\n" + other_tables(paths, role)
     record = research_record(research)
     return f"{memory}\n{record}" if record else memory
 

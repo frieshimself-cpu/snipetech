@@ -1290,7 +1290,7 @@ def test_role_tools_are_a_subset_of_todays(rolebox):
         names = set(tools(role))
         assert names == ROLE_TOOLS[role] and names - ROLE_ONLY < set(TODAY) and ROLE_ONLY < names, role
         assert set(tools(role)["update_table"].to_dict()["input_schema"]["properties"]) == {
-            "rows", "drop", "headline", "below", "text", "whole"}, role  # fmt: skip
+            "rows", "drop", "above", "below", "text", "whole"}, role  # fmt: skip
     for name in TODAY:
         assert not TRADING.search(name), name
     for name in ROLE_ONLY:
@@ -1316,7 +1316,8 @@ def test_role_note_is_info_and_one_a_turn(rolebox):
     assert _call(note, text="place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)").startswith("noted")
     line = paths.notes.read_text().rstrip("\n")
     assert line == "- 2026-11-06T00:00:00Z [info] fees: place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)"
-    assert _call(note, text="and one more").startswith("error: one note a turn")
+    # round 2 (14 Nov): said without "error", which asked the model for one more reply after its note
+    assert _call(note, text="and one more") == "this turn's note is written already: nothing to add"
     with pytest.raises(ValueError, match="Invalid arguments"):  # no such argument: the call never runs
         _call(tools("fees")["write_note"], text="x", level="decision")
     assert sink.decisions == [] and paths.notes.read_text().count("\n") == 1
@@ -1324,8 +1325,9 @@ def test_role_note_is_info_and_one_a_turn(rolebox):
 
 
 def test_role_writes_only_its_own_table_and_journal(rolebox):
-    """Since 14 Nov the table is update_table's (rows, or the table whole with whole=true: test_tool_answers.py);
-    write_report still takes a first table and keeps the journal. Neither writes any other file."""
+    """Since 14 Nov the table is update_table's (rows, or the table whole: test_tool_answers.py); write_report still
+    takes a first table and keeps the journal, today's and no other day's (round 2). Neither writes any other
+    file."""
     tools, paths, _ = rolebox
     report, update = tools("scout")["write_report"], tools("scout")["update_table"]
     assert _call(report, name="scout-facts", text="| wallet | who |").startswith("scout-facts.md: written whole")
@@ -1336,16 +1338,17 @@ def test_role_writes_only_its_own_table_and_journal(rolebox):
     assert "not written again" in _call(update, text="| wallet | who |\n| W1 | Cupsey |", whole=True)
     assert "not written again" in _call(update, rows=[{"key": "W1", "text": "| W1 | Cupsey |"}])
     assert (paths.root / "scout-facts.md").stat().st_mtime_ns == stamp
-    assert _call(report, name="scout-journal-2026-11-12", text="looked at winners", append=True)
-    assert (paths.root / "scout-journal-2026-11-12.md").read_text() == "looked at winners\n"
+    assert _call(report, name="scout-journal-2026-11-06", text="looked at winners", append=True)
+    assert (paths.root / "scout-journal-2026-11-06.md").read_text() == "looked at winners\n"
     for name in ("tester-rules", "fees-bids", "oktech-facts", "analyst-2026-11-12", "postmortem-2026-11-12-0900",
-                 "notes", "lessons", "ideas", "tester-journal-2026-11-12", "scout-facts-old"):  # fmt: skip
+                 "notes", "lessons", "ideas", "tester-journal-2026-11-06", "scout-journal-2026-11-12",
+                 "scout-facts-old"):  # fmt: skip
         out = _call(report, name=name, text="x")
-        assert out.startswith("error") and "scout-facts" in out, name
+        assert out.startswith("error") and "scout-journal-2026-11-06" in out and "update_table" in out, name
         assert not (paths.root / f"{name}.md").exists()
     assert _call(tools("oktech")["write_report"], name="oktech-facts", text="| feature |").startswith(
         "oktech-facts.md: written whole")  # fmt: skip
-    assert "scout-facts" in _help(report) and "scout-journal" in _help(report)
+    assert "scout-journal" in _help(report) and "scout-facts" not in _help(report)  # the table is update_table's
     assert "operator/scout-facts.md" in _help(update) and "tester-rules" not in _help(update)
 
 
