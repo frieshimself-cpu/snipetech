@@ -86,6 +86,29 @@ def test_take_snapshot_with_fakes(tmp_path, fake_service):
     assert snap.spent_today == 0.0 and snap.wallet == W
 
 
+def test_the_snapshot_marks_research_records_and_a_turn_is_not_handed_them_among_the_best(tmp_path, fake_service):
+    """The snapshot kept id, label, n, mean, ev_lower and total of each paper report row, and every turn was handed
+    the six best totals as `paper_top`: a rule scored without serial crews' coins (research only, never live) stood
+    there like any other, the best of them all. The snapshot keeps `research_only` and the short note; `paper_top`
+    leaves such rows out and `paper_research_only` says how many there are."""
+    from snipetech.operator.prompts import _compact_snapshot
+    from tests.operator.test_live_test import BEST, SECOND, _freeze
+
+    _freeze(fake_service.store, BEST, pnl=0.03, every_coin=False)  # frozen before 14 Nov: the best total
+    _freeze(fake_service.store, SECOND, pnl=0.01)
+    cfg = Config()
+    cfg.operator.wallet = W
+    snap = asyncio.run(take_snapshot(fake_service, OperatorPaths(tmp_path).ensure(), cfg, prev=None, now=2_000,
+                                     services=dict, balances=lambda w: (1.5, 0.25, [])))  # fmt: skip
+    rows = {s["id"]: s for s in snap.paper["strategies"]}
+    assert rows[BEST]["research_only"] is True
+    assert rows[BEST]["exit_note"] == "research only: scored without serial crews' coins"
+    assert not rows[SECOND].get("research_only") and not rows[SECOND].get("exit_note")
+    compact = _compact_snapshot(snap)
+    assert [s["id"] for s in compact["paper_top"]] == [SECOND] and compact["paper_research_only"] == 1
+    json.dumps(compact)
+
+
 def test_equity_is_none_when_a_balance_is_unknown():
     s = Snapshot(ts=1, native_sol=None, wsol=0.1)
     assert s.equity is None

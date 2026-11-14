@@ -1226,6 +1226,28 @@ class Store:
             [(key, json.dumps(data), now) for key, data in records.items()],
         )
 
+    def rewrite_coverages(self, keys: list[str], change) -> dict[str, dict[str, Any]]:
+        """Read the records under `keys` and write what `change` makes of them, in one transaction that holds the
+        write lock from the read on: no other writer's change to them falls between the read and the write (a
+        `coverage` followed by a `set_coverage` can write back a record another process changed in between).
+        `change`: {key: record} of the ones that exist -> {key: record} to write; the keys it leaves out are not
+        written, and {} or None writes nothing. Returns what was written."""
+        keys = list(keys)
+        wrote: dict[str, dict[str, Any]] = {}
+
+        def do() -> None:
+            wrote.clear()
+            marks = ",".join("?" * len(keys))
+            rows = self.conn.execute(f"SELECT key, data FROM coverage WHERE key IN ({marks})", keys).fetchall()
+            new = change({key: json.loads(data) for key, data in rows}) or {}
+            now = int(time.time())
+            self.conn.executemany("INSERT OR REPLACE INTO coverage (key, data, updated) VALUES (?,?,?)",
+                                  [(key, json.dumps(data), now) for key, data in new.items()])  # fmt: skip
+            wrote.update(new)
+
+        self._write(do)
+        return wrote
+
     def put_score(self, kind: str, key: str, data: dict[str, Any]) -> None:
         self._exec(
             "INSERT OR REPLACE INTO scores (kind, key, computed_at, data) VALUES (?,?,?,?)",

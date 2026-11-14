@@ -279,6 +279,23 @@ def test_role_runs_on_its_own_news(box):
     assert _due(box, "oktech") == (True, "a new fill of ours (read_fills)")
 
 
+def test_a_research_record_reaching_its_next_reading_is_no_news_for_the_tester(box):
+    """A rule scored without serial crews' coins (every launch-type rule frozen before 14 Nov) is no rule a sniper
+    trades: its 30th trade wakes nobody. The same for a rule frozen since."""
+    hunt = {"kind": "hunt", "sol": 5.0, "window": 1.0}
+    box.store.set_coverage("paper_strategies", {"strategies": [
+        {"id": "OLD", "label": "old", "trigger": hunt, "exit": {"watch_secs": 1.3}, "from_ts": NOW - 9000},
+        {"id": "NEW", "label": "new", "trigger": hunt | {"sol": 6.0}, "exit": {"watch_secs": 1.3},
+         "from_ts": NOW - 9000, "every_coin": True}], "superseded": []})  # fmt: skip
+    _state(box.paths, "tester", last=NOW - 900, seen=R.seen("tester", box.store))
+    for i in range(30):
+        box.store.put_paper_trade({"strategy": "OLD", "mint": f"M{i}", "trigger_ts": NOW - 500 + i, "pnl": 0.01})
+    assert _due(box, "tester") == (False, "nothing new")
+    for i in range(30):
+        box.store.put_paper_trade({"strategy": "NEW", "mint": f"N{i}", "trigger_ts": NOW - 500 + i, "pnl": 0.01})
+    assert _due(box, "tester") == (True, "a paper rule reached its next reading: NEW (30 trades)")
+
+
 def test_role_runs_after_three_quiet_hours(box):
     _state(box.paths, "oktech", last=NOW - 3 * H + 600)
     assert _due(box, "oktech") == (False, "nothing new")
@@ -994,15 +1011,21 @@ def test_week_counts_tests_freezes_and_forward_passes(box):
     for i in range(3):
         R.record_test(box.paths, NOW - i * 3600, "tester" if i else "scout", "I1", f"j{i}", ["lab"])
     kol, dev = {"kind": "kol"}, {"kind": "dev"}
+    ex = {"watch_secs": 1.3, "copy_exit_pct": 0.5}  # an exit that sells as a copy sniper's does
+    old = {"watch_secs": 1.3}  # frozen before 13 Nov: it held on when the followed wallet sold
     box.store.set_coverage("paper_strategies", {"strategies": [
-        {"id": "A", "from_ts": NOW - 86400, "trigger": kol}, {"id": "B", "from_ts": NOW - 2 * 86400, "trigger": kol},
-        {"id": "C", "from_ts": NOW - 30 * 86400, "trigger": kol}, {"id": "D", "from_ts": NOW - 86400, "trigger": dev},
-    ], "superseded": [{"id": "E", "from_ts": NOW - 3 * 86400, "trigger": kol}]})  # fmt: skip
+        {"id": "A", "from_ts": NOW - 86400, "trigger": kol, "exit": ex},
+        {"id": "B", "from_ts": NOW - 2 * 86400, "trigger": kol, "exit": ex},
+        {"id": "C", "from_ts": NOW - 30 * 86400, "trigger": kol, "exit": ex},
+        {"id": "D", "from_ts": NOW - 86400, "trigger": dev},
+        {"id": "F", "from_ts": NOW - 30 * 86400, "trigger": kol, "exit": old},
+    ], "superseded": [{"id": "E", "from_ts": NOW - 3 * 86400, "trigger": kol, "exit": ex}]})  # fmt: skip
     box.store.set_coverage("paper:report", {"rows": {
         "A": {"numbers": {"n": 41, "total": 1.2, "ev_lower": 0.004}},  # passes
         "B": {"numbers": {"n": 29, "total": 2.0, "ev_lower": 0.01}},  # too few trades yet
         "C": {"numbers": {"n": 300, "total": 0.9, "ev_lower": -0.001}},  # the lower bound is not above zero
         "D": {"numbers": {"n": 400, "total": 5.0, "ev_lower": 0.01}},  # a deployer-verdict rule: no lab froze it
+        "F": {"numbers": {"n": 500, "total": 9.0, "ev_lower": 0.02}},  # not what a sniper would trade: never "passed"
     }})  # fmt: skip
     assert R.week_counts(box.paths, NOW, box.store) == {"tests": 3, "frozen": 3, "passed": 1}
     assert R.week_counts(box.paths, NOW) == {"tests": 3, "frozen": None, "passed": None}  # no store: only the ledger

@@ -1451,7 +1451,11 @@ class Service:
         # OKTech's answer on maxDevBuySol 0 as the owner recorded it next to the database: a creator-0 plan's notes name
         # it, or say that the live test and the automatic test wait for it (research round 3)
         answer = oktech_answers.dev_max_zero(OperatorPaths(Path(self.cfg.storage.db_path).resolve().parent)) or {}
-        frozen = self.store.coverage("paper_strategies").get("strategies", [])
+        from .analysis import paper
+
+        # each rule as it was scored: a launch-type rule frozen before 14 Nov reads as scored without serial crews'
+        # coins (paper.frozen), which the sniper builder refuses, whether or not the stored rules were migrated
+        frozen = paper.frozen(self.store).get("strategies", [])
         picked = [s for s in frozen if strategy_id in (None, s["id"])]
         if not picked:
             raise SystemExit(f"no frozen strategy {strategy_id or ''}: see `snipetech paper report`")

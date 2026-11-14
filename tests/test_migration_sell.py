@@ -219,7 +219,7 @@ def test_autosell_refuses_a_migration_sell_oktech_cannot_take(frac, delay):
 def test_the_strategy_sniper_carries_the_migration_sell():
     trig = Trigger("hunt", sol=3.0, window=1.0, dev_max=1.0).__dict__
     ex = LAB | {"migration_sell_frac": 1.0, "migration_sell_delay": 1.0}
-    p = strategy_sniper({"id": "m", "label": "t", "buy_sol": 0.1, "exit": ex, "trigger": trig}, 1)
+    p = strategy_sniper({"id": "m", "every_coin": True, "label": "t", "buy_sol": 0.1, "exit": ex, "trigger": trig}, 1)
     assert p.config["autoSell"]["migrationSell"] == {"enabled": True, "sellPercent": 100.0, "delayMs": 1000}
     assert any("migration" in n and "live" in n for n in p.notes)
     assert any("migrates" in s for s in p.summary)  # the plan the owner reads before a yes says it sells there

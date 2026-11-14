@@ -1608,3 +1608,29 @@ def test_a_running_record_older_than_any_job_can_run_is_nobodys_twin(jobs):
          "running": True, "pid": os.getpid()}))  # fmt: skip
     assert jobs.start(["tips", "--json"], now=now, role="fees", idea=fees)["id"] != "ghost"
     assert not [r for r in roles.read_tests(OperatorPaths(jobs.ops.data)) if r.get("joined")]
+
+
+def test_the_agents_are_told_what_a_launch_rules_record_means_and_which_labs_were_overcharged(toolbox):
+    """14 Nov. Two things an agent would otherwise get wrong for days: every launch rule frozen before was scored
+    without serial crews' coins and is a research record (the same trigger frozen now is another rule), and every lab
+    of 12 Nov 17:24 to 14 Nov 18:26 was charged twice a transaction's cost, so what failed narrowly then is not
+    refuted. Both reach every role that runs a lab or freezes a rule."""
+    from snipetech.operator import roles
+    from snipetech.operator.prompts import ROLE_SYSTEM
+    from snipetech.operator.tools import SQL_TABLES
+
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    text = " ".join(full.split())
+    for words in ("SERIAL CREWS' COINS (14 Nov):", '"crew": "skip"', "Research records", "research_only_why",
+                  "paper_research_only", "freeze the same trigger again without a crew field", "old_code_scored",
+                  "THE COST A LAB CHARGES (14 Nov):", "is NOT refuted, test it again", 'per_tx_source "estimate"',
+                  "+0.013 without its five best trades"):
+        assert words in text, words
+    cuts = [(tags, words) for tags, words in roles.cut_job_help(full) if not isinstance(tags, str)]
+    for head in ("SERIAL CREWS' COINS (14 Nov):", "THE COST A LAB CHARGES (14 Nov):"):
+        assert any(head in words and {"lab", "paper"} <= set(tags) for tags, words in cuts), head
+    assert "passed over the coins of the serial crews known when it was scored" in SQL_TABLES["paper_trades"]
+    assert "scored forward without the coins of the crews known at the time (from 9 Nov on" in text
+    tester = " ".join(ROLE_SYSTEM["tester"].split())
+    assert "scored without serial crews' coins" in tester and "research record" in tester
