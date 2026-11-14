@@ -63,8 +63,9 @@ SQL_TABLES: dict[str, str] = {
     "paper_trades": "the forward paper test, one row per strategy and coin. strategy = the frozen strategy's id; "
     "pnl = SOL the trade made after costs, roi = its share of the buy; trigger_ts, entry_ts, exit_ts = unix seconds; "
     "reason = why it sold; data = JSON (venue, landing, entry_mcap_sol, hold_secs; deployer on a rule of kind dev). "
-    "A launch, hunt, whale or burst rule frozen before 14 Nov holds no trade on a serial crew's coin (a research "
-    "record: the paper report says research_only)",
+    "A launch, hunt, whale or burst rule frozen before 14 Nov passed over the coins of the serial crews known when "
+    "it was scored (from 9 Nov on; a crew's first two coins are in it): a research record, the paper report says "
+    "research_only",
     "scores": "one row per kind and key. kind = deployer, qualify, follow, copy or study; key = the wallet; "
     "computed_at = unix seconds; data = JSON (a deployer: verdict, launches, ev_lower_sol, basis; since 13 Nov "
     "launches_untraded = launches left out for want of trading, each still counted at a round trip's cost in "
@@ -986,8 +987,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         such coins were left out, which OKTech cannot do; on one hunt they were 633 of 1,715 coins (37 %) and they lost.
         "crew": "" or no crew field means every coin. "crew": "skip" leaves crews' coins out (what the default did
         before); "crew": "only" keeps them alone. Skip and only are research only: no sniper is built for either and
-        neither goes to a live test. Every launch, hunt, whale and burst rule frozen before 14 Nov was scored without
-        crews' coins: it keeps its id and its trades, its label says "(without serial crews' coins)", the paper report
+        neither goes to a live test. Every launch, hunt, whale and burst rule frozen before 14 Nov was scored forward
+        without the coins of the crews known at the time (from 9 Nov on; a crew is known once its third coin has
+        launched): it keeps its id and its trades, its label says "(without serial crews' coins)", the paper report
         lists it under "Research records" with research_only and a short exit_note (the reason once, under
         research_only_why), it is not in paper_top (paper_research_only counts them), it is never "at our landing" or
         "passed", and it is no evidence for a live test. For an as-live record freeze the same trigger again without a

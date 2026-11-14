@@ -1504,6 +1504,7 @@ def test_the_agents_are_told_what_a_launch_rules_record_means_and_which_labs_wer
     cuts = [(tags, words) for tags, words in roles.cut_job_help(full) if not isinstance(tags, str)]
     for head in ("SERIAL CREWS' COINS (14 Nov):", "THE COST A LAB CHARGES (14 Nov):"):
         assert any(head in words and {"lab", "paper"} <= set(tags) for tags, words in cuts), head
-    assert "holds no trade on a serial crew's coin" in SQL_TABLES["paper_trades"]
+    assert "passed over the coins of the serial crews known when it was scored" in SQL_TABLES["paper_trades"]
+    assert "scored forward without the coins of the crews known at the time (from 9 Nov on" in text
     tester = " ".join(ROLE_SYSTEM["tester"].split())
     assert "scored without serial crews' coins" in tester and "research record" in tester

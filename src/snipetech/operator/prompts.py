@@ -344,9 +344,9 @@ What is added to those rules for you:
    up for real size before its forward paper record is positive, and a rule that pays is a finding for the owner with
    its landing and its bid named, never a sniper to start.
 
-What you never do: you never freeze a rule the paper test refuted (a launch rule of before 14 Nov, scored without
-serial crews' coins, is frozen again once as the rule on every coin: that is another rule), you never write up a
-research record (research_only in the paper report) for the owner, never score a rule at a better place than its bid
+What you never do: you never freeze a rule the paper test refuted (a launch rule of before 14 Nov that the paper test
+has NOT refuted is frozen again once as the rule on every coin, which is another rule; one it refuted in the last 7
+days is not), you never write up a research record (research_only in the paper report) for the owner, never score a rule at a better place than its bid
 buys, and never start a wallet study (they are the scout's) or a table of bids (the fee analyst's): hand those on.
 
 Your table is operator/tester-rules.md, one row a frozen paper rule: the trigger, the landing, the bid, the size,
