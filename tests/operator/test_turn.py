@@ -890,8 +890,11 @@ def cache_rule_breaks(request: dict) -> list[str]:
             out.append("a marker on the last block with another duration than the top-level field")
         top = None  # the same duration: the automatic breakpoint does nothing more
     order = [ttl(mark) for _, mark in marks] + ([ttl(top)] if top else [])
-    if len(order) > 4:
-        out.append(f"{len(order)} breakpoints: the API takes four")
+    # a request that continues a thread carries no system and no tools: the marker on the instructions of the request
+    # that created the thread still counts
+    count = len(order) + (1 if (request.get("thread") or {}).get("type") == "continue" else 0)
+    if count > 4:
+        out.append(f"{count} breakpoints: the API takes four")
     if "5m" in order and "1h" in order[order.index("5m") :]:
         out.append("a one-hour marker behind a five-minute one")
     if any(b.get("type") == "text" and not str(b.get("text") or "").strip() for b in blocks if isinstance(b, dict)):
@@ -954,10 +957,10 @@ def test_a_role_turns_request_carries_the_system_marker_one_message_marker_and_t
     assert [b.get("cache_control") for b in req["system"]] == [HOUR_CACHE]
     content = req["messages"][0]["content"]
     assert len(content) == 5 and _marks(req) == [(3, HOUR_CACHE)]  # record + heading, three blocks of ten, the rest
-    for req in requests:  # a later request continues the first on the server, or sends the whole conversation again
+    for req in requests:  # a later request continues the first on the server and carries only the new message
         assert cache_rule_breaks(req) == [] and req["cache_control"] == {"type": "ephemeral"}
-        if "system" in req:
-            assert req["system"][0]["cache_control"] == HOUR_CACHE and _marks(req) == [(3, HOUR_CACHE)]
+    assert requests[1]["thread"]["type"] == "continue" and "system" not in requests[1]  # what is sent when the whole
+    # conversation goes again: test_a_thread_the_server_lost_is_sent_whole_again_without_the_lists_marker
     assert content[0]["text"].startswith("Research record")
     assert "OUTCOME: the creator-0 hunts lose" in content[0]["text"]
     text = message_text(content)
@@ -1270,3 +1273,253 @@ def test_a_request_the_api_refuses_for_its_cache_markers_is_sent_without_the_lis
     turn(lambda r: httpx2.Response(400, json={"type": "error", "error": {"type": "invalid_request_error",
                                                                          "message": "credit balance is too low"}}))
     assert roles.read_state(env["paths"])["fees"]["no_list_hour"] == NOW
+
+
+# -- 14 Nov, after the reviews of the turn that ends at its note (the starts helper's part) ----------------------------
+
+
+def _finished_job(env, jid, text, ended=NOW - 30):
+    """A job of the scout's that has ended, with `text` as its log."""
+    from snipetech.operator import learning, roles
+
+    paths = env["paths"]
+    paths.jobs.mkdir(exist_ok=True)
+    idea = learning.upsert_idea(paths, {"title": f"who leads, by {jid}", "why": "w", "test": "t", "expected": "e",
+                                        "kind": "research", "role": "scout", "status": "testing"},
+                                source="scout", now=NOW - 3600)["id"]  # fmt: skip
+    roles.record_test(paths, NOW - 600, "scout", idea, jid, ["winners", "--json"])
+    (paths.jobs / f"{jid}.json").write_text(json.dumps({"id": jid, "argv": ["winners", "--json"], "started": NOW - 600,
+                                                        "ended": ended, "exit_code": 0, "running": False}))  # fmt: skip
+    (paths.jobs / f"{jid}.exit").write_text("0")
+    (paths.jobs / f"{jid}.log").write_text(text)
+
+
+def test_a_note_beside_a_read_does_not_end_the_turn_before_the_model_saw_what_it_read(env):
+    """The review: a read_job_log in the same reply as the note ran, the job was written down as read, and the turn
+    ended there, so the model never saw the result and was never called for the job again. A reply that held a call
+    of a tool that only reads gets its answer: the turn ends at the next reply."""
+    from snipetech.operator import roles
+
+    _finished_job(env, "j1", json.dumps({"wallets": [{"wallet": "W9", "pnl_sol": 41.5}]}, indent=1))
+    handler, requests = _scripted(
+        _calls(("read_job_log", {"id": "j1"}), ("write_note", {"text": "W1: started winners, result next turn"})),
+        ([{"type": "text", "text": "W9 leads with 41.5 SOL."}], "end_turn"),
+    )
+    out = _run(env, Decision(True, "scout", ["the tester table changed"]), handler, role="scout")
+    assert len(requests) == 2 and out["stopped"] == "end_turn" and "ended_at" not in out and out["notes"] == 1
+    assert "W9" in json.dumps(requests[1])  # the model was shown the job's result
+    assert roles.jobs_read(env["paths"], "scout") == {"j1"}
+    # the reply after it may write on: with nothing but writes that all ran, the turn ends there, as before
+    _finished_job(env, "j2", json.dumps({"wallets": [{"wallet": "W7", "pnl_sol": 3.0}]}, indent=1))
+    handler, requests = _scripted(
+        _calls(("read_job_log", {"id": "j2"}), ("write_note", {"text": "W7: read next"})),
+        _calls(("add_lesson", {"text": "W7 leads its coin by 3 SOL", "evidence": "winners j2", "n": 12})),
+        ([{"type": "text", "text": "never asked for"}], "end_turn"),
+    )
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j2"]), handler, role="scout")
+    assert len(requests) == 2 and out["ended_at"] == "note"
+
+
+def test_only_a_write_that_was_refused_keeps_the_turn_past_its_note(env):
+    """`_calls_failed` looked for an answer that starts with "error" among all of a reply's calls: a job's log whose
+    own first word is "error" counted as a refused call and cost one more request. Only the answers of the tools that
+    write count (a refusal there is work not done); what a reading tool gave back is shown or not by the rule above."""
+    from snipetech.operator import turn as T
+
+    assert T.WRITE_TOOLS == frozenset({"update_table", "upsert_idea", "add_lesson", "start_job", "write_report",
+                                       "write_note", "set_candidates"})  # fmt: skip
+
+    def response(*results):
+        return {"content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": said, "is_error": bad}
+                            for i, (said, bad) in enumerate(results)]}  # fmt: skip
+
+    def uses(*names):
+        return [{"type": "tool_use", "id": f"t{i}", "name": name} for i, name in enumerate(names)]
+
+    log = "error: could not connect to the RPC\nTraceback ..."
+    assert T._calls_failed(response((log, False)), uses("read_job_log")) is False
+    read_and_note = response(("error: no such file x", False), ("noted", False))
+    assert T._calls_failed(read_and_note, uses("read_file", "write_note")) is False
+    assert T._calls_failed(response(("boom", True)), uses("sql")) is False  # a reading tool that raised
+    assert T._calls_failed(response(("error: no idea I999", False)), uses("upsert_idea")) is True
+    assert T._calls_failed(response(("  Error: one note a turn", False)), uses("write_note")) is True
+    assert T._calls_failed(response(("boom", True)), uses("add_lesson")) is True  # a writing tool that raised
+    assert T._calls_failed(response(("error: refused", False)), uses("a_tool_added_later")) is False
+    both_ran = response(("I20 updated", False), ("noted", False))
+    assert T._calls_failed(both_ran, uses("upsert_idea", "write_note")) is False
+    # through a turn: a job log that starts with "error", read in the reply before the note, costs no extra request
+    _finished_job(env, "j1", log)
+    handler, requests = _scripted(
+        _calls(("read_job_log", {"id": "j1"})),
+        _calls(("write_note", {"text": "winners failed: the RPC did not answer; started again"})),
+        ([{"type": "text", "text": "never asked for"}], "end_turn"),
+    )
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    assert len(requests) == 2 and out["ended_at"] == "note"
+
+
+def test_a_turn_cut_at_the_output_cap_says_so(env):
+    """A reply cut at max_tokens leaves `stopped` at "end_turn" for every reader of it; the result also says "cut", and
+    roles.run_role then forgets what the turn read (it did not finish with it)."""
+    cut = ([{"type": "text", "text": "W9 leads, and the next thing to"}], "max_tokens")
+    handler, _ = _scripted(_calls(("list_ideas", {})), cut)
+    out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+    assert out["stopped"] == "end_turn" and out["cut"] == "max_tokens"
+    assert "round cut off (max_tokens)" in env["paths"].notes.read_text()
+    handler, _ = _scripted(([{"type": "text", "text": "nothing new"}], "end_turn"))
+    assert "cut" not in _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+
+
+def _refusing(said, status=400):
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        error = {"type": "invalid_request_error", "message": said}
+        return httpx2.Response(status, json={"type": "error", "error": error})
+
+    return handler, seen
+
+
+def _role_turn(env, handler, clock, role="fees"):
+    return asyncio.run(run_turn(env["cfg"], env["svc"], env["paths"], env["snap"], Decision(True, role, ["first turn"]),
+                                env["ledger"], env["notifier"], env["notes"], jobs=env["jobs"], client=_client(handler),
+                                now=lambda: clock[0], role=role))  # fmt: skip
+
+
+GUARD_YES = (
+    "messages.0.content.3.cache_control.ttl: a ttl='1h' cache_control block must not come after a ttl='5m' block",
+    "A maximum of 4 blocks with cache_control may be provided. Found 5.",
+    "messages.0.content.3: a block with ttl='1h' must not come after a block with ttl='5m'",
+    "messages.0.content.3: `ttl` of 1h must not follow a shorter `ttl`.",
+    "messages.0.content.3.ttl: 1h after 5m is not allowed",
+    "Too many cache breakpoints: 5 (the limit is 4)",
+    "the ttl of a later block may not be longer",
+)
+GUARD_NO = (
+    "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade.",
+    "max_tokens: 200000 > 128000, which is the maximum allowed number of output tokens for this model",
+    "tools.3.custom.input_schema: JSON schema is invalid. It must match JSON Schema draft 2020-12",
+    "request throttled: settle the little battle before the shuttle",
+    "prompt is too long: 1210000 tokens > 1000000 maximum",
+)
+
+
+@pytest.mark.parametrize("said", GUARD_YES + GUARD_NO)
+def test_which_refusals_are_about_the_cache_markers(env, said):
+    """The guard's trigger was a free-standing word "ttl": "ttl='1h'", "`ttl`" and "ttl:" did not set it."""
+    from dataclasses import replace
+
+    from snipetech.operator import roles
+
+    env["snap"] = replace(env["snap"], jobs_recent=_many_jobs(34, NOW - 60))  # a list long enough to carry its marker
+    handler, seen = _refusing(said)
+    out = _role_turn(env, handler, [NOW])
+    assert out["stopped"] == "api_error" and _marks(seen[0]) != []
+    assert ("no_list_hour" in roles.read_state(env["paths"]).get("fees", {})) is (said in GUARD_YES)
+
+
+def test_a_refusal_the_guard_cannot_cure_is_told_as_an_api_error_and_the_guards_note_once_a_day(env):
+    """The review: a 400 that names cache_control but is not about the list's marker set the guard every round, wrote
+    its note every round (32 in two hours of four roles) and never the "api error ... no more Claude rounds" decision
+    the owner is paged with, while every turn failed. The guard is taken only for a request that carried the list's
+    marker, its note is written once a day a role, and a request without that marker that is refused all the same is
+    an api error like any other."""
+    from dataclasses import replace
+
+    from snipetech.operator import roles
+
+    env["snap"] = replace(env["snap"], jobs_recent=_many_jobs(34, NOW - 60))
+    clock = [float(NOW)]
+    handler, seen = _refusing("system.0.cache_control.ttl: Input should be '5m'")
+    for _ in range(8):  # two hours of rounds
+        for role in roles.ROLES:
+            _role_turn(env, handler, clock, role=role)
+        clock[0] += 900
+    notes = env["paths"].notes.read_text().splitlines()
+    guard = [n for n in notes if "refused the turn's cache markers" in n]
+    errors = [n for n in notes if "api error" in n]
+    assert len(guard) == 4 and len(errors) == 1 and len(notes) == 5
+    assert "[decision] api error: 400: system.0.cache_control.ttl" in errors[0] and len(env["sent"]) == 1
+    assert [bool(_marks(r)) for r in seen] == [True] * 4 + [False] * 28  # the marker left out from the second round on
+    # a role whose list goes out without the marker anyway (its last two waits were over an hour): its refusal sets
+    # no guard and is told as an api error at once
+    for f in (env["paths"].notes, env["paths"].root / roles.AGENTS_FILE):
+        f.write_text("")
+    roles.update_state(env["paths"], "scout", turn_end=int(clock[0]) - 7200, waits=[7200])
+    handler, seen = _refusing("system.0.cache_control.ttl: Input should be '5m'")
+    _role_turn(env, handler, clock, role="scout")
+    assert _marks(seen[0]) == [] and "no_list_hour" not in roles.read_state(env["paths"]).get("scout", {})
+    assert "[decision] api error" in env["paths"].notes.read_text()
+
+
+def test_a_thread_the_server_lost_is_sent_whole_again_without_the_lists_marker(env):
+    """What the SDK's runner really sends after a turn's first request: only the new message, on the thread the first
+    request created. When the server no longer has that thread (five minutes without a request) it sends the whole
+    conversation again and strips cache_control from every message up to the last reply: the list's marker is gone on
+    that request, the instructions' and the request's own five-minute field stay. No rule is broken either way."""
+    from dataclasses import replace
+
+    env["snap"] = replace(env["snap"], jobs_recent=_many_jobs(34, NOW - 60))
+    seen = []
+
+    def handler(request):
+        seen.append(json.loads(request.content))
+        i = len(seen)
+        if i == 2:  # the server lost the thread
+            lost = {"type": "not_found_error", "message": "thread not found",
+                    "details": {"error_code": "thread_not_found"}}  # fmt: skip
+            return httpx2.Response(404, json={"type": "error", "error": lost})
+        reply = _calls(("list_ideas", {} if i == 1 else {"status": "all"})) if i in (1, 3) else (
+            [{"type": "text", "text": "done"}], "end_turn")  # fmt: skip
+        return httpx2.Response(200, json=_message(*reply) | {"id": f"msg_{i}"})
+
+    out = _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")
+    assert out["stopped"] == "end_turn" and len(seen) == 4
+    hour = {"type": "ephemeral", "ttl": "1h"}
+    assert seen[0]["thread"] == {"type": "create"} and _marks(seen[0]) == [(3, hour)]
+    assert seen[1]["thread"]["type"] == "continue" and "system" not in seen[1] and "tools" not in seen[1]
+    assert seen[2]["thread"] == {"type": "create"} and seen[2]["system"] == seen[0]["system"]
+    first, again = seen[0]["messages"][0]["content"], seen[2]["messages"][0]["content"]
+    assert [b["text"] for b in first] == [b["text"] for b in again]  # the same text, block for block
+    assert _marks(seen[2]) == [] and all("cache_control" not in b for b in again)
+    assert seen[2]["system"][0]["cache_control"] == hour and seen[2]["tools"] == seen[0]["tools"]
+    for req in seen:
+        assert cache_rule_breaks(req) == [] and req["cache_control"] == {"type": "ephemeral"}
+
+
+def test_the_checker_counts_the_created_threads_markers_on_a_request_that_continues_it():
+    hour, five = {"type": "ephemeral", "ttl": "1h"}, {"type": "ephemeral"}
+    text = lambda t, mark=None: {"type": "text", "text": t} | ({"cache_control": mark} if mark else {})
+    marked = [text("a", hour), text("b", hour), text("c", hour), text("d")]
+    new = {"cache_control": five, "messages": [{"role": "user", "content": marked}]}
+    assert cache_rule_breaks(new) == []  # three markers and the request's own: four
+    goes_on = new | {"thread": {"type": "continue", "id": "t1"}}
+    assert cache_rule_breaks(goes_on) == ["5 breakpoints: the API takes four"]
+    assert cache_rule_breaks(new | {"thread": {"type": "create"}}) == []
+
+
+def test_a_reply_another_model_served_is_priced_per_attempt_in_the_turns_dollars(env):
+    """`fallbacks="default"`: a request the asked model declined is served by another inside the same call. The
+    response names the model that answered and lists every attempt; the turn's dollars and the ledger count each
+    attempt at its own model's rows."""
+    from snipetech.operator.turnlog import read_turns
+
+    usage = {"input_tokens": 100_000, "output_tokens": 10_000,
+             "iterations": [{"type": "message", "input_tokens": 100_000, "output_tokens": 0,
+                             "model": "claude-fable-5-2", "cache_creation_input_tokens": 0,
+                             "cache_read_input_tokens": 0},
+                            {"type": "fallback_message", "input_tokens": 100_000, "output_tokens": 10_000,
+                             "model": "claude-opus-5-5", "cache_creation_input_tokens": 0,
+                             "cache_read_input_tokens": 0}]}  # fmt: skip
+
+    def handler(request):
+        said = _message([{"type": "text", "text": "nothing new"}], "end_turn", usage)
+        return httpx2.Response(200, json=said | {"model": "claude-opus-5-5"})
+
+    out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+    want = 100_000 * 8 / 1e6 + (100_000 * 4 + 10_000 * 20) / 1e6  # the analyst's rows, then the strategist's
+    (line,) = [json.loads(row) for row in env["paths"].spend.read_text().splitlines()]
+    assert out["usd"] == pytest.approx(want) and line["usd"] == pytest.approx(want)
+    assert line["mode"] == "scout" and line["model"] == "claude-opus-5-5" and line["attempts"] == 2
+    assert read_turns(env["paths"], 1)[0]["model"] == "claude-opus-5-5"

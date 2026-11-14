@@ -1243,6 +1243,8 @@ def test_a_role_that_reads_a_finished_job_is_not_called_for_it_again(rolebox, jo
     assert "W1" in _call(scout, id="done1")
     assert roles.jobs_read(paths, "scout") == {"done1"} and roles.jobs_read(paths, "fees") == set()
     assert "W1" in _call(tools("fees")["read_job_log"], id="done1", key="wallets")
+    assert roles.jobs_read(paths, "fees") == set()  # one part of a result it never read from the top: no read
+    assert "W1" in _call(tools("fees")["read_job_log"], id="done1")
     assert roles.jobs_read(paths, "fees") == {"done1"}
 
 

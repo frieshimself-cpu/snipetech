@@ -431,6 +431,25 @@ def read_job_output(text: str, tail: int = 200, key: str | None = None, fields: 
     return "\n".join([head, *rest[:k], more])
 
 
+JOB_TAIL = 200  # read_job_log's default `tail`
+
+
+def read_counts(text: str, out: str, tail: int = JOB_TAIL, key: str | None = None,
+                fields: Iterable[str] | None = None, first: int | None = None, last: int | None = None,
+                skip: int = 0) -> bool:  # fmt: skip
+    """Whether the answer `out` that read_job_output gave for a finished job's log `text` counts as having read the
+    job (roles.note_job_read). It does when the job was read from the top (no key, fields, first, last or skip) and
+    the answer is the whole; or the log is a JSON result, whose answer from the top is the whole or its outline with
+    a line for every part whatever `tail` says (the roles' usual first read: a tail of 30 to 150); or a plain log
+    was read at the default tail or more (its end, with the line that says how to read on). A peek at a plain log
+    (a smaller tail of a longer one) and one part of a result do not count: the role is still told that the job
+    ended. 14 Nov review: `tail=1` gave 123 of 63,789 characters and the job was written down as read."""
+    if key or fields or first is not None or last is not None or skip:
+        return False
+    text = redact(str(text))
+    return int(tail) >= JOB_TAIL or str(out).strip() == text.strip() or json_log(text) is not None
+
+
 class NoteSink:
     """Appends to operator/notes.md; collects decision lines for Telegram."""
 
@@ -1067,8 +1086,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.exists():
             return f"error: no log for job {id}"
         over = role is not None and roles.job_over(paths, id)  # asked before the read: an ended job's log is whole
-        out = redact(read_job_output(p.read_text(errors="replace"), tail, key, fields, first, last, skip))
-        if over:  # a finished job a role has read is not "a job of yours ended" at its next round (roles.role_due)
+        text = p.read_text(errors="replace")
+        out = redact(read_job_output(text, tail, key, fields, first, last, skip))
+        # a finished job a role has read (whole, or by the default call: read_counts) is not "a job of yours ended"
+        # at its next round (roles.role_due)
+        if over and read_counts(text, out, tail, key, fields, first, last, skip):
             roles.note_job_read(paths, role, id, now_fn(), out)
         return out
 

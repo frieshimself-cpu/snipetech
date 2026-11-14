@@ -46,7 +46,9 @@ def test_set_budget_writes_the_owners_values_atomically_with_when_and_who(paths)
                      "telegram", NOW)  # fmt: skip
     assert out == {"daily_usd": 200.0, "turn_usd": 6.0, "max_tool_calls": 40, "analyst_every_h": 2.0}
     data = json.loads(budget_file(paths).read_text())
-    assert data == {**out, "ts": NOW, "by": "telegram"} and budget_file(paths) == paths.root / "BUDGET"
+    # `every` set by name is marked as the owner's own word (the gap between a research agent's turns: roles.py)
+    assert data == {**out, "every_named": True, "ts": NOW, "by": "telegram"}
+    assert budget_file(paths) == paths.root / "BUDGET"
     assert not list(paths.root.glob("*.tmp"))
     assert _effective(OperatorConfig(), paths) == (200.0, 6.0, 40, 2.0)
     assert isinstance(effective_max_tool_calls(OperatorConfig(), paths), int)
@@ -385,3 +387,56 @@ def test_new_dollars_after_every_zero_leave_the_agents_off_and_the_line_says_so(
         assert "the research agents are off (your /budget every 0; /budget every 0.25 switches them on)" in line
     budget_reply(cfg, paths, ["every", "0.25"], "telegram", 3.0)
     assert roles.on(cfg, paths) and "are off" not in budget_line(cfg, paths, 0.0)
+
+
+def test_dollars_alone_never_set_the_gap_between_a_roles_turns(tmp_path, paths, capsys):
+    """The review of 14 Nov: with no owner's file (after `/budget default`), `/budget 300` wrote the profile's
+    `every 2` and cut every role to a turn in two hours, though the owner had named dollars only. The file now says
+    whether `every` was among the owner's own words (`every_named`), and only then is it the gap between a role's
+    turns. Today's file on the server has no such mark and every 0.25: nothing changes for it."""
+    from snipetech.operator import learning, roles
+    from snipetech.operator.budget_switch import budget_line, budget_reply, every_named
+
+    def rules():
+        return roles.start_rules(ROLES_ON, paths)
+
+    none = {"wake_on_table": True, "every_h": None, "every_default": False}
+    budget_reply(ROLES_ON, paths, ["300"], "telegram", NOW)
+    assert read_budget(paths)["analyst_every_h"] == 2.0 and not every_named(paths) and rules() == none
+    assert "the research agents' turns every round" in budget_line(ROLES_ON, paths, 0)
+    idea = {"title": "from the scout", "why": "w", "test": "t", "expected": "e", "kind": "research", "role": "tester"}
+    handed = learning.upsert_idea(paths, idea, source="scout", now=NOW - 300)
+    state = {"last": NOW - 907, "idle": 0}
+    assert roles.role_due("tester", paths, NOW, state, [], **rules()) == (
+        True, f"handed an idea: {handed['id']} (by the scout)")  # fmt: skip
+    budget_reply(ROLES_ON, paths, ["400"], "telegram", NOW)  # more dollars: the gap nobody named stays unnamed
+    assert read_budget(paths)["analyst_every_h"] == 2.0 and not every_named(paths) and rules() == none
+    # the owner names it: now it is the gap, and new dollars keep it
+    reply = budget_reply(ROLES_ON, paths, ["300", "every", "1"], "telegram", NOW)
+    assert every_named(paths) and rules() == {"wake_on_table": True, "every_h": 1.0, "every_default": False}
+    assert "each research agent's turns at least 1 h apart" in reply
+    assert roles.role_due("tester", paths, NOW, state, [], **rules())[0] is False
+    budget_reply(ROLES_ON, paths, ["500"], "telegram", NOW)
+    assert every_named(paths) and rules()["every_h"] == 1.0 and read_budget(paths)["daily_usd"] == 500.0
+    budget_reply(ROLES_ON, paths, ["every", "2"], "telegram", NOW)
+    assert rules() == {"wake_on_table": True, "every_h": 2.0, "every_default": True}
+    budget_reply(ROLES_ON, paths, ["default"], "telegram", NOW)
+    assert not every_named(paths) and rules() == none
+    # a value set by name (the cloud session's `operate budget --analyst-every-h`, set_budget) is named
+    set_budget(paths, ROLES_ON, {"daily_usd": 200}, "cli", NOW)
+    assert not every_named(paths)
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 0.5}, "cli", NOW)
+    assert every_named(paths) and rules()["every_h"] == 0.5
+    there = OperatorPaths(tmp_path / "cli" / "data")
+    assert _cli(tmp_path / "cli", "budget", "--daily-usd", "300", "--analyst-every-h", "1") == 0
+    capsys.readouterr()
+    assert every_named(there) and roles.start_rules(Config(), there)["every_h"] == 1.0
+    # the server's file of 14 Nov, as it is: no mark, every 0.25: no gap, as before
+    budget_file(paths).write_text('{"daily_usd": 500.0, "turn_usd": 25.0, "max_tool_calls": 80, '
+                                  '"analyst_every_h": 0.25, "ts": 1794499357, "by": "cli"}')  # fmt: skip
+    assert rules() == none and roles.on(ROLES_ON, paths)
+    budget_reply(ROLES_ON, paths, ["300"], "telegram", NOW)  # dollars on top of it: the 0.25 it holds stays, unnamed
+    assert read_budget(paths)["analyst_every_h"] == 0.25 and rules() == none
+    # every 0 switches the agents off whoever wrote it
+    budget_reply(ROLES_ON, paths, ["every", "0"], "telegram", NOW)
+    assert not roles.on(ROLES_ON, paths)

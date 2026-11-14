@@ -95,6 +95,12 @@ def _read_inbox(paths: OperatorPaths) -> str:
 # length); a call beside the note was refused in 25 turns at most. So the turn ends after the first reply, at or
 # after the note, whose calls all came back without an error: a refusal is always shown to the model once.
 NOTE_ENDS_TURN = frozenset({"write_note", "write_report"})  # a journal entry whose headline wrote the note, or the note
+# The tools that write. A call of one of them that was refused is work not done, and the model is shown it so it can
+# repair it. Every other tool only reads: what it gave back is no failure whatever its first word (a job's log may
+# begin with "error"), and a reply that held one is always answered, because the model has not seen what it read
+# (14 Nov review: a read_job_log beside the note ran, the job was written down as read, and the turn ended there).
+WRITE_TOOLS = frozenset({"update_table", "upsert_idea", "add_lesson", "start_job", "write_report", "write_note",
+                         "set_candidates"})  # fmt: skip
 
 # When the hour's cache loses (14 Nov): it is written at twice the input price, the five-minute one at 1.25 times, and
 # an entry nobody reads within the hour was paid for nothing. A role whose last two waits between turns were both over
@@ -127,8 +133,13 @@ def list_hour_refused(paths: OperatorPaths, role: str, at: float) -> bool:
     return isinstance(since, (int, float)) and at - since < NO_LIST_HOUR_SECS
 
 
+_CACHE_WORDS = re.compile(r"cache_control|\bttl\b|cache breakpoint", re.IGNORECASE)
+
+
 def _names_cache_markers(exc: anthropic.APIError, words: str) -> bool:
-    return getattr(exc, "status_code", None) == 400 and ("cache_control" in words or "ttl" in words.lower().split())
+    """Whether a 400 is about the request's cache markers: it names cache_control, a ttl ("ttl='1h'", "`ttl`",
+    "content.3.ttl:": a free-standing word was all the first version looked for) or the cache breakpoints."""
+    return getattr(exc, "status_code", None) == 400 and bool(_CACHE_WORDS.search(words))
 
 
 def hour_cache_pays(waits: list[int]) -> bool:
@@ -136,13 +147,19 @@ def hour_cache_pays(waits: list[int]) -> bool:
     return len(waits) < WAITS_KEPT or any(w <= HOUR_WAIT_SECS for w in waits[-WAITS_KEPT:])
 
 
-def _calls_failed(response) -> bool:
-    """Whether a call of the reply just run came back as an error: the runner's own mark (a tool that raised), or an
-    answer that starts with "error", which is how every tool of tools.py says no."""
+def _field(block, name: str):
+    return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
+
+
+def _calls_failed(response, tool_uses=()) -> bool:
+    """Whether a call of a tool that writes (`WRITE_TOOLS`), in the reply just run, came back as an error: the
+    runner's own mark (a tool that raised), or an answer that starts with "error", which is how every tool of
+    tools.py says no. `tool_uses`: the reply's calls, which name the tool of each answer."""
+    names = {str(_field(b, "id")): _field(b, "name") for b in tool_uses}
     content = response.get("content") if isinstance(response, dict) else getattr(response, "content", None)
     for block in content if isinstance(content, list) else []:
         get = block.get if isinstance(block, dict) else lambda k, b=block: getattr(b, k, None)
-        if get("type") != "tool_result":
+        if get("type") != "tool_result" or names.get(str(get("tool_use_id"))) not in WRITE_TOOLS:
             continue
         said = get("content")
         if isinstance(said, list):
@@ -215,15 +232,17 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     instructions and tools, cut off at the role's cap, its spend recorded under the role. It reads no inbox and
     writes no day's report, and the analyst's cadence does not count from it. A role's turn ends at its note: once a
     reply's calls held one of the tools named in `ends_at` and wrote a note, the turn ends after the first reply (that
-    one or a later one) whose calls all ran without an error, and no further reply is asked for (the result says
-    `ended_at` "note"; `stopped` stays "end_turn", which is what it is to every reader of it). A note the tool refused
-    is no note; a call that failed beside the note is shown to the model, whose next reply may repair it; and the
-    operator's and the analyst's turns end as before."""
+    one or a later one) whose calls were all writes that ran without an error, and no further reply is asked for (the
+    result says `ended_at` "note"; `stopped` stays "end_turn", which is what it is to every reader of it). A note the
+    tool refused is no note; a write that failed beside the note is shown to the model, whose next reply may repair
+    it; a reply that also read something is answered, so the model sees what it read; and the operator's and the
+    analyst's turns end as before. A turn whose last reply was cut at the output cap says so (`cut`)."""
     op = cfg.operator
     started = now()
     turn_usd, max_calls = effective_turn_usd(cfg, paths), effective_max_tool_calls(cfg, paths)  # the owner's /budget
     analyst = decision.mode in ("analyst", "postmortem")  # a post-mortem is an analyst turn between the daily ones
     mode = "analyst" if analyst else "operator"  # the ledger prices and caps a post-mortem like the daily analysis
+    list_marked = False  # a role's request that carries the hour marker on its list of ended jobs (below)
     if role is not None:
         if decision.mode != role or role not in roles.ROLES:
             raise ValueError(f"a research agent's turn runs in its own mode: {role!r}, not {decision.mode!r}")
@@ -240,6 +259,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         content = role_message(role, snap, decision, learned=learned, table=_report_text(paths, roles.TABLES[role]),
                                started_by=roles.job_roles(paths), ceiling=ceiling, record=record_text,
                                hour=hour_cache_pays(waits) and not list_hour_refused(paths, role, started))  # fmt: skip
+        # whether this request carries the list's hour marker: only then can leaving it out cure a refusal
+        list_marked = isinstance(content, list) and any(isinstance(b, dict) and b.get("cache_control") for b in content)
     else:
         system_text = ANALYST_SYSTEM if analyst else OPERATOR_SYSTEM
         # an analysis between the daily ones adds its dated update to the report that already holds one, never over it
@@ -289,7 +310,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         async with asyncio.timeout(TURN_HARD_SECS):
             async for message in runner:
                 message_stop_reason = message.stop_reason
-                usd += ledger.record(mode, message.usage.model_dump(), now())
+                # every attempt of the response is priced at the rows of the model that ran it (budget.cost_usd)
+                usd += ledger.record(mode, message.usage.model_dump(), now(), model=getattr(message, "model", None))
                 record.model = getattr(message, "model", None)  # the model that answered (a fallback may)
                 record.add_message(message.content)
                 tool_uses = [b for b in message.content if getattr(b, "type", "") == "tool_use"]
@@ -314,7 +336,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                 if (role is not None and notes.count > noted
                         and any(getattr(b, "name", None) in ends_at for b in tool_uses)):  # fmt: skip
                     note_said = _notes_since(paths, size, role)
-                if note_said is not None and not _calls_failed(results):
+                read = any(getattr(b, "name", None) not in WRITE_TOOLS for b in tool_uses)  # the model must see it
+                if note_said is not None and not read and not _calls_failed(results, tool_uses):
                     # the role's note is written and every call of this reply ran: the turn is over. The record
                     # holds the note where the closing reply stood (the owner's page: "What the agents said last")
                     ended_at = "note"
@@ -336,12 +359,16 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         if says_no_credit(error):
             with contextlib.suppress(Exception):  # the record is for the alarm: never a reason to fail the turn
                 outage = credit_refused(svc.store, ledger, now())
-        if role is not None and _names_cache_markers(exc, error):
-            # the request's shape was refused: the role's next turns leave the list's hour marker out for a day
+        if role is not None and list_marked and _names_cache_markers(exc, error):
+            # the request's shape was refused: the role's next turns leave the list's hour marker out for a day. Only
+            # for a request that carried that marker: one without it that is refused all the same is an api error
+            # like any other, told to the owner below (the review: 32 notes in two hours and never that one)
             with contextlib.suppress(Exception):
                 roles.update_state(paths, role, no_list_hour=int(started))
-            notes.write(f"{role}: the API refused the turn's cache markers ({error[:200]}); its turns go out without "
-                        "the hour's cache on its list for a day", "info")  # fmt: skip
+            said = f"{role}: the API refused the turn's cache markers"
+            if not notes.has_today(said, now()):  # once a day a role
+                notes.write(f"{said} ({error[:200]}); its turns go out without the hour's cache on its list for a "
+                            "day", "info")  # fmt: skip
         elif outage or not notes.has_today("api error", now()):
             notes.write(f"api error: {error} — no more Claude rounds until this clears", "decision")
     finally:
@@ -382,6 +409,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     out = {"usd": round(usd, 4), "tool_calls": calls, "stopped": stopped, "notes": notes.count - notes_before}
     if error:  # the round's log line carries the API's own words too
         out["error"] = error
+    if ran and message_stop_reason == "max_tokens":  # its last reply was cut: the turn did not end by itself
+        out["cut"] = "max_tokens"
     if ended_at:
         out["ended_at"] = ended_at
     record.finish(out, paths, now())
