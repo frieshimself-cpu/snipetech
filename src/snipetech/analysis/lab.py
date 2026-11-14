@@ -178,8 +178,11 @@ class Trigger:
     # of OKTech's dev sniping (`devWallets`, oktech.dev_sniper); "" = every launch
     creators: str = ""
     # launch, hunt, whale, burst: serial crews' coins (one metadata uri on 3+ launches by 2+ creators, store.crew_uris).
-    # "" (the default) skips them; "only" scores them alone (owner, 9 Nov: crews' charts often run up before the rug).
-    # OKTech cannot tell a crew's coin, so a crew-only rule is research only (oktech.strategy_sniper refuses it)
+    # "" (the default, since 14 Nov) is EVERY coin, a crew's too: what a live OKTech sniper buys, since OKTech cannot
+    # tell a crew's coin from any other launch. "skip" passes over them (what "" did from 9 to 14 Nov: 37 % of one hunt
+    # rule's moments were such coins, left out of its paper record and bought live); "only" scores them alone (owner,
+    # 9 Nov: crews' charts often run up before the rug). "skip" and "only" are research only: no sniper is built for
+    # either (oktech.strategy_sniper), and a frozen one never goes to a live test (`crew_why`, paper.not_as_live)
     crew: str = ""
     # kol: the consensus, size and market-cap gates OKTech's copy mode has (10 Nov; owner: "if 2 kols are in, copy
     # trade when the second one gets in"). `known` = ctbotMinWallets: fire on a group wallet's first buy only once this
@@ -251,6 +254,7 @@ class Trigger:
             + (["not a create bundle"] if self.solo else [])
             + ([f"on {VENUE_WORDS.get(self.venue, self.venue)} launches"] if self.venue != PUMPFUN else [])
             + (["serial-crew coins only"] if self.crew == "only" else [])
+            + (["without serial crews' coins"] if self.crew == "skip" else [])
         )
         return base + (f" ({', '.join(extra)})" if extra else "")
 
@@ -446,7 +450,24 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo", "teams", "known_any")
 TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots", "only")
-CREW_CHOICES = ("", "only")  # Trigger.crew: skip the serial crews' coins, or score them alone
+# Trigger.crew (14 Nov 2026). Until then "" passed over the serial crews' coins, in the lab and in the forward paper
+# test, while the live sniper bought them: OKTech cannot tell a crew's coin (rule 2: a paper result must not be kinder
+# than the live place). Measured on the server on 14 Nov (labs efafe7 and c4d250, the hunt {"sol": 5, "window": 1,
+# "max_buyers": 2, "dev_max": 1}, 168 h to 05:01 UTC): 1,715 coins fired the rule, 633 of them (37 %) serial crews'.
+CREW_SKIP, CREW_ONLY = "skip", "only"
+CREW_CHOICES = ("", CREW_SKIP, CREW_ONLY)  # every coin (what a live sniper buys), without the crews' coins, those alone
+CREW_LEFT = "crew"  # a row's `skipped`: a serial crew's coin a crew "skip" rule fired on and passed over
+CREW_SHARE_WORDS = ("measured on 14 Nov on one hunt rule: 633 of the 1,715 coins it fired on in a week, 37 %, were "
+                    "serial crews' coins, and they lost")  # fmt: skip
+CREW_SKIP_WHY = ("research only: scored without serial crews' coins (crew skip: one metadata file on 3 or more "
+                 "launches by 2 or more creators), and OKTech cannot tell such a coin from any other launch, so the "
+                 f"live sniper buys the coins this record leaves out ({CREW_SHARE_WORDS}). The same rule with crew "
+                 "\"\" is scored on every coin the sniper would buy")  # fmt: skip
+CREW_ONLY_WHY = ("research only: scored on serial crews' coins alone (crew only), and OKTech cannot tell such a coin "
+                 "from any other launch: sent as a sniper it would buy every launch")  # fmt: skip
+CREW_NOTE = ("which coins are a serial crew's is known with hindsight: the lab reads the metadata files of its whole "
+             "window (and six hours before it), so a crew's first two coins count as crew coins too. A live sniper "
+             "knows nothing of it and buys them all")  # fmt: skip
 TRIGGER_VENUES = (PUMPFUN, LAUNCHLAB)  # the launchpads a launch-type trigger can name (`Trigger.venue`)
 VENUE_WORDS = {PUMPFUN: "pump.fun", LAUNCHLAB: "Raydium LaunchLab"}
 TRIGGER_GROUPS = ("kol", "wallet", "cand", "trader", "big")  # the groups `label_groups` reads from the labels
@@ -612,7 +633,12 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
         raise ValueError(f"bots must be one of {', '.join(LAB_BOT_GROUPS)} (a label kind of wallets, `snipetech label "
                          f"--kind bundler`), not {trig.bots!r}")  # fmt: skip
     if trig.crew not in CREW_CHOICES:
-        raise ValueError(f'crew must be "" (skip serial crews\' coins) or "only" (score them alone), not {trig.crew!r}')
+        raise ValueError('crew must be "" (every coin, a serial crew\'s too: what a live sniper buys), "skip" (pass '
+                         'over serial crews\' coins: research only, OKTech cannot tell them) or "only" (score them '
+                         f"alone: research only), not {trig.crew!r}")  # fmt: skip
+    if trig.crew == CREW_SKIP and trig.bots:
+        raise ValueError('crew "skip" does not go with bots: a hunt on a wallet group is scored on every coin its '
+                         "group's wallets bought, a serial crew's too, so skip would leave nothing out")  # fmt: skip
     if kind == "hunt":
         _whole_hunt(trig.sol, "sol (minTotalSol)")
         if trig.dev_max is not None:
@@ -688,8 +714,9 @@ def _mig_window_of(trig: Trigger | Mapping[str, Any]) -> float | None:
 def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
     """Why a MIG rule's window makes it research only (no OKTech sniper can be sent it as scored), or None. `trig`: a
     Trigger or a stored rule's trigger fields. It reads the window alone: a MIG rule of any age (`window` 0). Every
-    other rule answers None here, whatever else the sniper builder refuses of it (the paid-creator split, a crew-only
-    or LaunchLab rule: oktech.strategy_sniper says those)."""
+    other rule answers None here, whatever else the sniper builder refuses of it (the paid-creator split, a LaunchLab
+    rule: oktech.strategy_sniper says those; a rule scored without serial crews' coins or on them alone: `crew_why`,
+    which a freeze takes for a paper record and nothing sends live)."""
     return MIG_ANY_AGE_WHY if _mig_window_of(trig) == 0 else None
 
 
@@ -703,6 +730,48 @@ def mig_window_fields(trig: Trigger | Mapping[str, Any]) -> dict[str, Any]:
     if (_mig_window_of(trig) or 0) > MIG_WIDE_WINDOW_SECS:
         return {"oktech_unconfirmed": MIG_WIDE_WHY}
     return {}
+
+
+def crew_of(trig: Trigger | Mapping[str, Any] | None) -> str:
+    """Which coins a launch-type rule was scored on, as its trigger says it: "" every coin (a serial crew's too),
+    "skip" without the crews' coins, "only" those alone. `trig`: a Trigger, or its fields as a frozen rule stores
+    them. "" for a rule of any other kind, and for a hunt on a wallet group (`bots`) unless it says "only": the
+    group's wallets pick its coins, a crew's or not (`crew_skips`). A stored rule frozen before 14 Nov says "" and
+    was scored without them: paper.as_frozen reads it as "skip"."""
+    if not trig:
+        return ""
+    get = trig.get if isinstance(trig, Mapping) else (lambda name: getattr(trig, name, None))
+    if get("kind") not in LAUNCH_KINDS:
+        return ""
+    crew = str(get("crew") or "")
+    return "" if get("bots") and crew != CREW_ONLY else crew
+
+
+def crew_why(trig: Trigger | Mapping[str, Any] | None, lab: Mapping[str, Any] | None = None) -> str | None:
+    """Why a rule's crew choice makes it research only (no sniper runs it as scored), or None for a rule scored on
+    every coin. `lab`: the lab's crew block for the rule, when it was kept (a frozen rule's `lab.crew`): a "skip"
+    rule then names its own share of crews' coins instead of the one measured on 14 Nov."""
+    crew = crew_of(trig)
+    if crew == CREW_ONLY:
+        return CREW_ONLY_WHY
+    if crew != CREW_SKIP:
+        return None
+    try:
+        left, of = int((lab or {}).get("left_out") or 0), int((lab or {}).get("of") or 0)
+    except (TypeError, ValueError, AttributeError):
+        left = of = 0
+    if left > 0:
+        own = (f"in its own lab {left} of the {left + of} coins it fired on, {_share(left / (left + of))}, were "
+               "serial crews' coins and were left out")  # fmt: skip
+        return CREW_SKIP_WHY.replace(CREW_SHARE_WORDS, own)
+    return CREW_SKIP_WHY
+
+
+def crew_fields(trig: Trigger | Mapping[str, Any]) -> dict[str, Any]:
+    """What a lab's ranked row says about a rule's crew choice besides its numbers: `research_only` with its reason
+    for "skip" and "only", nothing for a rule scored on every coin or of another kind. No field changes a score."""
+    why = crew_why(trig)
+    return {} if why is None else {"research_only": True, "research_only_why": why}
 
 
 CURVE_REAL_TOKENS = 793_100_000 * 10**6  # tokens a pump.fun curve sells before it completes
@@ -2087,7 +2156,8 @@ class _Run:
     amm_cov: dict[str, Any] = field(default_factory=dict)
     horizon: float = 0.0
     mig_sell: bool = False
-    # metadata uris of serial crews in the tape's span (store.crew_uris): their coins are no launch-type moment
+    # metadata uris of serial crews in the tape's span (store.crew_uris): their coins are passed over by a crew
+    # "skip" rule, kept alone by a crew "only" rule, and counted for every launch-type rule (`_crew_report`)
     crew_uris: frozenset = frozenset()
     # the exits a MIG trigger's moments are scored on (default: `mig_exit_set`), and their horizon
     mig_exits: list[ExitParams] = field(default_factory=list)
@@ -2140,16 +2210,21 @@ CREW_LOOKBACK_SECS = 6 * 3600  # a crew's earlier coins, launched before the tap
 
 
 def crew_skips(trig: Trigger, launch, crews) -> bool:
-    """True when a launch-type trigger passes over this coin: a serial crew's coin by default, any other coin when the
-    trigger is crew "only". Copy, momentum and MIG triggers, and coins with no launch on the tape, are never skipped.
-    Nor is any coin for a hunt on a wallet group (`bots`): the group's wallets pick its coins, as OKTech's known-bot
-    gate does, which cannot tell a crew's coin (11 Nov: the crew of twelve launches on one uri from fresh creators, so
-    the first lab of its rule passed over 29 of its 31 launches). Crew "only" still limits such a rule."""
+    """True when a launch-type trigger passes over this coin: a serial crew's coin when the trigger is crew "skip",
+    any other coin when it is crew "only", none by default (since 14 Nov: "" is every coin, what a live sniper buys;
+    until then "" passed over the crews' coins). Copy, momentum and MIG triggers, and coins with no launch on the
+    tape, are never skipped. Nor is any coin for a hunt on a wallet group (`bots`): the group's wallets pick its
+    coins, as OKTech's known-bot gate does, which cannot tell a crew's coin (11 Nov: the crew of twelve launches on
+    one uri from fresh creators, so the first lab of its rule passed over 29 of its 31 launches). Crew "only" still
+    limits such a rule. The lab (`_coin_rows`) and the forward paper run (paper.run, paper.rescore) both ask here,
+    so a rule is scored forward on the coins its lab scored it on."""
     if trig.kind not in LAUNCH_KINDS or launch is None:
         return False
-    if trig.bots and trig.crew != "only":
+    if trig.crew == CREW_ONLY:
+        return launch.uri not in crews
+    if trig.bots:
         return False
-    return (launch.uri in crews) != (trig.crew == "only")
+    return trig.crew == CREW_SKIP and launch.uri in crews
 
 
 def _crew_uris(store: Store, spans) -> set[str]:
@@ -2209,9 +2284,17 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
     for ti, trig in run.triggers:
         if trig.kind == "launch" and not (launch and a <= launch.ts <= b - 60):
             continue
-        if crew_skips(trig, launch, run.crew_uris):
-            continue  # a serial crew's coin (one metadata uri on many creators' launches), or not one for crew "only"
         in_span = launch if (launch and a <= launch.ts) else None
+        if crew_skips(trig, launch, run.crew_uris):
+            # a serial crew's coin for crew "skip" (one metadata uri on many creators' launches), or any other coin
+            # for crew "only". A "skip" rule that fires on the coin says so, for the lab's count of what it left out
+            # (`_crew_report`); the row is no moment
+            if trig.crew == CREW_SKIP:
+                i = _fire(trig, path, in_span, run.kols, run.events_by_mint.get(mint), mig, paid)
+                if i is not None and fired_at(trig, path, i, mig)[1] <= b - 60:
+                    rows.append({"mint": mint, "trigger": ti, "ts": int(fired_at(trig, path, i, mig)[1]),
+                                 "skipped": CREW_LEFT})  # fmt: skip
+            continue
         if run.groups and trig.kind == "kol":  # the qualify lab: each candidate's own first buy is a moment
             fired = _first_buys(trig, path, in_span, run.kols)
         else:  # once per coin, the way one sniper takes one position per coin
@@ -2308,6 +2391,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 row["mig_landing"] = mig_landing(path, i, e, mig)
             if trig.kind in LAUNCH_KINDS:  # the trades between the trade that fired the rule and our buy
                 row["behind"] = int(e) - int(i)
+                if launch is not None and launch.uri in run.crew_uris:  # a serial crew's coin (`_crew_report`)
+                    row["crew"] = True
             rows.append(row)
     return rows
 
@@ -2578,8 +2663,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     else:
         rows, n = _parallel_rows(store, run, items, n, *shared)
     sized = [r for r in rows if r.get("skipped") in SIZE_WORDS]  # moments a buy this size cannot be replayed on
+    crew_left = [r for r in rows if r.get("skipped") == CREW_LEFT]  # crews' coins a crew "skip" rule passed over
     # moments the PumpSwap tape does not hold whole: never scored
-    skipped = [r for r in rows if "skipped" in r and r["skipped"] not in SIZE_WORDS]
+    skipped = [r for r in rows if "skipped" in r and r["skipped"] not in SIZE_WORDS and r["skipped"] != CREW_LEFT]
     rows = [r for r in rows if "skipped" not in r]
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
@@ -2591,6 +2677,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
            "mates": {"wallets": len(run.mates), "found_by": found_by},
            "size": _size_report(triggers, rows, sized, buy_sol),
            "later_buyers": "same_sol" if same_sol else "as_taped"}  # fmt: skip
+    crews = _crew_report(triggers, rows, crew_left, len(run.crew_uris))
+    if crews["triggers"]:  # a launch-type rule fired: how many of its moments are serial crews' coins
+        out["crew"] = crews
     if wallet_runs:  # the copy exit every exit of a wallet rule was scored with, and what it is not
         out["copy_exit"] = copy_exit_report(cfg)
     if amm_runs or mig_sell or skipped:  # `skipped` alone: a wallet rule's PumpSwap buys the tape does not hold whole
@@ -2602,6 +2691,47 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     if is_bid(position):
         out["bid_landing"] = _bid_report(store, spans, position, bid_sol, rows, skipped)
     return out
+
+
+def crew_block(trig: Trigger, moments: int, crew_moments: int, left_out: int) -> dict[str, Any]:
+    """One launch-type rule's crew numbers. `moments`: how many moments it was scored on; `crew_moments`: how many
+    of them are serial crews' coins (`moments` / `of`, and their `share`). A crew "skip" rule has none and says how
+    many crews' coins it fired on and passed over (`left_out`, and `left_out_share` of those and its moments
+    together); a crew "only" rule says it kept those alone (`kept`).
+
+    `hindsight` is always true, and it matters: the lab knows a crew by the metadata files of its whole window and
+    the six hours before it (`_crew_uris`), so a crew's first two coins count as crew coins too. A live sniper knows
+    nothing of it at the buy and buys them all: the share is what the default rule's record holds of such coins,
+    never a filter a sniper could run. `line` is the block as one sentence."""
+    share = crew_moments / moments if moments else 0.0
+    out: dict[str, Any] = {"moments": int(crew_moments), "of": int(moments), "share": share, "hindsight": True}
+    if trig.crew == CREW_SKIP and not trig.bots:
+        total = moments + left_out
+        out |= {"left_out": int(left_out), "left_out_share": left_out / total if total else 0.0}
+        out["line"] = (f"scored without serial crews' coins: {left_out} such coins it fired on were left out, "
+                       f"{_share(out['left_out_share'])} of the {total} coins it fired on; a live sniper buys them "
+                       "(research only)")  # fmt: skip
+    elif trig.crew == CREW_ONLY:
+        out["kept"] = "serial crews' coins alone"
+        out["line"] = (f"scored on serial crews' coins alone: all {moments} of its moments; a live sniper cannot "
+                       "pick them (research only)")  # fmt: skip
+    else:
+        out["line"] = (f"{crew_moments} of its {moments} moments ({_share(share)}) are serial crews' coins, which "
+                       "the live sniper buys too")  # fmt: skip
+    return out
+
+
+def _crew_report(triggers, rows: list[dict], left: list[dict], files: int) -> dict[str, Any]:
+    """A lab's `crew` block: per launch-type trigger that fired, by its name, how many of its moments are serial
+    crews' coins (`crew_block`), the number of metadata files that mark a crew in the window (`files`), and the
+    sentence a reader needs about hindsight (CREW_NOTE). `left`: the crews' coins a crew "skip" rule fired on and
+    passed over. No number of it changes a score."""
+    scored = Counter(r["trigger"] for r in rows)
+    crew = Counter(r["trigger"] for r in rows if r.get("crew"))
+    passed = Counter(r["trigger"] for r in left)
+    per = {t.label(): crew_block(t, scored[ti], crew[ti], passed[ti])
+           for ti, t in triggers if t.kind in LAUNCH_KINDS and (scored[ti] or passed[ti])}  # fmt: skip
+    return {"hindsight": True, "files": int(files), "note": CREW_NOTE, "triggers": per}
 
 
 def _backfill(store: Store, until: int | None) -> dict[str, list]:
@@ -2960,7 +3090,11 @@ def rank(data: dict[str, Any], cfg: Config, top: int = 10, min_train: int = 15, 
             # our own buy against the pools it met and both ends of what the later buyers are worth (`_size_of`)
             "size": sized,
             **mig_window_fields(trig),  # a MIG rule of any age is research only; a wide window is not confirmed
+            **crew_fields(trig),  # a rule scored without serial crews' coins, or on them alone, is research only
         })  # fmt: skip
+        crews = ((data.get("crew") or {}).get("triggers") or {}).get(trig.label())
+        if crews is not None:  # a launch-type rule: how many of its moments are serial crews' coins (`crew_block`)
+            out[-1]["crew"] = crews
         # the newer moments one by one: their digest always, the list when asked for (`lab --trades`)
         listed, left = trades_of(rs[cut:], k)
         out[-1]["test_digest"] = trades_digest(listed)

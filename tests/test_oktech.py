@@ -1001,7 +1001,8 @@ def test_a_salt_gives_each_live_test_its_own_strategy_sniper(monkeypatch):
             pass
 
     store = Store(":memory:")
-    store.set_coverage("paper_strategies", {"strategies": [HUNT_STRATEGY]})
+    # (frozen since 14 Nov, scored on every coin the sniper would buy: one frozen before gets no sniper)
+    store.set_coverage("paper_strategies", {"strategies": [HUNT_STRATEGY | {"every_coin": True}]})
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: Client())
 

@@ -217,7 +217,7 @@ def test_oktech_strategy_reads_the_owners_record_for_its_note(tmp_path):
     cfg.storage.db_path = str(data / "snipetech.db")
     store.set_coverage("paper_strategies", {"strategies": [
         {"id": BEST, "label": "creator 0", "buy_sol": 0.2, "trigger": CREATOR0,
-         "exit": {"stop_loss": 0.3, "max_hold_secs": 300}}]})  # fmt: skip
+         "exit": {"stop_loss": 0.3, "max_hold_secs": 300}, "every_coin": True}]})  # fmt: skip
     svc = Service(cfg, store=store)
     try:
         notes = asyncio.run(svc.oktech_strategy(BEST, "SNIPER"))["snipers"][0]["notes"]

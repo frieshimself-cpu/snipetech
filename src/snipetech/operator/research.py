@@ -326,7 +326,10 @@ def recent_tape(store: Store, hours: float = SEARCH_TAPE_H):
 def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> dict[str, Any]:
     """The full lab at the live copy landing (one lab, under the lab lock) on the newest tape: strategies and labelled
     wallets ranked where our copies land, and the strategies with a positive lower bound there frozen into the forward
-    paper test."""
+    paper test. Every launch-type rule of the grid is scored on every coin a live sniper would buy, serial crews'
+    coins too (14 Nov; until then they were passed over, so each such rule is frozen anew under an id of its own, and
+    the ones frozen before stay as research records: paper.migrate_crew); each row of the record says how many of
+    its moments are crews' coins (`crew`, known with hindsight)."""
     from ..analysis import lab as L
     from ..analysis import paper
     from ..qualify import run as Q
@@ -352,7 +355,10 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     out = {"ts": int(now), "landing": copy_pos, "buy_sol": buy, "tape_hours": round(float(data["tape_hours"]), 1),
            "moments": len(data["rows"]), "per_tx_sol": per_tx, "per_tx_source": cost["per_tx_source"],
            "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],
-                           "landing": paper.landing_key(*(r.get("landing") or (0, copy_pos))), **r["test"]} for r in ranked[:8]],
+                           "landing": paper.landing_key(*(r.get("landing") or (0, copy_pos))),
+                           # a launch-type rule: how many of its moments are serial crews' coins (lab.crew_block)
+                           **({"crew": {k: r["crew"][k] for k in ("moments", "of", "share")}} if r.get("crew") else {}),
+                           **r["test"]} for r in ranked[:8]],
            "wallets": [{k: w.get(k) for k in ("wallet", "label", "n", "mean", "ev_lower", "win_rate")} for w in wallets[:8]],
            "frozen": [{"id": s["id"], "label": s["label"]} for s in frozen["frozen"]],
            # the rows the freeze left out and why: a rule already under test, its twin, one refuted in the last week

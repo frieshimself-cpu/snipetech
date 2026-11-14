@@ -636,7 +636,12 @@ def build_parser() -> argparse.ArgumentParser:
                          '"known" count the tracked wallets of every group ("known_any": true) and ask for the SOL '
                          'traded in the coin before the followed buy ("vol_secs": 60, "min_vol", "max_vol"). Each '
                          "ranked wallet rule shows its result by market-cap band and by volume band "
-                         "(`bands`)")  # fmt: skip
+                         '(`bands`). A launch, hunt, whale or burst rule is scored on every coin a live sniper would '
+                         'buy, serial crews\' coins too (one metadata file on many creators\' launches; `crew` in the '
+                         'output says how many of its moments they are, known with hindsight). "crew": "skip" passes '
+                         'over them (what the default did until 14 Nov) and "crew": "only" keeps them alone: both '
+                         "research only, since OKTech cannot tell such a coin and no sniper is built for "
+                         "either")  # fmt: skip
     sp.add_argument("--copy-position", metavar="POS",
                     help="with --trigger: score copies (kol, momentum) at this place in the followed wallet's slot "
                          "instead of the measured copy landing: +0 right behind it, +N behind N more trades, +Nx behind "
@@ -902,7 +907,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--replace", action="store_true", help="freeze: drop the strategies frozen before")
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="freeze: the lab runs only this trigger (repeatable; a JSON object, as for `lab --trigger`), "
-                         "scored where it trades live: --latency / --position do not apply to it")  # fmt: skip
+                         "scored where it trades live: --latency / --position do not apply to it. A launch-type rule "
+                         'is frozen on every coin a live sniper would buy; with "crew": "skip" or "only" it is a '
+                         "research record that never goes live")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="freeze: the lab reads only the newest N hours of tape")
     sp.add_argument("--only-live", action="store_true",
                     help="freeze: keep only strategies the lab scored where they trade live")  # fmt: skip
@@ -1799,6 +1806,7 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.bid_landing import is_bid as lab_is_bid
             from .analysis.lab import check_bid_landing as lab_check_bid
             from .analysis.lab import collect as lab_collect
+            from .analysis.lab import crew_fields as lab_crew_fields
             from .analysis.lab import exit_scores as lab_exit_scores
             from .analysis.lab import exit_set as lab_exit_set
             from .analysis.lab import in_parts as lab_in_parts
@@ -1901,6 +1909,11 @@ async def _run(args, cfg: Config) -> int:
                 res["unscored"] = data["unscored"]
             if data.get("bid_landing"):  # the places the bid got, the moments with no fee record, the hours with bids
                 res["bid_landing"] = data["bid_landing"]
+            # how many of each launch-type rule's moments are serial crews' coins, known with hindsight (a live
+            # sniper buys them all), and what a crew "skip" rule left out
+            crews = (data.get("crew") or {}).get("triggers") or {}
+            if crews:
+                res["crew"] = data["crew"]
             if hypotheses:  # each hypothesis, ranked or not: where it was scored and how often it fired
                 fired = Counter(r["trigger"] for r in data["rows"])
                 res["triggers"] = [{"trigger": t.label(), "moments": fired[ti],
@@ -1908,7 +1921,10 @@ async def _run(args, cfg: Config) -> int:
                                                            copy_pos, buy_bid),
                                     "ranked": any(r["trigger_spec"] == t.__dict__ for r in ranked),
                                     # a MIG rule of any age is research only; a wide window is not confirmed
-                                    **lab_mig_window_fields(t)}
+                                    **lab_mig_window_fields(t),
+                                    # a rule scored without serial crews' coins, or on them alone, is research only
+                                    **lab_crew_fields(t),
+                                    **({"crew": crews[t.label()]} if t.label() in crews else {})}
                                    for ti, t in enumerate(data["triggers"])]  # fmt: skip
             # a hunt landing asked for: each hunt, whale and burst row says which way it differs from the live place,
             # and `hunt_landing` where the buys really stood (nothing without the flag)

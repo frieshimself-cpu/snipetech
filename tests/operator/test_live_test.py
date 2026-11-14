@@ -43,17 +43,21 @@ def _rule_sol(sid: str) -> float:
 
 
 def _freeze(store, sid, *, kind="hunt", n=150, pnl=0.02, landing=(1, "+3"), buy=0.2, trigger=None, outliers=(0, 0.0),
-            per_tx=0.0047, watch=WATCH_SECS):  # fmt: skip
+            per_tx=0.0047, watch=WATCH_SECS, every_coin=True):  # fmt: skip
     """A frozen paper strategy with `n` forward trades of `pnl` SOL each: with one value the lower bound is that value.
     (1, "+3") is where a live hunt fill lands (paper.HUNT_LANDING). `outliers`: (count, pnl) of extra big trades.
     `per_tx`: the SOL a transaction its trades were scored at (`paper freeze --per-tx`; by default 0.0047, the cost the
     measure stage measured on 6 Nov). `watch`: its exit's watch delay, OKTech's 1.3 s by default as the lab scores every
-    exit of a launch-type rule since 7 Nov evening (0: frozen before that). Its rule is its own (_rule_sol)."""
+    exit of a launch-type rule since 7 Nov evening (0: frozen before that). Its rule is its own (_rule_sol).
+    `every_coin`: frozen since 14 Nov, when a launch-type rule that names no crew choice is scored on every coin the
+    sniper would buy, serial crews' coins too, and its record says so (False: frozen before, scored without them)."""
     trig = trigger or ({**HUNT, "sol": _rule_sol(sid)} if kind == "hunt" else {"kind": kind, "sol": _rule_sol(sid)})
     ex = {"stop_loss": 0.3, "max_hold_secs": 300} | ({"watch_secs": watch} if watch else {})
     s = {"id": sid, "label": f"{kind} {sid[:4]} | lab exit", "trigger": trig, "exit": ex, "position": landing[1],
          "latency": landing[0], "buy_sol": buy, "per_tx_sol": per_tx, "from_ts": NOW - 20 * 3600,
          "lab": {"mean": 0.01, "ev_lower": 0.004}}  # fmt: skip
+    if every_coin:
+        s["every_coin"] = True
     cov = store.coverage("paper_strategies")
     store.set_coverage("paper_strategies", {"strategies": cov.get("strategies", []) + [s], "superseded": []})
     for k in range(n):
@@ -307,6 +311,44 @@ def test_a_hunt_strategy_scored_without_oktechs_watch_delay_never_goes_live(env)
     assert "watch delay" in reply and "1.3 s" in reply
     assert "watch delay" in _refused(env, SECOND, "go")
     assert _send(env).splitlines()[-1] == f"/test {new} go"
+
+
+def test_a_hunt_strategy_scored_without_serial_crews_coins_never_goes_live(env):
+    """Until 14 Nov the lab and the paper test passed over serial crews' coins (one metadata file on many creators'
+    launches) for every launch-type rule, and the live sniper bought them: OKTech cannot tell such a coin. A rule
+    frozen then keeps its id and its trades and never goes live, however good its record, before the stored rules
+    are migrated and after; the same rule frozen since is scored on every coin and may. A rule frozen on purpose
+    without crews' coins ("skip") or on them alone ("only") never goes live either."""
+    old = _freeze(env.store, BEST, pnl=0.03, every_coin=False)  # frozen before 14 Nov: the kinder bound
+    _freeze(env.store, SECOND, pnl=0.02)  # frozen since: scored on every coin the sniper would buy
+    assert old["trigger"].get("crew", "") == ""  # as the old code stored it
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    reply = _refused(env, BEST, "go")
+    assert "without serial crews' coins" in reply and "OKTech cannot tell" in reply
+    assert paper.migrate_crew(env.store, now=NOW) == 1
+    stored = env.store.coverage("paper_strategies")["strategies"]
+    assert [s["id"] for s in stored] == [BEST, SECOND] and stored[0]["trigger"]["crew"] == "skip"
+    assert len(env.store.paper_trades(BEST)) == 150  # its record is whole
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    assert "without serial crews' coins" in _refused(env, BEST, "go")
+    _freeze(env.store, THIRD, pnl=0.05, trigger={**HUNT, "sol": 7.0, "crew": "skip"}, every_coin=False)
+    _freeze(env.store, FOURTH, pnl=0.06, trigger={**HUNT, "sol": 8.0, "crew": "only"}, every_coin=False)
+    assert [r["id"] for r in LT.eligible(env.store, env.cfg, NOW)] == [SECOND]
+    assert "without serial crews' coins" in _refused(env, THIRD, "go")
+    assert "serial crews' coins alone" in _refused(env, FOURTH, "go")
+    assert _send(env).splitlines()[-1] == f"/test {SECOND} go"
+    assert env.svc.created == []  # nothing was created for any of them
+
+
+def test_a_hunt_on_a_wallet_group_frozen_before_is_not_refused_for_crews_coins(env):
+    """A hunt on a wallet group (`bots`) was always scored on every coin its group's wallets bought, a serial crew's
+    or not: the 14 Nov change takes nothing from it. Such a rule frozen before is refused for the wallets nobody
+    handed over (as it always was by this path), never for crews' coins, and the migration leaves it as it is."""
+    old = _freeze(env.store, BEST, pnl=0.03, trigger={**HUNT, "bots": "bundler"}, every_coin=False)
+    assert paper.migrate_crew(env.store, now=NOW) == 0
+    assert env.store.coverage("paper_strategies")["strategies"] == [old]
+    _ok, why, _rows = LT._survey(env.store, env.cfg, NOW)
+    assert "serial crews" not in why[BEST] and "bundler" in why[BEST]
 
 
 def test_the_plan_caps_size_count_and_time_and_keeps_the_floor_below_all_of_it():

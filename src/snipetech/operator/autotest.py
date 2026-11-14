@@ -382,8 +382,8 @@ def live_ids(store) -> dict[str, str]:
     with it. Empty when the paper test cannot be read: every strategy is then only itself."""
     from ..analysis import paper
 
-    try:
-        cov = store.coverage("paper_strategies") or {}
+    try:  # each rule as it was scored (paper.frozen): its id, and its sniper's, are then the ones it always had
+        cov = paper.frozen(store) or {}
     except Exception:  # noqa: BLE001 - unreadable
         return {}
     out: dict[str, str] = {}

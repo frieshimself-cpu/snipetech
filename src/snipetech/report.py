@@ -805,6 +805,21 @@ def _size_lines(size: dict, strategies: list[dict]) -> list[str]:
     return out
 
 
+def _crew_lines(crew: dict) -> list[str]:
+    """The lab's crew block (lab._crew_report), one sentence a launch-type rule: how many of its moments are serial
+    crews' coins, or what a rule scored without them left out. Said first: the lab knows a crew with hindsight, a
+    live sniper does not, so the share is what the rule's record holds, never a filter a sniper could run."""
+    per = crew.get("triggers") or {}
+    if not per:
+        return []
+    note = str(crew.get("note") or "")
+    head = ("Serial crews' coins (one metadata file on 3 or more launches by 2 or more creators). "
+            f"{note[:1].upper()}{note[1:]}.")  # fmt: skip
+    out = ["", head]
+    out += [f"  {label}: {t['line']}." for label, t in per.items() if t.get("line")]
+    return out
+
+
 def _band_lines(strategies: list[dict]) -> list[str]:
     """Each ranked wallet rule's two small tables (lab.bands): its chosen exit on all its moments, by the coin's
     market cap after the followed buy and by the SOL traded in the minute before it. Said with them: the bands hold
@@ -924,6 +939,7 @@ def render_lab(r: dict) -> str:
     if r.get("amm_tape"):
         out += [""] + _amm_tape_lines(r["amm_tape"])
     out += _size_lines(r.get("size") or {}, r["strategies"])
+    out += _crew_lines(r.get("crew") or {})
     out += _band_lines(r["strategies"])
     if r.get("later_buyers") == "same_sol":
         out.append("Later buyers: every one replayed spending the SOL it spent on the tape and no more (--same-sol), "
@@ -1029,8 +1045,12 @@ def render_paper(action: str, r: dict) -> str:
         ] or ["  nothing new (already frozen, or no strategy with a positive lower bound)"]
         out += [f"  still running: {s['id']}  {s['label']}" for s in r["kept"]]
         # the records whose exit is not their sniper's (paper.not_as_live): kept, and no longer their rule's record
+        stale = r.get("not_as_live") or []
         out += [f"  no longer the record of its rule: {', '.join(ids)}: {why}"
-                for why, ids in _by_note(r.get("not_as_live") or [], "why")]  # fmt: skip
+                for why, ids in _by_note([x for x in stale if not x.get("research_only")], "why")]  # fmt: skip
+        # the records scored on other coins than their sniper buys (without serial crews' coins, or on them alone)
+        out += [f"  research only, never goes live: {', '.join(ids)}: {why.replace('research only: ', '', 1)}"
+                for why, ids in _by_note([x for x in stale if x.get("research_only")], "why")]  # fmt: skip
         if r.get("bid_landing"):
             out += _bid_landing_lines(r["bid_landing"])
         return "\n".join(out)
@@ -1103,7 +1123,8 @@ def render_paper(action: str, r: dict) -> str:
         "mean / bound / total in SOL per trade at the frozen size; 'capped bound' counts each trade's gain at most 2.5x its"
         " buy (a few outliers cannot pass for an edge); 'lab said' is what the lab predicted when it was frozen."
     )
-    # the records whose exit is not their sniper's (paper.not_as_live): what their trades are not
+    # the records that are not what their sniper would trade (paper.not_as_live: an exit that is not the sniper's,
+    # or a rule scored without serial crews' coins or on them alone): what their trades are not
     out += [f"{', '.join(ids)}: {why}." for why, ids in _by_note(rows, "exit_note")]
     other = sum(int(s.get("other_venue") or 0) for s in rows)
     if other:

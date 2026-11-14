@@ -5,6 +5,7 @@ whose creator bought more than maxDevBuySol with it, counts distinct buyers, tak
 a non-SOL-quoted coin (pump error 6010)."""
 
 import time
+from dataclasses import replace
 
 import pytest
 
@@ -145,9 +146,14 @@ def test_a_hunt_strategy_lands_a_slot_after_its_trigger():
 def test_strategies_frozen_before_hunt_keep_their_ids():
     old = {"kind": "whale", "buyers": 0, "sol": 1.0, "window": 0.0, "progress": 0.0, "holders": 0, "ret": 0.0,
            "max_age": 1.0, "plain": True, "group": "kol", "solo": True, "event": ""}  # fmt: skip
-    now = Trigger(**old).__dict__
+    # as the rule reads today: every field added since at its default, and crew "skip", which is what a launch-type
+    # rule did until 14 Nov (today's default, every coin, is a rule of its own: test_crew_as_live.py)
+    now = Trigger(**old, crew="skip").__dict__
     assert set(now) > set(old)  # the new hunt fields are there, at their defaults
     assert paper.strategy_id(now, LAB_EXIT, "+6", 0, 0.2) == paper.strategy_id(old, LAB_EXIT, "+6", 0, 0.2)
+    assert paper.strategy_id(Trigger(**old).__dict__, LAB_EXIT, "+6", 0, 0.2) != paper.strategy_id(
+        old, LAB_EXIT, "+6", 0, 0.2
+    )
     hunt = Trigger("hunt", sol=2.0, window=1.0, dev_max=1.0).__dict__
     assert paper.strategy_id(hunt, LAB_EXIT, "+3", 1, 0.2) != paper.strategy_id(
         hunt | {"dev_max": None}, LAB_EXIT, "+3", 1, 0.2
@@ -407,9 +413,10 @@ def test_the_bundler_label_kind_reaches_the_lab_and_the_command_takes_it(tmp_pat
 def test_a_hunt_on_a_wallet_group_scores_the_groups_launches_serial_crew_or_not():
     """11 Nov: the first lab of the crew rule fired on 2 launches in 137 hours of tape; the tape held 31 launches the
     crew bundled, each with about 41 SOL in its create block. The crew launches from fresh creators on one metadata
-    uri, which is what marks a serial crew (`store.crew_uris`), and launch-type rules pass over those coins. A rule on
-    a wallet group buys what the group's wallets bought, as OKTech's known-bot gate does (it cannot tell a crew's
-    coin): the uri never skips a coin for it. Crew "only" still limits it to the crews' coins."""
+    uri, which is what marks a serial crew (`store.crew_uris`), and launch-type rules passed over those coins (since
+    14 Nov only with crew "skip"). A rule on a wallet group buys what the group's wallets bought, as OKTech's
+    known-bot gate does (it cannot tell a crew's coin): the uri never skips a coin for it. Crew "only" still limits
+    it to the crews' coins."""
     from snipetech.analysis.lab import crew_skips
 
     store = Store(":memory:")
@@ -422,7 +429,9 @@ def test_a_hunt_on_a_wallet_group_scores_the_groups_launches_serial_crew_or_not(
     crews = {"ipfs://crew"}
     plain = Trigger("hunt", sol=2.0, window=1.0)
     group = Trigger("hunt", sol=2.0, window=1.0, bots="bundler")
-    assert crew_skips(plain, store.launch(theirs.mint), crews)  # a plain hunt still passes over a serial crew's coin
+    # a plain hunt scored without crews' coins still passes over a serial crew's coin; the default scores it
+    assert crew_skips(replace(plain, crew="skip"), store.launch(theirs.mint), crews)
+    assert not crew_skips(plain, store.launch(theirs.mint), crews)
     assert not crew_skips(group, store.launch(theirs.mint), crews)  # the group's wallets decide, not the uri
     assert not crew_skips(group, store.launch(other.mint), crews)
     only = Trigger("hunt", sol=2.0, window=1.0, bots="bundler", crew="only")

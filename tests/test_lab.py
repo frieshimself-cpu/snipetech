@@ -677,7 +677,8 @@ def test_a_coin_no_pump_curve_could_price_is_never_a_moment():
 def test_coins_of_a_serial_crew_reusing_one_metadata_uri_are_no_launch_moments():
     """8 Nov: the "forg" rug crew reused one metadata uri on 28 coins from 20 fresh creators in an hour and was all of
     the loose creator-0 hunts' paper losses. A uri on 3+ launches by 2+ creators marks a crew: launch-type triggers
-    (launch, hunt, whale, burst) skip its coins in the lab; a KOL or momentum trigger does not."""
+    (launch, hunt, whale, burst) with crew "skip" pass over its coins in the lab; a KOL or momentum trigger does not.
+    (Until 14 Nov the default did; the live sniper buys them, so the default now scores them: test_crew_as_live.py.)"""
     store = Store(":memory:")
     whale_world(store, n=10)
     crew = [addr(f"lab-{i}") for i in range(4)]
@@ -686,35 +687,41 @@ def test_coins_of_a_serial_crew_reusing_one_metadata_uri_are_no_launch_moments()
     assert store.crew_uris(NOW - 10_000, NOW) == {"ipfs://forg"}
     cfg = Config()
     cfg.verdict.bootstrap_samples = 50
-    w = Trigger("whale", sol=2.0)
-    data = collect(store, cfg, buy_sol=0.2, latency_slots=0, position="start", triggers=[w])
-    fired = {r["mint"] for r in data["rows"]}
+    w = Trigger("whale", sol=2.0, crew="skip")
+    data = collect(store, cfg, buy_sol=0.2, latency_slots=0, position="start", triggers=[w, Trigger("whale", sol=2.0)])
+    fired = {r["mint"] for r in data["rows"] if r["trigger"] == 0}
     assert fired and not fired & set(crew)
+    assert {r["mint"] for r in data["rows"] if r["trigger"] == 1} == fired | set(crew)  # the default: every coin
     store.close()
 
 
 def test_the_paper_test_skips_a_serial_crews_coins_too():
-    """The forward paper test fires launch-type rules on the same coins the lab scores: a crew's coins are skipped."""
+    """The forward paper test fires launch-type rules on the same coins the lab scores: for a rule frozen with crew
+    "skip" a crew's coins are skipped, and for the same rule frozen with the default they are scored like any coin."""
     from snipetech.analysis import paper
 
     store = Store(":memory:")
     whale_world(store)
     cfg = Config()
     cfg.verdict.bootstrap_samples = 200
-    rep = paper.freeze(store, cfg, top=3, position="+1", now=NOW - 3500)
-    whale = rep["frozen"][0]
+    rules = [Trigger("launch", crew="skip"), Trigger("launch")]
+    rep = paper.freeze(store, cfg, top=3, position="+1", now=NOW - 3500, triggers=rules)
+    skip, every = sorted(rep["frozen"], key=lambda s: s["trigger"]["crew"] != "skip")
+    assert (skip["trigger"]["crew"], every["trigger"]["crew"]) == ("skip", "")
     crew = [addr(f"lab-{i}") for i in range(30, 34)]  # four of the coins after the freeze
     for i, m in enumerate(crew):
         store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
     paper.run(store, cfg, now=NOW)
-    mints = {t["mint"] for t in store.paper_trades(whale["id"])}
+    mints = {t["mint"] for t in store.paper_trades(skip["id"])}
     assert len(mints) == 11 and not mints & set(crew)
+    assert {t["mint"] for t in store.paper_trades(every["id"])} == mints | set(crew)
     store.close()
 
 
 def test_a_crew_only_trigger_fires_only_on_a_serial_crews_coins():
     """Owner, 9 Nov: rug crews' charts often run up before the rug; if we can get in and out first, trade them. A
-    launch-type trigger with crew "only" scores the crews' coins alone (the default, "", still skips them)."""
+    launch-type trigger with crew "only" scores the crews' coins alone (crew "skip" passes over them; the default,
+    "", scores every coin)."""
     store = Store(":memory:")
     whale_world(store, n=10)
     crew = [addr(f"lab-{i}") for i in range(4)]
@@ -734,6 +741,7 @@ def test_the_crew_knob_takes_only_only_and_only_on_launch_type_triggers():
     from snipetech.analysis.lab import parse_trigger
 
     assert parse_trigger('{"kind": "hunt", "sol": 4, "window": 1, "crew": "only"}').crew == "only"
+    assert parse_trigger('{"kind": "hunt", "sol": 4, "window": 1, "crew": "skip"}').crew == "skip"  # since 14 Nov
     with pytest.raises(ValueError, match="crew"):
         parse_trigger('{"kind": "launch", "crew": "maybe"}')
     with pytest.raises(ValueError, match="crew"):
@@ -743,8 +751,12 @@ def test_the_crew_knob_takes_only_only_and_only_on_launch_type_triggers():
 def test_a_crew_only_rule_keeps_old_ids_and_the_paper_test_fires_it_on_crew_coins_alone():
     from snipetech.analysis import paper
 
-    assert paper.strategy_id({"kind": "whale", "sol": 2.0, "crew": ""}, {}, "+1", 0, 0.2) == paper.strategy_id(
-        {"kind": "whale", "sol": 2.0}, {}, "+1", 0, 0.2)  # fmt: skip
+    # the id a rule had while it passed over the crews' coins is the id of crew "skip" (since 14 Nov "" is every
+    # coin, a rule of its own); "only" was always a rule of its own
+    old = paper.strategy_id({"kind": "whale", "sol": 2.0}, {}, "+1", 0, 0.2)
+    assert paper.strategy_id({"kind": "whale", "sol": 2.0, "crew": "skip"}, {}, "+1", 0, 0.2) == old
+    assert paper.strategy_id({"kind": "whale", "sol": 2.0, "crew": ""}, {}, "+1", 0, 0.2) != old
+    assert paper.strategy_id({"kind": "whale", "sol": 2.0, "crew": "only"}, {}, "+1", 0, 0.2) != old
     store = Store(":memory:")
     whale_world(store)
     crew = [addr(f"lab-{i}") for i in range(30, 34)]
@@ -752,7 +764,8 @@ def test_a_crew_only_rule_keeps_old_ids_and_the_paper_test_fires_it_on_crew_coin
         store._exec("UPDATE launches SET uri=?, creator=? WHERE mint=?", ("ipfs://forg", addr(f"crew-dev-{i}"), m))
     assert paper.crew_skips(Trigger("whale", sol=2.0, crew="only"), store.launch(addr("lab-1")), {"ipfs://forg"})
     assert not paper.crew_skips(Trigger("whale", sol=2.0, crew="only"), store.launch(crew[0]), {"ipfs://forg"})
-    assert paper.crew_skips(Trigger("whale", sol=2.0), store.launch(crew[0]), {"ipfs://forg"})
+    assert paper.crew_skips(Trigger("whale", sol=2.0, crew="skip"), store.launch(crew[0]), {"ipfs://forg"})
+    assert not paper.crew_skips(Trigger("whale", sol=2.0), store.launch(crew[0]), {"ipfs://forg"})  # every coin
     assert not paper.crew_skips(Trigger("kol", sol=1.0), store.launch(crew[0]), {"ipfs://forg"})
     store.close()
 

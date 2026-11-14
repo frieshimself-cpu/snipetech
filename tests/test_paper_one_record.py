@@ -180,10 +180,11 @@ def test_no_daily_limit_on_new_rules(monkeypatch):
 
 def test_a_rule_frozen_before_a_trigger_field_existed_is_the_same_rule(monkeypatch):
     """A strategy frozen on 7 Nov stores the trigger fields of that day. The same rule from today's lab carries every
-    field added since at its default: one rule, one record."""
+    field added since at its default: one rule, one record. (A launch-type rule frozen then passed over serial crews'
+    coins, which a rule says as crew "skip" since 14 Nov; today's default, every coin, is another rule.)"""
     store = Store(":memory:")
     old_trigger = {"buyers": 0, "kind": "whale", "sol": 5.0, "window": 0.0}
-    whale = Trigger("whale", sol=5.0)
+    whale = Trigger("whale", sol=5.0, crew="skip")
     old = {"id": paper.strategy_id(old_trigger, HOLD10.to_dict(), "+3", 1, 0.2), "label": "old", "trigger": old_trigger,
            "exit": HOLD10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2, "per_tx_sol": 0.0045,
            "from_ts": NOW - 4 * DAY}  # fmt: skip
@@ -247,8 +248,12 @@ def test_a_rule_without_parts_keeps_its_rule_key_and_every_id_stays():
 
     assert paper.rule_key(KOL.__dict__, "+6", 0, 0.2) == before(KOL.__dict__, "+6", 0, 0.2)
     assert paper.rule_key(HUNT1.__dict__, "+3", 1, 5.0, 0.03, True) == before(HUNT1.__dict__, "+3", 1, 5.0, 0.03, True)
-    s = {"trigger": HUNT1.__dict__, "exit": HOLD10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2}
+    # (a stored rule frozen since 14 Nov, scored on every coin: one frozen before is the crew "skip" rule)
+    s = {"trigger": HUNT1.__dict__, "exit": HOLD10.to_dict(), "position": "+3", "latency": 1, "buy_sol": 0.2,
+         paper.EVERY_COIN: True}  # fmt: skip
     assert paper._rule_of(s) == before(HUNT1.__dict__, "+3", 1, 0.2)
+    legacy = {k: v for k, v in s.items() if k != paper.EVERY_COIN}
+    assert paper._rule_of(legacy) == before(HUNT1.__dict__ | {"crew": "skip"}, "+3", 1, 0.2)
     in_parts = s | {"exit": PARTS10.to_dict()}
     assert paper._rule_of(in_parts) != paper._rule_of(s)
     assert paper._rule_of(in_parts) == paper._rule_of(s | {"exit": PARTS60.to_dict()})  # whatever the parts

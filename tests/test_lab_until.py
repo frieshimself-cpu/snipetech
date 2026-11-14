@@ -13,6 +13,7 @@ trades of each hypothesis, and two short digests say at a glance whether two run
 import json
 import shutil
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -44,7 +45,8 @@ WHALE_JSON = '{"kind": "whale", "sol": 2.2}'
 LAUNCH = Trigger("launch")
 KOL = Trigger("kol", sol=0.5)
 MIG = Trigger("mig", window=10.0)
-TRIGGERS = [HUNT, WHALE, LAUNCH, KOL, MIG]
+CREWLESS = replace(HUNT, crew="skip")  # the hunt scored without serial crews' coins (what "" was until 14 Nov)
+TRIGGERS = [HUNT, WHALE, LAUNCH, KOL, MIG, CREWLESS]
 LEAK = addr("until-leak")  # traded before UNTIL; the tape's record of its create is stamped after it
 SKIP_BEFORE = [T0 + 1000, T0 + 1010]  # a stretch the PumpSwap side skipped before UNTIL, and one after it
 SKIP_AFTER = [UNTIL + 400, UNTIL + 500]
@@ -170,7 +172,7 @@ def _lab(store, workers: int | None = 1) -> dict:
 
 def _same(a: dict, b: dict) -> None:
     """Two labs gave the same result: every scored moment, every count of what was left out, the same ranking."""
-    for key in ("rows", "tape_hours", "slot_secs", "size", "amm_tape", "mates", "unscored", "window"):
+    for key in ("rows", "tape_hours", "slot_secs", "size", "amm_tape", "mates", "unscored", "window", "crew"):
         assert a[key] == b[key], key
     ranked = [json.dumps(rank(d, _cfg(), top=20, trades=True), default=str, sort_keys=True) for d in (a, b)]
     assert ranked[0] == ranked[1]
@@ -302,9 +304,15 @@ def test_a_lab_that_ends_at_until_is_the_lab_of_a_tape_that_ended_there(dbs):
     assert any(addr(f"until-mig-{j}") in _fired(then, KOL) for j in range(28))  # a copy that bought on PumpSwap
     # what the cut is for. The whole tape is another lab:
     assert len(whole["rows"]) > len(then["rows"])
-    # a serial crew's coins are skipped, and at UNTIL the crew of three had launched two: both still count
-    assert {addr("until-10"), addr("until-20")} <= _fired(then, HUNT)
-    assert not {addr("until-10"), addr("until-20")} & _fired(whole, HUNT)
+    # a rule scored without serial crews' coins passes over them, and at UNTIL the crew of three had launched two:
+    # both still count; on the whole tape both are a crew's coins, passed over by that rule and counted as such for
+    # the default one, which scores every coin
+    early = {addr("until-10"), addr("until-20")}
+    assert early <= _fired(then, CREWLESS) and early <= _fired(then, HUNT)
+    assert not early & _fired(whole, CREWLESS) and early <= _fired(whole, HUNT)
+    assert then["crew"]["files"] == 0 and then["crew"]["triggers"][HUNT.label()]["moments"] == 0
+    assert whole["crew"]["files"] == 1 and whole["crew"]["triggers"][HUNT.label()]["moments"] == 3
+    assert whole["crew"]["triggers"][CREWLESS.label()]["left_out"] == 3
     # and clipping the spans alone is not enough: with the create stamped after UNTIL the coin's path starts at that
     # create, and its trades before UNTIL, a whale buy among them, are no moment at all,
     assert LEAK in _fired(then, WHALE) and LEAK not in _fired(spans_only, WHALE)
@@ -487,15 +495,16 @@ OLD_TOP = {"tape_hours", "moments", "latency_slots", "position", "copy_landing",
 OLD_STRATEGY = {"trigger", "trigger_spec", "exit", "exit_params", "landing", "moments", "exit_moments", "per_hour",
                 "train_mean", "test", "test_sol_per_day", "size", "live_landing"}  # fmt: skip
 NEW_STRATEGY = {"train", "test_from_ts", "test_from_utc", "test_digest", "window_digest"}
+CREW = {"crew"}  # since 14 Nov: how many of a launch-type rule's moments are serial crews' coins (test_crew_as_live.py)
 
 
 def test_the_output_gains_the_window_and_the_cut_and_nothing_else(dbs, capsys):
     """What a lab without the new flags prints: every field it printed before, the window, and per strategy where its
     cut fell and the two digests. The trades come only when asked for."""
     out = _run(capsys, dbs[1], "--trigger", HUNT_JSON)
-    assert set(out) == OLD_TOP | {"window"}
+    assert set(out) == OLD_TOP | {"window"} | CREW
     (s,) = out["strategies"]
-    assert set(s) == OLD_STRATEGY | NEW_STRATEGY
+    assert set(s) == OLD_STRATEGY | NEW_STRATEGY | CREW
     # 114 moments (a launch a minute, the last one a minute before the tape's end is too late to judge): the older 68
     # pick the exit, the newer 46 judge it, and the cut is the 69th moment's second
     assert (s["moments"], s["train"], s["test"]["n"]) == (114, {"n": 68}, 46)
@@ -503,7 +512,7 @@ def test_the_output_gains_the_window_and_the_cut_and_nothing_else(dbs, capsys):
     assert s["window_digest"] == W.window_digest(T0, UNTIL, 114)
     asked = _run(capsys, dbs[1], "--trigger", HUNT_JSON, "--trades")
     (t,) = asked["strategies"]
-    assert set(t) == OLD_STRATEGY | NEW_STRATEGY | {"test_trades", "left_out"}
+    assert set(t) == OLD_STRATEGY | NEW_STRATEGY | CREW | {"test_trades", "left_out"}
     assert {k: v for k, v in t.items() if k not in ("test_trades", "left_out")} == s
     assert {k: v for k, v in asked.items() if k != "strategies"} == {k: v for k, v in out.items() if k != "strategies"}
 

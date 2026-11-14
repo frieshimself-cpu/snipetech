@@ -196,6 +196,16 @@ def _why_not(row: dict | None, frozen: dict | None, cost: dict | None = None, de
         return "is not a frozen paper strategy"
     if row.get("trigger_kind") != "hunt":
         return "is not a hunt strategy (OKTech runs only its hunt launch gate exactly as the lab scored it)"
+    from ..analysis.paper import crew_not_as_live
+
+    # 14 Nov: until then a launch-type rule was scored without serial crews' coins (one metadata file on many
+    # creators' launches), in the lab and forward, and the live sniper bought them: OKTech cannot tell such a coin
+    # (37 % of one hunt rule's moments, and they lost). A rule frozen then keeps its id and its trades and never goes
+    # live, migrated or not (paper.as_frozen); nor does one frozen on purpose without them or on them alone. The
+    # same trigger frozen since is scored on every coin the sniper would buy, under an id of its own
+    crews = crew_not_as_live(frozen)
+    if crews is not None:
+        return f"is {crews}"
     from ..oktech import STRATEGY_PLATFORMS, venue_refusal
 
     # research round 4: the lab can score a rule on Raydium LaunchLab launches, which no sniper of ours can buy
@@ -263,7 +273,9 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
     from ..qualify.run import lab_tx_cost_info
 
     rows = paper.report(store, cfg, now=now)["strategies"]
-    frozen = {s["id"]: s for s in store.coverage("paper_strategies").get("strategies", []) if isinstance(s, dict)}
+    # each rule as it was scored: one frozen before 14 Nov reads as scored without serial crews' coins, whether or
+    # not the stored rules were migrated yet (paper.frozen), and is refused below
+    frozen = {s["id"]: s for s in paper.frozen(store).get("strategies", []) if isinstance(s, dict)}
     # the measured cost of a transaction, the last one measured after a week without enough fills, 0.0045 before any
     cost = lab_tx_cost_info(store, cfg)
     # OKTech's answer on maxDevBuySol 0, as the owner recorded it next to the database (operator/OKTECH)
@@ -280,7 +292,9 @@ def _survey(store, cfg: Config, now: float) -> tuple[list[dict], dict[str, str],
 
 def eligible(store, cfg: Config, now: float) -> list[dict]:
     """The frozen paper strategies a live test may run, best lower bound first (paper.report rows): hunt strategies (the
-    one kind OKTech runs exactly as the lab scored it), scored at the live landing, with OKTech's watch delay and at no
+    one kind OKTech runs exactly as the lab scored it), scored on every coin the sniper would buy (never without serial
+    crews' coins, as every launch-type rule frozen before 14 Nov was), at the live landing, with OKTech's watch delay
+    and at no
     less than the measured cost of a transaction (0.0045 while none is measured), with MIN_FORWARD_N forward trades or
     more and a lower bound above zero, also with each gain capped. The forward test at the real landing and the real
     cost is the evidence, never the lab."""

@@ -148,13 +148,16 @@ def test_existing_triggers_and_frozen_strategies_keep_their_ids():
     ex = {"take_profit": 0, "tp_sell_fraction": 1.0, "stop_loss": 0.15, "trailing_stop": 0.1, "trailing_activation": 0.0,
           "max_hold_secs": 60, "sell_on_dev_sell": False, "stale_secs": 0.0, "watch_secs": 1.3, "copy_exit_pct": 0.0,
           "migration_sell_frac": 0.0, "migration_sell_delay": 0.0}  # fmt: skip
-    now = Trigger(**trig).__dict__
+    # as the rule reads today: every field added since at its default, and crew "skip", what a launch-type rule did
+    # until 14 Nov (today's default, every coin, is a rule of its own: test_crew_as_live.py)
+    now = Trigger(**trig, crew="skip").__dict__
     assert now["venue"] == "pumpfun"
     assert paper.strategy_id(trig, ex, "+3", 1, 0.2) == "bbe92cca81"
     assert paper.strategy_id(now, ex, "+3", 1, 0.2) == "bbe92cca81"
+    assert paper.sid_of({"trigger": trig, "exit": ex, "position": "+3", "latency": 1, "buy_sol": 0.2}) == "bbe92cca81"
     f94 = trig | {"sol": 10.0}
     ex94 = ex | {"trailing_activation": 0.2}
-    assert paper.strategy_id(Trigger(**f94).__dict__, ex94, "+3", 1, 0.2) == "f94add343f"
+    assert paper.strategy_id(Trigger(**f94, crew="skip").__dict__, ex94, "+3", 1, 0.2) == "f94add343f"
     # the research option is a rule of its own
     assert paper.strategy_id(now | {"venue": "launchlab"}, ex, "+3", 1, 0.2) != "bbe92cca81"
     # an agent's hypothesis equal to a grid trigger still gets the grid's id
