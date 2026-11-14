@@ -472,20 +472,31 @@ LAB_COMMANDS = frozenset({"lab", "paper", "stopped-wallets"})  # a role's comman
 
 
 def lab_slots_line(paths: OperatorPaths, role: str) -> str:
-    """One line for a role's message: how many of the machine's lab slots are free at this moment, and who is owed the
-    next one. From the same locks and the same mark start_job's refusals read (analysis/lab_lock: a lab, a freeze and
-    qualify's own lab each hold a slot; the mark is left by the machine's own work when it found every slot held, and
-    the roles then give way: operator/jobs.py). "" for a role none of whose commands takes a slot. 14 Nov: "every lab
-    slot is held" and "labs are already running" were at least 28 of the refusals in 108 recorded turns."""
+    """One line for a role's message: how many of the machine's lab slots are free at this moment, and who waits for
+    one. From the same locks and the same mark start_job's refusals read (analysis/lab_lock: a lab, a freeze and
+    qualify's own lab each hold a slot; the mark is left by the machine's own work when it found every slot held).
+    The line says what start_job will do (operator/jobs.py): the roles give way to the one that waits only while
+    their own running labs are at their share of the slots (all but one, one at the least); below it a role's lab
+    starts all the same, and the line only says that somebody else waits too. "" for a role none of whose commands
+    takes a slot. 14 Nov: "every lab slot is held" and "labs are already running" were at least 28 of the refusals
+    in 108 recorded turns."""
     from ..analysis.lab_lock import free_slots, lab_slots, wanted
-    from .roles import ROLE_COMMANDS
+    from .roles import ROLE_COMMANDS, job_metas, job_roles
 
     if not ROLE_COMMANDS.get(role, frozenset()) & LAB_COMMANDS:
         return ""
     slots = lab_slots()
     line = f"Lab slots: {free_slots(paths.data, slots)} of {slots} free (a lab, a freeze and qualify each take one)"
     owed = wanted(paths.data)
-    return line + (f"; {owed['who']} waits for the next free one and gets it before a lab of yours." if owed else ".")
+    if not owed:
+        return line + "."
+    by = job_roles(paths)
+    held = sum(1 for m in job_metas(paths, time.time()) if m.get("running") and str(m.get("id")) in by
+               and (m.get("argv") or [""])[0] == "lab")  # fmt: skip
+    if held < max(1, slots - 1):
+        return f"{line}; {owed['who']} waits for a slot too."
+    mine = "a lab of yours" if "lab" in ROLE_COMMANDS[role] else "a lab-slot job of yours"
+    return f"{line}; {owed['who']} waits for the next free one and gets it before {mine}."
 
 
 def context(paths: OperatorPaths, lessons: int = CONTEXT_LESSONS, ideas: int = CONTEXT_IDEAS,

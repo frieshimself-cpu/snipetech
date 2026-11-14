@@ -800,14 +800,16 @@ def test_role_turn_leaves_the_days_analysis_alone(env):
         ([{"type": "tool_use", "id": "t1", "name": "write_report",
            "input": {"name": "analyst-2026-11-06", "text": "not mine"}}], "tool_use"),
         ([{"type": "tool_use", "id": "t2", "name": "write_report",
-           "input": {"name": "oktech-facts", "text": "| feature | verified |"}}], "tool_use"),
+           "input": {"name": "oktech-facts", "text": "# t\n\n| feature | verified |\n|---|---|\n| timer | yes |"}}],
+         "tool_use"),  # round 3 (14 Nov): a first table has a title line, a header and its separator
         ([{"type": "text", "text": "done"}], "end_turn"),
     )  # fmt: skip
     out = _run(env, Decision(True, "oktech", ["first turn"]), handler, role="oktech")
     assert out["stopped"] == "end_turn"
     assert last_analyst_ts(env["paths"], NOW) is None and not env["paths"].analyst_last.exists()
     assert not analyst_done_today(env["paths"], NOW)
-    assert (env["paths"].root / "oktech-facts.md").read_text() == "| feature | verified |"
+    written = (env["paths"].root / "oktech-facts.md").read_text()
+    assert written.endswith("| feature | verified |\n|---|---|\n| timer | yes |")
     assert "turn ended without a note" in env["paths"].notes.read_text() and env["sent"] == []
 
 
@@ -1095,7 +1097,8 @@ def test_a_role_turn_ends_at_its_note_without_asking_for_a_closing_reply(env):
     usage = {"input_tokens": 1000, "output_tokens": 500}
     handler, requests = _scripted(
         (*_calls(("list_ideas", {})), usage),
-        (*_calls(("write_report", {"name": "scout-facts", "text": "| wallet | who |\n| W1 | Cupsey |"}),
+        # round 3 (14 Nov): a table is written whole only with a title line, a header and its separator
+        (*_calls(("write_report", {"name": "scout-facts", "text": "# t\n\n| wallet | who |\n|---|---|\n| W1 | Cup |"}),
                  ("write_report", {"name": "scout-journal-2026-11-06", "text": "read winners", "append": True}),
                  ("write_note", {"text": "W1 is Cupsey: 31 round trips, +4.2 SOL at its own place"})), usage),
         ([{"type": "text", "text": "A closing summary nobody needs."}], "end_turn", usage),
@@ -1104,7 +1107,7 @@ def test_a_role_turn_ends_at_its_note_without_asking_for_a_closing_reply(env):
     assert len(requests) == 2  # no request after the note's calls
     assert out == {"usd": pytest.approx(0.056), "tool_calls": 4, "stopped": "end_turn", "notes": 1, "ended_at": "note"}
     # the whole reply ran: the table, the journal and the note are written
-    assert (env["paths"].root / "scout-facts.md").read_text() == "| wallet | who |\n| W1 | Cupsey |"
+    assert (env["paths"].root / "scout-facts.md").read_text().endswith("| wallet | who |\n|---|---|\n| W1 | Cup |")
     assert "read winners" in (env["paths"].root / "scout-journal-2026-11-06.md").read_text()
     notes = env["paths"].notes.read_text()
     assert notes.count("\n") == 1 and "[info] scout: W1 is Cupsey" in notes  # its one note, and no "without a note"
@@ -1576,3 +1579,49 @@ def test_a_reply_another_model_served_is_priced_per_attempt_in_the_turns_dollars
     assert out["usd"] == pytest.approx(want) and line["usd"] == pytest.approx(want)
     assert line["mode"] == "scout" and line["model"] == "claude-opus-5-5" and line["attempts"] == 2
     assert read_turns(env["paths"], 1)[0]["model"] == "claude-opus-5-5"
+
+
+# -- round 3 (14 Nov): the table tool writes a row only where it is certain, and an empty note is no note --------------
+
+_TWO_TABLES = ("# OKTech features (features analyst), 14 Nov 07:50 UTC\n\nNo rule has passed a forward reading.\n\n"
+               "| Feature | Verified? | Changes what | Cheapest test |\n|---|---|---|---|\n"
+               "| Timer | 300 s verified | f98f hold 5-10 s | I81 stage 1 |\n\nCandidates (tape, nothing live).\n\n"
+               "| Wallet | Finding | Idea |\n|---|---|---|\n"
+               "| YJFQNK | 8 of 39 buys on LaunchLab | I164 |\n")  # fmt: skip
+
+
+def test_a_new_row_for_the_second_table_is_written_there_in_one_request(env):
+    """The reviewer's proof (F1): a new three-cell row for the second table of oktech-facts landed at the end of the
+    FIRST table, was answered "it is written so, send it again", and four requests later stood there still. Said to
+    be new, it goes to the table that has its three cells, and the turn ends at the journal's headline."""
+    p = env["paths"].root / "oktech-facts.md"
+    p.write_text(_TWO_TABLES)
+    row = {"key": "9L5aWu", "text": "| 9L5aWu | fresh wallet; sells in one sale within 40 s | I173 |", "new": True}
+    entry = {"name": "oktech-journal-2026-11-06", "text": "## 01:00\n\nthe turn.", "headline": "9L5aWu sells once"}
+    handler, requests = _scripted(_calls(("update_table", {"rows": [row]}), ("write_report", entry)),
+                                  ([{"type": "text", "text": "closing"}], "end_turn"))  # fmt: skip
+    out = _run(env, Decision(True, "oktech", ["a job of yours ended: j1"]), handler, role="oktech")
+    lines = p.read_text().split("\n")
+    assert len(requests) == 1 and out["ended_at"] == "note"
+    assert lines.index(row["text"]) == lines.index("| YJFQNK | 8 of 39 buys on LaunchLab | I164 |") + 1
+    # not said to be new, it is not written anywhere, and the model reads why before the turn ends
+    p.write_text(_TWO_TABLES)
+    del row["new"]
+    again = entry | {"text": "again"}
+    handler, requests = _scripted(_calls(("update_table", {"rows": [row]}), ("write_report", again)),
+                                  ([{"type": "text", "text": "closing"}], "end_turn"))  # fmt: skip
+    _run(env, Decision(True, "oktech", ["a job of yours ended: j1"]), handler, role="oktech")
+    shown = [str(b["content"]) for b in requests[1]["messages"][-1]["content"] if b.get("type") == "tool_result"]
+    assert len(requests) == 2 and shown[0].startswith("error: not done: no row 9L5aWu: nothing was written; to add it")
+    assert p.read_text() == _TWO_TABLES
+
+
+def test_an_empty_note_does_not_end_a_role_turn(env):
+    """The reviewer's proof (F10): write_note(text=" ") wrote "scout:" as the turn's note and the turn ended on it."""
+    handler, requests = _scripted(_calls(("write_note", {"text": " "})),
+                                  _calls(("write_note", {"text": "W1 is Cupsey: 31 round trips"})),
+                                  ([{"type": "text", "text": "closing"}], "end_turn"))  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["first turn"]), handler, role="scout")
+    notes = env["paths"].notes.read_text().splitlines()
+    assert len(requests) == 2 and out["ended_at"] == "note" and out["notes"] == 1
+    assert len(notes) == 1 and notes[0].endswith("[info] scout: W1 is Cupsey: 31 round trips")

@@ -460,7 +460,7 @@ def test_the_page_names_each_research_agent_and_shows_what_a_journal_call_wrote(
                       "OKTech features analyst", "new"]  # fmt: skip
     step = {"kind": "tool", "name": "write_report", "input": {"name": "fees-journal-2026-11-14", "text": "## entry",
                                                               "headline": "place +0 is worth 0.21 SOL"},
-            "result": "appended to fees-journal-2026-11-14.md"}  # fmt: skip
+            "result": "appended to x.md; the headline is written as this turn's note"}  # fmt: skip
     assert run(f"stepLabel({json.dumps(step)})") == "Wrote its journal entry and the note for you"
     assert run(f"stepMain({json.dumps(step)})") == "place +0 is worth 0.21 SOL\n\n## entry"
     plain = {"kind": "tool", "name": "write_report", "input": {"name": "analyst-2026-11-14", "text": "# report"},
@@ -478,3 +478,25 @@ def test_the_page_names_each_research_agent_and_shows_what_a_journal_call_wrote(
                                                              "above": "Para that holds."}, "result": "x"}  # fmt: skip
     assert run(f"stepMain({json.dumps(rows)})") == "Para that holds.\n\n| k1 | v1 new |"
     assert run(f"stepLabel({json.dumps(rows)})") == "Changed rows of its table"
+
+
+def test_a_refused_journal_call_is_not_shown_as_a_note_written():
+    """Round 3 (14 Nov): the page labelled a REFUSED journal call "Wrote its journal entry and the note for you",
+    because it trusted the call's headline. What the tool answered decides; the headline of the call only while there
+    is no answer yet. A write that answered "error" carries the error mark; a job log that begins with that word is
+    no refusal."""
+    block, run = _page_rules()
+    assert "step.result == null" in block and "WRITES" in block
+    if run is None:
+        pytest.skip("no node on this machine: the page's rules were checked as text only")
+    call = {"kind": "tool", "name": "write_report", "input": {"name": "oktech-journal-2026-11-14", "text": "## entry",
+                                                              "headline": "the wallet cannot pay a buy"}}  # fmt: skip
+    refused = call | {"result": "error: not done: the headline was not written as this turn's note (what the ..."}
+    written = call | {"result": "appended to oktech-journal-2026-11-14.md; the headline is written as this turn's note"}
+    assert run(f"[stepLabel({json.dumps(refused)}), stepFailed({json.dumps(refused)})]") == ["Wrote the report", True]
+    assert run(f"[stepLabel({json.dumps(written)}), stepFailed({json.dumps(written)})]") == [
+        "Wrote its journal entry and the note for you", False]  # fmt: skip
+    assert run(f"stepLabel({json.dumps(call | {'result': None})})") == "Wrote its journal entry and the note for you"
+    log = {"kind": "tool", "name": "read_job_log", "input": {"id": "j9"}, "result": "error: no trades on the tape"}
+    assert run(f"stepFailed({json.dumps(log)})") is False
+    assert run(f"stepFailed({json.dumps(log | {'error': True})})") is True

@@ -886,7 +886,8 @@ def test_a_role_that_runs_labs_is_told_how_many_lab_slots_are_free(paths, monkey
         assert L.lab_slots_line(paths, "fees") == "Lab slots: 1 of 2 free (a lab, a freeze and qualify each take one)."
         with lab_lock.lab_lock(paths.data, wait=False):
             lab_lock.want(paths.data, "qualify")
+            # round 3 (14 Nov): no lab of the agents' runs, so start_job would not make them give way: the line
+            # says only that qualify waits too (tests/operator/test_tool_answers.py has the other case)
             assert L.lab_slots_line(paths, "tester") == (
-                "Lab slots: 0 of 2 free (a lab, a freeze and qualify each take one); qualify waits for the next free "
-                "one and gets it before a lab of yours."
+                "Lab slots: 0 of 2 free (a lab, a freeze and qualify each take one); qualify waits for a slot too."
             )

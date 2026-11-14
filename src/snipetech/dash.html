@@ -135,10 +135,14 @@
   const ROLE_WORDS = { operator: "Operator", analyst: "Analyst", postmortem: "Post-mortem", scout: "Wallet scout",
     tester: "Strategy tester", fees: "Fee and place analyst", oktech: "OKTech features analyst" };
   const turnTitle = (t) => ROLE_WORDS[t.mode] || t.mode || "Operator";
-  // a research agent's journal entry whose headline is the turn's note: by its input, or (a long input is kept cut) by
-  // what the tool answered
-  const wroteNote = (step) => step.name === "write_report" && (!!(step.input || {}).headline
-    || /headline is written as this turn's note/.test(String(step.result || "")));
+  // a research agent's journal entry whose headline became the turn's note: by what the tool answered (a refused call
+  // carries a headline too); by its input only while there is no answer yet
+  const wroteNote = (step) => step.name === "write_report" && (step.result == null ? !!(step.input || {}).headline
+    : /headline is written as this turn's note/.test(String(step.result)));
+  // a write the tool did not do as asked answers "error ..." (the runner's own mark is for a tool that raised; what
+  // a read gives back may begin with that word and be no refusal)
+  const WRITES = ["update_table", "upsert_idea", "add_lesson", "start_job", "write_report", "write_note", "set_candidates"];
+  const stepFailed = (step) => !!step.error || (WRITES.includes(step.name) && /^\s*error/i.test(String(step.result || "")));
   const stepLabel = (step) => wroteNote(step) ? "Wrote its journal entry and the note for you" : (TOOL_WORDS[step.name] || step.name);
   // the turn's record keeps an input over 1,500 characters as {"(cut)": the start of its JSON}: show the text in it
   function cutText(cut) {
@@ -202,7 +206,7 @@
     const inp = step.input || {};
     const main = stepMain(step);
     const rest = JSON.stringify(inp, null, 1);
-    return `<div class="step tool"><div class="lbl">${esc(stepLabel(step))}${step.error ? ' <span class="chip crit">error</span>' : ""}</div>
+    return `<div class="step tool"><div class="lbl">${esc(stepLabel(step))}${stepFailed(step) ? ' <span class="chip crit">error</span>' : ""}</div>
       ${main ? `<pre>${esc(main)}</pre>` : ""}
       <details class="sub" data-key="${key}-in"${openAttr(key + "-in")}><summary>full request</summary><pre>${esc(rest)}</pre></details>
       <details class="sub" data-key="${key}-out"${openAttr(key + "-out")}><summary>what came back</summary><pre>${esc(step.result == null ? "(nothing)" : step.result)}</pre></details></div>`;
