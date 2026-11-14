@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import math
 import os
 import time
 from collections.abc import Callable, Iterator
@@ -652,7 +653,7 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     testing = [i for i in queue if i.get("status") == "testing" and not i.get("owner_needed")]
     # told at the next round and once more when the idle wait has passed (`STALLED_TELLS`); then the three-hour look
     told = state.get("stalled_told")
-    told = told if isinstance(told, (int, float)) and not isinstance(told, bool) and told == told else None
+    told = told if isinstance(told, (int, float)) and not isinstance(told, bool) and math.isfinite(told) else None
     again = int(state.get("stalled_n") or 0) < STALLED_TELLS
     if testing and not job_runs and (told is None or (again and now - told >= IDLE_WAIT_SECS - SLACK_SECS)):
         return True, f"{STALLED} {testing[0].get('id')} is in testing and no job of yours runs: {STALLED_DO}"
