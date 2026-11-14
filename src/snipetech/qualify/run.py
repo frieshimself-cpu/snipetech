@@ -46,7 +46,7 @@ LOW_BID_ARM = "control"
 TX_COST_KEY = "measure:tx_cost"
 # How a kept cost was counted. 2 (14 Nov): on the low bid's own buys (a fill sent far above the arm's bid is another
 # bid's, measure.classify.OTHER_BID) and on failed sends on coins (measure.run.on_coins). A record without it was
-# counted the old way (the server's 0.00934 held four tip-test buys and 54 failed sends of one USDC swap): not charged.
+# counted the old way (the server's 0.00934 held four tip-test buys and 50 failed sends of one USDC swap): not charged.
 TX_COST_BASIS = 2
 
 
