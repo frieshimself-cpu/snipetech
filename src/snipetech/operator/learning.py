@@ -36,8 +36,13 @@ STATUSES = ("open", "testing", "adopted", "rejected")
 OPEN = ("open", "testing")  # what is still to be decided; adopted and rejected ideas are closed
 ALWAYS_OWNER = ("live-test", "code")  # a live test spends SOL; a code change needs a coding session: the owner's yes
 IDEA_TEXT = {"title": 120, "why": 600, "test": 400, "expected": 300}  # each field's size cap in characters
+# What the test found, in numbers: the field an idea is closed with, so that `test` stays how it is tested. Until
+# 14 Nov there was none and the agents kept the running result in `test`, which is why 41 of their 57 refused idea
+# writes were a test over its cap. Never required; shown by the live page (dash.py lists it).
+IDEA_RESULT_CHARS = 600
+IDEA_CAPS = IDEA_TEXT | {"result": IDEA_RESULT_CHARS}  # every text field's cap: a longer text is cut there and kept
 # role: whose queue a research idea is in (operator/roles.py); read it with role_of, which knows what none means
-IDEA_FIELDS = ("id", *IDEA_TEXT, "kind", "status", "owner_needed", "priority", "role")
+IDEA_FIELDS = ("id", *IDEA_TEXT, "result", "kind", "status", "owner_needed", "priority", "role")
 DEFAULT_PRIORITY = 3  # 1 (low) to 5 (high): the agent's own estimate of what testing the idea is worth
 MAX_IDEAS = 100
 
@@ -92,6 +97,17 @@ def _clean(value: Any, field: str, limit: int) -> str:
         raise ValueError(f"{field} looks like it carries a secret (a key, a token or a whole signature); cite the "
                          "wallet, the mint or the first 8 characters of a signature instead")  # fmt: skip
     return text
+
+
+def _clean_cut(value: Any, field: str, limit: int) -> tuple[str, int]:
+    """`_clean` for an idea's text: a text over its cap is cut there and kept, not refused. Returns the text and, when
+    it was cut, how long it was (else 0). A refusal made the agent write the whole text again: 57 of 207 idea writes
+    on 14 Nov. An empty text and a secret are still refused."""
+    text = " ".join(str(value if value is not None else "").split()).replace("|", "/")
+    was = len(text)
+    if was > limit:
+        text = text[: limit - 1].rstrip() + "…"
+    return _clean(text, field, limit), (was if was > limit else 0)
 
 
 def _lessons_path(paths: OperatorPaths) -> Path:
@@ -221,12 +237,20 @@ def _next_id(ideas: list[dict[str, Any]]) -> str:
     return f"I{max(nums, default=0) + 1}"
 
 
-def _validated(fields: dict[str, Any]) -> dict[str, Any]:
+def _validated(fields: dict[str, Any], cut: dict[str, int] | None = None) -> dict[str, Any]:
+    """The fields given, checked. `cut` is filled with each text field that was over its cap: how long it was."""
     unknown = sorted(set(fields) - set(IDEA_FIELDS))
     if unknown:
         raise ValueError(f"unknown field(s) {', '.join(unknown)}; an idea has {', '.join(IDEA_FIELDS)}")
     given = {k: v for k, v in fields.items() if v is not None}
-    clean: dict[str, Any] = {k: _clean(given[k], k, cap) for k, cap in IDEA_TEXT.items() if k in given}
+    if not str(given.get("result", "x")).strip():  # no result yet is no error: the field is never required
+        del given["result"]
+    clean: dict[str, Any] = {}
+    for k, cap in IDEA_CAPS.items():
+        if k in given:
+            clean[k], was = _clean_cut(given[k], k, cap)
+            if was and cut is not None:
+                cut[k] = was
     if "kind" in given:
         clean["kind"] = _choice(given["kind"], "kind", KINDS)
     if "status" in given:
@@ -261,15 +285,28 @@ def role_of(idea: dict[str, Any]) -> str | None:
 def upsert_idea(
     paths: OperatorPaths, fields: dict[str, Any], *, source: str, now: float | None = None, role: str | None = None
 ) -> dict[str, Any]:
+    """Add an idea, or update one: `upsert_idea_detail`, of which this returns the idea alone."""
+    return upsert_idea_detail(paths, fields, source=source, now=now, role=role)["idea"]
+
+
+def upsert_idea_detail(
+    paths: OperatorPaths, fields: dict[str, Any], *, source: str, now: float | None = None, role: str | None = None
+) -> dict[str, Any]:
     """Add an idea, or update one (by `id`, else by the same title): fields not given are kept. A new idea needs a
-    title, why (the evidence), test (how to confirm it), expected (the effect) and kind. Live tests and code changes
-    always need the owner. Raises ValueError with what to fix; nothing is written then.
+    title, why (the evidence), test (how to confirm it), expected (the effect) and kind; `result` (what the test
+    found) is given when there is one. Live tests and code changes always need the owner. A text over its cap is cut
+    there and kept. Raises ValueError with what to fix; nothing is written then.
+
+    Returns what it did: {"idea": the idea as it stands, "created": whether it is new, "changed": the fields that
+    differ from before (every field given, for a new idea), "cut": {field: how long its text was} for each text that
+    was over its cap}.
 
     `role`: the role whose turn writes (None for every other writer, which none of this holds). A role changes only
     its own queue's ideas and the ideas in nobody's; it may add an idea to any queue (the field `role`: how work is
     handed on), a research idea it adds without one is its own, and no queue takes an idea from a role's turn while
     it holds MAX_OPEN_IDEAS open ones."""
-    clean = _validated(dict(fields or {}))
+    cut: dict[str, int] = {}
+    clean = _validated(dict(fields or {}), cut)
     acting = _choice(role, "role", ROLES) if role is not None else None
     ts = _iso(time.time() if now is None else now)
     with _ideas_lock(paths):
@@ -284,6 +321,7 @@ def upsert_idea(
             key = _title_key(clean.get("title", ""))
             idea = next((i for i in ideas if key and _title_key(i.get("title", "")) == key), None)
         was_open_in = None  # the queue the idea already counts in
+        before = dict(idea) if idea is not None else None
         if idea is not None:
             owner = role_of(idea)
             if acting and owner not in (None, acting):
@@ -306,6 +344,8 @@ def upsert_idea(
                     "status": clean.get("status", "open"), "owner_needed": clean.get("owner_needed", False),
                     "priority": clean.get("priority", DEFAULT_PRIORITY), "created": ts, "updated": ts,
                     "source": re.sub(r"[^a-z-]", "", str(source).lower()) or "agent"}  # fmt: skip
+            if "result" in clean:
+                idea["result"] = clean["result"]
             if "role" in clean:
                 idea["role"] = clean["role"]
             elif acting and idea["kind"] == "research":  # a role's own research idea is its own queue's
@@ -320,7 +360,11 @@ def upsert_idea(
                 raise ValueError(f"the {queue}'s queue already holds {held} open ideas (the limit is "
                                  f"{MAX_OPEN_IDEAS}): close one with its result or merge two before adding")  # fmt: skip
         _write_ideas(paths, ideas)
-        return dict(idea)
+        if before is None:
+            changed = [k for k in IDEA_FIELDS if k in clean and k != "id"]
+        else:
+            changed = [k for k in IDEA_FIELDS if k != "id" and idea.get(k) != before.get(k)]
+        return {"idea": dict(idea), "created": before is None, "changed": changed, "cut": cut}
 
 
 def _priority(idea: dict[str, Any]) -> int:

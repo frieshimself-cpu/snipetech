@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sqlite3
 import time
@@ -22,6 +23,13 @@ LEVELS = ("info", "decision")
 
 
 SHARED_FILES = frozenset({"lessons.md", "notes.md", "inbox.md"})  # never overwritten by write_report
+# A role's table: a row or a paragraph longer than its cap is cut there and kept, and the answer says so (a refusal
+# makes the model write all of it again). The longest of 104 real writes, 13-14 Nov: a row of 906 characters, a
+# paragraph above the table of 1,198, one under it of 548.
+TABLE_ROW_CHARS = 1200
+TABLE_HEADLINE_CHARS = 1200
+TABLE_BELOW_CHARS = 800
+TABLE_WARN_CHARS = 6000  # what a role's own message carries of its table (prompts.ROLE_TABLE_CHARS): said when past
 RESEARCH_PREFIX = "docs/research/"  # how read_file names a report of the research rounds, in the checkout
 
 
@@ -132,17 +140,25 @@ def sql_hint(query: str, error: str) -> str:
 JSON_LEAD_LINES = 50  # lines a job may print before its JSON (a lab's note on its error stream), still read as one
 JSON_TRAIL_LINES = 20  # and after it (the shell's "Terminated")
 OUTLINE_NAMES = 12  # keys named for a part that does not fit, so the next read can ask for the one wanted
+ANSWER_CHARS = 12_000  # no answer of read_job_log is longer: it is cut at a line or an item and says how to read on
+ANSWER_ROOM = ANSWER_CHARS - 800  # what the lines of an answer may take: the rest is its first and its last line
+FOLD_CHARS = 2000  # a line longer than this is shown in pieces of this length (a result printed on one line, cut short)
+VALUE_CHARS = 300  # a plain value in an outline: a longer text shows its start and the key that reads all of it
+AROUND_CHARS = 1500  # what an answer shows of the lines a job printed before and after its JSON
 
 
 def json_log(text: str) -> tuple[Any, list[str], list[str]] | None:
     """(the object, the lines before it, the lines after it) for a log that is one JSON object or list with at most a
-    few lines printed around it; None for any other log."""
+    few lines printed around it; None for any other log. The JSON may be printed over many lines (a lab's --json) or
+    whole on ONE line (`gmgn ... --json`): until 14 Nov only a closing bracket on a line of its own was taken, so a
+    one-line result was no JSON to the reader and came back whole whatever was asked (25 answers, 703,000
+    characters)."""
     lines = text.splitlines()
     start = next((i for i, line in enumerate(lines[:JSON_LEAD_LINES]) if line[:1] in ("{", "[")), None)
     if start is None:
         return None
     for end in range(len(lines), max(start, len(lines) - JSON_TRAIL_LINES), -1):
-        if lines[end - 1].strip() not in ("}", "]"):
+        if lines[end - 1].rstrip()[-1:] not in ("}", "]"):
             continue
         try:
             return json.loads("\n".join(lines[start:end])), lines[:start], lines[end:]
@@ -153,7 +169,10 @@ def json_log(text: str) -> tuple[Any, list[str], list[str]] | None:
 
 def _holds(v: Any) -> str:
     if isinstance(v, dict):
-        return "it holds: " + ", ".join(str(k) for k in v) if v else "it is empty"
+        if not v:
+            return "it is empty"
+        more = f", … ({len(v)} keys)" if len(v) > OUTLINE_NAMES else ""
+        return "it holds: " + ", ".join(str(k) for k in list(v)[:OUTLINE_NAMES]) + more
     if isinstance(v, list):
         return f"it has {len(v)} items (0-{len(v) - 1})" if v else "it is empty"
     return "it is one value"
@@ -173,15 +192,34 @@ def json_part(obj: Any, key: str) -> Any:
     return at
 
 
+def _count(v: Any) -> str:
+    if not isinstance(v, (dict, list)):
+        return "one value"
+    word = "item" if isinstance(v, list) else "key"
+    return f"{len(v)} {word}{'' if len(v) == 1 else 's'}"
+
+
+def _too_big(k: str, v: Any, n_lines: int) -> str:
+    """One line for a part that is not printed: its size, the key that reads it, what it holds."""
+    size = f"{len(v)} items" if isinstance(v, list) else f"{len(v)} keys"
+    inside = v if isinstance(v, dict) else v[0] if v and isinstance(v[0], dict) else None
+    names = ", ".join(str(x) for x in list(inside)[:OUTLINE_NAMES]) if inside else ""
+    more = "" if not inside or len(inside) <= OUTLINE_NAMES else ", ..."
+    holds = f" ({'each' if isinstance(v, list) else 'it'} holds: {names}{more})" if names else ""
+    return f'{size}, {n_lines} lines: key="{k}"{holds}'
+
+
 def json_outline(obj: Any, budget: int) -> list[str]:
     """A JSON result too long for `budget` lines, as what it holds, in its own order: each plain value; each larger
     part whole while the lines last, taken from the top; each part that does not fit as one line with its size and the
-    key that reads it."""
+    key that reads it. The first line says how big the whole is."""
     items = list(obj.items()) if isinstance(obj, dict) else [(str(i), v) for i, v in enumerate(obj)]
     printed = [(k, v, json.dumps(v, indent=1, default=str).splitlines()) for k, v in items]
     total = sum(len(r) for _, _, r in printed) + 2
+    chars = sum(len(line) + 1 for _, _, r in printed for line in r)
     kind = "object" if isinstance(obj, dict) else "list"
-    head = f'one JSON {kind}, {total} lines; a part that does not fit below is read with key (key="a", "a.0", "a.b"):'
+    head = (f"one JSON {kind}, {total} lines, {chars:,} characters; a part that does not fit below is read with key "
+            '(key="a", "a.0", "a.b"):')  # fmt: skip
     out = [head]
     left = int(budget) - 1 - len(printed)  # a line for each part at the least
     whole: set[str] = set()
@@ -190,44 +228,204 @@ def json_outline(obj: Any, budget: int) -> list[str]:
             whole.add(k)
             left -= len(r) - 1
     for k, v, r in printed:
-        if len(r) == 1:
+        if len(r) == 1 and len(r[0]) > VALUE_CHARS:  # one long text: its start, and the key that reads all of it
+            out.append(f'"{k}": {r[0][:VALUE_CHARS]}… ({len(r[0]):,} characters: key="{k}")')
+        elif len(r) == 1:
             out.append(f'"{k}": {r[0]}')
         elif k in whole:
             out.append(f'"{k}": {r[0]}')
             out.extend(r[1:])
         else:
-            size = f"{len(v)} items" if isinstance(v, list) else f"{len(v)} keys"
-            inside = v if isinstance(v, dict) else v[0] if v and isinstance(v[0], dict) else None
-            names = ", ".join(str(x) for x in list(inside)[:OUTLINE_NAMES]) if inside else ""
-            more = "" if not inside or len(inside) <= OUTLINE_NAMES else ", ..."
-            holds = f" ({'each' if isinstance(v, list) else 'it'} holds: {names}{more})" if names else ""
-            out.append(f'"{k}": {size}, {len(r)} lines: key="{k}"{holds}')
+            out.append(f'"{k}": {_too_big(k, v, len(r))}')
     return out
 
 
-def read_job_output(text: str, tail: int = 200, key: str | None = None) -> str:
-    """What `read_job_log` returns for a log's text: see its docstring."""
-    tail = max(1, int(tail))
+def _fold(lines: list[str]) -> list[str]:
+    """The lines with each one longer than FOLD_CHARS in pieces of that length: an answer is cut at a line, and no
+    line is longer than an answer."""
+    if all(len(line) <= FOLD_CHARS for line in lines):
+        return lines
+    out: list[str] = []
+    for line in lines:
+        out.extend(line[i : i + FOLD_CHARS] for i in range(0, len(line), FOLD_CHARS)) if line else out.append(line)
+    return out
+
+
+def _fit(lines: list[str], tail: int, room: int) -> int:
+    """How many of `lines`, counted from the first, one answer takes: `tail` at most, `room` characters at most, one
+    at the least."""
+    n = used = 0
+    for line in lines[: max(1, tail)]:
+        used += len(line) + 1
+        if n and used > room:
+            break
+        n += 1
+    return n
+
+
+def _compact(v: Any) -> str:
+    return json.dumps(v, separators=(",", ":"), default=str, ensure_ascii=False)
+
+
+def _item_line(i: int, item: Any, fields: list[str], at: str, missing: set[str]) -> str:
+    """One item of a list as one line: its number and only the fields asked for (a dotted name reads a part inside a
+    part; a field the item has not is left out). A line over FOLD_CHARS names its longest values by size and key."""
+    if not isinstance(item, dict):
+        row: Any = item
+    else:
+        row = {}
+        for f in fields:
+            try:
+                row[f] = json_part(item, f)
+                missing.discard(f)
+            except KeyError:
+                pass
+    line = f"[{i}] {_compact(row)}"
+    while len(line) > FOLD_CHARS and isinstance(row, dict):
+        f = max(row, key=lambda k: len(_compact(row[k])))
+        if isinstance(row[f], str) and row[f].startswith("<") and row[f].endswith(">"):
+            break  # every value is named already
+        row[f] = f'<{len(_compact(row[f])):,} characters: key="{at}.{i}.{f}">'
+        line = f"[{i}] {_compact(row)}"
+    return line[:FOLD_CHARS]
+
+
+def _plain_output(text: str, tail: int, skip: int) -> str:
+    """A log that is no JSON result: its last `tail` lines, or the `tail` lines before the last `skip`."""
+    raw = text.splitlines()
+    lines = _fold(raw)
+    end = len(lines) - skip
+    if end <= 0:
+        return f"the log has {len(lines):,} lines: nothing is left before the last {skip:,}"
+    back = lines[max(0, end - tail) : end][::-1]  # the newest first: what is cut is the oldest of them
+    k = _fit(back, tail, ANSWER_ROOM)
+    shown = lines[end - k : end]
+    if k == len(lines):
+        return "\n".join(shown)
+    folded = f"; a line over {FOLD_CHARS:,} characters is folded" if len(lines) != len(raw) else ""
+    head = f"lines {end - k + 1:,}-{end:,} of {len(lines):,} ({len(text):,} characters in the log{folded}):"
+    more = [f"… {end - k:,} earlier lines: read on with skip={skip + k}"] if end - k > 0 else []
+    return "\n".join([head, *shown, *more])
+
+
+def _around(lines: list[str], what: str) -> list[str]:
+    """The lines a job printed before or after its JSON, each cut short and no more than AROUND_CHARS of them."""
+    out, used = [], 0
+    for i, line in enumerate(lines):
+        line = line if len(line) <= VALUE_CHARS else line[:VALUE_CHARS] + "…"
+        if used + len(line) > AROUND_CHARS:
+            out.append(f"(+{len(lines) - i} more lines printed {what} the JSON)")
+            break
+        out.append(line)
+        used += len(line) + 1
+    return out
+
+
+def read_job_output(text: str, tail: int = 200, key: str | None = None, fields: Iterable[str] | None = None,
+                    first: int | None = None, last: int | None = None, skip: int = 0) -> str:  # fmt: skip
+    """What `read_job_log` returns for a log's text: see its docstring. Never longer than ANSWER_CHARS; an answer that
+    is not the whole starts with a line that says how big the whole is and, while something is left, ends with a line
+    that says how to read on (`skip`, or `first` for items)."""
+    tail, skip = max(1, int(tail)), max(0, int(skip or 0))
+    fields = [fields] if isinstance(fields, str) else [str(f) for f in fields or []]
+    ranged = first is not None or last is not None
     found = json_log(text)
     if found is None:
-        if key:
-            return "error: this log is not one JSON object: read its last lines, without key"
-        return "\n".join(text.splitlines()[-tail:])
+        if key or fields or ranged:
+            return ("error: this log is not one JSON object: read its last lines, without key"
+                    + (", fields, first or last" if fields or ranged else ""))  # fmt: skip
+        return _plain_output(text, tail, skip)
     obj, before, after = found
+    part, name, at = obj, "the result", ""
     if key:
         try:
             part = json_part(obj, key)
         except KeyError as exc:
             return f"error: {exc.args[0]}"
-        lines = json.dumps(part, indent=1, default=str).splitlines()
-        if len(lines) <= tail:
-            return "\n".join(lines)
-        left = f'… {len(lines) - tail} more lines of "{key}": a longer tail, or a key inside it ({_holds(part)})'
-        return "\n".join([*lines[:tail], left])
-    body = json.dumps(obj, indent=1, default=str).splitlines()
-    if len(body) > tail and isinstance(obj, (dict, list)) and obj:
-        body = json_outline(obj, tail)
-    return "\n".join([*before, *body, *after])
+        name, at = f'"{key}"', f'key="{key}", '
+    lo = hi = 0
+    if ranged:
+        if not isinstance(part, list):
+            return f"error: first and last count the items of a list, and {name} is not one: {_holds(part)}"
+        lo = max(0, int(first or 0))
+        hi = len(part) - 1 if last is None else min(len(part) - 1, int(last))
+        if lo > hi:
+            return f"error: {name} has {len(part)} items (0-{len(part) - 1}): none from {lo} to {int(last or 0)}"
+    if fields and isinstance(part, list):  # one line an item, read on by items
+        if not ranged:
+            hi = len(part) - 1
+        lo += skip
+        missing = set(fields)
+        lines = [_item_line(i, part[i], fields, key or "", missing) for i in range(lo, hi + 1)]
+        if not lines:
+            return f"{name} has {len(part)} items: nothing is left from item {lo}"
+        k = _fit(lines, tail, ANSWER_ROOM)
+        none = f" (no item here has: {', '.join(sorted(missing))})" if missing else ""
+        head = (f"{name}: {len(part)} items; items {lo}-{lo + k - 1} of {len(part)}, one line each with "
+                f"{', '.join(fields)}{none}:")  # fmt: skip
+        more = []
+        if k < len(lines):
+            keep = (f", last={hi}" if last is not None else "") + (", skip=0" if skip else "")
+            more = [f"… items {lo + k}-{hi} not shown: read on with first={lo + k}{keep} (the same key and fields)"]
+        return "\n".join([head, *lines[:k], *more])
+    if fields:  # the named parts of one object, one line each
+        if not isinstance(part, dict):
+            return f"error: fields name the parts of an object or of a list's items, and {name} is one value"
+        lines = []
+        for f in fields:
+            try:
+                v = json_part(part, f)
+            except KeyError as exc:
+                lines.append(f'"{f}": {exc.args[0]}')
+                continue
+            short = _compact(v)
+            if len(short) > FOLD_CHARS - len(f) - 10 and isinstance(v, (dict, list)):
+                short = _too_big(f"{key}.{f}" if key else f, v, len(json.dumps(v, indent=1, default=str).splitlines()))
+            lines.append(f'"{f}": {short}')
+        lines, size = _fold(lines), f"{len(fields)} fields"
+    elif not key and not ranged:  # the whole result: as it is when it fits, else its outline
+        lines = json.dumps(obj, indent=1, default=str).splitlines()
+        around = _around(before, "before") + _around(after, "after")
+        room = ANSWER_ROOM - sum(len(line) + 1 for line in around)
+        if not skip and len(lines) <= tail and sum(len(line) + 1 for line in lines) <= room:
+            return "\n".join([*_around(before, "before"), *lines, *_around(after, "after")])
+        if not isinstance(obj, (dict, list)) or not obj:
+            lines, size = _fold(lines), "one value"
+        else:  # every part gets its line whatever `tail` says; only the cap cuts an outline
+            outline = _fold(json_outline(obj, tail))
+            rest = outline[1:][skip:]
+            if not rest:
+                return f"the outline has {len(outline) - 1} lines: nothing is left after skip={skip}"
+            k = _fit(rest, len(rest), room)
+            head = outline[0] if not skip else outline[0].split(";")[0] + f"; its outline from line {skip + 1}:"
+            more = [f"… {len(rest) - k:,} more lines of the outline: read on with skip={skip + k} and the same tail"]
+            return "\n".join([*(_around(before, "before") if not skip else []), head, *rest[:k],
+                              *(more if k < len(rest) else _around(after, "after"))])  # fmt: skip
+    else:  # one part, or a range of a list's items, in the pretty form
+        lines = _fold(json.dumps(part[lo : hi + 1] if ranged else part, indent=1, default=str).splitlines())
+        size = _count(part)
+        if ranged:
+            size, at = f"items {lo}-{hi} of {len(part)}", at + f"first={lo}, last={hi}, "
+    chars = sum(len(line) + 1 for line in lines)
+    rest = lines[skip:]
+    if not rest:
+        return f"{name} is {len(lines):,} lines: nothing is left after skip={skip}"
+    k = _fit(rest, tail, ANSWER_ROOM)
+    if not skip and k == len(lines) and not ranged:
+        return "\n".join(lines)  # the whole part: nothing to say about it
+    head = f"{name}: {size}, {len(lines):,} lines, {chars:,} characters; lines {skip + 1:,}-{skip + k:,}:"
+    if k == len(rest):
+        return "\n".join([head, *rest])
+    if fields:
+        hint = "fewer fields"
+    elif isinstance(part, list):
+        inside = part[lo] if part and isinstance(part[lo], dict) else None
+        names = ", ".join(str(x) for x in list(inside)[:OUTLINE_NAMES]) if inside else ""
+        hint = "fields=[...] for one line an item" + (f" (each holds: {names})" if names else "")
+    else:
+        hint = f"a key inside it ({_holds(part)})"
+    more = f"… {len(rest) - k:,} more lines of {name}: read on with {at}skip={skip + k}; or {hint}"
+    return "\n".join([head, *rest[:k], more])
 
 
 class NoteSink:
@@ -334,6 +532,302 @@ def _research_file(research: Path | None, path: str) -> Path | None:
         return None
 
 
+# A role's table by rows. 14 Nov, 108 paid turns of the research agents: every turn sent its whole table again (211
+# writes, about 5,500 characters each, a third of it new: 39 % of everything the agents wrote), and the guard "already
+# says exactly this" never fired because the clock in the title differed. A table is a markdown file: a title line, a
+# paragraph, a table, sometimes a paragraph under it and a second table. A row is known by its first cell.
+_PIPE = re.compile(r"(?<!\\)\|")  # a cell's border: a pipe that is not escaped
+_SEPARATOR = re.compile(r"^\|\s*:?-{2,}")  # the line under a table's header: |---|---|
+_TITLE_CLOCK = re.compile(r",?\s*(?:updated\s+)?\d{1,2} [A-Z][a-z]{2}(?: \d{4})?,? \d\d:\d\d UTC\s*$")
+
+
+def _cells(row: str) -> list[str]:
+    cells = [c.strip() for c in _PIPE.split(row.strip())]
+    return cells[(1 if cells[:1] == [""] else 0) : (-1 if len(cells) > 1 and cells[-1] == "" else None)]
+
+
+def _row_key(key: Any) -> str:
+    """A first cell as rows are matched by it: without bold or code marks, single-spaced, whatever its capitals."""
+    return " ".join(re.sub(r"[*`]", "", str(key)).split()).casefold()
+
+
+def _blocks(lines: list[str]) -> list[tuple[int, int, int]]:
+    """Each table of the file as (its first line, its first row under the header, the line after its last)."""
+    out, i = [], 0
+    while i < len(lines):
+        if not lines[i].startswith("|"):
+            i += 1
+            continue
+        j = i
+        while j < len(lines) and lines[j].startswith("|"):
+            j += 1
+        out.append((i, i + 2 if j - i >= 2 and _SEPARATOR.match(lines[i + 1]) else i, j))
+        i = j
+    return out
+
+
+def _find_row(lines: list[str], key: Any) -> tuple[int | None, tuple[int, int, int] | None, list[str]]:
+    """(the row's line, its table, []) for the row whose first cell is `key`, or the ONE row whose first cell starts
+    with it up to the end of a word ("efe459e8a2" finds "efe459e8a2 (frozen 13 Nov 21:31)": the real first cells are
+    long and change). When several rows start with it none is found: (None, None, their first cells)."""
+    want, starts = _row_key(key), []
+    for block in _blocks(lines):
+        for i in range(block[1], block[2]):
+            cells = _cells(lines[i])
+            have = _row_key(cells[0]) if cells else ""
+            if cells and have == want:
+                return i, block, []
+            if want and have.startswith(want) and not have[len(want)].isalnum():
+                starts.append((i, block, cells[0]))
+    if len(starts) == 1:
+        return starts[0][0], starts[0][1], []
+    return None, None, [first for _, _, first in starts]
+
+
+def _alike(lines: list[str], first_cell: str) -> list[str]:
+    """The first cells of the rows that begin with the same word as `first_cell` (a wallet, a rule's id): what a new
+    row may have been meant to replace."""
+    word = re.match(r"[a-z0-9]{4,}", _row_key(first_cell))
+    if not word:
+        return []
+    out = []
+    for block in _blocks(lines):
+        for i in range(block[1], block[2]):
+            cells = _cells(lines[i])
+            if cells and re.match(r"[a-z0-9]*", _row_key(cells[0])).group(0) == word.group(0):
+                out.append(cells[0])
+    return out
+
+
+def _row_line(key: str, text: Any, columns: int) -> tuple[str, int, int]:
+    """(the row as one table line, how long it was when it was over TABLE_ROW_CHARS else 0, its cells). The text is
+    the row whole, or its cells without the key (one cell fewer than the table has columns): the key goes in front."""
+    cells = _cells(" ".join(str(text).split()))
+    if columns and len(cells) == columns - 1 and (not cells or _row_key(cells[0]) != _row_key(key)):
+        cells = [" ".join(str(key).split()), *cells]
+    line = "| " + " | ".join(cells) + " |"
+    if len(line) <= TABLE_ROW_CHARS:
+        return line, 0, len(cells)
+    return line[: TABLE_ROW_CHARS - 3] + "… |", len(line), len(cells)
+
+
+def _paragraph(text: Any, cap: int) -> tuple[str, int]:
+    para = " ".join(str(text).split())
+    return (para, 0) if len(para) <= cap else (para[: cap - 1].rstrip() + "…", len(para))
+
+
+def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), headline: str | None = None,
+                 below: str | None = None) -> tuple[str, list[str]]:  # fmt: skip
+    """A role's table with rows replaced, added and dropped and its paragraphs replaced: (the new text, what was done
+    in a few words each). Every line not named stays as it is, byte for byte, and so does the title. A row whose key
+    is some row's first cell (or the start of exactly one) replaces that row; a new key goes to the end of the first
+    table, or right behind the row its `after` names, or in front of the row its `before` names (in whichever table
+    that is). A row equal to the one there changes nothing; a key that fits several rows changes none."""
+    lines, did = text.split("\n"), []
+    replaced, added, same, dropped, missing, cut, notes = [], [], [], [], [], [], []
+
+    def short(k: Any) -> str:
+        return learning._cut(" ".join(str(k).split()), 40)
+
+    def fits(k: Any, cells: list[str]) -> str:
+        named = "; ".join(short(c) for c in cells[:4])
+        return f"{short(k)} fits {len(cells)} rows ({named}): give more of the first cell"
+
+    for row in rows or ():
+        key = str(row.get("key") or "").strip() if isinstance(row, dict) else ""
+        if not key or not str(row.get("text") or "").strip():
+            notes.append("a row without key and text was left out")
+            continue
+        i, block, several = _find_row(lines, key)
+        if several:
+            notes.append(fits(key, several))
+            continue
+        behind = None
+        if i is None:  # a new row: where it goes
+            where = row.get("before") or row.get("after")
+            if where:
+                behind, block, _ = _find_row(lines, where)
+                if behind is None:
+                    notes.append(f"no one row {short(where)}: {short(key)} went to the end of the first table")
+                elif row.get("before"):
+                    behind -= 1
+            if behind is None:
+                tables = _blocks(lines)
+                block = tables[0] if tables else None
+                behind = block[2] - 1 if block else None
+        columns = len(_cells(lines[block[0]])) if block else 0
+        line, was, n = _row_line(key, row["text"], columns)
+        if was:
+            cut.append(f"{short(key)} ({was:,})")
+        if columns and n != columns:
+            notes.append(f"{short(key)} has {n} cells, its table {columns} columns")
+        if i is None:
+            alike = [short(c) for c in _alike(lines, _cells(line)[0])][:3]
+            if alike:
+                notes.append(f"{short(key)} starts like the row{'s' if len(alike) > 1 else ''} {'; '.join(alike)}: "
+                             "drop one if it took its place")  # fmt: skip
+        if i is not None:
+            (same if lines[i] == line else replaced).append(short(key))
+            lines[i] = line
+        elif behind is not None:
+            lines.insert(behind + 1, line)
+            added.append(short(key))
+        else:  # a file with no table yet: the rows become one at its end
+            end = len(lines) - 1 if lines and lines[-1] == "" else len(lines)
+            lines[end:end] = ([""] if end and lines[end - 1].strip() else []) + [line]
+            added.append(short(key))
+    for key in drop or ():
+        i, _, several = _find_row(lines, key)
+        if several:
+            notes.append(fits(key, several))
+        elif i is None:
+            missing.append(short(key))
+        else:
+            del lines[i]
+            dropped.append(short(key))
+    done = (("replaced", replaced), ("added", added), ("dropped", dropped), ("the same already", same))
+    did += [f"{word} {len(keys)} ({'; '.join(keys)})" for word, keys in done if keys]
+    for name, given, cap in (("headline", headline, TABLE_HEADLINE_CHARS), ("the paragraph below", below,
+                                                                           TABLE_BELOW_CHARS)):  # fmt: skip
+        if given is None:
+            continue
+        tables = _blocks(lines)
+        if not tables:
+            notes.append(f"{name} not replaced: the file has no table")
+            continue
+        if name == "headline":  # from under the title, when the text above the table begins with one
+            end = tables[0][0]
+            top = next((i for i in range(end) if lines[i].strip()), None)
+            start = top + 1 if top is not None and lines[top].startswith("#") else 0
+        else:
+            start, end = tables[0][2], (tables[1][0] if len(tables) > 1 else len(lines))
+        para, was = _paragraph(given, cap)
+        if was:
+            notes.append(f"{name} cut at {cap:,} characters (it was {was:,})")
+        if " ".join(" ".join(lines[start:end]).split()) == para:
+            did.append(f"{name} the same already")
+            continue
+        new = [para, ""] if para else []  # a blank line on each side; under the last table that is the file's end
+        lines[start:end] = new if name == "headline" and not start else ["", *new]
+        did.append(f"{name} replaced")
+    if missing:
+        did.append("not in the table: " + "; ".join(missing))
+    if cut:
+        did.append(f"cut at {TABLE_ROW_CHARS:,} characters: " + "; ".join(cut))
+    return "\n".join(lines), did + list(dict.fromkeys(notes))
+
+
+def whole_table(text: str) -> tuple[str, list[str]]:
+    """A table sent whole, as it is stored: as it came, but a row over TABLE_ROW_CHARS is cut there."""
+    lines, cut = str(text).split("\n"), []
+    for _, first, end in _blocks(lines):
+        for i in range(first, end):
+            if len(lines[i]) > TABLE_ROW_CHARS:
+                cells = _cells(lines[i])
+                cut.append(f"{learning._cut(cells[0] if cells else '?', 40)} ({len(lines[i]):,})")
+                lines[i] = lines[i][: TABLE_ROW_CHARS - 3] + "… |"
+    return "\n".join(lines), ([f"cut at {TABLE_ROW_CHARS:,} characters: " + "; ".join(cut)] if cut else [])
+
+
+def _no_clock(text: str) -> str:
+    """The table without the clock in its title: what decides whether two tables say the same."""
+    head, _, rest = text.partition("\n")
+    return (_TITLE_CLOCK.sub("", head.rstrip()) if head.startswith("#") else head) + "\n" + rest
+
+
+def table_stamped(text: str, now: float) -> str:
+    """The table with the time of this write in its title ("..., updated 14 Nov 08:05 UTC"), in place of whatever
+    clock the title carried. The code writes it, and only when it writes the file; a table with no title gets none."""
+    head, nl, rest = text.partition("\n")
+    if not head.startswith("#"):
+        return text
+    t = time.gmtime(now)
+    clock = f"updated {t.tm_mday} {time.strftime('%b %H:%M', t)} UTC"
+    return f"{_TITLE_CLOCK.sub('', head.rstrip())}, {clock}{nl}{rest}"
+
+
+def table_size(text: str) -> str:
+    lines = text.split("\n")
+    rows = sum(end - first for _, first, end in _blocks(lines))
+    over = (f"; it is past {TABLE_WARN_CHARS:,} characters: a turn's message carries its first {TABLE_WARN_CHARS:,} "
+            f"and the other roles' turns its first {roles.TABLE_CHARS:,}, so shorten or drop rows"
+            if len(text) > TABLE_WARN_CHARS else "")  # fmt: skip
+    return f"{len(text):,} characters, {rows} row{'' if rows == 1 else 's'}{over}"
+
+
+# What the idea tools answer. 14 Nov, 108 paid turns of the research agents: list_ideas gave every idea whole (about
+# 1,250 characters of JSON each, 8,000 a call, 67 calls) and upsert_idea, add_lesson and start_job answered with what
+# had just been written (181,000 characters back for 151,000 written). A list is one line an idea, with one call more
+# for an idea whole; a write is answered with what it did.
+IDEA_LINE = 180  # one idea in a list: id, status, priority, queue, title and the start of its test (or its result)
+
+
+def idea_line(idea: dict[str, Any]) -> str:
+    """One idea as one line of a list: `I20 [testing, priority 4, fees] title. Test: the start of its test`; a closed
+    idea that has a result shows the start of that instead."""
+    tags = [str(idea.get("status")), f"priority {learning._priority(idea)}",
+            learning.role_of(idea) or str(idea.get("kind") or "?")]  # fmt: skip
+    if idea.get("owner_needed"):
+        tags.append("needs the owner")
+    closed = idea.get("status") not in learning.OPEN
+    what = f"Result: {idea['result']}" if closed and idea.get("result") else f"Test: {idea.get('test', '?')}"
+    return learning._cut(f"{idea.get('id')} [{', '.join(tags)}] {learning._title(idea)}. {what}", IDEA_LINE)
+
+
+def ideas_answer(paths: OperatorPaths, status: str, limit: int, id: str | None, full: bool, *,
+                 role: str | None = None, label: str | None = None) -> str:  # fmt: skip
+    """What list_ideas returns: one line an idea under a line of counts; the ideas named by `id` whole, from any queue
+    (JSON); or with `full` every listed idea whole (JSON, as the tool answered until 14 Nov). `role`: only that
+    queue; `label`: how the queue is named in the answer (None for the analyst's tool, which knows no queue)."""
+    if id and str(id).strip():
+        want = [x for x in re.split(r"[\s,;]+", str(id).strip()) if x]
+        every = {str(i.get("id")): i for i in learning.list_ideas(paths, "all")}
+        out: dict[str, Any] = {"ideas": [every[x] | {"queue": learning.role_of(every[x])} for x in want if x in every]}
+        unknown = [x for x in want if x not in every]
+        if unknown:
+            out["unknown"] = unknown
+        return redact(json.dumps(out))
+    try:
+        listed = learning.list_ideas(paths, status, role=role)
+        rows = listed[: min(100, max(1, int(limit)))]
+    except ValueError as exc:
+        return f"error: {exc}"
+    counts: dict[str, int] = {}
+    for i in learning.list_ideas(paths, "all", role=role):
+        counts[str(i.get("status"))] = counts.get(str(i.get("status")), 0) + 1
+    if full:
+        if label is None:
+            return redact(json.dumps({"counts": counts, "ideas": rows}))
+        rows = [i | {"queue": learning.role_of(i)} for i in rows]
+        return redact(json.dumps({"queue": label, "counts": counts, "ideas": rows}))
+    head = ", ".join(f"{counts[k]} {k}" for k in sorted(counts, key=lambda k: (k not in learning.STATUSES, k)))
+    head = (f"queue {label}: " if label else "") + (head or "no ideas")
+    if len(rows) < len(listed):
+        head += f"; the first {len(rows)} of {len(listed)} listed (limit)"
+    example = rows[0].get("id") if rows else "I20"
+    head += f' (one line an idea; id="{example}" gives an idea whole, full=true all of these)'
+    return redact("\n".join([head, *(idea_line(i) for i in rows)]))
+
+
+def idea_answer(done: dict[str, Any]) -> str:
+    """What upsert_idea returns for learning.upsert_idea_detail's result: `<id> created: ...` or `<id> updated: the
+    fields that changed`, and each text that was cut at its cap with how long it was."""
+    idea = done["idea"]
+    if done["created"]:
+        queue = learning.role_of(idea)
+        what = [str(idea.get("kind")), str(idea.get("status")), f"priority {learning._priority(idea)}"]
+        if idea.get("owner_needed"):
+            what.append("needs the owner's yes")
+        what.append(f"queue {queue}" if queue else "in no queue")
+        out = f"{idea['id']} created: {', '.join(what)}"
+    else:
+        out = f"{idea['id']} updated: {', '.join(done['changed']) or 'nothing changed'}"
+    cut = [f"{f} cut at {learning.IDEA_CAPS[f]} characters (it was {was})" for f, was in done["cut"].items()]
+    if cut:
+        out += "; " + ", ".join(cut) + ": the idea keeps the cut text, the full text belongs in your journal"
+    return out
+
+
 def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str, *, ideas: bool = True,
                         svc=None, wallet: str = "", role: str | None = None) -> list:  # fmt: skip
     """The shared memory as tools: read_lessons, add_lesson, list_ideas, and (when `ideas`) upsert_idea; with a
@@ -371,54 +865,53 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
             lesson = learning.add_lesson(paths, text, evidence, n, source=source, now=now_fn())
         except ValueError as exc:
             return f"error: {exc}"
-        return "already recorded" if lesson is None else "recorded: " + json.dumps(lesson)
+        return "already recorded" if lesson is None else "recorded"
 
     @beta_async_tool
-    async def list_ideas(status: str = "open", limit: int = 10) -> str:
-        """The ideas worth testing (operator/ideas.json) with their evidence, test, expected effect, kind, status and
-        whether they need the owner's yes, plus the count per status.
+    async def list_ideas(status: str = "open", limit: int = 10, id: str | None = None, full: bool = False) -> str:
+        """The ideas worth testing (operator/ideas.json), one line each under the count per status: id, status,
+        priority, whose queue (or its kind), whether it needs the owner's yes, title, and the start of its test (of a
+        closed idea: of its result). An idea whole (why, test, expected, result) is one more call with its id.
 
         Args:
             status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
             limit: At most this many ideas.
+            id: One idea whole, or several ("I20" or "I20, I31"), as JSON.
+            full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
-        try:
-            rows = learning.list_ideas(paths, status, limit=min(100, max(1, int(limit))))
-        except ValueError as exc:
-            return f"error: {exc}"
-        counts: dict[str, int] = {}
-        for i in learning.list_ideas(paths, "all"):
-            counts[str(i.get("status"))] = counts.get(str(i.get("status")), 0) + 1
-        return redact(json.dumps({"counts": counts, "ideas": rows}))
+        return ideas_answer(paths, status, limit, id, full)
 
     @beta_async_tool
     async def upsert_idea(title: str | None = None, why: str | None = None, test: str | None = None,
                           expected: str | None = None, kind: str | None = None, status: str | None = None,
-                          owner_needed: bool | None = None, priority: int | None = None, id: str | None = None) -> str:  # fmt: skip
-        """Add an idea worth testing, or update one (by id, or by the same title); fields left out are kept. A new
-        idea needs title, why, test, expected and kind. Live tests and code changes always need the owner's yes, and
-        so does any config change outside the strategist's [autotune] bounds (set owner_needed). An idea never
-        changes anything by itself: research you may start with start_job; the rest waits for the strategist or the
-        owner.
+                          owner_needed: bool | None = None, priority: int | None = None, id: str | None = None,
+                          result: str | None = None) -> str:  # fmt: skip
+        """Add an idea worth testing, or update one (by id, or by the same title); fields left out are kept, so send
+        only what changes. A new idea needs title, why, test, expected and kind. Live tests and code changes always
+        need the owner's yes, and so does any config change outside the strategist's [autotune] bounds (set
+        owner_needed). An idea never changes anything by itself: research you may start with start_job; the rest
+        waits for the strategist or the owner. The answer is one line: the id and what changed. A text over its
+        length is cut there and kept, and the answer says so.
 
         Args:
-            title: What to try, in a few words (under 120 characters).
-            why: The evidence for it, with numbers (under 600 characters).
-            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (under 400).
-            expected: The effect expected if it works, in numbers where possible (under 300).
+            title: What to try, in a few words (120 characters).
+            why: The evidence for it, with numbers (600 characters).
+            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (400). It stays
+                how the idea is tested: what a test found goes into result.
+            expected: The effect expected if it works, in numbers where possible (300).
             kind: research | config | code | live-test.
-            status: open | testing | adopted | rejected (adopted or rejected only with the result that decided it).
+            status: open | testing | adopted | rejected (adopted or rejected together with the result that decided it).
             owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
             priority: 1 (low) to 5 (high): what testing it is worth.
             id: The idea's id (e.g. "I3") to update it; omit to add a new one.
+            result: What the test found, in numbers, with n and the job (600): what an idea is closed with.
         """
         fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
-                  "status": status, "owner_needed": owner_needed, "priority": priority}  # fmt: skip
+                  "status": status, "owner_needed": owner_needed, "priority": priority, "result": result}  # fmt: skip
         try:
-            idea = learning.upsert_idea(paths, fields, source=source, now=now_fn())
+            return idea_answer(learning.upsert_idea_detail(paths, fields, source=source, now=now_fn()))
         except ValueError as exc:
             return f"error: {exc}"
-        return json.dumps(idea)
 
     @beta_async_tool
     async def read_round_trips(hours: int = 24, limit: int = 40) -> str:
@@ -468,61 +961,61 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
     acting = role  # the role whose turn this is: upsert_idea's own `role` argument is the queue an idea goes to
 
     @beta_async_tool(name="list_ideas")
-    async def role_list_ideas(status: str = "open", limit: int = 10, queue: str = "mine") -> str:
-        """The ideas worth testing (operator/ideas.json), by queue: yours unless you ask for another. Each comes with
-        its evidence, test, expected effect, kind, status, whether it needs the owner's yes and its queue (none: an
-        idea of kind code, config or live-test, which waits for the cloud session or the owner), plus the count per
-        status in the queue asked for.
+    async def role_list_ideas(status: str = "open", limit: int = 10, queue: str = "mine", id: str | None = None,
+                              full: bool = False) -> str:  # fmt: skip
+        """The ideas worth testing (operator/ideas.json), by queue: yours unless you ask for another. One line an
+        idea under the count per status in the queue asked for: id, status, priority, its queue (an idea of kind
+        code, config or live-test is in none and shows its kind: it waits for the cloud session or the owner),
+        whether it needs the owner's yes, title, and the start of its test (of a closed idea: of its result). An
+        idea whole (why, test, expected, result) is one more call with its id.
 
         Args:
             status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
             limit: At most this many ideas.
             queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech.
+            id: One idea whole, or several ("I20" or "I20, I31"), from any queue, as JSON.
+            full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
         if queue not in ("mine", "all", *roles.ROLES):
             return f"error: queue must be mine, all or one of {', '.join(roles.ROLES)}"
         whose = None if queue == "all" else acting if queue == "mine" else queue
-        try:
-            rows = learning.list_ideas(paths, status, limit=min(100, max(1, int(limit))), role=whose)
-        except ValueError as exc:
-            return f"error: {exc}"
-        counts: dict[str, int] = {}
-        for i in learning.list_ideas(paths, "all", role=whose):
-            counts[str(i.get("status"))] = counts.get(str(i.get("status")), 0) + 1
-        rows = [i | {"queue": learning.role_of(i)} for i in rows]
-        return redact(json.dumps({"queue": whose or "all", "counts": counts, "ideas": rows}))
+        return ideas_answer(paths, status, limit, id, full, role=whose, label=whose or "all")
 
     @beta_async_tool(name="upsert_idea")
     async def role_upsert_idea(title: str | None = None, why: str | None = None, test: str | None = None,
                                expected: str | None = None, kind: str | None = None, status: str | None = None,
                                owner_needed: bool | None = None, priority: int | None = None,
-                               role: str | None = None, id: str | None = None) -> str:  # fmt: skip
+                               role: str | None = None, id: str | None = None,
+                               result: str | None = None) -> str:  # fmt: skip
         """Add an idea worth testing, or update one of your own (by id, or by the same title); fields left out are
-        kept. A new idea needs title, why, test, expected and kind. A research idea you add is your own queue's unless
-        you give role: that is how you hand work to another role (it alone moves or closes it; a queue holds at most
-        15 open ideas, so close or merge before you add). An idea of another role's queue you cannot change. What the
-        owner must decide is an idea of kind live-test, code or config: it is in nobody's queue, always needs the
-        owner's yes, and never changes anything by itself.
+        kept, so send only what changes. A new idea needs title, why, test, expected and kind. A research idea you
+        add is your own queue's unless you give role: that is how you hand work to another role (it alone moves or
+        closes it; a queue holds at most 15 open ideas, so close or merge before you add). An idea of another role's
+        queue you cannot change. What the owner must decide is an idea of kind live-test, code or config: it is in
+        nobody's queue, always needs the owner's yes, and never changes anything by itself. The answer is one line:
+        the id and what changed. A text over its length is cut there and kept, and the answer says so.
 
         Args:
-            title: What to try, in a few words (under 120 characters).
-            why: The evidence for it, with numbers (under 600 characters).
-            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (under 400).
-            expected: The effect expected if it works, in numbers where possible (under 300).
+            title: What to try, in a few words (120 characters).
+            why: The evidence for it, with numbers (600 characters).
+            test: How to confirm it: a lab run, a paper strategy, a live measure, or a code change (400). It stays
+                how the idea is tested: what a test found goes into result.
+            expected: The effect expected if it works, in numbers where possible (300).
             kind: research | config | code | live-test.
-            status: open | testing | adopted | rejected (adopted or rejected only with the result that decided it).
+            status: open | testing | adopted | rejected (adopted or rejected together with the result that decided it).
             owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
             priority: 1 (low) to 5 (high): what testing it is worth.
             role: The queue a research idea goes to: scout, tester, fees or oktech (yours when left out).
             id: The idea's id (e.g. "I3") to update it; omit to add a new one.
+            result: What the test found, in numbers, with n and the job (600): what an idea is closed with.
         """
         fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
-                  "status": status, "owner_needed": owner_needed, "priority": priority, "role": role}  # fmt: skip
+                  "status": status, "owner_needed": owner_needed, "priority": priority, "role": role,
+                  "result": result}  # fmt: skip
         try:
-            idea = learning.upsert_idea(paths, fields, source=source, now=now_fn(), role=acting)
+            return idea_answer(learning.upsert_idea_detail(paths, fields, source=source, now=now_fn(), role=acting))
         except ValueError as exc:
             return f"error: {exc}"
-        return json.dumps(idea)
 
     return role_list_ideas, role_upsert_idea
 
@@ -531,8 +1024,9 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
                         source: str = "operator", role: str | None = None) -> list:  # fmt: skip
     """The tools of one turn. Without `role`: the operator's and the analyst's, all of them. For a research agent's
     turn (`role`, operator/roles.py): the ones its role is given (roles.ROLE_TOOLS), with start_job, write_note,
-    write_report and the two idea tools kept to the role (`_role_tools`). A role's list is cut from this one and
-    never longer: nothing here trades, and nothing a role gets does."""
+    write_report and the two idea tools kept to the role (`_role_tools`). A role's list is cut from this one, plus
+    update_table, which writes the role's own table and no other file: nothing here trades, and nothing a role gets
+    does."""
     roots = [paths.reports, paths.root, paths.jobs]
     now_fn = notes.now
 
@@ -541,17 +1035,26 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
     from anthropic import beta_async_tool
 
     @beta_async_tool
-    async def read_job_log(id: str, tail: int = 200, key: str | None = None) -> str:
-        """A research job's output. A job run with --json prints one JSON object, its results first and its long
-        bookkeeping after: you get it from the top, each plain value, each part that fits in `tail` lines whole, and for
-        a part that does not fit one line with its size and the key that reads it. Any other log: its last `tail` lines.
+    async def read_job_log(id: str, tail: int = 200, key: str | None = None, fields: list[str] | None = None,
+                           first: int | None = None, last: int | None = None, skip: int = 0) -> str:  # fmt: skip
+        """A research job's output, never more than 12,000 characters an answer. A job run with --json prints one JSON
+        result, over many lines or on one: you get it from the top, each plain value, each part that fits in `tail`
+        lines whole, and for a part that does not fit one line with its size and the key that reads it. Any other log:
+        its last `tail` lines. An answer that is not the whole starts with a line that says how big the whole is and
+        ends with a line that says exactly how to read on; an answer without those two lines is the whole.
 
         Args:
             id: The job id as listed in the snapshot (e.g. 20261106-053520-7b96d8).
             tail: How many lines to return (of a plain log, the last ones).
             key: One part of a JSON result, dotted for a part inside a part: "strategies", "strategies.0",
-                "groups.crowding", "amm_tape.unscored". A part longer than `tail` lines comes as its top with what is
-                left and what it holds.
+                "groups.crowding", "amm_tape.unscored".
+            fields: Only these fields, compact. Of a list (key="wallets", fields=["wallet", "summary.pnl_sol"]): one
+                line an item, the cheapest way to read a long list. Of an object: one line a field named, so several
+                parts come in one call (fields=["moments", "strategies.0.test"]).
+            first: With a list: start at this item (counted from 0).
+            last: With a list: stop after this item.
+            skip: Read on: leave out this many lines already read (of a plain log, its last lines), as the last line
+                of the answer before said.
         """
         if "/" in id or "\\" in id or ".." in id:
             return "error: bad job id"
@@ -559,7 +1062,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         if not p.exists():
             return f"error: no log for job {id}"
         over = role is not None and roles.job_over(paths, id)  # asked before the read: an ended job's log is whole
-        out = redact(read_job_output(p.read_text(errors="replace"), tail, key))
+        out = redact(read_job_output(p.read_text(errors="replace"), tail, key, fields, first, last, skip))
         if over:  # a finished job a role has read is not "a job of yours ended" at its next round (roles.role_due)
             roles.note_job_read(paths, role, id, now_fn(), out)
         return out
@@ -1020,7 +1523,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
                 or one hypothesis on the newest day of tape: ["lab", "--trigger", '{"kind": "hunt", "sol": 4, "window": 1.5, "max_buyers": 4, "dev_max": 1}', "--hours", "24", "--json"].
         """
         try:
-            return json.dumps(jobs.start(list(argv)))
+            return f"started {jobs.start(list(argv))['id']}"  # the id and nothing else: the arguments are the caller's
         except PermissionError as exc:
             return redact(f"error: {exc}")
         except Exception as exc:  # noqa: BLE001
@@ -1215,6 +1718,7 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         return [*tools, *make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet)]
     own = _role_tools(paths, jobs, notes, role, read_file=read_file, job_text=start_job.description)
     tools = [{t.name: t for t in own}.get(t.name, t) for t in tools]
+    tools += [t for t in own if t.name not in {x.name for x in tools}]  # update_table: a role's alone
     tools += make_learning_tools(paths, now_fn, source, svc=svc, wallet=cfg.wallet, role=role)
     return [t for t in tools if t.name in roles.ROLE_TOOLS[role]]
 
@@ -1223,8 +1727,9 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
                 job_text: str) -> list:  # fmt: skip
     """The tools a research agent's turn gets in place of the analyst's of the same name: start_job for its own
     commands and an idea of its queue, write_note that is always "info" and once a turn, write_report for its own
-    table and journal, and read_file that names the documents its role may read. `job_text`: the analyst's start_job
-    text, which the role's is cut from."""
+    journal (with the headline that is the turn's note), and read_file that names the documents its role may read;
+    and the one tool only a role has, update_table, which changes its own table by rows. `job_text`: the analyst's
+    start_job text, which the role's is cut from."""
     from anthropic import beta_async_tool
 
     name, table, journal = roles.NAMES[role], roles.TABLES[role], roles.journal_prefix(role)
@@ -1239,20 +1744,45 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
                 with upsert_idea first when there is none).
         """
         try:
-            return json.dumps(jobs.start(list(argv), role=role, idea=str(idea)))
+            return f"started {jobs.start(list(argv), role=role, idea=str(idea))['id']}"
         except PermissionError as exc:
             return redact(f"error: {exc}")
         except Exception as exc:  # noqa: BLE001
             return redact(f"error: {type(exc).__name__}: {exc}")
 
     noted: list[str] = []
+    table_file = paths.report(table)
+
+    def write_table(old: str | None, new: str | None = None, did: list[str] | None = None, *, text: Any = None,
+                    whole: bool = False) -> str:  # fmt: skip
+        """Write the role's table and say in one line what was done: `new` (the table after a change by rows, with
+        what was `did`), or `text` (the table sent whole: taken when there is none yet, or with `whole`). `old`: the
+        table on disk, None when there is none. The file is written only when the table differs from the one there
+        by more than the clock in its title: its time is what tells the other roles that it changed
+        (roles.role_due), and the code stamps the title when it writes."""
+        if new is None:
+            if old is not None and not whole:
+                return (f"error: {table_file.name} is there and was not replaced: change it with update_table (rows, "
+                        "drop, headline, below), or rebuild it with update_table(text=..., whole=true)")  # fmt: skip
+            new, did = whole_table(str(text))
+            did = ["written whole", *did]
+        if old is not None and _no_clock(new).rstrip("\n") == _no_clock(old).rstrip("\n"):
+            same = "it says exactly this already" if text is not None else "; ".join(did or []) or "nothing asked"
+            return f"{table_file.name}: {same}: not written again; {table_size(old)}"
+        new = table_stamped(new, notes.now())
+        paths.ensure()
+        tmp = table_file.with_name(f"{table_file.name}.{os.getpid()}.tmp")
+        tmp.write_text(new)
+        os.replace(tmp, table_file)  # a turn that reads the table sees the old one or the new one, never half of one
+        return f"{table_file.name}: {'; '.join(did or [])}; {table_size(new)}"
 
     @beta_async_tool(name="write_note")
     async def role_write_note(text: str) -> str:
         """Append this turn's one note to the shared notes (operator/notes.md): what you found, in one or two plain
         sentences with the numbers that matter (n, the landing, the bid). One note a turn; it is always "info" and
         pages nobody. What the owner must decide is an idea that needs the owner's yes (upsert_idea), which the digest
-        carries; the longer record of the turn goes into your journal (write_report).
+        carries; the longer record of the turn goes into your journal (write_report). A journal entry written with a
+        headline has written this turn's note already: do not write it again here.
 
         Args:
             text: One or two plain sentences.
@@ -1263,42 +1793,97 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         if wallet_line(str(text)):
             return ("error: what the wallet can pay is not your role's subject (the operator says it once a day): "
                     "leave it out and write the note again")  # fmt: skip
-        line = notes.write(f"{role}: {text}", "info")
-        noted.append(line)
-        return line
+        noted.append(notes.write(f"{role}: {text}", "info"))
+        return "noted: this turn's note is written"  # not the line again: the turn has just written it
 
     @beta_async_tool(name="write_report")
-    async def role_write_report(name: str, text: str, append: bool = False) -> str:
-        """Write one of your two reports into operator/. Your table, which the other roles' turns carry (its first
-        2,000 characters: keep it current and short, one row a subject, and write it whole each time), and your
-        journal of the day, which you add to with append.
+    async def role_write_report(name: str, text: str, append: bool = False, headline: str | None = None) -> str:
+        """Add this turn's entry to your journal of the day (append=true): what the turn did and found, the longer
+        record. With a headline the entry carries the turn's note: the headline is written as this turn's note for
+        the owner (operator/notes.md, exactly as write_note writes it: one a turn, always "info") and closes the
+        entry in the journal, so the finding is written once and write_note is not called. Your table is changed
+        by rows with update_table, not here.
 
         Args:
-            name: Your table's name or your journal's (the description's last line names both).
+            name: Your journal's name (the description's last line names it).
             text: Markdown.
-            append: Add the text at the end of the report (created when missing) instead of replacing it.
+            append: Add the text at the end of the journal (created when missing) instead of replacing it.
+            headline: The turn's finding in one or two plain sentences with the numbers that matter (n, the landing,
+                the bid): it becomes this turn's note. Do not repeat it in the text.
         """
-        if name != table and not re.fullmatch(re.escape(journal) + r"-\d{4}-\d\d-\d\d", str(name)):
+        if name == table:
+            # The table whole, as this tool wrote it until 14 Nov and as the instructions then said. It is still
+            # taken: a refusal here would make the turn write all 5,500 characters a second time. The answer says
+            # the cheaper way.
+            old = table_file.read_text(errors="replace") if table_file.exists() else None
+            done = write_table(old, text=text, whole=True)
+            return done if old is None else f"{done}. Next time send only the rows that changed: update_table"
+        if not re.fullmatch(re.escape(journal) + r"-\d{4}-\d\d-\d\d", str(name)):
             return (f"error: the {name} writes {table} (its table) and {journal}-<YYYY-MM-DD> (its "
                     "journal) and no other report; a finding for another role is an idea in its queue")  # fmt: skip
         p = paths.report(name)
         paths.ensure()
-        text = str(text)
+        text, said = str(text), " ".join(str(headline or "").split())
+        if said:
+            text = text.rstrip("\n") + f"\n\nIn short: {said}"
         if append and p.exists():
             old = p.read_text(errors="replace")
             with p.open("a") as f:
                 f.write(("\n" if old.endswith("\n") else "\n\n") + text + ("" if text.endswith("\n") else "\n"))
-            return f"appended to {p.name}"
-        text += "\n" if append and not text.endswith("\n") else ""
-        if p.exists() and p.read_text(errors="replace") == text:
-            # not written again: a table that says the same is no news for the other roles (roles.role_due reads
-            # when it last changed)
-            return f"{p.name} already says exactly this: not written again"
-        p.write_text(text)
-        return f"wrote {p.name}"
+            did = f"appended to {p.name}"
+        else:
+            text += "\n" if append and not text.endswith("\n") else ""
+            if p.exists() and p.read_text(errors="replace") == text:
+                return f"{p.name} already says exactly this: not written again"
+            p.write_text(text)
+            did = f"wrote {p.name}"
+        if not said:
+            return did
+        if noted:
+            return f"{did}; the headline is not written as a note: this turn's note is written already"
+        if wallet_line(said):
+            return (f"{did}; the headline is not written as a note: what the wallet can pay is not your role's "
+                    "subject (the operator says it once a day). Write the note with write_note, without "
+                    "it")  # fmt: skip
+        noted.append(notes.write(f"{role}: {said}", "info"))
+        return f"{did}; the headline is written as this turn's note"
 
-    role_write_report.description += f"\n\nThe {name}'s table is {table}; its journal is {journal}-<YYYY-MM-DD>."
-    out = [role_start_job, role_write_note, role_write_report]
+    @beta_async_tool
+    async def update_table(rows: list[dict] | None = None, drop: list[str] | None = None, headline: str | None = None,
+                           below: str | None = None, text: str | None = None, whole: bool = False) -> str:  # fmt: skip
+        """Change your table by rows: the one table your role keeps, of which the other roles' turns carry the first
+        2,000 characters (keep it current and short, one row a subject). Send only what changed, never the whole
+        table. A row is known by its first cell, its key. The code keeps every other line as it is, writes the time
+        of the change into the title itself (never write a clock time only to say when the table was written), and
+        writes the file only when something differs: a call that changes nothing tells nobody. The answer is one
+        line: what changed and how big the table is now.
+
+        Args:
+            rows: The rows that changed or are new, each {"key": the row's first cell as it stands in the table, or
+                enough of its start to tell it from every other row, "text": the row whole as one markdown line
+                ("| a | b | c |"; a longer one is cut at 1,200 characters)}. A known key replaces that row (the text
+                may give it a new first cell); a new key is added at the end of the first table, or where you say:
+                {"key": ..., "text": ..., "before": the key of the row it goes in front of} or "after": the key of
+                the row it goes behind.
+            drop: The keys of the rows to remove.
+            headline: The paragraph above the table, whole, when it changed: what holds for every row, not this
+                turn's news, which is the journal's (1,200 characters).
+            below: The paragraph under the first table, whole, when it changed.
+            text: The whole table as markdown (a title line starting with "# ", the paragraph, the table), for a
+                table that is not written yet, or with whole=true for a rebuild (other columns, another order).
+            whole: True to replace the table that is there with `text`.
+        """
+        old = table_file.read_text(errors="replace") if table_file.exists() else None
+        if text is not None and str(text).strip():
+            return write_table(old, text=text, whole=whole)
+        if old is None:
+            return (f"error: {table_file.name} is not written yet: send it whole first (update_table with text: a "
+                    "title line, a paragraph, the table with its header), then change it by rows")  # fmt: skip
+        return write_table(old, *change_table(old, rows or (), drop or (), headline, below))
+
+    role_write_report.description += f"\n\nThe {name}'s journal is {journal}-<YYYY-MM-DD>; its table is {table}."
+    update_table.description += f"\n\nThe {name}'s table is operator/{table}.md."
+    out = [role_start_job, role_write_note, role_write_report, update_table]
     docs = roles.ROLE_DOCS.get(role)
     if docs:
         also = (f"\n\nThe {name} also reads these documents of the checkout, read-only, by exactly these paths: "

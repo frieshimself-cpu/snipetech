@@ -90,7 +90,8 @@ def test_role_tools_exist_today(tmp_path):
     today = {t.name for t in make_operator_tools(Svc(), paths, jobs, OperatorConfig(wallet="W"), NoteSink(paths))}
     st.close()
     for role in R.ROLES:
-        assert R.ROLE_TOOLS[role] <= today, (role, sorted(R.ROLE_TOOLS[role] - today))
+        # update_table (14 Nov) is the one tool a role has and the analyst has not: rows of the role's own table
+        assert R.ROLE_TOOLS[role] - {"update_table"} <= today, (role, sorted(R.ROLE_TOOLS[role] - today))
         assert R.SHARED_TOOLS <= R.ROLE_TOOLS[role]
     assert [r for r in R.ROLES if "set_candidates" in R.ROLE_TOOLS[r]] == ["scout"]
     assert [r for r in R.ROLES if "read_events" in R.ROLE_TOOLS[r]] == ["tester"]

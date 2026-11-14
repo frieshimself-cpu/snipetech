@@ -246,7 +246,8 @@ def test_sql_answers_a_wrong_column_with_the_tables_columns(toolbox):
 def test_start_job_tool_reports_refusals_as_text(toolbox):
     tools, _, _ = toolbox
     assert _call(tools["start_job"], argv=["oktech", "start"]).startswith("error")
-    assert json.loads(_call(tools["start_job"], argv=["follow", "--kols"]))["id"]
+    # since 14 Nov the answer is the job's id and nothing else (it echoed the arguments back: 181,000 characters)
+    assert re.fullmatch(r"started \d{8}-\d{6}-[0-9a-f]{6}", _call(tools["start_job"], argv=["follow", "--kols"]))
 
 
 def test_the_agents_cannot_raise_their_own_budget(toolbox):
@@ -368,7 +369,9 @@ def test_read_job_log_tail(toolbox):
     tools, paths, _ = toolbox
     (paths.jobs / "abc.log").write_text("\n".join(f"line {i}" for i in range(300)))
     out = _call(tools["read_job_log"], id="abc", tail=5)
-    assert out.splitlines() == [f"line {i}" for i in range(295, 300)]
+    # since 14 Nov an answer that is not the whole log says so: how big the log is first, how to read on last
+    assert out.splitlines()[1:-1] == [f"line {i}" for i in range(295, 300)]
+    assert out.splitlines()[0].startswith("lines 296-300 of 300") and out.splitlines()[-1].endswith("skip=5")
     assert _call(tools["read_job_log"], id="../x").startswith("error")
 
 
@@ -410,8 +413,9 @@ def test_one_part_of_a_json_result_can_be_asked_for(toolbox):
     assert json.loads(_call(tools["read_job_log"], id="lab1", key="triggers")) == out["triggers"]
     # a part longer than asked for: its top, and what is left
     part = _call(tools["read_job_log"], id="lab1", key="amm_tape", tail=30)
-    assert part.splitlines()[0] == "{" and "coin0" in part and "more lines" in part.splitlines()[-1]
-    assert len(part.splitlines()) == 31
+    assert part.splitlines()[1] == "{" and "coin0" in part and "more lines" in part.splitlines()[-1]
+    assert part.splitlines()[0].startswith('"amm_tape": 1 key, 1,004 lines')  # how big the whole part is (14 Nov)
+    assert len(part.splitlines()) == 32 and 'key="amm_tape", skip=30' in part.splitlines()[-1]
     miss = _call(tools["read_job_log"], id="lab1", key="strategy")
     assert miss.startswith("error") and "strategies" in miss and "amm_tape" in miss  # says what there is
     assert _call(tools["read_job_log"], id="lab1", key="strategies.7").startswith("error")
@@ -438,7 +442,8 @@ def test_a_small_json_result_and_a_plain_log_read_as_before(toolbox):
     (paths.jobs / "small.log").write_text(json.dumps({"evaluated": 3, "qualified": 0}, indent=1))
     assert json.loads(_call(tools["read_job_log"], id="small")) == {"evaluated": 3, "qualified": 0}
     (paths.jobs / "plain.log").write_text("\n".join(f"line {i}" for i in range(300)))
-    assert _call(tools["read_job_log"], id="plain", tail=3).splitlines() == ["line 297", "line 298", "line 299"]
+    assert _call(tools["read_job_log"], id="plain", tail=3).splitlines()[1:-1] == ["line 297", "line 298", "line 299"]
+    assert _call(tools["read_job_log"], id="plain", tail=300).splitlines()[0] == "line 0"  # the whole log: as it is
     asked = _call(tools["read_job_log"], id="plain", key="rows")
     assert asked.startswith("error") and "not one JSON" in asked
 
@@ -890,7 +895,7 @@ def test_the_agents_are_told_how_to_backfill_the_big_wallets_older_coins(toolbox
     assert "only inside the tape" in text and "trades nothing" in text
     # what the tool says an agent may start is what the runner lets it start
     assert _call(tools["start_job"], argv=["history", "amm-backfill", "--group", "big", "--days", "7", "--dry-run",
-                                           "--json"]).startswith("{")  # fmt: skip
+                                           "--json"]).startswith("started 2")  # fmt: skip
     assert "not a research command" in _call(tools["start_job"], argv=["history", "fetch", "--from", "2026-11-01"])
 
 
@@ -1243,6 +1248,10 @@ def test_a_role_that_reads_a_finished_job_is_not_called_for_it_again(rolebox, jo
 
 TRADING = re.compile(r"oktech|sniper|wallet|trade|buy|sell|swap|transfer|send|sign|book|risk|budget|autotest|config"
                      r"|setting|deploy|update|kill|unwrap|sweep", re.IGNORECASE)  # fmt: skip
+# The one tool a role has and the analyst has not (14 Nov): it changes rows of the role's own table, the file its
+# write_report wrote whole until then. Its name holds "update", the word the list above keeps for a deploy: what it
+# may touch is held by test_tool_answers.py (it names no file, no command and no setting, and writes that one table).
+ROLE_ONLY = {"update_table"}
 
 
 @pytest.fixture
@@ -1271,16 +1280,21 @@ def _help(tool) -> str:
 
 def test_role_tools_are_a_subset_of_todays(rolebox):
     """Without a role the list is today's, tool for tool. A role's list is the one roles.ROLE_TOOLS names, every name
-    one of today's, and none of them, in any list, is a tool that could trade or change a switch."""
+    one of today's but update_table (its own table by rows), and none of them, in any list, is a tool that could
+    trade or change a switch."""
     from snipetech.operator.roles import ROLE_TOOLS, ROLES
 
     tools, _, _ = rolebox
     assert list(tools()) == TODAY
     for role in ROLES:
         names = set(tools(role))
-        assert names == ROLE_TOOLS[role] and names < set(TODAY), role
+        assert names == ROLE_TOOLS[role] and names - ROLE_ONLY < set(TODAY) and ROLE_ONLY < names, role
+        assert set(tools(role)["update_table"].to_dict()["input_schema"]["properties"]) == {
+            "rows", "drop", "headline", "below", "text", "whole"}, role  # fmt: skip
     for name in TODAY:
         assert not TRADING.search(name), name
+    for name in ROLE_ONLY:
+        assert not TRADING.search(name.removeprefix("update_")), name
 
 
 def test_only_the_scout_sets_candidates(rolebox):
@@ -1298,7 +1312,9 @@ def test_role_note_is_info_and_one_a_turn(rolebox):
     tools, paths, sink = rolebox
     note = tools("fees")["write_note"]
     assert "level" not in note.to_dict()["input_schema"]["properties"]
-    line = _call(note, text="place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)")
+    # since 14 Nov the answer says the note is written and does not repeat it (every write was echoed back)
+    assert _call(note, text="place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)").startswith("noted")
+    line = paths.notes.read_text().rstrip("\n")
     assert line == "- 2026-11-06T00:00:00Z [info] fees: place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)"
     assert _call(note, text="and one more").startswith("error: one note a turn")
     with pytest.raises(ValueError, match="Invalid arguments"):  # no such argument: the call never runs
@@ -1308,13 +1324,17 @@ def test_role_note_is_info_and_one_a_turn(rolebox):
 
 
 def test_role_writes_only_its_own_table_and_journal(rolebox):
+    """Since 14 Nov the table is update_table's (rows, or the table whole with whole=true: test_tool_answers.py);
+    write_report still takes a first table and keeps the journal. Neither writes any other file."""
     tools, paths, _ = rolebox
-    report = tools("scout")["write_report"]
-    assert _call(report, name="scout-facts", text="| wallet | who |") == "wrote scout-facts.md"
-    assert _call(report, name="scout-facts", text="| wallet | who |\n| W1 | Cupsey |") == "wrote scout-facts.md"
+    report, update = tools("scout")["write_report"], tools("scout")["update_table"]
+    assert _call(report, name="scout-facts", text="| wallet | who |").startswith("scout-facts.md: written whole")
+    out = _call(update, text="| wallet | who |\n| W1 | Cupsey |", whole=True)
+    assert out.startswith("scout-facts.md: written whole") and "2 rows" in out  # no header line: both count
     stamp = (paths.root / "scout-facts.md").stat().st_mtime_ns
     # the same table again is not written again: an unchanged table is no news that calls the other roles' turns
-    assert "not written again" in _call(report, name="scout-facts", text="| wallet | who |\n| W1 | Cupsey |")
+    assert "not written again" in _call(update, text="| wallet | who |\n| W1 | Cupsey |", whole=True)
+    assert "not written again" in _call(update, rows=[{"key": "W1", "text": "| W1 | Cupsey |"}])
     assert (paths.root / "scout-facts.md").stat().st_mtime_ns == stamp
     assert _call(report, name="scout-journal-2026-11-12", text="looked at winners", append=True)
     assert (paths.root / "scout-journal-2026-11-12.md").read_text() == "looked at winners\n"
@@ -1323,8 +1343,10 @@ def test_role_writes_only_its_own_table_and_journal(rolebox):
         out = _call(report, name=name, text="x")
         assert out.startswith("error") and "scout-facts" in out, name
         assert not (paths.root / f"{name}.md").exists()
-    assert _call(tools("oktech")["write_report"], name="oktech-facts", text="| feature |") == "wrote oktech-facts.md"
+    assert _call(tools("oktech")["write_report"], name="oktech-facts", text="| feature |").startswith(
+        "oktech-facts.md: written whole")  # fmt: skip
     assert "scout-facts" in _help(report) and "scout-journal" in _help(report)
+    assert "operator/scout-facts.md" in _help(update) and "tester-rules" not in _help(update)
 
 
 def test_role_start_job_names_its_idea_and_keeps_to_its_commands(rolebox, jobs):
@@ -1334,34 +1356,38 @@ def test_role_start_job_names_its_idea_and_keeps_to_its_commands(rolebox, jobs):
     assert set(start.to_dict()["input_schema"]["required"]) == {"argv", "idea"}
     assert "not the wallet scout's to start" in _call(start, argv=["lab", "--json"], idea=idea)
     assert _call(start, argv=["oktech", "start", "x"], idea=idea).startswith("error: oktech is the owner's")
-    started = json.loads(_call(start, argv=["winners", "--hours", "72", "--json"], idea=idea))
+    started = _call(start, argv=["winners", "--hours", "72", "--json"], idea=idea)  # "started <id>" since 14 Nov
     from snipetech.operator import roles
 
-    assert roles.job_roles(paths) == {started["id"]: "scout"}
+    assert roles.job_roles(paths) == {started.removeprefix("started "): "scout"}
     # the analyst's start_job asks for no idea and holds to no role, as before
     assert set(tools()["start_job"].to_dict()["input_schema"]["required"]) == {"argv"}
-    assert json.loads(_call(tools()["start_job"], argv=["lab", "--latency", "0"]))["id"]
+    assert _call(tools()["start_job"], argv=["lab", "--latency", "0"]).startswith("started 2")
 
 
 def test_a_roles_idea_tools_keep_to_its_queue(rolebox, jobs):
-    tools, _, _ = rolebox
+    from snipetech.operator import learning
+
+    tools, paths, _ = rolebox
     mine, theirs = _queue(jobs, "scout", "hunt wallets"), _queue(jobs, "tester", "score a rule")
     scout = tools("scout")
-    listed = json.loads(_call(scout["list_ideas"]))
+    # since 14 Nov a list is one line an idea and a write is answered in one line; full=true is the list as it was
+    listed = json.loads(_call(scout["list_ideas"], full=True))
     assert [i["id"] for i in listed["ideas"]] == [mine] and listed["queue"] == "scout"
-    assert [i["id"] for i in json.loads(_call(scout["list_ideas"], queue="tester"))["ideas"]] == [theirs]
-    assert len(json.loads(_call(scout["list_ideas"], queue="all"))["ideas"]) == 2
+    assert [i["id"] for i in json.loads(_call(scout["list_ideas"], queue="tester", full=True))["ideas"]] == [theirs]
+    assert len(json.loads(_call(scout["list_ideas"], queue="all", full=True))["ideas"]) == 2
     assert f"{theirs} is in the tester's queue" in _call(scout["upsert_idea"], id=theirs, status="rejected")
-    handed = json.loads(_call(scout["upsert_idea"], title="score copies of this group", why="w", test="t",
-                              expected="e", kind="research", role="tester"))  # fmt: skip
-    own = json.loads(_call(scout["upsert_idea"], title="who copies Cupsey", why="w", test="t", expected="e",
-                           kind="research"))  # fmt: skip
+    handed = _call(scout["upsert_idea"], title="score copies of this group", why="w", test="t",
+                   expected="e", kind="research", role="tester")  # fmt: skip
+    own = _call(scout["upsert_idea"], title="who copies Cupsey", why="w", test="t", expected="e", kind="research")
+    stored = {i["id"]: i for i in learning.list_ideas(paths, "all")}
+    handed, own = stored[handed.split()[0]], stored[own.split()[0]]
     assert handed["role"] == "tester" and handed["source"] == "scout" and own["role"] == "scout"
     # the analyst's two tools are as they were: no queue, no role argument
     analyst = tools()
     assert "queue" not in analyst["list_ideas"].to_dict()["input_schema"]["properties"]
     assert "role" not in analyst["upsert_idea"].to_dict()["input_schema"]["properties"]
-    assert len(json.loads(_call(analyst["list_ideas"]))["ideas"]) == 4
+    assert len(json.loads(_call(analyst["list_ideas"], full=True))["ideas"]) == 4
 
 
 def test_the_oktech_role_reads_the_oktech_documents_and_nothing_else_of_the_checkout(rolebox, tmp_path):

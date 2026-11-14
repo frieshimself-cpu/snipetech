@@ -124,6 +124,7 @@
   const short = (a) => esc(String(a || "").slice(0, 8));
   const TOOL_WORDS = { sql: "Queried the database", read_file: "Read a file", read_job_log: "Read a job's output",
     start_job: "Started a job", write_note: "Wrote a note for you", write_report: "Wrote the report",
+    update_table: "Changed rows of its table",
     upsert_idea: "Added or updated an idea", list_ideas: "Read the idea list", read_lessons: "Read past lessons",
     add_lesson: "Recorded a lesson", read_round_trips: "Read live round trips", set_candidates: "Updated the candidate list",
     read_verdicts: "Read wallet verdicts", read_fills: "Read live fills", read_fee_policy: "Read the fee policy",
@@ -173,7 +174,8 @@
     if (step.kind === "thinking") return `<div class="step thinking"><div class="lbl">Thinking</div><div class="txt">${esc(step.text)}</div></div>`;
     if (step.kind === "say") return `<div class="step say"><div class="lbl">Said</div><div class="txt">${esc(step.text)}</div></div>`;
     const inp = step.input || {};
-    const main = inp.query || inp.sql || inp.path || inp.text || inp.job_id || inp.title || (inp.argv ? [].concat(inp.argv).join(" ") : "") || "";
+    const rows = Array.isArray(inp.rows) ? inp.rows.map((r) => (r && r.text) || "").filter(Boolean).join("\n") : "";
+    const main = inp.query || inp.sql || inp.path || [inp.headline, inp.text, rows].filter(Boolean).join("\n\n") || inp.job_id || inp.title || (inp.argv ? [].concat(inp.argv).join(" ") : "") || "";
     const rest = JSON.stringify(inp, null, 1);
     return `<div class="step tool"><div class="lbl">${esc(TOOL_WORDS[step.name] || step.name)}${step.error ? ' <span class="chip crit">error</span>' : ""}</div>
       ${main ? `<pre>${esc(main)}</pre>` : ""}

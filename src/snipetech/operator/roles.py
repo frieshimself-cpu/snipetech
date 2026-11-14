@@ -75,7 +75,7 @@ ROLE_NEEDS: dict[tuple[str, str], tuple[str, ...]] = {
 }
 
 SHARED_TOOLS = frozenset({"read_job_log", "read_file", "sql", "read_lessons", "add_lesson", "list_ideas", "upsert_idea",
-                          "start_job", "write_note", "write_report"})  # fmt: skip
+                          "start_job", "write_note", "write_report", "update_table"})  # fmt: skip
 ROLE_TOOLS: dict[str, frozenset[str]] = {
     "scout": SHARED_TOOLS | {"read_verdicts", "set_candidates"},
     "tester": SHARED_TOOLS | {"read_verdicts", "read_events"},
