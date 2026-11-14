@@ -436,14 +436,23 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         return plan
     dropped: dict[str, str] = {}  # wallet[:6] -> why its sniper is no longer wanted, when it is more than the ranking
     kept_paused: set[str] = set()
+    # wallets refused for a non-coin whose sniper is still active: ranked like any other, so no other wallet moves up
+    # into a place that sniper still fills (a refusal must never add a sniper), and never booked
+    refused: set[str] = set()
+    active_w6 = {s["w6"] for s in mine if is_active(s.get("status"))}
     for q in inp.qualified:
         w = q.get("wallet")
         if w and inp.non_coin.get(w):  # before any pause: it is not a wallet a copy sniper can follow at all
             why = non_coin_reason(inp.non_coin[w])
             plan.actions.append(Action("skip", w, None, None, None, why))
-            plan.notes.append(f"{w[:6]} is not copied: it {inp.non_coin[w]}")
+            plan.notes.append(f"{w[:6]} is not copied: it trades {inp.non_coin[w]}")
             dropped[w[:6]] = why
-            kept_paused.add(w)
+            if lp := live_pause_reason(inp.live.get(w), cfg):
+                plan.paused[w] = lp  # its live losses are remembered as for any wallet (it may trade coins only again)
+            if w[:6] in active_w6:
+                refused.add(w)  # its sniper still runs (a coin is held): it keeps its place, so the cap counts it
+            else:
+                kept_paused.add(w)
             continue
         why = live_pause_reason(inp.live.get(w) if w else None, cfg)
         if w and not why and still_paused(q, inp.paused.get(w)):
@@ -466,6 +475,8 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     plan.ranked = rank_wallets([q for q in inp.qualified if q.get("wallet") not in kept_paused], inp.live, cfg)
     bookable = []
     for r in plan.ranked:
+        if r["wallet"] in refused:
+            continue  # said above; its sniper is stopped below once the wallet holds nothing
         if r["wallet"] in inp.other_copies:  # its signals already buy through that sniper; a second adds failed sells
             plan.actions.append(Action("skip", r["wallet"], None, None, None, OVERLAP_REASON))
             plan.notes.append(f"{r['wallet'][:6]} is left to another sniper that already copies it from this OKTech "

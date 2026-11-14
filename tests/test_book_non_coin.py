@@ -20,7 +20,7 @@ from tests.test_book_run import L1, L2, NOW, FakeSvc, _env, _fresh_tape
 from tests.test_qualify_run import NOW as NOW_Q
 
 USDC = next(m for m, name in NON_COIN_MINTS.items() if name == "USDC")
-WORDS = "trades USDC (70 trades on the tape in the last 7 days)"
+WORDS = "USDC (70 trades on the tape in the last 7 days)"
 
 
 def _swap(wallet, mint, ts, i, is_buy=True):
@@ -34,7 +34,7 @@ def test_a_wallet_that_trades_a_non_coin_gets_no_sniper():
     plan = plan_book(_inp(actors={}, non_coin={A: WORDS}), cfg.book)
     assert _acts(plan, "create") == [("create", B), ("create", C)]
     assert _why(plan, A).startswith(NON_COIN_REASON) and WORDS in _why(plan, A)
-    assert A not in [r["wallet"] for r in plan.ranked]
+    assert A not in [r["wallet"] for r in plan.ranked]  # no sniper of its own: it holds no place
     assert any(A[:6] in n and "USDC" in n for n in plan.notes)
     # nobody trades one: the book is what it was
     before = plan_book(_inp(actors={}), cfg.book)
@@ -74,6 +74,7 @@ def test_the_tape_says_which_wallets_trade_a_non_coin(tmp_path):
         assert set(got) == {L1, B}
         assert "USDC" in got[L1] and "5 trades" in got[L1] and "3 of them buys" in got[L1]
         assert "wrapped SOL" in got[B] and "1 trade " in got[B]
+        assert not got[L1].startswith("trades") and got[L1].endswith("UTC on 6 Nov)")  # the day without a zero
         assert non_coin_traders(st, [], NOW) == {}
     finally:
         st.close()
@@ -111,32 +112,69 @@ def test_a_run_stops_the_sniper_of_a_wallet_that_trades_usdc(tmp_path):
         st.close()
 
 
-def test_a_run_that_cannot_read_the_tape_for_it_books_as_before_and_says_so(tmp_path, monkeypatch):
+def test_a_run_that_cannot_read_the_tape_for_it_adds_no_sniper_and_says_so(tmp_path, monkeypatch):
+    """One failed read must not undo a refusal: a wallet stopped for it would be ranked again and its stopped sniper
+    started. When in doubt the book adds nothing, as when it cannot read who buys with whom."""
     from snipetech.book import run
 
     st, cfg = _env(tmp_path, enabled=True)
-    svc = FakeSvc(st)
+    idle = [{"id": "s1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "idle"}]
+    svc = FakeSvc(st, snipers=idle)
 
     def broken(*a, **kw):
         raise RuntimeError("no such table")
 
     monkeypatch.setattr(run, "non_coin_traders", broken)
     try:
+        _fresh_tape(st)
         out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (10.0, 0.0, [])))
-        assert out["actions"] == {"create": 2}
+        assert not {"create", "start", "retire"} & set(out["actions"])
+        assert not any(c[0] in ("create", "start") for c in svc.calls)
         notes = (tmp_path / "data" / "operator" / "notes.md").read_text()
         assert "[book] could not read which wallets trade a non-coin" in notes
     finally:
         st.close()
 
 
+def test_a_refused_wallet_keeps_its_place_while_its_sniper_is_active():
+    """With two places and three wallets, refusing A must not make a third sniper while A's own still runs because a
+    coin is held: the cap counts it. Once A has no active sniper its place is free."""
+    cfg = Config()
+    cfg.book.max_wallets = 2
+    held = {"holdings": [{"mint": "M", "amount": 1}]}
+    plan = plan_book(_inp(actors={}, non_coin={A: WORDS}, snipers=[_sniper(A, "sa")], **held), cfg.book)
+    assert ("keep", A[:6]) in _acts(plan) and _acts(plan, "create") == [("create", B)]
+    freed = plan_book(_inp(actors={}, non_coin={A: WORDS}, snipers=[_sniper(A, "sa", "idle")]), cfg.book)
+    assert _acts(freed, "create") == [("create", B), ("create", C)]
+    # and no stopped sniper of an actor mate is started beside the refused wallet's running one
+    pair = [_sniper(A, "sa"), _sniper(B, "sb", "idle")]
+    cfg.book.max_wallets = 1
+    beside = plan_book(_inp(actors={A: [B]}, non_coin={A: WORDS}, snipers=pair, **held), cfg.book)
+    assert not _acts(beside, "start") and not _acts(beside, "create")
+
+
+def test_a_live_pause_is_still_recorded_for_a_refused_wallet():
+    cfg = Config()
+    losing = {A: {"wallet": A, "n": 9, "mean_sol": -0.05, "upper_sol": -0.01, "lower_sol": -0.09}}
+    alone = plan_book(_inp(actors={}, live=losing), cfg.book)
+    both = plan_book(_inp(actors={}, live=losing, non_coin={A: WORDS}), cfg.book)
+    assert alone.paused and both.paused == alone.paused
+
+
 def test_qualify_does_not_qualify_a_wallet_that_trades_a_non_coin():
     cfg = Config()
-    v = {"wallet": A, "status": "qualified", "reasons": ["holds after it was picked"], "next_review": NOW + 86400}
+    v = {
+        "wallet": A,
+        "status": "qualified",
+        "reasons": ["holds after it was picked"],
+        "next_review": NOW + 86400,
+        "forward": {"status": "passed", "n": 58},
+    }
     out = not_a_coin_trader(v, WORDS, cfg.qualify, NOW)
     assert out["status"] == "candidate" and out["gate"] == "non_coin"
     assert out["reasons"][-1].startswith(NON_COIN_REASON) and WORDS in out["reasons"][-1]
-    assert out["next_review"] == NOW + cfg.qualify.review_qualified_h * 3600
+    assert out["next_review"] == NOW + NON_COIN_DAYS * 86400  # when its last swap has left the window
+    assert out["forward"] is None  # it holds no place: the wallets it was chosen over are free to take it
     assert v["status"] == "qualified"  # the verdict passed in is not changed
     # nothing known of it, or a verdict that is not qualified: the verdict itself
     assert not_a_coin_trader(v, None, cfg.qualify, NOW) is v

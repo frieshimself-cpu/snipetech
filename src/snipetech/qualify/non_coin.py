@@ -12,7 +12,8 @@ The tape holds these trades (a PumpSwap pool of USDC is a pool like any other), 
 a trade of a non-coin (positions.NON_COIN_MINTS) in the last NON_COIN_DAYS days is not qualified (`not_a_coin_trader`,
 the verdict's last reason) and the book makes and keeps no sniper for it (`BookInputs.non_coin`), whatever its verdict
 says. The window is as long as a retired wallet waits for its next review: a wallet that stopped swapping into dollar
-coins comes back by itself."""
+coins comes back by itself. Both sides count, a sale of a dollar coin too: OKTech sent 49 sells of a coin we never
+held, and what makes it send one is not known. Only what the tape holds can be read: PumpSwap pools quoted in SOL."""
 
 from __future__ import annotations
 
@@ -43,11 +44,12 @@ def non_coin_traders(store, wallets: Iterable[str], now: float, days: int = NON_
         )
         parts = []
         for mint, n, buys, last in sorted(rows, key=lambda r: -int(r[1])):
-            when = time.strftime("%H:%M UTC on %-d %b", time.gmtime(int(last)))
+            at = time.gmtime(int(last))
+            when = f"{time.strftime('%H:%M UTC on', at)} {at.tm_mday} {time.strftime('%b', at)}"
             parts.append(f"{NON_COIN_MINTS[mint]} ({int(n)} trade{'' if int(n) == 1 else 's'} on the tape in the last "
                          f"{days} days, {int(buys or 0)} of them buys, the last at {when})")  # fmt: skip
         if parts:
-            out[w] = "trades " + " and ".join(parts)
+            out[w] = " and ".join(parts)
     return out
 
 
@@ -58,9 +60,12 @@ def reason(words: str) -> str:
 
 def not_a_coin_trader(v: dict[str, Any], words: str | None, cfg, now: float) -> dict[str, Any]:
     """A qualified verdict of a wallet that trades a non-coin, as a candidate's: not qualified (the book arms only
-    qualified wallets), reviewed as often as a qualified one, the reason last. `v` itself when nothing is known of the
-    wallet or it is not qualified anyway."""
+    qualified wallets), the reason last, due again when the window has passed, and without its forward block: a
+    candidate under its forward test holds its actor's place (one_actor.standing_wallets), and this one must not,
+    so the wallets it was chosen over can take it (one_actor.OneActor.release). Its copies since it was picked stay in
+    its record and are read again at its next review. `v` itself when nothing is known of the wallet or it is not
+    qualified anyway. `cfg` is not read (kept for the gates' common shape)."""
     if not words or v.get("status") != "qualified":
         return v
-    return dict(v, status="candidate", gate=GATE, next_review=int(now) + cfg.review_qualified_h * 3600,
+    return dict(v, status="candidate", gate=GATE, forward=None, next_review=int(now) + NON_COIN_DAYS * 86400,
                 reasons=[*list(v.get("reasons") or []), reason(words)])  # fmt: skip
