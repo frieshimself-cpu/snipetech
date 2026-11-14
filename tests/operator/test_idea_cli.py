@@ -68,7 +68,7 @@ def test_operate_idea_closes_an_idea_with_its_result_and_says_what_was_cut(tmp_p
     (after,) = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
     assert after["status"] == "rejected" and after["result"] == "lower -0.021 over 133 copies (job 6c1b82)"
     assert after["test"] == "lab over 72 h" and "cut" not in json.loads(capsys.readouterr().out)
-    assert _cli(tmp_path, "idea", "--id", idea["id"], "--test", "the same lab at +0 and at +6; " * 20) == 0
-    assert json.loads(capsys.readouterr().out)["cut"] == {"test": 599}
+    assert _cli(tmp_path, "idea", "--id", idea["id"], "--test", "the same lab at +0 and at +6; " * 25) == 0
+    assert json.loads(capsys.readouterr().out)["cut"] == {"test": 749}  # the cap is 650 since round 4 (14 Nov)
     (after,) = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
-    assert len(after["test"]) <= 400 and after["test"].endswith("…")
+    assert len(after["test"]) <= 650 and after["test"].endswith("…")

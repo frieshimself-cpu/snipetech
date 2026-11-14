@@ -35,7 +35,10 @@ KINDS = ("research", "config", "code", "live-test")
 STATUSES = ("open", "testing", "adopted", "rejected")
 OPEN = ("open", "testing")  # what is still to be decided; adopted and rejected ideas are closed
 ALWAYS_OWNER = ("live-test", "code")  # a live test spends SOL; a code change needs a coding session: the owner's yes
-IDEA_TEXT = {"title": 120, "why": 600, "test": 400, "expected": 300}  # each field's size cap in characters
+# each field's size cap in characters. Round 4 (14 Nov): 56 of 204 real idea writes were over the caps of then (test
+# 404-654 for 400, why 603-682 for 600, expected 305-372 for 300), each cut and kept: the caps are now what was
+# really written, so a cut, which costs the turn one more reply, is rare
+IDEA_TEXT = {"title": 120, "why": 700, "test": 650, "expected": 400}
 # What the test found, in numbers: the field an idea is closed with, so that `test` stays how it is tested. Until
 # 14 Nov there was none and the agents kept the running result in `test`, which is why 41 of their 57 refused idea
 # writes were a test over its cap. Never required; shown by the live page (dash.py lists it).
@@ -55,7 +58,7 @@ CONTEXT_LINE = 240  # each lesson or idea line is cut to this many characters
 # carried were the ones already under test, the same five turn after turn, and 20 of the day's 25 analyses started no
 # experiment. What a turn needs of one is its test, so the line has room for the longest test (IDEA_TEXT).
 UNTESTED_IDEAS = 3
-UNTESTED_LINE = 560
+UNTESTED_LINE = IDEA_TEXT["test"] + 160  # 810 since round 4 (560 for a test of 400)
 CONTEXT_MAX_CHARS = 4000 + UNTESTED_IDEAS * UNTESTED_LINE + 200
 # the research record every turn sees after the lessons and ideas, on its own cap so neither crowds out the other: the
 # newest round's outcome and lessons, then a line for each older round (research_record)

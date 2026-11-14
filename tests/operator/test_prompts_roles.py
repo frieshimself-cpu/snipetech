@@ -334,7 +334,8 @@ def test_the_role_rules_say_how_a_turn_is_written_once_and_as_the_code_does_it()
             "write_report with your journal's name and a headline. The headline is this turn's note for the owner and "
             "that call is your last: the turn ends when its reply's calls have run, with no write_note and no closing "
             "summary. A call of that reply that was refused or not done as asked is shown to you so you can repair "
-            "it.") in rules  # fmt: skip
+            "it; so is a text of yours that was cut at its length, once a turn: shorten it or let it "
+            "stand.") in rules  # fmt: skip
     assert "Read what answers the question, start the test, then write (step 3)." in rules
     assert "after two in a row your next turn waits 45 minutes" in rules and "waits an hour" not in rules
     # what counts as work since the reviews of 14 Nov (roles._worked): a lesson and a hand-on do, and a role that is

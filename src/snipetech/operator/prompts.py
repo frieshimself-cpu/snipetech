@@ -282,7 +282,8 @@ which hands it to the cloud session; an idea is not left open and untested while
 order: update_table for the rows that changed (no call when none did), then write_report with your journal's name and
 a headline. The headline is this turn's note for the owner and that call is your last: the turn ends when its reply's
 calls have run, with no write_note and no closing summary. A call of that reply that was refused or not done as asked
-is shown to you so you can repair it. Put no reading call into that reply: a reply that also reads is answered first,
+is shown to you so you can repair it; so is a text of yours that was cut at its length, once a turn: shorten it or let
+it stand. Put no reading call into that reply: a reply that also reads is answered first,
 which costs a further reply. A turn that starts no test, closes no idea, records no lesson and hands nothing on should
 be rare: after two in a row your next turn waits 45 minutes, unless an idea is handed to you or a job of yours ends.
 An idea you open and close in one turn counts only with its lesson.

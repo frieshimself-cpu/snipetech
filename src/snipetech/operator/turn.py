@@ -39,7 +39,7 @@ from .prompts import (
 )
 from .resources import credit_refused, says_no_credit
 from .snapshot import Snapshot
-from .tools import NoteSink, make_operator_tools
+from .tools import CUT_NOTE, NoteSink, make_operator_tools
 from .turnlog import TurnLog
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
@@ -151,12 +151,12 @@ def _field(block, name: str):
     return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
 
 
-def _calls_failed(response, tool_uses=()) -> bool:
-    """Whether a call of a tool that writes (`WRITE_TOOLS`), in the reply just run, came back as an error: the
-    runner's own mark (a tool that raised), or an answer that starts with "error", which is how every tool of
-    tools.py says no. `tool_uses`: the reply's calls, which name the tool of each answer."""
+def _write_answers(response, tool_uses=()) -> list[tuple[bool, str]]:
+    """(the runner's error mark, the answer's text) of each call of a tool that writes (`WRITE_TOOLS`) in the reply
+    just run. `tool_uses`: the reply's calls, which name the tool of each answer."""
     names = {str(_field(b, "id")): _field(b, "name") for b in tool_uses}
     content = response.get("content") if isinstance(response, dict) else getattr(response, "content", None)
+    out = []
     for block in content if isinstance(content, list) else []:
         get = block.get if isinstance(block, dict) else lambda k, b=block: getattr(b, k, None)
         if get("type") != "tool_result" or names.get(str(get("tool_use_id"))) not in WRITE_TOOLS:
@@ -164,9 +164,26 @@ def _calls_failed(response, tool_uses=()) -> bool:
         said = get("content")
         if isinstance(said, list):
             said = "".join(str(c.get("text") if isinstance(c, dict) else getattr(c, "text", "")) for c in said)
-        if get("is_error") or str(said or "").lstrip().lower().startswith("error"):
-            return True
-    return False
+        out.append((bool(get("is_error")), str(said or "")))
+    return out
+
+
+def _calls_cut(response, tool_uses=()) -> bool:
+    """Whether a write's answer in the reply just run says a text of the call was cut at its length (tools.CUT_NOTE):
+    done as asked, but the model must see it before the turn ends."""
+    return any(CUT_NOTE in said for _, said in _write_answers(response, tool_uses))
+
+
+def _calls_failed(response, tool_uses=(), cuts: bool = True) -> bool:
+    """Whether a call of a tool that writes (`WRITE_TOOLS`), in the reply just run, came back as an error: the
+    runner's own mark (a tool that raised), or an answer that starts with "error", which is how every tool of
+    tools.py says no; and with `cuts`, an answer that says a text of the call was cut (`_calls_cut`; round 4, 14 Nov:
+    56 of 204 idea writes were cut, and the turn ended before the model read it). `tool_uses`: the reply's calls,
+    which name the tool of each answer."""
+    answers = _write_answers(response, tool_uses)
+    if any(bad or said.lstrip().lower().startswith("error") for bad, said in answers):
+        return True
+    return cuts and _calls_cut(response, tool_uses)
 
 
 def _notes_size(paths: OperatorPaths) -> int:
@@ -232,7 +249,8 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     instructions and tools, cut off at the role's cap, its spend recorded under the role. It reads no inbox and
     writes no day's report, and the analyst's cadence does not count from it. A role's turn ends at its note: once a
     reply's calls held one of the tools named in `ends_at` and wrote a note, the turn ends after the first reply (that
-    one or a later one) whose calls were all writes that ran without an error, and no further reply is asked for (the
+    one or a later one) whose calls were all writes that ran without an error and, once a turn, without a cut text
+    (tools.CUT_NOTE), and no further reply is asked for (the
     result says `ended_at` "note"; `stopped` stays "end_turn", which is what it is to every reader of it). A note the
     tool refused is no note; a write that failed beside the note is shown to the model, whose next reply may repair
     it; a reply that also read something is answered, so the model sees what it read; and the operator's and the
@@ -297,6 +315,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
     usd, calls, stopped, message_stop_reason = 0.0, 0, "end_turn", None
     ended_at = None  # "note": a role's turn that ended at its note, without a closing reply
     note_said: str | None = None  # the role's note of this turn, once it is written
+    cut_shown = False  # a reply at or after the note whose text was cut kept the turn open once: not again
     record = TurnLog(decision.mode, decision.reasons, started)  # the owner's live page: how the turn thought
     error = None
     notes_before, decisions_before = notes.count, len(notes.decisions)
@@ -337,13 +356,14 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
                         and any(getattr(b, "name", None) in ends_at for b in tool_uses)):  # fmt: skip
                     note_said = _notes_since(paths, size, role)
                 read = any(getattr(b, "name", None) not in WRITE_TOOLS for b in tool_uses)  # the model must see it
-                if note_said is not None and not read and not _calls_failed(results, tool_uses):
+                if note_said is not None and not read and not _calls_failed(results, tool_uses, cuts=not cut_shown):
                     # the role's note is written and every call of this reply ran: the turn is over. The record
                     # holds the note where the closing reply stood (the owner's page: "What the agents said last")
                     ended_at = "note"
                     if note_said:
                         record.steps.append({"kind": "say", "text": note_said[:6000], "ended_at": "note"})
                     break
+                cut_shown = cut_shown or (note_said is not None and not read and _calls_cut(results, tool_uses))
                 if now() - started >= TURN_WALL_SECS:
                     notes.write(f"turn time limit reached ({(now() - started) / 60:.0f} min of "
                                 f"{TURN_WALL_SECS // 60}) before the round finished", "info")  # fmt: skip

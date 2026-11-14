@@ -1625,3 +1625,127 @@ def test_an_empty_note_does_not_end_a_role_turn(env):
     notes = env["paths"].notes.read_text().splitlines()
     assert len(requests) == 2 and out["ended_at"] == "note" and out["notes"] == 1
     assert len(notes) == 1 and notes[0].endswith("[info] scout: W1 is Cupsey: 31 round trips")
+
+
+# -- round 4 (14 Nov, 22:00): a text that was cut keeps the turn open once -----------------------------------------
+
+_DAY = time.strftime("%Y-%m-%d", time.gmtime(NOW))
+_SCOUT7 = (
+    "# Who is worth following (wallet scout), 14 Nov 08:05 UTC\n\nA wallet's own profit is made at its own place.\n\n"
+    "| Wallet | Who, kind | Own result | Who stands in its block | Companions | Qualify (+3x) | Source |\n"
+    "|---|---|---|---|---|---|---|\n"
+    "| AtifzK | unnamed hand trader | 2.4 d +38.7 SOL | outsider 48 % | none tracked | candidate +0.0863 | SQL |\n"
+    "| HjuSth | unnamed scalper | 7 d +65.8 SOL / 45 coins | gap 18.3 % | not checked | candidate +0.0083 | SQL |\n"
+)
+
+
+def _entry(role, text="## 01:00\nwhat the turn did.", headline="the finding: +0.2 SOL a copy (n 41)"):
+    from snipetech.operator import roles
+
+    return ("write_report", {"name": f"{roles.journal_prefix(role)}-{_DAY}", "text": text, "headline": headline})
+
+
+def _answers(env):
+    from snipetech.operator.turnlog import read_turns
+
+    return [str(s.get("result")) for s in read_turns(env["paths"], 1)[0]["steps"] if s["kind"] == "tool"]
+
+
+_CLOSING = ([{"type": "text", "text": "closing reply"}], "end_turn")
+
+
+def test_an_idea_text_cut_beside_the_note_is_shown_to_the_model_once(env):
+    """Proof P3 of round 4: 56 of 204 real idea writes were over a cap, cut and kept, and the reply that held the
+    journal's headline ended the turn: the last part of the test, where "what is missing" is written, was gone unseen.
+    A cut now keeps the turn open for one more reply, which may shorten the text or leave it; a second cut in that
+    reply does not keep it open again."""
+    from snipetech.operator import learning
+
+    test = ("lab --trigger FvHwFe first buy 0.3 SOL+ at +6 with 0.036 charged, 0.5 SOL, hold300s MIGSELL copy50%; "
+            "then the same at 1 and 2 SOL with --same-sol. ") * 5 + "WHAT IS MISSING: --companions."  # fmt: skip
+    assert len(test) > learning.IDEA_TEXT["test"] == 650
+    idea = ("upsert_idea", {"title": "FvHwFe copy at the place its bid buys", "why": "tape n 177", "test": test,
+                            "expected": "lower above zero", "kind": "research"})  # fmt: skip
+    short = ("lab --trigger FvHwFe first buy 0.3 SOL+ at +6, 0.5-2 SOL --same-sol. WHAT IS MISSING: --companions.")
+    handler, requests = _scripted(_calls(idea, _entry("tester")),
+                                  _calls(("upsert_idea", {"title": idea[1]["title"], "test": short})), _CLOSING)
+    out = _run(env, Decision(True, "tester", ["a job of yours ended: j1"]), handler, role="tester")
+    answers = _answers(env)
+    assert "test was cut at 650 characters" in answers[0] and not answers[0].startswith("error")
+    assert len(requests) == 2 and out["ended_at"] == "note" and out["notes"] == 1
+    assert learning.list_ideas(env["paths"], "all")[0]["test"] == short
+    # a reply that is cut again ends the turn: the cut was shown once
+    handler, requests = _scripted(_calls(idea, _entry("tester", text="## 02:00\nagain")),
+                                  _calls(("upsert_idea", {"title": idea[1]["title"], "test": test + " more"})),
+                                  _CLOSING)  # fmt: skip
+    out = _run(env, Decision(True, "tester", ["a job of yours ended: j1"]), handler, role="tester")
+    assert len(requests) == 2 and out["ended_at"] == "note"
+
+
+def test_a_row_and_a_paragraph_cut_beside_the_note_keep_the_turn_open(env):
+    """Proof P3b: a row of 1,564 and a paragraph of 1,559 characters were cut at 1,200, the answer had no "error" and
+    the turn ended in one request. The model now reads the cut before the turn ends; a cut is no error."""
+    p = env["paths"].root / "scout-facts.md"
+    p.write_text(_SCOUT7)
+    long_cell = "GMGN 7 d +2,552 USD; " * 70
+    row = f"| HjuSth | unnamed scalper | {long_cell}| gap 18.3 % | not checked | candidate +0.0083 / 27 | SQL 09:31 |"
+    above = "What holds for every row. " * 60
+    handler, requests = _scripted(
+        _calls(("update_table", {"rows": [{"key": "HjuSth", "text": row}], "above": above}), _entry("scout")),
+        _CLOSING)  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    answers = _answers(env)
+    assert not answers[0].startswith("error") and "the row HjuSth was cut at 1,200 characters" in answers[0]
+    assert "the paragraph above was cut at 1,200 characters" in answers[0]
+    assert len(requests) == 2 and "ended_at" not in out and out["stopped"] == "end_turn"
+    shown = [str(b["content"]) for b in requests[1]["messages"][-1]["content"] if b.get("type") == "tool_result"]
+    assert "was cut at 1,200" in shown[0]
+    from snipetech.operator.turnlog import read_turns
+
+    steps = [s for s in read_turns(env["paths"], 1)[0]["steps"] if s["kind"] == "tool"]
+    assert not any(s.get("error") for s in steps)  # the owner's page marks no error for a cut
+
+
+def test_a_row_one_cell_short_keeps_the_turn_open_and_writes_nothing(env):
+    """Proof P1 as a turn: the row was written a column to the right, "replaced 1", and the turn ended in one request.
+    It is refused now, and the model reads why before the turn ends."""
+    p = env["paths"].root / "scout-facts.md"
+    p.write_text(_SCOUT7)
+    row = "| AtifzK: QUALIFIED | unnamed hand trader | 2.4 d +38.7 SOL | outsider 48 % | QUALIFIED +0.09 / 31 | SQL |"
+    handler, requests = _scripted(_calls(("update_table", {"rows": [{"key": "AtifzK", "text": row}]}),
+                                         _entry("scout")), _CLOSING)  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    assert _answers(env)[0].startswith("error: not done: AtifzK has 6 cells")
+    assert len(requests) == 2 and "ended_at" not in out and p.read_text() == _SCOUT7
+
+
+def test_the_journal_entry_sent_again_beside_the_repair_stands_once(env):
+    """Proof P5 as a turn: a refused row beside the journal entry with its headline; the model sends its reply again
+    with the row repaired; the entry stood twice. It stands once, and the turn ends at the repair."""
+    p = env["paths"].root / "scout-facts.md"
+    p.write_text(_SCOUT7)
+    bad = ("update_table", {"rows": [{"key": "HjuSth", "text": "| x | y |"}]})
+    good = ("update_table", {"rows": [{"key": "HjuSth", "text": "| HjuSth | scalper | 7 d | gap | no | cand | SQL |"}]})
+    e = _entry("scout", text="## 01:00 UTC\n\nRead lab 9c6a6e: lower -0.031 to -0.040 (n 44).")
+    handler, requests = _scripted(_calls(bad, e), _calls(good, e), _CLOSING)
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    journal = (env["paths"].root / f"scout-journal-{_DAY}.md").read_text()
+    assert journal.count("Read lab 9c6a6e") == 1 and len(requests) == 2 and out["ended_at"] == "note"
+    assert _answers(env)[3].startswith("the journal ends with this entry already: not written again")
+
+
+def test_a_cut_counts_once_in_calls_failed(env):
+    from snipetech.operator import tools as TOOLS
+    from snipetech.operator import turn as T
+
+    def response(*results):
+        return {"content": [{"type": "tool_result", "tool_use_id": f"t{i}", "content": said, "is_error": False}
+                            for i, said in enumerate(results)]}  # fmt: skip
+
+    def uses(*names):
+        return [{"type": "tool_use", "id": f"t{i}", "name": name} for i, name in enumerate(names)]
+
+    cut = f"I3 updated: test; test {TOOLS.CUT_NOTE} 650 characters: its last 12 characters are gone"
+    assert T._calls_failed(response(cut), uses("upsert_idea")) is True
+    assert T._calls_failed(response(cut), uses("upsert_idea"), cuts=False) is False
+    assert T._calls_failed(response(cut), uses("read_job_log")) is False  # a reading tool's text is not a write's cut

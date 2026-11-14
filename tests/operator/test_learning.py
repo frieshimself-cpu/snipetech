@@ -138,8 +138,8 @@ def test_a_new_idea_needs_every_field_and_valid_choices(paths):
     assert L.list_ideas(paths, status="all") == []
     # since 14 Nov a text over its cap is no refusal: it is cut there and kept (57 of 207 idea writes had been refused
     # for length, and each was written again whole)
-    kept = L.upsert_idea(paths, IDEA | {"why": "7 of 9 losses were small buys. " * 25}, source="analyst", now=NOW)
-    assert len(kept["why"]) <= 600 and kept["why"].endswith("…") and kept["why"].startswith("7 of 9 losses were")
+    kept = L.upsert_idea(paths, IDEA | {"why": "7 of 9 losses were small buys. " * 30}, source="analyst", now=NOW)
+    assert len(kept["why"]) <= 700 and kept["why"].endswith("…") and kept["why"].startswith("7 of 9 losses were")
 
 
 def test_open_ideas_are_ranked_and_closed_ones_left_out(paths):

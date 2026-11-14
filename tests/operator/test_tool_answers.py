@@ -104,9 +104,14 @@ def test_a_new_key_is_added_at_the_end_of_the_table_or_behind_the_row_named(role
     assert lines[6].startswith("| FLPjyS") and lines[7] == "| i3Sj7y | FLPjyS's twin | candidate |"
     assert lines[-3:] == ["| YJFQNK | 8 of 39 buys on LaunchLab |", "| ANTUPU | no stop scored |", ""]
     assert "added 2 (i3Sj7y; ANTUPU)" in out
-    # the row's cells without its key are a row too: the key is put in front (the table has three columns)
-    _call(update, rows=[{"key": "Byn68j", "text": "Binance-funded | forward 8 of 20", "new": True}])
-    assert "| Byn68j | Binance-funded | forward 8 of 20 |" in p.read_text().split("\n")
+    # the row's cells without its key are no row (round 4: the key was put in front, and a rename one cell short was
+    # stored a column to the right): nothing is written and the answer asks for the row whole
+    before = p.read_text()
+    out = _call(update, rows=[{"key": "Byn68j", "text": "Binance-funded | forward 8 of 20", "new": True}])
+    assert out.startswith("error: not done: Byn68j: the row's first cell is Binance-funded, and a new row's key is its "
+                          "first cell or the start of it: nothing was written; send the row whole, with its first "
+                          "cell")  # fmt: skip
+    assert p.read_text() == before
     # and a key is the first cell however it is dressed: bold, spaces, capitals
     out = _call(update, rows=[{"key": "atifzk", "text": "| **AtifzK** | hand trader | retired |"}])
     assert "replaced 1" in out and p.read_text().count("AtifzK") == 1
@@ -139,11 +144,11 @@ def test_a_row_over_the_cap_is_cut_and_the_answer_says_so(rolebox):
     out = _call(tools("scout")["update_table"], rows=[{"key": "HjuSth", "text": long}])
     row = next(line for line in p.read_text().split("\n") if line.startswith("| HjuSth"))
     assert len(row) == TABLE_ROW_CHARS == 1200 and row.endswith("… |") and row.startswith(long[:1100])
-    assert "cut at 1,200 characters: HjuSth" in out and f"({len(long):,})" in out and not out.startswith("error")
+    assert f"the row HjuSth was cut at 1,200 characters (it was {len(long):,})" in out and not out.startswith("error")
     out = _call(tools("scout")["update_table"], above="No wallet is copyable yet. " * 60)
     head = p.read_text().split("\n")[2]
     assert len(head) <= 1200 and head.endswith("…")
-    assert "the paragraph above cut at 1,200 characters (it was 1,619)" in out
+    assert "the paragraph above was cut at 1,200 characters (it was 1,619)" in out
 
 
 def test_a_role_cannot_touch_another_roles_table_through_update_table(rolebox):
@@ -154,8 +159,9 @@ def test_a_role_cannot_touch_another_roles_table_through_update_table(rolebox):
     theirs = _table(paths, name="tester-rules")
     update = tools("scout")["update_table"]
     assert not {"name", "table", "path", "role"} & set(update.to_dict()["input_schema"]["properties"])
-    with pytest.raises(ValueError, match="Invalid arguments"):  # no such argument: the call never runs
-        _call(update, name="tester-rules", rows=[{"key": "HjuSth", "text": "| HjuSth | x | y |"}])
+    # no such argument: the call never runs (round 4: answered in words, not with the SDK's ValueError)
+    out = _call(update, name="tester-rules", rows=[{"key": "HjuSth", "text": "| HjuSth | x | y |"}])
+    assert out.startswith("error: not done: ") and "update_table takes no name" in out
     _call(update, rows=[{"key": "HjuSth", "text": "| HjuSth | x | y |"}])
     assert theirs.read_text() == TABLE and theirs.stat().st_mtime == NOW - 3600
     assert sorted(f.name for f in paths.root.glob("*.md")) == ["scout-facts.md", "tester-rules.md"]
@@ -428,18 +434,20 @@ def test_an_idea_field_over_its_cap_is_cut_and_kept(rolebox, jobs):
     text was written, refused and written again. It is cut at the cap and kept, and the answer says which field and by
     how much. Round 2 (14 Nov): it says how many of the text's last characters are gone, and gives no advice."""
     tools, paths, _ = rolebox
-    test = "lab at the bid place-bids names, then the same at +0 and at +6; " * 9  # 575 characters as stored
-    why = "7 of 9 losses copied buys under 0.3 SOL (n 9); " * 14  # 657
+    # round 4 (14 Nov): the caps from what was really written (test 404-654 for 400, why 603-682, expected 305-372)
+    assert learning.IDEA_TEXT == {"title": 120, "why": 700, "test": 650, "expected": 400}
+    test = "lab at the bid place-bids names, then the same at +0 and at +6; " * 11  # 703 characters as stored
+    why = "7 of 9 losses copied buys under 0.3 SOL (n 9); " * 16  # 751
     out = _call(tools("scout")["upsert_idea"], **(IDEA | {"test": test, "why": why}))
     assert not out.startswith("error") and "\n" not in out
     (idea,) = learning.list_ideas(paths, "all")
-    assert 390 < len(idea["test"]) <= 400 and idea["test"].endswith("…") and idea["test"][:390] == test[:390]
-    assert len(idea["why"]) <= 600 and idea["why"].endswith("…") and out.startswith(f"{idea['id']} created")
-    assert "test was cut at 400 characters: its last " in out and "why was cut at 600 characters: its last " in out
+    assert 640 < len(idea["test"]) <= 650 and idea["test"].endswith("…") and idea["test"][:640] == test[:640]
+    assert len(idea["why"]) <= 700 and idea["why"].endswith("…") and out.startswith(f"{idea['id']} created")
+    assert "test was cut at 650 characters: its last " in out and "why was cut at 700 characters: its last " in out
     # the library says the same to its other callers
-    done = learning.upsert_idea_detail(paths, {"id": idea["id"], "expected": "+0.004 SOL " * 30}, source="cloud")
-    assert done["cut"] == {"expected": 329} and done["changed"] == ["expected"] and not done["created"]
-    assert len(done["idea"]["expected"]) <= 300 and done["idea"]["expected"].endswith("…")
+    done = learning.upsert_idea_detail(paths, {"id": idea["id"], "expected": "+0.004 SOL " * 40}, source="cloud")
+    assert done["cut"] == {"expected": 439} and done["changed"] == ["expected"] and not done["created"]
+    assert len(done["idea"]["expected"]) <= 400 and done["idea"]["expected"].endswith("…")
     # a secret is still refused, and so is an empty field: nothing is kept of those
     assert _call(tools("scout")["upsert_idea"], id=idea["id"], why="key sk-ant-api03-abcdefghij").startswith("error")
 
@@ -597,8 +605,9 @@ def test_a_row_is_found_by_the_start_of_its_first_cell_and_a_new_row_can_go_on_t
     p = _table(paths, TABLE.replace("| HjuSth |", "| HjuSth (I165, closed 06:31): a scalper |"))
     update = tools("scout")["update_table"]
     out = _call(update, rows=[{"key": "HjuSth", "text": "| HjuSth | scalper | retired |"}])
-    assert "replaced 1 (HjuSth)" in out and "| HjuSth | scalper | retired |" in p.read_text().split("\n")
-    assert p.read_text().count("HjuSth") == 1
+    # round 4: the answer names the row as it stood, its whole first cell
+    assert "replaced 1 (HjuSth (I165, closed 06:31): a scalper)" in out
+    assert "| HjuSth | scalper | retired |" in p.read_text().split("\n") and p.read_text().count("HjuSth") == 1
     # "Hju" is no whole word of that cell, and "FLPjyS: QUAL" neither: a start ends where a word ends
     out = _call(update, rows=[{"key": "Hju", "text": "| Hju | another wallet | candidate |", "new": True}])
     assert out.startswith("scout-facts.md: added 1 (Hju)")
@@ -698,7 +707,7 @@ def test_what_update_table_did_not_do_starts_its_answer_with_error(rolebox):
     assert prose.read_text() == "# Fees and bids\n\nnothing measured yet\n"
     # cut, but done: no error
     out = _call(update, rows=[{"key": "HjuSth", "text": "| HjuSth | scalper | " + "seven days; " * 150 + "|"}])
-    assert not out.startswith("error") and "cut at 1,200 characters: HjuSth" in out
+    assert not out.startswith("error") and "the row HjuSth was cut at 1,200 characters" in out
 
 
 def test_the_paragraph_above_the_table_is_called_above_and_a_headline_is_the_journals(rolebox):
@@ -800,7 +809,7 @@ def test_a_headline_needs_no_text_and_the_note_it_writes_is_capped(rolebox):
     line = paths.notes.read_text().splitlines()[-1]
     assert len(line) <= 700 + 40 and line.endswith("…") and not out.startswith("error")
     assert f"the note was cut at 700 characters (the headline was {len(long):,})" in out
-    assert _call(tools("tester")["write_note"], text=long).endswith(f"cut at 700 characters (it was {len(long):,})")
+    assert _call(tools("tester")["write_note"], text=long).endswith(f"was cut at 700 characters (it had {len(long):,})")
     assert sink.count == 3 and all(len(n) <= 740 for n in paths.notes.read_text().splitlines())
 
 
@@ -843,11 +852,11 @@ def test_an_ideas_cut_says_what_is_gone_and_from_where(rolebox):
     """The cut takes the END of the text, where "what is missing" is appended, and its notice arrives after the turn
     ended in about half the turns. It says how much is gone and from where; no advice about the journal."""
     tools, paths, _ = rolebox
-    test = "lab at the bid place-bids names, then the same at +0 and at +6; " * 9  # 575 characters as stored
+    test = "lab at the bid place-bids names, then the same at +0 and at +6; " * 11  # 703 characters as stored
     out = _call(tools("scout")["upsert_idea"], **(IDEA | {"test": test}))
     (idea,) = learning.list_ideas(paths, "all")
-    gone = 575 - (len(idea["test"]) - 1)
-    assert out == (f"{idea['id']} created: research, open, priority 3, queue scout; test was cut at 400 characters: "
+    gone = 703 - (len(idea["test"]) - 1)
+    assert out == (f"{idea['id']} created: research, open, priority 3, queue scout; test was cut at 650 characters: "
                    f"its last {gone} characters are gone")  # fmt: skip
     assert "journal" not in out and not out.startswith("error")
 
@@ -900,7 +909,7 @@ def test_the_roles_writing_tools_say_each_thing_once(rolebox):
         args = t["write_report"].to_dict()["input_schema"]["properties"]
         assert " ".join(args["headline"]["description"].split()) == (
             "The finding in one or two plain sentences with the numbers that matter (n, the landing, the bid); not "
-            "repeated in the text.")  # fmt: skip
+            "repeated in the text (the note is cut at 700 characters).")  # fmt: skip
         assert t["write_report"].to_dict()["input_schema"]["required"] == ["name"]
         said = prompts.ROLE_SYSTEM[role] + " ".join(json.dumps(x.to_dict()) for x in t.values())
         assert said.count("never the whole table") == 0 and said.count("no write_note") == 1
@@ -927,12 +936,14 @@ def test_the_lab_slots_line_is_in_the_part_of_a_roles_message_that_changes_every
 
 def test_a_text_that_is_no_whole_table_never_replaces_one_even_with_the_flag(rolebox):
     """whole=true says "a rebuild", but one row sent with it is no rebuild of a table that has a title and a header:
-    it is taken as rows too. And what such a text holds beside rows (a paragraph) is not dropped without a word."""
+    round 4 (14 Nov) refuses it (round 3 took it as rows, and a prune sent without its title line removed nothing,
+    answered without "error"). And what a text without the flag holds beside rows (a paragraph) is not dropped
+    without a word."""
     tools, paths, _ = rolebox
     p = _table(paths)
     update = tools("scout")["update_table"]
     out = _call(update, text="| AtifzK | hand trader | retired |", whole=True)
-    assert "taken as rows" in out and "| FLPjyS: QUALIFIED |" in p.read_text() and len(p.read_text()) > 400
+    assert out.startswith("error: not done: whole=true needs the whole table") and p.read_text() == TABLE
     out = _call(update, text="One wallet clears every gate now.\n\n| HjuSth | scalper | retired |")
     assert out.startswith("error: not done: 1 line of the text is no table row and was left out")
     assert "above" in out and "; done: taken as rows" in out and "| HjuSth | scalper | retired |" in p.read_text()
@@ -968,8 +979,8 @@ def test_a_new_row_goes_to_the_table_its_cells_fit_and_a_row_that_fits_no_table_
     before = p.read_text()
     out = _call(update, rows=[{"key": "N1", "text": "| N1 | a | b | c | d |", "new": True}])
     assert out.startswith("error: not done: N1 has 5 cells, the first table has 3 columns (Wallet | Who, kind | "
-                          "Qualify (+3x)): nothing was written; for the second table give \"after\" with a key of "
-                          "that table")  # fmt: skip
+                          "Qualify (+3x)): nothing was written; send the row whole, with its first cell; for the "
+                          "second table give \"after\" with a key of that table")  # fmt: skip
     # an existing row with a cell too few, with and without its key cell: nothing written, the repair leaves one row
     for text in ("| HjuSth | only two |", "| scalper only |", "| HjuSth | a | b | c |"):
         out = _call(update, rows=[{"key": "HjuSth", "text": text}])
@@ -1035,13 +1046,13 @@ def test_a_row_whose_key_fits_no_row_is_written_only_when_the_call_says_it_is_ne
                                "before": "FvHwFe first buy"}], drop=["AtifzK"])  # fmt: skip
     assert out.startswith("scout-facts.md: added 1 (AtifzK: QUALIFIED); dropped 1 (AtifzK)")
     assert [row for row in _rows(p) if "AtifzK" in row] == ["| AtifzK: QUALIFIED | hand trader | +0.09 / 31 |"]
-    # "new" beside a key that fits a row is two statements that disagree: nothing is written
+    # "new" beside a key that is a row's first cell is two statements that disagree: nothing is written. A key that
+    # is only the start of a row's first cell is a new row (round 4: "A1eN4E" beside "A1eN4E + HVM33j (I122)")
     before = p.read_text()
-    for key in ("HjuSth", "FLPjyS"):
-        out = _call(update, rows=[{"key": key, "text": f"| {key} | a | b |", "new": True}])
-        assert (
-            out.startswith(f"error: not done: {key} is said to be new but there is a row") and p.read_text() == before
-        )
+    out = _call(update, rows=[{"key": "HjuSth", "text": "| HjuSth | a | b |", "new": True}])
+    assert out.startswith("error: not done: HjuSth is said to be new but there is a row") and p.read_text() == before
+    out = _call(update, rows=[{"key": "FLPjyS", "text": "| FLPjyS | a | b |", "new": True}])
+    assert out.startswith("scout-facts.md: added 1 (FLPjyS)") and "| FLPjyS: QUALIFIED |" in p.read_text()
     assert _call(update, rows=[{"key": "Z9", "text": "| Z9 | a | b |", "new": True}]).startswith(
         "scout-facts.md: added"
     )
@@ -1130,11 +1141,10 @@ def test_a_header_a_separator_or_another_rows_first_cell_is_never_written_as_a_r
     assert out.startswith(
         "error: not done: HjuSth: the first cell AtifzK is another row's already: nothing was written"
     )
+    # round 4: a new row's key is its first cell or the start of it, so this is refused before its first cell is
+    # looked up; the refusal of a taken first cell holds for a rename (above)
     out = _call(update, rows=[{"key": "Z1", "text": "| HjuSth | a | b |", "new": True}])
-    assert (
-        out.startswith("error: not done: Z1: the first cell HjuSth is another row's already")
-        and p.read_text() == before
-    )
+    assert out.startswith("error: not done: Z1: the row's first cell is HjuSth") and p.read_text() == before
 
 
 def test_an_empty_note_and_an_empty_headline_are_refused(rolebox):
@@ -1241,3 +1251,275 @@ def test_a_row_in_rows_and_in_drop_stays_as_it_is_whatever_else_the_call_moves(r
     rows = _rows(p)
     assert rows[2] == "| Z0 | a | b |" and "| HjuSth | scalper | stopped by crowding |" in rows
     assert not any("AtifzK" in row or "CHANGED" in row for row in rows)
+
+
+# -- round 4 (14 Nov, 22:00): no guess left in the table tool -------------------------------------------------------
+# The tables below keep the shapes of the agents' real tables of 14 Nov that the reviewer's proofs used: a scout table
+# of seven columns with a row for two wallets, an oktech table whose second table has three columns, and a fee table
+# whose rows say "same, 2 SOL" under a parent row.
+
+SCOUT7 = (
+    "# Who is worth following (wallet scout), 14 Nov 08:05 UTC\n"
+    "\n"
+    "A wallet's own profit is made at its own place in the block.\n"
+    "\n"
+    "| Wallet | Who, kind | Own result | Who stands in its block | Companions | Qualify (+3x) | Source |\n"
+    "|---|---|---|---|---|---|---|\n"
+    "| FvHwFe: QUALIFIED | own-signal bot of 4 wallets | 72 h +153 SOL / 212 coins | crowded | 3 "
+    "| QUALIFIED +0.02 / 177 | SQL 07:10 |\n"
+    "| AtifzK | unnamed hand trader | 2.4 d +38.7 SOL / 23 coins | outsider 48 % of 23 | none tracked "
+    "| candidate +0.0863 / 20 | SQL 06:40 |\n"
+    "| A1eN4E + HVM33j (I122) | unnamed twins | - | fees-bids | each other | A1eN4E +0.0151 / 31 | SQL 06:31 |\n"
+    "| HjuSth | unnamed scalper | 7 d +65.8 SOL / 45 coins | gap 18.3 % | not checked | candidate +0.0083 / 27 "
+    "| SQL 09:31 |\n"
+)
+OKTECH = (
+    "# OKTech features (features analyst), 14 Nov 07:50 UTC\n"
+    "\n"
+    "No rule has passed a forward reading.\n"
+    "\n"
+    "| Feature | Verified? | Changes what | Cheapest test |\n"
+    "|---|---|---|---|\n"
+    "| Copy landing | quiet 0-1 behind (n 37) | FvHwFe is crowded | none |\n"
+    "| FvHwFe copy at our bid (I156) | paper: 10 coins are 67 % of the gain | qualify | I156 |\n"
+    "| Timer | 300 s verified | f98f hold | I81 |\n"
+    "\n"
+    "Candidates (tape, nothing live).\n"
+    "\n"
+    "| Wallet | Finding | Idea |\n"
+    "|---|---|---|\n"
+    "| FvHwFe + 3 companions | crowded | I153 |\n"
+    "| HjuSth | re-enters | I149 |\n"
+    "| YJFQNK | 21 % of buys on LaunchLab | I163 |\n"
+)
+FEES = (
+    "# Fees and bids (fee and place analyst), 14 Nov 08:05 UTC\n"
+    "\n"
+    "All rows are paper.\n"
+    "\n"
+    "| Trade, size | Place | Bid | Wins the place | What it makes there | n, job |\n"
+    "|---|---|---|---|---|---|\n"
+    "| **FvHwFe first buy, 0.5 SOL (I20)** | +2 ASSUMED | 0.036 charged | not known | +0.05 | 69 test |\n"
+    "| same, 0.5 SOL | +10 ASSUMED | 0.005 charged | none | +0.119 | 76 test |\n"
+    "| same, 1 SOL | +10 ASSUMED | 0.005 charged | same | +0.245 | 76 test |\n"
+    "| same, 2 SOL | +10 ASSUMED | 0.005 charged | same | +0.446, lower +0.244 | 76 test |\n"
+    "| **FvHwFe: what a place is worth** | 0.5 SOL: +2 to +6 | 0.031 more | - | a place | 177 tape |\n"
+    "| Leck, 2 SOL | +0 assumed | 0.05 | quiet | -0.114 | 72088a |\n"
+)
+
+
+def _rows4(p):
+    return [line for line in p.read_text().split("\n") if line.startswith("|")]
+
+
+def test_a_row_one_cell_short_is_refused_and_never_gets_the_key_put_in_front(rolebox):
+    """Proof P1 of round 4: a rename (the key the old first cell, the text the row with its new one) with one cell
+    forgotten was taken for "the row without its key", the key was put in front and every cell stood one heading to
+    the right, answered "replaced 1". A row is now written only as it was sent: one cell short is refused and the
+    answer asks for the row whole."""
+    tools, paths, _ = rolebox
+    p = _table(paths, SCOUT7)
+    row = ("| AtifzK: QUALIFIED | unnamed hand trader | 2.4 d +38.7 SOL | outsider 48 % | QUALIFIED +0.09 / 31 "
+           "| SQL 09:10 |")
+    out = _call(tools("scout")["update_table"], rows=[{"key": "AtifzK", "text": row}])
+    assert out.startswith("error: not done: AtifzK has 6 cells, its table has 7 columns (Wallet | Who, kind")
+    assert "send the row whole, with its first cell" in out and p.read_text() == SCOUT7
+    # the same with the seventh cell is a rename, written as sent
+    out = _call(tools("scout")["update_table"], rows=[{"key": "AtifzK", "text": row[:-1] + "| none tracked |"}])
+    assert "replaced 1 (AtifzK)" in out and row[:-1] + "| none tracked |" in _rows4(p)
+
+
+def test_a_new_row_goes_to_the_end_of_the_table_its_cells_fit_as_it_was_sent(rolebox):
+    """Proof P1b: a new candidate of three cells for the second table (three columns), key the wallet and first cell
+    the wallet with a word more, landed in the FIRST table (four columns) with the key put in front. It now stands at
+    the end of the table whose number of columns it has, as sent."""
+    tools, paths, _ = rolebox
+    p = _table(paths, OKTECH, "oktech-facts")
+    new = "| 9L5aWu (fresh wallet) | sells in one sale within 40 s | I173 |"
+    out = _call(tools("oktech")["update_table"], rows=[{"key": "9L5aWu", "text": new, "new": True}])
+    assert "added 1 (9L5aWu)" in out and not out.startswith("error")
+    lines = p.read_text().split("\n")
+    assert lines.index(new) == lines.index("| YJFQNK | 21 % of buys on LaunchLab | I163 |") + 1
+    assert not any(line.startswith("| 9L5aWu | 9L5aWu") for line in lines)
+
+
+def test_a_key_written_with_its_pipes_is_the_first_cell_and_leaves_no_empty_first_cell(rolebox):
+    """Proof P1c: a key written "| HjuSth |" with a row one cell short and "new": true left a row of nine cells in a
+    table of seven with an empty first cell, and the old row stayed. The pipes around a key are no part of it: the
+    key is HjuSth, which is a row already, and nothing is written."""
+    tools, paths, _ = rolebox
+    p = _table(paths, SCOUT7)
+    update = tools("scout")["update_table"]
+    short = "| HjuSth | unnamed scalper | 7 d +65.8 SOL / 45 coins | gap 18.3 % | candidate +0.0083 / 27 | SQL 09:31 |"
+    out = _call(update, rows=[{"key": "| HjuSth |", "text": short, "new": True}])
+    assert out.startswith("error: not done: ") and p.read_text() == SCOUT7
+    assert not any(line.startswith("| |") for line in _rows4(p))
+    whole = short[:-1] + "| CHANGED |"
+    out = _call(update, rows=[{"key": "| **HjuSth** |", "text": whole}])
+    assert "replaced 1 (HjuSth)" in out and whole in _rows4(p)
+
+
+def test_a_new_row_whose_first_cell_starts_another_rows_is_added_and_never_replaces_that_row(rolebox):
+    """Proof P2: the scout table has "A1eN4E + HVM33j (I122)". A row of its own for A1eN4E with "new": true was
+    refused with advice to send what had been sent; with "after" it replaced the twins' row (HVM33j's numbers gone,
+    "moved 1"). A row said to be new is matched by its whole first cell only; a place without "new" on a key that is
+    only the start of a row writes nothing and says both ways out."""
+    tools, paths, _ = rolebox
+    p = _table(paths, SCOUT7)
+    new = {"key": "A1eN4E", "text": "| A1eN4E | unnamed | - | fees-bids | HVM33j | QUALIFIED +0.03 / 41 | SQL 09:46 |"}
+    out = _call(tools("scout")["update_table"], rows=[dict(new, after="FvHwFe: QUALIFIED")])
+    assert out.startswith("error: not done: A1eN4E is the start of the row A1eN4E + HVM33j (I122): to move or change "
+                          "A1eN4E + HVM33j (I122) give its whole first cell; to add a new row A1eN4E send "
+                          '"new": true with "after"')  # fmt: skip
+    assert p.read_text() == SCOUT7
+    out = _call(tools("scout")["update_table"], rows=[dict(new, new=True, after="FvHwFe: QUALIFIED")])
+    assert "added 1 (A1eN4E)" in out and not out.startswith("error")
+    rows = _rows4(p)
+    assert rows[3] == new["text"] and any(r.startswith("| A1eN4E + HVM33j (I122) |") for r in rows)
+    assert len(rows) - 2 == 5
+    # "new" alone: to the end of the table
+    p = _table(paths, SCOUT7)
+    out = _call(tools("scout")["update_table"], rows=[dict(new, new=True)])
+    assert "added 1 (A1eN4E)" in out and _rows4(p)[-1] == new["text"] and len(_rows4(p)) - 2 == 5
+
+
+def test_a_new_row_whose_first_cell_starts_two_rows_is_a_new_row(rolebox):
+    """Proof P2b: a new candidate FvHwFe beside "FvHwFe copy at our bid (I156)" and "FvHwFe + 3 companions" was
+    refused three times with "give more of the first cell": there is no more to give. With "new": true it is new;
+    without it the answer says how to add it."""
+    tools, paths, _ = rolebox
+    p = _table(paths, OKTECH, "oktech-facts")
+    new = {"key": "FvHwFe", "text": "| FvHwFe | alone, without its companions | I180 |"}
+    out = _call(tools("oktech")["update_table"], rows=[dict(new, after="HjuSth")])
+    assert out.startswith("error: not done: FvHwFe fits 2 rows (FvHwFe copy at our bid (I156); FvHwFe + 3 companions)")
+    assert 'to add a new row FvHwFe send "new": true' in out and p.read_text() == OKTECH
+    out = _call(tools("oktech")["update_table"], rows=[dict(new, new=True, after="HjuSth")])
+    assert "added 1 (FvHwFe)" in out
+    lines = p.read_text().split("\n")
+    assert lines[lines.index("| HjuSth | re-enters | I149 |") + 1] == new["text"]
+
+
+def test_a_first_cell_that_stands_twice_on_disk_is_answered_with_the_one_way_out(rolebox):
+    """Proof P4: "same, 2 SOL" under two parent rows (the agents use ditto cells; an older write took a whole table
+    unchecked). A change was refused with no way out, again on the next reply, and a drop removed the first of the two
+    silently. Both are now refused with the one call that works: the table whole, each row its own first cell."""
+    tools, paths, _ = rolebox
+    twin = "| same, 2 SOL | +2 ASSUMED | 0.036 charged | same | running | 9e9 |"
+    text = FEES.replace("| **FvHwFe: what a place is worth**", twin + "\n| **FvHwFe: what a place is worth**", 1)
+    p = _table(paths, text, "fees-bids")
+    update = tools("fees")["update_table"]
+    say = ("two rows have the first cell same, 2 SOL (lines 10 and 11): send the table whole with "
+           "update_table(text, whole=true) and give each its own first cell")  # fmt: skip
+    change = [{"key": "same, 2 SOL", "text": "| same, 2 SOL | +2 ASSUMED | 0.036 charged | same | +0.31 | 9e9 |"}]
+    out = _call(update, rows=change)
+    assert out.startswith(f"error: not done: {say}") and p.read_text() == text
+    out = _call(update, drop=["same, 2 SOL"])
+    assert out.startswith(f"error: not done: {say}") and p.read_text() == text
+    out = _call(update, rows=[dict(change[0], new=True)])
+    assert out.startswith(f"error: not done: {say}") and p.read_text() == text
+    # the way out works
+    fixed = text.replace(twin, twin.replace("same, 2 SOL", "same at +2, 2 SOL"))
+    out = _call(update, text=fixed, whole=True)
+    assert out.startswith("fees-bids.md: written whole") and "| same at +2, 2 SOL |" in p.read_text()
+
+
+def test_a_row_the_call_never_named_is_never_removed(rolebox):
+    """Proof P8: rows to drop were kept by line number. A key that fits a dropped row only after earlier rows of the
+    call renamed its look-alikes moved it, and the drop then took the line that slid into its place ("**FvHwFe: what
+    a place is worth**", named by no key). A row of the call that finds a row to drop now writes nothing."""
+    tools, paths, _ = rolebox
+    p = _table(paths, FEES, "fees-bids")
+    lost = "| **FvHwFe: what a place is worth** | 0.5 SOL: +2 to +6 | 0.031 more | - | a place | 177 tape |"
+    rows = [{"key": "same, 0.5 SOL", "text": "| FvHwFe 0.5 at +10 | +10 ASSUMED | 0.005 charged | - | +0.119 | 76 |"},
+            {"key": "same, 1 SOL", "text": "| FvHwFe 1 at +10 | +10 ASSUMED | 0.005 charged | none | +0.245 | 76 |"}]
+    moved = {"key": "same", "text": "| same | +10 ASSUMED | 0.005 charged | none | +0.446 | 76 test |"}
+    out = _call(tools("fees")["update_table"], rows=[*rows, dict(moved, after="Leck, 2 SOL")], drop=["same, 2 SOL"])
+    assert out.startswith("error: not done: ") and lost in _rows4(p)
+    assert "replaced 2" in out and "dropped 1 (same, 2 SOL)" in out
+    assert not any(r.startswith(("| same |", "| same, 2 SOL")) for r in _rows4(p))
+    # the same without a place: the row found is one to drop, so nothing is changed for it
+    p = _table(paths, FEES, "fees-bids")
+    out = _call(tools("fees")["update_table"], rows=[*rows, moved], drop=["same, 2 SOL"])
+    assert out.startswith("error: not done: ") and lost in _rows4(p)
+    assert not any(r.startswith("| same |") for r in _rows4(p)) and "dropped 1 (same, 2 SOL)" in out
+
+
+def test_whole_true_with_a_text_that_is_no_whole_table_is_refused(rolebox):
+    """Proof P7: a prune sent as header, separator and the rows to keep, without the "# " title line, with whole=true:
+    taken as rows, "the same already", nothing removed and no error. whole=true needs the whole table."""
+    from snipetech.operator.tools import TABLE_SHAPE
+
+    tools, paths, _ = rolebox
+    p = _table(paths, SCOUT7)
+    keep = "\n".join(_rows4(p)[:4])
+    out = _call(tools("scout")["update_table"], text=keep, whole=True)
+    assert out == f"error: not done: whole=true needs the whole table ({TABLE_SHAPE}): nothing was changed"
+    assert p.read_text() == SCOUT7
+
+
+def test_a_journal_entry_sent_again_is_not_written_twice(rolebox):
+    """Proof P5: reply 1 held a refused row and the journal entry with its headline; the model sent its reply again
+    with the row repaired, and the entry stood in the journal twice. A journal that ends with this entry already is
+    not written again, and the answer says so without "error" (the turn goes its way)."""
+    tools, paths, _ = rolebox
+    tester = tools("tester")
+    name = "tester-journal-2026-11-06"
+    entry = {"name": name, "text": "## 01:00 UTC\n\nRead lab 9c6a6e: lower -0.031 (n 44).",
+             "headline": "the finding: +0.2 SOL a copy (n 41)"}  # fmt: skip
+    first = _call(tester["write_report"], **entry)
+    assert "the headline is written as this turn's note" in first
+    again = _call(tester["write_report"], **entry)
+    assert again.startswith("the journal ends with this entry already: not written again") and "error" not in again
+    assert (paths.root / f"{name}.md").read_text().count("Read lab 9c6a6e") == 1
+    assert paths.notes.read_text().count("+0.2 SOL a copy") == 1
+    # a new turn that sends it again with no note written yet: not written again, and the note is written
+    other = tools("tester")
+    out = _call(other["write_report"], **entry)
+    assert out.startswith("the journal ends with this entry already: not written again")
+    assert "the headline is written as this turn's note" in out
+    # another entry is written as always
+    assert _call(other["write_report"], name=name, text="## 02:00 UTC\n\nmore").startswith("appended to")
+
+
+def test_a_wrong_argument_type_is_answered_in_words(rolebox):
+    """Proof P6: `rows` as JSON text, `drop` as one string, an argument of write_report's on update_table: the model
+    read only the SDK's "Invalid arguments for function update_table". It reads what to send."""
+    tools, paths, _ = rolebox
+    p = _table(paths, SCOUT7)
+    update = tools("scout")["update_table"]
+    row = [{"key": "HjuSth", "text": "| HjuSth | a | b | c | d | e | f |"}]
+    for kw in ({"rows": json.dumps(row)}, {"drop": "HjuSth"}, {"name": "scout-facts", "rows": row}):
+        out = _call(update, **kw)
+        assert out.startswith("error: not done: rows is a list of {\"key\", \"text\"} objects, drop is a list of keys")
+        assert out.endswith("nothing was changed") and "Invalid arguments" not in out
+    assert "update_table takes no name" in _call(update, name="scout-facts", rows=row)
+    assert p.read_text() == SCOUT7
+    # the other writing tools a model reaches the same way
+    out = _call(tools("scout")["upsert_idea"], title="t", priority="high")
+    assert out.startswith("error: not done: ") and "priority" in out and "Invalid arguments" not in out
+    out = _call(tools("scout")["write_report"], name=["scout-journal-2026-11-06"], text="x")
+    assert out.startswith("error: not done: ") and "name" in out and "Invalid arguments" not in out
+    out = _call(tools()["upsert_idea"], title="t", priority="high")
+    assert out.startswith("error: not done: ") and "priority" in out
+
+
+def test_the_same_row_twice_in_one_call_is_not_written(rolebox):
+    """R9: the same key twice in one call wrote the last and said "replaced 2 (K; K)". Two rows of a call for one row
+    of the table write nothing for it; a key that is not short is said to be what it is."""
+    tools, paths, _ = rolebox
+    p = _table(paths, OKTECH, "oktech-facts")
+    update = tools("oktech")["update_table"]
+    a = {"key": "Timer", "text": "| Timer | 300 s verified | a | b |"}
+    b = {"key": "TIMER", "text": "| Timer | 300 s verified | c | d |"}
+    out = _call(update, rows=[a, b])
+    assert out.startswith("error: not done: Timer is sent twice in this call: nothing was written for it")
+    assert p.read_text() == OKTECH
+    c = {"key": "FvHwFe copy", "text": "| FvHwFe copy at our bid (I156) | x | y | z |"}
+    d = {"key": "FvHwFe copy at our bid (I156)", "text": "| FvHwFe copy at our bid (I156) | x | y | w |"}
+    out = _call(update, rows=[c, d, {"key": "HjuSth", "text": "| HjuSth | re-enters twice | I149 |"}])
+    assert out.startswith("error: not done: ") and "sent twice in this call" in out and "replaced 1 (HjuSth)" in out
+    assert "| FvHwFe copy at our bid (I156) | paper: 10 coins are 67 % of the gain | qualify | I156 |" in _rows4(p)
+    long_key = "K" * 1300
+    out = _call(update, rows=[{"key": long_key, "text": f"| {long_key} | a | b | c |", "new": True}])
+    assert out.startswith("error: not done: ") and "first cell is 1,300 characters" in out
+    assert "cut at 1,200" not in out and long_key not in p.read_text()
