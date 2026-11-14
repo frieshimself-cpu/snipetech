@@ -321,6 +321,32 @@ def test_the_page_says_which_rules_are_research_records(ops):
     assert page["copy1"]["research_only"] is False and page["hunt2"]["research_only"] is False
 
 
+def test_the_page_marks_a_rule_old_code_scored_before_the_mark_is_written(tmp_path):
+    """A rule a run of the old code scored after the migration is research only for every reader at once; the mark
+    is written into the store by the next run or freeze. The page read the stored rules raw and showed such a rule
+    unmarked until then. It reads them as every other reader does."""
+    from snipetech import dash
+    from snipetech.analysis import paper
+    from snipetech.store import Store
+    from tests import test_crew_as_live as T
+
+    path = tmp_path / "d.db"
+    store = Store(path)
+    x, _crew = T._frozen_default(store)
+    T._old_code_run(store, x["id"], T.START + 70 * 60 + paper.SETTLE_SECS)
+    assert paper.OLD_CODE not in store.coverage("paper_strategies")["strategies"][-1]  # not written yet
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        (row,) = dash._paper(con, dash._tables(con))["strategies"]
+        assert row["research_only"] is True and "in part scored without serial crews' coins" in row["label"]
+        paper.run(store, T._cfg(), now=T.NOW)
+        (row,) = dash._paper(con, dash._tables(con))["strategies"]
+        assert row["research_only"] is True
+    finally:
+        con.close()
+        store.close()
+
+
 def test_a_rule_the_paper_test_dropped_is_said_to_be_stopped_and_listed_last(ops):
     """18 of the 36 rules on the page were refuted (losing with enough trades; scored no more) and looked running."""
     _paper_world(ops)

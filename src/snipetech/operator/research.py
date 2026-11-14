@@ -323,6 +323,11 @@ def recent_tape(store: Store, hours: float = SEARCH_TAPE_H):
     return _TapeWindow(store, max(b for _a, b in spans) - hours * 3600) if spans else store
 
 
+def _elapsed_clock() -> float:
+    """Seconds on a clock that only moves forward: what the search took, from its start to its freeze."""
+    return time.monotonic()
+
+
 def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> dict[str, Any]:
     """The full lab at the live copy landing (one lab, under the lab lock) on the newest tape: strategies and labelled
     wallets ranked where our copies land, and the strategies with a positive lower bound there frozen into the forward
@@ -335,6 +340,7 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     from ..qualify import run as Q
 
     store = svc.store
+    began = _elapsed_clock()  # (the lab runs before the freeze: each record says when it was written, `stored_at`)
     copy_pos = paper.copy_landing(store, cfg, now)
     buy = float(cfg.book.fill_min_sol)
     # what a trade really costs: the qualify lab's measured cost of a transaction (the low bid's fees and its failed
@@ -351,7 +357,8 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
     ranked = [r for r in L.rank(data, cfg, top=60) if (r.get("trigger_spec") or {}).get("kind") != "launch"]
     wallets = L.rank_wallets(data, cfg, store.labels(), top=40)
     frozen = paper.freeze(store, cfg, top=top, position=copy_pos, latency=0, buy_sol=buy, per_tx_sol=per_tx, now=now,
-                          data=data, only_live=True, per_tx_source=cost["per_tx_source"])  # fmt: skip
+                          data=data, only_live=True, per_tx_source=cost["per_tx_source"],
+                          stored_at=now + (_elapsed_clock() - began))  # fmt: skip
     out = {"ts": int(now), "landing": copy_pos, "buy_sol": buy, "tape_hours": round(float(data["tape_hours"]), 1),
            "moments": len(data["rows"]), "per_tx_sol": per_tx, "per_tx_source": cost["per_tx_source"],
            "strategies": [{"trigger": r["trigger"], "exit": r["exit"], "per_hour": r["per_hour"],

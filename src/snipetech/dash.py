@@ -106,6 +106,21 @@ def _latest_report(paths: OperatorPaths) -> str:
     return _tail(reports[-1], REPORT_CHARS) if reports else ""
 
 
+def _as_scored(con: sqlite3.Connection, strategies: list) -> list:
+    """The stored rules as every other reader sees them (analysis.paper.frozen_from): a rule frozen before 14 Nov
+    with its name saying so, and a rule a run of old code scored since the migration marked at once, before the
+    next run or freeze writes the mark. A page that cannot load the paper module shows the rules as stored."""
+    try:
+        from .analysis.paper import CREW_KEY, frozen_from
+
+        records: dict[str, Any] = {"paper_strategies": {"strategies": strategies}}
+        for key, data in con.execute("SELECT key, data FROM coverage WHERE key IN (?, 'paper')", (CREW_KEY,)):
+            records[key] = json.loads(data) or {}
+        return frozen_from(records).get("strategies", strategies)
+    except Exception:  # noqa: BLE001 - the page shows the rules without the marks
+        return strategies
+
+
 def _research_only(strategies: list) -> set:
     """The ids of the frozen rules that are research records (analysis.paper.crew_note: scored without serial crews'
     coins, on them alone, or in part by other code). The paper module is loaded only here, at the page's first read
@@ -132,6 +147,7 @@ def _paper(con: sqlite3.Connection | None, tables: set[str]) -> dict:
     try:
         row = con.execute("SELECT data FROM coverage WHERE key = 'paper_strategies'").fetchone()
         strategies = (json.loads(row[0]) or {}).get("strategies", []) if row else []
+        strategies = _as_scored(con, strategies)
         row = con.execute("SELECT data FROM coverage WHERE key = 'paper:report'").fetchone()
         kept = (json.loads(row[0]) or {}).get("rows") or {} if row else {}
         research = _research_only(strategies)

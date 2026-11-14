@@ -1087,6 +1087,9 @@ def render_paper(action: str, r: dict) -> str:
             parts += [f"{research}{records}"] if research else []
             at = ": " + ", ".join(parts) if len(parts) > 1 else (asked if own else records)
         line = f"scored {r['new_trades']} new paper trades{at} (triggers up to {_t.strftime('%m-%d %H:%M', _t.gmtime(r['until']))} UTC)"
+        if r.get("closed"):  # records a run of other code scored in part, whose rule was made again since
+            line += (f"\n  {', '.join(r['closed'])}: scored no more (in part scored by code that left serial crews' "
+                     "coins out, and their rule was frozen again since); their trades stay")  # fmt: skip
         gone = r.get("old_code_scored") or {}
         if gone.get("rules"):  # a run of other code scored since the migration: what it scored is research only now
             line += (f"\n  {', '.join(gone['rules'])}: scored between "

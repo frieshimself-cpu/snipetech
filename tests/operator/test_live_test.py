@@ -364,16 +364,26 @@ def test_the_owner_is_told_of_research_records_in_plain_words_and_shown_the_rule
     assert reply.startswith("No hunt strategy qualifies") and "Closest now:\ndddddddddd " in reply
     assert "has 90 forward trades of the 100 needed" in reply
     assert not any(sid in reply for sid in ("f98f8abd6a", "c5ca340caf", "0123456789"))
-    assert ("3 older launch rules were scored without a group of coins the live sniper buys: research only"
-            in reply)  # fmt: skip
+    assert "3 launch rules are research records (not what a sniper would trade)." in reply
     for text in (reply, _refused(env, "f98f8abd6a", "go"), _send(env, "f98f8abd6a")):
         assert 'crew ""' not in text and "(crew" not in text and "crew skip" not in text, text
     assert "without serial crews' coins" in _send(env, "f98f8abd6a")
     env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
     _freeze(env.store, BEST, n=600, pnl=0.03, every_coin=False)  # one, and nothing else frozen
     alone = _send(env)
-    assert "1 older launch rule was scored without a group of coins the live sniper buys: research only" in alone
+    assert "1 launch rule is a research record (not what a sniper would trade)." in alone
     assert "Closest now" not in alone and BEST not in alone
+    # the line says only what is true of every rule it counts: one frozen today on crews' coins alone, and one of
+    # today that a run of old code scored for an hour, are research records too, neither "older" nor "without"
+    env.store.set_coverage("paper_strategies", {"strategies": [], "superseded": []})
+    _freeze(env.store, THIRD, n=600, pnl=0.03, trigger={**f98, "crew": "only"}, every_coin=False)
+    _freeze(env.store, FOURTH, n=600, pnl=0.03, trigger={**f98, "window": 2.0})
+    cov = env.store.coverage("paper_strategies")
+    cov["strategies"][-1][paper.OLD_CODE] = [NOW - 7200, NOW - 3600]
+    env.store.set_coverage("paper_strategies", cov)
+    both = _send(env)
+    assert "2 launch rules are research records (not what a sniper would trade)." in both
+    assert "older" not in both and "without a group" not in both and "crew" not in both.lower()
 
 
 def test_the_owners_digest_and_the_weeks_count_keep_research_records_apart(env):
