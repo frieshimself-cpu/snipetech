@@ -589,7 +589,7 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     """Whether a turn of `role` runs now, and why (or why not). It runs when one of these holds: it has never run; a
     job it started (or waits for: `join_test`) has ended since its last turn and it has not read it since
     (`note_job_read`; a `label` job that ended well is never news); it was handed an idea since then; none of its jobs
-    runs and its queue holds an idea nobody tested, or, once, an idea in testing (`STALLED`); another role's table
+    runs and its queue holds an idea nobody tested, or, once an idle wait, an idea in testing (`STALLED`); another role's table
     changed since then (only while `wake_on_table`: the owner's switch, `start_rules`); its own news arrived
     (`_news`); or three hours have passed. After IDLE_TURNS turns in a row that did no work (`_idle_after`) it waits
     IDLE_WAIT_SECS from its last turn's start, less the round's slack, unless a job of its own has ended or an idea
@@ -607,8 +607,11 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
         return True, "first turn"
     mine = {str(t["job"]) for t in read_tests(paths, role=role)}
     read = jobs_read(paths, role)
+    # a turn that was cut off forgot what it read: the jobs it was called for count from the turn before, once
+    retell = state.get("retell_from")
+    since = min(last, retell) if isinstance(retell, (int, float)) else last
     ended = [str(m.get("id")) for m in metas
-             if str(m.get("id")) in mine and not m.get("running") and float(m.get("ended") or 0) >= last
+             if str(m.get("id")) in mine and not m.get("running") and float(m.get("ended") or 0) >= since
              and str(m.get("id")) not in read and not _no_news(m)]  # fmt: skip
     gap = float(every_h or 0) * 3600
     if gap > ROUND_SECS and now - last < gap - SLACK_SECS and not (ended and every_default):
@@ -627,7 +630,8 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     if waiting and not job_runs:
         return True, f"not tested yet: {waiting[0].get('id')}"
     testing = [i for i in queue if i.get("status") == "testing" and not i.get("owner_needed")]
-    if testing and not job_runs and not state.get("stalled_told"):
+    told = state.get("stalled_told")  # told once; again when the idle wait has passed and it still stands
+    if testing and not job_runs and (not told or now - float(told) >= IDLE_WAIT_SECS - SLACK_SECS):
         return True, f"{STALLED} {testing[0].get('id')} is in testing and no job of yours runs: {STALLED_DO}"
     for other in ROLES if wake_on_table else ():
         if other != role:
@@ -649,8 +653,9 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
 # An idea in testing whose job the role read inside the turn that started it calls nobody: the job is read, the idea is
 # not "not tested yet", and a table is written only when a row differs (14 Nov review: the next job of a chain was
 # started in exactly the turns that lose their reason). The role is called for it once (`role_due`); a turn that then
-# starts no job and closes no idea is not called for it again (`stalled_told` in its state, cleared by a turn that
-# does one of the two: `run_role`).
+# starts no job and closes no idea is not called for it again until the idle wait has passed since (`stalled_told` in
+# its state: when it was told; cleared by a turn that does one of the two: `run_role`). Without that second call a role
+# with the owner's table switch off was left alone for three hours with its idea standing still.
 STALLED = "your idea"
 STALLED_DO = "start its next job or close it with its result"
 
@@ -750,7 +755,8 @@ def _worked(paths: OperatorPaths, role: str, started: float) -> dict[str, bool]:
                       and learning.role_of(i) == role and not mine_now(i) for i in ideas),
         "lesson": any(x.get("source") == role and learning._epoch(x.get("ts")) >= since
                       for x in learning.read_lessons(paths, LESSONS_LOOKED)),
-        "handed": any(mine_now(i) and learning.role_of(i) in ROLES and learning.role_of(i) != role for i in ideas),
+        # to another role, or (an idea of kind code, config or live-test) to the cloud session or the owner
+        "handed": any(mine_now(i) and learning.role_of(i) != role for i in ideas),
     }  # fmt: skip
 
 
@@ -854,8 +860,9 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
             _log(paths, now(), f"agent {role}: {why}")
             return {"role": role, "ran": False, "why": why, "failed": True}
         result = dict(result or {})
-        if result.get("stopped") != "end_turn" or result.get("cut"):  # cut off or refused: it did not finish with
-            forget_reads(paths, role, t0)  # what it read (`cut`: its last reply stopped at the output cap)
+        unfinished = result.get("stopped") != "end_turn" or bool(result.get("cut"))
+        if unfinished:  # cut off or refused: it did not finish with what it read (`cut`: its last reply stopped at
+            forget_reads(paths, role, t0)  # the output cap)
         if result.get("stopped") in ("api_error", "refusal"):  # the API refused the turn: the next round tries again
             update_state(paths, role, last=state.get("last"), reason=state.get("reason"))
         else:
@@ -872,6 +879,7 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
             update_state(paths, role, usd=result.get("usd"), tool_calls=result.get("tool_calls"),
                          stopped=result.get("stopped"), idle=idle,
                          turns=turns, day=day, seen=saw, spent_usd=spent, stalled_told=told,
+                         retell_from=state.get("last") if unfinished else None,
                          share_usd=round(role_share_usd(cfg, paths, role), 2))  # fmt: skip
         _log(paths, now(), f"agent {role}: done: {json.dumps(result, default=str)}")
         return {"role": role, "ran": True, "why": reason, **result}

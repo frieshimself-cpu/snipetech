@@ -652,7 +652,8 @@ def test_the_least_gap_between_a_roles_turns_is_the_owners_every(box):
     table.write_text("| wallet |\n")
 
     def due(last_ago, now=NOW):
-        _state(box.paths, "tester", last=now - last_ago, seen=R.seen("tester", box.store), stalled_told=1)
+        # the idea in testing was told a moment ago: it is not what these calls are about
+        _state(box.paths, "tester", last=now - last_ago, seen=R.seen("tester", box.store), stalled_told=now)
         os.utime(table, (now - 10, now - 10))
         return R.role_due("tester", box.paths, now, R.read_state(box.paths)["tester"], R.job_metas(box.paths, now),
                           store=box.store, **R.start_rules(box.cfg, box.paths))  # fmt: skip
@@ -717,9 +718,11 @@ def test_an_idea_in_testing_with_no_job_running_calls_its_role_once(box):
     # the turn it is called for does nothing about it: not called for it again
     out = box.run("scout")
     assert out["ran"] and out["why"] == stalled and R.read_state(box.paths)["scout"]["stalled_told"] == NOW
-    for later in (900, 1800, 2 * H):
+    for later in (900, 1800):
         assert _due(box, "scout", NOW + later) == (False, "nothing new")
-    assert _due(box, "scout", NOW + 3 * H)[1] == "three quiet hours since its last turn"
+    # ... until the idle wait has passed since it was told (the review of 14 Nov, second round: with the owner's
+    # table switch off nothing else called the role for three hours while its idea stood still)
+    assert _due(box, "scout", NOW + 2700) == (True, stalled)
     # a later turn starts its next job: when that one is read too and nothing runs, the role is called again, once
     t = NOW + 3 * H
     box.acts[:] = [lambda jobs: (R.record_test(box.paths, t + 10, "scout", idea, "j2", ["winners", "--json"]),
@@ -732,6 +735,71 @@ def test_an_idea_in_testing_with_no_job_running_calls_its_role_once(box):
                                                     now=NOW + 3 * H + 960, role="scout")]  # fmt: skip
     assert box.run("scout", now=NOW + 3 * H + 900)["ran"]
     assert _due(box, "scout", NOW + 3 * H + 1800) == (False, "nothing new")
+
+
+def test_a_stalled_idea_is_told_again_after_the_idle_wait_with_the_table_switch_off(box):
+    """With `wake_on_table` off, a turn called for a stalled idea that only writes a lesson left the mark standing:
+    the role was not called again for three hours with its idea still in testing and no job running. The mark holds
+    for the idle wait (45 minutes less the round's slack), then the stall is told once more."""
+    idea = _idea(box.paths, "scout", "who leads this wallet", by="scout", now=NOW - 2 * H, status="testing")
+    _state(box.paths, "scout", last=NOW - 900, idle=0, seen=R.seen("scout", box.store))
+    stalled = f"your idea {idea} is in testing and no job of yours runs: start its next job or close it with its result"
+    box.acts[:] = [lambda jobs: learning.add_lesson(box.paths, "the wallet leads nobody", "n 12", 12, source="scout",
+                                                    now=NOW + 60)]  # fmt: skip
+    assert box.run("scout")["why"] == stalled
+    state = R.read_state(box.paths)["scout"]
+    assert state["stalled_told"] == NOW and state["idle"] == 0  # a lesson is work; the idea still stands
+
+    def off(later):
+        return R.role_due("scout", box.paths, NOW + later, R.read_state(box.paths)["scout"],
+                          R.job_metas(box.paths, NOW + later), store=box.store, wake_on_table=False)  # fmt: skip
+
+    assert off(900) == (False, "nothing new") and off(1800) == (False, "nothing new")
+    assert off(2700 - R.SLACK_SECS) == (True, stalled) and off(2700) == (True, stalled)
+
+
+def test_a_job_a_cut_turn_was_called_for_is_told_again_once(box):
+    """A turn whose last reply stopped at the output cap forgets what it read (it did not finish with it), but its
+    start time is kept as the role's last turn: the job it was called for ended before that and was never told again.
+    The next round tells it once more; a second cut turn does not tell it a third time, and a job that ended before
+    the turn before is not brought back."""
+    idea = _idea(box.paths, "scout", status="testing", by="scout", now=NOW - 5 * H)
+    _state(box.paths, "scout", last=NOW - 1800, seen=R.seen("scout", box.store))
+    for jid, ended in (("old", NOW - 3600), ("before", NOW - 60)):
+        R.record_test(box.paths, NOW - 4000, "scout", idea, jid, ["winners", "--json", "--hours", jid])
+        _job(box.data, jid, ["winners", "--json", "--hours", jid], NOW - 4000, ended=ended)
+
+    def cut(cfg, svc, paths, snap, decision, ledger, notifier, notes, *, jobs, now, role, **kw):
+        R.note_job_read(paths, role, "before", now(), "its result")
+        return {"usd": 0.2, "tool_calls": 2, "stopped": "end_turn", "notes": 1, "cut": "max_tokens"}
+
+    assert box.run("scout", turn=cut)["why"] == "a job of yours ended: before"
+    state = R.read_state(box.paths)["scout"]
+    assert state["last"] == NOW and state["retell_from"] == NOW - 1800 and not R.jobs_read(box.paths, "scout")
+    assert _due(box, "scout", NOW + 900) == (True, "a job of yours ended: before")  # "old" ended before that turn
+    # cut again: the job is not told a third time
+    assert box.run("scout", now=NOW + 900, turn=cut)["why"] == "a job of yours ended: before"
+    assert R.read_state(box.paths)["scout"]["retell_from"] == NOW
+    assert not _due(box, "scout", NOW + 1800)[1].startswith("a job of yours ended")
+    # a turn that ends well leaves no mark
+    _state(box.paths, "scout", last=NOW - 1800, retell_from=NOW - 3000)
+    assert box.run("scout", now=NOW + 1800)["ran"] and "retell_from" not in R.read_state(box.paths)["scout"]
+
+
+def test_an_idea_for_the_cloud_session_or_the_owner_opened_in_the_turn_is_work(box):
+    """A turn that finds a tool missing and writes the idea of kind code for it (or a live test for the owner) handed
+    its result on, as one that hands an idea to another role: it is not a turn without work."""
+    started = NOW
+    for kind in ("code", "live-test", "config"):
+        learning.upsert_idea(box.paths, {"title": f"a {kind} idea", "why": "w", "test": "t", "expected": "e",
+                                         "kind": kind}, source="oktech", now=started + 30)  # fmt: skip
+        assert R._worked(box.paths, "oktech", started)["handed"], kind
+        assert not R._worked(box.paths, "oktech", started + 60)["handed"]  # opened before that turn began
+        assert not R._worked(box.paths, "scout", started)["handed"]  # somebody else's
+        started += 100
+    # its own research idea, opened and left in its own queue, is still not work
+    _idea(box.paths, "oktech", "one for itself", by="oktech", now=started + 30)
+    assert not R._worked(box.paths, "oktech", started)["handed"]
 
 
 def test_a_job_that_was_killed_or_lost_in_a_restart_is_told(box, tmp_path):
