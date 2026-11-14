@@ -329,6 +329,9 @@ def read_job_output(text: str, tail: int = 200, key: str | None = None, fields: 
     tail, skip = max(1, int(tail)), max(0, int(skip or 0))
     fields = [fields] if isinstance(fields, str) else [str(f) for f in fields or []]
     ranged = first is not None or last is not None
+    # scrubbed whole, before any cut: the scrub takes out whole values, and a key across a fold or a 300-character cut
+    # is two pieces it does not know (14 Nov review)
+    text = redact(text)
     found = json_log(text)
     if found is None:
         if key or fields or ranged:
@@ -612,7 +615,9 @@ def _row_line(key: str, text: Any, columns: int) -> tuple[str, int, int]:
 
 
 def _paragraph(text: Any, cap: int) -> tuple[str, int]:
-    para = " ".join(str(text).split())
+    """One line of plain text for above or below a table, cut at `cap` (its length before, when it was cut). A leading
+    "|" or "#" goes: a paragraph that starts like a row or a title would be read as one from then on."""
+    para = " ".join(str(text).split()).lstrip("|# ")
     return (para, 0) if len(para) <= cap else (para[: cap - 1].rstrip() + "…", len(para))
 
 

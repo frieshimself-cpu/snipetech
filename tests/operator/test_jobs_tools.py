@@ -1587,3 +1587,19 @@ def test_the_agents_are_told_how_to_run_a_lab_twice_on_the_same_trades(toolbox):
     assert any("A LAB ON A FIXED WINDOW" in words for tags, words in roles.cut_job_help(full)
                if not isinstance(tags, str) and "lab" in tags)
     assert parts  # the cut list still fits the text
+
+
+def test_a_running_record_older_than_any_job_can_run_is_nobodys_twin(jobs):
+    """A job dies with its wrapper (a restart, out of memory) and its record goes on saying "running"; when its pid is
+    later another live process's, the record looks alive for good. Every job is ended by its own limit of six hours
+    (ops.op_run), so a "running" job that started longer ago than that is no job: its arguments are not refused, and
+    no role is joined to it (its idea would wait in testing for a job that never ends)."""
+    from snipetech.operator import roles
+
+    fees = _queue(jobs, "fees")
+    now = time.time()
+    (jobs.ops.data / "jobs" / "ghost.json").write_text(json.dumps(
+        {"id": "ghost", "argv": ["tips", "--json"], "started": now - 7 * 3600, "ended": None, "exit_code": None,
+         "running": True, "pid": os.getpid()}))  # fmt: skip
+    assert jobs.start(["tips", "--json"], now=now, role="fees", idea=fees)["id"] != "ghost"
+    assert not [r for r in roles.read_tests(OperatorPaths(jobs.ops.data)) if r.get("joined")]

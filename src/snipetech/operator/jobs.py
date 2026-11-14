@@ -69,6 +69,7 @@ AGENT_BACKFILL_STRETCH_TXS = 50_000
 BACKFILL_LIMIT_FLAGS = ("--max-credits", "--month-credits", "--max-stretch-txs")
 BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's log to see whether a limit ended it
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
+TWIN_MAX_SECS = 6 * 3600 + 600  # a job's own limit (ops.op_run) and some slack: past it a "running" record is no job
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
 LOOKUP_REPEAT_SECS = {"gmgn": 600}
 
@@ -281,7 +282,10 @@ class OperatorJobs:
         seconds apart and the twin held a lab slot (`_recent_identical` sees only jobs that have ended). For a role
         that did not start it, the running job then counts as its own test of `idea` (roles.join_test): the idea is
         being tested and the role is called when the job ends, as for a job it started."""
-        twin = next((m for m in self.running() if list(m.get("argv") or []) == list(argv)), None)
+        # a "running" record older than any job can run (its own six-hour limit, ops.op_run) is a dead job whose pid
+        # another process took: no twin, or its arguments were refused for good
+        live = [m for m in self.running() if now - float(m.get("started") or now) < TWIN_MAX_SECS]
+        twin = next((m for m in live if list(m.get("argv") or []) == list(argv)), None)
         if twin is None:
             return
         jid = str(twin.get("id"))

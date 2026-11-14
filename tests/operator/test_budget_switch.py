@@ -368,3 +368,20 @@ def test_new_dollars_a_day_keep_the_gap_the_owner_chose(paths):
     assert held["turn_usd"] == 6.0 and held["max_tool_calls"] == 40  # the rest of the profile as before
     budget_reply(cfg, paths, ["300", "every", "1"], "telegram", 4.0)
     assert read_budget(paths)["analyst_every_h"] == 1.0
+
+
+def test_new_dollars_after_every_zero_leave_the_agents_off_and_the_line_says_so(paths):
+    """`/budget every 0` switches the research agents off. New dollars a day keep the owner's gap, so they keep that
+    too: the line must say that the agents are off and how they come back, not only "the analysis once a day"."""
+    from snipetech.operator import roles
+    from snipetech.operator.budget_switch import budget_line, budget_reply
+
+    cfg = Config()
+    cfg.operator.role_agents = True
+    budget_reply(cfg, paths, ["500", "every", "0"], "telegram", 1.0)
+    reply = budget_reply(cfg, paths, ["300"], "telegram", 2.0)
+    assert not roles.on(cfg, paths) and read_budget(paths)["analyst_every_h"] == 0
+    for line in (reply, budget_line(cfg, paths, 0.0)):
+        assert "the research agents are off (your /budget every 0; /budget every 0.25 switches them on)" in line
+    budget_reply(cfg, paths, ["every", "0.25"], "telegram", 3.0)
+    assert roles.on(cfg, paths) and "are off" not in budget_line(cfg, paths, 0.0)

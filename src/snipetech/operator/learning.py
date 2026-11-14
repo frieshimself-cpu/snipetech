@@ -106,6 +106,7 @@ def _clean_cut(value: Any, field: str, limit: int) -> tuple[str, int]:
     text = " ".join(str(value if value is not None else "").split()).replace("|", "/")
     was = len(text)
     if was > limit:
+        _clean(text, field, was)  # the secret check on the WHOLE text: half a key in front of the cut is not a key
         text = text[: limit - 1].rstrip() + "…"
     return _clean(text, field, limit), (was if was > limit else 0)
 

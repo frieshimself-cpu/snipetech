@@ -849,3 +849,20 @@ def test_digest_names_one_next_test_a_role(paths):
         "This week: 3 tests started")
     plain = L.digest_lines(paths, NOW - 6 * H, NOW)
     assert "Testing next:" in plain and not any("research agent" in x or "This week" in x for x in plain)
+
+
+def test_a_secret_across_an_idea_texts_cap_is_refused_not_cut_in_half(paths, monkeypatch):
+    """An idea text over its cap is cut and kept since 14 Nov. The secret check ran on the cut text, so the part of a
+    key in front of the cut no longer looked like one and was stored. The whole text is checked first."""
+    key = "hk_" + "Q7w9" * 9 + "Zz"
+    monkeypatch.setenv("GMGN_API_KEY", key)
+    b58 = "5" + "KJvsngHeMpm884wtkJNzQGaCErckhHJBGFsvd3VyK5qM" * 2
+    idea = {"title": "t", "why": "w", "test": "x", "expected": "e", "kind": "research"}
+    for field in ("why", "test", "expected", "result", "title"):
+        cap = L.IDEA_CAPS[field]
+        for secret, keep in ((key, 20), (b58, 60)):
+            keep = min(keep, cap // 2)
+            text = ("word " * 300)[: cap - 2 - keep] + " " + secret + " and the rest" + " more" * 40
+            with pytest.raises(ValueError, match="looks like it carries a secret"):
+                L.upsert_idea(paths, idea | {field: text}, source="scout", now=NOW)
+    assert not L.list_ideas(paths, "all")

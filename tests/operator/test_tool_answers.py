@@ -610,3 +610,36 @@ def test_a_row_is_found_by_the_start_of_its_first_cell_and_a_new_row_can_go_on_t
     assert lines[7].startswith("| FLPjyS: QUALIFIED")
     assert "added 2 (6Z91 copy bot; YJFQNK (I164))" in out
     assert "YJFQNK (I164) starts like the row YJFQNK: drop one if it took its place" in out
+
+
+def test_a_secret_is_scrubbed_before_a_job_log_is_cut_never_after(monkeypatch):
+    """The scrub (ops.redact) takes out whole values of the environment's keys. Since 14 Nov a job's output is cut
+    inside a line (a long line folded at 2,000 characters, a long JSON value cut at 300), and a key across such a cut
+    was two harmless-looking pieces to a scrub that ran on the cut answer: it reached the model, the API and the
+    owner's page. The text is scrubbed first, whole, and cut after."""
+    from snipetech.operator.tools import FOLD_CHARS, VALUE_CHARS
+
+    key = "hk_" + "Q7w9" * 9 + "Zz"
+    monkeypatch.setenv("GMGN_API_KEY", key)
+    pieces = lambda out: [key[i : i + 6] for i in range(len(key) - 5) if key[i : i + 6] in out.replace("\n", "")]
+    folded = read_job_output("x" * (FOLD_CHARS - 15) + key + "y" * 500 + "\n", 200)
+    assert not pieces(folded) and "<redacted>" in folded
+    err = "pool: " + "e" * (VALUE_CHARS - 40) + f" url: /?api-key={key} (Caused by X)"
+    result = {"error": err, "rows": [{"i": i, "v": "z" * 50} for i in range(400)]}
+    assert not pieces(read_job_output(json.dumps(result, indent=1) + "\n", 40))
+    lead = "warning: " + "w" * (VALUE_CHARS - 25) + key + " tail"
+    assert not pieces(read_job_output(lead + "\n" + json.dumps({"a": 1}, indent=1) + "\n", 200))
+
+
+def test_a_headline_that_starts_like_a_row_or_a_title_is_still_a_paragraph():
+    """A headline beginning with "|" read as a table from then on (new rows landed above the real table and the next
+    headline left it in place); one beginning with "#" as a title. Both are written as plain paragraphs."""
+    from snipetech.operator.tools import change_table
+
+    text, _ = change_table(TABLE, headline="| not a row | just a headline |")
+    text, _ = change_table(text, rows=[{"key": "NEWROW", "text": "| NEWROW | a | b |"}])
+    lines = text.splitlines()
+    head = next(i for i, line in enumerate(lines) if line.startswith("|") and "---" in lines[i + 1])
+    assert next(i for i, line in enumerate(lines) if "NEWROW" in line) > head  # inside the real table
+    text, _ = change_table(text, headline="# clean again")
+    assert "just a headline" not in text and sum(line.startswith("#") for line in text.splitlines()) == 1

@@ -185,6 +185,8 @@ def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
     when = (f"an analysis every {every:g} h besides the daily one after {op.analyst_after_utc} UTC" if every > 0
             else f"the analysis once a day after {op.analyst_after_utc} UTC")  # fmt: skip
     agents = roles.on(cfg, paths)
+    if not agents and "every 0" in (roles.off_reason(cfg, paths) or ""):  # off by the owner's own every 0, said so
+        when += "; the research agents are off (your /budget every 0; /budget every 0.25 switches them on)"
     if agents:  # their turns stand where the analyses between the daily ones stood (gate.analyst_reason)
         when = f"the research agents' turns every round and the analysis once a day after {op.analyst_after_utc} UTC"
         rules = roles.start_rules(cfg, paths)  # the owner's own `every` is the least gap between a role's turns
