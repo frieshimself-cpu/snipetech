@@ -558,7 +558,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         p = paths.jobs / f"{id}.log"
         if not p.exists():
             return f"error: no log for job {id}"
-        return redact(read_job_output(p.read_text(errors="replace"), tail, key))
+        over = role is not None and roles.job_over(paths, id)  # asked before the read: an ended job's log is whole
+        out = redact(read_job_output(p.read_text(errors="replace"), tail, key))
+        if over:  # a finished job a role has read is not "a job of yours ended" at its next round (roles.role_due)
+            roles.note_job_read(paths, role, id, now_fn(), out)
+        return out
 
     @beta_async_tool
     async def read_file(path: str, tail: int = 0) -> str:

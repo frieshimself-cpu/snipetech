@@ -493,11 +493,17 @@ takes no new idea from a role's turn while it holds 15 open ones. From the cloud
 **When a turn runs.** While the agents are on, the round starts `snipetech operate agent --role <role>` for each role
 every 15 minutes, right after the idle research, each as its own job with its own lock
 (`operator/agent-<role>.lock`). The round does not wait for them. A turn runs only when something is new for its role
-(`roles.role_due`): a job it started has ended; it was handed an idea; its queue holds an idea nobody tested and none
-of its jobs runs; another role's table changed; its own news came (new verdicts or candidates for the scout; the
-strategy search ended or a paper rule reached 30 more trades for the tester; a new fill of ours for the fee and the
-OKTech analysts); or three hours have passed. Otherwise it writes one log line and costs nothing. After two turns in
-a row that started no test and closed no idea, a role waits an hour, unless a job of its own has ended. A turn does
+(`roles.role_due`): a job it started has ended and it has not read it since (a job it asked for while the same job
+was already running counts as its own; a `label` job that ended well is never news); it was handed an idea; its queue
+holds an idea nobody tested and none of its jobs runs; another role's table changed (the owner can switch this one
+off: `/budget wake table off`, the file `operator/WAKE_TABLE`); its own news came (a wallet qualified or was banned
+for the scout; the strategy search ended or a paper rule reached its first 30 or 60 trades for the tester; a new fill
+of ours for the fee and the OKTech analysts); or three hours have passed. Otherwise it writes one log line and costs
+nothing. After two turns in a row that started no test and closed no idea (an idea a role opens and closes in one
+turn does not count), a role waits an hour, unless a job of its own has ended. The owner's `/budget every` is the
+least gap between a role's turns: at 0.25 h, a round, nothing changes; above it a role is not called sooner, and only
+at 2 h, the value `/budget 200` writes by itself, a job of its own that ended still calls it at once. While the
+Anthropic account is empty, one role a round asks, each in its turn, and the others skip in one log line. A turn does
 not start when the role's share of the day is spent or the day is inside its reserve. Each role's last turn is in
 `operator/agents.json`: when, why, what it cost, how it ended, and what the role has spent of its share today
 (`spent_usd` of `share_usd`). Every turn and every skipped turn is a line in `operator/log.txt` that starts

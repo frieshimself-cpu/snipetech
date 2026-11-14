@@ -1004,6 +1004,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--default", dest="budget_default", action="store_true",
                     help="budget or risk: remove the owner's file; the config's (budget) or the 7 Nov plan's (risk) "
                          "values apply again")  # fmt: skip
+    sp.add_argument("--wake-table", dest="wake_table", choices=["on", "off"],
+                    help="budget: whether another research agent's table change alone starts an agent's turn "
+                         "(operator/WAKE_TABLE, the owner's; on is how it always was)")  # fmt: skip
     sp.add_argument("--day-stop", dest="day_stop", type=_sol_or_off,
                     help="risk: no new live trade once the day is this many SOL down (0.1 to 5), or off")  # fmt: skip
     sp.add_argument("--floor", dest="risk_floor", type=_sol_or_off,
@@ -3472,6 +3475,7 @@ def _main(args) -> int:
             args.action == "budget"
             or args.budget_default
             or any(v is not None for v in (args.daily_usd, args.turn_usd, args.tool_calls, args.analyst_every_h))
+            or args.wake_table is not None
         ):
             return budget_switch.budget_cli(cfg, args)
         if args.telegram_setup:

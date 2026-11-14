@@ -168,3 +168,12 @@ def test_the_research_agents_are_off_until_the_default_here_says_on():
     assert Config().operator.role_agents is False
     assert Config.load(SERVER_FILE, overlay=False).operator.role_agents is False
     assert "operator.role_agents" not in settings_drift(SERVER_FILE)["differs"]
+
+
+def test_a_table_change_still_starts_a_turn_until_the_owner_says_otherwise():
+    """`[operator] wake_on_table` (14 Nov): whether another role's table change alone starts a research agent's turn.
+    True is how it always was, and the server's file holds no value for it, so a deploy changes nothing: the owner
+    switches it with `/budget wake table off` (operator/WAKE_TABLE), without a deploy."""
+    assert Config().operator.wake_on_table is True
+    assert Config.load(SERVER_FILE, overlay=False).operator.wake_on_table is True
+    assert "operator.wake_on_table" not in settings_drift(SERVER_FILE)["differs"]
