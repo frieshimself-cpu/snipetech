@@ -2,7 +2,7 @@
 
 Every recorded transaction with a SOL-quoted trade and a payment (`TxEvents.pays`) is counted in memory
 (`solana/pay_dests.py`); every five minutes the recorder classifies what changed, writes it to the table `pay_dests`
-and reads the applied tip accounts back. A switch, `[live] apply_learned_tips`, off by default, decides whether a
+and reads the applied tip accounts back. A switch, `[live] apply_learned_tips` (on by default since 14 Nov), decides whether a
 transfer to an applied account counts into `trades.tip` (and into `trades.tip_learned`, so it can be told apart and
 undone): the first deploy only learns. Nothing in this path may cost the tape a transaction.
 
@@ -25,13 +25,20 @@ from snipetech.solana.programs import PUMP_PROGRAM
 from snipetech.solana.tx import RawEvent, TxEvents
 from snipetech.store import Store
 from tests.synth import addr
-from tests.test_live_amm import watcher
+from tests.test_live_amm import watcher as _watcher
 from tests.test_live_batch import Calls, handle
 from tests.test_tx_pays import ATIFZK_FEE, ATIFZK_TIP, stream_form
 
 TIPS = Path(__file__).parent / "fixtures" / "tips"
 T0 = 1_794_600_000
 TIP_ACC, FEE_ACC = addr("a landing service's tip account"), addr("a platform's fee account")
+
+
+def watcher(*args, **live):
+    """The recorder these tests drive, with the switch stated: off unless a test turns it on (it is on by default
+    since 14 Nov, after the applied accounts were read on the chain)."""
+    live.setdefault("apply_learned_tips", False)
+    return _watcher(*args, **live)
 
 
 def paying_buy(k: int, sol: float, pays: list[tuple[str, int]], ts: int = T0, payer: str | None = None,
@@ -236,10 +243,12 @@ def test_a_restart_keeps_what_was_learned(tmp_path):
 # ---- the switch ------------------------------------------------------------------------------------------------------
 
 
-def test_the_switch_is_off_by_default_and_the_tip_is_written_exactly_as_today():
+def test_with_the_switch_off_the_tip_is_written_exactly_as_before_the_learning():
     from snipetech.config import Config
 
-    assert Config().live.apply_learned_tips is False
+    # on by default since 14 Nov 10:20 UTC: the sixteen applied accounts were read one by one (Axiom's rotating tip
+    # accounts, 179 to 206 wallets each in the sample) and 1,000 transactions fetched from the chain agreed
+    assert Config().live.apply_learned_tips is True
     st = Store(":memory:")
     st.save_pay_dests([applied_row(ATIFZK_TIP)], now=3)
     w = watcher(store=st)  # the account is learned, applied in the table; the switch is off

@@ -77,7 +77,10 @@ def test_accounts_prints_the_learned_table_with_its_head(tmp_path, capsys, monke
     head = out["head"]
     assert head["destinations"] == {"tip": 2, "fee": 1, "mixed": 1, "undecided": 2}
     assert head["applied_accounts"] == 1  # of the two listed as tip, one passes the bar for being applied
-    assert head["learned_tips_applied"] is False  # [live] apply_learned_tips, off by default
+    assert head["learned_tips_applied"] is True  # [live] apply_learned_tips, on by default since 14 Nov
+    off = tmp_path / "off.toml"
+    off.write_text("[live]\napply_learned_tips = false\n")
+    assert run(capsys, "--config", str(off), "--db", str(db), "tips", "--accounts")[1]["head"]["learned_tips_applied"] is False
     assert (head["applied_since_ts"], head["applied_since"]) == (NOW - 500, "2026-11-14 06:58")  # tape:learned_tips
     assert head["filled_since_ts"] == NOW - 86_400  # the oldest first payment the table holds
     assert head["newest_payment_ts"] == NOW - 60

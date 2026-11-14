@@ -78,7 +78,7 @@ index_amm = false            # also index all PumpSwap trades (heavy)
 amm_recent_secs = 1800       # the tape keeps PumpSwap trades of coins that left their curve this recently (0 = off)
 rescore_interval_secs = 120
 funder_lookup = true         # link fresh deployer wallets to their funding wallet's history
-apply_learned_tips = false   # count transfers to the applied learned tip accounts (pay_dests) into a trade's tip
+apply_learned_tips = true    # count transfers to the applied learned tip accounts (pay_dests) into a trade's tip
 
 [agent]
 model = "claude-opus-5-5"

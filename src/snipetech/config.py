@@ -126,8 +126,10 @@ class LiveConfig:
     # it only learns, and a trade's tip is written from the fixed list of landing-service accounts, as before. True:
     # a transfer to an APPLIED learned account (25 wallets in a full sample, read as tip at two flushes in a row)
     # counts into the trade's tip too, and is written apart as trades.tip_learned. The history backfills read with the
-    # same accounts. Switched on after the table has been read.
-    apply_learned_tips: bool = False
+    # same accounts. On since 14 Nov 2026: the sixteen applied accounts were read one by one (Axiom's rotating tip
+    # accounts, 179 to 206 wallets each, medians of 0.0002 to 0.0013 SOL) and 1,000 transactions fetched from the
+    # chain agreed with the table on every destination both decided.
+    apply_learned_tips: bool = True
 
 
 @dataclass

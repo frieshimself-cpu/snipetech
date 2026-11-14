@@ -266,9 +266,11 @@ def test_the_backfill_command_hands_the_applied_accounts_over_only_while_the_swi
     monkeypatch.setattr(ab, "backfill", fake)
     monkeypatch.setattr(cli.R, "render_amm_backfill", lambda out: "ok")
     wallet = "AtifzK52uGFf9F4pKjtPcm9QFxzQoESWoqVC1yuihAYD"
-    cfg = tmp_path / "on.toml"
+    cfg, off = tmp_path / "on.toml", tmp_path / "off.toml"
     cfg.write_text("[live]\napply_learned_tips = true\n")
-    assert cli.main(["--db", str(db), "history", "amm-backfill", "--wallet", wallet, "--dry-run"]) == 0
+    off.write_text("[live]\napply_learned_tips = false\n")
+    assert cli.main(["--config", str(off), "--db", str(db), "history", "amm-backfill", "--wallet", wallet,
+                     "--dry-run"]) == 0  # fmt: skip
     assert cli.main(["--config", str(cfg), "--db", str(db), "history", "amm-backfill", "--wallet", wallet,
                      "--dry-run"]) == 0  # fmt: skip
     assert seen == [None, {ATIFZK_TIP: 3}]

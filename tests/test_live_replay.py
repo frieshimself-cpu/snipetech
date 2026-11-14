@@ -296,7 +296,7 @@ def test_a_transaction_without_a_time_of_its_own_gets_the_chains_time_not_the_cl
     seen: list[TxEvents] = []
     monkeypatch.setattr(w, "_on_tx", lambda ev, index, amm_only=False: seen.append(ev))
     monkeypatch.setattr(L, "extract_from_transaction",
-                        lambda txj: TxEvents(addr("ll"), txj["slot"], txj["blockTime"], "",
+                        lambda txj, *a: TxEvents(addr("ll"), txj["slot"], txj["blockTime"], "",
                                              [RawEvent(LAUNCHLAB_PROGRAM, "LaunchLabTradeEvent", {}, 0)]))  # fmt: skip
     w._ls_tx({"slot": A1_SLOT + 10, "blockTime": int(A1_TS + 600)}, 0)
     (ev,) = seen
