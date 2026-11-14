@@ -409,6 +409,16 @@ def _hours(v: str) -> float:
     return h
 
 
+def _until(v: str) -> int:
+    """lab --until: the end of the lab's window, as unix seconds or a UTC time (`lab_window.parse_until`)."""
+    from .analysis.lab_window import parse_until
+
+    try:
+        return parse_until(v)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+
+
 def _sol_or_off(v: str) -> float | str:
     """operate risk --day-stop / --floor: a number of SOL, or off (the owner's widened yes of 7 Nov ~12:10 UTC: "Just
     make it so live trading never stops"). Anything else is refused without being repeated (it may be a pasted key)."""
@@ -637,6 +647,23 @@ def build_parser() -> argparse.ArgumentParser:
                          "land live; moments before the tape's fee records (11 Nov 16:34 UTC) are left out and "
                          "counted")  # fmt: skip
     sp.add_argument("--hours", type=_hours, metavar="N", help="only the newest N hours of tape")
+    sp.add_argument("--until", type=_until, metavar="T",
+                    help="the end of the window: unix seconds, or UTC as 2026-11-14T06:00Z or \"2026-11-14 06:00\". "
+                         "The lab reads nothing after T (it is the lab of a tape that ended at T) and --hours counts "
+                         "back from T, so the same T and the same arguments give the same output again: `window` in "
+                         "the output says from when to when and which file was read, and `--until <window.until_ts>` "
+                         "with the same --hours reads that window again. Without it the window ends where the tape "
+                         "read ends, which moves with every hourly copy. Refused when T is not on the tape. Still a "
+                         "paper result: every row names its landing as before. The cost of a transaction and the "
+                         "copy landing are measured when the lab runs: pin them with --per-tx and --copy-position "
+                         "to compare two runs")  # fmt: skip
+    sp.add_argument("--trades", action="store_true",
+                    help="with --trigger (at most 8): each ranked hypothesis lists the test trades its numbers rest "
+                         "on, oldest first (`test_trades`: [second, coin, SOL made, whether the score rests on a "
+                         "price outside the model]) and the test moments its exit was not scored on (`left_out`: "
+                         "[second, coin, why]). Every ranked strategy carries `test_digest` and `window_digest` "
+                         "without it: two runs rest on the same trades exactly when both agree. Six lines and "
+                         "0.14 KB of the job's log a trade (433 trades: 2,600 lines, 59 KB)")  # fmt: skip
     sp.add_argument("--hunt-landing", type=_hunt_landing, default=None, metavar="+N@D",
                     help="score every hunt, whale and burst trigger of the run at this landing instead of where live "
                          "hunt buys landed (+3@1): N trades of the coin ahead of our buy, in the block D blocks after "
@@ -1764,7 +1791,7 @@ async def _run(args, cfg: Config) -> int:
         elif c == "lab":
             from collections import Counter
 
-            from .analysis import paper
+            from .analysis import lab_window, paper
             from .analysis.bid_landing import is_bid as lab_is_bid
             from .analysis.lab import check_bid_landing as lab_check_bid
             from .analysis.lab import collect as lab_collect
@@ -1805,6 +1832,7 @@ async def _run(args, cfg: Config) -> int:
                     lab_check_bid(pos, lat, buy_bid, copies)
                 if args.hunt_landing is not None:  # a landing no rule of the run could use: refused, never a no-op
                     paper.check_hunt_landing(hypotheses)
+                _lab_window_flags(args, hypotheses, svc.store)  # --trades without its triggers, an end past the tape
             except ValueError as exc:
                 print(f"lab: {exc}", file=sys.stderr)
                 return 2
@@ -1822,6 +1850,8 @@ async def _run(args, cfg: Config) -> int:
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
                     tape = svc.tape_store if args.hours is None else recent_tape(svc.tape_store, args.hours)
+                    if args.until is not None:  # a window with an end: nothing after it is read (lab_window)
+                        tape = lab_window.until_tape(svc.tape_store, args.until, args.hours)
                     # launch-window rules (launch, hunt, whale, burst) run live through OKTech hunt: scored where its
                     # buy lands, wherever --position puts the others, as `paper freeze` and the strategy search do
                     # the trades from the hourly copy, the wallet groups from the live database: the copy has none of
@@ -1835,11 +1865,18 @@ async def _run(args, cfg: Config) -> int:
                                        sell_parts=sell_parts, buy_bid_sol=buy_bid,
                                        same_sol=args.same_sol)  # fmt: skip
 
-            data = await asyncio.to_thread(_collect_locked)
+            try:
+                data = await asyncio.to_thread(_collect_locked)
+            except lab_window.OutsideTape as exc:  # the end asked for is not on the tape the lab opened
+                print(f"lab: {exc}", file=sys.stderr)
+                return 2
             top = max(args.top, len(hypotheses)) if hypotheses else args.top  # --top never hides a hypothesis
-            ranked = [r | paper.landing_fields(r, copy_pos, buy_bid) for r in lab_rank(data, cfg, top)]
+            ranked = [r | paper.landing_fields(r, copy_pos, buy_bid)
+                      for r in lab_rank(data, cfg, top, trades=args.trades)]  # fmt: skip
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
                    "copy_landing": copy_pos, "buy_sol": buy, **cost, "hours": args.hours,
+                   # from when to when the lab read, and which file (the end is --until's, or the end of that tape)
+                   "window": data.get("window"),
                    "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
             if buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
                 res["buy_bid_sol"] = float(buy_bid)
@@ -2393,6 +2430,23 @@ BATCH_COMMANDS = frozenset(
         "history amm-backfill",
     }
 )
+
+
+def _lab_window_flags(args, hypotheses, live) -> None:
+    """`lab --trades` and `lab --until`, refused in words (ValueError) before any tape is read: the trades are listed
+    for --trigger hypotheses, and for few enough of them that an agent can read the job's log; an end after the end
+    of the live tape is on no tape (the hourly copy's own range is checked once the copy is open)."""
+    from .analysis import lab_window
+
+    if args.trades:
+        if not args.trigger:
+            raise ValueError("--trades lists the test trades of hypotheses typed with --trigger: name at least one")
+        if len(hypotheses or ()) > lab_window.MAX_TRADES_TRIGGERS:
+            raise ValueError(f"--trades lists every test trade of every rule: at most "
+                             f"{lab_window.MAX_TRADES_TRIGGERS} rules a run, not {len(hypotheses)} (the output "
+                             "would not fit a job log an agent can read)")  # fmt: skip
+    if args.until is not None:
+        lab_window.check_until(live, args.until)
 
 
 def batch_name(cmd: str, action: str | None = None) -> str:

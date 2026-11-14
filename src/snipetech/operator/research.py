@@ -357,6 +357,8 @@ def search(svc, cfg: Config, data_dir: str | Path, now: float, top: int = 4) -> 
            "frozen": [{"id": s["id"], "label": s["label"]} for s in frozen["frozen"]],
            # the rows the freeze left out and why: a rule already under test, its twin, one refuted in the last week
            "skipped": list(frozen.get("skipped") or [])}  # fmt: skip
+    if data.get("window"):  # from when to when the lab read, and which file (analysis/lab_window.py)
+        out["window"] = data["window"]
     store.set_coverage(SEARCH_KEY, out)
     return out
 
