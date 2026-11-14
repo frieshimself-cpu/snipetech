@@ -994,15 +994,15 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         research_only_why), it is not in paper_top (paper_research_only counts them), it is never "at our landing" or
         "passed", and it is no evidence for a live test. For an as-live record freeze the same trigger again without a
         crew field: a new rule with a new id, from zero trades. A rule refuted in the last 7 days without crews' coins
-        is not frozen again as the default (the freeze says so under skipped): with the coins that lose it is no better.
-        To repeat an old result to the digit add "crew": "skip". Each lab row of such a rule has `crew`: `moments` of
-        `of` are crews' coins; a skip rule shows `left_out` of `fired`. `hindsight` is always true: the lab knows a crew
-        from its whole window, a sniper knows nothing and buys them all, so the share is no filter anyone could run.
-        Forward, a crew is known only once its third coin has launched: a skip record holds a crew's first two coins and
-        an only record lacks them; the default is the same in the lab and forward. If a paper run's answer has
-        old_code_scored, the rules it names were scored for a while by old code and are research only: freeze each
-        again. A default lab scores the crews' coins too and takes about half as long again. A hunt on a wallet group
-        (bots) is unchanged.
+        is not frozen again as the default (the freeze says so under skipped): on every coin it also buys the crews'
+        coins, which lost on the one rule measured. To repeat an old result to the digit add "crew": "skip". Each lab
+        row of such a rule has `crew`: `moments` of `of` are crews' coins; a skip rule shows `left_out` of `fired`.
+        `hindsight` is always true: the lab knows a crew from its whole window, a sniper knows nothing and buys them
+        all, so the share is no filter anyone could run. Forward, a crew is known only once its third coin has launched:
+        a skip record holds a crew's first two coins and an only record lacks them; the default is the same in the lab
+        and forward. If a paper run's answer has old_code_scored, the rules it names were scored for a while by old code
+        and are research only: freeze each again. A default lab scores the crews' coins too and takes about half as long
+        again. A hunt on a wallet group (bots) is unchanged.
         THE COST A LAB CHARGES (14 Nov): from 12 Nov 17:24 to 14 Nov 18:26 UTC every lab, freeze and qualify verdict
         charged 0.0085 to 0.0093 SOL a transaction, twice the low bid's real cost (about 0.0044): four buys of the tip
         test at 0.035 SOL and 50 failed sends of one USDC swap had been counted in it. That was about 0.009 SOL a round
