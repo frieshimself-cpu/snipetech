@@ -172,6 +172,61 @@ def test_rows_unseen_for_longer_than_the_tape_is_kept_are_pruned_but_not_a_learn
     st.close()
 
 
+def test_one_prune_call_deletes_one_batch_at_most(monkeypatch):
+    """Round 3, F1: the prune looped over every batch inside one call, on the recorder's event loop: with the cutoff
+    moved by days at once, 265,341 rows went in one call of 23.9 s (a 500,000-row table). One call is one batch; the
+    caller rests between them."""
+    st = Store(":memory:")
+    monkeypatch.setattr(Store, "WRITE_BATCH", 50)
+    rows = [row(f"OLD{k:04d}", None, last_ts=10 + k) for k in range(230)]
+    rows += [row("OLDTIP", "tip", last_ts=5), row("NEW", "fee", last_ts=1_000)]
+    st.save_pay_dests(rows, now=2_000)
+    calls = []
+    while True:
+        gone = st.prune_pay_dests(before_ts=500, learned_before_ts=0)
+        if not gone:
+            break
+        calls.append(gone)
+    assert calls == [50, 50, 50, 50, 30]
+    assert {r["address"] for r in st.pay_dests()} == {"OLDTIP", "NEW"}
+    plan = " ".join(r[3] for r in st._q("EXPLAIN QUERY PLAN " + st.PRUNE_PAY_DESTS_SQL, (500, 0, 50)))
+    assert "pay_dests_last" in plan  # each batch is found by the times' index, not by reading the table
+    st.close()
+
+
+def test_the_start_read_picks_its_rows_by_index_and_reads_only_those(monkeypatch):
+    """Round 3, F3: the read a recorder makes at its start read the whole table (2.7 s cold at 234,000 rows, before
+    the streams connect, growing with the table). The rows are picked by index (the last paid, the ones read as a
+    tip account, the applied ones) and only those are read; what comes back is what came back before."""
+    st = Store(":memory:")
+    rows = [row(f"PLAIN{k:03d}", None if k % 3 else "fee", n=40 + k % 7, last_ts=10_000 + k) for k in range(300)]
+    rows += [row(f"OLDTIP{k}", "tip", n=90 + k, last_ts=100 + k) for k in range(4)]
+    rows += [row(f"OLDAPPLIED{k}", "tip", n=70 + k, applied=1, last_ts=50 + k) for k in range(3)]
+    rows += [row("OLDMIXED", "mixed", last_ts=7)]
+    st.save_pay_dests(rows, now=20_000)
+    st.mark_applied(["OLDAPPLIED1"], now=20_001)
+    for limit in (0, 1, 25, 299, 5_000):
+        newest = sorted(rows, key=lambda r: -r["last_ts"])[:limit]
+        want = {r["address"] for r in newest} | {r["address"] for r in rows if r["kind"] == "tip"}
+        got = st.pay_dests(limit=limit)
+        assert {r["address"] for r in got} == want
+        assert [r["address"] for r in got] == [
+            r["address"] for r in sorted(rows, key=lambda r: (-r["n"], r["address"])) if r["address"] in want
+        ]  # the most paid first, as before
+        assert all(r["samples"] == SAMPLES for r in got)
+    asked = []
+    real = st._q
+    monkeypatch.setattr(st, "_q", lambda sql, params=(): asked.append((sql, params)) or real(sql, params))
+    st.pay_dests(limit=25)
+    ((sql, params),) = asked
+    plan = [r[3] for r in real("EXPLAIN QUERY PLAN " + sql, params)]
+    # no step reads the table whole: each one that touches it goes by an index or by the rows' ids
+    assert all("USING" in step for step in plan if "pay_dests" in step), plan
+    for index in ("pay_dests_last", "pay_dests_kind", "pay_dests_applied", "INTEGER PRIMARY KEY"):
+        assert any(index in step for step in plan), (index, plan)
+    st.close()
+
+
 def test_a_save_is_one_short_write_transaction(monkeypatch):
     st = Store(":memory:")
     writes = []

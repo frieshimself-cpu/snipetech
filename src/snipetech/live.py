@@ -504,6 +504,7 @@ class LiveWatcher:
         self.pay_queue: list[str] = []  # destinations of the flush under way, still to classify and write
         self.pay_flush_at = self.clock()  # when the last flush began
         self.pay_fails = 0  # ticks running in which the queue's first batch could not be written
+        self.pay_batch_read = False  # the queue's first batch is classified: only its write is tried again
         self.pay_tips_due = False  # the applied accounts are to be read (again) at the next tick
         self.pay_tips_said = False  # a failed read of them was logged
         self._pay_load()
@@ -1473,19 +1474,26 @@ class LiveWatcher:
             batch = self.pay_queue[:PAY_DESTS_STEP]
             chain = int(self._chain_now())
             try:
-                fresh = pd.unsynced(batch)
                 with self.meter.timed("pay_dests"):
-                    if fresh:
-                        pd.merge(self.store.pay_dests(addresses=fresh), checked=fresh)
-                    pd.refresh(batch, chain)
+                    if not self.pay_batch_read:
+                        # once a batch: a reading counts towards "tip at two flushes in a row", and a write the
+                        # database refused is tried again at the next ticks (14 Nov, review: one refused flush was
+                        # three readings, and an account was written applied at its second flush)
+                        fresh = pd.unsynced(batch)
+                        if fresh:
+                            pd.merge(self.store.pay_dests(addresses=fresh), checked=fresh)
+                        pd.refresh(batch, chain)
+                        self.pay_batch_read = True
                     self.stats["pay_dests_saved"] += self.store.save_pay_dests(pd.rows(batch), now=chain)
             except Exception:
                 self.pay_fails += 1
                 if self.pay_fails >= PAY_DESTS_GIVE_UP:  # let go: these come again with their next payment
                     del self.pay_queue[: len(batch)]
                     self.pay_fails = 0
+                    self.pay_batch_read = False
                 raise
             self.pay_fails = 0
+            self.pay_batch_read = False
             del self.pay_queue[: len(batch)]
             if not self.pay_queue:
                 self._pay_tips_try(mark=True)
@@ -1728,13 +1736,18 @@ class LiveWatcher:
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
         if self.pay_dests is not None:
             # the learned destinations last paid before the tape's own cutoff go with it (the table only grew
-            # otherwise); a tip account goes only after PAY_DESTS_KEEP_LEARNED_SECS unseen. Short batches by an index.
+            # otherwise); a tip account goes only after PAY_DESTS_KEEP_LEARNED_SECS unseen. A batch a call, by an
+            # index, and the loop's turn after each, as for the trades above.
             try:
-                with self.meter.timed("prune"):
-                    gone = self.store.prune_pay_dests(int(now - self.retain_days * 86400),
-                                                      int(now - PAY_DESTS_KEEP_LEARNED_SECS))  # fmt: skip
-                if gone:
+                before, learned = int(now - self.retain_days * 86400), int(now - PAY_DESTS_KEEP_LEARNED_SECS)
+                while True:
+                    t0 = time.perf_counter()
+                    with self.meter.timed("prune"):
+                        gone = self.store.prune_pay_dests(before, learned)
+                    if not gone:
+                        break
                     self.stats["pay_dests_pruned"] += gone
+                    await asyncio.sleep(max(PRUNE_REST_MIN_SECS, PRUNE_REST * (time.perf_counter() - t0)))
             except Exception as exc:  # noqa: BLE001 - never the end of the prune task, nor of the recorder
                 self._pay_failed("prune", exc)
 

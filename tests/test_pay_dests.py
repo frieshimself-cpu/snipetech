@@ -800,6 +800,30 @@ def test_a_destination_seen_again_goes_on_from_its_stored_row():
 # ---- the module itself -----------------------------------------------------------------------------------------------
 
 
+def test_a_wallets_tag_is_held_by_nothing_once_its_destinations_are_gone(monkeypatch):
+    """Round 3, F2: every counted payment interned its wallet's tag, and on Python 3.12 an interned string is never
+    freed: 2,000,000 different wallets grew the process by 190 MB. Nothing is interned; a tag is shared through a
+    mapping of the table's own that never holds more than TAG_MEMORY of them."""
+    import inspect
+
+    assert "intern" not in inspect.getsource(P)
+    monkeypatch.setattr(P, "TAG_MEMORY", 500)
+    module_level = {name: len(v) for name, v in vars(P).items() if isinstance(v, dict | set | list)}
+    pd = P.PayDests(max_dests=40)
+    for k in range(6_000):  # 6,000 wallets, each paying a destination of its own that is soon dropped for room
+        pd.add(f"dest{k:05d}", 5, 7, f"{k:08d}wallet", k)
+    assert len(pd) <= 40 and pd.dropped > 5_000
+    assert len(pd._tags) <= 500
+    held = set(pd._tags) | {t for d in pd._dests.values() for t in (*d.tags, *d.count, *d.wallets)}
+    assert len(held) <= 500 + 40 and "00000000" not in held and "00003000" not in held
+    assert {name: len(v) for name, v in vars(P).items() if isinstance(v, dict | set | list)} == module_level
+    # a wallet that pays many accounts is one string for all of them, while the mapping knows it
+    for k in range(30):
+        pd.add(f"busy{k}", 5, 7, "ManyAccsWallet" + "x" * 30, 7_000 + k)
+    tags = {id(pd._dests[f"busy{k}"].tags[0]) for k in range(30)}
+    assert len(tags) == 1 and P.tag_of("ManyAccsWallet" + "x" * 30) == "ManyAccs"
+
+
 def test_what_amounts_cannot_decide_is_said_in_plain_words():
     text = " ".join(P.NOT_DECIDED_BY_AMOUNTS)
     said = ["who owns the account", "percentage of the buy reads as fee", "follows the trader's size"]
