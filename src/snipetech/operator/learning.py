@@ -659,8 +659,12 @@ def research_record(directory: Path | None, max_chars: int = RESEARCH_MAX_CHARS)
     older = [_record_line(f"- {x}") for x in _older_rounds(Path(directory), n)]
     if not (outcome or lessons or older):
         return ""
-    top = [_record_line(f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} "
-                        f"({name}):")]  # fmt: skip
+    head = f"Research record (the cloud session's research rounds, docs/research/); the newest, round {n} ({name})"
+    if outcome or lessons:
+        top = [_record_line(f"{head}:")]
+    else:  # a report written without its sections: say so, a heading over nothing tells an agent nothing
+        top = [_record_line(f"{head}, has no outcome paragraph and no lessons list: read_file docs/research/{name} "
+                            "reads it whole.")]  # fmt: skip
     top += [_record_line(outcome)] if outcome else []
     room = max_chars - _size(top)
     lesson_part = (f"Round {n}'s lessons:", lessons,

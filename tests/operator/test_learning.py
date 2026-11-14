@@ -692,6 +692,19 @@ def test_no_research_record_gives_no_block_and_never_an_error(tmp_path, paths):
     assert L.context(paths, research=d) == L.context(paths) == L.context(paths, research=tmp_path / "nowhere")
 
 
+def test_a_newest_round_without_its_sections_says_so_instead_of_a_heading_over_nothing(tmp_path):
+    """Round 7 (8 Nov) was written without "## Report" and "## Lessons": every turn's record began "... the newest,
+    round 7 (2026-11-08-round-7.md):" with nothing under it. The line says what is missing and how to read the file."""
+    d = tmp_path / "research"
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: three.", ["three's lesson"])
+    (d / "2026-11-08-round-7.md").write_text("# Research round 7\n\n## 1. KOL copies: refuted\n\nNone qualifies.\n")
+    (d / "README.md").write_text(INDEX)
+    lines = L.research_record(d).splitlines()
+    assert not lines[0].endswith(":") and "round 7 (2026-11-08-round-7.md)" in lines[0]
+    assert "read_file docs/research/2026-11-08-round-7.md" in lines[0]
+    assert lines[1] == "Older rounds, newest first (docs/research/README.md):" and lines[2].startswith("- Round 3 (")
+
+
 def test_a_missing_section_leaves_out_only_its_part(tmp_path):
     d = tmp_path / "research"
     _report(d, "2026-11-07-round-3.md", "OUTCOME: three.")  # no ## Lessons, no README.md
