@@ -85,8 +85,8 @@ def test_start_refuses_a_hypothesis_the_lab_would_refuse_before_any_job_starts(j
 def test_max_jobs_enforced(jobs):
     for i in range(3):
         _meta(jobs.ops.data / "jobs", f"j{i}", ["follow"], running=True, pid=os.getpid())
-    with pytest.raises(PermissionError, match="3"):
-        jobs.start(["follow"])
+    with pytest.raises(PermissionError, match="3 jobs running, the limit is 3"):
+        jobs.start(["follow", "--kols"])  # other arguments than the three that run: no twin, the limit refuses it
 
 
 def test_dead_running_meta_does_not_count(jobs):
@@ -1162,6 +1162,85 @@ TODAY = ["read_job_log", "read_file", "sql", "start_job", "write_note", "set_can
          "read_verdicts", "read_fills", "read_fee_policy", "read_events", "read_lessons", "add_lesson", "list_ideas",
          "upsert_idea", "read_round_trips"]  # fmt: skip
 # what a tool that trades, moves SOL or changes a switch would be called: no agent has one, with a role or without
+def test_a_running_twin_is_refused_and_the_one_who_asked_is_called_when_it_ends(jobs, monkeypatch):
+    """14 Nov 06:01:16 and 06:02:28: the analyst and the tester started the same lab 72 seconds apart with the same
+    arguments, and the twin held a lab slot. Only an ENDED run of the same command was looked for. A job with these
+    exact arguments that runs now is refused with its id and who started it; for a role it then counts as its own
+    test of the idea: the idea is being tested, and the role is called when that job ends."""
+    from snipetech.operator import learning, roles
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    paths = OperatorPaths(jobs.ops.data)
+    tester, fees = _queue(jobs, "tester"), _queue(jobs, "fees")
+    lab = ["lab", "--trigger", KOL, "--copy-position", "+0", "--json"]
+    now = time.time()
+    (jobs.ops.data / "jobs" / "t1.json").write_text(json.dumps(
+        {"id": "t1", "argv": lab, "started": now - 72, "ended": None, "exit_code": None, "running": True,
+         "pid": os.getpid()}))  # fmt: skip
+    roles.record_test(paths, now - 72, "tester", tester, "t1", lab)
+    with pytest.raises(PermissionError, match="job t1 with these exact arguments is running now, started by the "
+                                              "strategy tester .* no second one starts.*counts as your test of "
+                                              f"{fees}.*read_job_log") as said:  # fmt: skip
+        jobs.start(lab, now=now, role="fees", idea=fees)
+    assert "already ran" not in str(said.value)
+    assert [p.stem for p in _job_files(jobs)] == ["t1"]  # nothing was started
+    # the fee analyst waits for it as for a job of its own, and the tester stays the one who started it
+    mine = roles.read_tests(paths, role="fees")
+    assert [(r["job"], r["idea"], r.get("joined")) for r in mine] == [("t1", fees, True)]
+    assert roles.job_roles(paths) == {"t1": "tester"}
+    assert roles.week_counts(paths, now)["tests"] == 1  # one test ran, whoever waits for it
+    status = {i["id"]: i["status"] for i in learning.list_ideas(paths, "all")}
+    assert status[fees] == "testing"
+    state = {"last": now + 5}  # its turn has ended; the job runs on
+    assert roles.role_due("fees", paths, now + 10, state, roles.job_metas(paths, now + 10)) == (False, "nothing new")
+    with pytest.raises(PermissionError, match="job t1 with these exact arguments is running now"):
+        jobs.start(lab, now=now, role="fees", idea=fees)  # asked twice: told twice, written down once
+    assert len(roles.read_tests(paths, role="fees")) == 1
+    (jobs.ops.data / "jobs" / "t1.exit").write_text("0")
+    os.utime(jobs.ops.data / "jobs" / "t1.exit", (now + 30, now + 30))
+    assert roles.role_due("fees", paths, now + 40, state, roles.job_metas(paths, now + 40)) == (
+        True, "a job of yours ended: t1")  # fmt: skip
+    for p in _job_files(jobs):
+        p.unlink()
+    (jobs.ops.data / "jobs" / "t1.exit").unlink()
+    # the one who started it, and an agent that is no role, are told the same and nothing is written down
+    (jobs.ops.data / "jobs" / "a1.json").write_text(json.dumps(
+        {"id": "a1", "argv": ["lab", "--latency", "0"], "started": now - 72, "ended": None, "exit_code": None,
+         "running": True, "pid": os.getpid()}))  # fmt: skip
+    with pytest.raises(PermissionError, match="job a1 with these exact arguments is running now, started by the "
+                                              "analyst or the round .* no second one starts: read it with "
+                                              "read_job_log when it ends"):  # fmt: skip
+        jobs.start(["lab", "--latency", "0"], now=now)
+    assert len(roles.read_tests(paths)) == 2
+    assert jobs.start(["lab", "--latency", "1"], now=now)["id"]  # other arguments: another job
+
+
+def test_a_role_that_reads_a_finished_job_is_not_called_for_it_again(rolebox, jobs):
+    """The hook in read_job_log (roles.job_over, roles.note_job_read): a role's read of a job that had ended is
+    written down for roles.role_due; a read of a job that still runs, an answer that is an error, and the analyst's
+    reads are not."""
+    from snipetech.operator import roles
+
+    tools, paths, _ = rolebox
+    jd = jobs.ops.data / "jobs"
+    _meta(jd, "run1", ["winners", "--json"], running=True, pid=os.getpid())
+    (jd / "run1.log").write_text("reading the tape ...\n")
+    _meta(jd, "done1", ["winners", "--json"], running=False)
+    (jd / "done1.exit").write_text("0")
+    (jd / "done1.log").write_text(json.dumps({"wallets": [{"wallet": "W1", "pnl": 3.5}]}, indent=1))
+    scout, analyst = tools("scout")["read_job_log"], tools()["read_job_log"]
+    assert "reading the tape" in _call(scout, id="run1")
+    assert roles.jobs_read(paths, "scout") == set()  # it still runs: its result is not read
+    assert _call(scout, id="done1", key="nothing").startswith("error")
+    assert roles.jobs_read(paths, "scout") == set()  # an error showed it nothing
+    assert "W1" in _call(analyst, id="done1")
+    assert roles.jobs_read(paths, "scout") == set() and not (paths.root / roles.READ_FILE).exists()
+    assert "W1" in _call(scout, id="done1")
+    assert roles.jobs_read(paths, "scout") == {"done1"} and roles.jobs_read(paths, "fees") == set()
+    assert "W1" in _call(tools("fees")["read_job_log"], id="done1", key="wallets")
+    assert roles.jobs_read(paths, "fees") == {"done1"}
+
+
 TRADING = re.compile(r"oktech|sniper|wallet|trade|buy|sell|swap|transfer|send|sign|book|risk|budget|autotest|config"
                      r"|setting|deploy|update|kill|unwrap|sweep", re.IGNORECASE)  # fmt: skip
 

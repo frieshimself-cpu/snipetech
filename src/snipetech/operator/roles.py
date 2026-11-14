@@ -18,7 +18,7 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -100,6 +100,9 @@ HANDOFF: dict[str, tuple[str, ...]] = {"scout": ("tester", "fees"), "tester": ("
 
 
 SWITCH = "ROLES_ON"  # operator/: the file that switches the agents on (`operate agent --switch on|off`)
+# operator/: the owner's word on whether another role's table change alone starts a role's turn ("on" or "off"; no
+# file: [operator] wake_on_table). Written by `/budget wake table on|off` and `operate budget --wake-table on|off`.
+WAKE_SWITCH = "WAKE_TABLE"
 ROLE_MAX_JOBS = 5  # research jobs at once while the agents run: four roles bounce off the analyst's three
 
 
@@ -126,6 +129,48 @@ def switch(paths: OperatorPaths, to: str) -> dict[str, str]:
         return {"agents": "on", "by": f"the file operator/{SWITCH}"}
     flag.unlink(missing_ok=True)
     return {"agents": "off", "by": f"the file operator/{SWITCH} is gone"}
+
+
+def set_wake_table(paths: OperatorPaths, to: str) -> dict[str, str]:
+    """Write the owner's word on the table wake (`WAKE_SWITCH`); what it did, in words."""
+    if to not in ("on", "off"):
+        raise ValueError("wake table is on or off")  # the word given is never repeated (it may be a pasted secret)
+    paths.ensure()
+    f = paths.root / WAKE_SWITCH
+    tmp = f.with_name(f.name + ".tmp")
+    tmp.write_text(f"{to} {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+    os.replace(tmp, f)
+    return {"wake_on_table": to, "by": f"the file operator/{WAKE_SWITCH}"}
+
+
+def wake_on_table(cfg, paths: OperatorPaths | None) -> bool:
+    """Whether another role's table change alone starts a role's turn: the owner's file when it says on or off, else
+    `[operator] wake_on_table` (true: as it always was). `cfg`: the whole config or its [operator] part."""
+    if paths is not None:
+        try:
+            said = (paths.root / WAKE_SWITCH).read_text().split()[:1]
+        except OSError:
+            said = []
+        if said in (["on"], ["off"]):
+            return said == ["on"]
+    return bool(getattr(getattr(cfg, "operator", cfg), "wake_on_table", True))
+
+
+def start_rules(cfg, paths: OperatorPaths | None) -> dict[str, Any]:
+    """The owner's two settings for when a role's turn starts, as `role_due` takes them: `wake_on_table`; `every_h`,
+    the least gap between a role's turns: the `every` of the owner's own file (operator/BUDGET, `/budget every`), None
+    when that file names none; and `every_default`, whether the owner's value is the code's default, which
+    `/budget 200` writes with its profile without the owner naming it: there a job of its own that ended still calls
+    a role inside the gap. The config's [operator] analyst_every_h alone sets no gap: it is 2 h in the code and in
+    the server's settings file, nobody chose it for the agents, and with it `/budget default` would have cut every
+    role to a turn in two hours."""
+    from ..config import OperatorConfig
+    from .budget_switch import read_budget
+
+    every = read_budget(paths).get("analyst_every_h") if paths is not None else None
+    default = every is not None and abs(float(every) - OperatorConfig().analyst_every_h) < 1e-9
+    return {"wake_on_table": wake_on_table(cfg, paths), "every_h": None if every is None else float(every),
+            "every_default": default}  # fmt: skip
 
 
 def journal_prefix(role: str) -> str:
@@ -247,9 +292,25 @@ def record_test(paths: OperatorPaths, now: float, role: str, idea: str, job: str
     return row
 
 
+def join_test(paths: OperatorPaths, now: float, role: str, idea: str, job: str, argv: list[str]) -> dict[str, Any]:
+    """Write down that `role` asked for a job that was already running with the same arguments (`job`, started by
+    somebody else) and waits for it as for a job of its own: one appended line marked `joined`. The role is called
+    when the job ends (`role_due`); who started it stays who started it (`job_roles`), and it is one test, not two
+    (`week_counts`). Asked again for the same job, nothing more is written."""
+    for row in read_tests(paths, role=role):
+        if str(row["job"]) == str(job):
+            return row
+    row = {"ts": int(now), "role": role, "idea": idea, "job": job, "argv": [str(a) for a in argv], "joined": True}
+    paths.ensure()
+    with (paths.root / TESTS_FILE).open("a") as f:
+        f.write(json.dumps(row) + "\n")
+    return row
+
+
 def read_tests(paths: OperatorPaths, since: float | None = None, role: str | None = None) -> list[dict[str, Any]]:
     """The ledger's rows, oldest first: all, or those at or after `since`, or one role's. A line that cannot be read is
-    skipped; no file reads as no rows."""
+    skipped; no file reads as no rows. A row marked `joined` is a job the role did not start and waits for
+    (`join_test`)."""
     try:
         lines = (paths.root / TESTS_FILE).read_text(errors="replace").splitlines()
     except OSError:
@@ -269,7 +330,7 @@ def read_tests(paths: OperatorPaths, since: float | None = None, role: str | Non
 
 def job_roles(paths: OperatorPaths) -> dict[str, str]:
     """Which role started which job (job id -> role), from the ledger; empty while no role has started one."""
-    return {str(r["job"]): str(r["role"]) for r in read_tests(paths)}
+    return {str(r["job"]): str(r["role"]) for r in read_tests(paths) if not r.get("joined")}
 
 
 # -- when a role's turn runs -------------------------------------------------------------------------------------------
@@ -281,7 +342,13 @@ IDLE_WAIT_SECS = 3600  # ... and the next one waits this long, unless a job of i
 SLACK_SECS = 5 * 60  # a round starts seconds into its quarter hour: this close to a wait's end counts as on time
 JOB_MEMORY_SECS = 2 * 86400  # how far back a turn looks for its jobs' records
 PAPER_READING = 30  # forward trades a paper rule's reading takes: 30, then 30 more (the tester's rule)
+PAPER_READINGS = 2  # the readings that are the tester's news: the first two; later ones are the paper report's rows
+SCOUT_NEWS = ("qualified", "banned")  # the verdict counts that are the scout's news: the others move every hour
 IDLE_WHY = "waits an hour after two turns without a test or a closed idea"
+ROUND_SECS = 15 * 60  # the operator's round, which starts each role's turn (standin.ROLE_EVERY_SECS)
+READ_FILE = "agents-read.json"  # operator/: per role, the finished jobs it has read and when (`note_job_read`)
+READ_KEEP_SECS = 86400  # how long that record keeps a job: a role with nothing new looks every three hours anyway
+NO_NEWS_JOBS = frozenset({"label"})  # these print nothing to read: such a job's end is no news unless it failed
 
 
 def read_state(paths: OperatorPaths) -> dict[str, dict[str, Any]]:
@@ -293,13 +360,25 @@ def read_state(paths: OperatorPaths) -> dict[str, dict[str, Any]]:
     return {r: v for r, v in data.items() if r in ROLES and isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
-def update_state(paths: OperatorPaths, role: str, **values: Any) -> dict[str, Any]:
-    """Merge `values` into `role`'s entry and return it; a value of None takes its key out. Four turns write this file
-    side by side: read, change and write happen under one file lock, and the write is a rename."""
+@contextmanager
+def _state_lock(paths: OperatorPaths) -> Iterator[None]:
+    """operator/agents.lock, held while the agents' state or their record of read jobs is read, changed and written."""
     paths.ensure()
     fd = os.open(paths.root / "agents.lock", os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def update_state(paths: OperatorPaths, role: str, **values: Any) -> dict[str, Any]:
+    """Merge `values` into `role`'s entry and return it; a value of None takes its key out. Four turns write this file
+    side by side: read, change and write happen under one file lock, and the write is a rename."""
+    with _state_lock(paths):
         state = read_state(paths)
         entry = {**state.get(role, {}), **values}
         state[role] = {k: v for k, v in entry.items() if v is not None}
@@ -308,11 +387,87 @@ def update_state(paths: OperatorPaths, role: str, **values: Any) -> dict[str, An
         tmp.write_text(json.dumps(state, indent=1, default=str))
         os.replace(tmp, f)
         return state[role]
-    finally:
-        try:
-            fcntl.flock(fd, fcntl.LOCK_UN)
-        finally:
-            os.close(fd)
+
+
+# -- the finished jobs a role has read: operator/agents-read.json ------------------------------------------------------
+
+
+def job_over(paths: OperatorPaths, jid: str) -> bool:
+    """Whether the job has ended: it wrote its exit file, or its record says it no longer runs or its process is gone
+    (as `job_metas` reads it). False for a job without a record. read_job_log asks this BEFORE it reads the log: the
+    log of a job that had ended by then is whole."""
+    from ..ops import _pid_alive
+
+    jid = str(jid)
+    if not jid or "/" in jid or "\\" in jid or ".." in jid:
+        return False
+    try:
+        if (paths.jobs / f"{jid}.exit").exists():
+            return True
+        meta = json.loads((paths.jobs / f"{jid}.json").read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(meta, dict) and not (bool(meta.get("running")) and _pid_alive(meta.get("pid")))
+
+
+def _read_record(paths: OperatorPaths) -> dict[str, dict[str, float]]:
+    try:
+        data = json.loads((paths.root / READ_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {r: {str(j): float(t) for j, t in v.items() if isinstance(t, (int, float)) and not isinstance(t, bool)}
+            for r, v in data.items() if r in ROLES and isinstance(v, dict)}  # fmt: skip
+
+
+def _change_reads(paths: OperatorPaths, change: Callable[[dict[str, dict[str, float]]], bool]) -> None:
+    """Read the record, let `change` alter it (it says whether it did) and write it, under the state's lock. Never
+    raises: the record is a saving, never a reason to fail a tool call or a turn."""
+    with suppress(Exception), _state_lock(paths):
+        record = _read_record(paths)
+        if not change(record):
+            return
+        f = paths.root / READ_FILE
+        tmp = f.with_name(f"{f.name}.{os.getpid()}.tmp")
+        tmp.write_text(json.dumps({r: {j: int(t) for j, t in v.items()} for r, v in record.items() if v}))
+        os.replace(tmp, f)
+
+
+def note_job_read(paths: OperatorPaths, role: str, jid: str, now: float, text: str) -> None:
+    """A role's read_job_log gave it `text` of job `jid`, which had ended before the log was read (`job_over`): the
+    job is not "a job of yours ended" at the role's next round (`role_due`). An answer that showed nothing (empty, an
+    error) is no read. The record holds a role's reads of the last READ_KEEP_SECS and is written under the state's
+    lock. Never raises: a read that cannot be written down costs one turn, never the tool call."""
+    shown = str(text).strip()
+    if role not in ROLES or not shown or shown.startswith("error"):
+        return
+
+    def change(record: dict[str, dict[str, float]]) -> bool:
+        record.setdefault(role, {})[str(jid)] = int(now)
+        for r in list(record):
+            record[r] = {j: t for j, t in record[r].items() if t >= now - READ_KEEP_SECS}
+        return True
+
+    _change_reads(paths, change)
+
+
+def forget_reads(paths: OperatorPaths, role: str, since: float) -> None:
+    """Take `role`'s reads at or after `since` out of the record: the turn that began then did not end by itself (the
+    API refused it mid-way, a cap cut it, it failed), so it did not finish with what it read and the job is told
+    again. Never raises."""
+
+    def change(record: dict[str, dict[str, float]]) -> bool:
+        mine = record.get(role, {})
+        record[role] = {j: t for j, t in mine.items() if t < since}
+        return len(record[role]) != len(mine)
+
+    _change_reads(paths, change)
+
+
+def jobs_read(paths: OperatorPaths, role: str) -> set[str]:
+    """The finished jobs `role` has read (`note_job_read`), as far as the record goes back."""
+    return set(_read_record(paths).get(role, {}))
 
 
 @contextmanager
@@ -340,8 +495,8 @@ def role_lock(paths: OperatorPaths, role: str) -> Iterator[bool]:
 
 def job_metas(paths: OperatorPaths, now: float) -> list[dict[str, Any]]:
     """The records of the jobs that ran or ended in the last JOB_MEMORY_SECS, each with `running` true only while its
-    job has written no exit file and its process is alive, and `ended` from the exit file where the record has none
-    (the process that started a job is usually gone when it ends)."""
+    job has written no exit file and its process is alive, and `ended` and `exit_code` from the exit file where the
+    record has none (the process that started a job is usually gone when it ends)."""
     from ..jobfiles import jobs_since
     from ..ops import _pid_alive
 
@@ -358,17 +513,24 @@ def job_metas(paths: OperatorPaths, now: float) -> list[dict[str, Any]]:
             ended_at: float | None = exit_file.stat().st_mtime
         except OSError:
             ended_at = None
+        code = meta.get("exit_code")
+        if ended_at is not None:
+            try:
+                code = int(exit_file.read_text().strip() or 0)  # the job's own word on how it ended
+            except (OSError, ValueError):
+                pass
         running = bool(meta.get("running")) and ended_at is None and _pid_alive(meta.get("pid"))
         ended = meta.get("ended") or ended_at
-        out.append(meta | {"id": meta.get("id") or jid, "running": running, "ended": None if running else ended})
+        out.append(meta | {"id": meta.get("id") or jid, "running": running, "ended": None if running else ended,
+                           "exit_code": None if running else code})  # fmt: skip
     return out
 
 
 def seen(role: str, store) -> dict[str, Any]:
     """What a role's turn remembers of the store so that its next one can tell news from what it has read: the scout
-    the verdict counts (they change when qualify wrote a verdict or discover brought a candidate), the tester each
-    paper rule's reading (its trades in whole PAPER_READINGs). The fee and the OKTech analysts need none: a fill has
-    its time."""
+    the verdict counts (`_news` compares the qualified and the banned: the candidates and the retired move every
+    hour), the tester each paper rule's reading (its trades in whole PAPER_READINGs). The fee and the OKTech analysts
+    need none: a fill has its time."""
     if role == "scout":
         return {"verdicts": store.verdict_counts()}
     if role == "tester":
@@ -377,11 +539,18 @@ def seen(role: str, store) -> dict[str, Any]:
 
 
 def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict[str, Any]]) -> str | None:
-    """A role's own news since its last turn, in words, or None."""
+    """A role's own news since its last turn, in words, or None. The scout: the count of qualified or of banned
+    wallets changed (until 14 Nov any of the four counts, and the candidates' moved at every reading: 76,496, 76,594,
+    77,125, 77,091). The tester: the strategy search ended, or a paper rule reached one of its first PAPER_READINGS
+    readings (until 14 Nov every multiple of 30 trades of each of 104 rules). The fee and the OKTech analysts: a fill
+    of ours."""
     was = state.get("seen") if isinstance(state.get("seen"), dict) else {}
     if role == "scout":
-        if "verdicts" in was and store.verdict_counts() != was["verdicts"]:
-            return "new verdicts or candidates (read_verdicts)"
+        before = was.get("verdicts") if isinstance(was.get("verdicts"), dict) else None
+        if before is not None:
+            counts = store.verdict_counts()
+            if any(int(counts.get(k) or 0) != int(before.get(k) or 0) for k in SCOUT_NEWS):
+                return "the qualified or the banned wallets changed (read_verdicts)"
     elif role == "tester":
         for m in metas:
             if (list(m.get("argv") or [])[:2] == ["research", "search"] and not m.get("running")
@@ -390,7 +559,7 @@ def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict
         before = was.get("paper") if isinstance(was.get("paper"), dict) else None
         if before is not None:
             for sid, row in sorted(store.paper_counts().items()):
-                if int(row[0]) // PAPER_READING > int(before.get(sid) or 0):
+                if min(int(row[0]) // PAPER_READING, PAPER_READINGS) > min(int(before.get(sid) or 0), PAPER_READINGS):
                     return f"a paper rule reached its next reading: {sid} ({int(row[0])} trades)"
     elif store.fills(since_ts=int(last) + 1, limit=1):  # the fee and the OKTech analysts: our own fills are the truth
         return "a new fill of ours (read_fills)"
@@ -398,21 +567,35 @@ def _news(role: str, store, state: dict[str, Any], last: float, metas: list[dict
 
 
 def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any], metas: list[dict[str, Any]],
-             store=None) -> tuple[bool, str]:  # fmt: skip
+             store=None, *, wake_on_table: bool = True, every_h: float | None = None,
+             every_default: bool = False) -> tuple[bool, str]:  # fmt: skip
     """Whether a turn of `role` runs now, and why (or why not). It runs when one of these holds: it has never run; a
-    job it started has ended since its last turn; it was handed an idea since then; none of its jobs runs and its
-    queue holds an idea nobody tested; another role's table changed since then; its own news arrived (`_news`); or
-    three hours have passed. After IDLE_TURNS turns in a row without a test started or an idea closed it waits
-    IDLE_WAIT_SECS, unless a job of its own has ended. `state`: the role's entry of agents.json; `metas`: job_metas;
-    `store`: for its news (none: that rule is not asked)."""
+    job it started (or waits for: `join_test`) has ended since its last turn and it has not read it since
+    (`note_job_read`; a `label` job that ended well is never news); it was handed an idea since then; none of its jobs
+    runs and its queue holds an idea nobody tested; another role's table changed since then (only while
+    `wake_on_table`: the owner's switch, `start_rules`); its own news arrived (`_news`); or three hours have passed.
+    After IDLE_TURNS turns in a row without a test started or an idea closed it waits IDLE_WAIT_SECS, unless a job of
+    its own has ended.
+
+    `every_h`: the owner's least gap between a role's turns in hours (`start_rules`; None: the owner set none, no
+    such rule). At a round or less (0.25 h, the server's file on 14 Nov) nothing changes. Above it a role whose last
+    turn began less than that long ago is not due, whatever is new; only where the owner's value is the default
+    (`every_default`) a job of its own that ended and that it has not read still calls it at once. `state`: the
+    role's entry of agents.json; `metas`: job_metas; `store`: for its news (none: that rule is not asked)."""
     from . import learning
 
     last = state.get("last")
     if not isinstance(last, (int, float)):
         return True, "first turn"
     mine = {str(t["job"]) for t in read_tests(paths, role=role)}
+    read = jobs_read(paths, role)
     ended = [str(m.get("id")) for m in metas
-             if str(m.get("id")) in mine and not m.get("running") and float(m.get("ended") or 0) >= last]  # fmt: skip
+             if str(m.get("id")) in mine and not m.get("running") and float(m.get("ended") or 0) >= last
+             and str(m.get("id")) not in read and not _no_news(m)]  # fmt: skip
+    gap = float(every_h or 0) * 3600
+    if gap > ROUND_SECS and now - last < gap - SLACK_SECS and not (ended and every_default):
+        ago = round((now - last) / 60)
+        return False, f"not yet: its last turn was {ago} minutes ago (the owner's every {every_h:g} h)"
     if ended:
         return True, "a job of yours ended: " + ", ".join(sorted(ended))
     if int(state.get("idle") or 0) >= IDLE_TURNS and now - last < IDLE_WAIT_SECS:
@@ -424,7 +607,7 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     waiting = learning.untested(paths, limit=1, role=role)
     if waiting and not any(m.get("running") and str(m.get("id")) in mine for m in metas):
         return True, f"not tested yet: {waiting[0].get('id')}"
-    for other in ROLES:
+    for other in ROLES if wake_on_table else ():
         if other != role:
             try:
                 changed = (paths.root / f"{TABLES[other]}.md").stat().st_mtime > last
@@ -439,6 +622,45 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     if now - last >= QUIET_MAX_SECS - SLACK_SECS:
         return True, "three quiet hours since its last turn"
     return False, "nothing new"
+
+
+def _no_news(meta: dict[str, Any]) -> bool:
+    """A job whose end is not worth a turn: one of NO_NEWS_JOBS (`label` writes one name and prints it) that did not
+    fail. One that failed is told: the name was not written."""
+    argv = list(meta.get("argv") or [])
+    return bool(argv) and argv[0] in NO_NEWS_JOBS and meta.get("exit_code") in (0, None)
+
+
+def credit_asker(cfg, paths: OperatorPaths, store, ledger, now: float, role: str, metas: list[dict[str, Any]],
+                 rules: dict[str, Any]) -> str | None:  # fmt: skip
+    """While the API refuses the agents for want of credit (resources.credit_empty_since): the one role whose turn
+    asks this round; None when the account is not known to be empty. `role` is the caller, which is due and has room
+    in its share. The roles take the rounds in turn (the round's number picks who is first); a role that has nothing
+    new, or no room, passes its round to the next, so every round one role that could run asks. 13 and 14 Nov: 471
+    turns were started against an empty account, four processes a round, each building its whole message to be
+    refused. The first answer ends it (the ledger holds a spend after the last refusal): the roles that start after
+    it run in the same round, the others in the next."""
+    from .budget_switch import room_for_role
+    from .resources import credit_empty_since
+
+    try:
+        if credit_empty_since(store, ledger) is None:
+            return None
+    except Exception:  # noqa: BLE001 - a record that cannot be read holds nobody back
+        return None
+    first = int(now // ROUND_SECS) % len(ROLES)
+    states, by = read_state(paths), ledger.spent_today_by(now)
+    for other in (*ROLES[first:], *ROLES[:first]):
+        if other == role:
+            return role
+        try:
+            could = (role_due(other, paths, now, states.get(other, {}), metas, store=store, **rules)[0]
+                     and room_for_role(cfg, paths, other, sum(by.values()), by.get(other, 0.0)))  # fmt: skip
+        except Exception:  # noqa: BLE001 - what cannot be said of another role never holds this one back
+            could = False
+        if could:
+            return other
+    return role
 
 
 def off_reason(cfg, paths: OperatorPaths | None) -> str | None:
@@ -460,13 +682,16 @@ def _log(paths: OperatorPaths, now: float, text: str) -> None:
 
 def _idle_after(paths: OperatorPaths, role: str, started: float, idle: int) -> int:
     """The role's count of turns in a row without a test started or an idea closed, after a turn that began at
-    `started`: zero when the ledger holds a job of its own since then or an idea of its queue was closed since then."""
+    `started`: zero when the ledger holds a job of its own since then, or an idea of its queue was closed since then
+    that it did not open itself in this same turn. An idea a role opens and closes in one turn is not counted (14 Nov:
+    one role did that in 20 of 22 turns, started nothing, and never reached the idle wait)."""
     from . import learning
 
     if read_tests(paths, since=int(started), role=role):
         return 0
     closed = [i for i in learning.list_ideas(paths, "all", role=role)
-              if i.get("status") in ("adopted", "rejected") and learning._epoch(i.get("updated")) >= int(started)]  # fmt: skip
+              if i.get("status") in ("adopted", "rejected") and learning._epoch(i.get("updated")) >= int(started)
+              and not (i.get("source") == role and learning._epoch(i.get("created")) >= int(started))]  # fmt: skip
     return 0 if closed else int(idle) + 1
 
 
@@ -490,8 +715,10 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     t0 = now()
     off = off_reason(cfg, paths)
+    rules = start_rules(cfg, paths)  # the owner's: the table wake, the least gap between a role's turns
     if dry_run:
-        due, reason = role_due(role, paths, t0, read_state(paths).get(role, {}), job_metas(paths, t0), store=svc.store)
+        due, reason = role_due(role, paths, t0, read_state(paths).get(role, {}), job_metas(paths, t0), store=svc.store,
+                               **rules)  # fmt: skip
         return {"role": role, "ran": False, "why": "dry run", "on": off is None, "due": due, "reason": reason}
     if off:
         return {"role": role, "ran": False, "why": off}
@@ -503,8 +730,8 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
     with role_lock(paths, role) as held:
         if not held:
             return skip("its last turn is still running")
-        state = read_state(paths).get(role, {})
-        due, reason = role_due(role, paths, t0, state, job_metas(paths, t0), store=svc.store)
+        state, metas = read_state(paths).get(role, {}), job_metas(paths, t0)
+        due, reason = role_due(role, paths, t0, state, metas, store=svc.store, **rules)
         if not due:
             return skip(reason)
         ledger = Ledger(paths.spend, cfg.operator.prices)
@@ -525,6 +752,9 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
             return skip(why)
         if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
             return skip("no ANTHROPIC_API_KEY in the environment")
+        asker = credit_asker(cfg, paths, svc.store, ledger, t0, role, metas, rules)
+        if asker not in (None, role):  # the account is empty: one role a round asks, the others build no message
+            return skip(f"the account is empty: the {asker} asks this round")
         from .notify import from_env
         from .tools import NoteSink
 
@@ -547,10 +777,13 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
                 result = await result
         except Exception as exc:  # noqa: BLE001 - a failed turn is a log line; the next round tries again
             update_state(paths, role, last=state.get("last"), reason=state.get("reason"))  # as the turn found them
+            forget_reads(paths, role, t0)
             why = redact(f"turn failed: {type(exc).__name__}: {str(exc)[:200]}")
             _log(paths, now(), f"agent {role}: {why}")
             return {"role": role, "ran": False, "why": why, "failed": True}
         result = dict(result or {})
+        if result.get("stopped") != "end_turn":  # cut off or refused: what it read it did not finish with
+            forget_reads(paths, role, t0)
         if result.get("stopped") in ("api_error", "refusal"):  # the API refused the turn: the next round tries again
             update_state(paths, role, last=state.get("last"), reason=state.get("reason"))
         else:
@@ -581,8 +814,8 @@ def week_counts(paths: OperatorPaths, now: float, store=None) -> dict[str, int |
     (FORWARD_PASS_TRADES forward trades or more, total and lower bound above zero), from what the paper report last
     worked out (its kept rows: nothing is computed here). The deployer-verdict rules, which no lab froze, are left
     out. Without a `store`, or when it cannot say, the last two are None."""
-    out: dict[str, int | None] = {"tests": len(read_tests(paths, since=now - WEEK_SECS)), "frozen": None,
-                                  "passed": None}  # fmt: skip
+    started = [r for r in read_tests(paths, since=now - WEEK_SECS) if not r.get("joined")]
+    out: dict[str, int | None] = {"tests": len(started), "frozen": None, "passed": None}
     if store is None:
         return out
     try:

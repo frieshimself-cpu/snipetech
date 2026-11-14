@@ -290,3 +290,61 @@ def test_budget_line_names_the_shares(paths):
     assert line.startswith("Claude budget: 500 $ a day (3.20 $ spent today)")
     set_budget(paths, ROLES_ON, {"analyst_every_h": 0}, "telegram", NOW)
     assert "share the day" not in budget_line(ROLES_ON, paths, 3.2)  # switched off by the owner: nothing to name
+
+
+# -- when a research agent's turn starts: the owner's two settings (operator/roles.py role_due) ----------------------
+
+
+def test_the_owner_switches_the_table_wake_off_and_on_without_a_deploy(tmp_path, paths, capsys):
+    """`/budget wake table off`: another role's table change alone no longer starts a role's turn. A file beside the
+    budget (operator/WAKE_TABLE), so the dollars are untouched and `/budget default` leaves it as the owner set it."""
+    from snipetech.operator import roles
+    from snipetech.operator.budget_switch import budget_line, budget_reply
+
+    set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6, "analyst_every_h": 0.25}, "telegram", NOW)
+    before = budget_file(paths).read_text()
+    assert "table" not in budget_line(ROLES_ON, paths, 0)  # as it was while the switch is as it was
+    reply = budget_reply(ROLES_ON, paths, ["wake", "table", "off"], "telegram", NOW)
+    assert reply.startswith("budget set: Claude budget: 500 $ a day")
+    assert "another role's table change alone starts no turn (/budget wake table on brings that back)" in reply
+    assert roles.start_rules(ROLES_ON, paths)["wake_on_table"] is False
+    assert budget_file(paths).read_text() == before
+    for bad in (["wake"], ["wake", "table"], ["wake", "table", "maybe"], ["wake", "up", "on"],
+                ["200", "wake", "table", "off"]):  # fmt: skip
+        said = budget_reply(ROLES_ON, paths, bad, "telegram", NOW)
+        assert said.startswith("budget not changed: ") and "wake table" in said
+        assert budget_file(paths).read_text() == before and roles.start_rules(ROLES_ON, paths)["wake_on_table"] is False
+    assert "starts no turn" in budget_reply(ROLES_ON, paths, ["default"], "telegram", NOW)
+    assert not budget_file(paths).exists() and roles.start_rules(ROLES_ON, paths)["wake_on_table"] is False
+    reply = budget_reply(ROLES_ON, paths, ["Wake", "Table", "ON"], "telegram", NOW)
+    assert reply.startswith("budget set: ") and "table" not in reply
+    assert roles.start_rules(ROLES_ON, paths)["wake_on_table"] is True
+    # the cloud session's way, with the owner's yes in chat: `remote --wait run operate budget --wake-table off`
+    there = OperatorPaths(tmp_path / "data")
+    assert _cli(tmp_path, "budget", "--wake-table", "off") == 0
+    out = capsys.readouterr().out
+    assert "another role's table change alone starts a research agent's turn: off" in out and "WAKE_TABLE" in out
+    assert roles.start_rules(Config(), there)["wake_on_table"] is False and not budget_file(there).exists()
+    assert _cli(tmp_path, "budget") == 0 and "turn: off" in capsys.readouterr().out  # shows, changes nothing
+    assert _cli(tmp_path, "budget", "--wake-table", "on") == 0 and "turn: on" in capsys.readouterr().out
+    assert roles.start_rules(Config(), there)["wake_on_table"] is True
+    with pytest.raises(SystemExit):
+        _cli(tmp_path, "budget", "--wake-table", "maybe")
+    with pytest.raises(SystemExit, match="operate budget"):  # the flag without the action sets nothing
+        _cli(tmp_path, "--wake-table", "off")
+    assert roles.start_rules(Config(), there)["wake_on_table"] is True
+
+
+def test_the_budget_line_says_the_least_gap_between_a_roles_turns(paths):
+    """`every` is the least gap between a role's turns (roles.role_due). At a round (0.25 h, the server's file) the
+    line reads as it did; above it the owner reads the gap, and at the default 2 h what still calls a role at once."""
+    from snipetech.operator.budget_switch import budget_line
+
+    set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6, "analyst_every_h": 0.25}, "telegram", NOW)
+    assert "the research agents' turns every round and the analysis once a day" in budget_line(ROLES_ON, paths, 0)
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 1}, "telegram", NOW)
+    assert ("each research agent's turns at least 1 h apart and the analysis once a day after"
+            in budget_line(ROLES_ON, paths, 0))  # fmt: skip
+    set_budget(paths, ROLES_ON, {"analyst_every_h": 2}, "telegram", NOW)
+    assert ("each research agent's turns at least 2 h apart (sooner only to read a job of its own that ended) and "
+            "the analysis once a day after") in budget_line(ROLES_ON, paths, 0)  # fmt: skip

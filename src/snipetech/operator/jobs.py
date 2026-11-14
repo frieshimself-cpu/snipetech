@@ -275,6 +275,28 @@ class OperatorJobs:
                 found = {**meta, "id": jid}
         return found
 
+    def _check_twin(self, argv: list[str], now: float, role: str | None, idea: str | None) -> None:
+        """A job with exactly these arguments that is RUNNING now is not started a second time: the refusal names it,
+        who started it and when. 14 Nov 06:01:16 and 06:02:28: the analyst and the tester started the same lab 72
+        seconds apart and the twin held a lab slot (`_recent_identical` sees only jobs that have ended). For a role
+        that did not start it, the running job then counts as its own test of `idea` (roles.join_test): the idea is
+        being tested and the role is called when the job ends, as for a job it started."""
+        twin = next((m for m in self.running() if list(m.get("argv") or []) == list(argv)), None)
+        if twin is None:
+            return
+        jid = str(twin.get("id"))
+        by = roles.job_roles(self.paths).get(jid)
+        who = ("you" if role is not None and by == role else f"the {roles.NAMES[by]}" if by in roles.NAMES
+               else "the cloud session" if twin.get("by") == "remote" else "the analyst or the round")  # fmt: skip
+        at = time.strftime("%H:%M UTC", time.gmtime(float(twin.get("started") or now)))
+        said = f"job {jid} with these exact arguments is running now, started by {who} at {at}: no second one starts"
+        if role is None or by == role:
+            raise PermissionError(f"{said}: read it with read_job_log when it ends")
+        roles.join_test(self.paths, now, role, str(idea).strip(), jid, argv)
+        self._idea_testing(now, role, str(idea))
+        raise PermissionError(f"{said}. It counts as your test of {str(idea).strip()}: you are called when it ends; "
+                              "read it then with read_job_log")  # fmt: skip
+
     def _backfill_stopped(self, argv: list[str], earlier: dict) -> str | None:
         """Which limit ended the earlier run of this backfill ("max_credits", "month_credits"), read from the end of
         its log; None when it ended whole, when its log is gone, and for a dry run (it keeps no place: the same one
@@ -367,6 +389,10 @@ class OperatorJobs:
     def record_test(self, now: float, role: str, idea: str, started: dict, argv: list[str]) -> None:
         """A role's job has started: one line in operator/tests.jsonl, and its idea moves from open to testing."""
         roles.record_test(self.paths, now, role, str(idea).strip(), str(started.get("id")), argv)
+        self._idea_testing(now, role, idea)
+
+    def _idea_testing(self, now: float, role: str, idea: str) -> None:
+        """The role's idea moves from open to testing: a job tests it (its own, or a running twin it waits for)."""
         try:
             if any(i.get("id") == str(idea).strip() and i.get("status") == "open"
                    for i in learning.list_ideas(self.paths, "all")):  # fmt: skip
@@ -402,6 +428,7 @@ class OperatorJobs:
         self._check_lab_window(argv)
         now = time.time() if now is None else now
         self._check_repeat(argv, now, backfill=action)
+        self._check_twin(argv, now, role, idea)  # after it: a backfill that goes on has its own words for its twin
         running = self.running()
         labs, slots = sum(1 for m in running if m.get("argv", [""])[0] == "lab"), lab_slots()
         if argv[0] == "lab" and labs >= slots:
