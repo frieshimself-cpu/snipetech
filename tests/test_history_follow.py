@@ -142,7 +142,8 @@ def test_the_command_takes_off_what_a_copy_of_our_size_costs(tmp_path, monkeypat
         assert pct == pytest.approx(2.5 + 100 * 2 * LIVE_TX_SOL / cfg.book.fill_min_sol)  # nothing measured: 7.0
         assert parts == {"buy_sol": cfg.book.fill_min_sol, "per_tx_sol": LIVE_TX_SOL, "per_tx_source": "estimate",
                          "pump_fees_pct": 2.5, "tx_pct": pytest.approx(pct - 2.5)}  # fmt: skip
-        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.00421, "arm": LOW_BID_ARM, "n": 75, "ts": 1_794_000_000})
+        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.00421, "arm": LOW_BID_ARM, "n": 75, "ts": 1_794_000_000,
+                                         "basis": 2})  # fmt: skip
         assert cli._copy_hurdle(cfg, store)[0] == pytest.approx(6.71)
     finally:
         store.close()

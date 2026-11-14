@@ -36,7 +36,7 @@ def test_a_copy_verdict_is_made_at_what_a_transaction_costs_live():
         rep = asyncio.run(svc.analyze_copy(t, refresh=False))
         assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(LIVE_TX_SOL)  # nothing measured: the estimate
         cheap = rep["copier"]["mean"]
-        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.0145, "arm": LOW_BID_ARM, "n": 75, "ts": NOW})
+        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.0145, "arm": LOW_BID_ARM, "n": 75, "ts": NOW, "basis": 2})
         rep = asyncio.run(svc.analyze_copy(t, refresh=False))
         assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(0.0145)
         assert rep["copier"]["mean"] < cheap - 0.015  # a buy and at least one sell, each 0.01 SOL dearer

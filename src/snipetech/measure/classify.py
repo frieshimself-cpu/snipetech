@@ -76,6 +76,10 @@ def leaders_for(store: Store, ts: float | None = None) -> set[str]:
     return out
 
 
+OTHER_BID = "other"  # the arm of a fill sent at a bid far above every arm's: a live test at another tip, a hand-made sniper
+OTHER_BID_TIMES = 2.0
+
+
 def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: dict[str, dict] | None) -> str:
     """The bid arm a fill paid for: the arm whose priority fee is nearest (tip as the tiebreaker: one send in three
     carries no tip). Both arms copy the same leaders from one wallet and OKTech's task documents carry no fills, so
@@ -84,16 +88,27 @@ def arm_from_fee(priority_lamports: int | None, tip_lamports: int | None, arms: 
     An arm has two shapes on the chain: as it is written in [book] bid_arms (how it was sent until 12 Nov: the paid
     arm 0.02 + 0.02) and as it is sent since, the same total with the bid in the tip (fees.sent_bid: 0.001 + 0.039).
     A fill belongs to the arm one of whose shapes it is nearest; an untipped send of an arm whose priority is at the
-    minimum cannot be told from control's."""
+    minimum cannot be told from control's.
+
+    A fill far above its nearest arm's bid is no arm's (OTHER_BID): its priority fee, or its priority and tip together,
+    more than OTHER_BID_TIMES the arm's. 12 Nov: four buys of a live tip test (0.005 + 0.03) were the low bid's
+    nearest, its measured fee a buy went from 0.003 to 0.0071 SOL, and every lab charged twice a transaction's cost
+    for a week. A fill below an arm's bid stays the arm's (a sale at the fixed sell fee, a setting raised since)."""
     if not arms or priority_lamports is None:
         return "control"
     prio, tip = priority_lamports / 1e9, (tip_lamports or 0) / 1e9
 
-    def distance(name: str) -> tuple[float, float]:
+    def shapes(name: str) -> tuple[tuple[float, float], tuple[float, float]]:
         written = (float(arms[name].get("priority") or 0), float(arms[name].get("tip") or 0))
-        return min((abs(prio - p), abs(tip - t)) for p, t in (written, sent_bid(*written)))
+        return written, sent_bid(*written)
 
-    return min(arms, key=distance)
+    def distance(name: str) -> tuple[float, float]:
+        return min((abs(prio - p), abs(tip - t)) for p, t in shapes(name))
+
+    arm = min(arms, key=distance)
+    most_priority, bid = max(p for p, _ in shapes(arm)), max(p + t for p, t in shapes(arm))
+    over = OTHER_BID_TIMES + 1e-9
+    return OTHER_BID if prio > most_priority * over or prio + tip > bid * over else arm
 
 
 def arm_for(store: Store, sniper_id: str | None) -> str:

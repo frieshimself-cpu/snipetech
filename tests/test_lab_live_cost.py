@@ -91,7 +91,7 @@ def test_after_a_week_without_fills_the_lab_charges_the_last_measured_cost_and_s
     at = NOW - 8 * 86400
     st = Store(db)
     try:
-        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": at})
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": at, "basis": 2})
     finally:
         st.close()
     out = _lab(capsys, db)

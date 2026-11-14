@@ -280,7 +280,8 @@ def test_a_week_without_fills_keeps_the_bar_at_the_last_measured_cost(env):
     """The bid model reads 7 days of fills, and a week without trading prunes the low bid's row (7 Nov 10:59 the wallet
     was emptied and nothing has traded since). The bar stays the last cost the measure stage measured, kept in
     measure:tx_cost, never the flat 0.0035 a freeze then charges too (review of 7 Nov evening)."""
-    env.store.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400})
+    env.store.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400,
+                                                "basis": 2})  # fmt: skip
     _freeze(env.store, BEST, pnl=0.02, per_tx=0.0035)
     _freeze(env.store, SECOND, pnl=0.01, per_tx=0.0045)
     _freeze(env.store, THIRD, pnl=0.005)  # 0.0047, what was measured

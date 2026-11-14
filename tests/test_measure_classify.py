@@ -216,3 +216,24 @@ def test_round_trips_charge_the_fees_each_fill_paid():
     assert round(out["trips"][0]["pnl_sol"], 6) == round(0.3 - 0.2 - (0.040005 + 0.004005), 6)
     flat = pair_round_trips([_b("B1", "M", 100, 0.2, 1000.0)], [_s("S1", "M", 200, 0.3, 1000.0)], per_tx_sol=0.0012)
     assert round(flat["trips"][0]["pnl_sol"], 6) == round(0.3 - 0.2 - 0.0024, 6)  # unknown fees: the flat cost
+
+
+def test_a_fill_sent_far_above_an_arms_bid_is_not_that_arms_fill():
+    """12 Nov 17:24: four buys of a live tip test went out at priority 0.005 + tip 0.03 SOL. The fee is all that tells
+    a fill's arm, the nearest arm was the low bid's (0.001 + 0.002), and its measured fee a buy went from 0.003 to
+    0.0071 SOL: every lab charged 0.0085 to 0.0093 SOL a transaction for a week instead of about 0.0042. A fill whose
+    priority fee or whose whole bid is more than twice the nearest arm's is no arm's fill: it is another bid's."""
+    from snipetech.measure.classify import OTHER_BID
+
+    only = {"control": {"priority": 0.001, "tip": 0.002}}
+    assert arm_from_fee(5_000_000, 30_000_000, only) == OTHER_BID
+    assert arm_from_fee(5_000_000, 0, only) == OTHER_BID  # an untipped send of such a buy, or its failed sell twin
+    assert arm_from_fee(1_000_000, 30_000_000, only) == OTHER_BID  # the same bid sent in the tip
+    assert arm_from_fee(1_000_000, 2_000_000, only) == "control" and arm_from_fee(1_000_000, 0, only) == "control"
+    assert arm_from_fee(700_000, 1_333_333, only) == "control"  # a smaller bid than the arm's is still the low bid
+    assert arm_from_fee(2_000_000, 4_000_000, only) == "control"  # up to twice the arm's bid (a setting moved since)
+    assert arm_from_fee(2_000_001, 0, only) == OTHER_BID
+    # where the retired paid arm (0.04 SOL a buy) is still written, a 0.035 bid is nearest it and within its bid
+    assert arm_from_fee(5_000_000, 30_000_000, ARMS) == "paid"
+    assert arm_from_fee(50_000_000, 100_000_000, ARMS) == OTHER_BID
+    assert arm_from_fee(None, None, only) == "control"  # an unknown fee, as before

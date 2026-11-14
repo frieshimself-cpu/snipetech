@@ -346,13 +346,14 @@ def test_a_week_with_too_few_low_bid_fills_charges_the_last_measured_cost_and_sa
     measure stage prunes the low bid's row (7 Nov 10:59 the wallet was emptied; nothing has traded since). Every lab,
     freeze and qualify run then fell back to the flat 0.0035, 0.002 SOL a trade too kind again. They charge the last
     cost the measure stage measured instead (measure:tx_cost), and say that it is and when it was measured."""
-    from snipetech.qualify.run import lab_tx_cost, lab_tx_cost_info
+    from snipetech.qualify.run import TX_COST_BASIS, lab_tx_cost, lab_tx_cost_info
 
     st, cfg = Store(":memory:"), Config()
     try:
         assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.0045, "per_tx_source": "estimate",
                                              "per_tx_measured_at": None}  # fmt: skip
-        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400})
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0047, "arm": "control", "n": 40, "ts": NOW - 8 * 86400,
+                                            "basis": TX_COST_BASIS})  # fmt: skip
         assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.0047, "per_tx_source": "last measured",
                                              "per_tx_measured_at": NOW - 8 * 86400}  # fmt: skip
         week = {"arm": "control", "n": 12, "failed_n": 3, "mean_fee_sol": 0.003, "mean_overhead_sol": 0.002,
@@ -1236,5 +1237,25 @@ def test_qualify_runs_beside_one_lab_on_a_two_slot_machine_and_is_owed_a_slot_wh
         out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda wallets, pos: calls.append(wallets) or [])
         assert out["deferred"] is False and calls == [["W1"]]  # it ran beside the other lab
         assert lab_lock.wanted(data) is None  # and nobody is owed a slot on its account any more
+    finally:
+        st.close()
+
+
+def test_a_cost_kept_before_the_low_bid_was_told_from_other_bids_is_not_charged():
+    """14 Nov: the cost kept on the server (measure:tx_cost) was 0.00934 SOL a transaction, measured on 31 buys of
+    which four were a tip test at 0.035 SOL a buy, with 54 failed sends of one USDC swap in its overhead. Since the
+    measure stage tells those apart the low bid has 27 buys in its week, too few to measure, and the labs would go on
+    charging the kept 0.00934 for as long as that lasts. A kept cost says how it was counted (`basis`); one counted the
+    old way is not charged: the estimate is, until the low bid is measured again."""
+    from snipetech.qualify.run import TX_COST_BASIS, lab_tx_cost_info
+
+    st, cfg = Store(":memory:"), Config()
+    try:
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.00934, "arm": "control", "n": 31, "ts": NOW - 3600})
+        assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.0045, "per_tx_source": "estimate",
+                                             "per_tx_measured_at": None}  # fmt: skip
+        st.set_coverage("measure:tx_cost", {"per_tx_sol": 0.0043, "arm": "control", "n": 31, "ts": NOW - 60,
+                                            "basis": TX_COST_BASIS})  # fmt: skip
+        assert lab_tx_cost_info(st, cfg)["per_tx_source"] == "last measured"
     finally:
         st.close()

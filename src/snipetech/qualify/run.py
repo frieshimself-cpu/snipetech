@@ -44,6 +44,10 @@ LOW_BID_ARM = "control"
 # the low bid's last measured cost a transaction, kept by the measure stage (measure.run) whenever its bid model
 # has enough fills: {"per_tx_sol", "arm", "n", "ts"}
 TX_COST_KEY = "measure:tx_cost"
+# How a kept cost was counted. 2 (14 Nov): on the low bid's own buys (a fill sent far above the arm's bid is another
+# bid's, measure.classify.OTHER_BID) and on failed sends on coins (measure.run.on_coins). A record without it was
+# counted the old way (the server's 0.00934 held four tip-test buys and 54 failed sends of one USDC swap): not charged.
+TX_COST_BASIS = 2
 
 
 def measured_tx_cost(row: dict | None, cfg: Config) -> float | None:
@@ -61,7 +65,8 @@ def lab_tx_cost_info(store, cfg: Config, arm: str = LOW_BID_ARM) -> dict[str, An
     "per_tx_source", "per_tx_measured_at"}.
 
     "measured": the low bid has `[measure] min_arm_fills` fills in the bid model's 7 days (measured_tx_cost).
-    "last measured": it has fewer now, and the measure stage kept the last cost it measured (TX_COST_KEY). The bid model
+    "last measured": it has fewer now, and the measure stage kept the last cost it measured (TX_COST_KEY), counted as
+    it is counted now (TX_COST_BASIS; a cost kept before 14 Nov is not charged). The bid model
     reads only the last 7 days, and a week without trading empties it (7 Nov 10:59 the wallet was emptied and nothing
     has traded since): every lab, freeze and qualify run then fell back to the flat 0.0035 (review of 7 Nov evening).
     "estimate": nothing measured here yet, LIVE_TX_SOL. A lab charged below what a trade costs live flatters every rule,
@@ -75,7 +80,8 @@ def lab_tx_cost_info(store, cfg: Config, arm: str = LOW_BID_ARM) -> dict[str, An
         return {"per_tx_sol": cost, "per_tx_source": "measured", "per_tx_measured_at": (row or {}).get("updated_at")}
     try:
         kept = store.coverage(TX_COST_KEY) or {}
-        sol = float(kept["per_tx_sol"]) if kept.get("arm", LOW_BID_ARM) == arm else None
+        ours = kept.get("arm", LOW_BID_ARM) == arm and kept.get("basis") == TX_COST_BASIS
+        sol = float(kept["per_tx_sol"]) if ours else None
     except Exception:  # noqa: BLE001 - nothing kept, or nothing readable: what a live transaction costs, estimated
         sol = None
     if sol is not None and math.isfinite(sol) and sol > 0:

@@ -22,7 +22,15 @@ from ..positions import NON_COIN_MINTS
 from ..solana.programs import PUMP_AMM_PROGRAM
 from ..store import Store
 from .chain_landing import fill_fields, known_mates, own_wallets, read_fill, read_landing, wallet_signatures
-from .classify import arm_from_fee, classify_trade, copy_sniper_rows, leaders_at, pair_round_trips, snipers_at
+from .classify import (
+    OTHER_BID,
+    arm_from_fee,
+    classify_trade,
+    copy_sniper_rows,
+    leaders_at,
+    pair_round_trips,
+    snipers_at,
+)
 from .exits import (
     SHADOW_AFTER_SECS,
     buying_sniper,
@@ -90,7 +98,18 @@ def wallet_live_rows(trips: list[dict], now: float, half_life_days: float,
     return sorted(out, key=lambda r: -r["mean_sol"])
 
 
+def on_coins(failed: list[dict]) -> list[dict]:
+    """The failed sends that were on a coin, or on nothing that is known: a send that failed on a dollar coin or
+    wrapped SOL (positions.NON_COIN_MINTS) is no bid's overhead. No lab scores a non-coin, and the book makes no sniper
+    for a wallet that trades one (qualify/non_coin.py), so charging every coin's transaction for them charges a cost a
+    rule does not have (14 Nov: 50 failed sends of one USDC swap were 37 % of the low bid's overhead for a week)."""
+    return [f for f in failed if f.get("mint") not in NON_COIN_MINTS]
+
+
 def bid_model_rows(buys: list[dict], failed: list[dict], now: float) -> list[dict[str, Any]]:
+    """One row per bid arm from its landed buys and its failed sends on coins (`on_coins`). A fill sent at another bid
+    than any arm's is its own row (classify.OTHER_BID), so an arm's fee and place are those of its own bid."""
+    failed = on_coins(failed)
     arms = sorted({b.get("bid_arm") or "control" for b in buys} | {f.get("bid_arm") or "control" for f in failed})
     out = []
     for arm in arms:
@@ -150,13 +169,13 @@ def keep_tx_cost(store: Store, cfg: Config, arms: list[dict[str, Any]], now: flo
     week without trading empties it and prunes its rows: the labs then charge this last measured cost
     (qualify.run.lab_tx_cost_info), never an unmeasured one (review of 7 Nov evening: they fell back to the flat 0.0035,
     0.002 SOL a trade too kind)."""
-    from ..qualify.run import LOW_BID_ARM, TX_COST_KEY, measured_tx_cost
+    from ..qualify.run import LOW_BID_ARM, TX_COST_BASIS, TX_COST_KEY, measured_tx_cost
 
     row = next((a for a in arms if a.get("arm") == LOW_BID_ARM), None)
     cost = measured_tx_cost(row, cfg)
     if cost is None:
         return None
-    rec = {"per_tx_sol": cost, "arm": LOW_BID_ARM, "n": int(row["n"]), "ts": int(now)}
+    rec = {"per_tx_sol": cost, "arm": LOW_BID_ARM, "n": int(row["n"]), "ts": int(now), "basis": TX_COST_BASIS}
     store.set_coverage(TX_COST_KEY, rec)
     return rec
 
@@ -788,7 +807,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
         store.put_wallet_live(row)
     store.prune_wallet_live([row["wallet"] for row in live])
     landing = None
-    best = max(arms, key=lambda a: a["n"], default=None)
+    best = max((a for a in arms if a["arm"] != OTHER_BID), key=lambda a: a["n"], default=None)  # an arm, not a mix
     if best and best["n"] >= m.min_arm_fills:
         behind = sorted(int(b["trades_behind"]) for b in all_buys if (b.get("bid_arm") or "control") == best["arm"]
                         and b.get("trades_behind") is not None)  # fmt: skip
@@ -806,6 +825,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
             "arms": {a["arm"]: {"n": a["n"], "failed_n": a["failed_n"], "p75_pos": a["p75_pos"], "mean_gap_pct": a["mean_gap_pct"]} for a in arms},
             "wallets_live": len(live), "landing_pos": landing, "window": [int(since_ts), until_ts],
             "from_chain": from_chain, "non_coin_buys": non_coins,
+            "non_coin_failed": len(all_failed) - len(on_coins(all_failed)),
             "exits": exit_reason_counts(store, look), "crossed": crossed_sells(store, look)["crossed"],
             "twin_fee_sol": round(sum(twins.values()), 6), "shadowed": shadowed,
             "landing_by_progress": landing_by_progress(all_buys), "twins_per_sell": per_sell, "sells_per_buy": split}  # fmt: skip

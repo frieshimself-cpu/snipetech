@@ -474,6 +474,7 @@ def test_the_low_bids_last_measured_cost_outlives_the_bid_models_week(tmp_path):
     svc, st, cfg = _svc(tmp_path)
     try:
         cfg.measure.min_arm_fills = 3
+        cfg.book.bid_arms = {"control": {"priority": 0.003, "tip": 0.002}}  # the low bid these buys were sent at
         sigs = _copy_world(st, coins=3)
         metas = {b: _meta(b, priority=3_000_000) for b, _ in sigs}  # 0.003 priority + 0.002 tip + base: 0.005005 a buy
         asyncio.run(
@@ -481,7 +482,8 @@ def test_the_low_bids_last_measured_cost_outlives_the_bid_models_week(tmp_path):
         )
         assert lab_tx_cost_info(st, cfg) == {"per_tx_sol": 0.005005, "per_tx_source": "measured",
                                              "per_tx_measured_at": NOW}  # fmt: skip
-        assert st.coverage("measure:tx_cost") == {"per_tx_sol": 0.005005, "arm": "control", "n": 3, "ts": NOW}
+        assert st.coverage("measure:tx_cost") == {"per_tx_sol": 0.005005, "arm": "control", "n": 3, "ts": NOW,
+                                                  "basis": 2}  # fmt: skip
         later = NOW + 8 * 86400  # a week and a day without a fill
         asyncio.run(run_measure(svc, cfg, later, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
         assert st.bid_model() == []  # nothing in the window: every row pruned
@@ -1081,5 +1083,80 @@ def test_a_buy_of_a_stablecoin_is_reported_by_the_run_and_said_once(tmp_path):
                                       failed_sigs=_no_failed, notes=notes))  # fmt: skip
         assert out["non_coin_buys"]["n"] == 1
         assert len([1 for _kind, text in notes.lines if "not a coin" in text]) == 1
+    finally:
+        st.close()
+
+
+def test_the_low_bids_cost_rests_on_fills_at_that_bid_and_on_coins():
+    """14 Nov: the cost of a transaction every lab charges (qualify.run.measured_tx_cost of the low bid's row) stood at
+    0.00934 SOL, twice the 0.0042 of 11 Nov, with no change of the bid. Its 31 buys held four of a tip test at 0.035
+    SOL a buy, and its 111 failed sends held 54 of one incident (a copied wallet swapped into USDC; the book refuses
+    such wallets since). A buy at another bid is another row's, and a failed send on a non-coin is no bid's overhead:
+    no lab scores a non-coin."""
+    from snipetech.measure.classify import OTHER_BID
+    from snipetech.measure.run import bid_model_rows
+    from snipetech.qualify.run import measured_tx_cost
+
+    usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+    buys = [{"bid_arm": "control", "priority_lamports": 1_000_000, "tip_lamports": 2_000_000} for _ in range(27)]
+    buys += [{"bid_arm": OTHER_BID, "priority_lamports": 5_000_000, "tip_lamports": 30_000_000} for _ in range(4)]
+    failed = [{"bid_arm": "control", "priority_lamports": 1_000_000, "mint": addr("coin")} for _ in range(10)]
+    failed += [{"bid_arm": "control", "priority_lamports": 1_000_000, "mint": None} for _ in range(2)]  # unknown coin
+    failed += [{"bid_arm": "control", "priority_lamports": 967_000, "mint": usdc} for _ in range(50)]
+    failed += [{"bid_arm": OTHER_BID, "priority_lamports": 5_000_000, "mint": addr("coin")} for _ in range(3)]
+    rows = {r["arm"]: r for r in bid_model_rows(buys, failed, NOW)}
+    low = rows["control"]
+    assert low["n"] == 27 and low["failed_n"] == 12
+    assert low["mean_fee_sol"] == round((1_000_000 + 2_000_000 + 5000) / 1e9, 6)
+    assert low["mean_overhead_sol"] == round(12 * (1_000_000 + 5000) / 1e9 / 27, 6)
+    assert rows[OTHER_BID]["n"] == 4 and rows[OTHER_BID]["failed_n"] == 3
+    cfg = Config()
+    assert measured_tx_cost(low, cfg) is None  # 27 buys at the low bid: under [measure] min_arm_fills, not measured
+    cfg.measure.min_arm_fills = 27
+    cost = measured_tx_cost(low, cfg)  # flat cost floor 0.0035: 0.003229 measured
+    assert round((2 * low["mean_fee_sol"] + low["mean_overhead_sol"]) / 2, 6) == 0.003229 and cost == 0.0035
+
+
+def test_a_stored_buy_at_another_bid_leaves_the_low_bids_row_on_a_backfill(tmp_path):
+    """The repair of the rows already stored: `measure backfill` over the hour of the tip test reads each buy's arm
+    again from its fee. The test buy leaves the low bid's row, and the run says how many failed sends were on
+    non-coins."""
+    from snipetech.measure.classify import OTHER_BID
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.book.bid_arms = {"control": {"priority": 0.001, "tip": 0.002}}  # as the server's settings hold them
+        sigs = _copy_world(st, coins=2)
+        metas = {sigs[0][0]: _meta(sigs[0][0]), sigs[1][0]: _meta(sigs[1][0], priority=5_000_000, tip=30_000_000)}
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                      failed_sigs=_no_failed))  # fmt: skip
+        assert out["arms"]["control"]["n"] == 1 and out["arms"][OTHER_BID]["n"] == 1 and out["non_coin_failed"] == 0
+        assert st.fill(sigs[1][0])["bid_arm"] == OTHER_BID
+        st._exec("UPDATE fills SET bid_arm='control'")  # as the code before 14 Nov stored them
+        usdc = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+        st.put_fill({"sig": "USDC1", "ts": NOW - 600, "slot": SLOT + 9000, "wallet": ME, "side": "failed", "sol": 0.0,
+                     "tokens": 0.0, "mint": usdc, "bid_arm": "control", "priority_lamports": 967_000})  # fmt: skip
+        out = asyncio.run(backfill(svc, cfg, NOW - 7200, NOW, ensure_meta=_ensure(st, metas), failed_sigs=_no_failed))
+        assert st.fill(sigs[1][0])["bid_arm"] == OTHER_BID and st.fill(sigs[0][0])["bid_arm"] == "control"
+        model = {r["arm"]: r for r in st.bid_model()}
+        assert model["control"]["n"] == 1 and model["control"]["mean_fee_sol"] == 0.003005
+        assert model["control"]["failed_n"] == 0 and out["non_coin_failed"] == 1
+    finally:
+        st.close()
+
+
+def test_buys_at_another_bid_never_set_the_measured_landing(tmp_path):
+    """The landing the qualify stage measures at is where the busiest ARM's buys land. Buys sent at some other bid (a
+    tip test) are a mix of bids, not an arm: however many there are, they set no landing."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 3
+        cfg.book.bid_arms = {"control": {"priority": 0.001, "tip": 0.002}}
+        sigs = _copy_world(st, coins=3)
+        metas = {b: _meta(b, priority=5_000_000, tip=30_000_000) for b, _ in sigs}
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200, ensure_meta=_ensure(st, metas),
+                                      failed_sigs=_no_failed))  # fmt: skip
+        assert out["arms"]["other"]["n"] == 3
+        assert out["landing_pos"] is None and not st.coverage("measure:landing_pos")
     finally:
         st.close()

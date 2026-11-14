@@ -108,7 +108,7 @@ def test_a_deployer_is_scored_at_what_a_transaction_costs_live():
         rep = asyncio.run(svc.analyze_deployer(dev, refresh=False, optimize=False))
         assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(LIVE_TX_SOL)
         cheap = rep["your_strategy"]["mean"]
-        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.0142, "arm": LOW_BID_ARM, "n": 75, "ts": now})
+        store.set_coverage(TX_COST_KEY, {"per_tx_sol": 0.0142, "arm": LOW_BID_ARM, "n": 75, "ts": now, "basis": 2})
         rep = asyncio.run(svc.analyze_deployer(dev, refresh=False, optimize=False))
         assert rep["settings"]["per_tx_cost_sol"] == pytest.approx(0.0142)
         # two transactions a snipe, each 0.0097 SOL dearer than before
