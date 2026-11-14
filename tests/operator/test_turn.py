@@ -1593,10 +1593,12 @@ _TWO_TABLES = ("# OKTech features (features analyst), 14 Nov 07:50 UTC\n\nNo rul
 def test_a_new_row_for_the_second_table_is_written_there_in_one_request(env):
     """The reviewer's proof (F1): a new three-cell row for the second table of oktech-facts landed at the end of the
     FIRST table, was answered "it is written so, send it again", and four requests later stood there still. Said to
-    be new, it goes to the table that has its three cells, and the turn ends at the journal's headline."""
+    be new and placed behind a row of that table (round 5: a new row without a place goes to the first table only),
+    it is written there, and the turn ends at the journal's headline."""
     p = env["paths"].root / "oktech-facts.md"
     p.write_text(_TWO_TABLES)
-    row = {"key": "9L5aWu", "text": "| 9L5aWu | fresh wallet; sells in one sale within 40 s | I173 |", "new": True}
+    row = {"key": "9L5aWu", "text": "| 9L5aWu | fresh wallet; sells in one sale within 40 s | I173 |", "new": True,
+           "after": "YJFQNK"}
     entry = {"name": "oktech-journal-2026-11-06", "text": "## 01:00\n\nthe turn.", "headline": "9L5aWu sells once"}
     handler, requests = _scripted(_calls(("update_table", {"rows": [row]}), ("write_report", entry)),
                                   ([{"type": "text", "text": "closing"}], "end_turn"))  # fmt: skip
@@ -1606,7 +1608,7 @@ def test_a_new_row_for_the_second_table_is_written_there_in_one_request(env):
     assert lines.index(row["text"]) == lines.index("| YJFQNK | 8 of 39 buys on LaunchLab | I164 |") + 1
     # not said to be new, it is not written anywhere, and the model reads why before the turn ends
     p.write_text(_TWO_TABLES)
-    del row["new"]
+    del row["new"], row["after"]
     again = entry | {"text": "again"}
     handler, requests = _scripted(_calls(("update_table", {"rows": [row]}), ("write_report", again)),
                                   ([{"type": "text", "text": "closing"}], "end_turn"))  # fmt: skip
@@ -1749,3 +1751,30 @@ def test_a_cut_counts_once_in_calls_failed(env):
     assert T._calls_failed(response(cut), uses("upsert_idea")) is True
     assert T._calls_failed(response(cut), uses("upsert_idea"), cuts=False) is False
     assert T._calls_failed(response(cut), uses("read_job_log")) is False  # a reading tool's text is not a write's cut
+
+
+# -- round 5 (14 Nov, 22:50) ------------------------------------------------------------------------------------------
+
+
+def test_a_cut_headline_does_not_keep_the_turn_open(env):
+    """F10: a headline over the note's length kept the turn open for a reply in which nothing could be done (the
+    note is written; write_note answered "written already"). The note's shortening is said without CUT_NOTE."""
+    (env["paths"].root / "scout-facts.md").write_text(_SCOUT7)
+    handler, requests = _scripted(_calls(_entry("scout", headline="x " * 400)),
+                                  _calls(("write_note", {"text": "shorter note"})), _CLOSING)  # fmt: skip
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    assert len(requests) == 1 and out["ended_at"] == "note" and "shortened to 700" in _answers(env)[0]
+
+
+def test_a_journal_entry_resent_without_its_headline_in_the_repair_stands_once(env):
+    """F7 through the turn: the repair reply sent the entry again without its headline; it stood twice."""
+    p = env["paths"].root / "scout-facts.md"
+    p.write_text(_SCOUT7)
+    bad = ("update_table", {"rows": [{"key": "HjuSth", "text": "| HjuSth | x |"}]})
+    good = ("update_table", {"rows": [{"key": "HjuSth", "text": "| HjuSth | scalper | 7 d | gap | no | cand | SQL |"}]})
+    e = _entry("scout")
+    handler, requests = _scripted(_calls(bad, e), _calls(good, ("write_report", {"name": e[1]["name"],
+                                                                                  "text": e[1]["text"]})), _CLOSING)
+    out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
+    journal = (env["paths"].root / f"scout-journal-{_DAY}.md").read_text()
+    assert journal.count("what the turn did.") == 1 and len(requests) == 2 and out["ended_at"] == "note"

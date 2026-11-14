@@ -1320,8 +1320,9 @@ def test_role_note_is_info_and_one_a_turn(rolebox):
     assert line == "- 2026-11-06T00:00:00Z [info] fees: place +0 behind Cupsey is worth 0.21 SOL at 2 SOL (n 41)"
     # round 2 (14 Nov): said without "error", which asked the model for one more reply after its note
     assert _call(note, text="and one more") == "this turn's note is written already: nothing to add"
-    with pytest.raises(ValueError, match="Invalid arguments"):  # no such argument: the call never runs
-        _call(tools("fees")["write_note"], text="x", level="decision")
+    # no such argument: the call never runs (round 5: answered in words, not with the SDK's ValueError)
+    out = _call(tools("fees")["write_note"], text="x", level="decision")
+    assert out.startswith("error: not done: write_note takes no level")
     assert sink.decisions == [] and paths.notes.read_text().count("\n") == 1
     assert _call(tools("scout")["write_note"], text="the wallet can't pay a buy").startswith("error")  # not its subject
 
