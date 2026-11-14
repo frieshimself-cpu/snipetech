@@ -1687,7 +1687,8 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         without the coins of the crews known at the time (from 9 Nov on; a crew is known once its third coin has
         launched): it keeps its id and its trades, its label says "(without serial crews' coins)", the paper report
         lists it under "Research records" with research_only and a short exit_note (the reason once, under
-        research_only_why), it is not in paper_top (paper_research_only counts them), it is never "at our landing" or
+        research_only_why), the analyst's paper_top leaves it out (paper_research_only counts them), it is never "at our
+        landing" or
         "passed", and it is no evidence for a live test. For an as-live record freeze the same trigger again without a
         crew field: a new rule with a new id, from zero trades. A rule refuted in the last 7 days without crews' coins
         is not frozen again as the default (the freeze says so under skipped): on every coin it also buys the crews'

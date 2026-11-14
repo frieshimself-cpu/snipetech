@@ -775,6 +775,35 @@ def test_a_stalled_idea_is_told_again_after_the_idle_wait_with_the_table_switch_
     assert off(2700 - R.SLACK_SECS) == (True, stalled) and off(2700) == (True, stalled)
 
 
+def test_a_stalled_idea_is_told_twice_and_then_left_to_the_three_hour_look(box):
+    """The final review of 14 Nov: told again every 45 minutes for as long as the idea stands, the scout, the tester
+    and the fee analyst were each called 32 times on a quiet day instead of 8 (their ideas wait for forward trades and
+    say so). The stall is told at the next round and once more after the idle wait; then only a turn that starts a
+    job or closes an idea brings the call back. A mark that is no number (a hand edit) never raises."""
+    idea = _idea(box.paths, "scout", "who leads this wallet", by="scout", now=NOW - 2 * H, status="testing")
+    _state(box.paths, "scout", last=NOW - 900, idle=0, seen=R.seen("scout", box.store), stalled_told="yes")
+    stalled = f"your idea {idea} is in testing and no job of yours runs: start its next job or close it with its result"
+    assert _due(box, "scout") == (True, stalled)  # a mark nobody can read is no mark
+    assert box.run("scout")["why"] == stalled and R.read_state(box.paths)["scout"]["stalled_n"] == 1
+    assert _due(box, "scout", NOW + 1800) == (False, "nothing new")
+    assert box.run("scout", now=NOW + 2700)["why"] == stalled
+    state = R.read_state(box.paths)["scout"]
+    assert state["stalled_n"] == 2 and state["stalled_told"] == NOW + 2700
+    for later in range(900, 3 * H - 600, 900):  # every round until the three-hour look: not for the idea
+        due, why = _due(box, "scout", NOW + 2700 + later)
+        assert not why.startswith(R.STALLED) and (not due or later >= 3 * H - R.SLACK_SECS), (later, why)
+    assert _due(box, "scout", NOW + 2700 + 3 * H)[1] == "three quiet hours since its last turn"
+    # a turn that starts a job clears the count: the next stall is told again, twice
+    t = NOW + 2700 + 3 * H
+    box.acts[:] = [lambda jobs: (R.record_test(box.paths, t + 10, "scout", idea, "j2", ["winners", "--json"]),
+                                 _job(box.data, "j2", ["winners", "--json"], t + 10, ended=t + 40),
+                                 R.note_job_read(box.paths, "scout", "j2", t + 60, "its result"))]  # fmt: skip
+    assert box.run("scout", now=t)["ran"]
+    state = R.read_state(box.paths)["scout"]
+    assert "stalled_n" not in state and "stalled_told" not in state
+    assert _due(box, "scout", t + 900) == (True, stalled)
+
+
 def test_a_job_a_cut_turn_was_called_for_is_told_again_once(box):
     """A turn whose last reply stopped at the output cap forgets what it read (it did not finish with it), but its
     start time is kept as the role's last turn: the job it was called for ended before that and was never told again.
@@ -815,8 +844,44 @@ def test_an_idea_for_the_cloud_session_or_the_owner_opened_in_the_turn_is_work(b
         assert not R._worked(box.paths, "scout", started)["handed"]  # somebody else's
         started += 100
     # its own research idea, opened and left in its own queue, is still not work
-    _idea(box.paths, "oktech", "one for itself", by="oktech", now=started + 30)
+    own = _idea(box.paths, "oktech", "one for itself", by="oktech", now=started + 30)
     assert not R._worked(box.paths, "oktech", started)["handed"]
+    # ... until a later turn does what its rules say for a test its commands cannot run: writes what is missing into
+    # the idea and sets its kind to code, which hands it to the cloud session
+    started += 100
+    learning.upsert_idea(box.paths, {"id": own, "test": "needs a command that lists a wallet's tips", "kind": "code"},
+                         source="oktech", now=started + 30, role="oktech")  # fmt: skip
+    assert R._worked(box.paths, "oktech", started)["handed"]
+    started += 100
+    learning.upsert_idea(box.paths, {"id": own, "why": "said again"}, source="oktech", now=started + 30, role="oktech")
+    assert not R._worked(box.paths, "oktech", started)["handed"]  # an update of an idea already handed on is none
+
+
+def test_ideas_for_nobodys_queue_do_not_keep_a_role_busy_for_ever(box):
+    """Nobody's queue (kind code, config, live-test) has no limit, so one such idea a turn kept a role "not idle" for
+    good: 96 turns and 96 open ideas in a day. An idea opened already closed is no hand-on, and while more than
+    NOBODY_OPEN of the role's ideas wait there, another one is no work."""
+    started = NOW
+
+    def add(n, **over):
+        return learning.upsert_idea(box.paths, {"title": f"missing tool {n}", "why": "w", "test": "t", "expected": "e",
+                                                "kind": "code", **over}, source="oktech", now=started + 30)  # fmt: skip
+
+    add(0, status="rejected")
+    assert not R._worked(box.paths, "oktech", started)["handed"]
+    for n in range(1, R.NOBODY_OPEN + 1):
+        started += 100
+        add(n)
+        assert R._worked(box.paths, "oktech", started)["handed"], n
+    started += 100
+    last = add(R.NOBODY_OPEN + 1)
+    assert not R._worked(box.paths, "oktech", started)["handed"]
+    # the cloud session closes two: the next one counts again
+    for iid in ("I2", "I3"):
+        learning.upsert_idea(box.paths, {"id": iid, "status": "adopted"}, source="cloud", now=started + 40)
+    started += 100
+    add(R.NOBODY_OPEN + 2)
+    assert last and R._worked(box.paths, "oktech", started)["handed"]
 
 
 def test_a_job_that_was_killed_or_lost_in_a_restart_is_told(box, tmp_path):

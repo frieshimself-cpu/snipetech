@@ -352,6 +352,9 @@ def upsert_idea_detail(
             elif acting and idea["kind"] == "research":  # a role's own research idea is its own queue's
                 idea["role"] = acting
             ideas.append(idea)
+        if acting and before is not None and before.get("kind") == "research" and idea.get("kind") != "research":
+            # a role set an idea of its own queue to a kind that waits for the cloud session or the owner: a hand-on
+            idea.update(handed_on=ts, handed_by=acting)  # (roles._worked counts it as the turn's work)
         if idea.get("kind") in ALWAYS_OWNER:
             idea["owner_needed"] = True
         queue = role_of(idea) if idea.get("status") in OPEN else None

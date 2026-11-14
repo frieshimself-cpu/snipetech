@@ -273,7 +273,8 @@ its last line how to read on). A job whose result you have read after it ended d
 read without key, fields, first, last or skip; any other log read with the default tail or more), and a label job
 never does: go on with what it showed in this same turn, with the next job or by closing the idea. An idea left in
 testing with no job of yours running calls you once, at the next round: start its next job or close it with its
-result; if that turn does neither, the next call for it comes 45 minutes later. (2) Test: start the job for the
+result; if that turn does neither, you are called for it once more, at the earliest 45 minutes later, and then no
+more until a turn of yours moves it. (2) Test: start the job for the
 first idea of your queue that is not tested yet, or close an idea with its status and its result (upsert_idea: result
 holds the numbers that decided it; test stays how it was tested; list_ideas shows one line an idea, id gives one
 whole). When your commands cannot run an idea's test, write what is missing into its test and set its kind to code,

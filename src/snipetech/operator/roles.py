@@ -608,8 +608,9 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     """Whether a turn of `role` runs now, and why (or why not). It runs when one of these holds: it has never run; a
     job it started (or waits for: `join_test`) has ended since its last turn and it has not read it since
     (`note_job_read`; a `label` job that ended well is never news); it was handed an idea since then; none of its jobs
-    runs and its queue holds an idea nobody tested, or, once an idle wait, an idea in testing (`STALLED`); another role's table
-    changed since then (only while `wake_on_table`: the owner's switch, `start_rules`); its own news arrived
+    runs and its queue holds an idea nobody tested, or an idea in testing (`STALLED`: told twice, an idle wait apart);
+    another role's table changed since then (only while `wake_on_table`: the owner's switch, `start_rules`); its own
+    news arrived
     (`_news`); or three hours have passed. After IDLE_TURNS turns in a row that did no work (`_idle_after`) it waits
     IDLE_WAIT_SECS from its last turn's start, less the round's slack, unless a job of its own has ended or an idea
     was handed to it.
@@ -649,8 +650,11 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     if waiting and not job_runs:
         return True, f"not tested yet: {waiting[0].get('id')}"
     testing = [i for i in queue if i.get("status") == "testing" and not i.get("owner_needed")]
-    told = state.get("stalled_told")  # told once; again when the idle wait has passed and it still stands
-    if testing and not job_runs and (not told or now - float(told) >= IDLE_WAIT_SECS - SLACK_SECS):
+    # told at the next round and once more when the idle wait has passed (`STALLED_TELLS`); then the three-hour look
+    told = state.get("stalled_told")
+    told = told if isinstance(told, (int, float)) and not isinstance(told, bool) and told == told else None
+    again = int(state.get("stalled_n") or 0) < STALLED_TELLS
+    if testing and not job_runs and (told is None or (again and now - told >= IDLE_WAIT_SECS - SLACK_SECS)):
         return True, f"{STALLED} {testing[0].get('id')} is in testing and no job of yours runs: {STALLED_DO}"
     for other in ROLES if wake_on_table else ():
         if other != role:
@@ -672,10 +676,13 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
 # An idea in testing whose job the role read inside the turn that started it calls nobody: the job is read, the idea is
 # not "not tested yet", and a table is written only when a row differs (14 Nov review: the next job of a chain was
 # started in exactly the turns that lose their reason). The role is called for it once (`role_due`); a turn that then
-# starts no job and closes no idea is not called for it again until the idle wait has passed since (`stalled_told` in
-# its state: when it was told; cleared by a turn that does one of the two: `run_role`). Without that second call a role
-# with the owner's table switch off was left alone for three hours with its idea standing still.
+# starts no job and closes no idea is called for it once more when the idle wait has passed since (`stalled_told` in
+# its state: when it was told; `stalled_n`: how often in a row; both cleared by a turn that does one of the two:
+# `run_role`). Without that second call a role with the owner's table switch off was left alone for three hours with
+# its idea standing still; told every 45 minutes for as long as the idea stands, the scout, the tester and the fee
+# analyst were each called 32 times on a quiet day instead of 8, for ideas that wait for forward trades and say so.
 STALLED = "your idea"
+STALLED_TELLS = 2
 STALLED_DO = "start its next job or close it with its result"
 
 
@@ -774,9 +781,32 @@ def _worked(paths: OperatorPaths, role: str, started: float) -> dict[str, bool]:
                       and learning.role_of(i) == role and not mine_now(i) for i in ideas),
         "lesson": any(x.get("source") == role and learning._epoch(x.get("ts")) >= since
                       for x in learning.read_lessons(paths, LESSONS_LOOKED)),
-        # to another role, or (an idea of kind code, config or live-test) to the cloud session or the owner
-        "handed": any(mine_now(i) and learning.role_of(i) != role for i in ideas),
+        "handed": any(mine_now(i) and learning.role_of(i) in ROLES and learning.role_of(i) != role for i in ideas)
+        or _handed_out(ideas, role, since),
     }  # fmt: skip
+
+
+NOBODY_OPEN = 5  # a role's open ideas in nobody's queue up to which one more of them is work
+
+
+def _handed_out(ideas: list[dict[str, Any]], role: str, since: int) -> bool:
+    """Whether the role handed an idea to the cloud session or the owner since `since`: it opened one of kind code,
+    config or live-test (nobody's queue), or set an older idea of its own queue to such a kind, which is what its
+    rules say for a test its commands cannot run (`learning.upsert_idea_detail` stamps that as `handed_on`). An idea
+    opened already closed is none, and neither is one more while over NOBODY_OPEN of the role's ideas wait there
+    open: that queue has no limit, and one idea a turn kept a role "not idle" for good."""
+    from . import learning
+
+    def out(i):
+        return learning.role_of(i) is None and i.get("status") in learning.OPEN and (
+            i.get("source") == role or i.get("handed_by") == role)  # fmt: skip
+
+    def now(i):
+        at = i.get("handed_on") if i.get("handed_by") == role else i.get("created") if i.get("source") == role else None
+        return at is not None and learning._epoch(at) >= since
+
+    waiting = [i for i in ideas if out(i)]
+    return len(waiting) <= NOBODY_OPEN and any(now(i) for i in waiting)
 
 
 LESSONS_LOOKED = 50  # the newest lessons looked through for one of the turn's own
@@ -892,12 +922,13 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
             did = _worked(paths, role, t0)
             # called for an idea in testing with no job running: a turn that starts no job and closes no idea is not
             # called for it again; one that does either clears the mark, so the next stall is told once more
-            told = None if did["job"] or did["closed"] else int(t0) if reason.startswith(STALLED) else state.get(
-                "stalled_told")  # fmt: skip
+            moved, called = did["job"] or did["closed"], reason.startswith(STALLED)
+            told = None if moved else int(t0) if called else state.get("stalled_told")
+            told_n = None if moved else int(state.get("stalled_n") or 0) + 1 if called else state.get("stalled_n")
             idle = 0 if any(did.values()) else int(state.get("idle") or 0) + 1
             update_state(paths, role, usd=result.get("usd"), tool_calls=result.get("tool_calls"),
                          stopped=result.get("stopped"), idle=idle,
-                         turns=turns, day=day, seen=saw, spent_usd=spent, stalled_told=told,
+                         turns=turns, day=day, seen=saw, spent_usd=spent, stalled_told=told, stalled_n=told_n,
                          retell_from=state.get("last") if unfinished else None,
                          share_usd=round(role_share_usd(cfg, paths, role), 2))  # fmt: skip
         _log(paths, now(), f"agent {role}: done: {json.dumps(result, default=str)}")
