@@ -929,11 +929,12 @@ def change_table(text: str, rows: Iterable[Any] = (), drop: Iterable[Any] = (), 
             shifted(at, 1)
             written.append(at)
             continue
-        if not side and not new:  # no such row, and the call does not say it is a new one
+        if not new:  # no such row, and the call does not say it is a new one (with a place or without: a row meant
+            # to be moved and keyed a little off was added beside the one meant, the read of round 6)
             alike = [_whole(c) for c in _alike(lines, key)][:4]
             wrong.append(f"no row {k}" + (f" (rows that start alike: {_quoted(alike)})" if alike else "")
-                         + ': nothing was written; to add it send it with "new": true (or "after"/"before"); to change '
-                         "a row give its first cell as it is now")  # fmt: skip
+                         + ': nothing was written; to add it send it with "new": true (and "after"/"before" for a '
+                         "place); to change or move a row give its first cell as it is now")  # fmt: skip
             continue
         tables = _blocks(lines)
         if not tables:
@@ -2203,7 +2204,7 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
             return redact(f"error: {type(exc).__name__}: {exc}")
 
     noted: list[str] = []  # who wrote this turn's note: "headline" (the journal entry's) or "note" (write_note)
-    headlines: list[str] = []  # this turn's headline as its journal entry ends with it ("In short: ...")
+    entries: list[str] = []  # the journal entries this turn wrote, each without its "In short: ..." line
     table_file = paths.report(table)
     born = time.strftime("%Y-%m-%d", time.gmtime(notes.now()))  # the day the turn began: its journal's, past midnight
 
@@ -2364,7 +2365,6 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         body = text.rstrip("\n")  # the entry without its "In short:" line
         if said and not wallet:  # the entry closes with its headline: the finding is written once
             text = (text.rstrip("\n") + "\n\n" if text.strip() else "") + f"In short: {said}"
-            headlines.append(said)  # also after a write_note (round 6)
         if not text.strip():
             why = ("the headline speaks of what the wallet can pay, which is not your role's subject" if wallet
                    else "give the entry's text, a headline, or both")  # fmt: skip
@@ -2372,20 +2372,22 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
         text += "" if text.endswith("\n") else "\n"
         old = p.read_text(errors="replace") if p.exists() else None
         tail, entry = (old or "").rstrip("\n"), text.rstrip("\n")
-        ends = [entry, *(f"{entry}\n\nIn short: {x}" for x in headlines)]  # sent again without its headline too
-        if body.strip():  # sent again with another headline, or without one, in this turn (round 6)
-            ends += [body, *(f"{body}\n\nIn short: {x}" for x in headlines)]
-        if old is not None and any(tail == e or tail.endswith("\n" + e) for e in ends):  # whole lines
-            # the entry sent again beside the repair of a refused call (round 4, 14 Nov: it stood twice): the
-            # journal has it; the headline goes its way below
-            did = "the journal ends with this entry already: not written again"
+        mine = body if body.strip() else entry  # what this turn's entries are known by: the text without a headline
+        # Sent again beside the repair of a refused call (round 4, 14 Nov: it stood twice), with its headline, a
+        # reworded one or none: an entry THIS TURN wrote, or the whole entry standing as the journal's last entry
+        # (a turn that wrote it and died before its note). Never lines of an earlier turn or of another entry that
+        # the new text happens to repeat (the read of round 6: "Nothing else changed." was skipped with its headline).
+        if mine in entries or (old is not None and (tail == entry or tail.endswith("\n\n" + entry))):
+            did = "the journal has this entry already: not written again"
         elif old is not None:  # always added: a call without append=true replaced the day's journal until 14 Nov
             with p.open("a") as f:
                 f.write(("\n" if old.endswith("\n") else "\n\n") + text)
             did = f"appended to {p.name}"
+            entries.append(mine)
         else:
             p.write_text(text)
             did = f"wrote {p.name}"
+            entries.append(mine)
         did = "; ".join([did, *cuts])
         if not said:
             return did
@@ -2417,8 +2419,9 @@ def _role_tools(paths: OperatorPaths, jobs: OperatorJobs, notes: NoteSink, role:
                 goes to the end of the first table (its cells must fit that table), {"key", "text", "new": true,
                 "after": the key of the row it goes behind} (or "before")
                 where you say (a row for another table: give "after" with a key of that table); "before" or "after"
-                without "new" moves the row whose whole first cell is the key. One row once a call. A row that fits
-                nothing is not written: the answer says what to send.
+                without "new" moves the row whose whole first cell is the key, and adds nothing: every new row says
+                "new": true. One row once a call. A row that fits nothing is not written: the answer says what to
+                send.
             drop: The keys of the rows to remove: each the row's first cell, whole, as it stands in the table.
             above: The paragraph above the table, whole, when it changed: what holds for every row, not this turn's
                 news (cut at 1,200 characters).

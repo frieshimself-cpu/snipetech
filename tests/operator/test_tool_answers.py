@@ -98,8 +98,10 @@ def test_a_new_key_is_added_at_the_end_of_the_table_or_behind_the_row_named(role
     lines = p.read_text().split("\n")
     assert lines[9] == "| 9L5aWu | fresh wallet | candidate, n 18 |" and lines[8].startswith("| HjuSth")
     assert lines[10] == "" and lines[11] == "In one line: nothing is copyable yet." and "added 1 (9L5aWu)" in out
-    twin = {"key": "i3Sj7y", "text": "| i3Sj7y | FLPjyS's twin | candidate |", "after": "FLPjyS: QUALIFIED"}
-    out = _call(update, rows=[twin, {"key": "ANTUPU", "text": "| ANTUPU | no stop scored |", "after": "YJFQNK"}])
+    twin = {"key": "i3Sj7y", "text": "| i3Sj7y | FLPjyS's twin | candidate |", "after": "FLPjyS: QUALIFIED",
+            "new": True}  # fmt: skip
+    out = _call(update, rows=[twin, {"key": "ANTUPU", "text": "| ANTUPU | no stop scored |", "after": "YJFQNK",
+                                     "new": True}])  # fmt: skip
     lines = p.read_text().split("\n")
     assert lines[6].startswith("| FLPjyS") and lines[7] == "| i3Sj7y | FLPjyS's twin | candidate |"
     assert lines[-3:] == ["| YJFQNK | 8 of 39 buys on LaunchLab |", "| ANTUPU | no stop scored |", ""]
@@ -627,7 +629,7 @@ def test_a_row_is_found_by_its_whole_first_cell_and_a_new_row_can_go_on_top(role
     assert 'no row FLPjyS. Rows whose first cell starts with it: "FLPjyS: QUALIFIED"; "FLPjyS twin i3Sj7y"' in out
     # a new row on top, and one that starts like a row that is there
     out = _call(update, rows=[{"key": "6Z91 copy bot", "text": "| 6Z91 copy bot | never a wallet to follow | - |",
-                               "before": "FLPjyS: QUALIFIED"},
+                               "before": "FLPjyS: QUALIFIED", "new": True},
                               {"key": "YJFQNK (I164)", "text": "| YJFQNK (I164) | arbitrager | candidate |"}])  # fmt: skip
     lines = p.read_text().split("\n")
     assert lines[6] == "| 6Z91 copy bot | never a wallet to follow | - |"
@@ -1006,8 +1008,8 @@ def test_a_new_row_goes_to_the_table_its_cells_fit_and_a_row_that_fits_no_table_
     )
     assert sum(1 for row in _rows(p) if "scalper" in row) == 1 and len(_rows(p)) == len(before.split("\n|")) - 1
     # a place in the second table is a key of that table; three cells do not go there
-    out = _call(update, rows=[{"key": "Z2", "text": "| Z2 | x |", "after": "YJFQNK"},
-                              {"key": "Z3", "text": "| Z3 | x | y |", "after": "YJFQNK"}])  # fmt: skip
+    out = _call(update, rows=[{"key": "Z2", "text": "| Z2 | x |", "after": "YJFQNK", "new": True},
+                              {"key": "Z3", "text": "| Z3 | x | y |", "after": "YJFQNK", "new": True}])  # fmt: skip
     assert out.startswith("error: not done: Z3 has 3 cells, the table of YJFQNK has 2 columns (Wallet | Finding)")
     assert "added 1 (Z2)" in out and "| Z2 | x |" in _rows(p) and "Z3" not in p.read_text()
     assert 'a row for another table: give "after" with a key of that table' in " ".join(
@@ -1042,7 +1044,7 @@ def test_a_row_whose_key_fits_no_row_is_written_only_when_the_call_says_it_is_ne
     """F3, F4. A row keyed by its CHANGED first cell was added and the stale row stayed: without a word when several
     rows start alike (five "FvHwFe..." rows on the real fees table), behind "error" when one did; and the right
     rename, a new row beside the old one's drop in one call, was answered "error" though all of it was done. One
-    rule: a key that fits no row is a new row only when the call says so ("new": true, or before/after)."""
+    rule: a key that fits no row is a new row only when the call says so ("new": true, with or without a place)."""
     tools, paths, _ = rolebox
     p = _table(paths, FAMILY)
     update = tools("scout")["update_table"]
@@ -1051,14 +1053,14 @@ def test_a_row_whose_key_fits_no_row_is_written_only_when_the_call_says_it_is_ne
     )
     assert out.startswith('error: not done: no row FvHwFe: who is first (14 Nov) (rows that start alike: "FvHwFe first '
                           'buy, 0.5 SOL"; "FvHwFe: who is first"; "FvHwFe: limits"): nothing was written; to add it '
-                          'send it with "new": true (or "after"/"before"); to change a row give its first cell as it '
-                          "is now")  # fmt: skip
+                          'send it with "new": true (and "after"/"before" for a place); to change or move a row give '
+                          "its first cell as it is now")  # fmt: skip
     assert p.read_text() == FAMILY and p.stat().st_mtime == NOW - 3600
     out = _call(update, rows=[{"key": "Z9", "text": "| Z9 | a | b |"}])
     assert out.startswith("error: not done: no row Z9: nothing was written; to add it") and p.read_text() == FAMILY
     # the right rename: the new row where it belongs, the old one dropped, in one call, and no "error"
     out = _call(update, rows=[{"key": "AtifzK: QUALIFIED", "text": "| AtifzK: QUALIFIED | hand trader | +0.09 / 31 |",
-                               "before": "FvHwFe first buy, 0.5 SOL"}], drop=["AtifzK"])  # fmt: skip
+                               "before": "FvHwFe first buy, 0.5 SOL", "new": True}], drop=["AtifzK"])  # fmt: skip
     assert out.startswith("scout-facts.md: added 1 (AtifzK: QUALIFIED) to the first table (Wallet); dropped 1 "
                           "(AtifzK)")  # fmt: skip
     assert [row for row in _rows(p) if "AtifzK" in row] == ["| AtifzK: QUALIFIED | hand trader | +0.09 / 31 |"]
@@ -1259,7 +1261,7 @@ def test_a_row_in_rows_and_in_drop_stays_as_it_is_whatever_else_the_call_moves(r
     tools, paths, _ = rolebox
     p = _table(paths)
     update = tools("scout")["update_table"]
-    out = _call(update, rows=[{"key": "Z0", "text": "| Z0 | a | b |", "before": "FLPjyS: QUALIFIED"},
+    out = _call(update, rows=[{"key": "Z0", "text": "| Z0 | a | b |", "before": "FLPjyS: QUALIFIED", "new": True},
                               {"key": "HjuSth", "text": "| HjuSth | scalper | CHANGED |"}],
                 drop=["HjuSth", "AtifzK"])  # fmt: skip
     assert out.startswith("error: not done: HjuSth is in rows and in drop: nothing was changed for it")
@@ -1488,13 +1490,13 @@ def test_a_journal_entry_sent_again_is_not_written_twice(rolebox):
     first = _call(tester["write_report"], **entry)
     assert "the headline is written as this turn's note" in first
     again = _call(tester["write_report"], **entry)
-    assert again.startswith("the journal ends with this entry already: not written again") and "error" not in again
+    assert again.startswith("the journal has this entry already: not written again") and "error" not in again
     assert (paths.root / f"{name}.md").read_text().count("Read lab 9c6a6e") == 1
     assert paths.notes.read_text().count("+0.2 SOL a copy") == 1
     # a new turn that sends it again with no note written yet: not written again, and the note is written
     other = tools("tester")
     out = _call(other["write_report"], **entry)
-    assert out.startswith("the journal ends with this entry already: not written again")
+    assert out.startswith("the journal has this entry already: not written again")
     assert "the headline is written as this turn's note" in out
     # another entry is written as always, and so is one that is only the end of the last line
     assert _call(other["write_report"], name=name, text="## 02:00 UTC\n\nall done").startswith("appended to")
@@ -1703,7 +1705,7 @@ def test_a_journal_entry_sent_again_without_its_headline_is_not_written_twice(ro
     name = "scout-journal-2026-11-06"
     _call(scout["write_report"], name=name, text="## 01:00\nwhat the turn did.", headline="finding A (n 4)")
     out = _call(scout["write_report"], name=name, text="## 01:00\nwhat the turn did.")
-    assert out.startswith("the journal ends with this entry already: not written again")
+    assert out.startswith("the journal has this entry already: not written again")
     assert (paths.root / f"{name}.md").read_text().count("what the turn did.") == 1
 
 
@@ -2010,6 +2012,22 @@ def test_a_place_by_the_start_of_a_first_cell_is_no_place(rolebox):
     assert p.read_text() == before
 
 
+def test_a_row_is_added_only_when_the_call_says_it_is_new(rolebox):
+    """The read of round 6: "before"/"after" on a key that names no row, without "new", added a row. A move meant for
+    "7aPo3n, AG89fn" and keyed "7aPo3n + AG89fn" was answered "added 1" and the wallet pair stood twice. Every new row
+    says that it is new; the refusal names the rows that start alike and both ways out."""
+    tools, paths, _ = rolebox
+    p = _real(paths, "scout")
+    before = p.read_text()
+    row = {"key": "7aPo3n + AG89fn", "text": _r(7, "7aPo3n + AG89fn"), "before": "FLPjyS: QUALIFIED"}
+    out = _call(tools("scout")["update_table"], rows=[row])
+    assert out.startswith('error: not done: no row 7aPo3n + AG89fn (rows that start alike: "7aPo3n, AG89fn")')
+    assert 'to add it send it with "new": true' in out and "to change or move a row give its first cell" in out
+    assert p.read_text() == before
+    out = _call(tools("scout")["update_table"], rows=[{**row, "new": True}])  # the first way out
+    assert _quiet(out) and "added 1 (7aPo3n + AG89fn)" in out
+
+
 def test_a_placed_new_row_sent_again_as_it_stands_is_the_same_already(rolebox):
     """Round 6, B (F6 left open): a new row sent with "after" and sent again by a repair got an error."""
     tools, paths, _ = rolebox
@@ -2073,15 +2091,39 @@ def test_a_journal_entry_resent_with_another_headline_is_not_written_twice(roleb
     entry = "## 10:00\nFound X: n 17."
     _call(scout["write_report"], name=name, text=entry, headline="H one.")
     out = _call(scout["write_report"], name=name, text=entry, headline="H one, corrected.")
-    assert out.startswith("the journal ends with this entry already: not written again")
+    assert out.startswith("the journal has this entry already: not written again")
     assert (paths.root / f"{name}.md").read_text().count("Found X") == 1
     other = tools("tester")
     tname = "tester-journal-2026-11-06"
     _call(other["write_note"], text="Note first.")
     _call(other["write_report"], name=tname, text=entry, headline="H one.")
     out = _call(other["write_report"], name=tname, text=entry)
-    assert out.startswith("the journal ends with this entry already: not written again")
+    assert out.startswith("the journal has this entry already: not written again")
     assert (paths.root / f"{tname}.md").read_text().count("Found X") == 1
+
+
+def test_a_new_journal_entry_that_repeats_the_journals_last_lines_is_written(rolebox):
+    """The read of round 6: an entry counted as already written whenever its text, without its headline, was the
+    journal's last lines, also lines of an earlier turn or of another entry of this turn: a short new entry ("Nothing
+    else changed.") was skipped and its "In short" line never reached the journal. Only an entry this turn wrote, or
+    the whole entry standing as the journal's last entry, is "already written"."""
+    tools, paths, _ = rolebox
+    name = "scout-journal-2026-11-06"
+    journal = paths.root / f"{name}.md"
+    journal.write_text("## 09:00 scout\nchecked HjuSth.\nNothing else changed.\n")  # an earlier turn's, no headline
+    scout = tools("scout")
+    out = _call(scout["write_report"], name=name, text="Nothing else changed.", headline="H new.")
+    assert out.startswith("appended to") and journal.read_text().endswith("Nothing else changed.\n\nIn short: H new.\n")
+    # within one turn: an entry without a headline, then a one-line entry that repeats its last line
+    other, tname = tools("tester"), "tester-journal-2026-11-06"
+    assert _call(other["write_report"], name=tname, text="## 12:00\nA.\nNo other change.").startswith("wrote")
+    out = _call(other["write_report"], name=tname, text="No other change.", headline="H2.")
+    assert out.startswith("appended to")
+    assert (paths.root / f"{tname}.md").read_text() == "## 12:00\nA.\nNo other change.\n\nNo other change.\n\nIn short: H2.\n"
+    # an entry of this turn sent again after another one was written in between is still not written twice
+    out = _call(other["write_report"], name=tname, text="## 12:00\nA.\nNo other change.")
+    assert out.startswith("the journal has this entry already: not written again")
+    assert (paths.root / f"{tname}.md").read_text().count("## 12:00") == 1
 
 
 def test_a_cut_journal_entry_is_let_stand_and_the_rest_is_a_second_entry(rolebox):

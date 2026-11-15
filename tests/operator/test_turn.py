@@ -1733,7 +1733,7 @@ def test_the_journal_entry_sent_again_beside_the_repair_stands_once(env):
     out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
     journal = (env["paths"].root / f"scout-journal-{_DAY}.md").read_text()
     assert journal.count("Read lab 9c6a6e") == 1 and len(requests) == 2 and out["ended_at"] == "note"
-    assert _answers(env)[3].startswith("the journal ends with this entry already: not written again")
+    assert _answers(env)[3].startswith("the journal has this entry already: not written again")
 
 
 def test_a_cut_counts_once_in_calls_failed(env):
