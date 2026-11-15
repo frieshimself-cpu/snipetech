@@ -57,7 +57,8 @@ STAGE_LIMIT_SECS: dict[str, int] = {
 # only then, so with them off no such stage exists). The round does not wait for them: alerts, the book and the kill
 # switch keep their minutes. They start right after the idle research has looked (`research next`), so they never
 # take a lab slot from under it. A turn cuts itself off at 24 minutes (turn.TURN_HARD_SECS); the job runner ends one
-# that hangs at 26, inside the two rounds its stage would otherwise hold.
+# that hangs at 26, inside the two rounds its stage would otherwise hold. The stage starts every round; whether a turn
+# then runs is roles.role_due's to say, the owner's least gap between a role's turns included (`/budget every`).
 ROLE_STAGE = ("operate", "agent", "--role")
 ROLE_EVERY_SECS = 15 * 60
 ROLE_LIMIT_SECS = 26 * 60

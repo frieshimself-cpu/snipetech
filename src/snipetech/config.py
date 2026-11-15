@@ -344,6 +344,11 @@ class OperatorConfig:
     # the server's file does not pin it and this default is what the server runs: to switch them on, True here (and in
     # tests/test_config_drift.py) and a deploy; the owner's `/budget every 0` switches them off without one.
     role_agents: bool = False
+    # Whether another role's table change alone starts a research agent's turn (roles.role_due). True: as it was until
+    # 14 Nov, when 32 of 105 turns (31 $) ran only for that. False: the other tables still come in every opening
+    # message; a handed idea, a fill, an ended job and the three-hour look still wake a role. New on 14 Nov, so the
+    # server's file does not pin it; the owner's `/budget wake table on|off` (operator/WAKE_TABLE) wins over it.
+    wake_on_table: bool = True
     digest_hour_utc: int = 7  # the daily Telegram digest goes out in the first round after this hour (UTC)
     model: str = "claude-sonnet-5-5"  # the 15-minute health check
     analyst_model: str = "claude-fable-5-2"  # the research thinking (analyst turns and post-mortems)

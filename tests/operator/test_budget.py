@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from snipetech.config import DEFAULT_OPERATOR_PRICES
@@ -105,3 +107,58 @@ def test_spent_today_by_role(tmp_path):
     assert by == pytest.approx({"scout": 6.0, "tester": 8.0, "operator": 2.0})
     assert sum(by.values()) == pytest.approx(led.spent_today(DAY + 3600))
     assert Ledger(tmp_path / "none.jsonl", DEFAULT_OPERATOR_PRICES).spent_today_by(DAY) == {}
+
+
+# -- 14 Nov review: a response is priced by the model that answered, and every attempt of it is counted ----------------
+# `fallbacks="default"` lets the API serve a request the asked model declined on another model inside the same call.
+# The API's reference (the claude-api skill's shared/model-migration.md, "Billing", line 1443 of the copy read on
+# 14 Nov): "`usage.iterations` is the per-attempt source of truth; top-level `usage` covers only the attempt that
+# produced the returned message ... fallback attempts bill at the fallback model's rates." The ledger priced every
+# response of a mode at the mode's rows and read the top-level usage only.
+
+
+def test_a_response_another_model_served_is_priced_per_attempt_at_each_models_rows(tmp_path):
+    from snipetech.operator.budget import MODEL_PRICES
+
+    led = Ledger(tmp_path / "spend.jsonl", DEFAULT_OPERATOR_PRICES)
+    declined = {"type": "message", "model": "claude-fable-5-2", "input_tokens": 100_000, "output_tokens": 0,
+                "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}  # fmt: skip
+    served = {"type": "fallback_message", "model": "claude-opus-5-5", "input_tokens": 100_000, "output_tokens": 10_000,
+              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}  # fmt: skip
+    usage = {"input_tokens": 100_000, "output_tokens": 10_000, "iterations": [declined, served]}
+    # the asked model's attempt at the analyst's rows (8 $ in), the serving one at the strategist's (4 $ in, 20 $ out)
+    want = 100_000 * 8 / 1e6 + (100_000 * 4 + 10_000 * 20) / 1e6
+    assert led.record("scout", usage, 1_000.0, model="claude-opus-5-5") == pytest.approx(want) == pytest.approx(1.4)
+    line = json.loads((tmp_path / "spend.jsonl").read_text())
+    assert line["usd"] == pytest.approx(want) and line["mode"] == "scout" and line["in"] == 100_000
+    assert line["model"] == "claude-opus-5-5" and line["attempts"] == 2  # said where it was not the mode's own model
+    # a model the price table has no rows for, but that the API may fall back to: its own listed prices
+    served_48 = served | {"model": "claude-opus-4-8"}
+    p = MODEL_PRICES["claude-opus-4-8"]
+    assert p["in"] == 5.0 and p["out"] == 25.0 and MODEL_PRICES["claude-opus-5"] == p
+    assert cost_usd({"iterations": [declined, served_48]}, DEFAULT_OPERATOR_PRICES, tier="analyst") == pytest.approx(
+        0.8 + (100_000 * 5 + 10_000 * 25) / 1e6)  # fmt: skip
+    # a dated id of a known model is that model; a longer name is not taken for a shorter one
+    dated = served | {"model": "claude-opus-5-5-20261101"}
+    assert cost_usd({"iterations": [dated]}, DEFAULT_OPERATOR_PRICES, tier="analyst") == pytest.approx(0.6)
+    # an attempt's writes to the hour's cache keep their own price
+    wrote = declined | {"cache_creation_input_tokens": 1000, "cache_creation": {"ephemeral_1h_input_tokens": 1000}}
+    assert cost_usd({"iterations": [wrote]}, DEFAULT_OPERATOR_PRICES, tier="analyst") == pytest.approx(0.8 + 0.016)
+
+
+def test_an_unknown_model_is_priced_at_the_modes_rows(tmp_path):
+    led = Ledger(tmp_path / "spend.jsonl", DEFAULT_OPERATOR_PRICES)
+    usage = {"input_tokens": 1_000_000, "output_tokens": 0}
+    assert led.record("scout", usage, 1_000.0, model="claude-some-new-model") == pytest.approx(8.0)
+    attempt = {"type": "message", "model": "claude-some-new-model", "input_tokens": 1_000_000, "output_tokens": 0}
+    twice = usage | {"iterations": [attempt, dict(attempt, model=None)]}
+    assert led.record("scout", twice, 1_000.0) == pytest.approx(16.0)
+    assert led.record("operator", usage, 1_000.0, model=None) == pytest.approx(2.0)
+    lines = [json.loads(line) for line in (tmp_path / "spend.jsonl").read_text().splitlines()]
+    assert all("model" not in line for line in lines)  # nothing to say: the mode's own rows
+    # the top-level usage of a response without attempts is the mode's, whatever model the response names: only the
+    # list of attempts says that another model was paid for
+    assert led.record("scout", usage, 1_000.0, model="claude-sonnet-5-5") == pytest.approx(8.0)
+    # a list of attempts that is empty or holds no counts changes nothing
+    for empty in ([], None, [{}], "x"):
+        assert cost_usd(usage | {"iterations": empty}, DEFAULT_OPERATOR_PRICES, tier="analyst") == pytest.approx(8.0)

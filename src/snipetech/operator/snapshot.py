@@ -179,6 +179,21 @@ def recent_jobs(jobs_dir: Path, now: float, hours: float = 24.0) -> list[dict]:
     return sorted(out, key=lambda j: -(j["ended"] or 0))
 
 
+# What a research agent's message lists of the ended jobs (prompts.role_message). A list of "the last 24 hours" loses
+# its oldest line every few minutes, and a line that leaves the front of a message changes every byte behind it, so
+# nothing of it is ever read from the prompt cache (14 Nov: the list was two thirds of a role's opening message, written
+# fresh every turn). The list starts at a time that moves in steps of ROLE_JOBS_STEP_SECS: between two steps no line
+# leaves, the list only grows at its end, and it covers 24 to 30 hours.
+ROLE_JOBS_STEP_SECS = 6 * 3600
+ROLE_JOBS_HOURS = 24 + ROLE_JOBS_STEP_SECS / 3600  # what `recent_jobs` is asked for a role's turn: the longest list
+
+
+def role_jobs_since(now: float) -> float:
+    """Where a role's list of ended jobs starts at `now`: the last step of ROLE_JOBS_STEP_SECS (00:00, 06:00, 12:00,
+    18:00 UTC) that lies a day or more back. A job is listed for 24 to 30 hours after it ended."""
+    return float((now - 86400) // ROLE_JOBS_STEP_SECS * ROLE_JOBS_STEP_SECS)
+
+
 def running_jobs(jobs_dir: Path) -> list[dict]:
     out = []
     for m in _read_metas(jobs_dir, math.inf):  # a job that runs has no exit file: only those records are opened

@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
+import functools
+import io
+import json
 import math
 import time
 from pathlib import Path
@@ -69,11 +73,57 @@ AGENT_BACKFILL_STRETCH_TXS = 50_000
 BACKFILL_LIMIT_FLAGS = ("--max-credits", "--month-credits", "--max-stretch-txs")
 BACKFILL_LOG_TAIL = 64_000  # bytes read from the end of an earlier backfill's log to see whether a limit ended it
 REPEAT_AFTER_SECS = 6 * 3600  # the same research command is not started again within this window
+TWIN_MAX_SECS = 6 * 3600 + 600  # a job's own limit (ops.op_run) and some slack: past it a "running" record is no job
 # a look-up of somebody else's live data answers differently minutes later: the same one may run again after this long
 LOOKUP_REPEAT_SECS = {"gmgn": 600}
 
 
 ANALYST_WANTS = "the analyst"  # how the analyst's own lab names itself when every slot is held (lab_lock.want)
+
+
+@functools.lru_cache(maxsize=1)
+def _cli_parser():
+    from ..cli import build_parser  # the command line's own parser: the one that reads a job's arguments when it runs
+
+    return build_parser()
+
+
+@functools.lru_cache(maxsize=1024)
+def _parsed(words: tuple[str, ...]) -> str | None:
+    """What the command line's parser makes of `words`, as text two command lines can be compared by; None when it
+    refuses them (it prints its usage and exits: both are caught, nothing is printed)."""
+    try:
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            parsed = _cli_parser().parse_args(list(words))
+    except (SystemExit, Exception):  # noqa: BLE001 - whatever the parser raises, these words have no parsed form
+        return None
+    return json.dumps(vars(parsed), sort_keys=True, default=str)
+
+
+def job_key(argv: list[str]) -> str:
+    """The form two jobs' arguments are compared in (the running twin, the run that ended within its window): two
+    command lines are the same job when the command line's own parser makes the same of them. A job runs
+    `snipetech <arguments>`, cli.main parses them and hands on nothing but what the parser made (the raw words are
+    read only by the nightly unit's check and for the title of a `--profile` log), so the same parsed arguments are
+    the same job whatever the order of the flags, `--flag=value` or `--flag value`, a flag said twice, or "72.0" for
+    72; a flag that may be given several times (`--trigger`) keeps the order of its values, and so do the words that
+    are no flags, because the parser keeps them. 14 Nov review: ["winners", "--json", "--hours", "72"] started beside
+    a running ["winners", "--hours", "72", "--json"]. Arguments the parser refuses are compared as they are, each
+    stripped and `--flag=value` split in two."""
+    words = [str(a).strip() for a in argv]
+    parsed = _parsed(tuple(words))
+    if parsed is not None:
+        return "parsed " + parsed
+    split: list[str] = []
+    for w in words:
+        split += w.split("=", 1) if w.startswith("--") and "=" in w else [w]
+    return "words " + json.dumps(split)
+
+
+def _same_words(theirs: list, argv: list[str]) -> str:
+    """How a refusal names the other job's arguments: word for word the same, or the same job said another way."""
+    return ("these exact arguments" if [str(a) for a in theirs] == [str(a) for a in argv]
+            else "the same arguments in another order or spelling")  # fmt: skip
 
 
 class OperatorJobs:
@@ -264,16 +314,45 @@ class OperatorJobs:
                                       "idea)")  # fmt: skip
 
     def _recent_identical(self, argv: list[str], now: float) -> dict | None:
-        """The newest run of exactly this command that ended well inside its repeat window."""
-        window = LOOKUP_REPEAT_SECS.get(argv[0], REPEAT_AFTER_SECS)
+        """The newest run of this same job (`job_key`) that ended well inside its repeat window."""
+        window = LOOKUP_REPEAT_SECS.get(str(argv[0]).strip(), REPEAT_AFTER_SECS)
         found: dict | None = None
+        key = job_key(argv)
         for jid in jobs_since(self.ops.data / "jobs", now - window):
             meta = self.ops._meta(jid)
-            if (meta and list(meta.get("argv") or []) == list(argv) and not meta.get("running")
+            if (meta and job_key(list(meta.get("argv") or [])) == key and not meta.get("running")
                     and meta.get("exit_code") == 0 and (meta.get("ended") or 0) >= now - window
                     and (found is None or (meta.get("ended") or 0) >= (found.get("ended") or 0))):  # fmt: skip
                 found = {**meta, "id": jid}
         return found
+
+    def _check_twin(self, argv: list[str], now: float, role: str | None, idea: str | None) -> None:
+        """The same job (`job_key`) that is RUNNING now is not started a second time: the refusal names it, who
+        started it and when. 14 Nov 06:01:16 and 06:02:28: the analyst and the tester started the same lab 72
+        seconds apart and the twin held a lab slot (`_recent_identical` sees only jobs that have ended). For a role
+        that did not start it, the running job then counts as its own test of `idea` (roles.join_test: a row for
+        each idea that asks): the idea is being tested and the role is called when the job ends, as for a job it
+        started."""
+        # a "running" record older than any job can run (its own six-hour limit, ops.op_run) is a dead job whose pid
+        # another process took: no twin, or its arguments were refused for good
+        live = [m for m in self.running() if now - float(m.get("started") or now) < TWIN_MAX_SECS]
+        key = job_key(argv)
+        twin = next((m for m in live if job_key(list(m.get("argv") or [])) == key), None)
+        if twin is None:
+            return
+        jid = str(twin.get("id"))
+        by = roles.job_roles(self.paths).get(jid)
+        who = ("you" if role is not None and by == role else f"the {roles.NAMES[by]}" if by in roles.NAMES
+               else "the cloud session" if twin.get("by") == "remote" else "the analyst or the round")  # fmt: skip
+        at = time.strftime("%H:%M UTC", time.gmtime(float(twin.get("started") or now)))
+        said = (f"job {jid} with {_same_words(twin.get('argv') or [], argv)} is running now, started by {who} at "
+                f"{at}: no second one starts")  # fmt: skip
+        if role is None or by == role:
+            raise PermissionError(f"{said}: read it with read_job_log when it ends")
+        roles.join_test(self.paths, now, role, str(idea).strip(), jid, argv)
+        self._idea_testing(now, role, str(idea))
+        raise PermissionError(f"{said}. It counts as your test of {str(idea).strip()}: you are called when it ends; "
+                              "read it then with read_job_log")  # fmt: skip
 
     def _backfill_stopped(self, argv: list[str], earlier: dict) -> str | None:
         """Which limit ended the earlier run of this backfill ("max_credits", "month_credits"), read from the end of
@@ -302,7 +381,7 @@ class OperatorJobs:
             return
         stopped = self._backfill_stopped(argv, dup) if backfill else None
         if stopped:  # it may go on, but not beside itself: two runs of one backfill fetch the same stretches twice
-            twin = next((m for m in self.running() if list(m.get("argv") or []) == list(argv)), None)
+            twin = next((m for m in self.running() if job_key(list(m.get("argv") or [])) == job_key(argv)), None)
             if twin:
                 raise PermissionError(f"job {twin.get('id')} is this same backfill and still runs: it is the one "
                                       "going on where the last stopped; read it with read_job_log when it "
@@ -317,10 +396,10 @@ class OperatorJobs:
                 return
             raise PermissionError(f"job {dup.get('id')} stopped at the month's limit for backfills "
                                   f"({ab.MONTH_CREDITS:,} credits) and nothing is left of it: the same run would stop "
-                                  "at its first request. The limit is the owner's to lift: say so in a note or an "
-                                  "idea with owner_needed")  # fmt: skip
+                                  "at its first request. The limit is the owner's to lift: say so in an idea "
+                                  "with owner_needed")  # fmt: skip
         raise PermissionError(
-            f"already ran: job {dup.get('id')} with these exact arguments finished "
+            f"already ran: job {dup.get('id')} with {_same_words(dup.get('argv') or [], argv)} finished "
             f"{int((now - dup.get('ended', now)) / 60)} min ago; read its log with read_job_log instead"
         )
 
@@ -367,6 +446,10 @@ class OperatorJobs:
     def record_test(self, now: float, role: str, idea: str, started: dict, argv: list[str]) -> None:
         """A role's job has started: one line in operator/tests.jsonl, and its idea moves from open to testing."""
         roles.record_test(self.paths, now, role, str(idea).strip(), str(started.get("id")), argv)
+        self._idea_testing(now, role, idea)
+
+    def _idea_testing(self, now: float, role: str, idea: str) -> None:
+        """The role's idea moves from open to testing: a job tests it (its own, or a running twin it waits for)."""
         try:
             if any(i.get("id") == str(idea).strip() and i.get("status") == "open"
                    for i in learning.list_ideas(self.paths, "all")):  # fmt: skip
@@ -381,7 +464,7 @@ class OperatorJobs:
         which nothing below that names a role holds); `idea`: the idea of its queue the job tests."""
         if argv and argv[0] in OWNER_COMMANDS:
             raise PermissionError(f"{argv[0]} is the owner's: an agent never starts it (its own budget, trading and "
-                                  "settings are the owner's call); put the case in a note or an idea with owner_needed")  # fmt: skip
+                                  "settings are the owner's call); put the case in an idea with owner_needed")  # fmt: skip
         action = tuple(argv[:2]) in RESEARCH_ACTIONS
         if action and not AGENT_BACKFILL_OPEN:
             raise PermissionError(BACKFILL_CLOSED)
@@ -402,6 +485,7 @@ class OperatorJobs:
         self._check_lab_window(argv)
         now = time.time() if now is None else now
         self._check_repeat(argv, now, backfill=action)
+        self._check_twin(argv, now, role, idea)  # after it: a backfill that goes on has its own words for its twin
         running = self.running()
         labs, slots = sum(1 for m in running if m.get("argv", [""])[0] == "lab"), lab_slots()
         if argv[0] == "lab" and labs >= slots:

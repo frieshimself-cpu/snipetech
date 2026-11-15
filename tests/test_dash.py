@@ -420,3 +420,83 @@ def test_the_pages_events_come_off_an_index_and_leave_out_the_old_transfer_rows(
             assert "SCAN events" not in plan.replace("SCAN events USING", "") and "TEMP B-TREE" not in plan, (q, plan)
     finally:
         con.close()
+
+
+def _page_rules():
+    """The page's own rules for a turn's title and a step's label and text, run in node when there is one: they are
+    plain functions between two marks in dash.html, with no page around them."""
+    import shutil
+    import subprocess
+
+    from snipetech.dash import dash_html
+
+    html = dash_html()
+    block = html[html.index("// rules-begin") : html.index("// rules-end")]
+    node = shutil.which("node")
+    if node is None:
+        return block, None
+
+    def run(expr):
+        js = block + f"\nconsole.log(JSON.stringify({expr}));"
+        done = subprocess.run([node, "-e", js], capture_output=True, text=True, timeout=60, check=True)
+        return json.loads(done.stdout)
+
+    return block, run
+
+
+def test_the_page_names_each_research_agent_and_shows_what_a_journal_call_wrote():
+    """Owner's page, 14 Nov review: every turn of the four research agents was titled "Operator"; the call that writes
+    the journal entry and the note was labelled "Wrote the report"; and a journal entry over 1,500 characters showed
+    an empty step, because the turn's record keeps a long input as {"(cut)": its start}."""
+    block, run = _page_rules()
+    for name in ("Wallet scout", "Strategy tester", "Fee and place analyst", "OKTech features analyst",
+                 "Wrote its journal entry and the note for you", '"(cut)"'):  # fmt: skip
+        assert name in block, name
+    if run is None:
+        pytest.skip("no node on this machine: the page's rules were checked as text only")
+    modes = ["operator", "analyst", "postmortem", "scout", "tester", "fees", "oktech", "new"]
+    titles = run(f"{json.dumps(modes)}.map((m) => turnTitle({{mode: m}}))")
+    assert titles == ["Operator", "Analyst", "Post-mortem", "Wallet scout", "Strategy tester", "Fee and place analyst",
+                      "OKTech features analyst", "new"]  # fmt: skip
+    step = {"kind": "tool", "name": "write_report", "input": {"name": "fees-journal-2026-11-14", "text": "## entry",
+                                                              "headline": "place +0 is worth 0.21 SOL"},
+            "result": "appended to x.md; the headline is written as this turn's note"}  # fmt: skip
+    assert run(f"stepLabel({json.dumps(step)})") == "Wrote its journal entry and the note for you"
+    assert run(f"stepMain({json.dumps(step)})") == "place +0 is worth 0.21 SOL\n\n## entry"
+    plain = {"kind": "tool", "name": "write_report", "input": {"name": "analyst-2026-11-14", "text": "# report"},
+             "result": "wrote analyst-2026-11-14.md"}  # fmt: skip
+    assert run(f"stepLabel({json.dumps(plain)})") == "Wrote the report"
+    # a long entry: the record holds the start of the call's JSON under "(cut)"; the page shows the entry's text from it
+    raw = json.dumps({"name": "tester-journal-2026-11-14", "text": "## 01:00 UTC\n\n" + "what the turn did. " * 200,
+                      "headline": "f98f pays +0.2 a trade (n 90)"})  # fmt: skip
+    cut = {"kind": "tool", "name": "write_report", "input": {"(cut)": raw[:1500] + " … [2386 more characters]"},
+           "result": "appended to x.md; the headline is written as this turn's note"}  # fmt: skip
+    shown = run(f"stepMain({json.dumps(cut)})")
+    assert shown.startswith("## 01:00 UTC\n\nwhat the turn did. what the turn did.") and len(shown) > 1300
+    assert run(f"stepLabel({json.dumps(cut)})") == "Wrote its journal entry and the note for you"  # by what came back
+    rows = {"kind": "tool", "name": "update_table", "input": {"rows": [{"key": "k1", "text": "| k1 | v1 new |"}],
+                                                             "above": "Para that holds."}, "result": "x"}  # fmt: skip
+    assert run(f"stepMain({json.dumps(rows)})") == "Para that holds.\n\n| k1 | v1 new |"
+    assert run(f"stepLabel({json.dumps(rows)})") == "Changed rows of its table"
+
+
+def test_a_refused_journal_call_is_not_shown_as_a_note_written():
+    """Round 3 (14 Nov): the page labelled a REFUSED journal call "Wrote its journal entry and the note for you",
+    because it trusted the call's headline. What the tool answered decides; the headline of the call only while there
+    is no answer yet. A write that answered "error" carries the error mark; a job log that begins with that word is
+    no refusal."""
+    block, run = _page_rules()
+    assert "step.result == null" in block and "WRITES" in block
+    if run is None:
+        pytest.skip("no node on this machine: the page's rules were checked as text only")
+    call = {"kind": "tool", "name": "write_report", "input": {"name": "oktech-journal-2026-11-14", "text": "## entry",
+                                                              "headline": "the wallet cannot pay a buy"}}  # fmt: skip
+    refused = call | {"result": "error: not done: the headline was not written as this turn's note (what the ..."}
+    written = call | {"result": "appended to oktech-journal-2026-11-14.md; the headline is written as this turn's note"}
+    assert run(f"[stepLabel({json.dumps(refused)}), stepFailed({json.dumps(refused)})]") == ["Wrote the report", True]
+    assert run(f"[stepLabel({json.dumps(written)}), stepFailed({json.dumps(written)})]") == [
+        "Wrote its journal entry and the note for you", False]  # fmt: skip
+    assert run(f"stepLabel({json.dumps(call | {'result': None})})") == "Wrote its journal entry and the note for you"
+    log = {"kind": "tool", "name": "read_job_log", "input": {"id": "j9"}, "result": "error: no trades on the tape"}
+    assert run(f"stepFailed({json.dumps(log)})") is False
+    assert run(f"stepFailed({json.dumps(log | {'error': True})})") is True

@@ -189,3 +189,44 @@ def test_a_failed_balance_read_keeps_the_last_valued_equity(tmp_path, fake_servi
 
     later = asyncio.run(take_snapshot(fake_service, paths, cfg, prev=first, now=2_900, services=lambda: {}, balances=broken))
     assert later.equity_ref == pytest.approx(2.1)
+
+
+def test_a_roles_turn_is_shown_the_ended_jobs_of_thirty_hours(tmp_path):
+    """A research agent's list of ended jobs starts at a time that moves in six-hour steps (role_jobs_since), so it
+    covers 24 to 30 hours: the turn is given the jobs of 30 hours, where the operator's and the analyst's snapshot
+    keeps its 24. A job that ended 27 hours ago is in what a role's turn is shown, one of 31 hours ago is not."""
+    import os
+
+    from snipetech.operator import roles
+    from snipetech.operator.snapshot import ROLE_JOBS_HOURS, recent_jobs
+
+    now, hour = 1_793_923_200 + 12 * 3600, 3600
+    data = tmp_path / "data"
+    paths = OperatorPaths(data).ensure()
+    (data / "jobs").mkdir()
+    for jid, ago in (("fresh", 1), ("day-old", 27), ("gone", 31)):
+        meta = {"id": jid, "argv": ["winners", "--json"], "started": now - (ago + 1) * hour, "ended": now - ago * hour,
+                "exit_code": 0, "running": False}  # fmt: skip
+        (data / "jobs" / f"{jid}.json").write_text(json.dumps(meta))
+        (data / "jobs" / f"{jid}.exit").write_text("0")
+        os.utime(data / "jobs" / f"{jid}.exit", (now - ago * hour, now - ago * hour))
+    assert [j["id"] for j in recent_jobs(paths.jobs, now)] == ["fresh"]  # the operator's and the analyst's day
+    assert [j["id"] for j in recent_jobs(paths.jobs, now, hours=ROLE_JOBS_HOURS)] == ["fresh", "day-old"]
+    st = Store(data / "snipetech.db")
+    cfg = Config()
+    cfg.storage.db_path, cfg.operator.role_agents, cfg.operator.wallet = str(data / "snipetech.db"), True, "W"
+
+    class Svc:
+        store = st
+
+    shown = []
+
+    def turn(cfg, svc, paths, snap, decision, ledger, notifier, notes, *, jobs, now, role, **kw):
+        shown.append(snap)
+        notes.write(f"{role}: did its turn", "info")
+        return {"usd": 0.0, "tool_calls": 0, "stopped": "end_turn", "notes": 1}
+
+    out = asyncio.run(roles.run_role(cfg, Svc(), "scout", repo=tmp_path, branch="main", now=lambda: now, turn=turn,
+                                     client=object()))  # fmt: skip
+    st.close()
+    assert out["ran"] and [j["id"] for j in shown[0].jobs_recent] == ["fresh", "day-old"]

@@ -79,6 +79,22 @@ def read_budget(paths: OperatorPaths) -> dict[str, float | int]:
     return out
 
 
+EVERY_NAMED = "every_named"  # in the owner's file: `analyst_every_h` there was among the owner's own words
+
+
+def every_named(paths: OperatorPaths | None) -> bool:
+    """Whether the `every` the owner's file holds was named by the owner (`/budget ... every N`, `operate budget
+    --analyst-every-h N`) and not written with the dollars' profile. Only a named one is the least gap between a
+    research agent's turns (roles.start_rules): `/budget 300` alone must not cut the roles to a turn in two hours."""
+    if paths is None:
+        return False
+    try:
+        data = json.loads(budget_file(paths).read_text())
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and data.get(EVERY_NAMED) is True
+
+
 def _operator(cfg) -> OperatorConfig:
     return getattr(cfg, "operator", cfg)  # the whole Config or its [operator] part
 
@@ -134,12 +150,14 @@ def room_for_role(cfg, paths: OperatorPaths | None, role: str, spent_today: floa
 
 
 def set_budget(
-    paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None
+    paths: OperatorPaths, cfg, values: dict[str, Any], by: str, now: float | None = None, *, named_every: bool = True
 ) -> dict[str, float | int]:
     """Write the owner's `values` over what the file already holds (a value not named keeps the file's, or the
     config's when the file has none) and return what the file holds now. Every value is checked before anything is
     written: one outside its bounds, or a turn that would cost more than the day, raises ValueError in plain words and
-    changes nothing. Atomic (tmp + replace), with when and who, as the book's switch."""
+    changes nothing. Atomic (tmp + replace), with when and who, as the book's switch. `named_every`: whether an
+    `analyst_every_h` among `values` is the owner's own word (false when the dollars' profile brought it): the file
+    keeps that (`every_named`); values without it leave the mark as it is."""
     unknown = sorted(set(values) - set(FIELDS))
     if unknown:
         raise ValueError(f"unknown budget value {', '.join(unknown)} (known: {', '.join(FIELDS)})")
@@ -160,7 +178,9 @@ def set_budget(
     paths.ensure()
     f = budget_file(paths)
     tmp = f.with_name(f.name + ".tmp")
-    tmp.write_text(json.dumps({**new, "ts": int(time.time() if now is None else now), "by": by}))
+    named = bool(named_every) if "analyst_every_h" in values else every_named(paths)
+    mark = {EVERY_NAMED: True} if named and "analyst_every_h" in new else {}
+    tmp.write_text(json.dumps({**new, **mark, "ts": int(time.time() if now is None else now), "by": by}))
     tmp.replace(f)
     return new
 
@@ -185,8 +205,15 @@ def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
     when = (f"an analysis every {every:g} h besides the daily one after {op.analyst_after_utc} UTC" if every > 0
             else f"the analysis once a day after {op.analyst_after_utc} UTC")  # fmt: skip
     agents = roles.on(cfg, paths)
+    if not agents and "every 0" in (roles.off_reason(cfg, paths) or ""):  # off by the owner's own every 0, said so
+        when += "; the research agents are off (your /budget every 0; /budget every 0.25 switches them on)"
     if agents:  # their turns stand where the analyses between the daily ones stood (gate.analyst_reason)
         when = f"the research agents' turns every round and the analysis once a day after {op.analyst_after_utc} UTC"
+        rules = roles.start_rules(cfg, paths)  # the owner's own `every` is the least gap between a role's turns
+        if (rules["every_h"] or 0) * 3600 > roles.ROUND_SECS:
+            sooner = " (sooner only to read a job of its own that ended)" if rules["every_default"] else ""
+            when = (f"each research agent's turns at least {every:g} h apart{sooner} and the analysis once a day "
+                    f"after {op.analyst_after_utc} UTC")  # fmt: skip
     line = (f"Claude budget: {b['daily_usd']:g} $ a day ({spent_today:.2f} $ spent today), at most {turn:g} $ "
             f"and {b['max_tool_calls']} tool calls a turn, {when}; extra analyses pause when less than "
             f"{(1 + RESERVE_TURNS) * turn:g} $ of the day is left, so the alert rounds keep {RESERVE_TURNS * turn:g} $")  # fmt: skip
@@ -197,6 +224,9 @@ def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
                  f"the last {roles.RESERVE_SHARE * 100:g} % ({roles.RESERVE_SHARE * daily:g} $) is kept for the alert "
                  "rounds, the daily analysis and the post-mortems; /budget every 0 switches the research agents "
                  "off")  # fmt: skip
+        if not roles.wake_on_table(cfg, paths):  # said only while it is not as it always was
+            line += ("; another role's table change alone starts no turn (/budget wake table on brings that "
+                     "back)")  # fmt: skip
     if read_budget(paths):
         return (
             line
@@ -211,6 +241,7 @@ def budget_line(cfg, paths: OperatorPaths, spent_today: float) -> str:
 _WORDS = {"daily": "daily_usd", "day": "daily_usd", "turn": "turn_usd", "calls": "max_tool_calls",
           "every": "analyst_every_h"}  # fmt: skip
 _UNKNOWN = "a word I do not know: after the dollars a day I know turn, calls and every, each with its number"
+_WAKE = "wake table takes on or off and goes alone: /budget wake table off, /budget wake table on"
 
 
 def _number(word: str) -> float:
@@ -221,10 +252,12 @@ def _number(word: str) -> float:
         raise ValueError("not a number") from None
 
 
-def parse_budget(words: list[str]) -> dict[str, float]:
+def parse_budget(words: list[str], held: dict | None = None) -> dict[str, float]:
     """`200`, `200 turn 4 calls 30 every 3`, `turn 4`: the values named. Dollars a day given (first, or after "daily")
     bring the work-harder profile for every value not named, the turn cut to the day when the day is smaller. A word
-    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log."""
+    that is not understood is never repeated: a secret key pasted by mistake must not reach the chat or the log.
+    `held`: what the owner's file holds now. The gap it holds (`every`) stays unless `every` is named: it is also the
+    least gap between a research agent's turns (roles.start_rules), and new dollars a day must not move it unsaid."""
     rest, values = [w.lower() for w in words], {}
     try:
         values["daily_usd"] = _number(rest[0])
@@ -244,13 +277,17 @@ def parse_budget(words: list[str]) -> dict[str, float]:
         rest = rest[2:]
     if "daily_usd" in values:
         for name, v in WORK_HARDER.items():
+            if name == "analyst_every_h" and name not in values and name in (held or {}):
+                continue  # the owner's own gap stays
             values.setdefault(name, min(v, values["daily_usd"]) if name == "turn_usd" else v)
     return values
 
 
 def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float | None = None) -> str:
     """`/budget` (show), `/budget 200` (the work-harder profile), `/budget 200 turn 4 calls 30 every 3`, `/budget
-    default`. A bad value changes nothing and says why; what still applies follows."""
+    default`. A bad value changes nothing and says why; what still applies follows. `/budget wake table on|off` is
+    the owner's switch for whether another role's table change alone starts a research agent's turn (a file of its
+    own, roles.WAKE_SWITCH: the dollars are not touched, and `/budget default` leaves it)."""
     now = time.time() if now is None else now
     spent = Ledger(paths.spend, {}).spent_today(now)
     words = [w.lower() for w in args]
@@ -262,7 +299,12 @@ def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float
                 raise ValueError("/budget default goes alone")
             clear_budget(paths)
             return "budget back to the config: " + budget_line(cfg, paths, spent)
-        set_budget(paths, cfg, parse_budget(words), by, now)
+        if "wake" in words:
+            if len(words) != 3 or words[:2] != ["wake", "table"] or words[2] not in ("on", "off"):
+                raise ValueError(_WAKE)
+            roles.set_wake_table(paths, words[2])
+            return "budget set: " + budget_line(cfg, paths, spent)
+        set_budget(paths, cfg, parse_budget(words, read_budget(paths)), by, now, named_every="every" in words)
     except ValueError as exc:
         return (f"budget not changed: {exc}. Send /budget 200 (the work-harder profile), /budget 200 turn 4 calls 30 "
                 f"every 3, or /budget default. {budget_line(cfg, paths, spent)}")  # fmt: skip
@@ -270,17 +312,20 @@ def budget_reply(cfg, paths: OperatorPaths, args: list[str], by: str, now: float
 
 
 def budget_cli(cfg, args, now: float | None = None) -> int:
-    """`snipetech operate budget [--daily-usd N] [--turn-usd N] [--tool-calls N] [--analyst-every-h N] [--default]`.
-    Sets exactly the values given, with no profile: the cloud session names each value the owner agreed to in chat
-    (`remote --wait run operate budget ...`). Prints where the file is and the budget that applies; a bad value, or a
-    budget flag without `budget`, changes nothing and exits with the reason."""
+    """`snipetech operate budget [--daily-usd N] [--turn-usd N] [--tool-calls N] [--analyst-every-h N] [--default]
+    [--wake-table on|off]`. Sets exactly the values given, with no profile: the cloud session names each value the
+    owner agreed to in chat (`remote --wait run operate budget ...`). Prints where the file is, the budget that
+    applies and the table wake; a bad value, or a budget flag without `budget`, changes nothing and exits with the
+    reason. `--wake-table` writes the owner's switch of its own (roles.WAKE_SWITCH), which `--default` leaves."""
     paths = OperatorPaths(Path(cfg.storage.db_path).resolve().parent)
     given = {"daily_usd": args.daily_usd, "turn_usd": args.turn_usd, "max_tool_calls": args.tool_calls,
              "analyst_every_h": args.analyst_every_h}  # fmt: skip
     values = {k: v for k, v in given.items() if v is not None}
+    wake = getattr(args, "wake_table", None)
     if args.action != "budget":
         raise SystemExit(
             "--daily-usd, --turn-usd, --tool-calls, --analyst-every-h and --default go with `operate budget`"
+            + ("; so does --wake-table" if wake is not None else "")
         )
     if args.budget_default and values:
         raise SystemExit("operate budget: --default goes alone (it removes the owner's budget file)")
@@ -292,7 +337,15 @@ def budget_cli(cfg, args, now: float | None = None) -> int:
             set_budget(paths, cfg, values, "cli", now)
         except ValueError as exc:
             raise SystemExit(f"operate budget: not changed: {exc}") from None
+    if wake is not None:
+        roles.set_wake_table(paths, wake)
     there = budget_file(paths).exists()
     print(f"budget file {budget_file(paths)} on this machine" + ("" if there else " (none: the config's values apply)"))
     print(budget_line(cfg, paths, Ledger(paths.spend, {}).spent_today(now)))
+    switch = paths.root / roles.WAKE_SWITCH
+    print(
+        "another role's table change alone starts a research agent's turn: "
+        + ("on" if roles.wake_on_table(cfg, paths) else "off")
+        + (f" (the owner's file {switch})" if switch.exists() else " (no owner's file: [operator] wake_on_table)")
+    )
     return 0

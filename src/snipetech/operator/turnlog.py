@@ -1,7 +1,9 @@
 """The agents' thinking on the record, for the owner's live page (owner, 9 Nov: "see exactly what each thing is doing
 ... how they are thinking"). One line per turn in operator/turns.jsonl: why the turn ran, then in order each piece of
 reasoning, what it said, and each tool it called with what it asked and what came back. Secrets are scrubbed (ops.redact),
-long text is cut, and the file is kept under TURNS_MAX_BYTES by dropping its oldest turns."""
+long text is cut, and the file is kept under TURNS_MAX_BYTES by dropping its oldest turns. A turn the API refused
+before it did anything is written once: the next ones that say the same are left out (`TurnLog.finish`), so an empty
+account does not push the turns that worked off the page."""
 
 from __future__ import annotations
 
@@ -86,10 +88,49 @@ class TurnLog:
         with contextlib.suppress(OSError, TypeError, ValueError):
             line = redact(json.dumps(row, default=str)) + "\n"
             path = turns_file(paths)
+            # A turn the API refused before it did anything, after a row that says the same: not written. 14 Nov: 199
+            # of the newest 307 rows were such refusals (an empty account, four roles a round) and the owner's page
+            # showed nothing else. The first of a run stays, so the page says why it went quiet.
+            if _bare_refusal(row) and _repeats(_last_row(path), json.loads(line)):
+                return
             with path.open("a") as f:
                 f.write(line)
             if path.stat().st_size > TURNS_MAX_BYTES:
                 _trim(path)
+
+
+LAST_ROW_BYTES = 4096  # a refusal's row is a few hundred bytes: a last row longer than this is no bare refusal
+
+
+def _bare_refusal(row: Any) -> bool:
+    """A turn the API refused before a single step: no thinking, no word, no tool call."""
+    return isinstance(row, dict) and row.get("stopped") == "api_error" and not row.get("steps")
+
+
+def _repeats(before: Any, row: dict) -> bool:
+    """Whether `row`, a bare refusal, says what the row before it said: that one a bare refusal too, in the same
+    words of the API (whichever agent was refused)."""
+    return _bare_refusal(before) and before.get("error") == row.get("error")
+
+
+def _last_row(path) -> dict | None:
+    """The file's last row when it is short enough to be a bare refusal, else None (no file, a long row, a damaged
+    one): only the file's end is read."""
+    try:
+        with path.open("rb") as f:
+            size = f.seek(0, 2)
+            f.seek(max(0, size - LAST_ROW_BYTES))
+            tail = f.read()
+    except OSError:
+        return None
+    lines = tail.splitlines()
+    if not lines or (len(lines) == 1 and size > LAST_ROW_BYTES):  # the last row begins before what was read
+        return None
+    try:
+        row = json.loads(lines[-1])
+    except ValueError:
+        return None
+    return row if isinstance(row, dict) else None
 
 
 def _trim(path) -> None:

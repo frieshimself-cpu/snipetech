@@ -52,3 +52,23 @@ def test_idea_cli_sets_the_role(tmp_path):
     assert [role_of(i) for i in list_ideas(OperatorPaths(tmp_path / "data"), status=None)] == ["scout", "fees"]
     with pytest.raises(SystemExit):
         _cli(tmp_path, "idea", "--id", old["id"], "--role", "analyst")
+
+
+def test_operate_idea_closes_an_idea_with_its_result_and_says_what_was_cut(tmp_path, capsys):
+    """An idea is closed with what its test found (`--result`); a text over its cap is cut there and kept, and the
+    command's answer names the field and how long it was, so the cloud session sees that it was cut."""
+    import json
+
+    _cli(tmp_path, "idea", "--title", "Cap", "--why", "w", "--test", "lab over 72 h", "--expected", "e", "--kind",
+         "research")  # fmt: skip
+    (idea,) = list_ideas(OperatorPaths(tmp_path / "data"))
+    capsys.readouterr()
+    assert _cli(tmp_path, "idea", "--id", idea["id"], "--status", "rejected", "--result",
+                "lower -0.021 over 133 copies (job 6c1b82)") == 0  # fmt: skip
+    (after,) = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
+    assert after["status"] == "rejected" and after["result"] == "lower -0.021 over 133 copies (job 6c1b82)"
+    assert after["test"] == "lab over 72 h" and "cut" not in json.loads(capsys.readouterr().out)
+    assert _cli(tmp_path, "idea", "--id", idea["id"], "--test", "the same lab at +0 and at +6; " * 25) == 0
+    assert json.loads(capsys.readouterr().out)["cut"] == {"test": 749}  # the cap is 650 since round 4 (14 Nov)
+    (after,) = list_ideas(OperatorPaths(tmp_path / "data"), status=None)
+    assert len(after["test"]) <= 650 and after["test"].endswith("…")

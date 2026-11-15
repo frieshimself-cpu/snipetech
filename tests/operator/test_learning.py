@@ -133,11 +133,13 @@ def test_a_new_idea_needs_every_field_and_valid_choices(paths):
         L.upsert_idea(paths, IDEA | {"priority": 9}, source="analyst", now=NOW)
     with pytest.raises(ValueError, match="secret"):
         L.upsert_idea(paths, IDEA | {"why": "key sk-ant-api03-abcdefghij"}, source="analyst", now=NOW)
-    with pytest.raises(ValueError, match="600"):
-        L.upsert_idea(paths, IDEA | {"why": "x" * 601}, source="analyst", now=NOW)
     with pytest.raises(ValueError, match="size"):
         L.upsert_idea(paths, IDEA | {"size": 2.0}, source="analyst", now=NOW)
     assert L.list_ideas(paths, status="all") == []
+    # since 14 Nov a text over its cap is no refusal: it is cut there and kept (57 of 207 idea writes had been refused
+    # for length, and each was written again whole)
+    kept = L.upsert_idea(paths, IDEA | {"why": "7 of 9 losses were small buys. " * 30}, source="analyst", now=NOW)
+    assert len(kept["why"]) <= 700 and kept["why"].endswith("…") and kept["why"].startswith("7 of 9 losses were")
 
 
 def test_open_ideas_are_ranked_and_closed_ones_left_out(paths):
@@ -477,12 +479,16 @@ def test_the_operator_and_the_analyst_can_read_and_write_what_was_learned(toolbo
     assert lesson["source"] == "postmortem" and lesson["n"] == 9 and lesson["ts"] == "2026-11-06T18:00:00Z"
     assert "Fees ate the small wins" in (paths.root / "lessons.md").read_text()
     assert _call(tools["add_lesson"], text="x", evidence="", n=3).startswith("error: evidence")
-    idea = json.loads(_call(tools["upsert_idea"], **IDEA))
+    # since 14 Nov a write is answered with what it did, not with what was written, and a list is one line an idea
+    assert _call(tools["upsert_idea"], **IDEA) == "I1 created: research, open, priority 3, queue tester"
+    (idea,) = L.list_ideas(paths, "all")
     assert idea["id"] == "I1" and idea["source"] == "postmortem"
-    moved = json.loads(_call(tools["upsert_idea"], id="I1", status="testing"))
+    assert _call(tools["upsert_idea"], id="I1", status="testing") == "I1 updated: status"
+    (moved,) = L.list_ideas(paths, "all")
     assert moved["status"] == "testing" and moved["title"] == IDEA["title"]
     assert _call(tools["upsert_idea"], title="half an idea").startswith("error: a new idea needs")
-    listed = json.loads(_call(tools["list_ideas"]))
+    assert _call(tools["list_ideas"]).splitlines()[1].startswith(f"I1 [testing, priority 3, tester] {IDEA['title']}.")
+    listed = json.loads(_call(tools["list_ideas"], full=True))
     assert [i["id"] for i in listed["ideas"]] == ["I1"] and listed["counts"] == {"testing": 1}
     assert _call(tools["list_ideas"], status="bogus").startswith("error")
 
@@ -686,6 +692,19 @@ def test_no_research_record_gives_no_block_and_never_an_error(tmp_path, paths):
     assert L.context(paths, research=d) == L.context(paths) == L.context(paths, research=tmp_path / "nowhere")
 
 
+def test_a_newest_round_without_its_sections_says_so_instead_of_a_heading_over_nothing(tmp_path):
+    """Round 7 (8 Nov) was written without "## Report" and "## Lessons": every turn's record began "... the newest,
+    round 7 (2026-11-08-round-7.md):" with nothing under it. The line says what is missing and how to read the file."""
+    d = tmp_path / "research"
+    _report(d, "2026-11-07-round-3.md", "OUTCOME: three.", ["three's lesson"])
+    (d / "2026-11-08-round-7.md").write_text("# Research round 7\n\n## 1. KOL copies: refuted\n\nNone qualifies.\n")
+    (d / "README.md").write_text(INDEX)
+    lines = L.research_record(d).splitlines()
+    assert not lines[0].endswith(":") and "round 7 (2026-11-08-round-7.md)" in lines[0]
+    assert "read_file docs/research/2026-11-08-round-7.md" in lines[0]
+    assert lines[1] == "Older rounds, newest first (docs/research/README.md):" and lines[2].startswith("- Round 3 (")
+
+
 def test_a_missing_section_leaves_out_only_its_part(tmp_path):
     d = tmp_path / "research"
     _report(d, "2026-11-07-round-3.md", "OUTCOME: three.")  # no ## Lessons, no README.md
@@ -843,3 +862,45 @@ def test_digest_names_one_next_test_a_role(paths):
         "This week: 3 tests started")
     plain = L.digest_lines(paths, NOW - 6 * H, NOW)
     assert "Testing next:" in plain and not any("research agent" in x or "This week" in x for x in plain)
+
+
+def test_a_secret_across_an_idea_texts_cap_is_refused_not_cut_in_half(paths, monkeypatch):
+    """An idea text over its cap is cut and kept since 14 Nov. The secret check ran on the cut text, so the part of a
+    key in front of the cut no longer looked like one and was stored. The whole text is checked first."""
+    key = "hk_" + "Q7w9" * 9 + "Zz"
+    monkeypatch.setenv("GMGN_API_KEY", key)
+    b58 = "5" + "KJvsngHeMpm884wtkJNzQGaCErckhHJBGFsvd3VyK5qM" * 2
+    idea = {"title": "t", "why": "w", "test": "x", "expected": "e", "kind": "research"}
+    for field in ("why", "test", "expected", "result", "title"):
+        cap = L.IDEA_CAPS[field]
+        for secret, keep in ((key, 20), (b58, 60)):
+            keep = min(keep, cap // 2)
+            text = ("word " * 300)[: cap - 2 - keep] + " " + secret + " and the rest" + " more" * 40
+            with pytest.raises(ValueError, match="looks like it carries a secret"):
+                L.upsert_idea(paths, idea | {field: text}, source="scout", now=NOW)
+    assert not L.list_ideas(paths, "all")
+
+
+def test_a_role_that_runs_labs_is_told_how_many_lab_slots_are_free(paths, monkeypatch):
+    """ "every lab slot is held" and "labs are already running" were at least 28 of the refusals in 108 recorded turns:
+    a role wrote a lab's whole command to learn that no slot was free. Its message says it (one line, in the part of
+    the message that changes every turn), from the locks start_job's refusal reads; a role with no command that takes
+    a slot is told nothing."""
+    from snipetech.analysis import lab_lock
+
+    monkeypatch.setenv("SNIPETECH_LAB_SLOTS", "2")
+    line = "Lab slots: 2 of 2 free (a lab, a freeze and qualify each take one)."
+    assert L.lab_slots_line(paths, "tester") == line
+    for role in ("tester", "fees", "scout"):
+        assert line in L.context(paths, role=role).splitlines(), role
+    assert L.lab_slots_line(paths, "oktech") == "" and "Lab slots" not in L.context(paths, role="oktech")
+    assert "Lab slots" not in L.context(paths)  # the operator's and the analyst's message: as it was
+    with lab_lock.lab_lock(paths.data, wait=False):
+        assert L.lab_slots_line(paths, "fees") == "Lab slots: 1 of 2 free (a lab, a freeze and qualify each take one)."
+        with lab_lock.lab_lock(paths.data, wait=False):
+            lab_lock.want(paths.data, "qualify")
+            # round 3 (14 Nov): no lab of the agents' runs, so start_job would not make them give way: the line
+            # says only that qualify waits too (tests/operator/test_tool_answers.py has the other case)
+            assert L.lab_slots_line(paths, "tester") == (
+                "Lab slots: 0 of 2 free (a lab, a freeze and qualify each take one); qualify waits for a slot too."
+            )
