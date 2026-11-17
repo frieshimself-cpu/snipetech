@@ -23,6 +23,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any
 
+from ..claude_client import has_claude_key
 from .paths import OperatorPaths
 
 ROLES = ("scout", "tester", "fees", "oktech")
@@ -877,7 +878,7 @@ async def run_role(cfg, svc, role: str, *, repo: Path, branch: str, now: Callabl
                 NoteSink(paths, now=now).write(f"{role}: {why}; it pauses until 00:00 UTC", "info")
                 update_state(paths, role, share_told=day)
             return skip(why)
-        if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        if client is None and not has_claude_key():
             return skip("no ANTHROPIC_API_KEY in the environment")
         asker = credit_asker(cfg, paths, svc.store, ledger, t0, role, metas, rules)
         if asker not in (None, role):  # the account is empty: one role a round asks, the others build no message

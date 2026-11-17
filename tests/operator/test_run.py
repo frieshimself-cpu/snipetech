@@ -587,3 +587,11 @@ def test_the_round_records_when_it_ended(tmp_env):
     _op(tmp_env, now=now, boot=lambda: NOW - 86400)
     state = json.loads((tmp_env["paths"].root / outage.STATE).read_text())
     assert state["round_ts"] == NOW + 3000  # the last time the round read the clock, not its start
+
+
+def test_an_amazon_bedrock_key_alone_lets_the_turn_run(tmp_env, monkeypatch):
+    _sells(tmp_env["svc"].store, 5, NOW - 3600)
+    monkeypatch.delenv("ANTHROPIC_API_KEY")
+    monkeypatch.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-token")
+    _op(tmp_env)
+    assert tmp_env["calls"]

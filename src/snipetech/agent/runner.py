@@ -8,6 +8,8 @@ import sys
 import anthropic
 from anthropic import AsyncAnthropic
 
+from snipetech.claude_client import claude_client
+
 from ..config import Config
 from ..service import Service
 from .prompts import SYSTEM_PROMPT
@@ -53,7 +55,7 @@ async def ask(client: AsyncAnthropic, cfg: Config, tools: list, history: list) -
 
 async def run_agent(cfg: Config, prompt: str | None = None) -> int:
     svc = Service(cfg, progress=lambda m: print(f"  … {m}", file=sys.stderr, flush=True))
-    client = AsyncAnthropic()
+    client = claude_client(cfg.agent.model)
     tools = make_tools(svc)
     history: list = []
     try:

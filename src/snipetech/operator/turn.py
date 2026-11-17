@@ -11,6 +11,8 @@ from collections.abc import Callable, Collection
 import anthropic
 from anthropic import AsyncAnthropic
 
+from snipetech.claude_client import claude_client
+
 from ..config import Config
 from ..ops import redact
 from . import roles
@@ -294,10 +296,11 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         text = user_message(snap, decision, inbox, learned=learned, update_of=update_of, ceiling=ceiling)
         # an update turn carries the day's report itself, in blocks the hour's cache serves (prompts.message_content)
         content = message_content(text, update_of, _report_text(paths, update_of))
-    client = client or AsyncAnthropic()
     big = analyst or role is not None  # the research thinking runs on the analyst's model
+    model = op.analyst_model if big else op.model
+    client = client or claude_client(model)  # directly, or through Amazon Bedrock (claude_client)
     runner = client.beta.messages.tool_runner(
-        model=op.analyst_model if big else op.model,
+        model=model,
         max_tokens=op.analyst_max_tokens if big else op.max_tokens,
         # the tools and the instructions are the same from turn to turn and turns come 15-30 minutes apart: in the
         # five-minute cache every turn wrote them again at the write price; in the hour's the next turn reads them

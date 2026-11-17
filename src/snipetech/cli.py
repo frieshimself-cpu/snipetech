@@ -1596,10 +1596,12 @@ async def doctor(svc: Service) -> dict:
             "ok": False,
             "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without",
         }
-    has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
+    from .claude_client import has_claude_key
+
+    has_key = has_claude_key()
     out["agent"] = {
         "ok": has_key,
-        "detail": "ANTHROPIC_API_KEY found" if has_key else "set ANTHROPIC_API_KEY to use `snipetech agent`",
+        "detail": "a Claude key found (direct or Amazon Bedrock)" if has_key else "set ANTHROPIC_API_KEY or AWS_BEARER_TOKEN_BEDROCK to use `snipetech agent`",
     }
     if os.environ.get("BIRDEYE_API_KEY"):
         try:

@@ -12,6 +12,8 @@ from typing import Any
 import anthropic
 from anthropic import AsyncAnthropic, beta_async_tool
 
+from snipetech.claude_client import claude_client
+
 from ..config import Config
 from ..operator.budget import Ledger
 from ..operator.learning import context as learning_context
@@ -57,7 +59,7 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
             }
         )
 
-    client = client or AsyncAnthropic()
+    client = client or claude_client(cfg.operator.strategist_model)
     runner = client.beta.messages.tool_runner(
         model=cfg.operator.strategist_model,
         max_tokens=cfg.operator.analyst_max_tokens,

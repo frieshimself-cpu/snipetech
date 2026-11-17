@@ -14,6 +14,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from ..book.watch import watch_wallet
+from ..claude_client import has_claude_key
 from ..config import Config
 from ..ops import _pid_alive, redact
 from . import learning, live_test, outage, plain_sol, postmortem, risk_guard, roles
@@ -344,7 +345,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
             _log(paths, t0, "quiet")
             return 0
         _log(paths, t0, f"call {decision.mode}: " + "; ".join(decision.reasons))
-        if client is None and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        if client is None and not has_claude_key():  # the direct key or the Amazon Bedrock one (claude_client)
             _log(paths, t0, "no ANTHROPIC_API_KEY in the environment")
             if not notes.has_today("ANTHROPIC_API_KEY", t0):
                 notifier.send(
