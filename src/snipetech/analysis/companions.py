@@ -67,7 +67,15 @@ def pack_end(i: int, n: int, at: Callable[[int], tuple[int, str, int, bool, str]
     buys of PACK_TX_WALLETS wallets or more; i itself when it was sent alone. `at(j)`: the j-th of the coin's `n`
     trades, in the order they ran, as (slot, transaction, block place, is a buy, wallet). No copy lands inside a
     transaction, nor between transactions sent together: a pack is its leader's own entry (lab.own_entry_end,
-    bid_landing.block)."""
+    bid_landing.block), and a place counted behind any trade is behind that trade's pack (lab.pack_end).
+
+    What this does and does not promise (a review, 19 Nov). A place is never earlier than without the rule. It is not
+    always dearer: a transaction is taken whole, so where it holds a sale the price behind it is under the price
+    behind its first buy. A link must sit in the very next block place: one foreign transaction between two of an
+    operator's transactions ends the pack there, and the rest of its buys are outsiders again. And any transaction in
+    the next place with two wallets' buys is a link, whoever sent it: both errors put a copy later, never earlier.
+    Block places are the block's own only on rows the stream recorder wrote; a listing's numbering (the logs
+    fallback, an RPC backfill) counts the coin's transactions 0, 1, 2 and makes every next one "the next place"."""
     slot, sig, place, _, _ = at(i)
     last, j = i, i + 1
     while j < n and at(j)[0] == slot and at(j)[1] == sig:  # the rest of its own transaction

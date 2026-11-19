@@ -1003,7 +1003,9 @@ def test_a_copy_never_lands_cheaper_than_right_behind_the_companions():
     m.commit()
     path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
     assert path.q[13] / path.b[13] < path.q[5] / path.b[5] < path.q[7] / path.b[7]
-    assert copy_entry(path, 5, 3) == 5  # as it was: right behind the leader, between the operator's transactions
+    # with no companions named the set's two buys are two of the three buys ahead of the copy, and it pays the dearest
+    # price among them (19 Nov: until then the third buy, after the dump, put it back right behind the leader)
+    assert copy_entry(path, 5, 3) == 7
     assert copy_entry(path, 5, 3, mates=mates) == 7  # behind the operator's last wallet, at the price the set left
     st.close()
 
@@ -1168,10 +1170,12 @@ def test_a_copy_lands_behind_the_pack_its_leader_was_sent_in():
     assert path.sigs[lead] == path.sigs[third] and not path.amm[14] and path.amm[15]
     assert own_entry_end(path, lead, None) == 15 and own_entry_end(path, third, None) == 15
     assert copy_entry(path, lead, 0) == 15  # the closest a copy lands: behind the whole pack, on PumpSwap
-    assert copy_entry(path, lead, 3) == 19  # behind three buys by others: CWNYbh, and two in the block after it
+    # behind three buys by others (CWNYbh, and two in the block after it, states 16 to 19) it pays the dearest price
+    # among them: the one CWNYbh's buy left
     assert path.users[16].startswith("CWNYbh") and int(path.slot[19]) == int(path.slot[lead]) + 2
+    assert copy_entry(path, lead, 3) == 16 and path.q[16] / path.b[16] >= path.q[19] / path.b[19]
     # the copy pays what the pack left, never the curve price between the operator's own buys
-    paid, inside = path.q[19] / path.b[19], path.q[4] / path.b[4]
+    paid, inside = path.q[16] / path.b[16], path.q[4] / path.b[4]
     assert paid > 3 * inside
 
 
@@ -1180,7 +1184,7 @@ def test_one_wallets_transaction_right_behind_the_leader_is_an_outsider_like_any
     place is a fast bot as often as the operator's own (the companion rule tells those apart, by habit): it stays a
     buyer the copy lands behind, counted like any other. And a pack that does not follow back to back is someone
     else's."""
-    from snipetech.analysis.lab import copy_entry, own_entry_end
+    from snipetech.analysis.lab import copy_entry, entry_at, own_entry_end
 
     st = Store(":memory:")
     lead, dev = addr("pk-lead"), addr("pk-dev")
@@ -1195,7 +1199,99 @@ def test_one_wallets_transaction_right_behind_the_leader_is_an_outsider_like_any
     m.commit()
     path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
     assert path.users[2] == lead and own_entry_end(path, 2, None) == 2
-    assert copy_entry(path, 2, 0) == 2 and copy_entry(path, 2, 1) == 3 and copy_entry(path, 2, 3) == 6
+    assert copy_entry(path, 2, 0) == 2 and copy_entry(path, 2, 1) == 3
+    # The third buy behind the leader is the second of the far transaction's three. Nobody buys inside a transaction
+    # (19 Nov, a review: "+3x" stood at state 6, between two buys of one transaction): the copy stands behind all of it.
+    assert path.sigs[5] == path.sigs[6] == path.sigs[7] and copy_entry(path, 2, 3) == 7
+    slot = int(path.slot[2])
+    for kind in ("kol", "whale"):  # a place counted inside the block stops there no more than one counted across
+        assert entry_at(kind, path, 2, slot, 0, "+3") == 7, kind  # the bot, the sale and the far transaction's first
+        assert entry_at(kind, path, 2, slot, 0, "+1") == 3, kind
+    st.close()
+
+
+def test_a_rule_that_is_no_copy_lands_behind_the_pack_its_trigger_was_sent_in():
+    """19 Nov, a review of the pack rule: only a copy and a place counted across blocks ("+Nx") stood behind the pack.
+    A momentum rule fires on a pack's own trade (several buys of 1 SOL, the price up 20 %), here BwNtrp's, the third
+    trade of the pack's first transaction, and its place inside the block was still counted from that trade: "+6" at
+    state 8, on the curve at 0.21 SOL a million coins between the operator's own buys, sold after 5 s for +0.24 SOL
+    on 0.2, where the pack left the coin on PumpSwap at 0.44 and the same buy loses. Every kind counts a place inside
+    the trigger's block from the end of the pack the trigger was sent in."""
+    from snipetech.analysis.lab import entry_at
+
+    path = MarketPath.build(_pack_19nov())
+    slot = int(path.slot[2])
+    assert path.users[2].startswith("BwNtrp") and path.sigs[2] == path.sigs[1] and int(path.slot[15]) == slot
+    for kind in ("momentum", "whale", "hunt", "event"):
+        for position in ("+1", "+3", "+6", "start", "middle", "end"):
+            assert entry_at(kind, path, 2, slot, 0, position) == 15, (kind, position)
+        # in a later block the place is what it was: the one trade of the next block, three trades into the one after
+        assert entry_at(kind, path, 2, slot, 1, "+3") == 16 and entry_at(kind, path, 2, slot, 2, "+3") == 19, kind
+
+
+def test_a_copy_counted_across_blocks_pays_the_dearest_price_among_the_buys_it_stands_behind():
+    """19 Nov, a review: with the pack's buys no longer among the three, the third buy by others is a later one, and
+    where a holder had sold by then the old floor ("never cheaper than right behind the leader") put the copy right
+    behind the pack: ahead of two outsiders who bought before the fall, 20 % cheaper than behind them. A copy that
+    stands behind three buys pays no less than behind any one of them, as a bid landing has done since 12 Nov."""
+    from snipetech.analysis.lab import copy_entry, own_entry_end
+
+    st = Store(":memory:")
+    lead, dev = addr("dx-lead"), addr("dx-dev")
+    m = Market(st, addr("dx-coin"), dev, NOW - 4000, 37_000_000)
+    m.buy(dev, 3.0, 0, sig=m.create_sig)  # state 1
+    m.buy(lead, 1.0, 5, sig=addr("dx-pack"))  # state 2
+    m.buy(addr("dx-mate"), 1.0, 5, sig=addr("dx-pack"))  # state 3: a pack of two
+    m.buy(addr("dx-out1"), 1.0, 5)  # state 4
+    m.buy(addr("dx-out2"), 1.0, 5)  # state 5
+    m.sell(dev, 1.0, 6)  # state 6: a holder sells a block later
+    m.buy(addr("dx-out3"), 0.2, 7)  # state 7: the third outsider, after the fall
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[2] == lead and own_entry_end(path, 2, None) == 3
+    assert path.q[7] / path.b[7] < path.q[3] / path.b[3] < path.q[5] / path.b[5]
+    assert [copy_entry(path, 2, n) for n in (0, 1, 2, 3)] == [3, 4, 5, 5]
+    st.close()
+
+
+def test_a_pack_wallet_that_buys_again_in_the_block_is_not_a_buyer_ahead_of_the_copy():
+    """A wallet of the leader's pack, or one that bought ahead of it in its own transaction, is the leader's operator
+    as a companion is: its second buy in that block is not one of the buys a copy is counted behind."""
+    from snipetech.analysis.lab import copy_entry
+
+    st = Store(":memory:")
+    lead, dev, payer, mate = addr("rb-lead"), addr("rb-dev"), addr("rb-payer"), addr("rb-mate")
+    m = Market(st, addr("rb-coin"), dev, NOW - 4000, 38_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    m.buy(payer, 0.01, 5, sig=addr("rb-pack"))  # state 2: the fee payer's own small buy comes first
+    m.buy(lead, 1.0, 5, sig=addr("rb-pack"))  # state 3: the followed wallet
+    m.buy(mate, 1.0, 5, sig=addr("rb-pack"))  # state 4
+    m.buy(payer, 0.5, 5)  # state 5: the payer again, a transaction of its own
+    m.buy(mate, 0.5, 5)  # state 6: and the mate again
+    for j in range(3):  # states 7-9: three outsiders
+        m.buy(addr(f"rb-out{j}"), 0.3, 5)
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[3] == lead
+    assert [copy_entry(path, 3, n) for n in (0, 1, 3)] == [4, 7, 9]
+    st.close()
+
+
+def test_a_coins_first_state_is_no_trade_and_starts_no_pack():
+    """A launch rule fires at the coin's synthetic first state (no trade: block place -1). A bundle at block place 0
+    read as "the next block place" behind it and became the launch's own pack, by accident of where the block began."""
+    from snipetech.analysis.lab import pack_end
+
+    st = Store(":memory:")
+    dev = addr("gs-dev")
+    m = Market(st, addr("gs-coin"), dev, NOW - 4000, 39_000_000)
+    m.n = -1  # the first transaction of the block: block place 0
+    for j in range(3):
+        m.buy(addr(f"gs-b{j}"), 1.0, 0, sig=addr("gs-bundle")).pos = 0
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.genesis and int(path.pos[0]) == -1 and int(path.pos[1]) == 0
+    assert pack_end(path, 0) == 0 and pack_end(path, 1) == 3
     st.close()
 
 

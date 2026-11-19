@@ -1105,7 +1105,8 @@ def mig_entry(path: MarketPath, i: int, mig, latency: int, position: str) -> int
 # Waiting that long is only ever worse for the copy, never better: where holders sell right after the leader's buy, the
 # 3rd buy can come after the dump, cheaper than the leader paid (review of 7 Nov: 13.9 % under the leader's fill on a
 # synthetic dump), a landing no live copy gets (7aPo3n's three landed 0-1 trades behind, 7 Nov 19:18-19:22). So a copy
-# enters at the worse price of the two: behind the N-th buy, or right behind the leader. And never in the create slot:
+# enters at the worst price among the places it may stand at: right behind the leader, or behind any of the N buys
+# (19 Nov; until then only the two ends were compared). And never in the create slot:
 # OKTech sees a buy there only once that block is out (research round 2: the create slot is where no copy lands).
 COPY_LAND_SLOTS = 10
 ACROSS = "x"  # "+3x": behind the 3rd buy after the trigger's, counted across slots
@@ -1120,13 +1121,31 @@ def across_slots(position: Any) -> int | None:
 def pack_end(path: MarketPath, i: int) -> int:
     """The last state of the pack the trade at state i was sent in (`companions.pack_end`: the later trades of its
     own transaction, and of the transactions that follow it back to back while each carries several wallets' buys).
-    State i itself when it was sent alone, and on a path that knows no block places (built by hand)."""
+    State i itself when it was sent alone, on a path that knows no block places (built by hand), and at a coin's
+    synthetic first state: that one is no trade (block place -1), and a bundle at block place 0 read as "the next
+    place" behind it by accident of where the block began.
+
+    Nobody buys inside a transaction, nor between transactions sent together. So this is also where a buy stands
+    that is counted behind the trade at state i, whoever sent that trade (19 Nov, a review: a place counted to the
+    middle of somebody's three-wallet transaction stood between two of its buys)."""
     pos = path.pos
-    if pos is None:
+    if pos is None or int(pos[i]) < 0:
         return i
     return trades_pack_end(
         i, path.n, lambda j: (int(path.slot[j]), path.sigs[j], int(pos[j]), bool(path.is_buy[j]), path.users[j])
     )
+
+
+def pack_buyers(path: MarketPath, i: int, packed: int) -> set[str]:
+    """The wallets that bought in the pack of the trade at state i (`packed`: its `pack_end`): in its own transaction
+    from that transaction's first trade on (the fee payer's own small buy often comes first) and in the links behind
+    it. They are the followed wallet's operator as a companion is. Empty on a path that knows no block places."""
+    if path.pos is None:
+        return set()
+    k, s = i, int(path.slot[i])
+    while k > 0 and path.sigs[k - 1] == path.sigs[i] and int(path.slot[k - 1]) == s:
+        k -= 1
+    return {path.users[j] for j in range(k, packed + 1) if path.is_buy[j]}
 
 
 def own_entry_end(path: MarketPath, i: int, mates: Collection[str] | None) -> int:
@@ -1149,26 +1168,33 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     """The state a copy enters at, its leader's buy at state i ("+Nx"): behind the n-th buy after it, counted across
     slots, so every trade before that buy (a sell too) lands ahead of the copy; only buys within COPY_LAND_SLOTS of the
     leader's slot count, and when fewer came by then, behind the last of those, right behind the leader when none did.
-    Never cheaper than right behind the leader, the closest a live copy lands: where the trades before the n-th buy left
-    the price under the one the leader's buy left, the copy enters right behind the leader instead (ahead of a dump that
-    came after it). Never in the coin's create slot (the tape's launch): behind its last trade at the earliest. With
-    `latency`, never ahead of a trade of the slots before slot + latency (copies land at latency 0).
+    Behind a buy means behind the whole transaction it came in, and the transactions sent with it (`pack_end`): nobody
+    buys inside one. Never cheaper than right behind the leader, the closest a live copy lands, nor than right behind
+    any of those n buys: the copy enters at the dearest of these states, the latest of equals (`_dearest`, as a bid
+    landing does). Until 19 Nov only the n-th buy was held against the price right behind the leader: where a holder
+    sold before the n-th buy came, the copy was put back right behind the leader, ahead of the buys that came before
+    the fall and cheaper than behind them (a review: 8,525 of 1.47 million fuzzed moments). With prices that only rise
+    the dearest state is the last one, as before. Never in the coin's create slot (the tape's launch): behind its last
+    trade at the earliest. With `latency`, never ahead of a trade of the slots before slot + latency (copies land at
+    latency 0).
 
     `mates`: the leader's companions, the wallets its operator buys with in the next transactions of the same block
     (qualify.gates.companions). Their buys in the leader's slot are its own entry: they are not among the n buys, and
     the closest a live copy lands is behind the last of them, since no copy lands between transactions sent together
     (11 Nov: without this the first wallet of a set of four was copied "behind three buys" that were its own, ahead of
-    every outside bot). A companion's buy in a later slot counts like anyone's."""
+    every outside bot). A companion's buy in a later slot counts like anyone's. The wallets of the leader's pack
+    (`pack_buyers`) are held as its companions are: a second buy of theirs in that block is not one of the n."""
     s = int(path.slot[i])
     hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
-    buys = i + 1 + np.flatnonzero(path.is_buy[i + 1 : hi])
+    buys = [int(j) for j in i + 1 + np.flatnonzero(path.is_buy[i + 1 : hi])]
     last_own = own_entry_end(path, i, mates)  # the leader's own buy, or the last of its pack's or its companions'
-    if last_own > i:  # the pack's buys, and the companions' in the leader's slot, are not buyers ahead of us
-        packed, mates = pack_end(path, i), mates or ()
-        buys = np.array([j for j in buys if j > packed and not (int(path.slot[j]) == s and path.users[int(j)] in mates)],
-                        dtype=int)  # fmt: skip
-    e = last_own if n <= 0 or not len(buys) else max(last_own, int(buys[min(n, len(buys)) - 1]))
-    return _no_cheaper(path, i, e, last_own, latency)
+    packed = pack_end(path, i)
+    # the pack's buys are not buyers ahead of us, nor are its wallets' and the companions' later buys in that block
+    ours = pack_buyers(path, i, packed) | set(mates or ())
+    if ours or packed > i:
+        buys = [j for j in buys if j > packed and not (int(path.slot[j]) == s and path.users[j] in ours)]
+    floor = _no_cheaper(path, i, last_own, last_own, latency)  # the closest a live copy lands
+    return _dearest(path, floor, (pack_end(path, j) for j in buys[: max(int(n), 0)]))
 
 
 def _no_cheaper(path: MarketPath, i: int, e: int, last_own: int, latency: int = 0) -> int:
@@ -1219,12 +1245,13 @@ def bid_entry(path: MarketPath, i: int, mates: Collection[str] | None, trades: S
     hi = int(np.searchsorted(path.slot, s + COPY_LAND_SLOTS, side="right"))
     at = {(path.sigs[j], path.users[j]): j for j in range(hi - 1, i, -1) if path.is_buy[j]}  # each one's first buy
     last_own = own_entry_end(path, i, mates)
-    stand = [at[key] for b in who["ahead"] if (key := (b["sig"], b["user"])) in at]  # behind each of these
+    # behind each of these, and so behind the whole transaction (and pack) each one's buy came in: `pack_end`
+    stand = [pack_end(path, at[key]) for b in who["ahead"] if (key := (b["sig"], b["user"])) in at]
     place = int(who["place"])
     if cautious(position):
         place += 1
         last = max([last_own, *stand])
-        stand += [j for j in range(last + 1, hi) if path.is_buy[j] and path.users[j] not in own][:1]
+        stand += [pack_end(path, j) for j in range(last + 1, hi) if path.is_buy[j] and path.users[j] not in own][:1]
     info = {"place": place, "outbid": int(who["outbid"]), "fast": int(who["fast"]), "later": int(who["later"])}
     return _dearest(path, _no_cheaper(path, i, last_own, last_own), stand), info
 
@@ -1247,16 +1274,22 @@ def entry_at(kind: str, path: MarketPath, i: int, t_slot: int, latency: int, pos
     "kol") lands behind the copied wallet's own companions at both (`mates`: analysis.companions; `own_entry_end`):
     "+N" inside the wallet's block counts from behind its last companion there. The lab and the forward paper test
     place every curve entry with this one function, so a rule's forward record and the lab that froze it agree on
-    every trade's place (11 Nov: the paper run had kept counting companions among the trades ahead of us)."""
+    every trade's place (11 Nov: the paper run had kept counting companions among the trades ahead of us).
+
+    Every kind stands behind the pack its trigger was sent in, at a place inside the trigger's block as at one counted
+    across blocks (19 Nov, a review of the pack rule: a momentum rule fires on a pack's own trade, and "+6" from that
+    trade stood six of the pack's buys further on, on the curve, where the pack left the coin on PumpSwap). And no
+    place stops inside a transaction or between transactions sent together, whoever sent them: where the last trade
+    ahead of us is one of a pack, we stand behind that pack (`pack_end`). A place in a later block ("+3@1") counts
+    from that block's start as before, and stops behind a whole transaction too."""
     across = across_slots(position)
-    if kind == "kol":
-        if across is not None:
-            return copy_entry(path, i, across, latency, mates)
-        e = int(path.landing_index(t_slot + latency, position, own_entry_end(path, i, mates)))
-        return create_block_entry(path, i, e, latency, position)  # never inside the coin's create block
     if across is not None:
-        return copy_entry(path, i, across, latency)
-    return int(path.landing_index(t_slot + latency, position, i))
+        return copy_entry(path, i, across, latency, mates if kind == "kol" else None)
+    # Counted from the end of the trigger's own entry: its pack, for a copy its companions too. Then behind the whole
+    # transaction (and pack) of the last trade ahead of us: nobody buys inside one (`pack_end`).
+    base = own_entry_end(path, i, mates) if kind == "kol" else pack_end(path, i)
+    e = pack_end(path, int(path.landing_index(t_slot + latency, position, base)))
+    return create_block_entry(path, i, e, latency, position) if kind == "kol" else e  # never in the create block
 
 
 def create_block_entry(path: MarketPath, i: int, e: int, latency: int, position: str) -> int:
@@ -1277,7 +1310,7 @@ def create_block_entry(path: MarketPath, i: int, e: int, latency: int, position:
     if launch is None or latency or int(path.slot[i]) != int(launch.slot):
         return e
     last = int(np.searchsorted(path.slot, int(launch.slot), side="right")) - 1  # the create block's last trade
-    land = int(path.landing_index(int(launch.slot) + 1, position, last))
+    land = pack_end(path, int(path.landing_index(int(launch.slot) + 1, position, last)))  # behind a whole transaction
     return _dearest(path, last, range(last + 1, land + 1))
 
 

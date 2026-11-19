@@ -654,10 +654,87 @@ def test_the_wallets_own_pack_is_never_a_row_of_outsiders_behind_it():
     trades = _pack_19nov()
     lead = trades[1]
     assert lead.user.startswith("8D92Hh")
-    read = BL.block(trades, lead.sig)
+    read = BL.block(trades, lead.sig, user=lead.user)
     assert read["buyers"] == [] and read["first_later"] == 1  # nobody else in its block: the first outsider a block on
     assert read["later"][0]["user"].startswith("CWNYbh")
+    # the followed buy is the wallet's own, 6.3 SOL, not the first of its transaction (13Yy7r's 0.01 SOL: what a
+    # reading without the wallet takes, and what every reading took until 19 Nov)
+    assert round(read["leader_sol"], 3) == 6.295 and round(BL.block(trades, lead.sig)["leader_sol"], 3) == 0.010
+    assert BL.block(trades, lead.sig, user="nobody in that transaction") is None
     path = MarketPath.build(trades)
     for bid in (0.0001, 0.01, 1.0):
         entry, said = bid_entry(path, 1, None, trades, (), bid)
         assert entry is not None and entry >= 15 and path.amm[entry], (bid, entry, said)
+
+
+def _packed_coin(st, again=(), gap=0):
+    """A coin LEAD buys in one transaction with two more wallets (the fee payer's small buy first), a second
+    transaction of two wallets right behind it (`gap` block places further: 0 = the next place), then RICH and SLOW
+    alone, each in a transaction of its own. `again`: wallets that buy once more behind all of that, in the block."""
+    _N[0] += 1
+    k = _N[0]
+    m = Market(st, addr(f"bl-pk-coin-{k}"), addr(f"bl-pk-dev-{k}"), NOW - 5000, 71_000_000 + k * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    payer, mate, link_a, link_b = (addr(f"bl-pk-{n}") for n in ("payer", "mate", "link-a", "link-b"))
+    rows = [(payer, 0.01, "tx1", 100), (LEAD, 2.0, "tx1", 100), (mate, 1.0, "tx1", 100),
+            (link_a, 1.0, "tx2", 101 + gap), (link_b, 1.0, "tx2", 101 + gap),
+            (RICH, 1.0, None, 110), (SLOW, 0.5, None, 111)]  # fmt: skip
+    rows += [(who, 0.3, None, 120 + j) for j, who in enumerate(again)]
+    for who, sol, tx, place in rows:
+        t = m.buy(who, sol, 50, sig=addr(f"bl-pk-{k}-{tx}") if tx else None)
+        t.pos = place
+        _bid(t, 0.002)
+    m.commit()
+    return m, (payer, mate, link_a, link_b)
+
+
+def test_a_pack_wallet_that_buys_again_is_no_outsider_and_a_gap_ends_the_pack():
+    """19 Nov, a review. A wallet that bought in the followed wallet's pack, or ahead of it in its own transaction (the
+    fee payer), had its first buy there: a second buy of its own later in the block is not an outsider's first buy,
+    as a companion's is not. And a transaction is a link of the pack only in the very next block place: the same
+    two-wallet transaction one place further on is somebody else's, and its buyers are outsiders."""
+    st = _store()
+    m, (payer, mate, link_a, link_b) = _packed_coin(st, again=(addr("bl-pk-payer"), addr("bl-pk-link-a")))
+    slot = m.trades[1].slot
+    trades = _fix_slot_order(st.block_trades(m.mint, slot, slot + COPY_LAND_SLOTS))
+    lead = next(t for t in trades if t.user == LEAD)
+    read = BL.block(trades, lead.sig, user=LEAD)
+    assert [b["user"] for b in read["buyers"]] == [RICH, SLOW]  # not the payer's and the link wallet's second buys
+    far, _ = _packed_coin(st, gap=1)  # the second transaction two places behind the wallet's own: no link
+    slot = far.trades[1].slot
+    trades = _fix_slot_order(st.block_trades(far.mint, slot, slot + COPY_LAND_SLOTS))
+    lead = next(t for t in trades if t.user == LEAD)
+    read = BL.block(trades, lead.sig, user=LEAD)
+    assert [b["user"] for b in read["buyers"]] == [link_a, link_b, RICH, SLOW]
+    path = MarketPath.build(st.trades_for_mint(far.mint), st.launch(far.mint))
+    i = next(j for j in range(path.n) if path.users[j] == LEAD)
+    from snipetech.analysis.lab import copy_entry, own_entry_end
+
+    assert own_entry_end(path, i, None) == i + 1  # its own transaction's last trade: the far one is no link
+    assert copy_entry(path, i, 1) == i + 3  # behind the first buy by others, and so behind that whole transaction
+    st.close()
+
+
+def test_one_buy_further_back_is_behind_the_whole_transaction_that_buy_came_in():
+    """The cautious place stands one buy further back, behind the next buy on the tape. Where that buy is the first of
+    a transaction of two wallets, the copy stands behind the transaction, not between its two buys (19 Nov, a review:
+    no place stops inside a transaction)."""
+    st = _store()
+    _N[0] += 1
+    k = _N[0]
+    m = Market(st, addr(f"bl-tx-coin-{k}"), addr(f"bl-tx-dev-{k}"), NOW - 5000, 72_000_000 + k * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(4):
+        m.buy(addr(f"bl-tx-crowd-{j}"), 0.5, 2 + j)
+    rows = [(LEAD, 2.0, None, 100, 0.002), (RICH, 1.0, "duo", 120, 0.0005), (addr("bl-tx-rider"), 1.0, "duo", 120, 0.0005),
+            (SLOW, 0.5, None, 130, 0.0005)]  # fmt: skip
+    for who, sol, tx, place, bid in rows:
+        t = m.buy(who, sol, 50, sig=addr(f"bl-tx-{k}-{tx}") if tx else None)
+        t.pos = place
+        _bid(t, bid)
+    m.commit()
+    e, info = _entry(st, m, 0.004)  # above every bid, and nobody within two transactions: right behind the wallet
+    assert e == LEAD_AT and info["place"] == 1
+    e, info = _entry(st, m, 0.004, position="bid-")
+    assert e == LEAD_AT + 2 and info["place"] == 2
+    st.close()
