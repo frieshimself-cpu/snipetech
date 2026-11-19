@@ -39,7 +39,7 @@ from .prompts import (
     role_message,
     user_message,
 )
-from .resources import credit_refused, says_no_credit
+from .resources import LIMIT_REACHED, credit_refused, limit_reached_note, says_limit_reached, says_no_credit
 from .snapshot import Snapshot
 from .tools import CUT_NOTE, NoteSink, make_operator_tools
 from .turnlog import TurnLog
@@ -393,6 +393,15 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
             if not notes.has_today(said, now()):  # once a day a role
                 notes.write(f"{said} ({error[:200]}); its turns go out without the hour's cache on its list for a "
                             "day", "info")  # fmt: skip
+        elif says_limit_reached(error, getattr(exc, "body", None)):
+            # the key's own credit limit, or a budget set at OpenRouter: told as that, once a day, with where it is
+            # raised. Never an empty account (says_no_credit): adding credit would not cure it
+            if not notes.has_today(LIMIT_REACHED, now()):
+                used = day = None
+                with contextlib.suppress(Exception):  # the day's own count only words the note
+                    used = ledger.credit_since(now() - now() % 86400)
+                    day = float(effective_daily_usd(cfg, paths))
+                notes.write(limit_reached_note(error, used, day), "decision")
         elif outage or not notes.has_today("api error", now()):
             notes.write(f"api error: {error} — no more Claude rounds until this clears", "decision")
     finally:

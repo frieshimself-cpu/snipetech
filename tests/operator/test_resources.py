@@ -547,3 +547,31 @@ def test_through_openrouter_the_count_falls_by_its_own_charge_and_credit_names_i
     r = {x.name: x for x in rows}["anthropic_credit"]
     left = 100.0 - ledger.credit_since(NOW)
     assert r.value == pytest.approx(round(left, 2)) and f"{left:.0f} $ of 100 $ left" in r.message
+
+
+def test_a_spending_limit_reached_at_openrouter_is_not_an_empty_account():
+    """19 Nov (OpenRouter's limits and errors pages): a key can carry a credit limit, and the owner is to set a
+    daily one before switching Auto Top-Up on. Its refusal comes in two forms. The 402 says "requires more credits"
+    and read as an empty account ("add credit": the wrong advice, and with Auto Top-Up on a charge to the card for
+    nothing); the 403 read as a bare api error. Neither is an empty account."""
+    from snipetech.operator.resources import says_limit_reached, says_no_credit
+
+    afford = ("This request requires more credits, or fewer max_tokens. You requested up to 16000 tokens, but can "
+              "only afford 250. To increase, visit https://openrouter.ai/settings/")  # fmt: skip
+    for said in ("403: Key limit exceeded",
+                 "403: Budget limit exceeded (daily limit): $474.00 of $474.00 used; resets 2026-11-20T00:00:00.000Z.",
+                 "403: Workspace monthly budget of $500.00 exceeded. Contact your org admin.",
+                 "402: " + afford + "keys and adjust the key's total limit"):  # fmt: skip
+        assert says_limit_reached(said) and not says_no_credit(said), said
+    # by the body's own word, whatever the text says
+    assert says_limit_reached("402: new words", {"metadata": {"limit_source": "openrouter_key_limit"}})
+    assert says_limit_reached(
+        "403: new words", {"error": {"metadata": {"limit_source": "openrouter_workspace_budget"}}}
+    )
+    # not a limit: the account itself, the hold for requests in flight, a rate limit, an overload
+    for said in ("402: Insufficient credits. Add more using https://openrouter.ai/settings/credits",
+                 "402: " + afford + "credits and upgrade to a paid account",
+                 "429: Rate limit exceeded: new-account-rpm", "529: Overloaded"):  # fmt: skip
+        assert not says_limit_reached(said), said
+    assert not says_limit_reached("402: x", {"metadata": {"limit_source": "openrouter_credits"}})
+    assert says_no_credit("402: " + afford + "credits and upgrade to a paid account")

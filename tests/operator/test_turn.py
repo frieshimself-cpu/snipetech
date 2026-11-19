@@ -202,6 +202,24 @@ def test_api_error_writes_one_note(env):
     assert env["paths"].notes.read_text().count("api error") == 1 and len(env["sent"]) == 1
 
 
+def test_a_spending_limit_reached_at_openrouter_is_told_as_that_once_a_day(env):
+    """A key's own credit limit, reached: the owner is told what it is and where it is raised, once a day, and it
+    is not recorded as an empty account (no "add credit" alarm follows it)."""
+    from snipetech.operator.resources import REFUSED_KEY
+
+    def handler(request):
+        return httpx2.Response(403, json={"type": "error", "error": {"type": "permission_error",
+                                                                     "message": "Key limit exceeded"}})  # fmt: skip
+
+    out1 = _run(env, Decision(True, "operator", ["x"]), handler)
+    out2 = _run(env, Decision(True, "operator", ["x"]), handler)
+    assert out1["stopped"] == "api_error" and out2["stopped"] == "api_error"
+    notes = env["paths"].notes.read_text()
+    assert notes.count("spending limit") == 1 and len(env["sent"]) == 1
+    assert "openrouter.ai/settings/keys" in notes and "Key limit exceeded" in notes
+    assert "credit balance" not in notes and env["svc"].store.coverage(REFUSED_KEY) == {}
+
+
 def test_an_api_refusal_keeps_the_apis_whole_message_for_the_owner(env):
     """7 Nov 11:16: the note cut the API's 403 at 160 characters, in the middle of "An Admin of ...", so the owner
     could not read what their Anthropic account needed. The note and the round's log line carry the API's own message

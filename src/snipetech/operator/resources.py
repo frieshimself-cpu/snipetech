@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Any
 
 from ..claude_client import route
 from ..config import Config
@@ -87,6 +88,54 @@ def _credit_page() -> str:
 ORG_HINT = " (the server's key belongs to"
 
 
+# OpenRouter's own names for a spending limit set there (its limits page): the key's credit limit, a budget on the
+# workspace, a guardrail's budget. `openrouter_credits` is the account itself and is not one of them.
+LIMIT_SOURCES = frozenset({"openrouter_key_limit", "openrouter_workspace_budget", "openrouter_guardrail_budget"})
+LIMIT_REACHED = "a spending limit at OpenRouter is reached"  # the words of the note, and what "once a day" looks for
+
+
+def _limit_source(body: Any) -> str:
+    """`limit_source` as a refusal's body gives it: in a top-level `metadata` (the Messages shape) or in the error's."""
+    if not isinstance(body, dict):
+        return ""
+    for holder in (body, body.get("error")):
+        meta = holder.get("metadata") if isinstance(holder, dict) else None
+        if isinstance(meta, dict) and meta.get("limit_source"):
+            return str(meta["limit_source"])
+    return ""
+
+
+def says_limit_reached(words: str, body: Any = None) -> bool:
+    """OpenRouter refused because a spending limit set there is used up (the key's own credit limit, a budget), not
+    because the account is empty: by the body's `limit_source` where it gives one, else by its words ("Key limit
+    exceeded", "Budget limit exceeded", "... budget of $X exceeded", and the 402 that sends to the key's page). Adding
+    credit cures none of these: the limit is raised on the key's page, or it resets by itself."""
+    source = _limit_source(body)
+    if source:
+        return source in LIMIT_SOURCES
+    said = str(words).split(ORG_HINT)[0].lower()
+    return ("key limit exceeded" in said or "budget limit exceeded" in said
+            or ("budget of $" in said and "exceeded" in said)
+            or ("requires more credits" in said and "key's total limit" in said))  # fmt: skip
+
+
+def limit_reached_note(words: str, used_today_usd: float | None, day_budget_usd: float | None) -> str:
+    """The owner's line for a reached limit: what OpenRouter said, where the limit is raised, and which of the two
+    cases it is by our own count of the day: the agents used it up (raise it or wait for its reset), or they used far
+    less than their day's budget (then, unless the limit is far below that budget, something else spends on the key:
+    look at the activity page and replace the key before raising anything)."""
+    head = (f"{LIMIT_REACHED} ({str(words)[:300]}): the agents get no answer until it resets or is raised at "
+            "openrouter.ai/settings/keys")  # fmt: skip
+    if used_today_usd is None:
+        return head
+    spent = f"By our own count the agents used {used_today_usd:.2f} $ of credit today"
+    if day_budget_usd and used_today_usd < 0.5 * day_budget_usd:
+        return (f"{head}. {spent}, far under their {day_budget_usd:g} $ a day: if the limit is not far below that, "
+                "something else spends on this key. Look at openrouter.ai/activity before raising anything, and make "
+                "a new key if a use there is not ours")  # fmt: skip
+    return f"{head}. {spent}"
+
+
 def says_no_credit(words: str) -> bool:
     """The API's refusal is about the account's credit ("Your credit balance is too low", "must add credits",
     OpenRouter's "Insufficient credits"). Not one: OpenRouter's hold for requests in flight, which passes by itself
@@ -94,6 +143,8 @@ def says_no_credit(words: str) -> bool:
     the key's organisation."""
     said = str(words).split(ORG_HINT)[0].lower()
     if said.startswith("429:"):  # a refusal that asks to be waited out is never an empty account
+        return False
+    if says_limit_reached(words):  # nor is a limit set at OpenRouter that is used up: credit does not cure it
         return False
     return "credit" in said and "in-flight" not in said and "in flight" not in said
 
