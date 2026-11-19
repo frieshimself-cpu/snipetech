@@ -468,6 +468,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--claude", action="store_true",
                     help="instead: one small request to each model the agents run on, shaped like a turn's: which "
                          "way in is used (the direct API, OpenRouter, Amazon Bedrock) and whether it answers")  # fmt: skip
+    sp.add_argument("--key", action="store_true",
+                    help="instead: what OpenRouter says of the agents' own key: its limit, what is left of it, when "
+                         "it is refilled and when the key ends (a read with that key; nothing is spent)")  # fmt: skip
 
     sp = cmd("config", "show / get / set configuration", json_flag=False)
     sp.add_argument("action", choices=["show", "get", "set"])
@@ -2905,6 +2908,22 @@ def _main(args) -> int:
 
         print(json.dumps(settings_drift(cfg.path)))
         return 0
+    if args.cmd == "doctor" and args.key:
+        from .openrouter_account import read_key, words
+        from .operator.budget_switch import effective_daily_usd
+        from .operator.paths import OperatorPaths
+
+        row = read_key()
+        if row is None:
+            print(json.dumps({"ok": None, "text": "no OpenRouter key on this machine: nothing to read"}))
+            return 0
+        try:
+            day = float(effective_daily_usd(cfg, OperatorPaths(Path(cfg.storage.db_path).resolve().parent)))
+        except Exception:  # noqa: BLE001 - the day's budget only words the answer
+            day = float(cfg.operator.daily_usd)
+        said = words(row, day)
+        print(json.dumps(row | said))
+        return 1 if said["warn"] else 0
     if args.cmd == "doctor" and args.claude:
         from .claude_ping import ping
 
