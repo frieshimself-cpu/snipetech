@@ -212,3 +212,17 @@ def test_the_doctor_says_which_way_the_agents_go(no_keys):
     no_keys.delenv("ANTHROPIC_API_KEY")
     there, words = cc.describe()
     assert there is False and "OPENROUTER_API_KEY" in words and "ANTHROPIC_API_KEY" in words
+
+
+def test_only_anthropics_own_api_gets_the_sdk_loops_message_thread(no_keys):
+    """19 Nov 16:15: every turn through OpenRouter died at its second request ("400: messages: at least one message
+    is required"). The SDK's tool loop runs over a message thread by default: the server holds the conversation and
+    each request sends only what is new. Only Anthropic's own API has threads; elsewhere the loop is told to send the
+    whole conversation every time."""
+    assert cc.runner_options() == {}
+    no_keys.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-token")
+    assert cc.runner_options() == {"thread": False}
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    assert cc.runner_options() == {"thread": False}
+    no_keys.setenv("SNIPETECH_CLAUDE_VIA", "anthropic")
+    assert cc.runner_options() == {}

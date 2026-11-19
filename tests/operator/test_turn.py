@@ -1778,3 +1778,29 @@ def test_a_journal_entry_resent_without_its_headline_in_the_repair_stands_once(e
     out = _run(env, Decision(True, "scout", ["a job of yours ended: j1"]), handler, role="scout")
     journal = (env["paths"].root / f"scout-journal-{_DAY}.md").read_text()
     assert journal.count("what the turn did.") == 1 and len(requests) == 2 and out["ended_at"] == "note"
+
+
+NOTE_CALL = ([{"type": "tool_use", "id": "t1", "name": "write_note", "input": {"text": "seen", "level": "info"}}], "tool_use")
+
+
+def test_through_openrouter_every_request_carries_the_whole_conversation(env, monkeypatch):
+    """19 Nov 16:15: the first turns through OpenRouter died at their second request ("400: messages: at least one
+    message is required"): the SDK's tool loop sent only the tool's answer and left the rest to a message thread, a
+    conversation the server holds, which only Anthropic's own API has."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.delenv("SNIPETECH_CLAUDE_VIA", raising=False)
+    handler, requests = _scripted(NOTE_CALL, ([{"type": "text", "text": "ok"}], "end_turn"))
+    out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    assert out["stopped"] == "end_turn" and len(requests) == 2
+    assert all("thread" not in r for r in requests)
+    # the question, the model's call and the call's answer; the instructions and the tools again
+    assert [m["role"] for m in requests[1]["messages"]] == ["user", "assistant", "user"]
+    assert requests[1]["system"] and requests[1]["tools"]
+
+
+def test_on_the_direct_api_the_loop_keeps_its_message_thread(env, monkeypatch):
+    for name in ("OPENROUTER_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "SNIPETECH_CLAUDE_VIA"):
+        monkeypatch.delenv(name, raising=False)
+    handler, requests = _scripted(NOTE_CALL, ([{"type": "text", "text": "ok"}], "end_turn"))
+    out = _run(env, Decision(True, "operator", ["job ended: j1"]), handler)
+    assert out["stopped"] == "end_turn" and "thread" in requests[0]

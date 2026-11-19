@@ -89,6 +89,17 @@ def describe(env: Mapping[str, str] | None = None) -> tuple[bool, str]:
     return False, f"set ANTHROPIC_API_KEY, {OPENROUTER_KEY_ENV} or {BEDROCK_KEY_ENV} to use `snipetech agent`"
 
 
+def runner_options(env: Mapping[str, str] | None = None) -> dict:
+    """What a turn's tool loop (`client.beta.messages.tool_runner`) must also be told for the way in.
+
+    The SDK's loop runs over a message thread by default: the server holds the conversation and each request sends
+    only what is new. Only Anthropic's own API has threads. 19 Nov 2026, 16:15: the first turns through OpenRouter
+    died at their second request ("400: messages: at least one message is required"), each after paying for its
+    first. Off the direct API the loop sends the whole conversation every time (`thread=False`); the top-level cache
+    marker then keeps the part already sent at the read price."""
+    return {} if route(env) == "anthropic" else {"thread": False}
+
+
 def _region(env: Mapping[str, str]) -> str:
     return env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or DEFAULT_REGION
 

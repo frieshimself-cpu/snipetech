@@ -11,7 +11,7 @@ from collections.abc import Callable, Collection
 import anthropic
 from anthropic import AsyncAnthropic
 
-from snipetech.claude_client import claude_client
+from snipetech.claude_client import claude_client, runner_options
 
 from ..config import Config
 from ..ops import redact
@@ -314,6 +314,7 @@ async def run_turn(cfg: Config, svc, paths: OperatorPaths, snap: Snapshot, decis
         cache_control={"type": "ephemeral"},
         betas=[FALLBACK_BETA],
         fallbacks="default",
+        **runner_options(),  # off Anthropic's own API: the whole conversation with every request
     )
     usd, calls, stopped, message_stop_reason = 0.0, 0, "end_turn", None
     ended_at = None  # "note": a role's turn that ended at its note, without a closing reply

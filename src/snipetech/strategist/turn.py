@@ -12,7 +12,7 @@ from typing import Any
 import anthropic
 from anthropic import AsyncAnthropic, beta_async_tool
 
-from snipetech.claude_client import claude_client
+from snipetech.claude_client import claude_client, runner_options
 
 from ..config import Config
 from ..operator.budget import Ledger
@@ -86,6 +86,7 @@ async def run_strategist_turn(cfg: Config, evidence: dict, ledger: Ledger, notes
         cache_control={"type": "ephemeral"},
         betas=[FALLBACK_BETA],
         fallbacks="default",
+        **runner_options(),  # off Anthropic's own API: the whole conversation with every request
     )
     usd, calls, stopped, final_text = 0.0, 0, "end_turn", ""
     try:
