@@ -53,6 +53,9 @@ def test_with_an_amazon_key_fable_goes_to_bedrock_runtime_under_its_global_id(no
     no_keys.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-token")
     client = cc.claude_client("claude-fable-5-2")
     assert isinstance(client, AsyncAnthropicBedrock)
+    # the owner's account (AWS's new sign-up, home Region Stockholm): AWS's policy takes Amazon-key calls to
+    # bedrock-runtime only in the home Region (in us-east-1 and us-west-2 it leaves out bedrock:CallWithBearerToken)
+    assert str(client.base_url).startswith("https://bedrock-runtime.eu-north-1.amazonaws.com")
     out = _prepared(client, _request("claude-fable-5-2"))
     assert out.url == "/model/global.anthropic.claude-fable-5-2/invoke"
     body = out.json_data
@@ -68,7 +71,8 @@ def test_with_an_amazon_key_sonnet_and_opus_go_to_bedrock_mantle(no_keys):
     for model in ("claude-sonnet-5-5", "claude-opus-5-5"):
         client = cc.claude_client(model)
         assert isinstance(client, AsyncAnthropicBedrockMantle)
-        assert str(client.base_url).startswith("https://bedrock-mantle.us-east-1.api.aws/anthropic")
+        # the owner's AWS account (new sign-up, Europe) is locked to its home Region, Stockholm
+        assert str(client.base_url).startswith("https://bedrock-mantle.eu-north-1.api.aws/anthropic")
         out = _prepared(client, _request(model))
         body = out.json_data
         assert body["model"] == f"anthropic.{model}"

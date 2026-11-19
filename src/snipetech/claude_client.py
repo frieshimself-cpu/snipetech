@@ -25,7 +25,11 @@ from typing import Any
 
 BEDROCK_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 VIA_ENV = "SNIPETECH_CLAUDE_VIA"
-DEFAULT_REGION = "us-east-1"
+# The owner's AWS account (19 Nov) is of AWS's new sign-up kind, home Region Stockholm. AWS's own policy for it
+# refuses the Anthropic use-case form outside that Region, and in us-east-1 and us-west-2 it leaves out
+# bedrock:CallWithBearerToken, so an Amazon key reaches bedrock-runtime only from Stockholm
+# (docs.aws.amazon.com/accounts/latest/reference/scps-and-rcps-for-projects.html). AWS_REGION overrides it.
+DEFAULT_REGION = "eu-north-1"
 # served by bedrock-runtime only (Anthropic's Bedrock pages, 17 Nov 2026); global.: no regional premium
 RUNTIME_ONLY = ("claude-fable-5-2", "claude-mythos-5-2")
 FALLBACK_BETA_PREFIX = "server-side-fallback"
