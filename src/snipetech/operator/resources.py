@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ..claude_client import route
 from ..config import Config
 from ..store import Store
 from .budget import Ledger
@@ -57,6 +58,23 @@ REFUSED_KEY = "resources:anthropic_refused"
 CREDIT_SETTLE_SECS = 120
 CREDIT_TOP_UP = ("add credit at console.anthropic.com (Billing; auto-reload there, when switched on, tops the account "
                  "up by itself)")  # fmt: skip
+# 19 Nov: with an OpenRouter key the agents spend OpenRouter's credit (claude_client.route), and every word that sends
+# the owner to add or read credit names that place (13 Nov: three top-ups on an organisation the key was not in)
+OPENROUTER_TOP_UP = ("add credit at openrouter.ai/settings/credits (Auto Top-Up there, when switched on, refills it "
+                     "by itself)")  # fmt: skip
+OPENROUTER_FIX = "send /credit <dollars openrouter.ai/settings/credits shows> and the count starts there"
+
+
+def _through_openrouter() -> bool:
+    return route() == "openrouter"
+
+
+def credit_top_up() -> str:
+    return OPENROUTER_TOP_UP if _through_openrouter() else CREDIT_TOP_UP
+
+
+def credit_fix() -> str:
+    return OPENROUTER_FIX if _through_openrouter() else CREDIT_FIX
 
 
 def says_no_credit(words: str) -> bool:
@@ -96,10 +114,11 @@ def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resourc
     try:
         empty = credit_empty_since(store, ledger)
         if empty is not None:
+            who = "OpenRouter" if _through_openrouter() else "the Anthropic API"
             return Resource("anthropic_credit", 0.0, "usd", None, "crit",
-                            f"empty since {time.strftime('%H:%M UTC on %-d %b', time.gmtime(empty))}: the Anthropic API "
+                            f"empty since {time.strftime('%H:%M UTC on %-d %b', time.gmtime(empty))}: {who} "
                             "refuses the agents for want of credit, so nothing is analysed until you "
-                            f"{CREDIT_TOP_UP}. Then {CREDIT_FIX}")  # fmt: skip
+                            f"{credit_top_up()}. Then {credit_fix()}")  # fmt: skip
         rec = store.coverage(CREDIT_KEY)
         credit = float(rec.get("usd", rc.anthropic_credit_usd))
         set_at = float(rec.get("set_at", 0))
@@ -107,7 +126,7 @@ def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resourc
         if credit > 0 and spent > credit * CREDIT_OVERRUN:
             return Resource("anthropic_credit", None, "usd", None, "unknown",
                             f"not known: {spent:.0f} $ spent against {credit:.0f} $ recorded, and the agents were "
-                            f"answered all the same, so the account held more than was recorded; {CREDIT_FIX}")  # fmt: skip
+                            f"answered all the same, so the account held more than was recorded; {credit_fix()}")  # fmt: skip
         left = max(0.0, credit - spent)
         left_pct = 100.0 * left / credit if credit > 0 else None
         per_day = max(ledger.spent_since(now - 7 * 86400) / 7.0, ledger.spent_since(now - 86400))
@@ -120,7 +139,7 @@ def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resourc
             f"{left:.0f} $ of {credit:.0f} $ left"
             + (f", about {days_left:.1f} days at the current pace" if days_left is not None else "")
             + (f", {left / daily:.1f} days if the agents spend their whole {daily:g} $ a day" if daily > 0 else "")
-            + f". After a top-up, {CREDIT_FIX}"
+            + f". After a top-up, {credit_fix()}"
         )
         return Resource(
             "anthropic_credit", round(left, 2), "usd", round(credit * rc.anthropic_alert_pct / 100, 2), status, msg

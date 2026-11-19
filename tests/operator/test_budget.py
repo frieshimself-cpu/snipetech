@@ -162,3 +162,16 @@ def test_an_unknown_model_is_priced_at_the_modes_rows(tmp_path):
     # a list of attempts that is empty or holds no counts changes nothing
     for empty in ([], None, [{}], "x"):
         assert cost_usd(usage | {"iterations": empty}, DEFAULT_OPERATOR_PRICES, tier="analyst") == pytest.approx(8.0)
+
+
+def test_an_answer_that_names_its_charge_is_recorded_at_that_charge_plus_the_fee_of_buying_credit(tmp_path):
+    """19 Nov: OpenRouter's answers say what the request cost (`usage.cost`, dollars of its credit), the hour's cache
+    writes included, which its usage does not always split out. Buying that credit costs 5.5 % on top."""
+    led = Ledger(tmp_path / "spend.jsonl", DEFAULT_OPERATOR_PRICES)
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000, "cost": 0.5}
+    assert led.record("analyst", usage, now=DAY) == pytest.approx(0.5 * 1.055)
+    assert json.loads((tmp_path / "spend.jsonl").read_text().splitlines()[-1])["usd"] == pytest.approx(0.5275)
+    # an answer that names no charge (the direct API, Amazon), or a charge of nothing, is priced from its tokens
+    tokens = {"input_tokens": 1_000_000}
+    for cost in ({}, {"cost": None}, {"cost": 0}, {"cost": "0.5"}, {"cost": True}, {"cost": float("nan")}):
+        assert led.record("analyst", tokens | cost, now=DAY) == pytest.approx(8.0)

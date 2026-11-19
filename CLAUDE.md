@@ -33,7 +33,8 @@ lab reports numbers from old code: the server keeps that rule itself once it run
 the book run, qualify) is mid-run, and names it; `remote status` lists them under `deploy_waits_for`;
 `remote update --when-quiet` waits for the moment, `--force` deploys all the same. The slice has no CPU quota since
 20:49 (all 6 cores, 12 GB).
-Secrets live only in `/etc/snipetech/env` on the server (Helius, OKTech, Anthropic, Telegram, TypeSafe keys). They
+Secrets live only in `/etc/snipetech/env` on the server (Helius, OKTech, Anthropic, OpenRouter, Telegram, TypeSafe
+keys; with an OpenRouter key the agents reach Claude through OpenRouter, `src/snipetech/claude_client.py`). They
 are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
 
 ## Rules that do not bend

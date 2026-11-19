@@ -1,29 +1,46 @@
-"""Which way the agents reach Claude: directly, or through Amazon Bedrock.
+"""Which way the agents reach Claude: directly, through OpenRouter, or through Amazon Bedrock.
 
 17 Nov 2026: the direct account hit its monthly spend cap ($500, the Start tier) and the Console's tier request
-refuses a Gmail address. The owner chose Bedrock, billed by AWS, with the same models. The callers keep building
-one request shape (adaptive thinking, effort, the hour's cache markers, the top-level cache marker, the
-server-side fallback); this module picks the client and rewrites, on the way out, what Bedrock does not take:
+refuses a Gmail address. The owner chose Bedrock, billed by AWS, with the same models. 19 Nov: Amazon refuses the
+owner's new account the newest model ("anthropic.claude-fable-5-2 is not available for this account", an
+account-level block only AWS's support lifts), so the agents go through OpenRouter, which resells the same models
+on prepaid credit with no monthly cap. The callers keep building one request shape (adaptive thinking, effort, the
+hour's cache markers, the top-level cache marker, the server-side fallback); this module picks the client and
+rewrites, on the way out, what the chosen way does not take.
+
+OpenRouter (its Anthropic-shaped endpoint, openrouter.ai/api/v1/messages; its reference read on 19 Nov):
+
+* its own model ids (`anthropic/claude-fable-5.2`), and Anthropic's own servers only (`provider.only`): a turn
+  replays its thinking blocks, which are bound to who served them, so no other provider may answer mid-turn;
+* Anthropic's server-side fallback is left out: OpenRouter's `fallbacks` is another thing, a list of its models;
+* only OpenRouter's key is sent there, never the Anthropic key that sits in the same environment.
+
+Amazon Bedrock:
 
 * the server-side fallback (`fallbacks` and its beta) is not offered on Bedrock: dropped;
 * Fable 5.2 is served only on `bedrock-runtime` (InvokeModel), which takes no top-level cache marker: the marker
   moves onto the last block of the last message, so a turn's tool loop still reads its earlier calls from cache;
 * the other models go to `bedrock-mantle`, the Messages API under an `anthropic.` model id.
 
-The choice: an `AWS_BEARER_TOKEN_BEDROCK` in /etc/snipetech/env sends every agent to Bedrock;
-`SNIPETECH_CLAUDE_VIA=anthropic` sends them back to the direct API with the key still in place.
+The choice (`route`): the way `SNIPETECH_CLAUDE_VIA` names (anthropic, openrouter, bedrock) when its key is in
+/etc/snipetech/env; otherwise an `OPENROUTER_API_KEY` sends every agent to OpenRouter, else an
+`AWS_BEARER_TOKEN_BEDROCK` to Bedrock, else the direct API.
 """
 
 from __future__ import annotations
 
 import copy
 import os
+import re
 from collections.abc import Mapping
 from typing import Any
 
 # the SDK is imported only when a client is made: the stages that call no model never load it (test_import_cost)
 
 BEDROCK_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
+OPENROUTER_URL = "https://openrouter.ai/api"  # the SDK adds /v1/messages
+OPENROUTER_PROVIDER = "anthropic"  # OpenRouter's name for Anthropic's own servers (its endpoints list, 19 Nov)
 VIA_ENV = "SNIPETECH_CLAUDE_VIA"
 # The owner's AWS account (19 Nov) is of AWS's new sign-up kind, home Region Stockholm. AWS's own policy for it
 # refuses the Anthropic use-case form outside that Region, and in us-east-1 and us-west-2 it leaves out
@@ -39,15 +56,37 @@ def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 
 
-def via_bedrock(env: Mapping[str, str] | None = None) -> bool:
+def route(env: Mapping[str, str] | None = None) -> str:
+    """The way the agents reach Claude: "anthropic" (the direct API), "openrouter" or "bedrock". The way
+    SNIPETECH_CLAUDE_VIA names when its key is set (the direct way reads its own key); else by the keys that are
+    there: OpenRouter's first, then Amazon's, then the direct API."""
     e = _env(env)
-    return bool(e.get(BEDROCK_KEY_ENV)) and (e.get(VIA_ENV) or "").strip().lower() != "anthropic"
+    have = {"openrouter": bool(e.get(OPENROUTER_KEY_ENV)), "bedrock": bool(e.get(BEDROCK_KEY_ENV)), "anthropic": True}
+    named = (e.get(VIA_ENV) or "").strip().lower()
+    if have.get(named):
+        return named
+    return next(way for way, there in have.items() if there)
+
+
+def via_bedrock(env: Mapping[str, str] | None = None) -> bool:
+    return route(env) == "bedrock"
 
 
 def has_claude_key(env: Mapping[str, str] | None = None) -> bool:
-    """Whether the agents can call Claude at all, either way in."""
+    """Whether the agents can call Claude at all, by any way in."""
     e = _env(env)
-    return bool(e.get("ANTHROPIC_API_KEY") or e.get("ANTHROPIC_AUTH_TOKEN") or e.get(BEDROCK_KEY_ENV))
+    names = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", OPENROUTER_KEY_ENV, BEDROCK_KEY_ENV)
+    return any(e.get(name) for name in names)
+
+
+WAYS = {"anthropic": "the direct API", "openrouter": "OpenRouter", "bedrock": "Amazon Bedrock"}
+
+
+def describe(env: Mapping[str, str] | None = None) -> tuple[bool, str]:
+    """Whether a Claude key is there, and in words which way the agents go (the doctor's row)."""
+    if has_claude_key(env):
+        return True, f"a Claude key found; the agents reach Claude through {WAYS[route(env)]}"
+    return False, f"set ANTHROPIC_API_KEY, {OPENROUTER_KEY_ENV} or {BEDROCK_KEY_ENV} to use `snipetech agent`"
 
 
 def _region(env: Mapping[str, str]) -> str:
@@ -99,6 +138,25 @@ def for_bedrock_mantle(body: dict) -> dict:
     return _common(copy.deepcopy(body))
 
 
+_MINOR_VERSION = re.compile(r"^(claude-[a-z]+-\d+)-(\d{1,2})$")
+
+
+def _openrouter_id(model: str) -> str:
+    """OpenRouter's name for a model: `claude-fable-5-2` is `anthropic/claude-fable-5.2` there."""
+    if "/" in model:  # already one of OpenRouter's
+        return model
+    return "anthropic/" + _MINOR_VERSION.sub(r"\1.\2", model)
+
+
+def for_openrouter(body: dict) -> dict:
+    """The request body OpenRouter takes: its model id, Anthropic's own servers only, no server-side fallback."""
+    body = _common(copy.deepcopy(body))
+    if body.get("model"):
+        body["model"] = _openrouter_id(str(body["model"]))
+    body["provider"] = {"only": [OPENROUTER_PROVIDER]}
+    return body
+
+
 def _strip_fallback_header(options: Any) -> Any:
     headers = options.headers
     if isinstance(headers, dict):
@@ -126,7 +184,19 @@ _CLASSES: dict[str, type] = {}
 def _classes() -> dict[str, type]:
     if _CLASSES:
         return _CLASSES
-    from anthropic import AsyncAnthropicBedrock, AsyncAnthropicBedrockMantle
+    from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, AsyncAnthropicBedrockMantle
+
+    class _OpenRouterClient(AsyncAnthropic):
+        @property
+        def auth_headers(self) -> dict[str, str]:  # type: ignore[override]
+            # OpenRouter's key and nothing else: never a key or a login the SDK finds for Anthropic itself
+            return {"Authorization": f"Bearer {self.auth_token}"}
+
+        async def _prepare_options(self, options):  # type: ignore[override]
+            if _is_messages_post(options):
+                options = _strip_fallback_header(options.model_copy(deep=True))
+                options.json_data = for_openrouter(options.json_data)
+            return await super()._prepare_options(options)
 
     class _RuntimeClient(AsyncAnthropicBedrock):
         async def _prepare_options(self, options):  # type: ignore[override]
@@ -148,17 +218,23 @@ def _classes() -> dict[str, type]:
                 options.json_data = body
             return await super()._prepare_options(options)
 
-    _CLASSES.update(runtime=_RuntimeClient, mantle=_MantleClient)
+    _CLASSES.update(runtime=_RuntimeClient, mantle=_MantleClient, openrouter=_OpenRouterClient)
     return _CLASSES
 
 
 def claude_client(model: str, env: Mapping[str, str] | None = None) -> Any:
-    """The client for one model's requests. Direct unless an Amazon Bedrock key is set (see the module text)."""
+    """The client for one model's requests, by the way `route` names (see the module text)."""
     e = _env(env)
-    if not via_bedrock(e):
+    way = route(e)
+    if way == "anthropic":
         from anthropic import AsyncAnthropic
 
         return AsyncAnthropic()
+    if way == "openrouter":
+        # an explicit token: the SDK then reads no Anthropic key from the environment (and auth_headers sends only it)
+        client = _classes()["openrouter"](base_url=OPENROUTER_URL, auth_token=e[OPENROUTER_KEY_ENV])
+        client.api_key = None
+        return client
     key, region = e[BEDROCK_KEY_ENV], _region(e)
     if any(model.endswith(m) for m in RUNTIME_ONLY):
         return _classes()["runtime"](aws_region=region, api_key=key)

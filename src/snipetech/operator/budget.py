@@ -99,6 +99,21 @@ def _counts_usd(usage: dict, prices: dict, tier: str) -> float:
 
 HOUR_OVER_FIVE_MINUTES = 2.0 / 1.25
 
+# OpenRouter's answers say what the request was charged (`usage.cost`, dollars of its credit; its Messages reference,
+# read 19 Nov 2026): that is the bill, the hour's cache writes included, which its usage does not always split out.
+# Buying that credit costs 5.5 % on top by card and 5 % in crypto (openrouter.ai/docs/faq, the same day), so a dollar
+# of use is this many of the owner's.
+CREDIT_FEE = 1.055
+
+
+def charged_usd(usage: dict) -> float | None:
+    """What the provider says the response cost, with the fee of buying its credit; None where the usage names no
+    charge (the direct API, Amazon) or a charge of nothing, which is then priced from its tokens."""
+    cost = usage.get("cost")
+    if isinstance(cost, bool) or not isinstance(cost, (int, float)) or not cost > 0:
+        return None
+    return float(cost) * CREDIT_FEE
+
 
 def hour_writes(usage: dict) -> int:
     """Tokens a response wrote to the hour's cache (`usage.cache_creation.ephemeral_1h_input_tokens`), never more than
@@ -122,7 +137,8 @@ class Ledger:
         fallback served it: `cost_usd`); the token counts on the line are the answering attempt's."""
         now = time.time() if now is None else now
         tier = TIERS.get(mode, "")
-        usd = cost_usd(usage, self.prices, tier=tier)
+        charged = charged_usd(usage)  # the provider's own bill where it names one (OpenRouter)
+        usd = cost_usd(usage, self.prices, tier=tier) if charged is None else charged
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
                 "cache_write_1h": hour_writes(usage), "usd": round(usd, 6)}  # fmt: skip

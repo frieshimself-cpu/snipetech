@@ -1,6 +1,7 @@
-"""The agents reach Claude directly or through Amazon Bedrock (owner, 17 Nov: the direct account hit its monthly cap).
+"""The agents reach Claude directly, through OpenRouter or through Amazon Bedrock (owner, 17 Nov: the direct account
+hit its monthly cap; 19 Nov: Amazon refuses the new account the newest model, so OpenRouter).
 
-The callers build one request shape; claude_client picks the way in and rewrites what Bedrock does not take."""
+The callers build one request shape; claude_client picks the way in and rewrites what that way does not take."""
 
 import asyncio
 
@@ -38,7 +39,8 @@ def _prepared(client, options: FinalRequestOptions) -> FinalRequestOptions:
 
 @pytest.fixture
 def no_keys(monkeypatch):
-    for name in ("AWS_BEARER_TOKEN_BEDROCK", "SNIPETECH_CLAUDE_VIA", "AWS_REGION", "AWS_DEFAULT_REGION"):
+    for name in ("AWS_BEARER_TOKEN_BEDROCK", "SNIPETECH_CLAUDE_VIA", "AWS_REGION", "AWS_DEFAULT_REGION",
+                 "OPENROUTER_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL"):  # fmt: skip
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test")
     return monkeypatch
@@ -131,3 +133,87 @@ def test_the_server_install_asks_for_the_amazon_key_with_typing_hidden():
 
     text = (Path(__file__).resolve().parents[1] / "deploy" / "bootstrap.sh").read_text()
     assert "set_key AWS_BEARER_TOKEN_BEDROCK" in text
+
+
+OPENROUTER_IDS = {
+    "claude-fable-5-2": "anthropic/claude-fable-5.2",
+    "claude-opus-5-5": "anthropic/claude-opus-5.5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+}
+
+
+def test_with_an_openrouter_key_every_agent_goes_through_openrouter_under_its_names(no_keys):
+    """19 Nov: openrouter.ai/api/v1/models lists the three models under these ids; its Anthropic-shaped endpoint is
+    /api/v1/messages (the SDK adds /v1/messages to the base address)."""
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    for model, theirs in OPENROUTER_IDS.items():
+        client = cc.claude_client(model)
+        assert isinstance(client, AsyncAnthropic)
+        assert str(client.base_url).rstrip("/") == "https://openrouter.ai/api"
+        out = _prepared(client, _request(model))
+        body = out.json_data
+        assert body["model"] == theirs
+        # Anthropic's own servers only: a turn replays its thinking blocks, which are bound to who served them
+        assert body["provider"] == {"only": ["anthropic"]}
+        # OpenRouter's `fallbacks` is another thing (a list of its models): Anthropic's is left out, with its beta
+        assert "fallbacks" not in body
+        assert FALLBACK not in str((out.headers or {}).get("anthropic-beta", ""))
+        # both cache markers go through as the direct API takes them
+        assert body["cache_control"] == {"type": "ephemeral"}
+        assert body["system"][0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+
+
+def test_only_the_openrouter_key_is_sent_to_openrouter(no_keys):
+    """The server's Anthropic key is in the same environment: it must never reach another company."""
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    no_keys.setenv("ANTHROPIC_AUTH_TOKEN", "ant-login-token")
+    client = cc.claude_client("claude-opus-5-5")
+    headers = {k.lower(): str(v) for k, v in client.default_headers.items()}
+    assert headers["authorization"] == "Bearer or-test-key"
+    assert "x-api-key" not in headers
+    assert "sk-ant-test" not in str(headers) and "ant-login-token" not in str(headers)
+    assert client.api_key is None
+
+
+def test_the_openrouter_key_comes_first_and_the_owner_can_name_another_way(no_keys):
+    assert cc.route() == "anthropic"
+    no_keys.setenv("AWS_BEARER_TOKEN_BEDROCK", "bedrock-test-token")
+    assert cc.route() == "bedrock"
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    assert cc.route() == "openrouter"
+    no_keys.setenv("SNIPETECH_CLAUDE_VIA", "bedrock")
+    assert cc.route() == "bedrock" and isinstance(cc.claude_client("claude-fable-5-2"), AsyncAnthropicBedrock)
+    no_keys.setenv("SNIPETECH_CLAUDE_VIA", "anthropic")
+    assert cc.route() == "anthropic" and type(cc.claude_client("claude-opus-5-5")) is AsyncAnthropic
+    # a way named without its key is no way: the keys that are there decide
+    no_keys.delenv("OPENROUTER_API_KEY")
+    no_keys.setenv("SNIPETECH_CLAUDE_VIA", "openrouter")
+    assert cc.route() == "bedrock"
+
+
+def test_an_openrouter_key_alone_lets_the_agents_run_and_is_redacted(no_keys):
+    from snipetech import ops
+
+    no_keys.delenv("ANTHROPIC_API_KEY")
+    assert not cc.has_claude_key()
+    no_keys.setenv("OPENROUTER_API_KEY", "or-secret-value-123")
+    assert cc.has_claude_key()
+    assert "OPENROUTER_API_KEY" in ops.SECRET_ENV
+    assert "or-secret-value-123" not in ops.redact("key or-secret-value-123 leaked")
+
+
+def test_the_server_install_asks_for_the_openrouter_key_with_typing_hidden():
+    from pathlib import Path
+
+    text = (Path(__file__).resolve().parents[1] / "deploy" / "bootstrap.sh").read_text()
+    assert "set_key OPENROUTER_API_KEY" in text
+
+
+def test_the_doctor_says_which_way_the_agents_go(no_keys):
+    assert cc.describe() == (True, "a Claude key found; the agents reach Claude through the direct API")
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    assert cc.describe() == (True, "a Claude key found; the agents reach Claude through OpenRouter")
+    no_keys.delenv("OPENROUTER_API_KEY")
+    no_keys.delenv("ANTHROPIC_API_KEY")
+    there, words = cc.describe()
+    assert there is False and "OPENROUTER_API_KEY" in words and "ANTHROPIC_API_KEY" in words

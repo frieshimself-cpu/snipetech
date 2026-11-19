@@ -69,6 +69,8 @@ set_key OKS_KEY "OKTech Sniper API key (make a NEW one in OKTech, with 'Allow st
 set_key ANTHROPIC_API_KEY "Anthropic API key for the operator (Enter to skip)"
 # the agents reach Claude through Amazon Bedrock when this key is set (src/snipetech/claude_client.py)
 set_key AWS_BEARER_TOKEN_BEDROCK "Amazon Bedrock API key for the agents (Enter to skip)"
+# with this key the agents reach Claude through OpenRouter, before the two above (claude_client.route)
+set_key OPENROUTER_API_KEY "OpenRouter API key for the agents (Enter to skip)"
 chmod 640 "$ENVF"; chgrp "${SNIPETECH_USER:-snipetech}" "$ENVF" 2>/dev/null || true
 if ! grep -qE '^SNIPETECH_RETAIN_DAYS=' "$ENVF"; then
   # the market tape grows ~7 GB/day: keep as many days as fit in ~60% of the disk (3..30)

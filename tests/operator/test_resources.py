@@ -479,3 +479,22 @@ def test_an_account_the_api_calls_empty_is_an_alarm_until_the_agents_are_answere
     rows = check_resources(cfg, tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW + 700)  # fmt: skip
     assert "empty since" not in {x.name: x for x in rows}["anthropic_credit"].message
     assert credit_refused(tmp_store, ledger, NOW + 5000) is True  # and the next refusal is a new outage
+
+
+def test_the_credit_alarm_names_openrouter_while_the_agents_go_through_it(tmp_store, ledger, monkeypatch):
+    """19 Nov: with an OpenRouter key the agents' credit is OpenRouter's. An alarm that sent the owner to Anthropic's
+    console would have them add money where the agents do not spend it (13 Nov: three top-ups on the wrong
+    organisation)."""
+    from snipetech.operator.resources import credit_refused, says_no_credit
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.delenv("SNIPETECH_CLAUDE_VIA", raising=False)
+    assert says_no_credit("402: Insufficient credits. Add more using https://openrouter.ai/settings/credits")
+    ledger.record("scout", {"input_tokens": 100_000}, now=NOW - 1000)
+    assert credit_refused(tmp_store, ledger, NOW - 900) is True
+    rows = check_resources(
+        Config(), tmp_store, snap(), ledger, disk_free_gb=lambda: 50.0, birdeye_credits=None, now=NOW
+    )
+    r = {x.name: x for x in rows}["anthropic_credit"]
+    assert r.status == "crit" and "OpenRouter refuses" in r.message
+    assert "openrouter.ai/settings/credits" in r.message and "console.anthropic.com" not in r.message

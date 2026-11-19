@@ -465,6 +465,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--settings", action="store_true",
                     help="instead: what the settings file sets differently from today's defaults (a file written by "
                          "`init` pins the defaults of its day; values that could hold a key are not shown)")  # fmt: skip
+    sp.add_argument("--claude", action="store_true",
+                    help="instead: one small request to each model the agents run on, shaped like a turn's: which "
+                         "way in is used (the direct API, OpenRouter, Amazon Bedrock) and whether it answers")  # fmt: skip
 
     sp = cmd("config", "show / get / set configuration", json_flag=False)
     sp.add_argument("action", choices=["show", "get", "set"])
@@ -1596,13 +1599,10 @@ async def doctor(svc: Service) -> dict:
             "ok": False,
             "detail": f"{exc} — `watch` needs a websocket-capable RPC; `watch --poll --no-firehose` works without",
         }
-    from .claude_client import has_claude_key
+    from .claude_client import describe
 
-    has_key = has_claude_key()
-    out["agent"] = {
-        "ok": has_key,
-        "detail": "a Claude key found (direct or Amazon Bedrock)" if has_key else "set ANTHROPIC_API_KEY or AWS_BEARER_TOKEN_BEDROCK to use `snipetech agent`",
-    }
+    has_key, words = describe()
+    out["agent"] = {"ok": has_key, "detail": words}
     if os.environ.get("BIRDEYE_API_KEY"):
         try:
             from .birdeye import Birdeye
@@ -2905,6 +2905,12 @@ def _main(args) -> int:
 
         print(json.dumps(settings_drift(cfg.path)))
         return 0
+    if args.cmd == "doctor" and args.claude:
+        from .claude_ping import ping
+
+        rows = asyncio.run(ping(cfg))
+        print(json.dumps(rows))
+        return 0 if all(row.get("ok") for row in rows) else 1
     if args.cmd == "config":
         if args.action == "show":
             print(dump_toml(cfg.to_dict()))

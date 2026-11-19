@@ -45,7 +45,7 @@ MAX_WRITE = 5 << 20
 # `remote sql` reads the live database, and a read holds its WAL back until it ends (no checkpoint passes it, the WAL
 # cannot start over): a query is cut at this many seconds, whatever a request asks for
 SQL_MAX_SECS = 30.0
-SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "SNIPETECH_RPC_URL", "SNIPETECH_WS_URL")
+SECRET_ENV = ("HELIUS_API_KEY", "OKS_KEY", "ANTHROPIC_API_KEY", "OPENROUTER_API_KEY", "AWS_BEARER_TOKEN_BEDROCK", "SNIPETECH_RPC_URL", "SNIPETECH_WS_URL")
 ALLOWED = frozenset({
     "status", "doctor", "index-launches", "deployer", "mint", "copy", "copy-rank", "audit", "optimize", "backtest",
     "top-deployers", "sniper", "snipers", "profitable-devs", "fees", "label", "lab", "follow", "oktech", "study",
