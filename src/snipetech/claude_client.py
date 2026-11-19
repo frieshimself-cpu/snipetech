@@ -46,6 +46,11 @@ OPENROUTER_PROVIDER = "anthropic"  # OpenRouter's name for Anthropic's own serve
 # there with their work so far paid for). The SDK waits 0.5, 1, 2, 4, then 8 s a try (or what the answer's
 # retry-after says): this many tries outlast the minute, where its own two are over in a second and a half.
 OPENROUTER_RETRIES = 14
+# The longest wait a refusal's Retry-After is given, in seconds. The SDK sleeps what the header says, whatever it
+# says; with the tries above, a header of two minutes on every answer held one request for 28 minutes, past a turn's
+# own limit (turn.TURN_HARD_SECS). A longer one is not obeyed: the short waits above take its place, the request ends
+# as the API's refusal within about a minute, and the next round asks again.
+OPENROUTER_LONGEST_WAIT = 60.0
 VIA_ENV = "SNIPETECH_CLAUDE_VIA"
 # The owner's AWS account (19 Nov) is of AWS's new sign-up kind, home Region Stockholm. AWS's own policy for it
 # refuses the Anthropic use-case form outside that Region, and in us-east-1 and us-west-2 it leaves out
@@ -209,9 +214,54 @@ _CLASSES: dict[str, type] = {}
 def _classes() -> dict[str, type]:
     if _CLASSES:
         return _CLASSES
-    from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, AsyncAnthropicBedrockMantle
+    import httpx2
+    from anthropic import AsyncAnthropic, AsyncAnthropicBedrock, AsyncAnthropicBedrockMantle, Middleware
+
+    class _OpenRouterAnswers(Middleware):
+        """Three answers of OpenRouter's that the SDK reads wrongly, turned into the errors they are, inside the SDK's
+        retry loop (its errors and limits pages, 19 Nov 2026):
+
+        * a 200 whose body is an error. OpenRouter answers 200 as soon as the provider takes the request and reports
+          a later failure (overloaded, a dropped connection) in the body. The SDK built a message from it and the
+          turn died on a TypeError outside its API-error path. It becomes the status the direct API would have sent,
+          so an overload is tried again and anything else ends the turn as the API error it is, with its words;
+        * a 402 that carries Retry-After: the hold for requests in flight, refused while the balance is there, and
+          passing by itself. The SDK retries no 402; as a 429 it waits and asks again. A 402 without the header is an
+          empty account and stays one;
+        * a refusal that asks for a wait beyond OPENROUTER_LONGEST_WAIT. The SDK sleeps whatever Retry-After says
+          and this client asks OPENROUTER_RETRIES times, so `retry-after: 120` held one request for 28 minutes, past
+          the turn's own limit. The header is left out and the SDK's short waits take its place."""
+
+        client: Any = None  # set once the client exists: its own factory makes the typed error
+
+        def _error(self, http: Any, status: int, keep_wait: bool) -> Exception:
+            names = ("content-type", "request-id", "x-request-id") + (("retry-after", "retry-after-ms") * keep_wait)
+            headers = {k: v for k in names if (v := http.headers.get(k))}
+            stand_in = httpx2.Response(status, headers=headers, content=http.content, request=http.request)
+            return self.client._make_status_error_from_response(stand_in)
+
+        async def handle_async(self, request, call_next):  # type: ignore[override]
+            response = await call_next(request)
+            http = response.http_response
+            asks_to_wait = bool(http.headers.get("retry-after") or http.headers.get("retry-after-ms"))
+            wait = self.client._parse_retry_after_header(http.headers) if asks_to_wait else None
+            keep_wait = wait is None or wait <= OPENROUTER_LONGEST_WAIT
+            hold = http.status_code == 402 and asks_to_wait
+            if hold or (not http.is_success and not keep_wait):
+                await http.aread()
+                raise self._error(http, 429 if hold else http.status_code, keep_wait)
+            if http.is_success and "json" in http.headers.get("content-type", ""):  # not a stream
+                await http.aread()
+                err = _reported_error(_json(http))
+                if err is not None:
+                    raise self._error(http, _status_of(err), keep_wait)
+            return response
 
     class _OpenRouterClient(AsyncAnthropic):
+        # OpenRouter holds no message threads: the SDK's tool loop sends the whole conversation with every request on
+        # this client, whatever its caller passes (runner_options() says the same at the call sites)
+        _supports_message_threads = False
+
         @property
         def auth_headers(self) -> dict[str, str]:  # type: ignore[override]
             # OpenRouter's key and nothing else: never a key or a login the SDK finds for Anthropic itself
@@ -243,8 +293,48 @@ def _classes() -> dict[str, type]:
                 options.json_data = body
             return await super()._prepare_options(options)
 
-    _CLASSES.update(runtime=_RuntimeClient, mantle=_MantleClient, openrouter=_OpenRouterClient)
+    _CLASSES.update(runtime=_RuntimeClient, mantle=_MantleClient, openrouter=_OpenRouterClient,
+                    openrouter_answers=_OpenRouterAnswers)  # fmt: skip
     return _CLASSES
+
+
+# The status the direct API gives the kind of error OpenRouter reports inside a 200 (`error.type`, and its own
+# `error.error_type`): the SDK then retries what it retries (overloaded, a timeout, a server error) and no more.
+# `billing_error` is an account without credit: a 402, which ends the turn at once and is told as that.
+_ERROR_STATUS = {"invalid_request_error": 400, "authentication_error": 401, "billing_error": 402,
+                 "permission_error": 403, "not_found_error": 404, "request_too_large": 413,
+                 "rate_limit_error": 429, "overloaded_error": 529, "timeout_error": 504}  # fmt: skip
+
+
+def _status_of(err: dict) -> int:
+    """The status of an error reported inside a 200: by its kind where that is known, else the status OpenRouter's
+    general shape carries as `error.code`, else a server's failure (`api_error`, anything unnamed), tried again."""
+    kind, detail, code = str(err.get("type") or ""), str(err.get("error_type") or ""), err.get("code")
+    if "overloaded" in detail:
+        return 529
+    if "timeout" in detail:
+        return 504
+    if kind in _ERROR_STATUS:
+        return _ERROR_STATUS[kind]
+    if isinstance(code, int) and not isinstance(code, bool) and 400 <= code <= 599:
+        return code
+    return 502
+
+
+def _reported_error(body: Any) -> dict | None:
+    """The error a 200's body reports instead of an answer: the Messages envelope (`type: error`), or OpenRouter's
+    general shape, an `error` object beside no content (its errors page: "check the body for an `error` field even
+    on a 200"). None for an answer."""
+    if not isinstance(body, dict) or not isinstance(body.get("error"), dict):
+        return None
+    return body["error"] if body.get("type") == "error" or "content" not in body else None
+
+
+def _json(http: Any) -> Any:
+    try:
+        return http.json()
+    except Exception:  # noqa: BLE001 - a body that is no JSON says nothing here
+        return None
 
 
 def claude_client(model: str, env: Mapping[str, str] | None = None) -> Any:
@@ -257,9 +347,14 @@ def claude_client(model: str, env: Mapping[str, str] | None = None) -> Any:
         return AsyncAnthropic()
     if way == "openrouter":
         # an explicit token: the SDK then reads no Anthropic key from the environment (and auth_headers sends only it)
+        answers = _classes()["openrouter_answers"]()
         client = _classes()["openrouter"](
-            base_url=OPENROUTER_URL, auth_token=_key(e, OPENROUTER_KEY_ENV), max_retries=OPENROUTER_RETRIES
+            base_url=OPENROUTER_URL,
+            auth_token=_key(e, OPENROUTER_KEY_ENV),
+            max_retries=OPENROUTER_RETRIES,
+            middleware=[answers],
         )
+        answers.client = client
         client.api_key = None
         client._custom_headers = {}  # ANTHROPIC_CUSTOM_HEADERS is for Anthropic: nothing of it goes elsewhere
         return client

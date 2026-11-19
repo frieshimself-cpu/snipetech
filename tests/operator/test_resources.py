@@ -498,3 +498,52 @@ def test_the_credit_alarm_names_openrouter_while_the_agents_go_through_it(tmp_st
     r = {x.name: x for x in rows}["anthropic_credit"]
     assert r.status == "crit" and "OpenRouter refuses" in r.message
     assert "openrouter.ai/settings/credits" in r.message and "console.anthropic.com" not in r.message
+
+
+def test_a_refusal_that_passes_or_this_codes_own_hint_is_not_an_empty_account():
+    """19 Nov. OpenRouter's hold for requests in flight says "credits" and passes by itself. And the words this code
+    puts behind every refusal of the direct API ("the credit has to be on that organization") made any error an empty
+    account: a 529 "Overloaded" would have had the owner told to add credit."""
+    from snipetech.operator.resources import says_no_credit
+
+    assert says_no_credit("402: Insufficient credits. Add more using https://openrouter.ai/settings/credits")
+    assert says_no_credit("400: Your credit balance is too low to access the Anthropic API.")
+    assert not says_no_credit("429: This request would exceed your available credits given your current in-flight "
+                              "requests. Retry after in-flight requests settle, or add credits.")  # fmt: skip
+    hint = (" (the server's key belongs to the Anthropic organization ID abc-1: the credit has to be on that "
+            "organization, console.anthropic.com, Settings, Organization shows the ID)")  # fmt: skip
+    assert not says_no_credit("529: Overloaded" + hint)
+    # a refusal that asks to be waited out (429) is never an empty account, whatever its words mention
+    assert not says_no_credit("429: Rate limited while your credits settle. Please retry shortly")
+    assert says_no_credit("400: Your credit balance is too low to access the Anthropic API." + hint)
+
+
+def test_through_openrouter_the_count_falls_by_its_own_charge_and_credit_names_its_page(tmp_store, ledger, monkeypatch):
+    """The figure the owner records is the one OpenRouter's Credits page shows, and that falls by OpenRouter's own
+    charge. The ledger holds the owner's dollars, the 5.5 % of buying the credit included: counted down from the
+    page's figure, they called the account empty a twentieth early (the review, 19 Nov). And /credit sent the owner
+    to the Anthropic console for a figure that is on OpenRouter's page."""
+    from snipetech.operator.resources import credit_reply
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-key")
+    monkeypatch.delenv("SNIPETECH_CLAUDE_VIA", raising=False)
+    cfg = Config()
+    refused = credit_reply(cfg, tmp_store, ledger, ["lots"], NOW)
+    assert "openrouter.ai/settings/credits" in refused and "Anthropic" not in refused
+    said = credit_reply(cfg, tmp_store, ledger, ["100"], NOW)
+    assert said.startswith("recorded: 100 $ on the OpenRouter account") and "Anthropic" not in said
+    usd = ledger.record("scout", {"input_tokens": 1, "cost": 40.0}, now=NOW + 60)
+    assert usd == pytest.approx(42.2) and ledger.spent_since(NOW) == pytest.approx(42.2)  # the owner's dollars
+    assert ledger.credit_since(NOW) == pytest.approx(40.0)  # what left the account
+    ledger.record("scout", {"input_tokens": 1_000_000}, now=NOW + 61)  # a line with no charge named: its dollars
+    assert (
+        ledger.credit_since(NOW + 61) == pytest.approx(ledger.spent_since(NOW + 61))
+        and ledger.spent_since(NOW + 61) > 0
+    )
+    rows = check_resources(
+        cfg, tmp_store, snap(), Ledger(ledger.path, cfg.operator.prices), disk_free_gb=lambda: 50.0,
+        birdeye_credits=None, now=NOW + 120,
+    )  # fmt: skip
+    r = {x.name: x for x in rows}["anthropic_credit"]
+    left = 100.0 - ledger.credit_since(NOW)
+    assert r.value == pytest.approx(round(left, 2)) and f"{left:.0f} $ of 100 $ left" in r.message

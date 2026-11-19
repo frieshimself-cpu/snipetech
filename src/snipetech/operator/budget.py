@@ -142,6 +142,8 @@ class Ledger:
         line = {"ts": int(now), "mode": mode, "in": int(usage.get("input_tokens") or 0), "out": int(usage.get("output_tokens") or 0),
                 "cache_read": int(usage.get("cache_read_input_tokens") or 0), "cache_write": int(usage.get("cache_creation_input_tokens") or 0),
                 "cache_write_1h": hour_writes(usage), "usd": round(usd, 6)}  # fmt: skip
+        if charged is not None:  # what left the provider's credit: its charge without the fee of buying that credit
+            line["credit"] = round(charged / CREDIT_FEE, 6)
         others = served_by(usage, tier)
         if others:
             line |= {"model": str(model or others[-1]), "attempts": len(_attempts(usage))}
@@ -180,3 +182,9 @@ class Ledger:
 
     def spent_since(self, ts: float) -> float:
         return float(sum(r.get("usd", 0.0) for r in self._lines() if r.get("ts", 0) >= ts))
+
+    def credit_since(self, ts: float) -> float:
+        """What has left the account's credit since `ts`: the provider's own charge where a line names one (through
+        OpenRouter the line's dollars hold the fee of buying the credit too, and the account's figure does not fall
+        by that), the line's dollars elsewhere."""
+        return float(sum(r.get("credit", r.get("usd", 0.0)) for r in self._lines() if r.get("ts", 0) >= ts))

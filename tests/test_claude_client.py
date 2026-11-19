@@ -258,3 +258,144 @@ def test_a_blank_key_is_no_key(no_keys):
     assert cc.route() == "openrouter"
     headers = {k.lower(): str(v) for k, v in cc.claude_client("claude-opus-5-5").default_headers.items()}
     assert headers["authorization"] == "Bearer or-test-key"
+
+
+ANSWER = {"id": "gen-1", "type": "message", "role": "assistant", "model": "anthropic/claude-fable-5.2",
+          "content": [{"type": "text", "text": "ok"}], "stop_reason": "end_turn", "stop_sequence": None,
+          "usage": {"input_tokens": 1, "output_tokens": 1}}  # fmt: skip
+IN_FLIGHT = ("This request would exceed your available credits given your current in-flight requests. Retry after "
+             "in-flight requests settle, or add credits.")  # fmt: skip
+
+
+def _through_openrouter(no_keys, *answers):
+    """The OpenRouter client over a stand-in server that gives `answers` in turn (the last one again after that)."""
+    import httpx2
+
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        status, headers, body = answers[min(len(seen), len(answers)) - 1]
+        return httpx2.Response(status, headers=headers, json=body)
+
+    client = cc.claude_client("claude-fable-5-2")
+    client._client = httpx2.AsyncClient(transport=httpx2.MockTransport(handler), base_url=str(client.base_url))
+    return client, seen
+
+
+def _ask(client):
+    return asyncio.run(
+        client.beta.messages.create(
+            model="claude-fable-5-2", max_tokens=10, messages=[{"role": "user", "content": "hi"}]
+        )
+    )
+
+
+def _error(kind, words):
+    return {"type": "error", "error": {"type": kind, "message": words}}
+
+
+def test_a_failure_openrouter_reports_inside_a_200_is_an_api_error_and_is_tried_again(no_keys):
+    """OpenRouter answers 200 as soon as the provider takes a request and reports a later failure in the body
+    (openrouter.ai/docs/api_reference/errors-and-debugging, 19 Nov). The SDK built a message from that body and the
+    turn died on a TypeError outside its API-error path: its notes unsent, the API's words lost, nothing retried."""
+    import anthropic
+
+    client, seen = _through_openrouter(no_keys, (200, {}, _error("overloaded_error", "Overloaded")), (200, {}, ANSWER))
+    assert _ask(client).content[0].text == "ok" and len(seen) == 2  # as a 529 from the direct API is: tried again
+    client, seen = _through_openrouter(no_keys, (200, {}, _error("invalid_request_error", "messages: none")))
+    with pytest.raises(anthropic.APIStatusError) as refused:
+        _ask(client)
+    assert refused.value.status_code == 400 and "messages: none" in str(refused.value.body) and len(seen) == 1
+    # an empty account reported that way ends the turn at once, as the 402 it is: never fourteen more tries
+    client, seen = _through_openrouter(no_keys, (200, {}, _error("billing_error", "Insufficient credits")))
+    with pytest.raises(anthropic.APIStatusError) as empty:
+        _ask(client)
+    assert empty.value.status_code == 402 and len(seen) == 1
+    # OpenRouter's general shape, without `type`: an `error` object with the status as its `code`, and no content
+    bare = {"id": "gen-1", "error": {"code": 503, "message": "Provider returned error"}}
+    client, seen = _through_openrouter(no_keys, (200, {}, bare), (200, {}, ANSWER))
+    assert _ask(client).content[0].text == "ok" and len(seen) == 2
+    client, seen = _through_openrouter(no_keys, (200, {}, {"error": {"code": 400, "message": "bad request"}}))
+    with pytest.raises(anthropic.APIStatusError) as bad:
+        _ask(client)
+    assert bad.value.status_code == 400 and "bad request" in str(bad.value.body) and len(seen) == 1
+
+
+def test_openrouters_passing_refusal_for_requests_in_flight_is_waited_out(no_keys):
+    """A 402 that carries Retry-After is OpenRouter's hold for requests in flight: the balance is there, the refusal
+    passes by itself, and the SDK retries no 402 (its limits page, 19 Nov). One without the header is an empty
+    account and is not asked again."""
+    import anthropic
+
+    hold = (402, {"retry-after": "0.01"}, _error("invalid_request_error", IN_FLIGHT))
+    client, seen = _through_openrouter(no_keys, hold, (200, {}, ANSWER))
+    assert _ask(client).content[0].text == "ok" and len(seen) == 2
+    client, seen = _through_openrouter(no_keys, (402, {}, _error("invalid_request_error", "Insufficient credits")))
+    with pytest.raises(anthropic.APIStatusError) as empty:
+        _ask(client)
+    assert empty.value.status_code == 402 and len(seen) == 1
+
+
+def test_a_wait_of_more_than_a_minute_that_openrouter_asks_for_is_not_slept(no_keys):
+    """The SDK sleeps what Retry-After says, whatever it says (anthropic/_base_client.py _calculate_retry_timeout:
+    "just do what it says"), and through OpenRouter a request is asked up to 14 times: `retry-after: 120` on every
+    answer held one request for 28 minutes, longer than a turn may run (the review's measurement, 19 Nov). Up to a
+    minute is waited as asked. Beyond it the SDK's own short waits take the header's place, so a request that keeps
+    being refused ends as the API's refusal within about a minute, and the next round asks again."""
+    import anthropic._base_client as base
+
+    slept = []
+
+    async def nap(secs):
+        slept.append(secs)
+
+    no_keys.setattr(base.anyio, "sleep", nap)
+    limit = _error("rate_limit_error", "Rate limit exceeded")
+    for asked, as_asked in (("45", True), ("3600", False), ("Wed, 21 Oct 2099 07:28:00 GMT", False)):
+        slept.clear()
+        client, seen = _through_openrouter(no_keys, (429, {"retry-after": asked}, limit), (200, {}, ANSWER))
+        assert _ask(client).content[0].text == "ok" and len(seen) == 2
+        assert slept == [45.0] if as_asked else (len(slept) == 1 and 0 < slept[0] <= 0.5), (asked, slept)
+    slept.clear()  # the hold for requests in flight: the same bound
+    hold = (402, {"retry-after": "900"}, _error("invalid_request_error", IN_FLIGHT))
+    client, seen = _through_openrouter(no_keys, hold, (200, {}, ANSWER))
+    assert _ask(client).content[0].text == "ok" and len(seen) == 2
+    assert len(slept) == 1 and 0 < slept[0] <= 0.5, slept
+
+
+def test_a_tool_loop_through_openrouter_sends_the_whole_conversation_whatever_the_caller_passes(no_keys):
+    """The agents' loops pass runner_options(). A loop that forgets it would bring 19 Nov 16:15 back: a second
+    request with no history, instructions or tools. The client itself says it holds no message threads, so the SDK's
+    loop sends the whole conversation every time on it."""
+    import json
+
+    from anthropic import beta_async_tool
+
+    @beta_async_tool
+    async def say(word: str) -> str:
+        """Say one word aloud.
+
+        Args:
+            word: the word to say
+        """
+        return f"said {word}"
+
+    call = {**ANSWER, "stop_reason": "tool_use",
+            "content": [{"type": "tool_use", "id": "t1", "name": "say", "input": {"word": "ok"}}]}  # fmt: skip
+    client, seen = _through_openrouter(no_keys, (200, {}, call), (200, {}, ANSWER))
+
+    async def loop():
+        runner = client.beta.messages.tool_runner(  # no runner_options(): the caller forgot
+            model="claude-fable-5-2", max_tokens=10, system="rules", tools=[say],
+            messages=[{"role": "user", "content": "hi"}],
+        )  # fmt: skip
+        return [message async for message in runner]
+
+    assert len(asyncio.run(loop())) == 2
+    first, second = (json.loads(request.content) for request in seen)
+    assert "thread" not in first and "thread" not in second
+    assert [m["role"] for m in second["messages"]] == ["user", "assistant", "user"]
+    assert second["system"] == "rules" and [t["name"] for t in second["tools"]] == ["say"]
+    assert "message-threads" not in str(seen[0].headers.get("anthropic-beta"))

@@ -77,9 +77,25 @@ def credit_fix() -> str:
     return OPENROUTER_FIX if _through_openrouter() else CREDIT_FIX
 
 
+def _credit_page() -> str:
+    """Where the owner reads the figure /credit takes: the account the agents spend from."""
+    return "openrouter.ai/settings/credits" if _through_openrouter() else "the Anthropic console"
+
+
+# What turn.key_organisation puts behind the API's words. It names "the credit", so it is cut off before the words
+# are read: with it, every refusal of the direct API (an overload, a rate limit) read as an empty account (19 Nov).
+ORG_HINT = " (the server's key belongs to"
+
+
 def says_no_credit(words: str) -> bool:
-    """The API's refusal is about the account's credit ("Your credit balance is too low", "must add credits")."""
-    return "credit" in str(words).lower()
+    """The API's refusal is about the account's credit ("Your credit balance is too low", "must add credits",
+    OpenRouter's "Insufficient credits"). Not one: OpenRouter's hold for requests in flight, which passes by itself
+    while the balance is there (claude_client restates it as a 429), any other 429, and this code's own hint about
+    the key's organisation."""
+    said = str(words).split(ORG_HINT)[0].lower()
+    if said.startswith("429:"):  # a refusal that asks to be waited out is never an empty account
+        return False
+    return "credit" in said and "in-flight" not in said and "in flight" not in said
 
 
 def credit_refused(store: Store, ledger: Ledger, now: float) -> bool:
@@ -122,14 +138,14 @@ def credit_row(cfg: Config, store: Store, ledger: Ledger, now: float) -> Resourc
         rec = store.coverage(CREDIT_KEY)
         credit = float(rec.get("usd", rc.anthropic_credit_usd))
         set_at = float(rec.get("set_at", 0))
-        spent = ledger.spent_since(set_at)
+        spent = ledger.credit_since(set_at)  # what left the account: through OpenRouter, without the buying fee
         if credit > 0 and spent > credit * CREDIT_OVERRUN:
             return Resource("anthropic_credit", None, "usd", None, "unknown",
                             f"not known: {spent:.0f} $ spent against {credit:.0f} $ recorded, and the agents were "
                             f"answered all the same, so the account held more than was recorded; {credit_fix()}")  # fmt: skip
         left = max(0.0, credit - spent)
         left_pct = 100.0 * left / credit if credit > 0 else None
-        per_day = max(ledger.spent_since(now - 7 * 86400) / 7.0, ledger.spent_since(now - 86400))
+        per_day = max(ledger.credit_since(now - 7 * 86400) / 7.0, ledger.credit_since(now - 86400))
         days_left = (left / per_day) if per_day > 0 else None
         daily = effective_daily_usd(cfg, OperatorPaths(Path(cfg.storage.db_path).resolve().parent))
         status = _pct_left_status(left_pct, rc.anthropic_alert_pct)
@@ -157,10 +173,11 @@ def credit_reply(cfg: Config, store: Store, ledger: Ledger, args: list[str], now
         if not 0 <= usd < 1e7:
             raise ValueError(args[0])
     except ValueError:
-        return (f"credit not changed: {args[0][:20]!r} is not a number of dollars. Send /credit 180 when the Anthropic "
-                "console shows 180 $.")  # fmt: skip
+        return (f"credit not changed: {args[0][:20]!r} is not a number of dollars. Send /credit 180 when "
+                f"{_credit_page()} shows 180 $.")  # fmt: skip
     store.set_coverage(CREDIT_KEY, {"usd": usd, "set_at": now})
-    return (f"recorded: {usd:g} $ on the Anthropic account as of now. The agents' spend counts down from it; you hear "
+    who = "OpenRouter" if _through_openrouter() else "Anthropic"
+    return (f"recorded: {usd:g} $ on the {who} account as of now. The agents' spend counts down from it; you hear "
             "when it runs low.")  # fmt: skip
 
 
