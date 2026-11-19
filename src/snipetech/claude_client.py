@@ -41,6 +41,11 @@ BEDROCK_KEY_ENV = "AWS_BEARER_TOKEN_BEDROCK"
 OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 OPENROUTER_URL = "https://openrouter.ai/api"  # the SDK adds /v1/messages
 OPENROUTER_PROVIDER = "anthropic"  # OpenRouter's name for Anthropic's own servers (its endpoints list, 19 Nov)
+# OpenRouter holds a new account to 20 requests a minute on a model ("429: Rate limit exceeded: new-account-rpm/...
+# Please retry shortly", 19 Nov 16:31: five agents on one model pass that together, and four of five turns ended
+# there with their work so far paid for). The SDK waits 0.5, 1, 2, 4, then 8 s a try (or what the answer's
+# retry-after says): this many tries outlast the minute, where its own two are over in a second and a half.
+OPENROUTER_RETRIES = 14
 VIA_ENV = "SNIPETECH_CLAUDE_VIA"
 # The owner's AWS account (19 Nov) is of AWS's new sign-up kind, home Region Stockholm. AWS's own policy for it
 # refuses the Anthropic use-case form outside that Region, and in us-east-1 and us-west-2 it leaves out
@@ -56,12 +61,21 @@ def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 
 
+def _key(env: Mapping[str, str], name: str) -> str:
+    """A key as the environment holds it, without the blanks around it: a value of blanks is no key."""
+    return (env.get(name) or "").strip()
+
+
 def route(env: Mapping[str, str] | None = None) -> str:
     """The way the agents reach Claude: "anthropic" (the direct API), "openrouter" or "bedrock". The way
     SNIPETECH_CLAUDE_VIA names when its key is set (the direct way reads its own key); else by the keys that are
     there: OpenRouter's first, then Amazon's, then the direct API."""
     e = _env(env)
-    have = {"openrouter": bool(e.get(OPENROUTER_KEY_ENV)), "bedrock": bool(e.get(BEDROCK_KEY_ENV)), "anthropic": True}
+    have = {
+        "openrouter": bool(_key(e, OPENROUTER_KEY_ENV)),
+        "bedrock": bool(_key(e, BEDROCK_KEY_ENV)),
+        "anthropic": True,
+    }
     named = (e.get(VIA_ENV) or "").strip().lower()
     if have.get(named):
         return named
@@ -76,7 +90,7 @@ def has_claude_key(env: Mapping[str, str] | None = None) -> bool:
     """Whether the agents can call Claude at all, by any way in."""
     e = _env(env)
     names = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", OPENROUTER_KEY_ENV, BEDROCK_KEY_ENV)
-    return any(e.get(name) for name in names)
+    return any(_key(e, name) for name in names)
 
 
 WAYS = {"anthropic": "the direct API", "openrouter": "OpenRouter", "bedrock": "Amazon Bedrock"}
@@ -243,10 +257,13 @@ def claude_client(model: str, env: Mapping[str, str] | None = None) -> Any:
         return AsyncAnthropic()
     if way == "openrouter":
         # an explicit token: the SDK then reads no Anthropic key from the environment (and auth_headers sends only it)
-        client = _classes()["openrouter"](base_url=OPENROUTER_URL, auth_token=e[OPENROUTER_KEY_ENV])
+        client = _classes()["openrouter"](
+            base_url=OPENROUTER_URL, auth_token=_key(e, OPENROUTER_KEY_ENV), max_retries=OPENROUTER_RETRIES
+        )
         client.api_key = None
+        client._custom_headers = {}  # ANTHROPIC_CUSTOM_HEADERS is for Anthropic: nothing of it goes elsewhere
         return client
-    key, region = e[BEDROCK_KEY_ENV], _region(e)
+    key, region = _key(e, BEDROCK_KEY_ENV), _region(e)
     if any(model.endswith(m) for m in RUNTIME_ONLY):
         return _classes()["runtime"](aws_region=region, api_key=key)
     return _classes()["mantle"](aws_region=region, api_key=key)

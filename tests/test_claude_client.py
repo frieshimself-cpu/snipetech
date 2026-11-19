@@ -226,3 +226,35 @@ def test_only_anthropics_own_api_gets_the_sdk_loops_message_thread(no_keys):
     assert cc.runner_options() == {"thread": False}
     no_keys.setenv("SNIPETECH_CLAUDE_VIA", "anthropic")
     assert cc.runner_options() == {}
+
+
+def test_through_openrouter_a_request_refused_for_the_minutes_limit_is_waited_out(no_keys):
+    """19 Nov 16:31: "429: Rate limit exceeded: new-account-rpm/anthropic/claude-fable-5.2: new accounts are limited
+    to 20 requests per minute for this model. Please retry shortly." Five agents on that model pass 20 a minute
+    together, and four of five turns ended there, their work so far paid for. The SDK tries twice more within about a
+    second and a half; through OpenRouter it now tries long enough to outlast the minute."""
+    assert cc.claude_client("claude-fable-5-2").max_retries == 2  # the direct API: the SDK's own
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    client = cc.claude_client("claude-fable-5-2")
+    assert client.max_retries == cc.OPENROUTER_RETRIES
+    # the SDK waits 0.5, 1, 2, 4 and then 8 seconds a try, each up to a quarter shorter: over a minute in all
+    waits = [min(0.5 * 2**n, 8.0) * 0.75 for n in range(cc.OPENROUTER_RETRIES)]
+    assert sum(waits) > 60
+
+
+def test_headers_the_environment_holds_for_anthropic_do_not_go_to_openrouter(no_keys):
+    no_keys.setenv("OPENROUTER_API_KEY", "or-test-key")
+    no_keys.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-api-key: sk-ant-in-a-header\nx-other: thing")
+    headers = {k.lower(): str(v) for k, v in cc.claude_client("claude-opus-5-5").default_headers.items()}
+    assert "sk-ant-in-a-header" not in str(headers) and "x-other" not in headers
+    assert headers["authorization"] == "Bearer or-test-key"
+
+
+def test_a_blank_key_is_no_key(no_keys):
+    no_keys.setenv("OPENROUTER_API_KEY", "   ")
+    no_keys.setenv("AWS_BEARER_TOKEN_BEDROCK", "\t")
+    assert cc.route() == "anthropic" and cc.runner_options() == {}
+    no_keys.setenv("OPENROUTER_API_KEY", "  or-test-key \n")
+    assert cc.route() == "openrouter"
+    headers = {k.lower(): str(v) for k, v in cc.claude_client("claude-opus-5-5").default_headers.items()}
+    assert headers["authorization"] == "Bearer or-test-key"
