@@ -128,13 +128,6 @@ def test_the_amazon_key_is_redacted_from_every_output(no_keys):
     assert "bedrock-secret-value-123" not in ops.redact("token bedrock-secret-value-123 leaked")
 
 
-def test_the_server_install_asks_for_the_amazon_key_with_typing_hidden():
-    from pathlib import Path
-
-    text = (Path(__file__).resolve().parents[1] / "deploy" / "bootstrap.sh").read_text()
-    assert "set_key AWS_BEARER_TOKEN_BEDROCK" in text
-
-
 OPENROUTER_IDS = {
     "claude-fable-5-2": "anthropic/claude-fable-5.2",
     "claude-opus-5-5": "anthropic/claude-opus-5.5",
@@ -207,6 +200,8 @@ def test_the_server_install_asks_for_the_openrouter_key_with_typing_hidden():
 
     text = (Path(__file__).resolve().parents[1] / "deploy" / "bootstrap.sh").read_text()
     assert "set_key OPENROUTER_API_KEY" in text
+    # one hidden question for the agents' key, not two: the Amazon one is gone (Amazon refuses the account the models)
+    assert "set_key AWS_BEARER_TOKEN_BEDROCK" not in text
 
 
 def test_the_doctor_says_which_way_the_agents_go(no_keys):
