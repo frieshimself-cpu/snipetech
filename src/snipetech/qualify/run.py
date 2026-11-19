@@ -3,6 +3,7 @@ lab job, never more often than `lab_interval_h`; wallets the tape has never seen
 
 from __future__ import annotations
 
+import json
 import math
 import time
 from collections.abc import Callable
@@ -145,16 +146,44 @@ def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
     wallet that lost and qualified again on a new streak counted that streak, the copies that made it qualify again, as
     forward copies of its first pick), so the latest is None when the wallet's latest verdict failed one. Research
     round 2 scored the 27 wallets from the 04:15 and 14:30 verdicts from those verdicts the same way."""
-    rows = store._q("SELECT computed_at, status, forward IS NOT NULL, kept_armed IS NOT NULL FROM verdicts "
-                    "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
-    first = latest = None
-    for at, status, checked, kept in rows:
-        if checked or (status == "qualified" and not kept):
-            first = int(at) if first is None else first
-            latest = int(at) if latest is None else latest
-        else:
-            latest = None
+    first, latest, _ = _pick_record(store, wallet)
     return first, latest
+
+
+def armed_since(store, wallet: str) -> int | None:
+    """Since when the wallet counts as armed: where the tape ended that the look read which first passed its forward
+    check in the pick it is in now (that verdict's own time when it does not say where its tape ended); None when no
+    look of this pick passed, once a verdict failed an in-sample gate, and once the wallet went cold. The book makes
+    the sniper within minutes of that verdict, and the tape end, not the clock time, is the last moment that look
+    saw: counted from the clock time, FLPjyS's 5 copies in between (-0.065 SOL) were judged by nobody."""
+    return _pick_record(store, wallet)[2]
+
+
+def _pick_record(store, wallet: str) -> tuple[int | None, int | None, int | None]:
+    """(first pick, latest pick, armed since) from the wallet's verdicts in order: `pick_times`, `armed_since`. A
+    verdict that says the wallet went cold since it was armed (forward "cold", gates.forward_gate) ends the arming and
+    starts a new pick itself, at the end of the tape it read: the copies from the stop on count toward the 20 the
+    wallet needs to come back (started at the next look, a day of copies counted for nothing)."""
+    rows = store._q("SELECT computed_at, status, forward, kept_armed IS NOT NULL FROM verdicts "
+                    "WHERE wallet=? ORDER BY computed_at, id", (wallet,))  # fmt: skip
+    first = latest = armed = None
+    for at, status, forward, kept in rows:
+        if not (forward is not None or (status == "qualified" and not kept)):
+            latest = armed = None
+            continue
+        try:
+            fwd = json.loads(forward) if forward else {}
+        except ValueError:
+            fwd = {}
+        fwd = fwd if isinstance(fwd, dict) else {}
+        first = int(at) if first is None else first
+        if fwd.get("cold"):
+            latest, armed = int(fwd.get("tape_end") or at), None
+            continue
+        latest = int(at) if latest is None else latest
+        if armed is None and fwd.get("status") == "passed":
+            armed = int(fwd.get("tape_end") or at)
+    return first, latest, armed
 
 
 def with_recorded(recorded: list | None, moments: list | None, spans) -> list[list[float]]:
@@ -356,14 +385,14 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         moments = row.pop("moments", None) if row else None  # its copies, for the forward check only
         record = (store.get_score("qualify", w) or {}).get("record") or {}  # its copies since its first pick, so far
         copies = with_recorded(record.get("copies"), moments, spans)
-        first, latest = pick_times(store, w)
+        first, latest, armed = _pick_record(store, w)
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
         # every in-sample gate passed: is another wallet of its actor the candidate already? (never for a wallet a
         # sniper may copy.) A wallet that yields starts no forward record; one it has runs on, its history its own
         act = one.decide(w, lower_lab, c.get("verdict"), latest is not None) if v["status"] == "qualified" else None
         if act is None or not act.same_as or latest is not None:
             v = forward_gate(v, copies, latest, spans, q_eff, now, conf=cfg.verdict.confidence,
-                             samples=cfg.verdict.bootstrap_samples, first_picked_at=first)  # fmt: skip
+                             samples=cfg.verdict.bootstrap_samples, first_picked_at=first, armed_at=armed)  # fmt: skip
         v = same_actor(v, act, q_eff, now)  # `v` itself unless it yields
         if first is None and v.get("forward") is not None:
             first = int(now)  # picked for the first time now
@@ -403,6 +432,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         fwd = (v.get("forward") or {}).get("status")
         out["forward_pending"] += fwd == "pending"
         out["forward_failed"] += fwd == "failed"
+        if (v.get("forward") or {}).get("cold"):  # gone cold since it was armed: said in the run's own answer
+            out.setdefault("cold", []).append(w)
 
     # The wallets CHUNK at a time, in the queue's order, each chunk's verdicts written before the next chunk's lab. In
     # one lab of all of them every verdict waited for the last wallet (the first of the queue two hours for what the

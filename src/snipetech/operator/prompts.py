@@ -45,7 +45,12 @@ scored with the exit the book sends and the wallet's copy plan (copy_plan: the s
 leader's selling style). Read them with read_verdicts: `qualified` means history, venue, tape (n and lower bound),
 crowding, relationship and create-slot gates all passed, and so did its own copies on the tape after it was picked
 (`forward`: 20+ of them over 6+ h, lower bound above 0; picked again after it failed a gate, its copies since its first
-pick must not lose either); "forward pending" is a wallet waiting for those copies, not copied meanwhile. `kept_armed`
+pick must not lose either); "forward pending" is a wallet waiting for those copies, not copied meanwhile. Wallets
+change: one that paid last week can stop paying today. So a qualified wallet is looked at again at every qualify lab
+(19 Nov; once a day before), and `forward.armed` says what its copies made since it was armed. Once the newest 10 to
+20 of them lose even on the kind reading (`forward.newest`: their 90 % upper bound under 0) it has gone cold
+(`forward.cold`): a candidate again, not copied, until 20 new copies pay. When a copied wallet's newest copies turn,
+say so in your note with those numbers; under 10 copies it is a hint, not a result. `kept_armed`
 marks a wallet the book copied before these rules (7 Nov): kept qualified while a book sniper still buys for it, at
 least at the score it was armed on, its reason saying whether it still qualifies; whether it goes is the owner's
 call. The snapshot's `verdicts` counts change when a run wrote something. Build set_candidates from read_verdicts, not

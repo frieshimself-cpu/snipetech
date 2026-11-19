@@ -938,6 +938,77 @@ def test_pick_times_are_the_first_pick_and_the_start_of_the_latest_run_of_picks(
         st.close()
 
 
+def test_a_cold_verdict_starts_a_new_pick_from_the_tape_it_read_and_ends_the_arming():
+    """19 Nov: a wallet gone cold since it was armed waits again like one just picked. Its new pick starts at the cold
+    verdict itself, at the end of the tape that look read, so its copies from the stop on count toward the 20 it
+    needs to come back (started at the next look, a day of copies counted for nothing). `armed_since`: where the tape
+    ended that the look read which first passed its forward check in the pick it is in now; None once the pick ends
+    or the wallet went cold."""
+    from snipetech.qualify.run import armed_since, pick_times
+
+    st = Store(":memory:")
+    try:
+        assert armed_since(st, "W") is None
+
+        def put(at, status, forward=None):
+            st.put_verdict({"wallet": "W", "computed_at": at, "status": status, "next_review": at + 86400,
+                            "forward": forward})  # fmt: skip
+
+        put(100, "candidate", {"status": "pending", "tape_end": 90})
+        assert armed_since(st, "W") is None
+        put(200, "qualified", {"status": "passed", "tape_end": 180})
+        put(300, "qualified", {"status": "passed", "tape_end": 290})
+        assert pick_times(st, "W") == (100, 100) and armed_since(st, "W") == 180  # the look that first passed
+        put(400, "candidate", {"status": "pending", "tape_end": 380, "cold": {"n": 10, "mean": -0.05, "upper": -0.01}})
+        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        put(500, "candidate", {"status": "pending", "tape_end": 480})
+        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") is None
+        put(600, "qualified", {"status": "passed"})  # a verdict from before the tape end was kept: its own time
+        assert pick_times(st, "W") == (100, 380) and armed_since(st, "W") == 600
+        put(700, "candidate")  # stopped in-sample: the pick is over, and so is the arming
+        assert pick_times(st, "W") == (100, None) and armed_since(st, "W") is None
+    finally:
+        st.close()
+
+
+def test_a_copied_wallet_is_measured_at_the_next_lab_and_one_that_waits_is_not(tmp_path):
+    """19 Nov: ARMED passed its forward check and WAITS is still short of it. Three hours later, one lab on, ARMED is
+    due (its review comes after an hour) and WAITS is not (after a day). ARMED has gone cold in between: ten copies
+    since it was armed, each losing. The lab measures it alone, and it is no longer qualified."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["ARMED", "WAITS"])
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, NOW]]})
+        for w in ("ARMED", "WAITS"):
+            st.upsert_candidate(w, "solanatracker", STRONG, NOW - 2 * 86400)
+        picked = NOW - 40 * 3600
+        st.put_verdict({"wallet": "ARMED", "computed_at": picked, "landing_pos": "+3x", "n_tape": 30, "mean_sol": 0.02,
+                        "lower_sol": 0.01, "score": 0.01, "status": "candidate", "next_review": NOW - 60,
+                        "forward": {"status": "pending", "picked_at": picked, "n": 0},
+                        "copy_plan": {"min_leader_sol": 0.3, "exit_name": "lab", "lab_version": 2}})  # fmt: skip
+        wins = [[picked + 1800 * k + 60, 0.03 if k % 5 else -0.01] for k in range(30)]  # 30 copies since the pick
+        seen = []
+
+        def runner(wallets, pos):
+            seen.append(sorted(wallets))
+            later = wins if len(seen) == 1 else wins + [[NOW + 600 * k + 60, -0.05] for k in range(10)]
+            return [_row(w, 30, 0.022, 0.012, later if w == "ARMED" else wins[-25:], 0.8) for w in wallets]
+
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert by["ARMED"]["status"] == "qualified" and by["ARMED"]["next_review"] == NOW + 3600
+        assert by["WAITS"]["forward"]["status"] == "pending" and by["WAITS"]["next_review"] == NOW + 86400
+        later = NOW + 3 * 3600
+        st.set_coverage("tape", {"spans": [[NOW - 3 * 86400, later]]})
+        out = run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=runner)
+        assert seen == [["ARMED", "WAITS"], ["ARMED"]] and out["lab_wallets"] == 1
+        armed = next(v for v in st.latest_verdicts() if v["wallet"] == "ARMED")
+        assert armed["status"] == "candidate" and armed["forward"]["cold"]["n"] == 10, armed["reasons"]
+        assert any(r.startswith("cold since it was armed") for r in armed["reasons"])
+    finally:
+        st.close()
+
+
 def test_a_run_says_where_its_time_went(tmp_path):
     """11 Nov: a run of 300 wallets took 2 h 18 min at about one processor, back to back all day, and its output did
     not say whether the lab or the gates read wallet by wallet took the time, nor how many processes the lab ran on.

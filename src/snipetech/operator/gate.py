@@ -274,6 +274,8 @@ def decide(snap, prev, now: float, cfg: OperatorConfig, paths: OperatorPaths, ne
         gained = (snap.verdicts or {}).get("qualified", 0) - (getattr(prev, "verdicts", None) or {}).get("qualified", 0)
         if gained > 0:
             events.append(f"{gained} newly qualified wallet(s) (read_verdicts)")
+        elif gained < 0:  # one gone cold or stopped by a fix is news too (19 Nov: three lost their verdict, no event)
+            events.append(f"{-gained} wallet(s) no longer qualified (read_verdicts)")
     # equity with the coins valued at the tape price, against the last equity a round could value: the book's own
     # buys only move SOL into coins; a real loss shows up here once the coin is sold or priced
     ref = getattr(prev, "equity_ref", None) if prev is not None else None

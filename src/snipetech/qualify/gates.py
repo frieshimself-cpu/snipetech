@@ -241,6 +241,24 @@ def create_slot_share(store: Store, wallet: str, since_ts: int) -> dict[str, Any
 # must also not lose (the same counts, a mean below 0 retires it), so qualifying again never forgets what it lost.
 FORWARD_MIN_N = 20
 FORWARD_MIN_HOURS = 6.0
+# Gone cold since it was armed (19 Nov 2026; the owner: "some wallets change, they lose motion ... it has to adapt
+# super fast"). The check above weighs every copy since the pick alike, so a wallet's early wins carry its new
+# losses: FLPjyS, the one wallet dropped for going cold, stayed ranked 39.9 h after its first losing copy while 43
+# paper copies lost 1.74 SOL; its 10th copy since arming came 2 h after the first, 8 of the 10 lost. The cold
+# reading looks only at the copies since the wallet was armed, the newest COLD_WINDOW of them: with COLD_MIN_N or
+# more and even their one-sided COLD_CONF upper bound under 0 the wallet waits again like one just picked. 10, not
+# the live pause's 5 (measure.run): at 5 the stop also hit the one steady wallet of the record. The newest 20, not
+# all since arming: counted over all of them a wallet that made 40 good copies first needed a median of 84 losing
+# ones (simulated from FLPjyS's own copies), over the newest 20 it needs 16 or 17, and the three steady wallets of
+# the record were stopped within 100 copies 3 %, 2 % and 7 % of the time. 90 % is the live pause's own bound. The
+# price: a wallet whose profit is a few big wins among many small losses (7q5MVn: 49 % wins, +0.011 SOL a copy) is
+# stopped within 100 copies 83 % of the time though it has not changed; such a wallet rarely passes the forward
+# check. One real case stands behind this rule, and it is paper: no wallet armed under the forward check was ever
+# bought live. What protects money is the book's pause on five losing live copies; this one speaks first only
+# while no live copy exists.
+COLD_MIN_N = 10
+COLD_WINDOW = 20
+COLD_CONF = 0.9
 
 
 def tape_hours_after(spans, since: float, now: float) -> float:
@@ -250,7 +268,7 @@ def tape_hours_after(spans, since: float, now: float) -> float:
 
 def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None, spans, cfg: QualifyConfig,
                  now: float, conf: float = 0.8, samples: int = 2000,
-                 first_picked_at: int | None = None) -> dict[str, Any]:  # fmt: skip
+                 first_picked_at: int | None = None, armed_at: int | None = None) -> dict[str, Any]:  # fmt: skip
     """The verdict after the forward check, for a verdict every in-sample gate passed (status qualified; any other is
     returned as it is). `moments`: the wallet's copies, [[the leader's buy ts, SOL a copy made], ...]: the lab's, and
     older than the tape the lab read, the ones earlier runs recorded (qualify.run.with_recorded); `picked_at`: its
@@ -267,7 +285,18 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     qualified wallet (review_qualified_h). With both, the in-sample gate's rule on the forward copies: their lower bound
     above 0 keeps it qualified ("passed"); their mean below 0 retires it ("failed": it lost after it was picked);
     between the two it stays pending. Means and bounds count to the lamport. The reason says which, with its
-    numbers."""
+    numbers.
+
+    `armed_at`: where the tape ended that the look read which first passed this check in the pick the wallet is in
+    (qualify.run.armed_since), None when none did. `forward` then also holds "armed": {"at", "n", "mean"}, its copies
+    since, and with COLD_MIN_N or more of them "newest": {"n", "mean", "upper"}, the newest COLD_WINDOW of them with
+    their COLD_CONF upper bound: written at every look, stopped or not, so each case is on the record. Where the
+    pooled rule would still keep the wallet and that upper bound is under 0 it has gone cold: a candidate again,
+    forward status "pending" (so it stays first in qualify's queue), with "cold": {"n", "mean", "upper", "since"}
+    and a reason that names the landing. Its next pick starts at this verdict (qualify.run.pick_times).
+
+    "tape_end": where the tape the lab read ended. A verdict's clock time is later: the copy of the tape a lab reads
+    was 0.7 to 4 hours old at 33 labs (16 to 19 Nov)."""
     if v.get("status") != "qualified":
         return v
     since = int(now if picked_at is None else picked_at)
@@ -280,10 +309,23 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
     tape_from = min((float(a) for a, _ in spans or []), default=float(now))
     since_first = [p for ts, p in copies if ts > first]
     first_mean = sum(since_first) / len(since_first) if since_first else None
+    tape_to = max((float(b) for _, b in spans or []), default=float(now))
     fwd = {"picked_at": since, "tape_hours": hours, "n": len(later), "mean": mean, "lower": st.get("ev_lower"),
            "win_rate": st.get("win_rate"), "status": "pending", "min_n": FORWARD_MIN_N, "min_hours": FORWARD_MIN_HOURS,
            "first_picked_at": first, "first_n": len(since_first), "first_mean": first_mean,
-           "off_tape": sum(1 for ts, _ in copies if since < ts < tape_from)}  # fmt: skip
+           "off_tape": sum(1 for ts, _ in copies if since < ts < tape_from),
+           "tape_end": int(min(tape_to, float(now)))}  # fmt: skip
+    cold = None
+    if armed_at is not None:  # what it did since it was armed, kept at every look; the newest of it is the cold reading
+        since_armed = [p for _, p in sorted(c for c in copies if c[0] > armed_at)]
+        fwd["armed"] = {"at": int(armed_at), "n": len(since_armed),
+                        "mean": sum(since_armed) / len(since_armed) if since_armed else None}  # fmt: skip
+        newest = since_armed[-COLD_WINDOW:]
+        if len(newest) >= COLD_MIN_N:
+            read = summarize(newest, COLD_CONF, samples)
+            fwd["newest"] = {"n": len(newest), "mean": read["mean"], "upper": read["ev_upper"]}
+            if round(float(read["ev_upper"]), 9) < 0:
+                cold = dict(fwd["newest"], since=int(armed_at))
     out = dict(v, forward=fwd, reasons=list(v.get("reasons") or []))
     when = time.strftime("%d %b %H:%M UTC", time.gmtime(since))
     waits = {"status": "candidate", "gate": "forward", "next_review": int(now) + cfg.review_qualified_h * 3600}
@@ -305,6 +347,13 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
         out |= retires
         out["reasons"].append(f"loses after it was picked: mean {mean:+.4f} SOL over {len(later)} later copies since "
                               f"{when}")  # fmt: skip
+    elif cold is not None:  # the copies since the pick still pass or wait; the newest since it was armed all but lose
+        fwd["cold"] = cold
+        out |= waits
+        then = time.strftime("%d %b %H:%M UTC", time.gmtime(int(armed_at)))
+        out["reasons"].append(f"cold since it was armed on {then}: mean {cold['mean']:+.4f} SOL over the newest "
+                              f"{cold['n']} copies since (upper bound {cold['upper']:+.4f}) at {v.get('landing_pos')}; "
+                              f"it waits for {FORWARD_MIN_N} new copies that pay")  # fmt: skip
     elif round(float(fwd["lower"]), 9) <= 0:
         out |= waits
         out["reasons"].append(f"forward pending: mean {mean:+.4f} SOL over {len(later)} later copies since {when}, its "
@@ -374,7 +423,8 @@ def verdict_for(wallet: str, hist: dict, lab_row: dict | None, venue: float | No
     if mates:  # said with every verdict the lab scored that way: its numbers are behind the operator's own wallets
         reasons.append(f"buys with {mates} wallet{'s' if mates != 1 else ''} of its own in its block (in the next "
                        "places, or in changing order around it): a copy is scored behind them")  # fmt: skip
-    hours = {"qualified": cfg.review_qualified_h, "candidate": cfg.review_candidate_h, "retired": cfg.review_retired_h}[
+    # a qualified wallet is looked at again at the next regular lab (review_copied_h, 19 Nov), every other after days
+    hours = {"qualified": cfg.review_copied_h, "candidate": cfg.review_candidate_h, "retired": cfg.review_retired_h}[
         status
     ]
     return {"wallet": wallet, "computed_at": int(now), "landing_pos": cfg.landing_pos, "n_tape": n, "mean_sol": mean, "lower_sol": lower,

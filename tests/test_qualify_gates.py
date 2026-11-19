@@ -189,7 +189,8 @@ def test_verdict_status_matrix(cfg):
     }
 
     v = verdict_for("W", strong, row(10), 0.9, quiet, True, [], cfg, NOW)
-    assert v["status"] == "qualified" and v["next_review"] == NOW + 24 * 3600 and v["n_tape"] == 10 and v["score"] > 0
+    # a qualified wallet is due again after an hour (review_copied_h, 19 Nov): every regular lab looks at it
+    assert v["status"] == "qualified" and v["next_review"] == NOW + 3600 and v["n_tape"] == 10 and v["score"] > 0
     assert (
         v["hist_win_rate"] == 64.0 and v["hist_trades"] == 300 and v["venue_share"] == 0.9 and v["landing_pos"] == "+6"
     )
@@ -352,7 +353,8 @@ def test_a_wallet_with_no_later_tape_is_forward_pending_and_nothing_else_changes
     assert out["status"] == "candidate" and out["next_review"] == NOW + 24 * 3600
     assert out["forward"] == {"picked_at": NOW, "tape_hours": 0.0, "n": 0, "mean": None, "lower": None,
                               "win_rate": None, "status": "pending", "min_n": 20, "min_hours": 6.0,
-                              "first_picked_at": NOW, "first_n": 0, "first_mean": None, "off_tape": 0}  # fmt: skip
+                              "first_picked_at": NOW, "first_n": 0, "first_mean": None, "off_tape": 0,
+                              "tape_end": NOW}  # fmt: skip
     assert out["reasons"][:-1] == v["reasons"] and out["reasons"][-1].startswith("forward pending: 0 later copies")
     assert v["status"] == "qualified" and "forward" not in v  # the verdict handed in is left as it was
 
@@ -702,3 +704,110 @@ def test_the_companions_rule_lives_with_the_lab_and_the_gates_still_name_it():
     got = C.companions_of(st, [addr("W"), addr("X"), addr("nobody")], NOW - 10_000)
     assert got == {addr("W"): frozenset({addr("m1")})}  # only the wallets that have any
     st.close()
+
+
+# -- wallets change: a copied wallet is looked at every lab, and one gone cold since it was armed waits again -------
+
+
+def test_a_wallet_the_book_may_copy_is_looked_at_again_within_the_hour(cfg):
+    """19 Nov 2026 (the owner: "some wallets change, they lose motion and others gain motion, it has to adapt super
+    fast"). A qualified wallet was looked at once a day: two looks at an armed wallet were 24.5 h apart at the median
+    (10 reviews), FLPjyS stayed ranked 39.9 h after its first losing copy, and the lab fix of that day reached the
+    three ranked wallets only because someone called them up by hand (their next looks were 15 and 20 h away). A
+    qualified verdict is due again after review_copied_h, one hour: every regular lab measures it. A wallet that waits
+    on its forward check keeps its 24 hours (arming sooner is not shown to pay: the 16 wallets that ever met the
+    forward bar lost 6.9 SOL over their next 753 paper copies), a stopped one its 72, a retired one its 168."""
+    assert Config().qualify.review_copied_h == 1 and Config().qualify.review_qualified_h == 24
+    v = _in_sample_pass(cfg)
+    assert v["next_review"] == NOW + 3600
+    waits = forward_gate(v, [], None, [[NOW - 7200, NOW]], cfg, NOW)
+    assert waits["forward"]["status"] == "pending" and waits["next_review"] == NOW + 24 * 3600
+    passed = forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, [[PICK, NOW]], cfg, NOW)
+    assert passed["status"] == "qualified" and passed["next_review"] == NOW + 3600
+    few = verdict_for("W", {"trades": None}, {"n": 5, "mean": 0.02, "ev_lower": 0.001}, 1.0, {}, True, [], cfg, NOW)
+    lost = verdict_for("W", {"trades": None}, {"n": 30, "mean": -0.02, "ev_lower": -0.03}, 1.0, {}, True, [], cfg, NOW)
+    assert (few["status"], few["next_review"]) == ("candidate", NOW + 72 * 3600)
+    assert (lost["status"], lost["next_review"]) == ("retired", NOW + 168 * 3600)
+
+
+def test_the_forward_check_says_where_the_tape_it_read_ended(cfg):
+    """A verdict's clock time is not the end of what it saw: the lab reads a copy of the tape 0.7 to 4 hours old (33
+    labs, 16 to 19 Nov). The forward block keeps the end of that tape, so the next look and the cold reading count a
+    wallet's copies from there and none falls into the gap (FLPjyS: 5 copies, -0.065 SOL, judged by nobody)."""
+    v = _in_sample_pass(cfg)
+    out = forward_gate(v, _copies(25, 0.02, PICK + 60), PICK, [[PICK - 3600, NOW - 9000]], cfg, NOW)
+    assert out["forward"]["tape_end"] == NOW - 9000
+    assert forward_gate(v, [], None, [], cfg, NOW)["forward"]["tape_end"] == NOW  # no tape named: its own time
+
+
+ARMED_AT = NOW - 30 * 3600  # where the tape ended that its arming look read
+PICKED = NOW - 60 * 3600
+LONG = [[PICKED - 3600, NOW]]
+
+
+def test_a_wallet_gone_cold_since_it_was_armed_waits_again_whatever_it_earned_before(cfg):
+    """FLPjyS, the one wallet dropped for going cold (13 to 15 Nov): from its first losing copy after it was armed to
+    the drop took 39.9 h and 43 paper copies (-1.74 SOL), because the forward check weighs every copy since the pick
+    alike and its early wins carried the new losses. Its 10th copy since arming came 2 h after the first: 8 of the 10
+    lost, -0.54 SOL. The cold reading looks at the copies since the wallet was armed, the newest 20 of them: with 10
+    or more and even their 90 % upper bound under 0 the wallet is not copied any more. It waits like a wallet just
+    picked, first in the queue, and its verdict says the numbers and the landing."""
+    v = _in_sample_pass(cfg)
+    wins = _copies(40, 0.05, PICKED + 600)  # +2.0 SOL after the pick, before it was armed
+    cold = _copies(10, lambda k: -0.06 if k % 5 else 0.01, ARMED_AT + 600)  # 8 of 10 lose since
+    still = forward_gate(v, wins + cold, PICKED, LONG, cfg, NOW)  # nobody says when it was armed: the pooled rule alone
+    assert still["status"] == "qualified" and "cold" not in still["forward"]
+    out = forward_gate(v, wins + cold, PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    fwd = out["forward"]
+    assert out["status"] == "candidate" and out["gate"] == "forward" and fwd["status"] == "pending"
+    assert out["next_review"] == NOW + cfg.review_qualified_h * 3600
+    assert fwd["cold"]["n"] == 10 and fwd["cold"]["mean"] == pytest.approx(-0.046) and fwd["cold"]["upper"] < 0
+    assert fwd["cold"]["since"] == ARMED_AT and fwd["armed"] == {"at": ARMED_AT, "n": 10, "mean": pytest.approx(-0.046)}
+    said = [r for r in out["reasons"] if r.startswith("cold since it was armed")]
+    assert len(said) == 1 and "10 copies" in said[0] and "-0.0460" in said[0] and "at +3x" in said[0], out["reasons"]
+    assert not any(r.startswith("holds after it was picked") for r in out["reasons"])
+
+
+def test_nine_copies_or_a_mixed_ten_are_no_cold_reading_and_both_readings_are_kept(cfg):
+    """Under 10 copies since arming nothing is said (at 5 copies the stop also hit the one steady wallet of the record,
+    at 10 it did not). A ten that still holds a few good wins is not cold either: only an upper bound under 0 is.
+    Every look at a copied wallet writes what it found since arming, stopped or not, so the next case is on the
+    record: so far the evidence is one wallet."""
+    v = _in_sample_pass(cfg)
+    wins = _copies(40, 0.05, PICKED + 600)
+    nine = forward_gate(v, wins + _copies(9, -0.06, ARMED_AT + 600), PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    assert nine["status"] == "qualified" and nine["forward"]["status"] == "passed" and "cold" not in nine["forward"]
+    assert nine["forward"]["armed"]["n"] == 9 and nine["forward"]["armed"]["mean"] == pytest.approx(-0.06)
+    mixed = _copies(10, lambda k: 0.2 if k % 3 == 0 else -0.05, ARMED_AT + 600)  # four wins of 0.2 among six losses
+    ten = forward_gate(v, wins + mixed, PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    assert ten["status"] == "qualified" and "cold" not in ten["forward"] and ten["forward"]["armed"]["n"] == 10
+    assert ten["forward"]["newest"]["n"] == 10 and ten["forward"]["newest"]["upper"] > 0  # the reading, kept
+    assert "newest" not in nine["forward"]  # under ten copies there is no reading to keep
+    none = forward_gate(v, wins, PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)  # armed, and no copy since
+    assert none["status"] == "qualified" and none["forward"]["armed"] == {"at": ARMED_AT, "n": 0, "mean": None}
+
+
+def test_the_cold_reading_is_the_newest_twenty_copies_so_old_wins_since_arming_do_not_carry_new_losses(cfg):
+    """Counted over every copy since arming, a wallet that made 40 good copies first needed a median of 84 losing ones
+    to be stopped (simulated from FLPjyS's own copies): the same weeks the pooled rule takes. Over the newest 20 it
+    takes 16 or 17. A steady wallet is not stopped for it: within 100 copies the newest-20 reading stopped the three
+    steady wallets of the record 3 %, 2 % and 7 % of the time."""
+    v = _in_sample_pass(cfg)
+    wins = _copies(40, 0.05, PICKED + 600)
+    good_since = _copies(40, 0.05, ARMED_AT + 60)  # 40 good copies since it was armed
+    losing = _copies(20, lambda k: -0.06 if k % 5 else 0.01, ARMED_AT + 3600)
+    out = forward_gate(v, wins + good_since + losing, PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    assert out["status"] == "candidate" and out["forward"]["cold"]["n"] == 20  # the newest 20 of its 60 since arming
+    assert out["forward"]["armed"]["n"] == 60 and out["forward"]["armed"]["mean"] > 0
+    half = forward_gate(v, wins + good_since + losing[:8], PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    assert half["status"] == "qualified" and "cold" not in half["forward"]  # 12 good and 8 losing in the newest 20
+
+
+def test_a_wallet_that_loses_over_all_its_copies_since_the_pick_is_retired_not_called_cold(cfg):
+    """The pooled rule is the stronger word: a mean below 0 over the copies since the pick retires the wallet for a
+    week. The cold reading only speaks where that rule would still keep the wallet."""
+    v = _in_sample_pass(cfg)
+    few_wins = _copies(20, 0.01, PICKED + 600)
+    cold = _copies(15, -0.06, ARMED_AT + 600)
+    out = forward_gate(v, few_wins + cold, PICKED, LONG, cfg, NOW, armed_at=ARMED_AT)
+    assert out["status"] == "retired" and out["forward"]["status"] == "failed" and "cold" not in out["forward"]

@@ -666,3 +666,20 @@ def test_budget_every_zero_turns_the_roles_off(paths):
     assert _at(paths, AT_0630 + 5 * 3600, cfg=ROLES_ON).mode == "none"  # no in-between analysis either: once a day
     set_budget(paths, ROLES_ON, {"analyst_every_h": 2}, "telegram", NOW)
     assert roles.on(ROLES_ON, paths)
+
+
+def test_a_wallet_that_stops_qualifying_is_news_as_one_that_starts_is(paths):
+    """19 Nov 2026: the gate raised an event when a wallet newly qualified and none when one stopped. A wallet the
+    book copies going cold, or losing its verdict to a lab fix (three did that day), is the same kind of news: the
+    agents read the verdicts that round and say why, instead of finding out at the daily report."""
+    before, fewer, more = (
+        snap(verdicts={"qualified": 3}),
+        snap(verdicts={"qualified": 1}),
+        snap(verdicts={"qualified": 4}),
+    )
+    lost = decide(fewer, before, NOW, CFG, paths)
+    assert lost.call and any(r == "2 wallet(s) no longer qualified (read_verdicts)" for r in lost.reasons), lost.reasons
+    gained = decide(more, before, NOW, CFG, paths)
+    assert gained.call and any(r == "1 newly qualified wallet(s) (read_verdicts)" for r in gained.reasons)
+    same = decide(snap(verdicts={"qualified": 3}), before, NOW, CFG, paths)
+    assert same.call is False

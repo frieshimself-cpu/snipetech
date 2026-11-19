@@ -501,7 +501,11 @@ class QualifyConfig:
     strong_win_rate: float = 60.0
     strong_coins: int = 50
     max_gap3_pct: float = 15.0  # median price gap to the 3rd follower above this = too crowded for our landing
-    review_qualified_h: int = 24
+    review_qualified_h: int = 24  # a wallet that waits on its forward check, one kept armed, one that yields
+    # a qualified wallet, the kind the book copies (19 Nov 2026): due again after an hour, so every regular lab
+    # measures it. Looked at once a day, an armed wallet's two looks were 24.5 h apart and a lab fix reached it a day
+    # late. Only the look comes sooner: the rules it is held to are the same
+    review_copied_h: int = 1
     review_candidate_h: int = 72
     review_retired_h: int = 168
     lab_interval_h: float = 2.0  # at most one qualify lab per this many hours (the lab is the heavy job)
