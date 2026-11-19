@@ -495,7 +495,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                     notes.write(f"{sig}{size}{exit_} — {a.reason}", "info")
         if act_on_stops and plan.kill_reason:  # stops of non-holders are safety, not new money: on or off
             for a in stops:
-                await _do(svc, notifier, notes, "stop", a)
+                await _do(svc, notifier, notes, "stop", a, store, now)
         record_run(store, plan, True, now, **seen)
         _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
         return {
@@ -508,7 +508,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     # live: stop → retire (stop, delete) → create → start
     for a in plan.actions:
         if a.kind == "stop" and a.sniper_id:
-            await _do(svc, notifier, notes, "stop", a)
+            await _do(svc, notifier, notes, "stop", a, store, now)
     not_replaced: set[str] = set()  # wallets whose old sniper is still there: no second one this run
     for a in plan.actions:
         if (
@@ -565,10 +565,12 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
             await svc.oktech_task("start", sid)
             notifier.send(notes.write(f"[book] start {a.wallet[:6]} {a.arm} ({sid}) — new sniper", "decision"))
         except Exception as exc:  # noqa: BLE001
-            notifier.send(notes.write(f"[book] start {sid} failed: {type(exc).__name__}: {str(exc)[:120]}", "decision"))
+            _tell_once_a_day(
+                store, notifier, notes, f"[book] start {sid} failed: {type(exc).__name__}: {str(exc)[:120]}", now
+            )
     for a in plan.actions:
         if a.kind == "start" and a.sniper_id:
-            await _do(svc, notifier, notes, "start", a)
+            await _do(svc, notifier, notes, "start", a, store, now)
     record_run(store, plan, False, now, **seen)
     _watch(cfg, store, notifier, notes, wallet, holdings, snipers, now)
     return {
@@ -580,7 +582,9 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     }
 
 
-async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a) -> None:
+async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a, store=None, now: float | None = None) -> None:
+    """Stop or start one sniper and tell the owner. A failure that repeats run after run (OKTech refuses the same
+    stop every five minutes) is told once a day when `store` and `now` are given (`_tell_once_a_day`)."""
     try:
         await svc.oktech_task(action, a.sniper_id)
         notifier.send(
@@ -589,9 +593,11 @@ async def _do(svc, notifier: Notifier, notes: NoteSink, action: str, a) -> None:
             )
         )
     except Exception as exc:  # noqa: BLE001
-        notifier.send(
-            notes.write(f"[book] {action} {a.sniper_id} failed: {type(exc).__name__}: {str(exc)[:120]}", "decision")
-        )
+        line = f"[book] {action} {a.sniper_id} failed: {type(exc).__name__}: {str(exc)[:120]}"
+        if store is not None and now is not None:
+            _tell_once_a_day(store, notifier, notes, line, now)
+        else:
+            notifier.send(notes.write(line, "decision"))
 
 
 def _ignored(svc) -> list[str]:

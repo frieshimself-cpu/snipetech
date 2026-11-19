@@ -1486,6 +1486,26 @@ def test_a_create_that_keeps_failing_is_told_to_the_owner_once_a_day(tmp_path):
             st.close()
 
 
+def test_a_stop_or_start_oktech_refuses_run_after_run_is_told_once_a_day(tmp_path):
+    """The review of 19 Nov: a failed create was the storm that day, but a stop or a start OKTech refuses went to the
+    owner on every run just the same."""
+    st, cfg = _env(tmp_path, enabled=True)
+    snipers = [
+        {"id": "gone1", "name": "snipetech copy book DROPPD arm:control", "status": "running"},  # no longer ranked
+        {"id": "idle1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "idle"},  # ranked and stopped
+    ]
+    svc, sent = FakeSvc(st, snipers=snipers, fail={("stop", "gone1"), ("start", "idle1")}), []
+    try:
+        _live(svc, cfg, sent)
+        first = [t for t in sent if "failed" in t]
+        assert len(first) == 2 and any("stop gone1" in t for t in first) and any("start idle1" in t for t in first)
+        _live(svc, cfg, sent, now=NOW + 300)
+        assert [t for t in sent if "failed" in t] == first  # tried again, as it must be; told once
+        assert [c for c in svc.calls if c == ("stop", "gone1")] == [("stop", "gone1")] * 2
+    finally:
+        st.close()
+
+
 def test_a_failed_create_that_telegram_did_not_take_is_told_on_the_next_run(tmp_path):
     """The review: the note was written before the message was sent, so a message Telegram did not take counted as
     told, and the day's only notice was lost."""
