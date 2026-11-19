@@ -7,6 +7,7 @@ import re
 import time
 
 from ..playbook import OKTECH_PLAYBOOK
+from ..positions import BOOK_FILL_SOL, BUY_NATIVE_SOL, buys_payable  # noqa: F401 - read from here by name
 from .gate import Decision
 from .snapshot import Snapshot, role_jobs_since
 
@@ -460,26 +461,8 @@ ROLE_SYSTEM = {"scout": SCOUT_SYSTEM, "tester": TESTER_SYSTEM, "fees": FEES_SYST
 
 
 
-# What one buy needs in plain SOL, beside the buy itself: the control arm's priority fee (0.001) and tip (0.002) and the
-# rent of a new coin's token account (0.002, back when the account is closed). 11 Nov: with 0.0008 SOL beside 0.47
-# wrapped SOL the wallet sent nothing on five signals, and the analyst spent nine updates on the missing fills.
-BUY_NATIVE_SOL = 0.005
-BOOK_FILL_SOL = 0.2  # one copy's size where the snapshot does not carry the book's ([book] fill_min_sol)
-
-
-def buys_payable(native_sol: float | None, wsol: float | None, fill_sol: float | None) -> dict | None:
-    """How many copies of the book's size the wallet can pay, a venue at a time; None when a balance was not read.
-    A buy on pump.fun's curve takes the buy itself from plain SOL (a system transfer to the curve), a PumpSwap buy
-    takes it from wrapped SOL, and each pays BUY_NATIVE_SOL in plain SOL on top. 11 Nov 18:52 UTC: the snapshot's old
-    flag read "a buy's fees are payable" at 0.0052 SOL beside 0.47 wrapped SOL, and the first copy of 74xVT9 landed
-    and failed for the 0.2 SOL it could not take from plain SOL."""
-    if native_sol is None or wsol is None:
-        return None
-    size = float(fill_sol or BOOK_FILL_SOL)
-    eps = 1e-9  # a balance of exactly n buys pays n
-    fees = int((float(native_sol) + eps) // BUY_NATIVE_SOL)
-    return {"size_sol": size, "curve": int((float(native_sol) + eps) // (size + BUY_NATIVE_SOL)),
-            "pumpswap": min(int((float(wsol) + eps) // size), fees)}  # fmt: skip
+# What the wallet can pay (BUY_NATIVE_SOL, BOOK_FILL_SOL, buys_payable) is one rule for the agents' snapshot, the
+# conversion of wrapped SOL and the book: positions.py holds it, and it is read here under its old names.
 
 
 JOB_ARGV_CHARS = 300  # what ran, cut to this: the whole command is in the job's own file

@@ -592,3 +592,65 @@ def test_an_overlay_never_switches_the_exit_mode(tmp_path):
     (tmp_path / "autotune.toml").write_text('[book]\nexit_mode = "per_wallet"\nverified_exits = ["lab", "ride"]\n')
     _apply_overlay(cfg)
     assert cfg.book.exit_mode == "fixed" and cfg.book.verified_exits == ["lab", "hold60"]
+
+
+def test_no_sniper_is_made_while_the_wallet_cannot_pay_a_buy():
+    """17-19 Nov: the wallet was empty and the owner's floor off. The book made a sniper for each ranked wallet about
+    every ten minutes; each ended within minutes without a buy (OKTech: "finished") and the next run made another:
+    165 snipers in two days, each with two messages to the owner, until OKTech refused ("TASK_LIMIT: This key already
+    has 200 snipers"). What pays a buy is SOL: plain SOL for a curve buy, wrapped SOL for one on PumpSwap, and a few
+    thousandths of plain SOL beside either (positions.buys_payable, the rule the agents' snapshot reads)."""
+    from snipetech.book.policy import BookStops
+    from snipetech.positions import BUY_NATIVE_SOL
+
+    cfg = _cfg()
+    off = BookStops(None, None, None)  # the owner's /risk: no floor, no day stop, no daily cap
+
+    def made(**wallet):
+        plan = plan_book(_inp(stops=off, **wallet), cfg.book)
+        return plan, [a for a in plan.actions if a.kind == "create"]
+
+    plan, creates = made(equity_sol=0.0007, native_sol=0.0007, wsol=0.0)
+    assert plan.kill_reason is None and not creates
+    skips = [a for a in plan.actions if a.kind == "skip"]
+    assert len(skips) == 3 and all("cannot pay" in a.reason for a in skips)
+    assert sum("cannot pay" in n for n in plan.notes) == 1  # said once a plan, not once a wallet
+    # the review of 19 Nov: a coin's value is no money. With the wallet's worth in an unsold coin the first version
+    # of this rule (it read the equity) made the snipers all the same, and the loop went on
+    assert not made(equity_sol=0.5007, native_sol=0.0007, wsol=0.0)[1]
+    assert not made(equity_sol=None, native_sol=0.0007, wsol=0.0)[1]  # a coin the tape has not priced: equity unknown
+    # wrapped SOL alone sends nothing either (11 Nov: 0.0008 SOL beside 0.47 wrapped, nothing sent on five signals);
+    # with a buy's costs in plain SOL beside it a PumpSwap buy is payable, and the snipers are made
+    assert not made(native_sol=0.0007, wsol=0.5)[1]
+    assert len(made(native_sol=BUY_NATIVE_SOL, wsol=0.5)[1]) == 3
+    # a fill and its costs in plain SOL: made as always, to the lamport; a balance that was not read says nothing
+    fill = cfg.book.fill_min_sol
+    assert not made(native_sol=fill + BUY_NATIVE_SOL - 0.0001, wsol=0.0)[1]
+    assert len(made(native_sol=fill + BUY_NATIVE_SOL, wsol=0.0)[1]) == 3
+    for unread in ({"native_sol": None, "wsol": 0.0}, {"native_sol": 0.0, "wsol": None}, {}):
+        assert len(made(**unread)[1]) == 3
+
+
+def test_a_wallet_that_waits_for_money_keeps_its_actors_place():
+    """The review of 19 Nov: a wallet skipped because the wallet cannot pay its fill left its actor without a sniper
+    in the plan's eyes, so a lower-ranked wallet of the same actor on a smaller fill was made in its stead, and kept
+    the place once money came. The wallet that waits holds its actor's place: one signal, one sniper, the best one."""
+    from snipetech.book.policy import BookStops
+
+    cfg = _cfg(fill_max_sol=2.0, explore_share=0.5, bid_arms={k: dict(v) for k, v in ALT.items()})  # two arms
+    model = {"control": {"n": 40, "p75_pos": 4.0}, "alt": {"n": 31, "p75_pos": 1.0}}  # the dearer arm lands better
+    off = BookStops(None, None, None)
+    rows = [_q("W1", 0.03), _q("W2", 0.02)]
+
+    def plan(**over):
+        return plan_book(_inp(qualified=rows, stops=off, bid_model=model, **over), cfg.book)
+
+    fills = {a.wallet: a.fill_sol for a in plan().actions if a.kind == "create"}
+    assert fills["W1"] > 1 > fills["W2"] == 0.2  # the first on the dear arm's fill, the second on the small one
+    money = {"native_sol": 0.5, "wsol": 0.0}  # pays the small fill, not the big one
+    tied = plan(actors={"W1": ["W2"], "W2": ["W1"]}, **money)
+    assert not [a for a in tied.actions if a.kind == "create"]  # W2 is not made in W1's stead
+    why = {a.wallet: a.reason for a in tied.actions if a.kind == "skip"}
+    assert "cannot pay" in why["W1"] and "waits" in why["W2"] and "W1" in why["W2"]
+    apart = plan(**money)  # two actors: W2 is its own signal, and is made
+    assert [a.wallet for a in apart.actions if a.kind == "create"] == ["W2"]

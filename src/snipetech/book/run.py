@@ -1,12 +1,14 @@
 """`book run`: gather → plan → in dry mode write what it would do, in live mode execute through the Service's OKTech
-calls (stop → retire → create → start), one Telegram line per action. Dry is the default and is forced under a kill
+calls (stop → retire → delete the ended → create → start), one Telegram line per action. Dry is the default and is forced under a kill
 reason. A retire stops and deletes a sniper that made its relied-on buy while the wallet holds nothing, and the same
 run creates its replacement."""
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import fcntl
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -19,12 +21,14 @@ from ..operator.notify import Notifier, from_env
 from ..operator.paths import OperatorPaths
 from ..operator.snapshot import rpc_balances
 from ..operator.tools import NoteSink
-from ..positions import is_active
+from ..positions import SPENT_STATUSES, is_active
 from ..qualify.non_coin import NON_COIN_REASON, non_coin_traders
 from .policy import (
     BOOK_NAME_RE,
+    CANNOT_PAY,
     GUARD_KILL,
     ONE_SNIPER,
+    WAITS_FOR_MONEY,
     BookInputs,
     BookPlan,
     ExitChoice,
@@ -75,10 +79,18 @@ def _other_copies(store, tasks: list[dict]) -> set[str]:
     return out
 
 
-def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = False) -> dict[str, list[str]]:
+# A sniper's leader is read for its ties this long after the sniper was removed. 19 Nov (a review): the clean-up
+# deletes ended snipers, and a wallet that no longer qualifies was read only while OKTech listed a sniper of it. Where
+# its record was the one tie between two qualified wallets, the delete untied them: two snipers on one signal.
+ACTOR_MEMORY_SECS = 14 * 86400
+
+
+def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = False,
+                 now: float | None = None) -> dict[str, list[str]]:  # fmt: skip
     """Which wallets buy together, for the policy (BookInputs.actors): what qualify kept in each wallet's record
     (qualify/one_actor.py: its companions, the wallets it was chosen over, the one it yields to), for the qualified
-    wallets and for the leaders our own records name for a sniper OKTech still lists (its tasks carry no config).
+    wallets and for the leaders our own records name for a sniper OKTech still lists (its tasks carry no config) or
+    that was removed in the last ACTOR_MEMORY_SECS (`now`: when that is counted from; None reads the listed alone).
     A wallet whose record ties it to nobody is left out; no record at all says nothing, and the book then books that
     wallet by itself, as before 13 Nov. `twins`: the wallets each record names its twins instead
     (BookInputs.twins; one_actor.twin_links), which the first reading leaves out."""
@@ -86,6 +98,9 @@ def _actor_links(store, qualified: list[dict], tasks: list[dict], twins: bool = 
 
     local = {r["id"]: r for r in store.oktech_snipers(active=False)}
     leaders = {w for t in tasks for w in copied_leaders(local.get(t.get("id")) or {})}
+    if now is not None:
+        leaders |= {w for r in local.values() if (r.get("removed_at") or 0) >= now - ACTOR_MEMORY_SECS
+                    for w in copied_leaders(r)}  # fmt: skip
     out: dict[str, list[str]] = {}
     for w in dict.fromkeys([*(str(v["wallet"]) for v in qualified if v.get("wallet")), *sorted(leaders)]):
         links = (twin_links if twins else actor_links)(actor_block(store, w)) - {w}
@@ -363,8 +378,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     bookable = _bookable(store)
     twins: dict[str, list[str]] = {}
     try:  # which wallets buy together, and which are twins: one sniper an actor (policy.actor_members)
-        actors: dict[str, list[str]] | None = _actor_links(store, bookable, snipers)
-        twins = _actor_links(store, bookable, snipers, twins=True)
+        actors: dict[str, list[str]] | None = _actor_links(store, bookable, snipers, now=now)
+        twins = _actor_links(store, bookable, snipers, twins=True, now=now)
     except Exception as exc:  # noqa: BLE001 - not known this run: nothing new is added below
         actors = None
         sig = "[book] could not read which wallets buy together"
@@ -386,7 +401,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                      other_copies=_other_copies(store, snipers), buys_by_sniper=buys, holdings_known=holdings_known,
                      tape_holding=tape_holding, paused=paused_rec,
                      guard=guard is None or guard.tripped or not guard.known,
-                     stops=book_stops(cfg, paths))  # fmt: skip  # the owner's /risk values where set, else [book]'s
+                     stops=book_stops(cfg, paths),  # the owner's /risk values where set, else [book]'s
+                     native_sol=native, wsol=wsol)  # fmt: skip
     # holders=None: while the wallet holds any coin every book sniper is kept. A measured fill can name the wrong leader
     # (a co-buying leader, a failed leader attempt, an older closed position in the same coin), and stopping the sniper
     # that really holds a coin strands it; each kept sniper can add at most max_buys_per_sniper buys.
@@ -419,7 +435,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         age = _tape_age(store, now)
     except Exception:  # noqa: BLE001
         age = None
-    if age is not None and age > TAPE_STALE_SECS:
+    tape_behind = age is not None and age > TAPE_STALE_SECS
+    if tape_behind:
         # each sniper's buys and a fresh buy of ours are read on the tape: while it is behind, nothing new starts
         held_back = [a for a in plan.actions if a.kind in ("create", "start", "retire")]
         plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
@@ -458,6 +475,15 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
     counts: dict[str, int] = {}
     for a in plan.actions:
         counts[a.kind] = counts.get(a.kind, 0) + 1
+    # the ranked wallets no sniper is made for because the wallet cannot pay a buy (and those of their actors that wait
+    # with them), and the ones that have or get a sniper: what the owner is told the book copies (book_reason)
+    waits = [a for a in plan.actions if a.kind == "skip" and (CANNOT_PAY in a.reason or WAITS_FOR_MONEY in a.reason)]
+    if waits:
+        seen |= {
+            "waiting": len(waits),
+            "armed": sum(counts.get(k, 0) for k in ("keep", "create", "start")),
+            "waiting_fill": min((float(a.fill_sol) for a in waits if a.fill_sol), default=None),
+        }
     if effective_dry:
         for a in plan.actions:
             if a.kind in ("create", "start", "stop", "retire"):
@@ -491,6 +517,8 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
             and not await _retire(svc, wallet, notifier, notes, a, store, now, strays)
         ):
             not_replaced.add(a.wallet or "")
+    # the ended ones go before a new one is made: OKTech counts them against the key's 200 (19 Nov)
+    await _prune_ended(svc, wallet, notes, snipers, store, now, strays, tape_behind=tape_behind)
     new_ids: list[tuple[str, Any]] = []
     from .switch import book_mcaps
 
@@ -524,10 +552,13 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
                 notifier.send(notes.write(f"[book] create {a.wallet[:6]} {a.arm} {a.fill_sol:g} SOL on its buys of "
                                           f"{floor:g} SOL or more, {_exit_words(ex)} — {a.reason}", "decision"))  # fmt: skip
             except Exception as exc:  # noqa: BLE001
-                notifier.send(
-                    notes.write(
-                        f"[book] create {a.wallet[:6]} failed: {type(exc).__name__}: {str(exc)[:120]}", "decision"
-                    )
+                # the same refusal run after run is told once a day (19 Nov: 188 of one line in five hours)
+                _tell_once_a_day(
+                    store,
+                    notifier,
+                    notes,
+                    f"[book] create {a.wallet[:6]} failed: {type(exc).__name__}: {str(exc)[:120]}",
+                    now,
                 )
     for sid, a in new_ids:
         try:
@@ -568,6 +599,109 @@ def _ignored(svc) -> list[str]:
     return list(getattr(getattr(getattr(svc, "cfg", None), "operator", None), "ignore_mints", None) or [])
 
 
+async def _holds_a_coin(svc, wallet: str, store, now: float, strays: set[str] | frozenset) -> bool:
+    """Whether the wallet holds a coin of ours now, by its own balances and by the tape (a buy seconds old); holdings
+    that cannot be read count as held."""
+    try:
+        if [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]:
+            return True
+    except Exception:  # noqa: BLE001 - unknown holdings: treat as held
+        return True
+    try:
+        return bool(store is not None and now and _tape_holding(store, wallet, now))
+    except Exception:  # noqa: BLE001
+        return True
+
+
+TOLD_KEY = "book:told"  # the lines of today that Telegram has taken: {"day": "YYYY-MM-DD", "lines": [...]}
+
+
+def _tell_once_a_day(store, notifier: Notifier, notes: NoteSink, line: str, now: float) -> None:
+    """A line for the owner that every run would send again while its cause lasts (a create OKTech refuses): written
+    to the notes once a day, in the words a note holds (NoteSink.stored: the check looked for the raw text and never
+    found one with a line break or a trailing space), and sent until Telegram has taken it once that day (the note
+    used to be written before the send, so a message that was not taken counted as told)."""
+    line = notes.stored(line)
+    day = time.strftime("%Y-%m-%d", time.gmtime(now))
+    try:
+        rec = store.coverage(TOLD_KEY) or {}
+    except Exception:  # noqa: BLE001 - not known: told again, never lost
+        rec = {}
+    told = set(rec.get("lines") or []) if rec.get("day") == day else set()
+    text = None if notes.has_today(line, now) else notes.write(line, "decision")
+    if line in told:
+        return
+    if notifier.send(text or line):
+        with contextlib.suppress(Exception):
+            store.set_coverage(TOLD_KEY, {"day": day, "lines": sorted(told | {line})[-100:]})
+
+
+# 19 Nov: 191 of the key's 200 snipers were the book's own and ended (OKTech: "finished"), and nothing ever deleted
+# one: a retire deletes only a sniper the book itself stops after its buy. From 11:40 UTC OKTech refused every new
+# sniper ("TASK_LIMIT: This key already has 200 snipers. Delete some before creating more").
+PRUNE_PER_RUN = 30
+# The longest the clean-up may take in one run, in seconds. The machine ends the book's unit after four minutes, and
+# OKTech's client waits out a rate limit for up to three minutes a call: housekeeping never holds up the run's
+# creates, starts and watch.
+PRUNE_SECS = 45.0
+PRUNE_REFUSALS = 3  # this many snipers that OKTech will not delete end the run's clean-up too
+# The book's ended snipers as the last run saw them: {"ids": [...], "ts": when}. A sniper is deleted only when the run
+# before already saw it ended. OKTech counts a sniper's attempts, so one can read "finished" while its last buy is
+# still on its way: five minutes on that buy is in the wallet, and the wallet check keeps its sniper (a review, 19 Nov).
+ENDED_KEY = "book:ended"
+
+
+def _one_sniper_refused(exc: BaseException) -> bool:
+    """OKTech answered about this one sniper (it will not delete it): the next one can still be tried. Not so when it
+    gave no answer in time, the network failed, it asked us to slow down or its server broke: the next delete would
+    meet the same."""
+    from ..oktech import OktechError
+
+    return (isinstance(exc, OktechError) and 400 <= int(exc.status or 0) < 500 and exc.status != 429
+            and exc.code not in ("NETWORK", "RATE_LIMITED"))  # fmt: skip
+
+
+async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], store, now: float,
+                       strays: set[str] | frozenset = frozenset(), tape_behind: bool = False) -> int:  # fmt: skip
+    """Delete the book's own snipers that have ended (positions.SPENT_STATUSES: they buy and sell nothing more), the
+    oldest first and at most PRUNE_PER_RUN a run; how many went. Only one the run before already saw ended
+    (ENDED_KEY), only while the wallet holds nothing (a wallet that could not be read counts as holding) and the tape
+    is not behind (`tape_behind`: it could not show a buy of ours that is seconds old). Never a sniper that is not the
+    book's by its name, one that still runs or waits, or one OKTech marks failed (that one is kept for someone to look
+    at). Housekeeping: written down, never sent to the owner. A sniper OKTech will not delete is passed over
+    (PRUNE_REFUSALS of them end the run's clean-up); no answer in PRUNE_SECS, or a failure that is not about the one
+    sniper, ends it at once, and the next run goes on with the rest."""
+    ended = sorted(
+        str(s["id"])
+        for s in snipers
+        if s.get("id") and BOOK_NAME_RE.match(str(s.get("name") or "")) and str(s.get("status")) in SPENT_STATUSES
+    )
+    try:
+        seen = {str(i) for i in (store.coverage(ENDED_KEY) or {}).get("ids") or []}
+        store.set_coverage(ENDED_KEY, {"ids": ended, "ts": int(now or 0)})
+    except Exception:  # noqa: BLE001 - what the run before saw is not known: nothing is deleted this run
+        return 0
+    due = [sid for sid in ended if sid in seen]
+    if not due or tape_behind or await _holds_a_coin(svc, wallet, store, float(now or 0), strays):
+        return 0
+    done, refused, until = 0, [], time.monotonic() + PRUNE_SECS
+    for sid in due[:PRUNE_PER_RUN]:
+        try:
+            await asyncio.wait_for(svc.oktech_task("delete", sid), max(0.01, until - time.monotonic()))
+            done += 1
+        except Exception as exc:  # noqa: BLE001 - refused, or no answer in time
+            refused.append(f"{type(exc).__name__}: {str(exc)[:120]}".rstrip(": "))
+            if not _one_sniper_refused(exc) or len(refused) >= PRUNE_REFUSALS:
+                break
+    line = (f"[book] deleted {done} of its ended snipers on OKTech ({len(ended) - done} left): each had ended by the "
+            "run before and the wallet holds nothing")  # fmt: skip
+    if refused:
+        line += f"; {len(refused)} would not go ({refused[0]})"
+    if done or not notes.has_today("[book] deleted 0 of its ended snipers", now):
+        notes.write(line, "info")
+    return done
+
+
 async def _retire(
     svc,
     wallet: str,
@@ -585,15 +719,7 @@ async def _retire(
     now = float(now if now is not None else 0)
 
     async def held() -> bool:
-        try:
-            if [p for p in await svc.open_positions(wallet, ignore=_ignored(svc)) if str(p.get("mint")) not in strays]:
-                return True
-        except Exception:  # noqa: BLE001 - unknown holdings: treat as held
-            return True
-        try:
-            return bool(store is not None and now and _tape_holding(store, wallet, now))
-        except Exception:  # noqa: BLE001
-            return True
+        return await _holds_a_coin(svc, wallet, store, now, strays)
 
     if await held():
         notes.write(f"[book] retire {w6} ({sid}) waits: the wallet holds a coin again (or could not be read)", "info")

@@ -517,6 +517,21 @@ def test_the_book_line_says_why_it_is_or_is_not_trading(env):
     assert "halted" in RS.book_reason(st, cfg, paths) and "2.1" in RS.book_reason(st, cfg, paths)
     st.set_coverage("book:last_run", {"ts": NOW, "kill_reason": None, "ranked": 2, "dry": False, "actions": {}})
     assert "copying 2 wallet" in RS.book_reason(st, cfg, paths)
+    # 19 Nov (a review): while no sniper can be made the digest went on saying "copying 2 wallet(s)" with nothing
+    # armed. It says how many qualify and that none is armed, and leaves the wallet out (the owner's rule of 9 Nov:
+    # what is in the wallet is never reported); /book status, the owner's own question, says why
+    from snipetech.book.state import LAST_RUN_KEY, last_run_line
+
+    rec = st.coverage(LAST_RUN_KEY)
+    st.set_coverage(LAST_RUN_KEY, rec | {"waiting": 2, "waiting_fill": 0.2, "armed": 0})
+    words = RS.book_reason(st, cfg, paths)
+    assert "2 wallet(s) qualify" in words and "none armed" in words and "copying" not in words
+    assert "SOL" not in words and "wallet cannot" not in words
+    asked = last_run_line(st)
+    assert "none armed" in asked and "cannot pay a 0.2 SOL buy" in asked
+    st.set_coverage(LAST_RUN_KEY, rec | {"waiting": 1, "waiting_fill": 0.2, "armed": 1})  # one armed, one waits
+    assert "copying 1 wallet(s)" in RS.book_reason(st, cfg, paths)
+    st.set_coverage(LAST_RUN_KEY, rec)
     paths.stop_flag.write_text("x")
     assert "/stop" in RS.book_reason(st, cfg, paths)
 

@@ -420,6 +420,13 @@ def book_reason(store: Store, cfg: Config, paths: OperatorPaths) -> str:
         tail = (f" (the best, {_short(best.get('wallet'))}, scores {float(best['score']):g})"
                 if best.get("score") is not None else " (no wallet passes every check yet)")  # fmt: skip
         return f"Book: on but not trading: no wallet scores {bar:g} SOL a trade or more at our landing{tail}."
+    waiting, armed = int(rec.get("waiting") or 0), rec.get("armed")
+    if waiting and not armed and not rec.get("dry"):
+        # no sniper could be made for them this run. Why is the owner's own business (9 Nov: what the wallet holds is
+        # never reported); /book status says it when the owner asks
+        return f"Book: on, {ranked} wallet(s) qualify, none armed."
+    if waiting and armed is not None and not rec.get("dry"):
+        return f"Book: on and copying {armed} wallet(s); {waiting} more qualify and are not armed."
     return f"Book: on and copying {ranked} wallet(s){' (dry run)' if rec.get('dry') else ''}."
 
 

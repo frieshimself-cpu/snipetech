@@ -114,5 +114,13 @@ def last_run_line(store: Store, now: float | None = None) -> str:
         )
         return f"last run {when}: no qualified wallet scores at least the bar{tail}{wait}"
     did = ", ".join(f"{k} {v}" for k, v in sorted((rec.get("actions") or {}).items())) or "nothing to change"
+    waiting = int(rec.get("waiting") or 0)
+    if waiting and not rec.get("dry"):  # the owner asks (/book status): said plainly, with the reason
+        fill = rec.get("waiting_fill")
+        size = f"a {float(fill):g} SOL buy" if fill else "a buy"
+        armed = rec.get("armed")
+        none = "none armed" if not armed else f"{armed} armed, {waiting} not"
+        return (f"last run {when}: {ranked if ranked is not None else '?'} wallet(s) above the bar, {none}: the wallet "
+                f"cannot pay {size}, so no sniper is made until it can ({did}){wait}")  # fmt: skip
     return (f"last run {when}: {ranked if ranked is not None else '?'} wallet(s) above the bar, "
             f"{'dry' if rec.get('dry') else 'live'}: {did}{wait}")  # fmt: skip

@@ -482,6 +482,13 @@ class NoteSink:
             self.decisions.append(line)
         return line
 
+    @staticmethod
+    def stored(text: str) -> str:
+        """`text` as a note holds it (`write`): its white space folded, secrets taken out. What `has_today` can find
+        again: a text with a line break, a trailing space or a secret in it is never found as it was given (19 Nov:
+        a failed create that timed out was sent to the owner on every run for that reason)."""
+        return redact(" ".join(str(text).split()))
+
     def has_today(self, prefix: str, now: float, *also: str) -> bool:
         """A note of today (UTC) that contains `prefix` and each of `also`."""
         day = time.strftime("%Y-%m-%d", time.gmtime(now))

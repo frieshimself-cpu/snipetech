@@ -18,7 +18,7 @@ from ..config import BookConfig
 from ..exits_menu import EXIT_MENU_VERSION, exit_family
 from ..fees import sent_bid
 from ..oktech import validate_exit
-from ..positions import SPENT_STATUSES, is_active
+from ..positions import SPENT_STATUSES, buys_payable, is_active
 from ..qualify.non_coin import reason as non_coin_reason
 
 # the book creates its snipers through list_copy_sniper with label "book" and tag "arm:<arm>", so OKTech shows
@@ -142,6 +142,10 @@ class BookInputs:
     # the book's own floor, day stop and daily cap as they apply (book/switch.book_stops: the owner's /risk values where
     # set); None: the config's [book] values
     stops: BookStops | None = None
+    # what can pay a buy, as this run read it: the wallet's plain SOL and its wrapped SOL (None: not read, which says
+    # nothing). The equity above also holds the coins' value and is for the floor alone
+    native_sol: float | None = None
+    wsol: float | None = None
     # which wallets buy together, as qualify kept it (qualify/one_actor.actor_links): wallet -> the wallets its record
     # ties it to (its companions, the wallets it was chosen over, the one it yields to), by full address, for the
     # qualified wallets and the leaders of our own snipers. Wallets tied together are one actor (analysis/actors.py)
@@ -189,6 +193,17 @@ def actor_members(actors: dict[str, list[str]], wallets: list[str],
 
 
 RETIRE_REASON = "made its buy and holds nothing: replaced so its spare buys are never needed"
+SPENT_REASON = "spent; a new sniper replaces it"
+# 17-19 Nov: the wallet was empty and the owner's floor off. The book made a sniper for each ranked wallet about every
+# ten minutes; each ended within minutes without a buy (OKTech: "finished") and the next run made another: 165 snipers
+# in two days, two messages to the owner for each, until OKTech refused ("TASK_LIMIT: This key already has 200
+# snipers"). A sniper is made only while the wallet can pay one buy of its fill, by the rule the agents' snapshot reads
+# (positions.buys_payable): plain SOL for a curve buy, wrapped SOL for one on PumpSwap, and a buy's costs in plain SOL
+# beside either. The value of a coin pays nothing (the first version of this rule read the equity, and with the
+# wallet's worth in an unsold coin the loop went on: the review of 19 Nov). A balance that was not read says nothing,
+# and a sniper that exists is left as it is.
+CANNOT_PAY = "the wallet cannot pay"
+WAITS_FOR_MONEY = "waits until the wallet can pay its buy"  # a wallet of the same actor as one that cannot be paid for
 
 
 def relied_buys(cfg: BookConfig) -> int:
@@ -495,6 +510,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
     members = actor_members(inp.actors, [r["wallet"] for r in bookable], inp.twins)
     armed_w6 = {s["w6"] for s in mine if is_active(s.get("status"))}
     added_w6: set[str] = set()
+    waiting_w6: set[str] = set()  # ranked, no sniper yet: the wallet cannot pay its fill. It keeps its actor's place
 
     def actor_sniper(wallet: str) -> str | None:
         """Another wallet of `wallet`'s actor that has a sniper (see above), or None."""
@@ -558,7 +574,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
                 )
                 seen_w6.add(w6)
             elif status in SPENT_STATUSES:
-                plan.actions.append(Action("skip", wallet, s["arm"], None, s["id"], "spent; a new sniper replaces it"))
+                plan.actions.append(Action("skip", wallet, s["arm"], None, s["id"], SPENT_REASON))
             elif status == "idle":
                 # with nothing held a stopped sniper has no coin to sell: it is not started beside its actor's sniper.
                 # With a coin held (or holdings unread) it may be the one that has to sell it: started as always
@@ -598,6 +614,22 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
         if other is not None:  # never a second sniper on one signal, whatever the verdicts say
             why = same_actor(wallet, other, "no sniper is added")
             plan.actions.append(Action("skip", wallet, None, None, None, why))
+            continue
+        waits = next((m for m in sorted(members.get(wallet, ())) if m[:6] != w6 and m[:6] in waiting_w6), None)
+        if waits is not None:  # the better wallet of its actor waits for money: this one is not made in its stead
+            plan.actions.append(Action("skip", wallet, None, None, None,
+                                       f"same actor as {waits[:6]}, which {WAITS_FOR_MONEY}: "
+                                       f"{ONE_SNIPER}; no sniper is made in its stead"))  # fmt: skip
+            continue
+        fill = usable[arm]
+        can = buys_payable(inp.native_sol, inp.wsol, fill)
+        if can is not None and not (can["curve"] or can["pumpswap"]):
+            waiting_w6.add(w6)
+            plan.actions.append(Action("skip", wallet, None, fill, None,
+                                       f"{CANNOT_PAY} a {fill:g} SOL buy: no sniper is made until it can"))  # fmt: skip
+            if not any(CANNOT_PAY in n for n in plan.notes):
+                plan.notes.append(f"{CANNOT_PAY} a {fill:g} SOL buy ({inp.native_sol:.4f} SOL and {inp.wsol:.4f} "
+                                  "wrapped SOL): no sniper is made until it can")  # fmt: skip
             continue
         added_w6.add(w6)
         # a new sniper gets the wallet's own floor and exit; a running one keeps those it was made with (no churn)

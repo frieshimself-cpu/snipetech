@@ -2,6 +2,7 @@
 Telegram line each; below the equity floor it is dry whatever the config says; the CLI refuses --live when disabled."""
 
 import asyncio
+import time
 
 import pytest
 
@@ -1362,5 +1363,273 @@ def test_the_books_paid_arm_goes_out_with_its_bid_in_the_tip(tmp_path):
         assert not any("WARNING" in s for s in svc.built[L2]["summary"])
         control = svc.built[L1]["config"]
         assert (control["priorityFee"], control["tipAmount"]) == (0.001, 0.002)
+    finally:
+        st.close()
+
+
+def _ended(n, w6="ENDEDW", status="finished"):
+    return [{"id": f"f{i:03d}", "name": f"snipetech copy book {w6} arm:control", "status": status} for i in range(n)]
+
+
+def _live(svc, cfg, sent, balances=(10.0, 0.0, []), now=NOW, post=None):
+    post = post or (lambda u, d: sent.append(d["text"]))
+    return asyncio.run(run_book(svc, cfg, now, notifier=Notifier("T", 7, post=post), balances=lambda w: balances))
+
+
+def _floor_off(tmp_path):
+    """The owner's wallet-wide floor and day stop off, as they stood on 19 Nov."""
+    from snipetech.operator.risk_guard import set_risk
+
+    set_risk(OperatorPaths(tmp_path / "data"), {"floor_sol": "off", "day_stop_sol": "off"}, "telegram", NOW)
+
+
+def test_the_books_ended_snipers_are_deleted_while_the_wallet_holds_nothing(tmp_path):
+    """19 Nov: 191 of the key's 200 snipers were the book's own, ended ("finished"), and nothing ever deleted one:
+    from 11:40 UTC OKTech refused every new sniper ("TASK_LIMIT: This key already has 200 snipers")."""
+    from snipetech.book.run import PRUNE_PER_RUN
+
+    st, cfg = _env(tmp_path, enabled=True)
+    snipers = _ended(PRUNE_PER_RUN + 10) + [
+        {"id": "s1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "running"},
+        {"id": "x1", "name": "the owner's own sniper", "status": "finished"},
+        {"id": "b1", "name": "snipetech copy book BROKEN arm:control", "status": "failed"},
+    ]
+    _seen_ended(st, snipers)
+    svc, sent = FakeSvc(st, snipers=snipers), []
+    try:
+        assert _live(svc, cfg, sent)["dry"] is False
+        deleted = [c[1] for c in svc.calls if c[0] == "delete"]
+        # a run's worth, the oldest first; never a sniper that is not the book's, one still running, or a failed one
+        assert deleted == [f"f{i:03d}" for i in range(PRUNE_PER_RUN)]
+        assert not any("deleted" in t for t in sent)  # housekeeping: written down, never sent to the owner
+        notes = OperatorPaths(tmp_path / "data").notes.read_text()
+        assert f"deleted {PRUNE_PER_RUN} of its ended snipers" in notes and "10 left" in notes
+    finally:
+        st.close()
+
+
+def test_no_ended_sniper_is_deleted_while_the_wallet_holds_a_coin_or_the_book_is_dry(tmp_path):
+    st, cfg = _env(tmp_path, enabled=True)
+    try:
+        _seen_ended(st, _ended(5))
+        holding = FakeSvc(st, snipers=_ended(5), held=[{"mint": "M1", "amount": 5, "value_sol": 0.1}])
+        _live(holding, cfg, [])
+        assert not [c for c in holding.calls if c[0] == "delete"]
+        cfg.book.enabled = False
+        dry = FakeSvc(st, snipers=_ended(5))
+        assert _live(dry, cfg, [])["dry"] is True
+        assert not [c for c in dry.calls if c[0] == "delete"]
+    finally:
+        st.close()
+
+
+def test_a_delete_that_is_refused_or_hangs_ends_the_clean_up_and_never_holds_the_run(tmp_path, monkeypatch):
+    """The book's unit is ended by the machine after four minutes (snipetech-book.service), and OKTech's client waits
+    out a rate limit up to three minutes a call: thirty refused deletes in a row would have had the run killed before
+    its creates, its starts and its watch. The clean-up is housekeeping: the first delete that will not go ends it for
+    this run, a call that does not answer is left after PRUNE_SECS, and the run goes on."""
+    from snipetech.book import run
+
+    st, cfg = _env(tmp_path, enabled=True)
+    try:
+        _seen_ended(st, _ended(6))
+
+        class Hanging(FakeSvc):
+            async def oktech_task(self, action, task_id):
+                if action != "delete":
+                    return await super().oktech_task(action, task_id)
+                self.calls.append((action, task_id))
+                await asyncio.sleep(30)  # were the time limit taken out, this test fails in half a minute
+
+        monkeypatch.setattr(run, "PRUNE_SECS", 0.05)
+        hanging = Hanging(st, snipers=_ended(6))
+        started = time.monotonic()
+        assert _live(hanging, cfg, [])["dry"] is False  # the run ends, as a run
+        assert time.monotonic() - started < 5 and [c[1] for c in hanging.calls if c[0] == "delete"] == ["f000"]
+    finally:
+        st.close()
+
+
+def test_a_create_that_keeps_failing_is_told_to_the_owner_once_a_day(tmp_path):
+    """19 Nov 11:40 to 16:50: three "create ... failed: TASK_LIMIT" messages every five minutes, 188 in five hours.
+    The review of the first fix: a note is stored with its white space folded, and the check looked for the raw text,
+    so a create that timed out (httpx gives no words: the line ends in a space) or met a gateway's error page (line
+    breaks) was still sent on every run."""
+    texts = [
+        "TASK_LIMIT: This key already has 200 snipers. Delete some before creating more.",
+        "NETWORK: network error: ReadTimeout: ",
+        "502: <html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1>",
+    ]
+    for k, text in enumerate(texts):
+
+        class Refusing(FakeSvc):
+            words = text
+
+            async def oktech_copylist(self, specs, wallet, **kw):
+                raise RuntimeError(self.words)
+
+        st, cfg = _env(tmp_path / str(k), enabled=True)
+        svc, sent = Refusing(st), []
+        try:
+            _live(svc, cfg, sent)
+            first = [t for t in sent if "failed" in t]
+            assert len(first) == 2, (text, sent)  # one for each ranked wallet
+            _live(svc, cfg, sent, now=NOW + 300)
+            assert [t for t in sent if "failed" in t] == first, text  # the same refusal again: nothing new
+            svc.words = "INTERNAL: something else broke"  # another failure the same day is news
+            _live(svc, cfg, sent, now=NOW + 600)
+            assert len([t for t in sent if "failed" in t]) == 4
+            svc.words = text  # and the first one again the next day is told again
+            _live(svc, cfg, sent, now=NOW + 86400)
+            assert len([t for t in sent if "failed" in t]) == 6
+        finally:
+            st.close()
+
+
+def test_a_failed_create_that_telegram_did_not_take_is_told_on_the_next_run(tmp_path):
+    """The review: the note was written before the message was sent, so a message Telegram did not take counted as
+    told, and the day's only notice was lost."""
+
+    class Full(FakeSvc):
+        async def oktech_copylist(self, specs, wallet, **kw):
+            raise RuntimeError("TASK_LIMIT: This key already has 200 snipers.")
+
+    st, cfg = _env(tmp_path, enabled=True)
+    svc, sent = Full(st), []
+
+    def down(url, data):
+        raise OSError("telegram did not answer")
+
+    try:
+        _live(svc, cfg, sent, post=down)
+        assert sent == []
+        _live(svc, cfg, sent, now=NOW + 300)
+        assert len([t for t in sent if "failed" in t]) == 2  # told now
+        _live(svc, cfg, sent, now=NOW + 600)
+        assert len([t for t in sent if "failed" in t]) == 2  # and once
+    finally:
+        st.close()
+
+
+def test_no_sniper_is_made_with_the_wallets_worth_in_an_unsold_coin(tmp_path):
+    """The review of 19 Nov: the first "cannot pay" rule read the equity, which holds the value of every coin. With
+    0.0007 SOL beside a coin worth 0.5 SOL it made the snipers all the same: none could buy, each ended, the next run
+    made the next, with two messages to the owner each. The same with a coin the tape has not priced (the equity is
+    then unknown, and the rule said nothing)."""
+    for k, coin in enumerate(({"mint": "M1", "amount": 5, "value_sol": 0.5},
+                              {"mint": "M2", "amount": 5, "priced": False})):  # fmt: skip
+        st, cfg = _env(tmp_path / str(k), enabled=True)
+        _floor_off(tmp_path / str(k))
+        svc, sent = FakeSvc(st, held=[coin]), []
+        try:
+            assert _live(svc, cfg, sent, balances=(0.0007, 0.0, []))["dry"] is False
+            assert not [c for c in svc.calls if c[0] in ("create", "start")], coin
+            assert not [t for t in sent if "create" in t or "start" in t]
+            from snipetech.book.state import last_run_line
+
+            rec = st.coverage("book:last_run")  # what the owner is told is read from here (book_reason, /book status)
+            assert rec["waiting"] == 2 and rec["armed"] == 0 and rec["waiting_fill"] == cfg.book.fill_min_sol
+            assert "none armed" in last_run_line(st) and "cannot pay a 0.2 SOL buy" in last_run_line(st)
+            rich = FakeSvc(st, held=[coin])  # with SOL beside the same coin the snipers are made as always
+            _live(rich, cfg, [], balances=(0.5, 0.0, []))
+            assert len([c for c in rich.calls if c[0] == "create"]) == 2
+        finally:
+            st.close()
+
+
+def _seen_ended(st, snipers, now=NOW):
+    """As the run before left it: these ended snipers were seen ended then."""
+    from snipetech.book.run import ENDED_KEY
+
+    st.set_coverage(ENDED_KEY, {"ids": [s["id"] for s in snipers], "ts": int(now) - 300})
+
+
+def test_an_ended_sniper_is_deleted_only_once_two_runs_have_seen_it_ended(tmp_path):
+    """The review: OKTech counts a sniper's attempts, so it can read "finished" while its last buy is still on its
+    way. The run read the wallet once, saw no coin and deleted it; the buy landed a moment later with no sniper left
+    to sell it. A sniper is deleted only when the run before already saw it ended: five minutes on, a buy in flight
+    is in the wallet, and the wallet check keeps the sniper."""
+    st, cfg = _env(tmp_path, enabled=True)
+    svc = FakeSvc(st, snipers=_ended(4))
+    try:
+        _live(svc, cfg, [])
+        assert not [c for c in svc.calls if c[0] == "delete"]  # the first sight of them: none goes
+        _live(svc, cfg, [], now=NOW + 300)
+        assert [c[1] for c in svc.calls if c[0] == "delete"] == ["f000", "f001", "f002", "f003"]
+    finally:
+        st.close()
+
+
+def test_the_clean_up_leaves_everything_while_holdings_are_unread_a_buy_is_fresh_or_the_tape_is_behind(tmp_path):
+    """Three states in which a delete could strand a coin, each pinned (the review: none was, at the moment of a
+    delete): the wallet could not be read; a buy of ours is seconds old on the tape and not yet in the wallet read;
+    the tape is minutes behind, so it could not show such a buy."""
+    from snipetech.models import Trade
+
+    class Unread(FakeSvc):
+        async def open_positions(self, address, ignore=()):
+            raise OSError("the wallet could not be read")
+
+    def trade(st, user, ts, sig):
+        st.add_trades([Trade(sig=sig, ev=0, slot=1000 + int(ts) % 1000, pos=1, ts=int(ts), mint="M9", venue="curve",
+                             user=user, is_buy=True, quote=10**8, base=10**9, fee=0, fee_bps=125, q_after=10**10,
+                             b_after=10**15)])  # fmt: skip
+
+    for k, state in enumerate(("unread", "fresh buy", "tape behind")):
+        st, cfg = _env(tmp_path / str(k), enabled=True)
+        snipers = _ended(3)
+        _seen_ended(st, snipers)
+        try:
+            if state == "unread":
+                svc = Unread(st, snipers=snipers)
+            else:
+                svc = FakeSvc(st, snipers=snipers)
+                if state == "fresh buy":
+                    trade(st, W, NOW - 30, "ours")  # our own buy, 30 s old: the wallet read does not show it yet
+                else:
+                    trade(st, "someone", NOW - 600, "old")  # the newest trade on the tape is ten minutes old
+            _live(svc, cfg, [])
+            assert not [c for c in svc.calls if c[0] == "delete"], state
+        finally:
+            st.close()
+
+
+def test_the_ended_go_before_a_new_sniper_is_made_and_one_refusal_does_not_end_the_clean_up(tmp_path):
+    """Freeing the key's places before a create is the point of the order. And one sniper OKTech will not delete must
+    not stand in front of the rest for good (the review: the oldest was tried first on every run, and the loop ended
+    at it); only a failure that is not about the one sniper (the network, a rate limit, no answer in time) ends the
+    run's clean-up."""
+    from snipetech.oktech import OktechError
+
+    st, cfg = _env(tmp_path, enabled=True)
+    snipers = _ended(5)
+    _seen_ended(st, snipers)
+
+    class OneStuck(FakeSvc):
+        async def oktech_task(self, action, task_id):
+            if action == "delete" and task_id == "f000":
+                self.calls.append((action, task_id))
+                raise OktechError(409, "CONFLICT", "this task cannot be deleted")
+            return await super().oktech_task(action, task_id)
+
+    class NetDown(FakeSvc):
+        async def oktech_task(self, action, task_id):
+            if action == "delete":
+                self.calls.append((action, task_id))
+                raise OktechError(0, "NETWORK", "network error: ConnectError: ")
+            return await super().oktech_task(action, task_id)
+
+    try:
+        stuck = OneStuck(st, snipers=snipers)
+        _live(stuck, cfg, [])
+        kinds = [c[0] for c in stuck.calls if c[0] in ("delete", "create")]
+        assert kinds.index("create") > max(i for i, k in enumerate(kinds) if k == "delete")  # every delete first
+        assert [c[1] for c in stuck.calls if c[0] == "delete"] == ["f000", "f001", "f002", "f003", "f004"]
+        notes = OperatorPaths(tmp_path / "data").notes.read_text()
+        assert "deleted 4 of its ended snipers" in notes and "would not go" in notes
+        _seen_ended(st, snipers)
+        down = NetDown(st, snipers=snipers)
+        _live(down, cfg, [], now=NOW + 300)
+        assert [c[1] for c in down.calls if c[0] == "delete"] == ["f000"]  # no answer from OKTech: not five waits
     finally:
         st.close()
