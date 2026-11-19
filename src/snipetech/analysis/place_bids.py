@@ -237,7 +237,7 @@ def read_blocks(store: Store, cfg: Config, now: float, trig: Trigger, *, hours: 
         if who not in mates_of:  # as a lab finds them: on the tape it reads
             mates_of[who] = companions(store, who, since)
         trades = _fix_slot_order(store.block_trades(m["mint"], m["slot"], m["slot"] + AFTER_SLOTS))
-        read = block(trades, m["sig"], mates_of[who], own, min_sol=DUST_SOL)
+        read = block(trades, m["sig"], mates_of[who], own, min_sol=DUST_SOL, user=who)
         if read is not None and read["leader_bid"] is not None:
             scored.append({**m, **read})
     return found, scored, mates_of, fees
@@ -335,7 +335,7 @@ def _model_behind(tape: Store, fill: Mapping[str, Any], bid_sol: float, own: Col
     if lead:
         sig, at = lead[0]
         trades = _fix_slot_order(tape.block_trades(fill["mint"], int(at), int(at) + COPY_LAND_SLOTS))
-        read = block(trades, sig, companions(tape, fill["wallet_copied"], since), own)
+        read = block(trades, sig, companions(tape, fill["wallet_copied"], since), own, user=fill["wallet_copied"])
         who = ahead(read, bid_sol) if read is not None else None
         if isinstance(who, dict):
             return int(who["place"]) - 1, "tape"

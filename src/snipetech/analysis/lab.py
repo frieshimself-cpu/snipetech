@@ -79,6 +79,7 @@ from .bid_landing import ahead as bid_ahead
 from .bid_landing import block as read_block
 from .bid_landing import places as bid_places
 from .companions import companions_of
+from .companions import pack_end as trades_pack_end
 from .lab_window import clip_backfill, cut_at, trades_digest, trades_of, utc, window_digest, window_fields
 from .names import category, entity
 from .stats import summarize
@@ -1116,13 +1117,27 @@ def across_slots(position: Any) -> int | None:
     return int(p[1:-1]) if p.startswith("+") and p.endswith(ACROSS) and p[1:-1].isdigit() else None
 
 
-def own_entry_end(path: MarketPath, i: int, mates: Collection[str] | None) -> int:
-    """The last state of a copied wallet's own entry, its buy at state i: its last companion's buy in the same slot
-    (`mates`: analysis.companions), or i when it bought alone. No copy lands ahead of it."""
-    if not mates:
+def pack_end(path: MarketPath, i: int) -> int:
+    """The last state of the pack the trade at state i was sent in (`companions.pack_end`: the later trades of its
+    own transaction, and of the transactions that follow it back to back while each carries several wallets' buys).
+    State i itself when it was sent alone, and on a path that knows no block places (built by hand)."""
+    pos = path.pos
+    if pos is None:
         return i
-    s, last = int(path.slot[i]), i
-    for j in range(i + 1, path.n):
+    return trades_pack_end(
+        i, path.n, lambda j: (int(path.slot[j]), path.sigs[j], int(pos[j]), bool(path.is_buy[j]), path.users[j])
+    )
+
+
+def own_entry_end(path: MarketPath, i: int, mates: Collection[str] | None) -> int:
+    """The last state of a copied wallet's own entry, its buy at state i: the end of the pack it was sent in
+    (`pack_end`), or its last companion's buy in the same slot when that is later (`mates`: analysis.companions), or
+    i when it bought alone. No copy lands ahead of it."""
+    last = pack_end(path, i)
+    if not mates:
+        return last
+    s = int(path.slot[i])
+    for j in range(last + 1, path.n):
         if int(path.slot[j]) != s:
             break
         if path.is_buy[j] and path.users[j] in mates:
@@ -1147,9 +1162,11 @@ def copy_entry(path: MarketPath, i: int, n: int, latency: int = 0, mates: Collec
     s = int(path.slot[i])
     hi = int(np.searchsorted(path.slot, s + max(int(latency), COPY_LAND_SLOTS), side="right"))
     buys = i + 1 + np.flatnonzero(path.is_buy[i + 1 : hi])
-    last_own = own_entry_end(path, i, mates)  # the leader's own buy, or its last companion's in its slot
-    if last_own > i:  # the companions' buys in the leader's slot are not buyers ahead of us
-        buys = np.array([j for j in buys if not (int(path.slot[j]) == s and path.users[int(j)] in mates)], dtype=int)
+    last_own = own_entry_end(path, i, mates)  # the leader's own buy, or the last of its pack's or its companions'
+    if last_own > i:  # the pack's buys, and the companions' in the leader's slot, are not buyers ahead of us
+        packed, mates = pack_end(path, i), mates or ()
+        buys = np.array([j for j in buys if j > packed and not (int(path.slot[j]) == s and path.users[int(j)] in mates)],
+                        dtype=int)  # fmt: skip
     e = last_own if n <= 0 or not len(buys) else max(last_own, int(buys[min(n, len(buys)) - 1]))
     return _no_cheaper(path, i, e, last_own, latency)
 
@@ -1194,7 +1211,7 @@ def bid_entry(path: MarketPath, i: int, mates: Collection[str] | None, trades: S
     The second value: {"place": ours among the outsiders (1 = first; "bid-" one more), "outbid", "fast", "later": how
     many stood ahead of us for each reason}. A moment the tape holds no fee record for is not placed: (None, the
     reason: NO_BIDS, BID_UNKNOWN)."""
-    read = read_block(trades, path.sigs[i], mates or (), own)
+    read = read_block(trades, path.sigs[i], mates or (), own, user=path.users[i])
     who = NO_BIDS if read is None else bid_ahead(read, bid_sol)
     if isinstance(who, str):
         return None, who

@@ -642,3 +642,22 @@ def test_the_cli_prints_the_model_check(tmp_path, capsys):
     assert cli.main(["--db", str(db), "place-bids", "--model-check"]) == 0
     text = capsys.readouterr().out
     assert "2 fills" in text and "mechanism" in text and "agrees" in text
+
+
+def test_the_wallets_own_pack_is_never_a_row_of_outsiders_behind_it():
+    """19 Nov: fourteen wallets bought behind 8D92Hh in its block, none with a bid, so any bid of ours stood ahead of
+    all of them: inside the four transactions the operator sent back to back (tests/test_lab.py, the pack of 19 Nov).
+    The pack is the wallet's own entry here as it is for a counted place: nobody in it is an outsider, and a copy
+    enters behind its last trade whatever it bids."""
+    from .test_lab import _pack_19nov
+
+    trades = _pack_19nov()
+    lead = trades[1]
+    assert lead.user.startswith("8D92Hh")
+    read = BL.block(trades, lead.sig)
+    assert read["buyers"] == [] and read["first_later"] == 1  # nobody else in its block: the first outsider a block on
+    assert read["later"][0]["user"].startswith("CWNYbh")
+    path = MarketPath.build(trades)
+    for bid in (0.0001, 0.01, 1.0):
+        entry, said = bid_entry(path, 1, None, trades, (), bid)
+        assert entry is not None and entry >= 15 and path.amm[entry], (bid, entry, said)

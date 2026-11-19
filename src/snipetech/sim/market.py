@@ -131,6 +131,10 @@ class MarketPath:
     # per state: the trade was a buy that spent an exact amount of SOL (`EXACT_IN`). None on a path built by hand: no
     # trade is, and a position is priced as it always was.
     exact_in: np.ndarray | None = None
+    # per state: the place of the trade's transaction in its block (Trade.pos; -1 for the synthetic first state). None
+    # on a path built by hand. With `sigs` it tells which trades ran in one transaction and which transactions ran
+    # back to back (analysis.lab.pack_end).
+    pos: np.ndarray | None = None
     _walk: tuple | None = field(default=None, repr=False, compare=False)  # `displacement`'s per-path lists, made once
 
     # -- construction -----------------------------------------------------------
@@ -186,6 +190,7 @@ class MarketPath:
             off_curve=np.maximum.accumulate(np.array(off, dtype=bool)) if off else np.zeros(0, dtype=bool),
             venue=coin_venue(t.venue for t in trades),
             exact_in=np.array(exact, dtype=bool),
+            pos=np.array([-1] * (1 if genesis else 0) + [int(t.pos) for t in trades], dtype=np.int64),
         )
 
     def same_sol(self) -> MarketPath:

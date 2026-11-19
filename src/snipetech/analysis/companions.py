@@ -30,7 +30,7 @@ companion."""
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from ..store import Store
 
@@ -45,6 +45,46 @@ COMPANION_SCAN = 20_000  # buys of the wallet read at most (a bot's hundred thou
 COMPANION_MOMENTS = 300  # and its newest first buys looked at: one small read each
 # the set rule: in its block on COMPANION_SHARE of its first buys, and on each side of it in this share of those blocks
 COMPANION_AHEAD_SHARE = 0.25
+
+
+# A pack: several wallets' buys in one transaction, and such transactions back to back. 19 Nov 2026: the three
+# wallets the live book ranked (8D92Hh, 3AQ2Ha, CD4Taz: +0.045 to +0.176 SOL a copy on paper) are one operator's. Each
+# first buy of theirs is one of fifteen in three or four transactions that run back to back, three to five wallets'
+# buys in each, 63 SOL, and the coin is on PumpSwap before the block ends (tests/fixtures/graduation_pack_19nov_tape.tsv).
+# The set of wallets changes with every coin and their order never does, so the habit rule below knew at most two of
+# the fifteen, and a paper copy stood behind the third of the operator's own buys, on the curve at a third of the price
+# the pack left. Behind the pack the same copies lose (the agents' lab 3d2699, place +16, 0.2 SOL: -0.0085 SOL a copy
+# on 68, -0.0114 on 50).
+# A transaction that carries this many wallets' buys of the coin is a link of a pack. One wallet's transaction in the
+# next block place is no link: a fast bot stands there as often as the operator's own wallet, and the habit rule tells
+# those apart.
+PACK_TX_WALLETS = 2
+
+
+def pack_end(i: int, n: int, at: Callable[[int], tuple[int, str, int, bool, str]]) -> int:
+    """The last trade of the pack the coin's i-th trade was sent in: the later trades of its own transaction, and of
+    the transactions that follow it back to back in its block (the next block place each time) while each carries
+    buys of PACK_TX_WALLETS wallets or more; i itself when it was sent alone. `at(j)`: the j-th of the coin's `n`
+    trades, in the order they ran, as (slot, transaction, block place, is a buy, wallet). No copy lands inside a
+    transaction, nor between transactions sent together: a pack is its leader's own entry (lab.own_entry_end,
+    bid_landing.block)."""
+    slot, sig, place, _, _ = at(i)
+    last, j = i, i + 1
+    while j < n and at(j)[0] == slot and at(j)[1] == sig:  # the rest of its own transaction
+        last, place = j, max(place, at(j)[2])
+        j += 1
+    while j < n and at(j)[0] == slot and at(j)[2] == place + 1:  # the next block place
+        k, link, buyers = j, at(j)[1], set()
+        while k < n and at(k)[0] == slot and at(k)[1] == link:
+            _, _, where, is_buy, user = at(k)
+            if is_buy:
+                buyers.add(user)
+            place = max(place, where)
+            k += 1
+        if len(buyers) < PACK_TX_WALLETS:
+            break
+        last, j = k - 1, k
+    return last
 
 
 def companions(store: Store, wallet: str, since_ts: int, until_ts: int | None = None) -> frozenset[str]:

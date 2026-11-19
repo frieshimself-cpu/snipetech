@@ -1124,3 +1124,84 @@ def test_a_lab_of_wallet_rules_reads_only_the_coins_its_wallets_bought(monkeypat
     both = collect(store, cfg, 0.2, 0, "+1", exits=[LIVE_EXITS["lab"]], triggers=[rule, Trigger("launch")], workers=1)
     assert len(set(read)) == 12
     assert [r for r in both["rows"] if r["trigger"] == 0] == data["rows"]
+
+
+# -- a pack: several wallets' buys in one transaction, and such transactions back to back (19 Nov 2026) -------------
+
+
+def _pack_19nov() -> list:
+    """The tape of ERZLje…pump from slot 471417964 (19 Nov 2026 17:23 UTC), as the server recorded it: four
+    transactions back to back (block places 440 to 443), fifteen wallets' buys, 63 SOL, that take the coin from the
+    middle of its curve to PumpSwap inside one block. 8D92Hh and 3AQ2Ha, two of the three wallets the book ranked that
+    day, are the second and the fourth buyer of the first transaction; the first outsider (CWNYbh) buys a block later."""
+    import csv
+    from pathlib import Path
+
+    from snipetech.models import Trade
+
+    with open(Path(__file__).parent / "fixtures" / "graduation_pack_19nov_tape.tsv", newline="") as fh:
+        return [
+            Trade(sig=t["sig"], ev=int(t["ev"]), slot=int(t["slot"]), pos=int(t["pos"]), ts=int(t["ts"]), mint=t["mint"],
+                  venue=t["venue"], user=t["user"], is_buy=t["is_buy"] == "1", quote=int(t["quote"]), base=int(t["base"]),
+                  fee=int(t["fee"]), fee_bps=int(t["fee_bps"]), q_after=int(t["q_after"]), b_after=int(t["b_after"]),
+                  r_base_after=int(t["r_base_after"] or 0), ix=t["ix"], payer=t["payer"],
+                  priority=int(t["priority"] or 0), tip=int(t["tip"] or 0))
+            for t in csv.DictReader(fh, delimiter="\t")
+        ]  # fmt: skip
+
+
+def test_a_copy_lands_behind_the_pack_its_leader_was_sent_in():
+    """19 Nov: the three wallets the live book ranked (8D92Hh +0.176 SOL a copy on 130, 3AQ2Ha +0.139 on 123, CD4Taz
+    +0.045 on 126, all at "+3x") are one operator's. Each of their first buys is one of fifteen in three or four
+    transactions that run back to back, three to five wallets' buys in each, and the coin is on PumpSwap before the
+    block ends. They are in a different set of wallets for every coin, so no companion rule knew them, and "+3x" put
+    the paper copy behind the third of the operator's own buys: on the curve at 0.139 SOL a million coins where the
+    pack left 0.44. Scored behind the pack the same copies lose (the agents' lab 3d2699: -0.0085 SOL a copy on 68 and
+    -0.0114 on 50, at 0.2 SOL). No copy lands inside a transaction, nor between transactions sent together: the later
+    buys of the leader's own transaction, and of the transactions that follow it back to back while each carries two
+    or more wallets' buys, are the leader's own entry."""
+    from snipetech.analysis.lab import copy_entry, own_entry_end
+
+    path = MarketPath.build(_pack_19nov())
+    lead, third = 1, 3  # 8D92Hh and 3AQ2Ha: one transaction
+    assert path.users[lead].startswith("8D92Hh") and path.users[third].startswith("3AQ2Ha")
+    assert path.sigs[lead] == path.sigs[third] and not path.amm[14] and path.amm[15]
+    assert own_entry_end(path, lead, None) == 15 and own_entry_end(path, third, None) == 15
+    assert copy_entry(path, lead, 0) == 15  # the closest a copy lands: behind the whole pack, on PumpSwap
+    assert copy_entry(path, lead, 3) == 19  # behind three buys by others: CWNYbh, and two in the block after it
+    assert path.users[16].startswith("CWNYbh") and int(path.slot[19]) == int(path.slot[lead]) + 2
+    # the copy pays what the pack left, never the curve price between the operator's own buys
+    paid, inside = path.q[19] / path.b[19], path.q[4] / path.b[4]
+    assert paid > 3 * inside
+
+
+def test_one_wallets_transaction_right_behind_the_leader_is_an_outsider_like_any_other():
+    """What makes a pack is several wallets buying in one transaction. A single wallet's transaction in the next block
+    place is a fast bot as often as the operator's own (the companion rule tells those apart, by habit): it stays a
+    buyer the copy lands behind, counted like any other. And a pack that does not follow back to back is someone
+    else's."""
+    from snipetech.analysis.lab import copy_entry, own_entry_end
+
+    st = Store(":memory:")
+    lead, dev = addr("pk-lead"), addr("pk-dev")
+    m = Market(st, addr("pk-coin"), dev, NOW - 4000, 36_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig)  # state 1
+    m.buy(lead, 1.0, 5)  # state 2: alone in its transaction
+    m.buy(addr("pk-bot"), 2.0, 5)  # state 3: one wallet, the next block place
+    m.sell(dev, 0.1, 5)  # state 4: someone's sale stands between
+    for j in range(3):  # states 5-7: three wallets in one transaction, but not back to back with the leader's
+        m.buy(addr(f"pk-far{j}"), 1.0, 5, sig=addr("pk-far-tx"))
+    m.buy(addr("pk-late"), 0.3, 6)  # state 8
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[2] == lead and own_entry_end(path, 2, None) == 2
+    assert copy_entry(path, 2, 0) == 2 and copy_entry(path, 2, 1) == 3 and copy_entry(path, 2, 3) == 6
+    st.close()
+
+
+def test_a_path_built_by_hand_knows_no_block_places_and_lands_as_before():
+    from snipetech.analysis.lab import copy_entry, own_entry_end
+
+    path = MarketPath.build(_pack_19nov())
+    path.pos = None
+    assert own_entry_end(path, 1, None) == 1 and copy_entry(path, 1, 3) == 4

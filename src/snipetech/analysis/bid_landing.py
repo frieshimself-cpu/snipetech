@@ -36,6 +36,7 @@ from typing import Any
 from ..config import Config
 from ..models import Trade
 from ..store import Store
+from .companions import pack_end
 
 LAMPORTS = 1_000_000_000
 BID, CAUTIOUS = "bid", "bid-"  # the two copy positions: where the bid puts the copy, and one buy further back
@@ -102,9 +103,13 @@ def own_wallets(store: Store, cfg: Config, until_ts: int | None = None) -> set[s
 
 
 def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: Collection[str] = (),
-          min_sol: float = 0.0) -> dict | None:  # fmt: skip
+          min_sol: float = 0.0, user: str | None = None) -> dict | None:  # fmt: skip
     """One moment read off its block. `trades`: the coin's trades from the followed wallet's block on, in the order
-    they ran; `sig`: the followed buy; `mates`: the wallet's companions; `own`: our wallets. `min_sol`: an outsider's
+    they ran; `sig`: the followed buy's transaction, and `user` the followed wallet where that transaction carries
+    several wallets' buys (19 Nov: 8D92Hh's was the second of four in its transaction, and without the wallet the
+    first of them, a 0.01 SOL buy, was read as the followed one); `mates`: the wallet's companions; `own`: our
+    wallets. The wallet's pack (companions.pack_end: the later trades of its transaction and of the transactions that
+    follow it back to back, each with several wallets' buys) is its own entry: nobody in it is an outsider. `min_sol`: an outsider's
     buy of less SOL than this is dust and is passed over: no buyer, no place, and not that wallet's first buy (a
     larger buy of its own later counts). The bid tables read with the lab's dust floor (`place_bids.read_blocks`,
     lab.DUST_SOL). The landing model reads without one (0, the default: `lab.bid_entry`, `place_bids._model_behind`):
@@ -116,12 +121,14 @@ def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: C
     blocks later the first outsider came (`first_later`: 0 in its block, None when nobody came in the blocks read) and
     our own first buy (`ours`: its place among the outsiders, blocks later, bid, SOL). None when the followed buy is
     not among `trades`."""
-    k0 = next((k for k, t in enumerate(trades) if t.sig == sig and t.is_buy), None)
+    k0 = next((k for k, t in enumerate(trades) if t.sig == sig and t.is_buy and user in (None, t.user)), None)
     if k0 is None:
         return None
     lead = trades[k0]
-    end = k0  # the wallet's own entry ends at its last companion's buy in the block (lab.own_entry_end)
-    for k in range(k0 + 1, len(trades)):
+    # the wallet's own entry ends with its pack, or at its last companion's buy in the block (lab.own_entry_end)
+    packed = end = pack_end(k0, len(trades), lambda k: (int(trades[k].slot), trades[k].sig, int(trades[k].pos),
+                                                         bool(trades[k].is_buy), trades[k].user))  # fmt: skip
+    for k in range(end + 1, len(trades)):
         if trades[k].slot != lead.slot:
             break
         if trades[k].is_buy and trades[k].user in mates:
@@ -133,7 +140,7 @@ def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: C
     after: list[dict[str, Any]] = []
     ours = first_later = None
     outsiders = 0
-    for k in range(k0 + 1, len(trades)):
+    for k in range(packed + 1, len(trades)):  # behind its pack: a trade in it is the wallet's own entry
         t = trades[k]
         if not t.is_buy or t.user in seen or t.user in mates:
             continue
