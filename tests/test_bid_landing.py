@@ -694,7 +694,8 @@ def test_a_pack_wallet_that_buys_again_is_no_outsider_and_a_gap_ends_the_pack():
     as a companion's is not. And a transaction is a link of the pack only in the very next block place: the same
     two-wallet transaction one place further on is somebody else's, and its buyers are outsiders."""
     st = _store()
-    m, (payer, mate, link_a, link_b) = _packed_coin(st, again=(addr("bl-pk-payer"), addr("bl-pk-link-a")))
+    m, (payer, _, link_a, link_b) = _packed_coin(st, again=(addr("bl-pk-payer"), addr("bl-pk-link-a")))
+    assert payer == addr("bl-pk-payer")
     slot = m.trades[1].slot
     trades = _fix_slot_order(st.block_trades(m.mint, slot, slot + COPY_LAND_SLOTS))
     lead = next(t for t in trades if t.user == LEAD)
