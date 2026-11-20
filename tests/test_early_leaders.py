@@ -3,6 +3,8 @@ The server's agents run it as a job (their ad hoc SQL timed out at 30 s)."""
 
 import time
 
+import pytest
+
 from snipetech.analysis.early_leaders import early_leaders
 from snipetech.store import Store
 
@@ -109,12 +111,17 @@ def test_pumpswap_trades_are_left_out_of_an_early_buys_result():
     pool trade."""
     from types import SimpleNamespace as N
 
+    from snipetech.models import Launch, Trade
+
     t0 = NOW - 600
+    places = iter(range(1, 100))  # each trade a transaction of its own, one block place after the other
 
     def tr(user, slot, ts, q_after, b_after, venue="curve", quote=1_000_000_000):
-        return N(user=user, slot=slot, ts=ts, quote=quote, is_buy=True, venue=venue, q_after=q_after, b_after=b_after)
+        pos = next(places)
+        return Trade(sig=f"sig{pos}", ev=0, slot=slot, pos=pos, ts=ts, mint="M", venue=venue, user=user, is_buy=True,
+                     quote=quote, base=1, fee=0, fee_bps=125, q_after=int(q_after), b_after=int(b_after))  # fmt: skip
 
-    launch = N(mint="M", user="dev", creator="dev", slot=100, ts=t0)
+    launch = Launch("M", "dev", "dev", "", "", "", "", 100, t0, "create")
     trades = [
         tr("dev", 100, t0, 30e9, 1000e9, quote=500_000_000),
         tr("lead", 102, t0 + 1, 31e9, 990e9),
@@ -129,3 +136,62 @@ def test_pumpswap_trades_are_left_out_of_an_early_buys_result():
     # entered behind c3, marked at c4, the last curve trade in the 30 s: +1.3 % on 0.2 SOL, less the 0.009 cost
     assert abs(by["lead"]["mean_sol"] - (0.2 * ((32.2 / 978) / (31.9 / 981) - 1) - 0.009)) < 1e-5
     assert "pool" not in by
+
+
+def _pack_coin(st, i):
+    """A coin whose first buyers are one operator's pack: three slots after the create, nine buys of 2 SOL in three
+    transactions back to back, `packer` the first of them; nobody follows, and a wallet of the pack sells a fifth of
+    its coins eight seconds later. Returns the pack's last buy and that sale."""
+    m = Market(st, addr(f"el-pack-{i}"), addr(f"el-pack-dev-{i}"), NOW - 7200 + i * 60, 40_000_000 + i * 1000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    for j in range(3):
+        for k in range(3):
+            who = addr("packer") if (j, k) == (0, 0) else addr(f"el-pack-{i}-{j}{k}")
+            last = m.buy(who, 2.0, 3, sig=addr(f"el-pack-{i}:tx{j}"))
+            last.pos = 100 + j
+    sale = m.sell(addr(f"el-pack-{i}-22"), 0.2, 23)
+    m.commit()
+    return last, sale
+
+
+def test_a_wallet_whose_early_buys_come_in_a_pack_is_copied_behind_the_pack_and_ranks_first_no_more():
+    """19 Nov 2026: the wallets the book ranked were one operator's pack, and this screen feeds qualify's queue the
+    same way: it entered the copy at the third trade behind the wallet, which for the first wallet of a pack is the
+    fourth of the operator's own nine buys. On this tape that copy made +0.10 SOL on 0.2 and the pack wallet ranked
+    first, ahead of a wallet a crowd really follows. Nobody buys inside a transaction, nor between transactions sent
+    together: the copy is entered where the lab enters one (lab.copy_entry at the same place), behind the pack, and
+    there it loses."""
+    st = Store(":memory:")
+    try:
+        for i in range(25):
+            _coin(st, i, "early", True)
+            last, sale = _pack_coin(st, i)
+        rows = early_leaders(st, NOW, hours=24, min_n=20)
+        by = {r["wallet"]: r for r in rows}
+        assert rows[0]["wallet"] == addr("early") and by[addr("early")]["lower_sol"] > 0
+        packer = by[addr("packer")]
+        behind_the_pack = 0.2 * ((sale.q_after / sale.b_after) / (last.q_after / last.b_after) - 1.0) - 0.009
+        assert packer["n"] == 25 and packer["mean_sol"] == pytest.approx(behind_the_pack, abs=1e-5)
+        assert packer["mean_sol"] < 0 and packer["win_rate"] == 0.0
+    finally:
+        st.close()
+
+
+def test_an_early_buy_with_fewer_than_three_trades_behind_it_is_no_moment_as_before():
+    """Only where the copy stands changed on 19 Nov, not which buys count: a buy with fewer trades behind it than the
+    place asks for was never a moment of this screen, and is none now (the lab would enter that copy right behind the
+    wallet; qualify's lab is where a wallet this screen names is scored on every buy)."""
+    st = Store(":memory:")
+    try:
+        for i in range(25):
+            m = Market(st, addr(f"el-thin-{i}"), addr(f"el-thin-dev-{i}"), NOW - 7200 + i * 60, 50_000_000 + i * 1000)
+            m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+            for k in range(3):
+                m.buy(addr(f"el-thin-first-{i}-{k}"), 0.5, 1)
+            m.buy(addr("thin"), 1.0, 3)
+            for k in range(2):  # two trades behind it, where the place asks for three
+                m.buy(addr(f"el-thin-fan-{i}-{k}"), 0.5, 8 + k)
+            m.commit()
+        assert addr("thin") not in {r["wallet"] for r in early_leaders(st, NOW, hours=24, min_n=1)}
+    finally:
+        st.close()

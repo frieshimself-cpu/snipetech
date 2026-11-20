@@ -219,3 +219,46 @@ def test_a_run_that_cannot_read_the_actors_adds_no_sniper(tmp_path, monkeypatch)
         assert "buy together" in (tmp_path / "data" / "operator" / "notes.md").read_text()
     finally:
         st.close()
+
+
+# -- packs: wallets whose buys come in one transaction (19 Nov 2026) --------------------------------------------------
+
+
+def test_the_book_reads_the_wallets_of_a_pack_from_the_qualify_record_as_ties_of_two(tmp_path):
+    """19 Nov 2026: the book made a sniper each for 3AQ2Ha, 8D92Hh and CD4Taz, three wallets of one operator that buy
+    in the same packs. Qualify now keeps the wallets of a wallet's packs in its record (`pack_with`); the book reads
+    them where it reads twins, apart from the companions' ties, so the grouping and its cap never see them."""
+    from tests.test_book_run import L1, L2
+
+    st, _cfg = _env(tmp_path)
+    try:
+        qualified = [{"wallet": L1}, {"wallet": L2}]
+        _score(st, L1, {"mates": [X], "pack_with": [L2]})
+        _score(st, L2, {"mates": [], "over": [L1], "leads": True, "pack_with": [L1]})
+        assert _actor_links(st, qualified, [], twins=True) == {L1: [L2], L2: [L1]}
+        assert _actor_links(st, qualified, []) == {L1: [X]}  # the companions' ties alone
+    finally:
+        st.close()
+
+
+def test_a_run_makes_one_sniper_for_two_qualified_wallets_of_one_pack_whose_actors_are_at_the_cap(tmp_path):
+    """The review's case of 19 Nov: each of the two has eleven companions (the wallets of the three transactions
+    behind theirs), so each is an actor of twelve and the grouping refuses to join them: two snipers on one signal.
+    A pack's tie is one of two, added after the grouping: the better ranked wallet gets the sniper, the other none."""
+    from snipetech.analysis.actors import ACTOR_MAX
+    from tests.test_book_run import L1, L2
+
+    st, cfg = _env(tmp_path, enabled=True)
+    svc = FakeSvc(st)
+    try:
+        crew = [addr(f"pack-crew-{i}") for i in range(ACTOR_MAX - 1)]
+        _score(st, L1, {"mates": crew, "capped": True, "pack_with": [L2]})
+        _score(st, L2, {"mates": crew, "capped": True, "pack_with": [L1]})
+        out = asyncio.run(run_book(svc, cfg, NOW, balances=lambda w: (10.0, 0.0, [])))
+        assert out["dry"] is False and out["actions"] == {"create": 1, "skip": 1}
+        creates = [c for c in svc.calls if c[0] == "create"]
+        assert len(creates) == 1 and creates[0][1] == (f"{L1}:book:0.3:lab",)
+        notes = (tmp_path / "data" / "operator" / "notes.md").read_text()
+        assert f"[book] {L2[:6]} gets no sniper of its own: same actor as {L1[:6]}" in notes
+    finally:
+        st.close()

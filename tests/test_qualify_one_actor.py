@@ -426,3 +426,318 @@ def test_a_pair_under_test_that_is_reviewed_in_two_runs_ends_with_one_candidate(
         assert _same_as(by[LEAD]) is None and by[LEAD]["forward"]["picked_at"] == picked
     finally:
         st.close()
+
+
+# -- packs: wallets whose buys come in one transaction (19 Nov 2026) --------------------------------------------------
+
+P1, P2 = addr("pack-one"), addr("pack-two")
+IN_ONE_TX = "They buy in one transaction on 12 of this wallet's {} coins. "
+
+
+def _pack_tape(st, coins=12, alone=0, crew=False, t0=NOW - 7000):
+    """P1 and P2 buy `coins` coins in ONE transaction: one signature and one block place, as the tape writes them
+    (19 Nov: 8D92Hh and 3AQ2Ha at place 440 of slot 471417964). `crew`: with a third wallet in that transaction and
+    three more transactions of four, four and three wallets back to back behind it, the same fifteen wallets on every
+    coin (the shape of that day's pack). `alone`: as many more coins each, bought in one transaction with a wallet
+    seen once. A small crowd follows in later blocks."""
+    D = addr("dev")
+    n = 0
+
+    def coin(tag, txs):
+        nonlocal n
+        m = Market(st, addr(f"{tag}:{n}"), D, t0 + n * 60, SLOT + n * 150)
+        m.buy(D, 1.0, 0)
+        for j, tx in enumerate(txs):
+            for w in tx:
+                m.buy(w, 0.5, 5, sig=addr(f"{tag}:{n}:tx{j}")).pos = 200 + j
+        for j in range(4):
+            m.buy(addr(f"{tag}-crowd{n}{j}"), 0.3 + 0.1 * j, 6 + j)
+        for w in txs[0]:
+            m.sell(w, 1.0, 30)
+        m.commit()
+        n += 1
+
+    links = [[addr(f"pack-crew-{j}{i}") for i in range(size)] for j, size in enumerate((4, 4, 3))] if crew else []
+    for _ in range(coins):
+        coin("pack", [[P1, P2, *([addr("pack-crew-x")] if crew else [])], *links])
+    for who in (P1, P2):
+        for _ in range(alone):
+            coin(f"pack-alone-{who[:4]}", [[who, addr(f"pack-once-{who[:4]}-{n}")]])
+    st.set_coverage("tape", {"spans": [[NOW - 40 * 3600, NOW]]})
+
+
+def _judge_the_pack(st, svc, data):
+    """Both wallets were picked 30 hours ago and both have passed their forward test since: the state in which the
+    book made a sniper for each. Returns the run's answer, the wallet that yields and the one that holds the place."""
+    picked = NOW - 30 * 3600
+    _both_under_test(st, picked, wallets=(P1, P2))
+    record_copying(st, set(), NOW - 120)
+    after = [[picked + 3600 + 600 * k, 0.03] for k in range(24)]
+    out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner(moments={P1: after, P2: after}))
+    said = out.get("same_actor") or [{}]
+    return out, said[0].get("wallet"), said[0].get("same_as")
+
+
+def test_two_wallets_that_buy_in_one_transaction_give_one_candidate_and_the_reason_says_so(tmp_path):
+    """19 Nov 2026: the book made a sniper each for 3AQ2Ha, 8D92Hh and CD4Taz, three wallets of one operator whose
+    buys come in the same packs: three copies on one signal. The companion rule never sees two wallets of one
+    transaction (they stand at one block place, and it asks for a place behind). A review that day ran two such
+    wallets through this stage on 12 of 12 coins: the twin rule joined them by their lists of coins, in the words
+    "They are twins" and "its buy comes first in the block on 12 of the 12 coins they share". They are one actor by
+    their packs, and the reason says what the tape shows."""
+    from snipetech.qualify.one_actor import actor_links, twin_links
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st)
+        out, yields, leads = _judge_the_pack(st, svc, data)
+        assert {yields, leads} == {P1, P2} and len(out["same_actor"]) == 1
+        by = _latest(st)
+        assert by[leads]["status"] == "qualified" and _same_as(by[leads]) is None
+        assert [v["wallet"] for v in _bookable(st)] == [leads]
+        how = IN_ONE_TX.format(12)
+        said = _same_as(by[yields])
+        assert by[yields]["status"] == "candidate" and out["same_actor"][0]["how"] == how
+        assert said.startswith(f"same actor as {leads}: one signal, one sniper. {how}Not armed while that wallet is")
+        assert "comes first" not in said and "twins" not in said
+        assert "on 12 of them their first buys came in one transaction" in said  # why the block order chose nobody
+        # what the next run and the book read: a tie of two, kept apart from the companions' grouping
+        lead = st.get_score("qualify", leads)["actor"]
+        assert lead["leads"] is True and lead["over"] == [yields] and lead["pack_with"] == [yields]
+        assert twin_links(lead) == {yields} and actor_links(lead) == set() and "twin_with" not in lead
+        assert st.get_score("qualify", yields)["actor"]["pack_with"] == [leads]
+    finally:
+        st.close()
+
+
+def test_two_wallets_in_one_transaction_on_twelve_coins_of_thirty_each_give_one_candidate(tmp_path):
+    """The review's second case, the shape of 19 Nov (the set of wallets changes with every coin): 12 coins bought
+    together in one transaction, 18 more each with other wallets. Under half of either list, so no twins; never a
+    place behind the other, so no companions: "qualified=2 candidate=0 same_actor=0" and the book planned a sniper
+    for each. A pack is counted in coins, not as a share of them."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st, alone=18)
+        out, yields, leads = _judge_the_pack(st, svc, data)
+        assert {yields, leads} == {P1, P2} and out["qualified"] == 1 and out["candidate"] == 1
+        assert [v["wallet"] for v in _bookable(st)] == [leads]
+        assert _same_as(_latest(st)[yields]).startswith(
+            f"same actor as {leads}: one signal, one sniper. {IN_ONE_TX.format(30)}Not armed while"
+        )
+    finally:
+        st.close()
+
+
+def test_two_wallets_of_one_pack_give_one_candidate_though_their_actor_is_at_the_cap(tmp_path):
+    """The review's third case: the pack of 19 Nov with the same fifteen wallets on 12 coins. Each of the two has the
+    eleven wallets of the next three transactions as companions, so each alone is an actor of twelve (ACTOR_MAX), the
+    join of the two is refused, and the twin rule had no room left either: both qualified, each record read
+    {"mates": [11 wallets], "capped": True, "twins": 1}, two snipers. A pack ties two wallets beside the grouping, as
+    twins are tied, so no cap can refuse it."""
+    from snipetech.analysis.actors import ACTOR_MAX
+    from snipetech.book.policy import BookInputs, plan_book
+    from snipetech.book.run import _actor_links
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st, crew=True)
+        out, yields, leads = _judge_the_pack(st, svc, data)
+        assert {yields, leads} == {P1, P2} and out["qualified"] == 1
+        lead = st.get_score("qualify", leads)["actor"]
+        assert len(lead["mates"]) == ACTOR_MAX - 1 and lead["capped"] is True and lead["pack_with"] == [yields]
+        assert _same_as(_latest(st)[yields]).startswith(
+            f"same actor as {leads}: one signal, one sniper. {IN_ONE_TX.format(12)}"
+        )
+        bookable = _bookable(st)
+        cfg = svc.cfg
+        cfg.book.min_score = 0.0
+        plan = plan_book(BookInputs(equity_sol=10.0, day_realised_sol=0.0, day_risk_used_sol=0.0, qualified=bookable,
+                                    live={}, bid_model={}, snipers=[], holdings=[], now=NOW, holdings_known=True,
+                                    actors=_actor_links(st, bookable, []),
+                                    twins=_actor_links(st, bookable, [], twins=True)), cfg.book)  # fmt: skip
+        assert [(a.kind, a.wallet) for a in plan.actions] == [("create", leads)]
+    finally:
+        st.close()
+
+
+def test_wallets_in_one_transaction_on_four_coins_get_the_verdicts_they_always_got(tmp_path):
+    """Under COMPANION_MIN coins bought together nothing is habit (the companion rule's own floor): the two wallets
+    are judged apart, each record as it always was."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st, coins=4, alone=20)
+        out, _yields, _leads = _judge_the_pack(st, svc, data)
+        assert "same_actor" not in out and out["qualified"] == 2
+        assert st.get_score("qualify", P1)["actor"] == {"mates": []} == st.get_score("qualify", P2)["actor"]
+    finally:
+        st.close()
+
+
+def test_a_wallet_of_a_pack_that_a_sniper_may_copy_is_never_marked_and_its_record_names_the_other(tmp_path):
+    """The state of 19 Nov: both wallets qualified and the book has a sniper for each. Marking either would have the
+    book stop a running sniper, so neither is marked. Each record names the other as a wallet of its packs, which is
+    what the book reads to add no further sniper on that signal (book/policy.actor_members)."""
+    from snipetech.book.run import _actor_links
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st, alone=18)
+        snipers = [_armed(st, P1), _armed(st, P2)]
+        record_copying(st, buying_book_wallets(snipers), NOW - 120)
+        after = [[NOW - 24 * 3600 + 600 * k, 0.03] for k in range(60)]
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner(moments={P1: after, P2: after}))
+        by = _latest(st)
+        assert {w: by[w]["status"] for w in (P1, P2)} == {P1: "qualified", P2: "qualified"}
+        assert _same_as(by[P1]) is None and _same_as(by[P2]) is None and "same_actor" not in out
+        assert st.get_score("qualify", P1)["actor"] == {"mates": [], "pack_with": [P2]}
+        assert st.get_score("qualify", P2)["actor"] == {"mates": [], "pack_with": [P1]}
+        assert _actor_links(st, _bookable(st), [], twins=True) == {P1: [P2], P2: [P1]}
+        assert _actor_links(st, _bookable(st), []) == {}  # no tie the companions' grouping could refuse
+    finally:
+        st.close()
+
+
+def test_a_companion_of_the_next_transaction_is_decided_by_the_companion_rule_as_before(tmp_path, monkeypatch):
+    """A wallet of the transaction right behind is a companion by the habit rule (a place behind, on every buy) and a
+    wallet of the pack. The companion rule decides first and its words stand: the reason and the record are the ones
+    from before the pack rule, and with no other place-holder left to compare the wallet with, its packs are not
+    read."""
+    from snipetech.qualify import one_actor
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st, crew=True)
+        behind = addr("pack-crew-00")  # the first wallet of the second transaction, under its forward test
+        _both_under_test(st, NOW - 30 * 3600, wallets=(behind,), due={behind: NOW + 3600})
+        record_copying(st, set(), NOW - 120)
+        st.upsert_candidate(P1, "solanatracker", STRONG, NOW - 3600)
+        read = []
+        monkeypatch.setattr(one_actor, "pack_mates", lambda tape, w, since: read.append(w))
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner())
+        (said,) = out["same_actor"]
+        assert (said["wallet"], said["same_as"]) == (P1, behind) and "how" not in said and read == []
+        assert _same_as(_latest(st)[P1]).startswith(f"same actor as {behind}: one signal, one sniper. Not armed while")
+        block = st.get_score("qualify", P1)["actor"]
+        assert behind in block["mates"] and block["same_as"] == behind and "pack_with" not in block
+    finally:
+        st.close()
+
+
+def test_a_pack_tie_stands_while_the_candidates_record_names_it(tmp_path):
+    """The two were of one pack when one was chosen over the other. Days later the tape no longer holds the coins
+    they bought together. The choice stands as a twin's and a companion's do: the candidate's record still names the
+    wallet behind it, and the reason says the finding is an earlier run's and gives today's numbers."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st)
+        _out, yields, leads = _judge_the_pack(st, svc, data)
+        later = NOW + 25 * 3600
+        _pack_tape(st, coins=0, alone=6, t0=later - 3000)  # six newer coins each, bought with other wallets
+        st.set_coverage("tape", {"spans": [[NOW - 6000, later]]})  # the coins they bought together are off the tape
+        record_copying(st, set(), later - 120)
+        after = [[NOW - 29 * 3600 + 600 * k, 0.03] for k in range(24)]
+        run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=_runner(moments={P1: after, P2: after}))
+        by = _latest(st)
+        assert by[leads]["computed_at"] == later == by[yields]["computed_at"]
+        assert [v["wallet"] for v in _bookable(st)] == [leads] and by[yields]["status"] == "candidate"
+        assert (
+            "They were found to buy in one pack in an earlier run, and that stands: today they buy in one transaction "
+            "on 0 of this wallet's 6 coins. Not armed while"
+        ) in _same_as(by[yields])
+        assert st.get_score("qualify", leads)["actor"]["pack_with"] == [yields]
+        assert st.get_score("qualify", yields)["actor"]["pack_with"] == [leads]
+    finally:
+        st.close()
+
+
+def _places(st):
+    """The wallets that hold a place: qualified, or under a forward test, and not yielding to another wallet."""
+    return {w for w, v in _latest(st).items()
+            if (v["status"] == "qualified" or (v["status"] == "candidate" and v["forward"])) and _same_as(v) is None}  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "tested, armed, new",
+    [
+        ((), (), (P1, P2)),  # both come up in one lab
+        ((P1,), (), (P2,)),  # one is under test, the other comes up
+        ((P1, P2), (), ()),  # both under test since before the rule
+        ((), (P2,), (P1,)),  # one has a sniper
+        ((), (P1, P2), ()),  # both have a sniper, as on 19 Nov
+    ],
+)
+def test_with_the_pack_rule_never_more_wallets_hold_a_place_and_no_armed_one_changes(
+    tmp_path, monkeypatch, tested, armed, new
+):
+    """Five mixes of two wallets that buy 12 of their 30 coins in one transaction, judged with the pack rule and
+    without it (the tape then shows no packs): with it the wallets that hold a place are never more, the armed ones
+    are exactly as without it, and one place is left where no sniper holds more."""
+    from snipetech.analysis.companions import Packs
+    from snipetech.qualify import one_actor
+
+    def run(sub, rule):
+        (tmp_path / sub).mkdir()
+        svc, st, data = _svc(tmp_path / sub)
+        try:
+            if not rule:
+                monkeypatch.setattr(one_actor, "pack_mates", lambda *a, **k: Packs())
+            _pack_tape(st, alone=18)
+            picked = NOW - 30 * 3600
+            _both_under_test(st, picked, wallets=tested)
+            snipers = [_armed(st, w) for w in armed]
+            record_copying(st, buying_book_wallets(snipers), NOW - 120)
+            for w in new:
+                st.upsert_candidate(w, "solanatracker", STRONG, NOW - 3600)
+            after = [[picked + 3600 + 600 * k, 0.03] for k in range(60)]
+            run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=_runner(moments={P1: after, P2: after}))
+            by = _latest(st)
+            return _places(st), {w: (by[w]["status"], _same_as(by[w])) for w in armed}
+        finally:
+            monkeypatch.undo()
+            st.close()
+
+    places, armed_now = run("with", True)
+    before, armed_before = run("without", False)
+    assert len(places) <= len(before) and armed_now == armed_before
+    assert all(status == "qualified" and said is None for status, said in armed_now.values())
+    assert set(armed) <= places and len(places) == max(1, len(armed))  # one signal: one place, or the armed ones'
+    assert len(before) == 2  # without it each of the two held a place
+
+
+def test_a_wallet_the_candidate_was_chosen_over_stays_a_tie_of_two_in_its_record_when_it_falls(tmp_path):
+    """The wallet behind the candidate stops passing and holds no place any more, so later runs no longer compare
+    the candidate with it. The candidate's record still names it among the wallets it was chosen over, and still as
+    a wallet of its packs: a tie of two, which the companions' grouping (and its cap) must never see as its own."""
+    from snipetech.qualify.one_actor import actor_links, twin_links
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _pack_tape(st)
+        _out, yields, leads = _judge_the_pack(st, svc, data)
+        after = [[NOW - 29 * 3600 + 600 * k, 0.03] for k in range(24)]
+        fell = {
+            "wallet": yields,
+            "n": 40,
+            "mean": -0.02,
+            "ev_lower": -0.03,
+            "win_rate": 0.2,
+            "total": -0.8,
+            "exit": "x",
+        }
+        seen = []
+
+        def runner(ws, pos):
+            seen.append(list(ws))
+            return [r for r in (dict(fell), _row(leads, moments=after)) if r["wallet"] in ws]
+
+        for later in (NOW + 25 * 3600, NOW + 28 * 3600):  # the wallet behind falls; then the candidate's next review
+            record_copying(st, set(), later - 120)
+            st.review_now([leads], later)
+            run_qualify(svc, svc.cfg, data / "jobs", later, lab_runner=runner)
+        assert seen[1] == [leads] and _latest(st)[yields]["status"] == "retired"
+        assert [v["wallet"] for v in _bookable(st)] == [leads]
+        block = st.get_score("qualify", leads)["actor"]
+        assert block["over"] == [yields] and block["pack_with"] == [yields] and "twin_with" not in block
+        assert twin_links(block) == {yields} and actor_links(block) == set()
+    finally:
+        st.close()

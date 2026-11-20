@@ -94,11 +94,14 @@ def actor_of(groups: Iterable[Actor], wallet: str) -> Actor | None:
     return next((g for g in groups if wallet in g.wallets), None)
 
 
-def block_firsts(store: Store, wallets: Iterable[str], since_ts: int) -> tuple[dict[str, int], int]:
+def block_firsts(store: Store, wallets: Iterable[str], since_ts: int) -> tuple[dict[str, int], int, int]:
     """Who buys first: ({wallet: the blocks in which its buy of the coin came before the others'}, the blocks at least
-    two of `wallets` share). A wallet's buy of a coin is its first one of COMPANION_DUST_SOL or more since `since_ts`
-    (a dust buy ahead of the real one is passed over, as the companion rule does); a block is shared when two of the
-    wallets made that buy in the same slot. One read of each wallet's buys, on the wallet index."""
+    two of `wallets` share, of those the blocks nobody is first in). A wallet's buy of a coin is its first one of
+    COMPANION_DUST_SOL or more since `since_ts` (a dust buy ahead of the real one is passed over, as the companion
+    rule does); a block is shared when two of the wallets made that buy in the same slot. Nobody is first where the
+    earliest block place is two wallets': one place is one transaction, and a copy of either lands behind all of it
+    (19 Nov: the smaller address was called first, on 12 of 12 coins two wallets bought in one transaction). One read
+    of each wallet's buys, on the wallet index."""
     floor = round(COMPANION_DUST_SOL * 1e9)
     blocks: dict[tuple[str, int], list[tuple[int, str]]] = {}
     ws = list(dict.fromkeys(wallets))
@@ -113,12 +116,16 @@ def block_firsts(store: Store, wallets: Iterable[str], since_ts: int) -> tuple[d
                 seen.add(mint)
                 blocks.setdefault((mint, int(slot)), []).append((int(pos), w))
     won = {w: 0 for w in ws}
-    n = 0
+    n = level = 0
     for buys in blocks.values():
         if len(buys) >= 2:
             n += 1
-            won[min(buys)[1]] += 1
-    return won, n
+            place, first = min(buys)
+            if sum(1 for at, _ in buys if at == place) > 1:
+                level += 1
+            else:
+                won[first] += 1
+    return won, n, level
 
 
 def leader(store: Store, wallets: Iterable[str], since_ts: int,
@@ -131,7 +138,7 @@ def leader(store: Store, wallets: Iterable[str], since_ts: int,
     ws = sorted(dict.fromkeys(wallets))
     if len(ws) == 1:
         return ws[0], "the only wallet"
-    won, n = block_firsts(store, ws, since_ts)
+    won, n, level = block_firsts(store, ws, since_ts)
     top = max(ws, key=lambda w: won[w])
     if n >= LEADER_MIN_BLOCKS and 2 * won[top] > n:
         return top, f"its buy comes first in the block on {won[top]} of the {n} coins they share"
@@ -139,7 +146,8 @@ def leader(store: Store, wallets: Iterable[str], since_ts: int,
     best = max(low.values(), default=None)
     tied = sorted(w for w, v in low.items() if v == best) or ws  # no lower bound at all: every wallet is level
     who = tied[0]
-    order = f"the block order does not tell them apart (first on {won[who]} of {n} shared coins)"
+    one_tx = f"; on {level} of them their first buys came in one transaction" if level else ""
+    order = f"the block order does not tell them apart (first on {won[who]} of {n} shared coins{one_tx})"
     if len(tied) == 1:
         return who, f"{order}; it has the better lower bound ({best:+.4f} SOL a copy)"
     return who, f"{order}, nor does the lower bound: the first by address"

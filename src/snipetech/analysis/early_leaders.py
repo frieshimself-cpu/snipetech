@@ -4,10 +4,17 @@ The server analyst found that 7aPo's and AG89's buys within 20 slots of a coin's
 from the 3rd trade after them, and their later buys lose. This ranks every wallet on the tape the same way: its first
 buy of `min_sol` or more in each coin, made 1 to `max_slots` slots after the create (never in the create slot), on coins
 whose create slot did not already buy the curve out (`slot0_cap_sol`: those graduate at once and no copy reaches them).
-Each buy is entered at the `behind`-th trade after it (where a live copy lands) and marked `horizon` seconds after the
-leader's buy; the result is SOL per `buy_sol` trade less `cost`, the whole round trip: pump.fun's fee both ways and two
-transactions (the command works it out for the book's size at the measured cost, `context.round_trip_pct`; the default
-here is two transactions alone). Read the tape copy, never the live file.
+Each buy is entered where the lab enters a copy of it at "+`behind`x" (lab.copy_entry: behind the `behind`-th buy by
+others after it, counted across blocks, and behind the pack the wallet's buy was sent in) and marked `horizon` seconds
+after the leader's buy; the result is SOL per `buy_sol` trade less `cost`, the whole round trip: pump.fun's fee both
+ways and two transactions (the command works it out for the book's size at the measured cost, `context.round_trip_pct`;
+the default here is two transactions alone). Read the tape copy, never the live file.
+
+19 Nov 2026: until then the copy was entered at the `behind`-th trade after the buy. For the first wallet of a pack
+(several wallets' buys in one transaction, and such transactions back to back: analysis.companions) that is the
+operator's own fourth buy, on the curve between its buys, where nobody lands: the three wallets the book ranked that
+day were such, and this screen hands its best to qualify's queue. The wallet's companions (the habit rule) are not
+read here, one read a wallet for every wallet on the tape: qualify's lab scores the ones this screen names behind them.
 """
 
 from __future__ import annotations
@@ -16,6 +23,8 @@ import math
 from typing import Any
 
 from ..models import AMM
+from ..sim.market import MarketPath
+from .lab import copy_entry
 
 LAMPORTS = 1_000_000_000
 
@@ -45,28 +54,29 @@ def early_leaders(store, now: float, *, hours: float = 72, min_sol: float = 0.3,
         if slot0 >= slot0_cap_sol * LAMPORTS:
             continue
         devs = {launch.user, launch.creator}
+        early = [t for t in trades if t.is_buy and t.user not in devs and int(t.quote) >= min_sol * LAMPORTS
+                 and 1 <= int(t.slot) - int(launch.slot) <= max_slots]  # fmt: skip
+        if not early:  # no buy here could count: the coin's path is not built
+            continue
+        path = MarketPath.build(trades, launch)  # state 0 is the coin's first state, no trade
         seen: set[str] = set()
-        for i, t in enumerate(trades):
-            if not t.is_buy or not t.user or t.user in devs or t.user in seen:
+        for i in range(1, path.n):
+            user = path.users[i]
+            if not path.is_buy[i] or not user or user in devs or user in seen:
                 continue
-            seen.add(t.user)
-            after = int(t.slot) - int(launch.slot)
-            if not 1 <= after <= max_slots or int(t.quote) < min_sol * LAMPORTS:
+            seen.add(user)
+            after = int(path.slot[i]) - int(launch.slot)
+            if not 1 <= after <= max_slots or path.quote[i] < min_sol * LAMPORTS:
                 continue
-            e = i + behind
-            if e >= len(trades):
+            e = copy_entry(path, i, behind)  # where the lab enters a copy: never inside the wallet's own pack
+            mark = path.index_at_time(float(path.ts[i]) + horizon)  # the last trade inside the horizon
+            if mark < e or path.b[e] <= 0 or path.b[mark] <= 0:
                 continue
-            p_in = _price(trades[e])
-            mark = None
-            for x in trades[e:]:
-                if float(x.ts) > float(t.ts) + horizon:
-                    break
-                mark = x
-            p_out = _price(mark) if mark is not None else None
+            p_in, p_out = path.q[e] / path.b[e], path.q[mark] / path.b[mark]
             if not p_in or not p_out:
                 continue
-            results.setdefault(t.user, []).append(buy_sol * (p_out / p_in - 1.0) - cost)
-            slots_after.setdefault(t.user, []).append(after)
+            results.setdefault(user, []).append(buy_sol * (p_out / p_in - 1.0) - cost)
+            slots_after.setdefault(user, []).append(after)
     rows = []
     for w, xs in results.items():
         n = len(xs)

@@ -30,7 +30,8 @@ companion."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
 
 from ..store import Store
 
@@ -154,3 +155,72 @@ def companions_of(store: Store, wallets: Iterable[str], since_ts: int,
         if mates:
             out[w] = mates
     return out
+
+
+@dataclass(frozen=True)
+class Packs:
+    """What a wallet's first buys say of the wallets in its packs (`pack_mates`). `moments`: the first buys looked
+    at; `mates`: wallet -> (on how many of them it bought in one pack with the wallet, on how many of those in the
+    wallet's own transaction)."""
+
+    moments: int = 0
+    mates: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+
+    def tied(self, other: str) -> bool:
+        """Whether `other` buys with the wallet by habit: in one pack with it on COMPANION_MIN of its first buys."""
+        return self.mates.get(other, (0, 0))[0] >= COMPANION_MIN
+
+    def words(self, other: str) -> str:
+        """What the two do, in plain words, for the wallet's own verdict ("this wallet"): a sentence after "They"."""
+        n, same = self.mates.get(other, (0, 0))
+        of = f"of this wallet's {self.moments} coins"
+        if same == n:
+            return f"buy in one transaction on {n} {of}"
+        if not same:
+            return f"buy in transactions that run back to back on {n} {of}"
+        return f"buy in one pack on {n} {of}, in one transaction on {same} of them"
+
+
+def pack_mates(store: Store, wallet: str, since_ts: int) -> Packs:
+    """The wallets that buy in one pack with `wallet`, over its first buys of a coin since `since_ts`: the moments
+    `companions` reads (a first buy of COMPANION_MIN_SOL or more, among its first COMPANION_SCAN buys, the newest
+    COMPANION_MOMENTS of them). In one pack with its buy: the trades of its own transaction, the ones ahead of it
+    too (the fee payer's own small buy often comes first), the links behind it (`pack_end`), and the trades ahead of
+    it whose own pack reaches its buy. A buy of any size counts: whoever is in a transaction signed it.
+
+    19 Nov 2026: the habit rule above compares block places strictly, and the trades of one transaction share one
+    place, so a wallet of the followed wallet's own transaction was never behind it nor ahead of it: nobody's
+    companion. 8D92Hh and 3AQ2Ha, the second and the fourth buyer of one transaction, each got a sniper.
+
+    One read of the wallet's buys and one small read a coin, on indexes: the coin's trades of that one block."""
+    firsts: dict[str, int] = {}  # coin -> the block of its first buy there, -1 when that buy is too small
+    # the companion rule's own read of a wallet's buys, word for word (the same plan on the wallet index)
+    for mint, slot, _pos, quote in store._q(
+        "SELECT mint, slot, pos, quote FROM trades WHERE user=? AND is_buy=1 AND ts>=? ORDER BY slot, pos, ev LIMIT ?",
+        (wallet, int(since_ts), COMPANION_SCAN),
+    ):
+        if mint not in firsts:  # its first buy of the coin: the one a copy follows, when it is large enough
+            firsts[mint] = int(slot) if quote >= COMPANION_MIN_SOL * 1e9 else -1
+    moments = [(mint, slot) for mint, slot in firsts.items() if slot >= 0][-COMPANION_MOMENTS:]
+    packed: dict[str, int] = {}  # in one pack with it
+    same: dict[str, int] = {}  # of those: in its own transaction
+    for mint, slot in moments:
+        rows = store._q(
+            "SELECT sig, pos, is_buy, user FROM trades WHERE mint=? AND slot=? ORDER BY pos, ev", (mint, slot)
+        )
+        i = next((k for k, r in enumerate(rows) if r[3] == wallet and r[2]), None)  # its first buy of the coin
+        if i is None:  # the tape dropped the block between the two reads
+            continue
+
+        def at(k: int, rows=rows, slot=slot) -> tuple[int, str, int, bool, str]:
+            return slot, rows[k][0], int(rows[k][1]), bool(rows[k][2]), rows[k][3]
+
+        first = i  # the first trade whose pack reaches the wallet's buy: its own transaction's first at the least
+        while first > 0 and pack_end(first - 1, len(rows), at) >= i:
+            first -= 1
+        pack = [r for r in rows[first : pack_end(i, len(rows), at) + 1] if r[2] and r[3] != wallet]
+        for user in {r[3] for r in pack}:
+            packed[user] = packed.get(user, 0) + 1
+        for user in {r[3] for r in pack if r[0] == rows[i][0]}:
+            same[user] = same.get(user, 0) + 1
+    return Packs(len(moments), {user: (n, same.get(user, 0)) for user, n in packed.items()})

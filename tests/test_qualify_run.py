@@ -1125,6 +1125,32 @@ def test_the_readings_only_a_passing_wallet_needs_are_made_only_for_one(tmp_path
         st.close()
 
 
+def test_a_wallets_packs_are_read_only_once_every_gate_passed_it_and_someone_holds_a_place(tmp_path, monkeypatch):
+    """19 Nov: wallets of one pack are one actor (one_actor.py). The read behind it is the companion rule's size, the
+    wallet's buys once and a block of a coin for each of up to 300 first buys. It only decides between a wallet every
+    in-sample gate passed and the wallets that hold a place, so it is made for such a wallet alone, once: not for a
+    losing or a thin one, and not for the first wallet of a run in which nobody holds a place yet."""
+    from snipetech.qualify import one_actor
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        wallets = ["FIRST", "LOSES", "THIN", "SECOND"]
+        _tape(st, wallets, coins=12)
+        for i, w in enumerate(wallets):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
+        rows = {"FIRST": _lab_row(30, 0.02, 0.005), "LOSES": _lab_row(30, -0.01, -0.02),
+                "THIN": _lab_row(4, 0.03, 0.001), "SECOND": _lab_row(30, 0.02, 0.005)}  # fmt: skip
+        read = []
+        real = one_actor.pack_mates
+        monkeypatch.setattr(one_actor, "pack_mates", lambda tape, w, since: read.append(w) or real(tape, w, since))
+        run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=lambda ws, pos: [dict(rows[w], wallet=w) for w in ws])
+        assert read == ["SECOND"]  # compared with FIRST, which is under its forward test by then
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        assert by["FIRST"]["forward"]["status"] == by["SECOND"]["forward"]["status"] == "pending"
+    finally:
+        st.close()
+
+
 def test_a_wallet_the_book_copies_is_measured_however_few_coins_the_tape_holds(tmp_path):
     """The count before the lab never decides for a wallet that was picked before or is qualified: its review, its
     forward check and whether its sniper is kept are the lab's to say."""

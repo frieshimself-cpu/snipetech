@@ -131,6 +131,29 @@ def test_venue_share_and_crowding():
     st.close()
 
 
+def test_the_crowd_is_counted_behind_the_pack_the_wallets_buy_was_sent_in():
+    """19 Nov 2026: 8D92Hh's first buy of the fixture's coin is the second of fifteen that one operator sent in four
+    transactions back to back. The crowding reading took the operator's thirteen other wallets for its followers and
+    their buys for the price a copy chases: 23 followers within a second and +29.7 % by the third buy behind it
+    (3AQ2Ha, the fourth of the fifteen: 21 and +33.3 %), against a gate of 15 %. A copy lands behind the whole pack
+    (lab.own_entry_end), so the crowd is who buys behind that: 10 wallets within the second, and the third of them
+    paid 6.2 % over the price the pack left."""
+    from tests.test_lab import _pack_19nov
+
+    trades = _pack_19nov()
+    st = Store(":memory:")
+    st.add_trades(trades)
+    lead, fourth = trades[1].user, trades[3].user
+    assert lead.startswith("8D92Hh") and fourth.startswith("3AQ2Ha")
+    end, third_behind = trades[15], trades[19]  # the pack's last trade, and the third buy by others behind it
+    gap = (third_behind.q_after / third_behind.b_after) / (end.q_after / end.b_after) - 1
+    assert gap * 100 == pytest.approx(6.17, abs=0.01)
+    for wallet in (lead, fourth):
+        c = crowding(st, wallet, trades[1].ts - 10)
+        assert c["n"] == 1 and c["followers_1s"] == 10.0 and c["gap3_pct"] == pytest.approx(gap * 100)
+    st.close()
+
+
 def test_relationship_gate_vetoes_bundle_members():
     st = Store(":memory:")
     B, S, D = addr("bundle"), addr("sniper"), addr("dev")

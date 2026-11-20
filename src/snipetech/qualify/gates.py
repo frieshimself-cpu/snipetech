@@ -19,6 +19,7 @@ from ..analysis.companions import (  # noqa: F401
     COMPANION_SHARE,
     companions,
     companions_of,
+    pack_end,
 )
 from ..analysis.stats import summarize
 from ..config import QualifyConfig
@@ -128,7 +129,12 @@ def venue_share(store: Store, wallet: str, since_ts: int) -> float | None:
 
 def crowding(store: Store, wallet: str, since_ts: int, window_secs: int = 60) -> dict[str, Any]:
     """How crowded the wallet's entries are: per first buy in a coin, distinct other buyers within 1 s and the
-    price gap between its buy and the 3rd following buy (within `window_secs`); medians over its buys."""
+    price gap to the 3rd following buy (within `window_secs`); medians over its buys. Both are counted from behind
+    the pack its buy was sent in (companions.pack_end: the later trades of its own transaction and of the
+    transactions that follow it back to back, each with several wallets' buys): a copy lands behind the pack, so
+    the crowd is who buys behind it and the gap is over the price the pack left. 19 Nov 2026: 8D92Hh's buy was the
+    second of fifteen its operator sent in one block, and the other thirteen wallets were read as 23 followers
+    within a second and a gap of 29.7 % (behind the pack: 10 followers, 6.2 %). A buy sent alone is its own pack."""
     firsts = store._q(
         "SELECT mint, min(ts) FROM trades WHERE user=? AND is_buy=1 AND ts>=? GROUP BY mint", (wallet, int(since_ts))
     )
@@ -140,10 +146,13 @@ def crowding(store: Store, wallet: str, since_ts: int, window_secs: int = 60) ->
         if idx is None:
             continue
         mine = trades[idx]
-        after = [t for t in trades[idx + 1 :] if t.is_buy and t.user != wallet]
+        end = pack_end(idx, len(trades), lambda k, ts=trades: (int(ts[k].slot), ts[k].sig, int(ts[k].pos),
+                                                               bool(ts[k].is_buy), ts[k].user))  # fmt: skip
+        last = trades[end]  # the last trade of its pack: what a copy lands behind
+        after = [t for t in trades[end + 1 :] if t.is_buy and t.user != wallet]
         followers.append(float(len({t.user for t in after if t.ts <= mine.ts + 1})))
-        if len(after) >= 3 and mine.b_after and after[2].b_after:
-            p0 = mine.q_after / mine.b_after
+        if len(after) >= 3 and last.b_after and after[2].b_after:
+            p0 = last.q_after / last.b_after
             p3 = after[2].q_after / after[2].b_after
             if p0 > 0:
                 gaps.append((p3 / p0 - 1.0) * 100.0)
