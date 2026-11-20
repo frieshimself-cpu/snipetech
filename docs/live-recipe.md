@@ -28,6 +28,7 @@ landing position OKTech was measured at (same slot as the trigger, ~1 trade in t
 
 | # | time (UTC) | wallet copied | coin | its buy (first / repeat, SOL) | landed (blocks after, buys ahead) | highest bid ahead | price vs the wallet | exit | result (SOL) |
 |---|---|---|---|---|---|---|---|---|---|
+| 1 | 16:38:45 | Cupseyy | FARLB5…pump (curve; created 16:38:39, 844 trades by 16:40) | first, 2.93 | 1 block after (slot 471807188, place 32 in it), 4 buys ahead: NOT first or one behind | 0.7 (GkSRwC…); three bid 0.001 and still got in first (`landing`: "speed") | +124.8 % | held at 16:40 (worth 0.0662 against 0.0494 paid) | open |
 
 ## A copied wallet swapped into USDC and the copy followed: 54 failed sends, 0.05 SOL; the book now refuses such wallets (14 Nov 2026, 06:00-07:10 UTC)
 
