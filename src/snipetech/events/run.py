@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from ..store import Store
@@ -80,8 +82,25 @@ def scan_tape(store: Store, now: float, hours: float = 6.0, tape: Store | None =
     return {"curve_cross": added, "scanned_hours": hours}
 
 
+def installed_code() -> str:
+    """The commit the installed checkout stands at ("" when git cannot say): a deploy moves it (ops.op_update)."""
+    repo = Path(__file__).resolve().parents[3]
+    try:
+        r = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return ""
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def poll_loop(store: Store, clients: dict[str, Any], interval: float = 60.0, once: bool = False,
-              log: Callable[[str], None] = print, sleep: Callable[[float], None] = time.sleep) -> None:  # fmt: skip
+              log: Callable[[str], None] = print, sleep: Callable[[float], None] = time.sleep,
+              version: Callable[[], str] | None = None, rounds: int | None = None) -> None:  # fmt: skip
+    """Poll the feeds every `interval` seconds. `version`: the installed code's commit (`installed_code`); once it
+    differs from the one the loop started on, the loop ends and the unit's Restart=always starts the new code. A deploy
+    restarts the recorder and the ops service and nothing else (20 Nov: this loop ran its 12 Nov code for eight days).
+    A commit that cannot be read ("") is never a change. `rounds`: stop after that many polls (tests)."""
+    started = version() if version is not None else ""
+    done = 0
     while True:
         try:
             out = poll_feeds(store, clients, time.time(), log=log)
@@ -91,7 +110,12 @@ def poll_loop(store: Store, clients: dict[str, Any], interval: float = 60.0, onc
             )
         except Exception as exc:  # noqa: BLE001 - the service must outlive one bad minute
             log(f"[events] poll failed: {type(exc).__name__}: {exc}")
-        if once:
+        done += 1
+        if once or (rounds is not None and done >= rounds):
+            return
+        now_code = version() if version is not None else ""
+        if started and now_code and now_code != started:
+            log(f"[events] new code was deployed ({started[:12]} -> {now_code[:12]}): ending, for systemd to start it")
             return
         sleep(interval)
 

@@ -881,6 +881,16 @@ def test_a_secret_across_an_idea_texts_cap_is_refused_not_cut_in_half(paths, mon
     assert not L.list_ideas(paths, "all")
 
 
+def test_an_idea_result_as_long_as_the_agents_write_one_is_not_cut(paths):
+    """20 Nov audit (19 Nov 16:15 to 20 Nov 01:37): 43 of 130 idea writes had a result over the 600 characters of
+    then, by 48 at the median and 129 at the most. Each cut kept the turn open for one more reply, and none of those
+    35 replies repaired anything. The cap is what the agents write, as the other caps are since 14 Nov."""
+    idea = {"title": "t", "why": "w", "test": "x", "expected": "e", "kind": "research"}
+    result = ("n 40, mean -0.012 SOL, lower -0.021, job 8f3a2c; " * 20)[:729]  # 600 + the longest overflow seen
+    done = L.upsert_idea_detail(paths, idea | {"result": result}, source="scout", now=NOW)
+    assert done["cut"] == {} and done["idea"]["result"] == result
+
+
 def test_a_role_that_runs_labs_is_told_how_many_lab_slots_are_free(paths, monkeypatch):
     """ "every lab slot is held" and "labs are already running" were at least 28 of the refusals in 108 recorded turns:
     a role wrote a lab's whole command to learn that no slot was free. Its message says it (one line, in the part of

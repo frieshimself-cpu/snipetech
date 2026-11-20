@@ -548,9 +548,10 @@ def test_a_provider_that_refuses_our_key_is_written_down_and_cleared_once_it_let
         assert rec.get("cleared") == int(A1_TS + 121.0) and rec["why"] == "Project is suspended"
         await stop(task)
 
-    from snipetech.operator.resources import REFUSED_KEY
+    from snipetech.operator.resources import REFUSED_KEY, TAPE_REFUSED_KEY
 
-    assert L.REFUSED_KEY == REFUSED_KEY  # the round reads what the recorder writes
+    assert L.REFUSED_KEY == TAPE_REFUSED_KEY  # the round reads what the recorder writes
+    assert REFUSED_KEY != TAPE_REFUSED_KEY  # and never as the agents' credit refusal (20 Nov 00:24-01:31)
 
     asyncio.run(go())
 

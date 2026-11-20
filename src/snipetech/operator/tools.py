@@ -1335,7 +1335,7 @@ def make_learning_tools(paths: OperatorPaths, now_fn: Callable[[], float], sourc
             owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
             priority: 1 (low) to 5 (high): what testing it is worth.
             id: The idea's id (e.g. "I3") to update it; omit to add a new one.
-            result: What the test found, in numbers, with n and the job (600): what an idea is closed with.
+            result: What the test found, in numbers, with n and the job (800): what an idea is closed with.
         """
         fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
                   "status": status, "owner_needed": owner_needed, "priority": priority, "result": result}  # fmt: skip
@@ -1439,7 +1439,7 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
             priority: 1 (low) to 5 (high): what testing it is worth.
             role: The queue a research idea goes to: scout, tester, fees or oktech (yours when left out).
             id: The idea's id (e.g. "I3") to update it; omit to add a new one.
-            result: What the test found, in numbers, with n and the job (600): what an idea is closed with.
+            result: What the test found, in numbers, with n and the job (800): what an idea is closed with.
         """
         fields = {"id": id, "title": title, "why": why, "test": test, "expected": expected, "kind": kind,
                   "status": status, "owner_needed": owner_needed, "priority": priority, "role": role,

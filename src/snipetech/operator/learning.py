@@ -41,8 +41,9 @@ ALWAYS_OWNER = ("live-test", "code")  # a live test spends SOL; a code change ne
 IDEA_TEXT = {"title": 120, "why": 700, "test": 650, "expected": 400}
 # What the test found, in numbers: the field an idea is closed with, so that `test` stays how it is tested. Until
 # 14 Nov there was none and the agents kept the running result in `test`, which is why 41 of their 57 refused idea
-# writes were a test over its cap. Never required; shown by the live page (dash.py lists it).
-IDEA_RESULT_CHARS = 600
+# writes were a test over its cap. Never required; shown by the live page (dash.py lists it). 600 until 20 Nov, when 43
+# of 130 results in 9.6 hours were over it (by 48 at the median, 129 at the most) and each cut cost a reply: 800.
+IDEA_RESULT_CHARS = 800
 IDEA_CAPS = IDEA_TEXT | {"result": IDEA_RESULT_CHARS}  # every text field's cap: a longer text is cut there and kept
 # role: whose queue a research idea is in (operator/roles.py); read it with role_of, which knows what none means
 IDEA_FIELDS = ("id", *IDEA_TEXT, "result", "kind", "status", "owner_needed", "priority", "role")

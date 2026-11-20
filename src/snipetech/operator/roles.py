@@ -85,6 +85,12 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
     "oktech": SHARED_TOOLS | {"read_fills", "read_fee_policy", "read_round_trips"},
 }
 
+# The roles another role's table change never wakes (`role_due`): the OKTech analyst's subject is our fills and
+# OKTech's features. 20 Nov audit (19 Nov 16:15 to 20 Nov 01:37): the scout's table woke it 19 times (8.86 $, about
+# 22 $ a day) and those turns started no job; 9 of its notes said nothing was new. A fill, a handed idea, a job of its
+# own and the three-hour look still wake it. The same table woke the fee analyst 14 times (10 jobs started) and the
+# tester's woke the scout 11 times (12 jobs): those wakes stay.
+TABLE_DEAF = frozenset({"oktech"})
 # The one table each role keeps current (operator/<name>.md), which the other roles' turns carry, and its journal
 # (operator/<role>-journal-<date>.md): the only two reports a role's write_report writes.
 TABLES = {"scout": "scout-facts", "tester": "tester-rules", "fees": "fees-bids", "oktech": "oktech-facts"}
@@ -658,7 +664,7 @@ def role_due(role: str, paths: OperatorPaths, now: float, state: dict[str, Any],
     again = int(state.get("stalled_n") or 0) < STALLED_TELLS
     if testing and not job_runs and (told is None or (again and now - told >= IDLE_WAIT_SECS - SLACK_SECS)):
         return True, f"{STALLED} {testing[0].get('id')} is in testing and no job of yours runs: {STALLED_DO}"
-    for other in ROLES if wake_on_table else ():
+    for other in ROLES if wake_on_table and role not in TABLE_DEAF else ():
         if other != role:
             try:
                 changed = (paths.root / f"{TABLES[other]}.md").stat().st_mtime > last

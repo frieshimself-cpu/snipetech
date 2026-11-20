@@ -82,6 +82,28 @@ def test_budget_stops_before_the_call():
     assert len(calls) == 1
 
 
+def test_the_budget_is_a_days_and_starts_again_each_utc_day():
+    """20 Nov audit: the events service builds one Birdeye client for its whole life (cli.py), so `daily_cu`
+    (250,000) was a cap for the life of the process: it was reached on 18 Nov 11:12 UTC and the trending feed stored
+    nothing after it, every minute's error read by nobody. The budget is the UTC day's: a new day starts it again."""
+    calls = []
+
+    def handler(req):
+        calls.append(1)
+        return httpx.Response(200, json={"success": True, "data": {"summary": {"counts": {}, "cashflow_usd": {}, "pnl": {}}}})
+
+    now = [1_795_132_000.0]  # 19 Nov 2026, 23:46:40 UTC
+    b = _client(handler, budget_cu=50, clock=lambda: now[0])
+    b.wallet_pnl("W1")
+    with pytest.raises(BudgetExceeded):
+        b.wallet_pnl("W2")
+    now[0] += 3600  # past 00:00 UTC: a new day's budget
+    b.wallet_pnl("W2")
+    with pytest.raises(BudgetExceeded):
+        b.wallet_pnl("W3")
+    assert len(calls) == 2
+
+
 def test_api_error_message_surfaces_without_the_key():
     def handler(req):
         return httpx.Response(401, json={"success": False, "message": "Unauthorized"})

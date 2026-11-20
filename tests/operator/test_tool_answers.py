@@ -469,8 +469,8 @@ def test_an_idea_is_closed_with_its_result_and_the_test_stays_the_test(rolebox, 
     line = _call(scout["list_ideas"], status="rejected").splitlines()[1]
     assert line.startswith(f"{mine} [rejected, priority 3, scout] who copies Cupsey. Result: lower -0.021")
     assert "result" in learning.IDEA_FIELDS and "result" not in learning.IDEA_TEXT  # a new idea needs none
-    long = _call(scout["upsert_idea"], id=mine, result="lower -0.021 over 133 copies; " * 25)
-    assert "result was cut at 600 characters: its last 150 characters are gone" in long
+    long = _call(scout["upsert_idea"], id=mine, result="lower -0.021 over 133 copies; " * 30)  # 900 (cap 800 since 20 Nov)
+    assert "result was cut at 800 characters: its last 100 characters are gone" in long
     assert _call(tools()["upsert_idea"], id=mine, result="the analyst's reading").endswith("updated: result")
 
 

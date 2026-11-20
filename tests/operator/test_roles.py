@@ -620,10 +620,11 @@ def test_a_table_change_alone_starts_no_turn_when_the_owner_says_so(box):
     other tables still come in every opening message, and a handed idea, a fill and the three-hour look still wake."""
     assert Config().operator.wake_on_table is True
     _state(box.paths, "oktech", last=NOW - 900, seen={})
+    _state(box.paths, "fees", last=NOW - 900, seen={})
     table = box.paths.root / "scout-facts.md"
     table.write_text("| wallet |\n")
     os.utime(table, (NOW - 50, NOW - 50))
-    assert _due(box, "oktech") == (True, "the scout table changed (operator/scout-facts.md)")  # as today
+    assert _due(box, "fees") == (True, "the scout table changed (operator/scout-facts.md)")  # as today
     assert R.start_rules(box.cfg, box.paths)["wake_on_table"] is True
     box.cfg.operator.wake_on_table = False
     rules = R.start_rules(box.cfg, box.paths)
@@ -654,6 +655,23 @@ def test_a_table_change_alone_starts_no_turn_when_the_owner_says_so(box):
     assert box.run("tester")["why"] == "the scout table changed (operator/scout-facts.md)"
     with pytest.raises(ValueError, match="on or off"):
         R.set_wake_table(box.paths, "maybe")
+
+
+def test_another_roles_table_never_wakes_the_oktech_analyst(box):
+    """20 Nov audit (19 Nov 16:15 to 20 Nov 01:37): the scout's table woke the OKTech analyst 19 times (8.86 $) and
+    those turns started no job; 9 of its own notes said nothing was new (no fill since 12 Nov). Its subject is our
+    fills and OKTech's features: a fill, an idea handed to it, a job of its own and the three-hour look still wake
+    it. The same table still wakes the fee analyst (14 turns, 10 jobs started) and the tester's the scout (11, 12)."""
+    _state(box.paths, "oktech", last=NOW - 900, seen={})
+    _state(box.paths, "fees", last=NOW - 900, seen={})
+    for name in ("scout-facts.md", "tester-rules.md", "fees-bids.md"):
+        table = box.paths.root / name
+        table.write_text("| row |\n")
+        os.utime(table, (NOW - 50, NOW - 50))
+    assert _due(box, "oktech") == (False, "nothing new")
+    assert _due(box, "fees") == (True, "the scout table changed (operator/scout-facts.md)")
+    handed = _idea(box.paths, "oktech", "which feature sells this rule's coin", by="tester", now=NOW - 300)
+    assert _due(box, "oktech") == (True, f"handed an idea: {handed} (by the tester)")
 
 
 def test_the_least_gap_between_a_roles_turns_is_the_owners_every(box):

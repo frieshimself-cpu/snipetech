@@ -40,13 +40,17 @@ def _int(v: Any) -> int:
 class Birdeye:
     def __init__(self, key: str | None = None, *, transport: httpx.BaseTransport | None = None, budget_cu: int | None = None,
                  wallet_rps: float = 4.0, sleep: Callable[[float], None] = time.sleep, timeout: float = 20.0,
-                 counter: Callable[[int], None] | None = None):  # fmt: skip
+                 counter: Callable[[int], None] | None = None,
+                 clock: Callable[[], float] = time.time):  # fmt: skip
         self.key = key or os.environ.get("BIRDEYE_API_KEY") or ""
         if not self.key:
             raise RuntimeError("BIRDEYE_API_KEY is not set")
         self.http = httpx.Client(base_url=BASE, timeout=timeout, transport=transport,
                                  headers={"X-API-KEY": self.key, "x-chain": "solana", "accept": "application/json"})  # fmt: skip
         self.budget_cu, self.used_cu, self.calls, self.counter = budget_cu, 0, 0, counter  # counter: CU spent per successful call
+        # the budget is the UTC day's (20 Nov: the events service keeps one client for its whole life, so a cap that
+        # never started again stopped the trending feed for good on 18 Nov 11:12); `used_cu` counts the client's life
+        self.clock, self._day, self._day_cu = clock, None, 0
         self._wallet_gap, self._last_wallet_call, self.sleep = 1.0 / max(0.1, wallet_rps), 0.0, sleep
 
     def close(self) -> None:
@@ -55,8 +59,11 @@ class Birdeye:
     # -- transport -------------------------------------------------------------
 
     def _get(self, path: str, params: dict[str, Any], cost: int, *, wallet_endpoint: bool = False) -> dict:
-        if self.budget_cu is not None and self.used_cu + cost > self.budget_cu:
-            raise BudgetExceeded(f"birdeye budget: {self.used_cu} + {cost} CU would exceed {self.budget_cu}")
+        day = int(self.clock() // 86400)
+        if day != self._day:
+            self._day, self._day_cu = day, 0
+        if self.budget_cu is not None and self._day_cu + cost > self.budget_cu:
+            raise BudgetExceeded(f"birdeye budget: {self._day_cu} + {cost} CU would exceed {self.budget_cu} today (UTC)")
         if wallet_endpoint:  # 5 rps across the account whatever the plan
             wait = self._wallet_gap - (time.monotonic() - self._last_wallet_call)
             if wait > 0:
@@ -78,6 +85,7 @@ class Birdeye:
                     pass
                 raise RuntimeError(f"birdeye {path}: HTTP {r.status_code} {msg}".strip())
             self.used_cu += cost
+            self._day_cu += cost
             if self.counter is not None:
                 self.counter(cost)
             body = r.json()

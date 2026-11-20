@@ -609,3 +609,20 @@ def test_a_refusal_that_is_over_or_brief_says_nothing(tmp_store, ledger):
     tmp_store.set_coverage("tape:refused", {"since": NOW - 3600, "last": NOW - 1800, "why": "Project is suspended",
                                             "cleared": NOW - 1700})  # fmt: skip
     assert "helius" not in rows()
+
+
+def test_a_helius_refusal_is_no_credit_outage_and_each_reads_its_own_record(tmp_store, ledger):
+    """20 Nov 00:24 to the fix: resources.py named two records REFUSED_KEY, the agents' credit refusal and the tape's
+    Helius refusal, and the second name won. The credit check read Helius's suspension: at 00:31 the owner was told
+    OpenRouter refused the agents for want of credit, and the round held most agent turns until 01:31. Each check
+    reads its own record now; a refusal of one is never the other."""
+    from snipetech.operator import resources as R
+
+    assert R.REFUSED_KEY == "resources:anthropic_refused" and R.TAPE_REFUSED_KEY == "tape:refused"
+    tmp_store.set_coverage("tape:refused", {"since": NOW - 900, "last": NOW - 60, "why": "Project is suspended",
+                                            "code": "PERMISSION_DENIED"})  # fmt: skip
+    assert R.credit_empty_since(tmp_store, ledger) is None
+    assert R.provider_refusal(tmp_store, NOW).name == "helius"
+    assert R.credit_refused(tmp_store, ledger, NOW) is True  # an agent turn refused for want of credit
+    assert tmp_store.coverage("resources:anthropic_refused")["since"] == NOW
+    assert tmp_store.coverage("tape:refused")["why"] == "Project is suspended"  # untouched by it

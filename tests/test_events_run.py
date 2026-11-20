@@ -5,7 +5,7 @@ from pathlib import Path
 
 from snipetech import ops as O
 from snipetech.cli import build_parser
-from snipetech.events.run import poll_feeds, scan_tape
+from snipetech.events.run import poll_feeds, poll_loop, scan_tape
 from snipetech.store import Store
 from tests.synth import Market, addr
 
@@ -129,3 +129,24 @@ def test_feeds_keep_only_pump_coins(tmp_path):
         assert [r["mint"][:3] for r in pump_only(st, rows)] == ["Abc"]
     finally:
         st.close()
+
+
+def test_the_poll_ends_when_new_code_is_deployed_so_systemd_starts_the_new_code(tmp_path):
+    """20 Nov audit: a deploy restarts the recorder and the ops service and nothing else (the server's sudo rule
+    allows no more), so `events poll` ran its 12 Nov code for eight days, the Birdeye budget bug of the trending feed
+    included. The loop ends at the first round after the installed code changed; the unit's Restart=always starts it
+    again on the new code ten seconds later. Code it cannot read ("") is never a change."""
+    st = Store(tmp_path / "t.db")
+    try:
+        seen = []
+        versions = iter(["abc", "abc", "def"])
+        poll_loop(st, {"solanatracker": FakeST()}, interval=0, log=seen.append, sleep=lambda s: None,
+                  version=lambda: next(versions))  # fmt: skip
+        assert sum(1 for m in seen if m.startswith("[events] poll:")) == 2
+        assert seen[-1] == "[events] new code was deployed (abc -> def): ending, for systemd to start it"
+        unread = iter(["", "", "x"])
+        poll_loop(st, {"solanatracker": FakeST()}, interval=0, log=seen.append, sleep=lambda s: None, once=False,
+                  version=lambda: next(unread, "x"), rounds=3)  # fmt: skip
+    finally:
+        st.close()
+    assert "Restart=always" in (UNITS / "snipetech-events.service").read_text()

@@ -448,8 +448,10 @@ def _failed_by_the_wallets_sol(cfg: Config, store: Store, snap: Snapshot, failed
 
 # The provider turning our key away, as the recorder wrote it down (live.REFUSED_KEY). Current while its last refusal
 # is under REFUSAL_CURRENT_SECS old and it was not cleared since; an alert once it has lasted REFUSAL_ALERT_SECS (10 Nov:
-# "Unable to verify project" came and went within minutes before it held for 33).
-REFUSED_KEY = "tape:refused"
+# "Unable to verify project" came and went within minutes before it held for 33). Its own name: from 20 Nov 00:24 it
+# was called REFUSED_KEY too, which replaced the agents' credit record above, and Helius's suspension was read as the
+# agents refused for want of credit (a false alert to the owner at 00:31, agent turns held until 01:31).
+TAPE_REFUSED_KEY = "tape:refused"
 REFUSAL_CURRENT_SECS = 600
 REFUSAL_ALERT_SECS = 300
 
@@ -460,7 +462,7 @@ def provider_refusal(store: Store, now: float) -> Resource | None:
     restart would help, which it cannot): since when, the provider's own words and the one place it is fixed. None
     when nothing was refused, the refusal was cleared, or the record cannot be read."""
     try:
-        rec = store.coverage(REFUSED_KEY) or {}
+        rec = store.coverage(TAPE_REFUSED_KEY) or {}
     except Exception:  # noqa: BLE001
         return None
     last, since = rec.get("last"), rec.get("since")

@@ -191,7 +191,7 @@ def _landing(args, cfg) -> int:
 def _events(args, cfg) -> int:
     import time
 
-    from .events.run import poll_feeds, poll_loop, scan_tape
+    from .events.run import installed_code, poll_feeds, poll_loop, scan_tape
     from .service import Service
 
     svc = Service(cfg)
@@ -250,7 +250,8 @@ def _events(args, cfg) -> int:
                 )
             )
             return 0
-        poll_loop(svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True))
+        poll_loop(svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True),
+                  version=installed_code)  # a deploy restarts nothing else: ends for its unit to restart it
         return 0
     except KeyboardInterrupt:
         return 0
