@@ -235,6 +235,12 @@ class Trigger:
     vol_secs: float = 0.0
     min_vol: float = 0.0
     max_vol: float = 0.0
+    # kol (20 Nov: OKTech copies every buy of a wallet above its floor, and at 0.95 SOL 81 % of Cupseyy's buys in a
+    # week were repeats in a coin it had bought before): which of a followed wallet's buys are moments. "" its first
+    # buy in the coin (every rule before); "also" every buy at the rule's size, the first and the repeats (what a live
+    # copy sniper takes); "only" its buys after its first one (research only, `research_only_why`: no sniper copies
+    # repeats alone). A buy under the size is never a moment, a first buy under it included
+    repeats: str = ""
     # whale (13 Nov, idea I84, the bot E2x1's coin filter: "any buy of 0.25 to 0.56 SOL by anyone, on a coin whose
     # curve holds 7 to 18 SOL before that buy, 20 to 190 slots old"): four of the fields above gate a whale trigger
     # too (ANY_BUYER_GATES), and make it an any-buyer rule (`any_buyer`). `max_sol`: the trigger buy is at most this
@@ -319,7 +325,11 @@ class Trigger:
                     + ("tracked wallet of any group" if self.known_any else "known wallet") + whose]
                    if self.gap else [])
             )  # fmt: skip
-            return (f"{who} makes its first buy in the coin, >= {self.sol or KOL_MIN_SOL:g} SOL"
+            buys = {
+                REPEATS_ALSO: "buys in the coin (its first buy or a repeat)",
+                REPEATS_ONLY: "makes a repeat buy in the coin (not its first)",
+            }.get(self.repeats, "makes its first buy in the coin")
+            return (f"{who} {buys}, >= {self.sol or KOL_MIN_SOL:g} SOL"
                     + "".join(f", {g}" for g in gates))  # fmt: skip
         return "at the launch"
 
@@ -426,7 +436,11 @@ TRIGGERS = (
 # An agent's own trigger (`parse_trigger`): the fields each kind's rule reads (`_fire`), the bounds of every number and
 # the label groups a KOL trigger can name. Every other field stays at its default, so a hypothesis tests what it says.
 KOL_GATES = ("known", "within", "max_sol", "min_curve", "max_curve", "teams", "gap", "min_mcap", "max_mcap",
-             "only", "known_any", "vol_secs", "min_vol", "max_vol")  # fmt: skip
+             "only", "known_any", "vol_secs", "min_vol", "max_vol", "repeats")  # fmt: skip
+REPEATS_ALSO, REPEATS_ONLY = "also", "only"
+REPEAT_CHOICES = ("", REPEATS_ALSO, REPEATS_ONLY)
+REPEATS_ONLY_WHY = ("it follows only a wallet's repeat buys in a coin, and no copy sniper can: OKTech copies every buy "
+                    "of the wallet above its floor, its first in a coin included")  # fmt: skip
 TRIGGER_KNOBS: dict[str, tuple[str, ...]] = {
     "launch": ("plain", "venue", "creators", "crew"),
     "burst": ("buyers", "sol", "window", "max_age", "plain", "venue", "crew"),
@@ -450,7 +464,7 @@ TRIGGER_BOUNDS: dict[str, tuple[float, float]] = {
 }  # fmt: skip
 WHOLE_FIELDS = ("buyers", "holders", "max_buyers", "known")
 FLAG_FIELDS = ("plain", "solo", "teams", "known_any")
-TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots", "only")
+TEXT_FIELDS = ("kind", "group", "event", "venue", "creators", "crew", "bots", "only", "repeats")
 # Trigger.crew (14 Nov 2026). Until then "" passed over the serial crews' coins, in the lab and in the forward paper
 # test, while the live sniper bought them: OKTech cannot tell a crew's coin (rule 2: a paper result must not be kinder
 # than the live place). Measured on the server on 14 Nov (labs efafe7 and c4d250, the hunt {"sol": 5, "window": 1,
@@ -662,6 +676,10 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
     if trig.crew == CREW_SKIP and trig.bots:
         raise ValueError('crew "skip" does not go with bots: a hunt on a wallet group is scored on every coin its '
                          "group's wallets bought, a serial crew's too, so skip would leave nothing out")  # fmt: skip
+    if trig.repeats not in REPEAT_CHOICES:
+        raise ValueError('repeats must be "" (the wallet\'s first buy in a coin), "also" (every buy at the size, the '
+                         'repeats too: what a live copy sniper takes) or "only" (the repeats alone: research only), '
+                         f"not {trig.repeats!r}")  # fmt: skip
     if kind == "hunt":
         _whole_hunt(trig.sol, "sol (minTotalSol)")
         if trig.dev_max is not None:
@@ -739,7 +757,11 @@ def research_only_why(trig: Trigger | Mapping[str, Any]) -> str | None:
     Trigger or a stored rule's trigger fields. It reads the window alone: a MIG rule of any age (`window` 0). Every
     other rule answers None here, whatever else the sniper builder refuses of it (the paid-creator split, a LaunchLab
     rule: oktech.strategy_sniper says those; a rule scored without serial crews' coins or on them alone: `crew_why`,
-    which a freeze takes for a paper record and nothing sends live)."""
+    which a freeze takes for a paper record and nothing sends live). A wallet rule that follows only repeat buys
+    (`repeats` "only") is research only too: OKTech copies every buy above a wallet's floor."""
+    repeats = trig.get("repeats") if isinstance(trig, Mapping) else getattr(trig, "repeats", "")
+    if repeats == REPEATS_ONLY:
+        return REPEATS_ONLY_WHY
     return MIG_ANY_AGE_WHY if _mig_window_of(trig) == 0 else None
 
 
@@ -1969,7 +1991,7 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
             return i
         if (
             trig.kind == "kol"
-            and first
+            and _moment_buy(trig, first)
             and path.users[i] in group
             and path.quote[i] >= (trig.sol or KOL_MIN_SOL) * LAMPORTS
             and (not trig.min_age or path.ts[i] >= launch.ts + trig.min_age)  # the coin is old enough
@@ -2008,20 +2030,29 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
     dev = launch.deployers() if launch is not None else set()
     group = rule_wallets(trig, kols)  # the wallets the rule names (`only`), else its group's
     floor = (trig.sol or KOL_MIN_SOL) * LAMPORTS
-    seen: set[str] = set()  # buyers so far: only a wallet's first buy counts, never its top-ups
+    seen: set[str] = set()  # buyers so far: a wallet's first buy, or its repeats, by the rule's `repeats`
     out: list[int] = []
     for i in range(path.n):
         if trig.max_age and path.ts[i] > launch.ts + trig.max_age:
             break
         u = path.users[i]
-        if not path.is_buy[i] or u in dev or u in seen:
+        if not path.is_buy[i] or u in dev:
             continue
+        first = u not in seen
         seen.add(u)
+        if not _moment_buy(trig, first):
+            continue
         if trig.min_age and path.ts[i] < launch.ts + trig.min_age:
-            continue  # its first buy came while the coin was too young
+            continue  # the buy came while the coin was too young
         if u in group and path.quote[i] >= floor and _vol_gate(trig, path, i):
             out.append(i)
     return out
+
+
+def _moment_buy(trig: Trigger, first: bool) -> bool:
+    """Whether a followed wallet's buy can be a wallet rule's moment, by the rule's `repeats`: its first buy in the coin
+    (""), any buy ("also"), or a buy after its first ("only")."""
+    return {REPEATS_ALSO: True, REPEATS_ONLY: not first}.get(trig.repeats, first)
 
 
 # An any-buyer rule with coin gates (13 Nov, idea I84: the bot E2x1's coin filter, "any buy of 0.25 SOL or more by

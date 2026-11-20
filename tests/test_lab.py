@@ -377,6 +377,53 @@ def test_every_wallets_moment_is_its_first_buy_at_the_trigger_size():
     assert fired[0] == _fire(trig, path, launch, groups)  # the first of them is where the one-per-coin trigger fires
 
 
+def test_a_wallet_rule_can_score_the_repeat_buys_a_live_copy_sniper_also_takes():
+    """20 Nov: OKTech copies every buy of a wallet above its floor, the lab only the wallet's first buy in a coin; at
+    0.95 SOL, 81 % of Cupseyy's buys in a week were repeats. `repeats` says which of a wallet's buys are moments: ""
+    its first buy in the coin (every rule before), "also" every buy at the rule's size (what a live copy sniper
+    takes), "only" its buys after the first (research only: no sniper copies repeats alone, so none is frozen)."""
+    from snipetech.analysis.lab import _first_buys, parse_trigger, research_only_why
+    from snipetech.analysis.paper import strategy_id
+
+    store = Store(":memory:")
+    m = Market(store, addr("rp"), addr("rp-dev"), NOW - 4000, 31_000_000)
+    m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+    m.buy(addr("rp-1"), 0.5, 2)  # rp-1's first buy
+    m.buy(addr("rp-2"), 0.05, 3)  # rp-2's first buy, under the rule's size: never a moment
+    m.buy(addr("rp-2"), 2.0, 4)  # rp-2's repeat
+    m.buy(addr("rp-1"), 1.0, 5)  # rp-1's repeat
+    m.buy(addr("rp-1"), 0.05, 6)  # rp-1's repeat under the size: never a moment
+    m.buy(addr("rp-x"), 0.4, 7)  # not followed
+    m.commit()
+    launch = store.launch(addr("rp"))
+    path = MarketPath.build(store.trades_for_mint(addr("rp")), launch)
+    groups = {"cand": {addr("rp-1"), addr("rp-2")}}
+
+    def moments(trig):
+        return [(path.users[i], round(float(path.quote[i]) / 1e9, 2)) for i in _first_buys(trig, path, launch, groups)]
+
+    first, also, only = (Trigger("kol", sol=0.1, group="cand", repeats=r) for r in ("", "also", "only"))
+    assert moments(first) == [(addr("rp-1"), 0.5)]
+    assert moments(also) == [(addr("rp-1"), 0.5), (addr("rp-2"), 2.0), (addr("rp-1"), 1.0)]
+    assert moments(only) == [(addr("rp-2"), 2.0), (addr("rp-1"), 1.0)]
+    for trig in (first, also, only):  # the rule that fires once per coin fires at the first of them
+        assert _fire(trig, path, launch, groups) == _first_buys(trig, path, launch, groups)[0]
+    assert "first buy" in first.label() and "first buy or a repeat" in also.label()
+    assert "repeat buy" in only.label() and "not its first" in only.label()
+    assert parse_trigger('{"kind": "kol", "group": "big", "sol": 0.95, "repeats": "only"}').repeats == "only"
+    with pytest.raises(ValueError, match="repeats"):
+        parse_trigger('{"kind": "kol", "sol": 1, "repeats": "some"}')
+    with pytest.raises(ValueError, match="repeats"):  # a wallet rule's knob only
+        parse_trigger('{"kind": "whale", "sol": 1, "repeats": "also"}')
+    assert research_only_why(first) is None and research_only_why(also) is None
+    assert "repeat" in research_only_why(only) and "repeat" in research_only_why({"kind": "kol", "repeats": "only"})
+    # a rule frozen before keeps its id; one that takes repeats is a rule of its own
+    exit_params = {"max_hold_secs": 12.0}
+    ids = [strategy_id({"kind": "kol", "group": "big", "sol": 0.95, **({"repeats": r} if r is not None else {})},
+                       exit_params, "bid-", 1, 2.0) for r in (None, "", "also")]  # fmt: skip
+    assert ids[0] == ids[1] != ids[2]
+
+
 # -- each wallet's own exit from the menu (audit item 11) -------------------------------------------------------------
 
 
