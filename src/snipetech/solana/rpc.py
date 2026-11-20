@@ -126,9 +126,9 @@ class SolanaRpc:
                     if throttles <= self.max_retries * 4:
                         continue  # rate limits are waited out, not counted as failures
                     raise last_exc
-                if resp.status_code >= 500:
-                    raise httpx.HTTPStatusError(f"HTTP {resp.status_code}", request=resp.request, response=resp)
-                resp.raise_for_status()
+                if not resp.is_success:  # its own words, never httpx's: they name the address, and so the key
+                    raise httpx.HTTPStatusError(f"HTTP {resp.status_code} {resp.reason_phrase}".strip(),
+                                                request=resp.request, response=resp)  # fmt: skip
                 payload = resp.json()
                 if "error" in payload:
                     raise RpcError(method, payload["error"])

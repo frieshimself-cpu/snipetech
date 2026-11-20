@@ -11,7 +11,9 @@ the next operator round starts; nothing here creates or starts a sniper. /test a
 /risk is the owner's wallet-wide guard (risk_guard.py): it shows the guard and today's result, and /risk stop, /risk floor
 (each with SOL or off) and /risk default change the owner's operator/RISK; nothing the owner sent is repeated.
 /oktech is what OKTech has confirmed (oktech_answers.py): until the owner's /oktech dev0 confirmed records that Hunt's
-maxDevBuySol 0 skips every launch whose creator bought anything, no creator-0 rule starts live (research round 3)."""
+maxDevBuySol 0 skips every launch whose creator bought anything, no creator-0 rule starts live (research round 3).
+/renew records when a paid plan ends (resources.renew_reply): the round reminds the owner 3 days before (20 Nov: Helius's
+plan ran out unseen on 19 Nov)."""
 
 from __future__ import annotations
 
@@ -42,7 +44,9 @@ HELP = (
     "/budget [dollars a day] [turn N] [calls N] [every N hours]|default (what the agents may spend; every N hours is "
     "how often the analyst runs and, only when you name it, the least gap between a research agent's turns)  /budget wake table on|off "
     "(whether another agent's table change alone starts an agent's turn)  /credit <dollars> (what the Anthropic console shows, after a top-up: the count of the credit "
-    "starts there; /credit alone says the count)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
+    "starts there; /credit alone says the count)  /renew <service> <date> (when a paid plan ends, as its billing page "
+    "says, e.g. /renew helius 2026-12-20: a reminder comes 3 days before; /renew alone lists every date; services: "
+    "helius server oktech gmgn birdeye solanatracker; /renew <service> off forgets one)  /test (a capped live test of the best hunt strategy: /test shows its plan, /test <id> go starts "
     "it at the next round, /stop ends it)  /test auto on|off (live trading that starts by itself and never stops: block "
     "after block while live holds up against paper; /stop holds it, /resume lets it go on)  /risk (the wallet-wide "
     "guard: no new live trade once the day is that far down or the wallet under its floor), one per message: "
@@ -510,6 +514,12 @@ async def handle_command(cmd: Command, *, svc, cfg: Config, paths: OperatorPaths
         reply = credit_reply(cfg, svc.store, Ledger(paths.spend, cfg.operator.prices), cmd.args, now)
         if reply.startswith("recorded"):
             notes.write(f"owner recorded the Anthropic credit (/credit): {reply}", "decision")
+    elif cmd.name == "renew":
+        from .resources import renew_reply
+
+        reply = renew_reply(svc.store, cmd.args, now)
+        if reply.startswith("recorded") or "no end date kept now" in reply:
+            notes.write(f"owner recorded a plan end date (/renew): {reply}", "decision")
     elif cmd.name == "risk" and cmd.args and cmd.date is not None and now - cmd.date > SELL_MAX_AGE_SECS:
         # the same rule as /sell: a change that waited in Telegram's queue may loosen the guard after the moment it was
         # meant for. Its words are not repeated

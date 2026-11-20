@@ -16,6 +16,7 @@ from ..config import Config
 from ..jobfiles import jobs_since
 from .budget import Ledger
 from .paths import OperatorPaths
+from .refusals import OKTECH_REFUSED_KEY, RPC_REFUSED_KEY, clear_refusal, note_refusal, refusal_status, scrub
 
 WSOL_MINT = "So11111111111111111111111111111111111111112"
 # Long-running services and the timers must be active; the oneshot services (snipetech-daily, snipetech-operator)
@@ -303,8 +304,11 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
             snap.held = carry_since(list(held or []), prev, now)
             total = snap.total_equity
             snap.equity_ref = total if total is not None else getattr(prev, "equity_ref", None)
+            clear_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, now)
         except Exception as exc:  # noqa: BLE001
-            snap.errors.append(f"balances: {exc}")
+            if refusal_status(exc) is not None:  # Helius turned the key away: an alert once it lasts (resources)
+                note_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, exc, now)
+            snap.errors.append(scrub(f"balances: {exc}"))
             snap.equity_ref = (
                 getattr(prev, "equity_ref", None) if prev is not None else None
             )  # keep the last valued equity
@@ -325,8 +329,11 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
         snap.snipers = [
             {"id": t.get("id"), "name": t.get("name"), "status": t.get("status")} for t in st.get("snipers", [])
         ]
+        clear_refusal(getattr(svc, "store", None), OKTECH_REFUSED_KEY, now)
     except Exception as exc:  # noqa: BLE001
-        snap.errors.append(f"oktech: {exc}")
+        if refusal_status(exc) is not None:  # OKTech turned the key away (a lapsed plan): an alert once it lasts
+            note_refusal(getattr(svc, "store", None), OKTECH_REFUSED_KEY, exc, now)
+        snap.errors.append(scrub(f"oktech: {exc}"))
         snap.snipers = None
     try:
         from ..analysis import paper

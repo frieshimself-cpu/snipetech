@@ -3,6 +3,7 @@ A critical row becomes one decision note a day with the exact thing to do."""
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
@@ -15,6 +16,7 @@ from ..store import Store
 from .budget import Ledger
 from .budget_switch import effective_daily_usd
 from .paths import OperatorPaths
+from .refusals import OKTECH_REFUSED_KEY, RPC_REFUSED_KEY, open_refusal
 from .snapshot import Snapshot
 
 TAPE_ALERT_SECS = 300  # the tape this far behind is critical (its own stale guards are 60 and 120 s)
@@ -337,12 +339,13 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
     # The tape (7 Nov 14:03-15:48: it recorded nothing for 1 h 45 min and only the operator's model would have said so,
     # while the API refused it): code says it, once a day like every critical row.
     refused = provider_refusal(store, now)
+    tape_refused = open_refusal(store, TAPE_REFUSED_KEY, now, REFUSAL_CURRENT_SECS) is not None
     if snap.tape_last_ts is None:
         out.append(Resource("tape", None, "s", TAPE_ALERT_SECS, "unknown", "the tape's newest trade could not be read"))
     else:
         lag = max(0.0, now - float(snap.tape_last_ts))
         late = lag > TAPE_ALERT_SECS
-        if late and refused is not None:  # the cause is known and is no restart's to fix (the helius row says it)
+        if late and tape_refused:  # the cause is known and is no restart's to fix (the helius row says it)
             why = f"the tape is {lag / 60:.0f} min behind: Helius refuses the recorder (the helius row)"
         elif late:
             why = (f"the tape is {lag / 60:.0f} min behind: nothing new is recorded. The recorder opens a new "
@@ -353,6 +356,11 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         out.append(Resource("tape", round(lag), "s", TAPE_ALERT_SECS, "crit" if late else "ok", why))
     if refused is not None:  # a row of its own: said once a day apart from the tape's (run.py: "resource <name>")
         out.append(refused)
+    oktech_refused = oktech_refusal(store, now)
+    if oktech_refused is not None:
+        out.append(oktech_refused)
+    # When each paid plan ends: a reminder before, as the owner recorded it (/renew).
+    out.extend(renewal_rows(store, now))
 
     # The machine's network setup: critical from the moment its manager gives up on a link.
     out.append(network_row(network_links or read_network_links))
@@ -450,33 +458,280 @@ def _failed_by_the_wallets_sol(cfg: Config, store: Store, snap: Snapshot, failed
 # is under REFUSAL_CURRENT_SECS old and it was not cleared since; an alert once it has lasted REFUSAL_ALERT_SECS (10 Nov:
 # "Unable to verify project" came and went within minutes before it held for 33). Its own name: from 20 Nov 00:24 it
 # was called REFUSED_KEY too, which replaced the agents' credit record above, and Helius's suspension was read as the
-# agents refused for want of credit (a false alert to the owner at 00:31, agent turns held until 01:31).
+# agents refused for want of credit (a false alert to the owner at 00:31, agent turns held until 01:31). The RPC's and
+# OKTech's refusals are written by the round and the one-minute watch (operator/refusals.py), current for longer: the
+# round reads every 15 minutes.
 TAPE_REFUSED_KEY = "tape:refused"
 REFUSAL_CURRENT_SECS = 600
 REFUSAL_ALERT_SECS = 300
 
 
+def _refusal_row(name: str, records: list[tuple[str, dict]], now: float) -> tuple[float, str, str] | None:
+    """(how long, since when as HH:MM UTC, the parts refused with their words) for the open records, or None."""
+    if not records:
+        return None
+    since = min(float(rec["since"]) for _, rec in records)
+    parts = "; ".join(f'{what}: "{rec.get("why") or "refused"}"' for what, rec in records)
+    return max(0.0, now - since), time.strftime("%H:%M UTC", time.gmtime(since)), parts
+
+
 def provider_refusal(store: Store, now: float) -> Resource | None:
     """The `helius` row while Helius turns our key away (19 Nov 2026 23:11 UTC: "Project is suspended": the tape
     recorded nothing and every RPC call was refused, and the round said only that the tape was behind and that a
-    restart would help, which it cannot): since when, the provider's own words and the one place it is fixed. None
-    when nothing was refused, the refusal was cleared, or the record cannot be read."""
+    restart would help, which it cannot): which part (the tape's stream, the RPC), since when, the provider's own
+    words and the one place it is fixed. None when nothing is refused now or the records cannot be read."""
+    tape = open_refusal(store, TAPE_REFUSED_KEY, now, REFUSAL_CURRENT_SECS)
+    rpc = open_refusal(store, RPC_REFUSED_KEY, now)
+    got = _refusal_row("helius", [(w, r) for w, r in (("the tape's stream", tape), ("the RPC", rpc)) if r], now)
+    if got is None:
+        return None
+    lasted, when, parts = got
+    lost = (("the tape records nothing", tape), ("no job can read the chain or the wallet", rpc))
+    effects = " and ".join(what for what, refused in lost if refused)
+    msg = (f"Helius refuses our key since {when} ({lasted / 60:.0f} min), {parts}. {effects[0].upper() + effects[1:]}. "
+           "Nothing on the server can fix it: log in at dashboard.helius.dev, Billing (most likely the plan's paid "
+           "period ended, as on 19 Nov; else a payment that did not go through, the month's credits used up, or a "
+           "changed key)" + (". The recorder lets itself back in within a minute of the fix; what it cannot replay "
+                             "stays a hole in the tape" if tape else ""))  # fmt: skip
+    status = "crit" if lasted >= REFUSAL_ALERT_SECS else "warn"
+    return Resource("helius", round(lasted), "s", REFUSAL_ALERT_SECS, status, msg)
+
+
+def oktech_refusal(store: Store, now: float) -> Resource | None:
+    """The `oktech_key` row while OKTech turns our key away (a lapsed plan: its "VIP expiry"). OKTech runs our exits,
+    so a sniper holding a coin may not sell; until 20 Nov the round's failed read only woke an agent. None when nothing
+    is refused now."""
+    rec = open_refusal(store, OKTECH_REFUSED_KEY, now)
+    got = _refusal_row("oktech_key", [("its answer", rec)] if rec else [], now)
+    if got is None:
+        return None
+    lasted, when, _parts = got
+    msg = (f'OKTech refuses our key since {when} ({lasted / 60:.0f} min): "{rec.get("why") or "refused"}". The book '
+           "cannot see, arm or stop its snipers, and a sniper that holds a coin may not sell (/sell <coin> still sells "
+           "through Helius). Check the plan (its VIP expiry) on OKTech's site, or OKS_KEY on the server")  # fmt: skip
+    status = "crit" if lasted >= REFUSAL_ALERT_SECS else "warn"
+    return Resource("oktech_key", round(lasted), "s", REFUSAL_ALERT_SECS, status, msg)
+
+
+# -- the end date of each paid plan (20 Nov 2026: Helius's plan ran out unseen on 19 Nov, "my subscription ran out") ---
+# No provider says when its plan ends (no endpoint we call returns it), so the owner records each date (/renew helius
+# 2026-12-20) and the round turns it into a reminder: shown from RENEW_WARN_DAYS out, sent once a day from
+# RENEW_ALERT_DAYS out. A date that passed while the provider kept answering was a renewal: it moves on a month
+# (RENEW_GRACE_SECS after it, so a lapse that comes a few hours late is still seen as one, by its refusal row).
+RENEWALS_KEY = "resources:renewals"
+RENEW_WARN_DAYS = 7
+RENEW_ALERT_DAYS = 3
+RENEW_GRACE_SECS = 86400
+RENEW_MAX_DAYS = 400
+# name, the plan, where it is renewed, what stops when it lapses
+RENEW_SERVICES: dict[str, tuple[str, str, str, str]] = {
+    "helius": ("Helius", "Helius plan", "dashboard.helius.dev, Billing", "the tape and every chain read stop"),
+    "server": (
+        "The server",
+        "The server's plan",
+        "BitLaunch, Billing (add balance)",
+        "everything stops, and a lapsed server can be deleted with its database",
+    ),
+    "oktech": ("OKTech", "OKTech plan", "OKTech's site (VIP)", "no sniper can buy or sell"),
+    "gmgn": ("GMGN", "GMGN plan", "gmgn.ai (API)", "wallet finding loses its best source"),
+    "birdeye": ("Birdeye", "Birdeye plan", "bds.birdeye.so (Package)", "its wallet finding and trending feed stop"),
+    "solanatracker": (
+        "SolanaTracker",
+        "SolanaTracker plan",
+        "solanatracker.io/data-api",
+        "its feeds and leaderboard stop",
+    ),
+}
+_MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august", "september", "october",
+           "november", "december")  # fmt: skip
+
+
+def parse_day(words: list[str], now: float) -> float | None:
+    """00:00 UTC of the day `words` name, as a billing page writes it: 2026-12-20, 20 Dec, Dec 20, 2026, December
+    20th. A day without its year is its next one from today. None for anything else."""
+    import calendar
+    import datetime as dt
+    import re
+
+    text = " ".join(words).replace(",", " ").strip().lower()
+    iso = re.fullmatch(r"(\d{4})-(\d{1,2})-(\d{1,2})", text)
+    year = month = day = None
+    if iso:
+        year, month, day = (int(g) for g in iso.groups())
+    else:
+        for tok in text.split():
+            tok = tok.rstrip(".")
+            num = re.fullmatch(r"(\d{1,2})(?:st|nd|rd|th)?|(\d{4})", tok)
+            if num and num.group(2):
+                if year is not None:
+                    return None
+                year = int(num.group(2))
+            elif num:
+                if day is not None:
+                    return None
+                day = int(num.group(1))
+            elif len(tok) >= 3 and any(m.startswith(tok) for m in _MONTHS) and month is None:
+                month = next(i for i, m in enumerate(_MONTHS, 1) if m.startswith(tok))
+            else:
+                return None
+    if month is None or day is None:
+        return None
+    today = dt.datetime.fromtimestamp(now, dt.UTC).date()
+    try:
+        when = dt.date(year if year is not None else today.year, month, day)
+        if year is None and when < today:
+            when = dt.date(today.year + 1, month, day)
+    except ValueError:
+        return None
+    return float(calendar.timegm(when.timetuple()))
+
+
+def _day(ts: float) -> str:
+    return time.strftime("%-d %b %Y", time.gmtime(ts))
+
+
+def _days_word(due: float, now: float) -> str:
+    n = int(due // 86400) - int(now // 86400)
+    if n == 0:
+        return "today"
+    if n == 1:
+        return "tomorrow"
+    return f"in {n} days" if n > 0 else f"{-n} day{'s' if n < -1 else ''} ago"
+
+
+def _next_month(ts: float) -> float:
+    """The same day and time a month later (the 31st of a short month: its last day)."""
+    import calendar
+
+    t = time.gmtime(ts)
+    year, month = (t.tm_year + 1, 1) if t.tm_mon == 12 else (t.tm_year, t.tm_mon + 1)
+    day = min(t.tm_mday, calendar.monthrange(year, month)[1])
+    return float(calendar.timegm((year, month, day, t.tm_hour, t.tm_min, t.tm_sec)))
+
+
+def _refused(service: str, store: Store, now: float) -> bool:
+    """Whether the service turns our key away now, where the code can tell (Helius, OKTech)."""
+    if service == "helius":
+        return provider_refusal(store, now) is not None
+    if service == "oktech":
+        return oktech_refusal(store, now) is not None
+    return False
+
+
+def _helius_estimate(store: Store, now: float) -> tuple[float, float] | None:
+    """(the estimated end, when Helius let us back in) with no date recorded: a month on, and on each month after,
+    from the last suspension that was cleared (the plan renewed). None when none was."""
     try:
         rec = store.coverage(TAPE_REFUSED_KEY) or {}
     except Exception:  # noqa: BLE001
         return None
-    last, since = rec.get("last"), rec.get("since")
-    if last is None or since is None or (rec.get("cleared") or 0) >= last or now - float(last) > REFUSAL_CURRENT_SECS:
+    cleared = rec.get("cleared")
+    if not cleared or "suspended" not in str(rec.get("why") or "").lower():
         return None
-    lasted = max(0.0, now - float(since))
-    when = time.strftime("%H:%M UTC", time.gmtime(float(since)))
-    why = str(rec.get("why") or "refused")
-    msg = (f'Helius refuses our key since {when} ({lasted / 60:.0f} min): "{why}". The tape records nothing and no '
-           "job can read the chain. Nothing on the server can fix it: log in at dashboard.helius.dev, Billing / Usage "
-           "(this month's credits used up, a payment that did not go through, or a changed key). The recorder lets "
-           "itself back in within a minute of the fix; what it cannot replay stays a hole in the tape")  # fmt: skip
-    status = "crit" if lasted >= REFUSAL_ALERT_SECS else "warn"
-    return Resource("helius", round(lasted), "s", REFUSAL_ALERT_SECS, status, msg)
+    due = _next_month(float(cleared))
+    while due + RENEW_GRACE_SECS <= now:
+        due = _next_month(due)
+    return due, float(cleared)
+
+
+def renew_reply(store: Store, args: list[str], now: float) -> str:
+    """The owner's /renew: alone, every plan's end date; `/renew <service> <date>` records one, `/renew <service> off`
+    forgets it. Nothing the owner typed is repeated back."""
+    dates = dict(store.coverage(RENEWALS_KEY) or {})
+    names = ", ".join(RENEW_SERVICES)
+    if not args:
+        lines = []
+        for svc in RENEW_SERVICES:
+            due = (dates.get(svc) or {}).get("due")
+            est = _helius_estimate(store, now) if svc == "helius" and due is None else None
+            if due is not None:
+                lines.append(f"{svc}: {_day(float(due))} ({_days_word(float(due), now)})")
+            elif est is not None:
+                lines.append(f"{svc}: about {_day(est[0])} ({_days_word(est[0], now)}; estimated)")
+            else:
+                lines.append(f"{svc}: no date")
+        return (f"plan end dates (a reminder comes {RENEW_ALERT_DAYS} days before each): " + "; ".join(lines)
+                + ". Send /renew <service> <date>, e.g. /renew server 2026-12-01; /renew <service> off forgets one.")  # fmt: skip
+    svc = args[0].lower()
+    if svc not in RENEW_SERVICES:
+        return f"renew not changed: that is not one of {names}."
+    name, plan, _where, _effect = RENEW_SERVICES[svc]
+    if len(args) == 1:
+        due = (dates.get(svc) or {}).get("due")
+        said = f"{_day(float(due))} ({_days_word(float(due), now)})" if due is not None else "no date"
+        return f"{svc}: {said}. Send /renew {svc} <date> when its plan ends, e.g. /renew {svc} 2026-12-20."
+    if args[1].lower() in ("off", "none", "cancel", "cancelled", "forget"):
+        dates.pop(svc, None)
+        store.set_coverage(RENEWALS_KEY, dates)
+        return f"{name}: no end date kept now, so no reminder."
+    due = parse_day(args[1:], now)
+    if due is None:
+        return (f"renew not changed: that is not a day. Send it as the billing page writes it, e.g. /renew {svc} "
+                f"2026-12-20 or /renew {svc} 20 Dec.")  # fmt: skip
+    if int(due // 86400) < int(now // 86400):
+        return f"renew not changed: {_day(due)} has passed. Send the plan's next end date."
+    if due - now > RENEW_MAX_DAYS * 86400:
+        return f"renew not changed: {_day(due)} is more than a year away."
+    dates[svc] = {"due": due, "set_at": now}
+    store.set_coverage(RENEWALS_KEY, dates)
+    return (f"recorded: {plan} ends {_day(due)} ({_days_word(due, now)}). A reminder comes {RENEW_ALERT_DAYS} days "
+            "before; /renew lists every date.")  # fmt: skip
+
+
+def renewal_rows(store: Store, now: float) -> list[Resource]:
+    """One row a plan with an end date (`renew_<service>`): ok, then warn from RENEW_WARN_DAYS out and crit from
+    RENEW_ALERT_DAYS out (said once a day by the round, with where to renew and what stops). A date that passed:
+    crit while the provider refuses us; else warn for RENEW_GRACE_SECS, then it moves on a month (a renewal) and
+    the row says so. Helius with no date recorded: estimated from its last suspension that was cleared."""
+    try:
+        dates = dict(store.coverage(RENEWALS_KEY) or {})
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[Resource] = []
+    for svc, (name, plan, where, effect) in RENEW_SERVICES.items():
+        due = (dates.get(svc) or {}).get("due")
+        note = ""
+        if due is None and svc == "helius":
+            est = _helius_estimate(store, now)
+            if est is None:
+                continue
+            due = est[0]
+            note = (f"; estimated a month after Helius let us back in on {_day(est[1])}, so send /renew helius "
+                    "<date> for the exact day")  # fmt: skip
+            plan_ends = f"{plan} ends about"
+        elif due is None:
+            continue
+        else:
+            plan_ends = f"{plan} ends"
+        due = float(due)
+        if now >= due:  # the day has come
+            if _refused(svc, store, now):
+                out.append(Resource(f"renew_{svc}", round((due - now) / 86400, 1), "days", RENEW_ALERT_DAYS, "crit",
+                                    f"{plan} ended {_day(due)} and {name} refuses our key: renew at {where}, then "
+                                    f"send /renew {svc} <its next end date>"))  # fmt: skip
+                continue
+            if now - due < RENEW_GRACE_SECS or note:
+                out.append(Resource(f"renew_{svc}", round((due - now) / 86400, 1), "days", RENEW_ALERT_DAYS, "warn",
+                                    f"{plan} end date {_day(due)} has passed and nothing refuses us yet: if it was "
+                                    f"renewed, nothing to do; else renew at {where}"))  # fmt: skip
+                continue
+            old, due = due, _next_month(due)
+            while due <= now:
+                due = _next_month(due)
+            dates[svc] = {"due": due, "set_at": now, "moved_from": old}
+            with contextlib.suppress(Exception):  # not written: moved on again next round
+                store.set_coverage(RENEWALS_KEY, dates)
+            out.append(Resource(f"renew_{svc}", round((due - now) / 86400, 1), "days", RENEW_ALERT_DAYS, "ok",
+                                f"{plan} ends {_day(due)} ({_days_word(due, now)}; moved on a month from {_day(old)}, "
+                                f"since {name} kept working: send /renew {svc} <date> if it differs)"))  # fmt: skip
+            continue
+        days = int(due // 86400) - int(now // 86400)
+        status = "crit" if days <= RENEW_ALERT_DAYS else ("warn" if days <= RENEW_WARN_DAYS else "ok")
+        msg = f"{plan_ends} {_day(due)} ({_days_word(due, now)}{note})"
+        if status != "ok":
+            msg += f": renew at {where}, or {effect}. If it renews by itself, nothing to do"
+        out.append(Resource(f"renew_{svc}", round((due - now) / 86400, 1), "days", RENEW_ALERT_DAYS, status, msg))
+    return out
 
 
 def alert_lines(resources: list[Resource]) -> list[str]:

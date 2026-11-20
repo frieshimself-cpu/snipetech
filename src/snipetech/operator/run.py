@@ -26,6 +26,7 @@ from .gate import Decision, decide, refire_secs
 from .jobs import OperatorJobs
 from .notify import from_env
 from .paths import OperatorPaths
+from .refusals import RPC_REFUSED_KEY, clear_refusal, note_refusal, refusal_status, scrub
 from .resources import alert_lines, check_resources, disk_free_gb_at, status_line
 from .snapshot import load_current, save, take_snapshot
 from .standin import start_standins
@@ -46,9 +47,44 @@ async def run_turn(*args, **kwargs):
 
 
 def _log(paths: OperatorPaths, now: float, text: str) -> None:
+    """One line of the round's log, with no secret in it (19 Nov 23:12-00:34: the one-minute watch logged a refused
+    RPC call in httpx's own words, the RPC's address with Helius's key, 84 times)."""
     paths.ensure()
     with paths.log.open("a") as f:
-        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {text}\n")
+        f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))} {scrub(text)}\n")
+
+
+KEY_URLS_SCRUBBED = ".key-urls-scrubbed"  # the marker of the one clean-up below
+
+
+def scrub_key_urls_once(paths: OperatorPaths) -> int:
+    """Once: every key in an address (`api-key=...`) written before _log scrubbed its lines, in the round's log and
+    the logs of ended jobs (a running job still writes to its own file: replaced, the file would lose what follows),
+    replaced where it lies. The number replaced; 0 once done (the marker), or when a file cannot be read or written
+    (the next round tries again)."""
+    import re
+
+    marker = paths.root / KEY_URLS_SCRUBBED
+    if marker.exists():
+        return 0
+    found = re.compile(r"(?i)(api[-_]?key=)(?!<redacted>)[^\s'\"&]+")
+    n = 0
+    try:
+        ended = [p for p in sorted(paths.jobs.glob("*.log")) if p.with_suffix(".exit").exists()]
+        for p in [paths.log, *ended]:
+            if not p.is_file():
+                continue
+            text = p.read_text(errors="replace")
+            clean, k = found.subn(r"\1<redacted>", text)
+            if k:
+                tmp = p.with_name(p.name + ".scrub")
+                tmp.write_text(clean)
+                tmp.replace(p)
+                n += k
+        marker.write_text(f"{n}\n")
+    except OSError:
+        return 0
+    return n
 
 
 def _acquire_lock(paths: OperatorPaths, now: float) -> bool:
@@ -140,9 +176,13 @@ async def commands_pass(cfg: Config, svc, *, now: Callable[[], float] = time.tim
         for h in await asyncio.wait_for(watch_wallet(cfg, svc, notifier, t0, notes=notes), WATCH_TIMEOUT_SECS):
             if h.get("alerted"):  # as often as the owner hears it
                 _log(paths, t0, f"watch: {h['mint']} is not being sold ({h['reason']})")
+        if cfg.operator.wallet:  # the wallet was read: an RPC refusal written down before is over
+            clear_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, t0)
     except TimeoutError:  # the next minute's pass tries again
         _log(paths, t0, f"watch: skipped: the wallet or OKTech did not answer within {WATCH_TIMEOUT_SECS:g} s")
     except Exception as exc:  # noqa: BLE001 - the watch must never break the one-minute kill switch
+        if refusal_status(exc) is not None:  # Helius turned the key away: the round says it to the owner (resources)
+            note_refusal(getattr(svc, "store", None), RPC_REFUSED_KEY, exc, t0)
         _log(paths, t0, f"watch: skipped: {type(exc).__name__}: {str(exc)[:160]}")
     return 0
 
@@ -209,6 +249,10 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         _log(paths, t0, "locked: another round is running")
         return 0
     try:
+        if not dry_run:
+            scrubbed = scrub_key_urls_once(paths)
+            if scrubbed:
+                _log(paths, t0, f"logs: {scrubbed} keys in addresses, written before 20 Nov, replaced by <redacted>")
         prev = load_current(paths)
         notes = NoteSink(paths, now=now)
         notifier = from_env(paths, log=lambda m: _log(paths, now(), m))
