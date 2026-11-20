@@ -519,14 +519,14 @@ def test_the_output_gains_the_window_and_the_cut_and_nothing_else(dbs, capsys):
 
 def test_the_trades_of_a_hypothesis_one_by_one(dbs, capsys):
     """`--trades`: each ranked hypothesis lists its test moments on the chosen exit, oldest first, each
-    [second, coin, SOL made, whether the score rests on a price outside the model]; the list is what `test` sums, and
-    its digest is the digest of the list as printed."""
+    [second, coin, SOL made, whether the score rests on a price outside the model, what sold it, seconds held (since
+    20 Nov)]; the list is what `test` sums, and its digest is the digest of the list as printed."""
     out = _run(capsys, dbs[1], "--trigger", HUNT_JSON, "--trigger", WHALE_JSON, "--buy", "1", "--trades")
     assert len(out["strategies"]) == 2
     for s in out["strategies"]:
         trades = s["test_trades"]
         assert len(trades) == s["test"]["n"] and s["left_out"] == []
-        assert all(len(t) == 4 and isinstance(t[0], int) and isinstance(t[3], bool) for t in trades)
+        assert all(len(t) == 6 and isinstance(t[0], int) and isinstance(t[3], bool) for t in trades)
         assert [t[0] for t in trades] == sorted(t[0] for t in trades) and trades[0][0] == s["test_from_ts"]
         assert all(len(t[1]) >= 32 for t in trades)  # the coin's address in full
         if s["trigger_spec"]["kind"] == "hunt":  # a launch a minute, each one's moment two seconds after its create
@@ -538,6 +538,59 @@ def test_the_trades_of_a_hypothesis_one_by_one(dbs, capsys):
         assert s["window_digest"] == W.window_digest(T0, UNTIL, s["moments"])
     a, b = out["strategies"]
     assert a["test_digest"] != b["test_digest"]
+
+
+def test_each_test_trade_says_what_sold_it_and_after_how_long(dbs, capsys):
+    """I358 (the tester, 20 Nov): whether a copy left at a part-seller's first small sale, at a sale of half of what
+    it held then, or on its timer could not be read off a test trade, which said only what it made. Each trade now
+    also names what sold it (the simulator's words: "copy_exit", "stop_loss", "take_profit", "trailing_stop",
+    "time", "part" for a later part of a sale in parts, joined by "+") and the seconds from our buy to the sale.
+    Neither is part of the digest: two runs on the same trades still agree, and a lab without --trades is as before."""
+    out = _run(capsys, dbs[1], "--trigger", HUNT_JSON, "--trades")
+    (s,) = out["strategies"]
+    trades = s["test_trades"]
+    assert trades and all(len(t) == 6 for t in trades)
+    words = {"copy_exit", "stop_loss", "take_profit", "trailing_stop", "time", "part", "dev_sell", "stale",
+             "migration_sell", "flat"}  # fmt: skip
+    assert all(isinstance(t[4], str) and set(t[4].split("+")) <= words for t in trades)
+    assert all(isinstance(t[5], float) and 0 <= t[5] <= s["exit_params"]["max_hold_secs"] + 60 for t in trades)
+    assert s["test_digest"] == W.trades_digest(trades)
+
+
+def test_a_rows_exit_and_hold_go_with_its_trade():
+    """The rows a lab keeps for --trades carry each exit's reason and hold (`how`); a trade lists its exit's."""
+    rows = [
+        {"ts": 100, "mint": "m1", "pnl": [0.01, -0.02], "how": {0: ["copy_exit", 12.25], 1: ["stop_loss", 3.5]}},
+        {"ts": 160, "mint": "m2", "pnl": [None, 0.03], "gaps": {0: "migrated"}, "how": {1: ["time", 300.0]}},
+    ]
+    trades, left = W.trades_of(rows, 1)
+    assert trades == [[100, "m1", -0.02, False, "stop_loss", 3.5], [160, "m2", 0.03, False, "time", 300.0]]
+    assert left == []
+    trades, left = W.trades_of(rows, 0)
+    assert trades == [[100, "m1", 0.01, False, "copy_exit", 12.25]] and left == [[160, "m2", "migrated"]]
+    assert W.trades_digest(trades) == W.trades_digest([t[:4] for t in trades])
+
+
+def test_a_seller_in_equal_parts_trips_the_copy_exit_at_its_second_to_last_part():
+    """I358: the copy exit reads one sale against what the wallet holds at that moment (OKTech, on our 19 live copy
+    exit sells: 11 on a full sale, 5 on a sale of exactly half the holding, 0 of 3 on half less one raw unit), and
+    several small sales never add up. A wallet that sells in four equal parts trips it at the third: a copy holds
+    through most of its selling."""
+    import numpy as np
+
+    from snipetech.analysis.lab import leader_sell_fractions
+    from snipetech.sim.market import MarketPath
+
+    p = MarketPath.__new__(MarketPath)
+    p.n = 5
+    p.users = ["L"] * 5
+    p.is_buy = np.array([True, False, False, False, False])
+    p.base = np.array([4.0, 1.0, 1.0, 1.0, 1.0])
+    frac = leader_sell_fractions(p, "L")
+    assert frac.tolist() == pytest.approx([0.0, 0.25, 1 / 3, 0.5, 1.0])
+    assert next(i for i, f in enumerate(frac) if f >= 0.5) == 3
+    p.base = np.array([4.0, 1.0, 1.0, 0.999999, 1.000001])  # half less a hair: the last sale trips it
+    assert next(i for i, f in enumerate(leader_sell_fractions(p, "L")) if f >= 0.5) == 4
 
 
 def test_trades_are_refused_without_a_trigger_and_for_more_than_eight(dbs, capsys, monkeypatch):

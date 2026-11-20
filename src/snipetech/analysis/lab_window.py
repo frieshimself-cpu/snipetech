@@ -257,14 +257,20 @@ def window_fields(store, spans, until: int | None = None) -> dict[str, Any]:
 def trades_of(rows, k: int) -> tuple[list[list], list[list]]:
     """A strategy's test moments `rows` (lab rows, oldest first) on its exit `k`, one by one: the trades, each
     [second, coin, SOL made (6 places), whether the score rests on a price outside the model (the row's `outside`
-    names the exit)], and the moments the exit was not scored on, each [second, coin, why (the row's `gaps`)]."""
+    names the exit)], and, where the lab kept them (`lab --trades`: the row's `how`), what sold it (the simulator's
+    reason: "copy_exit", "stop_loss", "time", ... joined by "+") and the seconds from our buy to the sale; and the
+    moments the exit was not scored on, each [second, coin, why (the row's `gaps`)]."""
     trades, left = [], []
     for r in rows:
         pnl = r["pnl"][k]
         if pnl is None:
             left.append([int(r["ts"]), r["mint"], (r.get("gaps") or {}).get(k, "not scored")])
-        else:
-            trades.append([int(r["ts"]), r["mint"], round(float(pnl), 6) + 0.0, k in (r.get("outside") or {})])
+            continue
+        trade = [int(r["ts"]), r["mint"], round(float(pnl), 6) + 0.0, k in (r.get("outside") or {})]
+        how = (r.get("how") or {}).get(k)
+        if how is not None:  # (I358, 20 Nov: whether a copy left at a part-seller's first sale or on its timer)
+            trade += [str(how[0]), round(float(how[1]), 2) + 0.0]
+        trades.append(trade)
     return trades, left
 
 

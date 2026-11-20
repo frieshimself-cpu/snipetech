@@ -895,8 +895,10 @@ def recipes_own(ex: ExitParams) -> bool:
 
 
 def copy_sold(ex: ExitParams, pct: float) -> ExitParams:
-    """`ex` as a copy sniper sells it: everything left also goes when the followed wallet sells at least `pct` of its
-    coins in one sale (0.5 = half; OKTech's ctbotCopyExit, as `_as_live` gives the qualify lab's exits). An exit that
+    """`ex` as a copy sniper sells it: everything left also goes when the followed wallet sells at least `pct` of what
+    it holds at that moment in one sale (0.5 = half; OKTech's ctbotCopyExit, as `_as_live` gives the qualify lab's
+    exits; `leader_sell_fractions`: its buys less its sales on the tape, so a wallet that sells in four equal parts
+    trips it at the third, I358). An exit that
     already names a copy exit keeps its own (the qualify menu's), a recipe's own exit is the bot's and gets none
     (`recipes_own`), and no threshold (`pct` 0) is no copy exit.
 
@@ -911,8 +913,11 @@ def copy_sold(ex: ExitParams, pct: float) -> ExitParams:
 
 
 COPY_EXIT_NOTE = (
-    "every exit of a wallet rule also sells everything when the followed wallet sells at least this share of its "
-    "coins in one sale, as every copy sniper is sent it; the exit's name says so (\"copy50%\" at 50). A row or a "
+    "every exit of a wallet rule also sells everything when the followed wallet sells at least this share of what it "
+    "holds at that moment in one sale (its buys less its sales on the tape: OKTech fired 11 of our 19 live copy-exit "
+    "sells on a full sale, 5 on a sale of exactly half of what the wallet held, 0 of 3 on half less one raw unit), "
+    "as every copy sniper is sent it; a wallet that sells in N equal parts trips it at its next-to-last part; the "
+    "exit's name says so (\"copy50%\" at 50). A row or a "
     "frozen wallet rule from before 13 Nov has no copy exit: it is another exit, run or freeze the rule again. A "
     "recipe's own exit is the bot's and carries none. The sale is priced a slot after the wallet's sale and ahead "
     "of that slot's trades, like every exit's sale: other bots that copy the same wallet sell then too, so behind a "
@@ -1429,13 +1434,15 @@ def exit_gap(cov: Mapping[str, Any], path: MarketPath, prep, res, ex: ExitParams
 
 
 def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[ExitParams], costs: Costs,
-              end_ts: float, mig, gap: str | None,
-              outside: dict[int, str] | None = None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
+              end_ts: float, mig, gap: str | None, outside: dict[int, str] | None = None,
+              how: dict[int, list] | None = None) -> tuple[list[float | None], dict[int, str]]:  # fmt: skip
     """Each exit's pnl on a position bought on the curve (`prep`, at state prep.e), None for an exit left out, and the
     exits left out with why (exit index: a key of SKIP_WORDS). `outside`, when given, is filled with the scored exits
     whose result rests on a price outside the model (exit index: a key of OUTSIDE_WORDS; `SimResult.fallback`, and
     `SimResult.past_curve` for a position of SIZE_FLOOR_SHARE of the pool or more): they stay scored, and the lab says
-    how many they are. `gap`: `migration_sell_gap` over the longest exit's hold,
+    how many they are. `how`, when given, is filled with each scored exit's [reason, seconds held] (`SimResult`'s
+    exit_reason and hold_secs: what `lab --trades` lists beside each trade). `gap`: `migration_sell_gap` over the
+    longest exit's hold,
     None where the PumpSwap tape holds the coin's migration or nothing migrates while held, and then every exit is
     scored, exactly as before 8 Nov. Otherwise an exit whose every sale landed before the coin left its curve is scored
     on the curve tape the lab has (`SimResult.sold_on_curve`), and so is one whose own hold the PumpSwap tape can score
@@ -1460,6 +1467,8 @@ def exit_pnls(cov: Mapping[str, Any], path: MarketPath, prep, exits: Sequence[Ex
                 gaps[j] = why
                 continue
         pnl.append(res.pnl_sol)
+        if how is not None:
+            how[j] = [res.exit_reason, float(res.hold_secs)]
         if outside is not None:
             if res.fallback:
                 outside[j] = "fallback"
@@ -2271,6 +2280,9 @@ class _Run:
     # the end of the lab's window when one was named (`lab --until`, lab_window): a worker's own connection reads no
     # trade, create or migration after it (`_chunk_rows`)
     until: int | None = None
+    # every row keeps each exit's reason and seconds held (`exit_pnls`' `how`): asked by `lab --trades` alone, the
+    # rows of a search being many
+    exit_how: bool = False
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2461,7 +2473,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
             # MIG: its own exits (watched, `mig_exits`); a launch-type rule: its exits watched (`kind_exits`)
             exits = run.mig_exits if trig.kind in AMM_KINDS else run.kind_exits.get(trig.kind, run.exits)
             outside: dict[int, str] = {}
-            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap, outside)
+            how: dict[int, list] | None = {} if run.exit_how else None
+            pnl, gaps = exit_pnls(run.amm_cov, path, prep, exits, run.costs, float(b), mig, gap, outside, how)
             if gaps and len(gaps) == len(exits):  # every exit still held when the coin left its curve: left out whole
                 rows.append({"mint": mint, "trigger": ti, "ts": int(t_ts), "skipped": gap})
                 continue
@@ -2476,6 +2489,8 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 row["gaps"] = gaps
             if outside:  # the exits whose score rests on a price outside the model, and which
                 row["outside"] = outside
+            if how:  # what sold each exit's position, and when (`lab --trades`)
+                row["how"] = how
             if trig.kind == "kol":  # how many companions of the wallet the copy was scored behind
                 row["mates"] = len(run.mates.get(path.users[i]) or ())
                 # for the bands (`bands`): the coin's market cap after the followed buy and the SOL traded in the
@@ -2619,8 +2634,9 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             triggers: Sequence[Trigger] | None = None, workers: int | None = None,
             mates: Mapping[str, Collection[str]] | None = None,
             sell_parts: tuple[int, float] | None = None, buy_bid_sol: float = 0.0,
-            same_sol: bool = False) -> dict[str, Any]:  # fmt: skip
+            same_sol: bool = False, exit_how: bool = False) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
+    `exit_how`: every row also keeps what sold each exit's position and after how long (`lab --trades`).
     `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
     `buy_bid_sol`: a bid paid once on every buy, on top of `per_tx_sol` (`Costs.entry_bid_lamports`).
     `position` "bid" or "bid-" (wallet rules only, latency 0): each copy lands where `buy_bid_sol` puts it among the
@@ -2737,7 +2753,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
-               same_sol=bool(same_sol))  # fmt: skip
+               same_sol=bool(same_sol), exit_how=bool(exit_how))  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
     if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)

@@ -675,7 +675,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--trades", action="store_true",
                     help="with --trigger (at most 8): each ranked hypothesis lists the test trades its numbers rest "
                          "on, oldest first (`test_trades`: [second, coin, SOL made, whether the score rests on a "
-                         "price outside the model]) and the test moments its exit was not scored on (`left_out`: "
+                         "price outside the model, what sold it (copy_exit, stop_loss, time, ...: joined by + when "
+                         "it sold in parts), seconds from our buy to the sale]) and the test moments its exit was "
+                         "not scored on (`left_out`: "
                          "[second, coin, why]). Every ranked strategy carries `test_digest` and `window_digest` "
                          "without it: two runs rest on the same trades exactly when both agree. Six lines and "
                          "0.14 KB of the job's log a trade (433 trades: 2,600 lines, 59 KB)")  # fmt: skip
@@ -1883,7 +1885,7 @@ async def _run(args, cfg: Config) -> int:
                                        triggers=hypotheses, kols=lab_groups(svc.store),
                                        exits=lab_recipe_exits(rec) if rec else None,
                                        sell_parts=sell_parts, buy_bid_sol=buy_bid,
-                                       same_sol=args.same_sol)  # fmt: skip
+                                       same_sol=args.same_sol, exit_how=args.trades)  # fmt: skip
 
             try:
                 data = await asyncio.to_thread(_collect_locked)

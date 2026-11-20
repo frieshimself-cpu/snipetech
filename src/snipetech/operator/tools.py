@@ -1911,8 +1911,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         with the same "--hours", and pin "--per-tx" (and "--copy-position" for wallet rules) to the first run's
         values: two runs rest on the same trades exactly when both digests agree. When they differ, add "--trades"
         (with "--trigger", 8 rules at most) and read strategies.0.test_trades with a tail of six lines a trade:
-        each is [second, coin, SOL made, outside the model]; left_out lists the test moments the exit was not
-        scored on. A lab on a past window is still a paper result at the landing each row names; a test total
+        each is [second, coin, SOL made, outside the model, what sold it, seconds from our buy to the sale] (the
+        simulator's words: copy_exit, stop_loss, take_profit, trailing_stop, time; joined by "+" when it sold in
+        parts); left_out lists the test moments the exit was not scored on. The copy exit reads ONE sale of the
+        followed wallet against what it holds at that moment, as OKTech fires it: a wallet that sells in N equal
+        parts trips it at its next-to-last part, so read what sold each copy of a part-seller before trusting it. A lab on a past window is still a paper result at the landing each row names; a test total
         rests on where the cut falls, so judge a rule on its lower bound and on what it is without its five best
         trades, not on one run's total.
         SERIAL CREWS' COINS (14 Nov): a launch, hunt, whale or burst rule is scored on every coin a live sniper would
