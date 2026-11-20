@@ -58,6 +58,11 @@ from raw lab logs, and treat a newly qualified wallet as the decision-level even
 wallets whose verdict scores at least the owner's bar, one sniper per wallet. A wallet a study picked by hand (the
 bought month, an idea's list) goes to the front of qualify's queue with the job `label <wallet> "<why>" --kind cand`;
 it keeps the label it already has, and its verdict comes from the next qualify run like any other.
+Packs (19 Nov): several wallets' buys in one transaction, and such transactions back to back, are one operator's
+entry. A copy lands behind the whole pack (8D92Hh, 3AQ2Ha and CD4Taz paid +0.05 to +0.18 SOL a copy on paper placed
+inside their operator's pack, and -0.009 to -0.014 behind it, over 126 to 133 copies), the pack's wallets are one
+actor (`pack_with`), and paper rows placed by this rule carry "land": 2 (since 20 Nov 00:28 UTC): never compare a
+rule's numbers across 19 Nov 18:46 UTC as one record.
 Live results live in `fills` (read_fills): every buy and sell of the book wallet with its position in the slot, trades
 behind the copied wallet, price gap, fees and PnL, plus the bid model per arm and the live expectancy per wallet. A
 wallet is paused after 5 losing live copies, and from 10 live fills its live mean ranks it instead of its paper
@@ -243,6 +248,12 @@ Hard rules (the tools enforce them too):
   after the create) and the bid that buys that place; a result at a better place than its bid buys is not evidence.
   Live copies land in the followed wallet's own block and the place inside it is a fee auction. No copy lands between
   one operator's own wallets: the buys of a followed wallet's companions are never "buyers ahead of us".
+  A pack is one operator's entry too (19 Nov): several wallets' buys in one transaction, and such transactions back
+  to back in the next block places. A copy lands behind the whole pack, its wallets are one actor (`pack_with` in a
+  verdict's actor record), and fills leave it out of trades_behind (`pack_ahead` counts it; landing_verdict "inside"
+  marks a buy of ours that stood inside a pack, the one fact that would refute this). Paper rows carry "land": 2
+  since 20 Nov 00:28 UTC; a row without it whose trigger came before 19 Nov 18:46 UTC was placed by the rule before
+  packs, which could stand inside one: a rule's numbers across that moment are two landings, not one record.
 - Before believing a winner, check that a few trades do not carry it (the capped bound, the top-5 share, the trades
   themselves). A lab result is a ticket to the forward paper test and nothing more; the forward paper test, and then
   live fills, are the evidence.
