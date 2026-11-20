@@ -294,6 +294,7 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
 # -- the bid landing model against our real fills -------------------------------------------------------------------
 
 MODEL_MIN_FILLS = 30  # under this many placed buys of ours the comparison is a mechanism, not a calibration
+PLACED_BY = ("chain", "tape")  # fills.landing_src of a buy of ours placed behind the wallet it copied, by whom
 MATES_HOURS = 72  # the stretch of tape a copied wallet's companions are found on (as the paper test)
 VERDICTS = ("agrees", "model too kind", "model too harsh")
 MODEL_READING = (
@@ -348,16 +349,19 @@ def _model_behind(tape: Store, fill: Mapping[str, Any], bid_sol: float, own: Col
 
 
 def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: int = 0) -> dict[str, Any]:
-    """The bid landing model (`analysis.bid_landing`) against where our real buys landed. For every buy of ours the
-    chain reader placed behind the wallet it copied (`fills`: landing_src "chain", `trades_behind` the outsiders
-    really ahead of it, `blocks_after`, our own priority fee and tip): how many outsiders the model puts ahead of a
-    copy with that bid in that block (`_model_behind`), against how many there were. `store` holds the fills, `tape`
-    the blocks. Per fill a row with both numbers, what the model was read from and the verdict; in all, how often the
-    model agrees, is too kind (it puts us closer than we landed) or too harsh, for "bid" and for the cautious "bid-"
-    (one further back), and the share of our buys that landed in the copied wallet's own block. Under
-    MODEL_MIN_FILLS fills it is a mechanism, not a calibration, and says so."""
+    """The bid landing model (`analysis.bid_landing`) against where our real buys landed. For every buy of ours placed
+    behind the wallet it copied (`fills`: landing_src in PLACED_BY, the chain reader's or the tape's, both counting
+    `trades_behind` as the other wallets' buys between the copied one and ours, its companions and pack left out;
+    `blocks_after`, known for the chain reader's only; our own priority fee and tip): how many outsiders the model
+    puts ahead of a copy with that bid in that block (`_model_behind`), against how many there were. `store` holds
+    the fills, `tape` the blocks. Per fill a row with both numbers, which reader placed it, what the model was read
+    from and the verdict; in all, how often the model agrees, is too kind (it puts us closer than we landed) or too
+    harsh, for "bid" and for the cautious "bid-" (one further back), and the share of our buys whose blocks after are
+    known that landed in the copied wallet's own block. Under MODEL_MIN_FILLS fills it is a mechanism, not a
+    calibration, and says so. The tape's own were left out until 20 Nov (the agents' I431): the landing test's fills
+    1 and 5 were two of them."""
     fills = [f for f in store.fills(since_ts=since_ts, side="buy", limit=5000)
-             if f.get("landing_src") == "chain" and f.get("trades_behind") is not None
+             if f.get("landing_src") in PLACED_BY and f.get("trades_behind") is not None
              and f.get("wallet_copied")]  # fmt: skip
     own = _own_wallets(store, cfg) | {f["wallet"] for f in fills if f.get("wallet")}
     since = int(now - MATES_HOURS * 3600)
@@ -374,11 +378,13 @@ def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: in
         tally[CAUTIOUS][_verdict(model + 1, real).replace(" ", "_")] += 1
         rows.append({"sig": f["sig"], "ts": f.get("ts"), "mint": f["mint"], "leader": f["wallet_copied"],
                      "bid_sol": bid_sol, "real_behind": real, "model_behind": model, "cautious_behind": model + 1,
-                     "blocks_after": f.get("blocks_after"), "basis": basis, "verdict": verdict})  # fmt: skip
+                     "blocks_after": f.get("blocks_after"), "placed_by": f["landing_src"], "basis": basis,
+                     "verdict": verdict})  # fmt: skip
     n = len(rows)
+    known = [r for r in rows if r["blocks_after"] is not None]
     if not n:
-        note = ("no buy of ours has been placed by the chain reader yet (fills.landing_src = 'chain'): nothing to "
-                "compare the model with")  # fmt: skip
+        note = ("no buy of ours has been placed behind the wallet it copied yet (fills.landing_src 'chain' or "
+                "'tape'): nothing to compare the model with")  # fmt: skip
     elif n < MODEL_MIN_FILLS:
         note = (f"{n} fills: this shows the mechanism works, it is not a calibration (that takes {MODEL_MIN_FILLS} or "
                 "more). A bid landing stays a model, not where our copies land live")  # fmt: skip
@@ -387,6 +393,8 @@ def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: in
                 "nothing here takes it: a bid landing stays reported as a model until the code says otherwise")
     return {"fills": n, BID: tally[BID], CAUTIOUS: tally[CAUTIOUS],
             "basis": {k: sum(1 for r in rows if r["basis"] == k) for k in ("tape", "ahead")},
-            "same_block": _share(sum(1 for r in rows if r["blocks_after"] == 0), n),
+            "placed_by": {k: sum(1 for r in rows if r["placed_by"] == k) for k in PLACED_BY},
+            "same_block": _share(sum(1 for r in known if r["blocks_after"] == 0), len(known)),
+            "same_block_known": len(known),
             "calibrated": False, "min_fills": MODEL_MIN_FILLS, "note": note, "rows": rows,
             "reading": list(MODEL_READING)}  # fmt: skip

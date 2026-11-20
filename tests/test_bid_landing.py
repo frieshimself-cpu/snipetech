@@ -626,6 +626,34 @@ def test_the_model_check_with_no_placed_fill_says_so():
     st.close()
 
 
+def test_the_model_check_also_reads_the_buys_the_tape_placed():
+    """The measure stage places a buy of ours from the tape when the tape holds the coin (fills.landing_src "tape",
+    trades_behind counted as the chain reader counts it: other wallets' buys between the copied buy and ours, the
+    wallet's companions and pack left out). The landing test's fills 1 and 5 of 20 Nov were such buys, and the check
+    read only the chain reader's (the agents' I431). Each row says which reader placed it; the share in the wallet's
+    own block counts only the buys whose blocks after are known (the tape reader leaves them unknown)."""
+    from snipetech import report as R
+
+    st = _store()
+    m1 = _coin(st, block=((BOT_C, 0.5, 0.001, 20), (OURS, 0.05, 0.01, 21)))
+    _fill(st, "fill-tape-kind", m1.mint, m1.slot0 + 50, 0.01, 1, blocks_after=None, src="tape")  # a lower bid ahead
+    m2 = _coin(st, block=((BOT_A, 3.0, 0.03, 20), (OURS, 0.05, 0.01, 21)))
+    _fill(st, "fill-chain-agree", m2.mint, m2.slot0 + 50, 0.01, 1, ahead=((BOT_A, 0.03),))
+    _fill(st, "fill-tape-unplaced", addr("bl-tape-none"), 7, 0.01, None, src="tape")  # no copied buy: nothing to place
+    out = PB.model_check(st, st, Config(), now=NOW)
+    rows = {r["sig"]: r for r in out["rows"]}
+    assert set(rows) == {"fill-tape-kind", "fill-chain-agree"} and out["fills"] == 2
+    tape = rows["fill-tape-kind"]
+    assert (tape["placed_by"], tape["basis"], tape["real_behind"], tape["model_behind"]) == ("tape", "tape", 1, 0)
+    assert tape["verdict"] == "model too kind" and tape["blocks_after"] is None
+    assert rows["fill-chain-agree"]["placed_by"] == "chain" and rows["fill-chain-agree"]["verdict"] == "agrees"
+    assert out["placed_by"] == {"chain": 1, "tape": 1}
+    assert out["same_block"] == 1.0 and out["same_block_known"] == 1
+    text = R.render_model_check(out)
+    assert "Placed by the chain reader: 1, by the tape: 1" in text and "1 of them with known blocks after" in text
+    st.close()
+
+
 def test_the_cli_prints_the_model_check(tmp_path, capsys):
     from snipetech import cli
 

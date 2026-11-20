@@ -1015,13 +1015,17 @@ def render_model_check(o: dict) -> str:
                    f"too harsh on {t['model_too_harsh']}.")  # fmt: skip
     share = o.get("same_block")
     basis = o["basis"]
-    out.append(f"Landed in the copied wallet's own block: {'-' if share is None else f'{100 * share:.0f} %'} of them. "
-               f"Read from the tape's block: {basis['tape']}; from the buyers ahead only: {basis['ahead']}.")
+    placed = o.get("placed_by") or {}
+    out.append(f"Landed in the copied wallet's own block: {'-' if share is None else f'{100 * share:.0f} %'} of the "
+               f"{o.get('same_block_known', o['fills'])} of them with known blocks after. Placed by the chain reader: "
+               f"{placed.get('chain', 0)}, by the tape: {placed.get('tape', 0)}. Read from the tape's block: "
+               f"{basis['tape']}; from the buyers ahead only: {basis['ahead']}.")  # fmt: skip
     out.append(table([[time.strftime("%d %b %H:%M", time.gmtime(float(r["ts"] or 0))), str(r["mint"])[:8],
-                       f"{r['bid_sol']:g}", r["real_behind"], r["model_behind"], r["blocks_after"], r["basis"],
-                       r["verdict"]] for r in o["rows"]],
-                     ["time (UTC)", "coin", "our bid", "really behind", "model", "blocks after", "read from",
-                      "verdict"]))  # fmt: skip
+                       f"{r['bid_sol']:g}", r["real_behind"], r["model_behind"],
+                       "-" if r["blocks_after"] is None else r["blocks_after"], r.get("placed_by") or "-",
+                       r["basis"], r["verdict"]] for r in o["rows"]],
+                     ["time (UTC)", "coin", "our bid", "really behind", "model", "blocks after", "placed by",
+                      "read from", "verdict"]))  # fmt: skip
     out += [""] + list(o.get("reading") or [])
     return "\n".join(out)
 

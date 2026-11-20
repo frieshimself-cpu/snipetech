@@ -25,7 +25,9 @@ of them, so it is never priced ahead of one of them, and `bid-` never pays less 
 A moment whose block holds no fee record is refused with its reason (`NO_BIDS`, `BID_UNKNOWN`), never guessed.
 
 What the model is not: where our copies land live. Three real copies at a bid of 0.035 SOL exist (12 Nov: first
-twice); `place_bids.model_check` compares the model with every buy of ours the chain reader placed. Until that holds
+twice); `place_bids.model_check` compares the model with every buy of ours placed behind the wallet it copied (by
+the chain reader or, since 20 Nov, the tape: the landing test's five fills that day, 2 where `bid-` put us or
+closer, 3 one to three buys further back). Until that holds
 enough fills a bid landing is a model, and every output says so (`NOT_LIVE`)."""
 
 from __future__ import annotations

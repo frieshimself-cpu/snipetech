@@ -1217,8 +1217,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--top", type=int, default=20, help="followed wallets and first-place holders to list")
     sp.add_argument("--model-check", action="store_true",
                     help="instead of the table: the bid landing model (lab --copy-position bid / bid-) against every "
-                         "buy of ours the chain reader placed: where the model puts a copy with that bid in that "
-                         "block, where it really landed, and how often they agree")  # fmt: skip
+                         "buy of ours placed behind the wallet it copied, by the chain reader or the tape: where the "
+                         "model puts a copy with that bid in that block, where it really landed, and how often they "
+                         "agree")  # fmt: skip
     sp = cmd(
         "tips",
         "the tip table: for each followed wallet, what the outsiders behind it in its own block bid (the first one's "
