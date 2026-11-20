@@ -1151,12 +1151,12 @@ class Service:
                 return f"the tape could not be read ({type(exc).__name__})"
             return f"the tape is {age:.0f} s behind" if age is not None and age > TAPE_STALE_SECS else None
 
-        async def open_positions(unknown: list[dict] | None = None) -> list[dict]:
+        async def open_positions() -> list[dict]:
             # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
-            # ignore_mints: positions no sniper manages (to be sold by hand); `unknown` gets the tokens the tape cannot
-            # price (a coin past its window on PumpSwap is one), which a spent sniper's re-arm counts as held
-            return await self.open_positions(address, ignore=ignore_mints, unknown=unknown)
+            # ignore_mints: positions no sniper manages (to be sold by hand). A token the tape cannot price is held too
+            # (positions.filter_positions keeps it, unpriced)
+            return await self.open_positions(address, ignore=ignore_mints)
 
         def tag(i: str) -> str:
             # a sniper by its own end: OKTech's ids open with their creation second, the same for snipers made together
@@ -1230,12 +1230,16 @@ class Service:
         reason, restarts = "time limit", 0
         armed_at: dict[str, float] = {}
         armed: set[str] = set()  # the snipers this run started and has not stopped since
-        seen: set[str] = set()  # the coins the wallet has held since the start: each one is at least one buy
+        # the coins the wallet has held since the start, priced or not (open_positions keeps an unpriced one, held), and
+        # when each was first seen: each one is at least one buy, and a sniper armed before it is re-armed once it is
+        # gone (20 Nov 17:31:32: a fill on a PumpSwap coin the tape held no trade of was no fill to the re-arm, and the
+        # sniper sat spent while OKTech said "running")
+        first_seen: dict[str, float] = {}
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
 
         def fills_now() -> int:
-            return max(fills_since(t0), len(seen))
+            return max(fills_since(t0), len(first_seen))
 
         try:
             b0 = await balance()
@@ -1273,12 +1277,13 @@ class Service:
                     break
                 try:
                     b = await balance()
-                    unpriced: list[dict] = []
-                    held = await open_positions(unpriced)
+                    held = await open_positions()
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
-                seen.update(str(h["mint"]) for h in held if h.get("mint"))
+                for h in held:
+                    if h.get("mint"):
+                        first_seen.setdefault(str(h["mint"]), time.time())
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
@@ -1290,7 +1295,7 @@ class Service:
                     reason = f"cap reached: {fills} fills since start"
                     break
                 if held:
-                    continue  # a position is open: never restart now
+                    continue  # a position is open, one the tape cannot price too: never restart now
                 lag = tape_lag()
                 if lag:  # a re-arm now could buy without being counted
                     if not paused:
@@ -1311,8 +1316,10 @@ class Service:
                         continue
                     # spent with nothing held, an unpriced token included, for SPENT_REARM_SECS: the RPC has long shown
                     # any coin it bought by then, so the shot bought nothing (20 Nov: copies of swaps into USDC)
-                    spent = i in spent_at and now - spent_at[i] >= SPENT_REARM_SECS and not unpriced
-                    if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after or spent:
+                    spent = i in spent_at and now - spent_at[i] >= SPENT_REARM_SECS
+                    at = armed_at.get(i, now)
+                    bought = fills_since(at) >= 1 or any(ts > at for ts in first_seen.values())
+                    if bought or since >= rearm_after or spent:
                         blocked, why = await guard_says(held)
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
                             reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True

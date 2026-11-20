@@ -707,7 +707,7 @@ CLEAR = None  # the owner's wallet-wide guard says nothing against a re-arm
 
 
 def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda secs: None, balance=lambda: 5.0,
-               coins=None, clock=None, guard=lambda: CLEAR):  # fmt: skip
+               coins=None, clock=None, guard=lambda: CLEAR, unpriced=None):  # fmt: skip
     """The cycler on a fake clock (each sleep moves it, so its one-minute re-arm really comes round), one capped sniper
     "a", a wallet with `balance()` SOL that holds coin M1 while `holds()` says so (or the coins `coins(now)` lists),
     and the owner's /stop flag in `flag`. The tape is empty unless a test adds trades to the store. The owner's
@@ -734,9 +734,13 @@ def _cycle_svc(monkeypatch, client, flag, holds=lambda: False, on_sleep=lambda s
     svc._rpc = Rpc()
 
     async def positions(address, ignore=None, unknown=None):
+        # tokens the tape cannot price, as positions.filter_positions gives them: held (unpriced) and in `unknown`
+        off = [dict(u, value_sol=None, priced=False) for u in (unpriced(clock["t"]) if unpriced else [])]
+        if unknown is not None:
+            unknown.extend(off)
         if coins is not None:
-            return coins(clock["t"])
-        return [{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []
+            return coins(clock["t"]) + off
+        return ([{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if holds() else []) + off
 
     def risk_guard(address, sol, held):
         said = guard()
@@ -872,7 +876,8 @@ def test_a_sniper_spent_on_a_failed_send_is_rearmed_soon_not_at_its_timer(monkey
 
 def test_a_spent_sniper_that_holds_its_coin_is_never_rearmed_before_the_coin_is_sold(monkeypatch):
     """Rule 1: a stopped sniper strands its coin. A sniper that filled reads "finished" too, while it still sells the
-    coin it bought: no re-arm while the wallet holds a coin, and the 30 s count starts only once it holds none."""
+    coin it bought: no re-arm while the wallet holds a coin; once it holds none the coin was a buy, and the snipers
+    armed before it are re-armed at once, as after a fill on the tape."""
     t0 = 1_794_045_600.0
 
     def spent(i, now, last_start):
@@ -884,10 +889,58 @@ def test_a_spent_sniper_that_holds_its_coin_is_never_rearmed_before_the_coin_is_
     svc, store, client, t0 = _spent_cycle(monkeypatch, spent, coins=coins)
     rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800))
     touched = [(kind, t) for kind, i, t in client.timed if i == SNIPER_IDS[0] and t > t0 + 10]
-    assert not [t for _kind, t in touched if t0 + 100 <= t < t0 + 250]  # nothing while held, nor in the 30 s after
-    assert [kind for kind, t in touched if t < t0 + 300] == ["start"]  # then re-armed once (no stop of a finished one)
-    assert rep["restarts"] == 1
+    assert not [t for _kind, t in touched if t0 + 100 <= t < t0 + 220]  # nothing while held
+    assert [kind for kind, t in touched if t < t0 + 240] == ["start"]  # re-armed just after (no stop of a finished one)
+    assert rep["restarts"] == 2  # and the other sniper: the wallet cannot say whose buy the coin was
     store.close()
+
+
+def _off_tape_cycle(monkeypatch, unpriced, minutes=5, rearm_after=1800.0):
+    """Two snipers OKTech always reports "running" (as it did after a copy that filled, 20 Nov 17:31:32), and a wallet
+    whose only tokens are the ones `unpriced(now)` lists, none of which the tape can price."""
+    flag, clock = {"stop": False}, {"t": 1_794_045_600.0}
+    client = _SpentClient(clock, SNIPER_IDS, lambda i, now, last_start: False)
+    svc, store = _cycle_svc(monkeypatch, client, flag, clock=clock, unpriced=unpriced)
+    for i in SNIPER_IDS:
+        store.add_oktech_sniper(
+            {"id": i, "kind": "copy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 1}}
+        )
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, minutes, rearm_after=rearm_after))
+    store.close()
+    return rep, client, clock["t"] - minutes * 60 - 3  # (the report, the client, about when the run started)
+
+
+def test_a_buy_that_filled_off_the_tape_is_a_fill_and_its_snipers_are_rearmed_once_it_is_sold(monkeypatch):
+    """20 Nov 17:31:32: Cupseyy's sniper filled on a PumpSwap coin the tape could not price; OKTech kept the sniper
+    "running" with its one shot used (its updatedAt moves for other reasons too: the idle snipers' moved 20-28 s after
+    their starts), the cycler counted no fill and re-armed nothing, and his buy of 6.85 SOL 35 s later went uncopied. A
+    coin in the wallet, priced or not, is a buy: it counts toward the cap, nothing is re-armed while it is held, and once
+    it is gone the snipers armed before it are re-armed, as after a fill on the tape."""
+    t0 = 1_794_045_600.0
+
+    def unpriced(now):  # the off-tape coin is held from 100 s to 110 s, then sold
+        return [{"mint": "OffTape", "amount": 1.0}] if t0 + 100 <= now < t0 + 110 else []
+
+    rep, client, _ = _off_tape_cycle(monkeypatch, unpriced)
+    touched = [(kind, i, t) for kind, i, t in client.timed if t > t0 + 10]
+    assert not [t for _k, _i, t in touched if t < t0 + 110]  # nothing while the coin is held
+    first = [kind for kind, i, t in touched if i == SNIPER_IDS[0] and t < t0 + 140]
+    assert first == ["stop", "start"]  # re-armed within half a minute of the sale
+    assert rep["fills"] == 1 and rep["restarts"] == 2  # both snipers: the wallet cannot say whose buy it was
+
+
+def test_an_off_tape_coin_still_held_at_the_end_keeps_the_snipers_running(monkeypatch):
+    """Rule 1: a stopped sniper strands its coin. A coin bought during the run on a pool the tape cannot price is held
+    all the same: at the time limit the snipers are left running to sell it, and it counts as a fill."""
+    t0 = 1_794_045_600.0
+
+    def bought_late(now):  # bought 200 s in and still held when the 5 minutes end
+        return [{"mint": "OffTape", "amount": 1.0}] if now >= t0 + 200 else []
+
+    rep, client, _ = _off_tape_cycle(monkeypatch, bought_late)
+    assert rep["fills"] == 1 and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
+    assert "coin is held" in rep["reason"]
+    assert not [t for _kind, _i, t in client.timed if t >= t0 + 200]  # nothing touched once it was bought
 
 
 def _tape_trade(store, ts: float, k: int = 0) -> None:
