@@ -1115,6 +1115,7 @@ class Service:
         its coin). The report's `held` is the wallet's coins by the shared rule (positions.py), and `left_running` the
         snipers this run armed and did not stop."""
         from .book.run import TAPE_STALE_SECS, _tape_age
+        from .oktech import OktechError
 
         address = self._check(address)
         if self.stop_flag_set():
@@ -1323,7 +1324,13 @@ class Service:
                             break
                         unsure = False
                         try:
-                            await client.stop(i)
+                            try:
+                                await client.stop(i)
+                            except OktechError as exc:
+                                # a finished sniper is not running, and OKTech refuses to stop it (20 Nov 16:25: the
+                                # re-arm failed on that every 5 s and held back the other snipers): start it as it is
+                                if exc.code != "NOT_RUNNING":
+                                    raise
                             armed.discard(i)
                             await asyncio.sleep(1.5)
                             if self.stop_flag_set():  # the owner's /stop came in the pause: it wins, the next tick ends

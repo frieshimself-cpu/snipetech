@@ -816,6 +816,11 @@ class _SpentClient(_CycleClient):
         return await super().start(i)
 
     async def stop(self, i):
+        from snipetech.oktech import OktechError
+
+        if self.spent(i, self.clock["t"], self.started_at.get(i, 0.0)):
+            # as OKTech answered on 20 Nov 16:25:24 for a finished copy sniper: no stop for a task that is not running
+            raise OktechError(400, "NOT_RUNNING", "Sniper is not running")
         self.timed.append(("stop", i, self.clock["t"]))
         return await super().stop(i)
 
@@ -853,7 +858,10 @@ def test_a_sniper_spent_on_a_failed_send_is_rearmed_soon_not_at_its_timer(monkey
     svc, store, client, t0 = _spent_cycle(monkeypatch, spent)
     rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 5, rearm_after=1800))
     rearms = [t for kind, i, t in client.timed if kind == "start" and i == SNIPER_IDS[0] and t > t0 + 10]
-    assert len(rearms) == 1 and t0 + 130 <= rearms[0] <= t0 + 175  # about 30 s after OKTech first said it was spent
+    # about 30 s after OKTech first said it was spent; OKTech refuses to stop a finished sniper (NOT_RUNNING), and the
+    # re-arm starts it all the same (20 Nov 16:25: it failed on that refusal every 5 s and held back the other snipers)
+    assert len(rearms) == 1 and t0 + 130 <= rearms[0] <= t0 + 175
+    assert not any("failed" in e for e in rep["events"])
     assert not [t for kind, i, t in client.timed if kind == "start" and i == SNIPER_IDS[1] and t > t0 + 10]
     assert rep["restarts"] == 1 and rep["reason"].startswith("time limit") and rep["left_running"] == []
     line = next(e for e in rep["events"] if "re-armed" in e)
@@ -877,7 +885,7 @@ def test_a_spent_sniper_that_holds_its_coin_is_never_rearmed_before_the_coin_is_
     rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800))
     touched = [(kind, t) for kind, i, t in client.timed if i == SNIPER_IDS[0] and t > t0 + 10]
     assert not [t for _kind, t in touched if t0 + 100 <= t < t0 + 250]  # nothing while held, nor in the 30 s after
-    assert [kind for kind, t in touched if t < t0 + 300] == ["stop", "start"]  # then re-armed once
+    assert [kind for kind, t in touched if t < t0 + 300] == ["start"]  # then re-armed once (no stop of a finished one)
     assert rep["restarts"] == 1
     store.close()
 
