@@ -28,6 +28,15 @@ first on the server's recording and only then run live in capped batches.
   -0.039). At 5 SOL each buyer ahead of us costs about 0.1 SOL a copy: the edge is in the first two places, and
   only Cooker (cheap crowd, 26 copies a week) holds at every place. Our live fills behind Cupseyy at a 0.05 bid
   stood 1, 2, 2, 5 and 5 behind.
+- **The market-cap ceiling turns it round (the agents' I421/I442, then labs 3d13e5, fe1626, caef75, 230146 at 5 SOL,
+  0.2 bid, 20:58-21:01).** Copy only buys made while the coin is under 100 SOL market cap (at the wallet's buy):
+  +3x +0.332 a copy on the newer 41 (lower +0.100), Cupseyy +0.654 over 49 in the week, Cooker +0.519 over 7, Gake
+  Side -0.021 over 7; +5x +0.028 (lower -0.182), Cupseyy +0.266, Cooker +0.432. At 200 SOL: +3x +0.263 over 70
+  (lower +0.107; Cupseyy +0.220 over 70, Cooker +0.390 over 17, Gake Side +0.136 over 17); +5x +0.020 (Cupseyy
+  -0.087, Cooker +0.291, Gake Side +0.065): Cupseyy's buys at 100-200 SOL lose about 0.8 a copy at +3x, Cooker's
+  and Gake Side's gain. OKTech's ceiling (`maxMcapUsd`, `oktech copylist --max-mcap SOL` since 2ea7bd7) is a min-out
+  on OUR buy, so it also refuses the copies that land too late (fill 5 paid +76 % over Cupseyy). The bands were
+  picked on this week: the live result will be lower.
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
