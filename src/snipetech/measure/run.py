@@ -433,8 +433,8 @@ def _crossed_line(sell: dict, buy: dict | None) -> str:
 
 CHAIN_LANDING = ("chain", "chain-none")  # fills.landing_src of a buy the chain was read for (chain_landing.fill_fields)
 # what a chain reading wrote on a buy and a later read of the same trade from the tape keeps
-CHAIN_KEPT = ("wallet_copied", "trades_behind", "price_gap_pct", "landing_src", "blocks_after", "ahead_bids",
-              "ahead_bid_max", "ahead_bid_p50", "landing_verdict", "venue")  # fmt: skip
+CHAIN_KEPT = ("wallet_copied", "trades_behind", "pack_ahead", "price_gap_pct", "landing_src", "blocks_after",
+              "ahead_bids", "ahead_bid_max", "ahead_bid_p50", "landing_verdict", "venue")  # fmt: skip
 PUMP_VENUES = ("pump.fun curve", "PumpSwap")  # where a failed send's own instruction says whether it was a sell
 
 
@@ -511,8 +511,16 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     copy_rows = copy_sniper_rows(store)
     look = min(int(now - m.lookback_days * 86400), int(since_ts))  # a backfilled window is paired too
 
+    ctx: dict[str, Any] | None = None  # what a chain reading takes from our records: built once, when first asked
+
+    def mates(leader: str):
+        """The copied wallet's companions as the tape knows them, for the tape reading as for the chain reading."""
+        nonlocal ctx
+        ctx = ctx or _chain_context(svc, cfg, now)
+        return ctx["mates"](leader)
+
     def store_fill(t, meta) -> dict:
-        row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms)
+        row = classify_trade(store, t, leaders_at(copy_rows, t.ts), meta, arms=cfg.book.bid_arms, mates=mates)
         existing = store.fill(t.sig)
         if existing:  # a re-read of the same trade keeps what pairing wrote and the arm it bid at fill time
             for k in ("pnl_sol", "exit_reason", "buy_sig", "exit_name", "crossed", "twin_fee_sol"):
@@ -581,7 +589,6 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
     on_tape = set(sigs)
     off_tape = [s for s in landed_list if s.get("signature") and s["signature"] not in on_tape
                 and int(since_ts) <= int(s.get("blockTime") or 0) <= until_ts]  # fmt: skip
-    ctx: dict[str, Any] | None = None
 
     async def place(sig: str, ts: float, tx: dict | None = None) -> dict | None:
         """Where a buy of ours landed against the wallets our copy snipers copied at the time; None when none did."""
@@ -597,7 +604,7 @@ async def run_measure(svc, cfg: Config, now: float, *, since_ts: int | None = No
 
     todo = [s for s in off_tape if reclassify_arms or not (store.fill(s["signature"]) or {}).get("venue")]
     if todo:
-        ctx = _chain_context(svc, cfg, now)
+        ctx = ctx or _chain_context(svc, cfg, now)
         try:
             txs = await svc.rpc.get_transactions([s["signature"] for s in todo])
         except Exception as exc:  # noqa: BLE001

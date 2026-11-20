@@ -1637,3 +1637,27 @@ def test_the_agents_are_told_what_a_launch_rules_record_means_and_which_labs_wer
     assert "scored forward without the coins of the crews known at the time (from 9 Nov on" in text
     tester = " ".join(ROLE_SYSTEM["tester"].split())
     assert "scored without serial crews' coins" in tester and "research record" in tester
+
+
+def test_the_agents_are_told_that_a_copied_wallets_own_pack_is_not_counted_behind_it(toolbox):
+    """19 Nov. The measure stage counted the copied wallet's own pack as buyers ahead of our copy: on that day's
+    tape the first place behind 8D92Hh's pack read "12 trades behind", and behind such a block the chain reading's
+    verdict was "speed" (a lower bid still got in first, no tip buys that place). An agent told only that
+    trades_behind is the trades between the copied buy and ours reads such a row as "too slow" and asks for a
+    higher bid. The words on the fills table and the paragraph on where our buys landed say what is left out
+    since, name pack_ahead, and say that a row measured before does not know its pack."""
+    from snipetech.operator import roles
+    from snipetech.operator.tools import SQL_TABLES
+
+    fills = SQL_TABLES["fills"]
+    for words in ("the copied wallet's own pack left out", "pack_ahead = how many buys that pack was",
+                  "NULL = not known", "may still count a pack"):  # fmt: skip
+        assert words in fills, words
+    tools, _, _ = toolbox
+    full = tools["start_job"].to_dict()["description"]
+    landing = [words for tags, words in roles.cut_job_help(full)
+               if not isinstance(tags, str) and "landing" in tags and "WHERE OUR OWN BUYS LANDED:" in words]  # fmt: skip
+    assert len(landing) == 1
+    for words in ("Nor is the wallet's own pack", "each carry buys of several wallets", "pack_ahead",
+                  'read "12 behind, speed"'):  # fmt: skip
+        assert words in landing[0], words

@@ -2,6 +2,7 @@
 fees from the fingerprint, FIFO round trips."""
 
 from snipetech.measure.classify import arm_for, arm_from_fee, classify_trade, leaders_for, pair_round_trips
+from snipetech.models import Trade
 from snipetech.solana.txmeta import TxMeta
 from snipetech.store import Store
 from tests.synth import Market, addr
@@ -242,3 +243,178 @@ def test_a_fill_sent_far_above_an_arms_bid_is_not_that_arms_fill():
     assert arm_from_fee(20_000_000, 0, ARMS) == "paid"
     assert arm_from_fee(50_000_000, 100_000_000, ARMS) == OTHER_BID
     assert arm_from_fee(None, None, only) == "control"  # an unknown fee, as before
+
+
+# -- the copied wallet's own pack is nobody ahead of us (19 Nov 2026) -------------------------------------------------
+
+PAYER, PACK_A, PACK_B, PACK_C = addr("pack payer"), addr("pack a"), addr("pack b"), addr("pack c")
+
+
+def _pack_tape(st):
+    """The tape of 19 Nov in a store (tests/test_lab.py: four transactions back to back at block places 440 to 443,
+    fifteen buys, 63 SOL; 8D92Hh is the second buyer of the first, and the first outsider, CWNYbh, buys 2.7 SOL a
+    block later)."""
+    from tests.test_lab import _pack_19nov
+
+    trades = _pack_19nov()
+    st.add_trades(trades)
+    assert trades[1].user.startswith("8D92Hh") and trades[1].pos == 440 and trades[15].pos == 443
+    return trades
+
+
+def _our_buy(st, trades, slot, pos):
+    """A 0.2 SOL buy of ours at block place `pos` of `slot`, into the pool as the last trade ahead of it left it."""
+    before = [t for t in trades if (t.slot, t.pos) < (slot, pos)][-1]
+    q = before.q_after + 200_000_000
+    b = before.q_after * before.b_after // q
+    ours = Trade(sig=f"our copy at {slot}:{pos}", ev=0, slot=slot, pos=pos, ts=before.ts, mint=before.mint,
+                 venue="amm", user=ME, is_buy=True, quote=200_000_000, base=before.b_after - b, fee=2_400_000,
+                 fee_bps=120, q_after=q, b_after=b)  # fmt: skip
+    st.add_trades([ours])
+    return ours
+
+
+def _block(st, name, rows, ours_at):
+    """A coin whose block at slot +50 holds `rows` in order, each (wallet, SOL, the transaction it is in or None for
+    one of its own, block place), then a 0.2 SOL buy of ours at block place `ours_at`. Returns our trade."""
+    m = Market(st, addr(name), D, NOW + 9000, SLOT + 20_000)
+    m.buy(D, 1.0, 0)
+    for who, sol, tx, place in rows:
+        m.buy(who, sol, 50, sig=addr(f"{name}:{tx}") if tx else None).pos = place
+    mine = m.buy(ME, 0.2, 50)
+    mine.pos = ours_at
+    m.commit()
+    return mine
+
+
+def test_the_copied_wallets_own_pack_is_not_counted_as_trades_behind_it():
+    """19 Nov: 8D92Hh's buy is the second of four in its transaction, and three more transactions of the same
+    operator run right behind it: fifteen buys, 63 SOL, block places 440 to 443. A buy of ours put in the very next
+    place of that tape (444) is first behind the wallet, the best place there is. A review found the measure stage
+    writes "12 trades behind" for it, where the paper model says none, and the lesson read off such a row is "too
+    slow" or "bid more". The pack is the copied wallet's own entry (CLAUDE.md rule 2: one operator's own buys are
+    never buyers ahead of us): its buys are left out of trades_behind, and the row says how many they were."""
+    st = Store(":memory:")
+    trades = _pack_tape(st)
+    lead = trades[1]
+    ours = _our_buy(st, trades, lead.slot, 444)
+    row = classify_trade(st, ours, {lead.user}, None)
+    assert row["wallet_copied"] == lead.user and row["price_gap_pct"] > 0
+    assert row["trades_behind"] == 0 and row["pack_ahead"] == 12
+    st.close()
+
+
+def test_an_outsider_behind_the_pack_is_still_a_trade_behind():
+    """19 Nov, the same block. CWNYbh is no wallet of the pack: it buys 2.7 SOL a block later, alone in its
+    transaction. A copy of ours behind that buy is one trade behind the copied wallet (13 before the pack was left
+    out): only the pack is left out, never an outsider behind it."""
+    st = Store(":memory:")
+    trades = _pack_tape(st)
+    lead, outsider = trades[1], trades[16]
+    assert outsider.user.startswith("CWNYbh") and outsider.slot == lead.slot + 1
+    ours = _our_buy(st, trades, outsider.slot, outsider.pos + 1)
+    row = classify_trade(st, ours, {lead.user}, None)
+    assert row["trades_behind"] == 1 and row["pack_ahead"] == 12
+    st.close()
+
+
+def test_a_pack_wallets_second_buy_in_that_block_is_no_trade_behind_either():
+    """19 Nov, as the lab counts a place since that day (lab.copy_entry, pack_buyers): whoever bought in the copied
+    wallet's own transaction, the fee payer's small buy ahead of it included, or in a transaction of its pack, is its
+    operator. A second buy of such a wallet later in that block is the operator buying again, not an outsider who
+    beat us. Here the copied wallet's transaction holds three wallets' buys and a transaction of two follows it; the
+    payer and one wallet of the second transaction buy again, then one outsider, then us: 1 trade behind, not 5."""
+    st = Store(":memory:")
+    rows = [(PAYER, 0.01, "tx1", 100), (LEAD, 2.0, "tx1", 100), (PACK_A, 1.0, "tx1", 100),
+            (PACK_B, 1.0, "tx2", 101), (PACK_C, 1.0, "tx2", 101),
+            (PAYER, 0.3, None, 110), (PACK_B, 0.3, None, 111), (X, 0.5, None, 112)]  # fmt: skip
+    mine = _block(st, "pack-again", rows, 113)
+    row = classify_trade(st, mine, {LEAD}, None)
+    # left out: the two buys of the second transaction and the two second buys; counted: the outsider alone
+    assert row["trades_behind"] == 1 and row["pack_ahead"] == 4
+    st.close()
+
+
+def test_a_buyer_alone_in_the_next_transaction_and_a_transaction_further_on_are_still_counted():
+    """19 Nov. What is no pack is counted as before. One wallet's transaction in the very next block place is no
+    link: a fast bot stands there as often as the operator's own wallet (analysis.companions tells those apart from
+    habit, the pack rule does not). And a transaction of two wallets that is not in the very next place is somebody
+    else's. Both rows say that no pack was left out: 0, a known number."""
+    st = Store(":memory:")
+    fast = _block(st, "fast-bot", [(LEAD, 2.0, None, 100), (X, 0.5, None, 101)], 102)
+    row = classify_trade(st, fast, {LEAD}, None)
+    assert row["trades_behind"] == 1 and row["pack_ahead"] == 0
+    far = _block(st, "far-pair", [(LEAD, 2.0, None, 100), (X, 0.5, "pair", 102), (Y, 0.5, "pair", 102)], 103)
+    row = classify_trade(st, far, {LEAD}, None)
+    assert row["trades_behind"] == 2 and row["pack_ahead"] == 0
+    st.close()
+
+
+def test_a_fill_that_copied_nobody_says_nothing_of_a_pack():
+    """19 Nov. `pack_ahead` is a count only where a copied buy was found. A buy that copied nobody and a sell carry
+    None, as they carry no trades_behind: not known is never written as 0."""
+    st = Store(":memory:")
+    _tl, tme, tsell, tfirst = _world(st)
+    assert classify_trade(st, tme, {LEAD}, None)["pack_ahead"] == 0  # copied LEAD, who bought alone
+    assert classify_trade(st, tfirst, {LEAD}, None)["pack_ahead"] is None  # nobody bought before us to copy
+    assert classify_trade(st, tsell, {LEAD}, None)["pack_ahead"] is None  # a sell copies no one
+    st.close()
+
+
+MATE = addr("mate")
+
+
+def test_known_companions_of_the_copied_wallet_are_no_trades_behind_on_the_tape_either():
+    """CLAUDE.md rule 2: a copied wallet's companions are never buyers ahead of us. The chain reading left them out
+    (chain_landing.read_landing: companions_ahead) and the tape reading counted them, so two different counts went
+    into one measured landing (a review, 19 Nov: trades_behind=1 behind a known companion). Now the tape reading
+    leaves them out as the chain reading does, in the copied buy's block and after it. Companions the tape cannot
+    name (None: too few of the wallet's buys) leave the count as it was."""
+    st = Store(":memory:")
+    m = Market(st, addr("mates"), D, NOW + 20_000, SLOT + 40_000)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 2.0, 2)
+    m.buy(MATE, 1.0, 2)  # alone in its own transaction right behind the copied buy: a companion, no pack
+    m.buy(X, 0.5, 2)
+    m.buy(MATE, 0.5, 3)  # the companion again, a block later
+    mine = m.buy(ME, 0.2, 3)
+    m.commit()
+    known = classify_trade(st, mine, {LEAD}, None, mates=lambda w: {MATE} if w == LEAD else set())
+    assert known["trades_behind"] == 1 and known["pack_ahead"] == 0
+    assert classify_trade(st, mine, {LEAD}, None, mates=lambda w: None)["trades_behind"] == 3
+    assert classify_trade(st, mine, {LEAD}, None)["trades_behind"] == 3
+    st.close()
+
+
+def test_a_companion_in_the_pack_is_left_out_once():
+    """A companion that bought in the copied wallet's pack is one of the pack's buys (pack_ahead counts it, as the
+    chain reading lists it under pack_ahead first) and is not taken off trades_behind a second time."""
+    st = Store(":memory:")
+    rows = [(LEAD, 2.0, "tx1", 100), (MATE, 1.0, "tx1", 100), (PACK_B, 1.0, "tx2", 101), (MATE, 1.0, "tx2", 101),
+            (X, 0.5, None, 102)]  # fmt: skip
+    mine = _block(st, "mate-in-pack", rows, 103)
+    row = classify_trade(st, mine, {LEAD}, None, mates=lambda w: {MATE})
+    assert row["trades_behind"] == 1 and row["pack_ahead"] == 2
+    st.close()
+
+
+def test_a_buy_of_ours_inside_the_copied_wallets_pack_is_counted_plainly_and_said():
+    """A review, 19 Nov: the lab's premise is that no copy lands inside a pack (between the transactions one operator
+    sends together). A fill of ours that stood inside one is the only live evidence against it, so it is not
+    explained away: trades_behind counts every buy ahead of it as before, pack_ahead says how many of them were the
+    pack's, and landing_verdict says "inside". Here the copied wallet's transaction and one more of its pack run
+    ahead of us, and a transaction of two wallets' buys stands right behind ours, where the pack would have gone on
+    had our buy not stood there. A one-wallet transaction behind ours is no link, and nothing behind ours is no pack
+    left: those buys of ours are behind the pack."""
+    st = Store(":memory:")
+    pack = [(LEAD, 2.0, "tx1", 100), (PACK_A, 1.0, "tx1", 100), (PACK_B, 1.0, "tx2", 101), (PACK_C, 1.0, "tx2", 101)]
+    inside = _block(st, "inside", [*pack, (PAYER, 0.5, "tx3", 103), (X, 0.5, "tx3", 103)], 102)
+    row = classify_trade(st, inside, {LEAD}, None)
+    assert row["trades_behind"] == 2 and row["pack_ahead"] == 2 and row["landing_verdict"] == "inside"
+    alone = _block(st, "alone-behind", [*pack, (X, 0.5, None, 103)], 102)
+    row = classify_trade(st, alone, {LEAD}, None)
+    assert row["trades_behind"] == 0 and row["pack_ahead"] == 2 and row["landing_verdict"] is None
+    behind = _block(st, "behind", pack, 102)
+    row = classify_trade(st, behind, {LEAD}, None)
+    assert row["trades_behind"] == 0 and row["pack_ahead"] == 2 and row["landing_verdict"] is None
+    st.close()

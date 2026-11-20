@@ -386,6 +386,21 @@ def test_the_page_script_marks_stopped_rules_and_picks_the_best_among_running_on
     assert "!p.refuted && p.trades > 0" in html  # the "Best paper rule" card: a rule still running
 
 
+def test_the_live_page_says_what_behind_counts_and_that_a_pack_is_left_out():
+    """19 Nov. "Behind" on the owner's page is fills.trades_behind, and the measure stage counted the copied wallet's
+    own pack in it: on that day's tape the first place behind 8D92Hh's pack read 12 behind. The pack is left out
+    now, and the column's heading says in plain words what the number counts, what it leaves out, and that a row
+    from before may still count a pack."""
+    import re
+
+    from snipetech.dash import dash_html
+
+    said = re.search(r'<th class="r" title="([^"]+)">Behind</th>', dash_html())
+    assert said, "the Behind column has no title"
+    for words in ("between the copied wallet's buy and ours", "own pack is not counted", "before 19 Nov"):
+        assert words in said.group(1), words
+
+
 def test_the_pages_events_come_off_an_index_and_leave_out_the_old_transfer_rows(ops):
     """11 Nov: the page found its 20 newest events by reading all 6.6 million rows and sorting them, over 30 seconds on
     every 10-second refresh, and counted the day's events in 9.7 s. 6.4 million of the rows were `dev_transfer`, which

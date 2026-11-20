@@ -145,6 +145,66 @@ def swap(name: str, wallet: str, mint: str, *, tokens: int, sol: float, pool: st
     }  # fmt: skip
 
 
+def pack(name: str, wallets: list[str], mint: str, *, tokens: int, sol: float, pool: str | None = None,
+         program: str | None = None) -> dict:  # fmt: skip
+    """One transaction that carries a buy of `mint` by each of `wallets`, as getTransaction returns it, without its
+    slot: every buyer signs and the first pays the fee; each gets `tokens` of the coin (raw units) for `sol` in plain
+    SOL, which the pool takes into its own account (a pump.fun curve's shape); no priority fee and no tip. The shape
+    of the transactions an operator sent back to back on 19 Nov 2026, four wallets' buys in each
+    (tests/fixtures/graduation_pack_19nov_tape.tsv)."""
+    pool = pool or key(f"pool {mint}")
+    program = program or key("some amm")
+    vault, fee_to = key(f"vault {pool}"), key("venue fee account")
+    atas = [key(f"ata {w} {mint}") for w in wallets]
+    keys = [*wallets, vault, *atas, fee_to, pool, SYSTEM, COMPUTE_BUDGET, SPL_TOKEN, ATA_PROGRAM, program, mint]
+    ix = {k: i for i, k in enumerate(keys)}
+    lam = round(sol * LAMPORTS)
+    venue = round(lam * POOL_FEE)
+    fee = 5000 * len(wallets)
+    pre = {k: 1_000_000 for k in keys}
+    pre.update({w: 10 * LAMPORTS for w in wallets})
+    pre.update({pool: 50 * LAMPORTS, vault: RENT})
+    pre.update({a: 0 for a in atas})  # each buyer's token account is opened here
+    post = dict(pre)
+    post[wallets[0]] -= fee
+    for w, a in zip(wallets, atas):
+        post[w] -= lam + RENT
+        post[a] = RENT
+        post[pool] += lam - venue
+        post[fee_to] += venue
+    pool_tokens = 10**15
+
+    def balance(account: str, owner: str, raw: int) -> dict:
+        return {"accountIndex": ix[account], "mint": mint, "owner": owner, "programId": SPL_TOKEN,
+                "uiTokenAmount": _amount(raw)}  # fmt: skip
+
+    def instruction(prog: str, accounts: list[str], data: bytes) -> dict:
+        return {"programIdIndex": ix[prog], "accounts": [ix[a] for a in accounts], "data": b58encode(data),
+                "stackHeight": None}  # fmt: skip
+
+    ixs = [instruction(COMPUTE_BUDGET, [], b"\x02" + (400_000).to_bytes(4, "little")),
+           instruction(COMPUTE_BUDGET, [], b"\x03" + (0).to_bytes(8, "little"))]  # fmt: skip
+    ixs += [instruction(program, [pool, w, vault, a, fee_to, mint], b"\x09" * 8 + tokens.to_bytes(8, "little"))
+            for w, a in zip(wallets, atas)]  # fmt: skip
+    return {
+        "transaction": {
+            "signatures": [sig(f"{name} {k}") if k else sig(name) for k in range(len(wallets))],
+            "message": {"accountKeys": keys, "header": {"numRequiredSignatures": len(wallets),
+                                                         "numReadonlySignedAccounts": 0,
+                                                         "numReadonlyUnsignedAccounts": 6},
+                        "instructions": ixs, "recentBlockhash": key(f"blockhash {name}")},
+        },
+        "meta": {"err": None, "status": {"Ok": None}, "fee": fee,
+                 "preBalances": [pre[k] for k in keys], "postBalances": [post[k] for k in keys],
+                 "preTokenBalances": [balance(vault, pool, pool_tokens)],
+                 "postTokenBalances": [balance(vault, pool, pool_tokens - tokens * len(wallets)),
+                                       *(balance(a, w, tokens) for w, a in zip(wallets, atas))],
+                 "innerInstructions": [], "logMessages": [], "loadedAddresses": {"writable": [], "readonly": []},
+                 "computeUnitsConsumed": 60_000 * len(wallets), "rewards": []},
+        "version": 0,
+    }  # fmt: skip
+
+
 def noise(name: str, wallet: str) -> dict:
     """A transaction that has nothing to do with any coin: a plain SOL transfer."""
     keys = [wallet, key(f"friend of {wallet}"), SYSTEM]

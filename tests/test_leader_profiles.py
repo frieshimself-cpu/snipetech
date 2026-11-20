@@ -70,6 +70,75 @@ def test_a_dust_buy_is_no_outsider():
     assert [r["user"] for r in st["same_block"]] == ["bot1"]
 
 
+def _pack_rows():
+    """The tape of 19 Nov as the tool's cache holds it for 8D92Hh's buy: the coin's trades in the wallet's block and
+    the next five, as dicts (tests/test_lab.py: four transactions back to back at block places 440 to 443, fifteen
+    buys, 63 SOL, the wallet the second buyer of the first; the first outsider buys a block later)."""
+    from .test_lab import _pack_19nov
+
+    trades = _pack_19nov()
+    lead = trades[1]
+    assert lead.user.startswith("8D92Hh") and lead.pos == 440
+    keys = ("sig", "ev", "slot", "pos", "user", "is_buy", "quote", "q_after", "b_after", "priority", "tip")
+    return [{k: getattr(t, k) for k in keys} for t in trades if t.slot <= lead.slot + 5], lead
+
+
+def test_a_wallets_own_pack_is_its_entry_and_a_place_is_where_the_lab_puts_it():
+    """19 Nov: the three wallets the live book ranked are one operator's, each buy one of fifteen in four transactions
+    sent back to back. This helper had its own copy of the lab's "+Nx" place, which knew companions and no pack: it
+    read the fourteen other buys of the pack as outsiders in the wallet's block and put "right behind it" on the
+    curve at a quarter of the price the pack left (0.000107 against 0.000440 SOL a thousand coins). The place now
+    comes from the lab's own function (lab.copy_entry), so the two cannot differ again: the wallet's entry ends with
+    its pack, nobody else stands in its block, and the first outsider is the one that bought a block later."""
+    from snipetech.analysis import lab
+    from snipetech.sim.market import MarketPath
+
+    from .test_lab import _pack_19nov
+
+    lp = _tool()
+    rows, lead = _pack_rows()
+    st = lp.place_states(rows, lead.user, lead.slot, lead.pos, set())
+    assert st["own"] is rows[1] and st["entry_end"] is rows[15] and rows[15]["pos"] == 443
+    assert st["same_block"] == [] and st["after"] == rows[16:]
+    assert [r["user"][:6] for r in st["outsiders"]] == ["CWNYbh", "J8SWrH", "DJze9r", "RYZx65", "EadXjv", "DuCHeS"]
+
+    def pool(j):
+        return rows[j]["q_after"], rows[j]["b_after"]
+
+    assert st["at"][0] == pool(15)  # right behind it: behind its pack, on PumpSwap
+    # two back: behind CWNYbh and J8SWrH, at the dearer of the two (a holder sold between them), as the lab prices it
+    assert st["at"][2] == pool(16)
+    assert st["at"][6] == pool(27)  # six back: behind the sixth outsider, four blocks on
+    # where no dust is among the buys counted the place is the lab's, state for state
+    path = MarketPath.build([t for t in _pack_19nov() if t.slot <= lead.slot + 5])
+    one = lp.place_states(rows, lead.user, lead.slot, lead.pos, set(), places=(0, 1))
+    assert [one["at"][n] for n in (0, 1)] == [pool(lab.copy_entry(path, 1, n)) for n in (0, 1)] == [pool(15), pool(16)]
+
+
+def test_a_place_never_stops_inside_a_transaction():
+    """19 Nov, the lab's rule since the review of the pack: behind a buy means behind the whole transaction it came
+    in. Two wallets buy in one transaction behind the wallet: one place back is behind both, not between the two."""
+    lp = _tool()
+    rows = [_row(10, 2, "W", 1, 110), _row(10, 5, "a", 1, 120), _row(10, 5, "b", 1, 130), _row(10, 9, "c", 1, 140)]
+    st = lp.place_states(rows, "W", 10, 2, set(), places=(0, 1, 2))
+    assert st["at"] == {0: (110, 1_000), 1: (130, 1_000), 2: (130, 1_000)}
+    assert [r["user"] for r in st["outsiders"]] == ["a", "b", "c"]
+
+
+def test_a_dust_buy_and_a_buy_of_our_own_take_no_place():
+    """The lab counts every buy behind a wallet; this study counts outsiders (docs/research/2026-11-12-leader-profiles.md:
+    a buy of 0.1 SOL or more by a wallet that is not ours). A buy of dust and a buy of our own behind the wallet are
+    trades a copy lands behind when they come first, and no place: one place back is behind the first outsider."""
+    lp = _tool()
+    dust = _row(10, 3, "dust", 1, 111)
+    dust["quote"] = int(0.004e9)
+    rows = [_row(10, 2, "W", 1, 110), dust, _row(10, 4, "ours", 1, 112), _row(10, 5, "bot1", 1, 130),
+            _row(10, 6, "bot2", 1, 140)]  # fmt: skip
+    st = lp.place_states(rows, "W", 10, 2, set(), {"ours"}, places=(0, 1, 2))
+    assert st["at"] == {0: (110, 1_000), 1: (130, 1_000), 2: (140, 1_000)}
+    assert [r["user"] for r in st["outsiders"]] == ["bot1", "bot2"]
+
+
 def test_a_wallet_absent_from_the_rows_gives_nothing():
     lp = _tool()
     assert lp.place_states([_row(10, 2, "X", 1, 110)], "W", 10, 2, set()) == {}

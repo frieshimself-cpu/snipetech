@@ -180,7 +180,7 @@ _FILL_COLS = ("sig", "ts", "slot", "pos_in_slot", "slot_txs", "wallet", "wallet_
               "trades_behind", "price_gap_pct", "priority_lamports", "tip_lamports", "cu_limit", "cu_used", "landing_service", "pnl_sol",
               "exit_reason", "sniper_id", "bid_arm", "buy_sig", "exit_name", "crossed", "twin_fee_sol",
               "leader_progress", "landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50",
-              "landing_verdict", "venue")  # fmt: skip
+              "landing_verdict", "venue", "pack_ahead")  # fmt: skip
 _BID_COLS = ("arm", "n", "failed_n", "mean_pos", "p25_pos", "p75_pos", "mean_gap_pct", "mean_fee_sol", "updated_at",
              "mean_behind", "tipped_share", "mean_overhead_sol")  # fmt: skip
 # columns added after a table first shipped: (table, column, type); added to existing databases on open
@@ -213,7 +213,8 @@ _ADDED_COLUMNS = (
     # the tape does not hold) or "chain-none" (the chain was read: no copied wallet had bought the coin). From the
     # chain only: blocks_after (blocks after the copied buy's own, 0 = the same block), ahead_bids (JSON: the buyers
     # between the copied buy and ours, each with its bid in lamports), the highest and the median bid ahead in
-    # lamports, landing_verdict (first, ahead, fees, speed, unclear: chain_landing.VERDICT_WORDS) and venue (pump.fun
+    # lamports, landing_verdict (first, ahead, fees, speed, unclear: chain_landing.VERDICT_WORDS; the tape reading
+    # writes one word of its own, "inside": our buy stood inside the copied wallet's pack) and venue (pump.fun
     # curve, PumpSwap, LaunchLab or other:<program>). NULL on rows written before, and on sells.
     ("fills", "landing_src", "TEXT"),
     ("fills", "blocks_after", "INTEGER"),
@@ -233,6 +234,14 @@ _ADDED_COLUMNS = (
     ("pay_dests", "applied_since", "INTEGER"),
     ("pay_dests", "tip_streak", "INTEGER"),
     ("pay_dests", "sample_payers", "INTEGER"),
+    # a copy buy: the buys of the copied wallet's own pack between its buy and ours (19 Nov; analysis.companions
+    # pack_end: the rest of its transaction, the transactions sent right behind it with several wallets' buys each,
+    # and those wallets' later buys in that block). They are left out of trades_behind, tape reading and chain reading
+    # alike: one operator's own buys are no buyers ahead of us. 0: the copied wallet bought alone. NULL: not known, a
+    # row measured before, whose trades_behind may still count a pack (on the tape of 19 Nov the first place behind
+    # 8D92Hh's pack read 12 behind). A column and not a key of ahead_bids: that JSON is a list of buyers and only the
+    # chain reading writes it.
+    ("fills", "pack_ahead", "INTEGER"),
 )
 # indexes on columns of _ADDED_COLUMNS: created after those are added
 _ADDED_INDEXES = ("CREATE INDEX IF NOT EXISTS pay_dests_applied ON pay_dests(applied, address, applied_since)",)

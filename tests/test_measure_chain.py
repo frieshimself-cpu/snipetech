@@ -20,7 +20,7 @@ from snipetech.store import Store
 
 from .chain import Chain, key, noise, sig, swap
 from .synth import Market, addr
-from .test_chain_landing import COIN, FAST, LEAD, MATE, ME2, RICH, S, _busy_block
+from .test_chain_landing import COIN, FAST, LEAD, MATE, ME2, PACK_COIN, RICH, S, _busy_block, _pack_block
 
 ME = key("our wallet")
 T0 = 1_794_502_800  # 12 Nov 2026 17:00 UTC: the window of the server's backfill starts here
@@ -224,6 +224,32 @@ def test_a_tape_row_that_arrives_after_the_chain_reading_keeps_the_chains_landin
         buy = st.fill(ours)
         assert buy["landing_src"] == "chain" and buy["trades_behind"] == 2 and buy["wallet_copied"] == LEAD
         assert buy["ahead_bid_max"] == 350_000_000 and buy["pos_in_slot"] is not None  # its place from the tape now
+    finally:
+        st.close()
+
+
+def test_the_pack_a_chain_reading_left_out_stays_on_the_row_when_the_tape_reads_the_buy_again(tmp_path):
+    """19 Nov. A copy of ours on a coin the tape does not hold yet lands first behind the copied wallet's pack (twelve
+    buys in the three transactions right behind its own): the chain reading writes trades_behind 0 and pack_ahead 12.
+    Seconds later the recorder has our trade, with no copied buy beside it, and the next run reads it from the tape.
+    What the chain read stays on the row, the pack's count with the place: it does not turn into "not known"."""
+    chain = Chain(t0=T0 + 240, slot0=S)
+    ours = _pack_block(chain)
+    svc, st, cfg = _svc(tmp_path, chain, mates=False)
+    try:
+        _copy_sniper(st)
+        asyncio.run(backfill(svc, cfg, T0, T0 + 1200))
+        first = st.fill(ours)
+        assert first["landing_src"] == "chain" and first["trades_behind"] == 0 and first["pack_ahead"] == 12
+        m = Market(st, PACK_COIN, addr("late-pack-dev"), chain.ts(S) - 2, S - 5)
+        m.buy(m.deployer, 1.0, 0)
+        t = m.buy(ME, 0.2, 5)
+        t.sig = ours
+        m.commit()
+        asyncio.run(run_measure(svc, cfg, T0 + 1300, since_ts=T0, until_ts=T0 + 1200, move_cursor=False))
+        buy = st.fill(ours)
+        assert buy["landing_src"] == "chain" and buy["trades_behind"] == 0 and buy["pack_ahead"] == 12
+        assert buy["pos_in_slot"] is not None  # its place among the coin's trades, from the tape now
     finally:
         st.close()
 

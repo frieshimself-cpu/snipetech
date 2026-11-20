@@ -13,10 +13,11 @@ through the ops endpoint's `sql` action (30 s and 500 rows a query, always on an
 
 What the numbers are (docs/research/2026-11-12-leader-profiles.md):
 - a moment = a wallet's first buy of a coin in the window, 1 SOL or more (MIN_SOL);
-- its own entry = its buy and, in the same block, its companions' buys (analysis/companions.py: no copy lands
-  between transactions sent together); an outsider = any other buyer behind it;
-- place +N = behind the N-th outsider buy after its entry, counted across its block and the next 5 (the lab's
-  "+Nx"), never cheaper than right behind it;
+- its own entry = its buy, the pack it was sent in (the rest of its transaction and the transactions right behind
+  it that each carry several wallets' buys) and, in the same block, its companions' buys (analysis/companions.py: no
+  copy lands between transactions sent together); an outsider = any other buyer behind it;
+- place +N = behind the N-th outsider buy after its entry, counted across its block and the next 5: the lab's own
+  "+Nx" (lab.copy_entry places it, since 19 Nov), never cheaper than right behind it nor than behind any of the N;
 - the path = the coin's last price at +1, +2, +5, +20 and +60 seconds (5, 9, 23, 93, 280 blocks of 0.214 s) over the
   price at the place: gross, before pump.fun's fees (2.5 % a round trip), the buyer's own price impact and the bid.
 Nothing on import: `main()` does the work."""
@@ -148,12 +149,49 @@ def companions_from_blocks(moments: list[dict], wallet: str, places: int = 5, sh
     return out
 
 
+def _lab_path(rows: list[dict]):
+    """`rows` as the lab's own path (sim.market.MarketPath), one state a row in the rows' order, so a state's number
+    is a row's number. It holds what `analysis.lab.copy_entry` reads: blocks, block places and transactions (a row
+    with no "sig", as a test makes them, is of the one transaction at its block place), wallets, buys, and the pool
+    after each trade."""
+    import numpy as np
+
+    from snipetech.sim.market import MarketPath
+
+    n = len(rows)
+    return MarketPath(
+        mint="", n=n, slot=np.array([r["slot"] for r in rows], dtype=np.int64), ts=np.zeros(n),
+        q=np.array([r["q_after"] for r in rows], dtype=np.float64),
+        b=np.array([r["b_after"] for r in rows], dtype=np.float64), fee_bps=np.zeros(n),
+        is_buy=np.array([bool(r["is_buy"]) for r in rows], dtype=bool), quote=np.zeros(n), base=np.zeros(n),
+        amm=np.zeros(n, dtype=bool), users=[r["user"] for r in rows],
+        sigs=[r.get("sig") or f"{r['slot']}:{r['pos']}" for r in rows],
+        pos=np.array([r["pos"] for r in rows], dtype=np.int64),
+    )  # fmt: skip
+
+
 def place_states(rows: list[dict], wallet: str, slot: int, pos: int, mates: set[str], skip: set[str] = frozenset(),
                  places=PLACES) -> dict:  # fmt: skip
-    """Where a copy lands behind a wallet's buy. `rows`: the coin's trades from the wallet's block on, in order
-    (dicts with slot, pos, user, is_buy, q_after, b_after, quote, priority, tip). Returns the wallet's own entry (its
-    buy and its companions' buys in its block), the outsiders behind it and the pool at each place: behind the N-th
-    outsider buy after the entry, counted across the blocks in `rows`, never cheaper than right behind the entry."""
+    """Where a copy lands behind a wallet's buy. `rows`: the coin's trades of the wallet's block and the blocks after
+    it, in order (dicts with slot, pos, user, is_buy, q_after, b_after, quote, priority, tip, and sig where the tape
+    gave one). Returns the wallet's own buy, the end of its own entry, the outsiders behind it and the pool at each
+    place.
+
+    The entry and every place are the lab's own (`analysis.lab.own_entry_end`, `pack_end`, `copy_entry`: "+Nx"), on
+    the same rows. Until 19 Nov 2026 this was a copy of that rule made by hand, and it had stayed behind. It knew
+    companions and no pack: the fourteen other buys of 8D92Hh's pack of 19 Nov read as outsiders in its block, and
+    "right behind it" stood inside its operator's four transactions, at 0.000107 SOL a thousand coins where the pack
+    left 0.000440. It stopped between two buys of one transaction. And it priced a place behind the N-th buy alone,
+    where the lab takes the dearest of the N. So: the entry is the pack the buy was sent in and the companions' buys
+    in its block; a place is behind the N-th outsider buy after the pack, behind the whole transaction that buy came
+    in, at the dearest price among the entry's end and those N.
+
+    Two rules stay this study's own (docs/research/2026-11-12-leader-profiles.md): a buy under MIN_OUTSIDER_SOL and a
+    buy of one of `skip` (our wallets) are no outsiders, nor is the wallet's own later buy. The lab counts every buy,
+    so it is handed the rows with those buys behind the pack as trades that are no buys: a copy still lands behind
+    them where they come first, and none of them is a place."""
+    from snipetech.analysis import lab
+
     own_i = None
     for i, r in enumerate(rows):
         if r["slot"] == slot and r["user"] == wallet and r["is_buy"] and r["pos"] >= pos:
@@ -161,37 +199,30 @@ def place_states(rows: list[dict], wallet: str, slot: int, pos: int, mates: set[
             break
     if own_i is None:
         return {}
-    last_own = own_i
-    for j in range(own_i + 1, len(rows)):
-        if rows[j]["slot"] != slot:
-            break
-        if rows[j]["is_buy"] and (rows[j]["user"] in mates or rows[j]["user"] == wallet):
-            last_own = j
-    after = rows[last_own + 1 :]
-    outs = [
-        (j, r) for j, r in enumerate(rows[own_i + 1 :], own_i + 1)
-        if r["is_buy"] and r["user"] != wallet and r["user"] not in skip
-        and r["quote"] >= MIN_OUTSIDER_SOL * 1e9
-        and not (r["slot"] == slot and r["user"] in mates)
-    ]  # fmt: skip
-    floor = rows[last_own]
+    path = _lab_path(rows)
+    packed = lab.pack_end(path, own_i)
+    last_own = lab.own_entry_end(path, own_i, mates)
+    own = lab.pack_buyers(path, own_i, packed) | set(mates)  # its operator's wallets: the pack's, its companions
+    for j in range(packed + 1, len(rows)):
+        r = rows[j]
+        if r["slot"] == slot and r["user"] in mates:
+            continue  # a companion's buy in its block ends its entry, whatever its size: the lab reads it as it is
+        if r["user"] == wallet or r["user"] in skip or r["quote"] < MIN_OUTSIDER_SOL * 1e9:
+            path.is_buy[j] = False
+    # the buys the lab counts behind the pack (lab.copy_entry): the n-th of these is the n-th buy a place is behind
+    outs = [(j, r) for j, r in enumerate(rows)
+            if j > packed and path.is_buy[j] and not (r["slot"] == slot and r["user"] in own)]  # fmt: skip
     at = {}
     for n in places:
-        cand = floor
-        late = [j for j, _ in outs if j > last_own]
-        if n > 0 and late:
-            cand = rows[max(last_own, late[min(n, len(late)) - 1])]
-        # never cheaper than right behind the entry (a dump after it is not a better place)
-        if price(cand["q_after"], cand["b_after"]) < price(floor["q_after"], floor["b_after"]):
-            cand = floor
-        at[n] = (cand["q_after"], cand["b_after"])
+        e = lab.copy_entry(path, own_i, n, mates=mates)
+        at[n] = (rows[e]["q_after"], rows[e]["b_after"])
     return {
         "own": rows[own_i],
-        "entry_end": floor,
+        "entry_end": rows[last_own],
         "at": at,
         "outsiders": [r for _, r in outs],
         "same_block": [r for _, r in outs if r["slot"] == slot],
-        "after": after,
+        "after": rows[last_own + 1 :],
     }
 
 

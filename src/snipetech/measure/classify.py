@@ -4,9 +4,11 @@ No network: the fingerprint (TxMeta) is passed in, the tape is read from the sto
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Collection
 from typing import Any
 
 from ..analysis.audit import _position_in_slot
+from ..analysis.companions import pack_end
 from ..analysis.lab import CURVE_REAL_TOKENS, VIRTUAL_OFFSET
 from ..fees import sent_bid
 from ..models import AMM, CURVE, Trade
@@ -199,10 +201,62 @@ def fee_fields(meta: TxMeta | None) -> dict[str, Any]:
             "cu_used": meta.cu_consumed, "landing_service": service}  # fmt: skip
 
 
+def pack_ahead(store: Store, trade: Trade, leader: str, lslot: int, lpos: int) -> tuple[list[Trade], bool]:
+    """The buys between the copied buy (`leader`'s, at block place `lpos` of `lslot`) and our buy `trade` that are
+    the copied wallet's own pack, and whether our buy stood inside that pack. The pack: the trades sent with its buy
+    (`analysis.companions.pack_end`: the rest of its transaction and the transactions that follow it back to back in
+    its block, each with several wallets' buys), and the later buys in that block of the wallets that bought in the
+    pack, those ahead of the copied wallet in its own transaction included (the fee payer's small buy often comes
+    first). One short read of the coin's trades in the copied buy's block.
+
+    19 Nov 2026: 8D92Hh's buy was the second of four in its transaction and three more transactions of the same
+    operator ran right behind it, fifteen buys in block places 440 to 443. A review put a buy of ours in the next
+    place of that tape: it was written down as "12 trades behind", where the paper model (lab.copy_entry,
+    bid_landing.block) leaves the pack out and says none. Such a row calls the best place there is slow, and the
+    measured landing of every qualify lab (the 75th percentile of trades_behind, measure/run.py) is pushed back by
+    the size of the packs: two such fills among four made it "+12x" where the outsiders make it "+3x". One operator's
+    own buys are never buyers ahead of us (CLAUDE.md rule 2). Counted as the lab counts a place: a pack wallet's buy
+    in a later block is anybody's buy again.
+
+    Inside: the pack is read as if our own transactions were not in the block, so a link that stands right behind
+    ours goes on with it. Our buy stood inside the pack when the pack so read goes on past it. The lab's premise is
+    that no copy lands there (between the transactions one operator sends together), and a fill that did is the only
+    live evidence against it (a review, 19 Nov): `classify_trade` counts it plainly and says so."""
+    block = store.block_trades(trade.mint, int(lslot), int(lslot))
+    mine = {t.sig for t in block if t.user == trade.user}  # our own transactions in that block
+    places = sorted({int(t.pos) for t in block if t.sig in mine})
+    rest = [t for t in block if t.sig not in mine]
+    k0 = next((k for k, t in enumerate(rest) if t.pos == lpos and t.user == leader and t.is_buy), None)
+    if k0 is None:
+        return [], False
+
+    def at(k: int) -> tuple[int, str, int, bool, str]:  # a place counted as if ours were not there
+        t = rest[k]
+        return int(t.slot), t.sig, int(t.pos) - sum(1 for p in places if p < int(t.pos)), bool(t.is_buy), t.user
+
+    end = pack_end(k0, len(rest), at)
+    first = k0
+    while first > 0 and rest[first - 1].sig == rest[k0].sig:  # its own transaction, from its first trade on
+        first -= 1
+    wallets = {t.user for t in rest[first : end + 1] if t.is_buy}
+    ours = (int(trade.slot), int(trade.pos))
+    inside = (int(rest[end].slot), int(rest[end].pos)) > ours
+    # of the rows `classify_trade` counts between the two buys (another wallet's buy, behind the copied one's place,
+    # ahead of ours): those in the pack, and those of the pack's wallets
+    ahead = [t for k, t in enumerate(rest)
+             if t.is_buy and t.pos > lpos and (int(t.slot), int(t.pos)) < ours and (k <= end or t.user in wallets)]  # fmt: skip
+    return ahead, inside
+
+
 def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta | None, sniper_id: str | None = None,
-                   bid_arm: str | None = None, arms: dict[str, dict] | None = None) -> dict[str, Any]:  # fmt: skip
+                   bid_arm: str | None = None, arms: dict[str, dict] | None = None,
+                   mates: Callable[[str], Collection[str] | None] | None = None) -> dict[str, Any]:  # fmt: skip
     """One `fills` row. `sol` is what left the wallet on a buy (quote + protocol fee) and what came back on a sell.
-    The arm: as given, else from the sniper's name, else from the fee paid (`arms` = the book's bid arms)."""
+    The arm: as given, else from the sniper's name, else from the fee paid (`arms` = the book's bid arms).
+    `trades_behind`: the other wallets' buys between the copied buy and ours, without the copied wallet's own pack,
+    whose buys are counted apart (`pack_ahead`), and without its companions (`mates(wallet)`: the set the chain
+    reading leaves out, chain_landing.known_mates; None or no `mates`: not known, counted); both None where no copied
+    buy was found. A buy of ours that stood inside the pack is counted plainly, with `landing_verdict` "inside"."""
     rank, size = _position_in_slot(store, trade.mint, trade.slot, trade.sig)
     fees = fee_fields(meta)
     if bid_arm is None:
@@ -216,7 +270,8 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
         "wallet_copied": None, "event_kind": None, "mint": trade.mint, "side": "buy" if trade.is_buy else "sell",
         "sol": round((trade.quote + trade.fee) / 1e9, 6) if trade.is_buy else round((trade.quote - trade.fee) / 1e9, 6),
         "tokens": float(trade.base), "trades_behind": None, "price_gap_pct": None, "pnl_sol": None, "exit_reason": None,
-        "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None, "leader_progress": None,
+        "sniper_id": sniper_id, "bid_arm": bid_arm, "buy_sig": None, "leader_progress": None, "pack_ahead": None,
+        "landing_verdict": None,
     }  # fmt: skip
     row.update(fees)
     if trade.is_buy:
@@ -225,11 +280,22 @@ def classify_trade(store: Store, trade: Trade, leaders: set[str], meta: TxMeta |
             user, lslot, lpos, _lquote, _lq, lb, lvenue = lead
             # other wallets' buys between the leader's and ours: our own other fills (the second arm) do not count,
             # or the arm that goes second measures worse by construction
+            # nor the copied wallet's companions, in its block or after it, as the chain reading leaves them out
+            known = sorted(set((mates(user) if mates else None) or ()) - {trade.user})
+            others = " AND user NOT IN (%s)" % ",".join("?" * len(known)) if known else ""
             between = store._q(
-                "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND user != ? AND (slot>? OR (slot=? AND pos>?)) AND (slot<? OR (slot=? AND pos<?))",
-                (trade.mint, trade.user, lslot, lslot, lpos, trade.slot, trade.slot, trade.pos),
+                "SELECT COUNT(*) FROM trades WHERE mint=? AND is_buy=1 AND user != ?%s AND (slot>? OR (slot=? AND pos>?)) "
+                "AND (slot<? OR (slot=? AND pos<?))" % others,
+                (trade.mint, trade.user, *known, lslot, lslot, lpos, trade.slot, trade.slot, trade.pos),
             )[0][0]
-            row["wallet_copied"], row["trades_behind"], row["price_gap_pct"] = user, int(between), _gap_pct(trade, lead)
+            # less the copied wallet's own pack, counted apart: its operator's buys are no buyers ahead of us
+            ahead, inside = pack_ahead(store, trade, user, lslot, lpos)
+            row["pack_ahead"] = len(ahead)
+            row["wallet_copied"], row["price_gap_pct"] = user, _gap_pct(trade, lead)
+            if inside:  # the only live evidence against "no copy lands inside a pack": counted plainly, and said
+                row["trades_behind"], row["landing_verdict"] = int(between), "inside"
+            else:  # a companion that bought in the pack is out of `between` already
+                row["trades_behind"] = int(between) - sum(1 for t in ahead if t.user not in known)
             # where on its curve the leader bought (research round 2, 7 Nov: early-curve copies landed 2-4 trades behind
             # at +18-43 %, 7aPo3n's at 79-93 % of the curve 0-1 behind at +0.5-0.8 %): live landings by curve progress
             row["leader_progress"] = curve_progress(lvenue, lb)

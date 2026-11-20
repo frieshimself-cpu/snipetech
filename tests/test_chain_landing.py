@@ -16,7 +16,7 @@ import pytest
 from snipetech.measure import chain_landing as CL
 from snipetech.solana.programs import PUMP_AMM_PROGRAM, PUMP_PROGRAM
 
-from .chain import NOZOMI, Chain, key, noise, sig, swap
+from .chain import NOZOMI, Chain, key, noise, pack, sig, swap
 
 FIX = Path(__file__).parent / "fixtures"
 ME, ME2, LEAD, MATE = key("our wallet"), key("our second wallet"), key("the copied wallet"), key("its companion")
@@ -389,3 +389,101 @@ def test_the_landing_command_reads_one_buy_or_a_window_and_the_agents_may_start_
     assert "--sig" in capsys.readouterr().err
     a = cli.build_parser().parse_args(["landing", "--sig", "X", "--leader", "A", "--leader", "B"])
     assert a.leader == ["A", "B"] and a.since_minutes == 60.0
+
+
+# -- the copied wallet's own pack is nobody ahead of us (19 Nov 2026) -------------------------------------------------
+
+PACK_COIN = key("a coin an operator's pack bought")
+
+
+def _pack_wallets(n: int = 4) -> list[list[str]]:
+    """The wallets of a pack of `n` transactions, four in each; the copied wallet is the second buyer of the first."""
+    wallets = [[key(f"pack wallet {t}.{k}") for k in range(4)] for t in range(n)]
+    wallets[0][1] = LEAD
+    return wallets
+
+
+def _pack_block(chain: Chain, behind: tuple = (), our_slot: int = S) -> str:
+    """A block shaped like the one of 19 Nov: the copied wallet's buy is the second of four in its transaction and
+    three more transactions of four wallets' buys follow it back to back, none with a priority fee or a tip. Then the
+    transactions of `behind`, and our own buy at a bid of 0.003 SOL (in `our_slot`, behind what that block holds
+    already). Returns our buy's signature."""
+    chain.put(S, noise("before the pack", key("somebody")))
+    for t, wallets in enumerate(_pack_wallets()):
+        chain.put(S, pack(f"pack {t}", wallets, PACK_COIN, tokens=20_000_000_000, sol=4.0))
+    chain.put(S, *behind)
+    chain.put(our_slot, swap("ours", ME, PACK_COIN, tokens=38_000_000, sol=0.2, priority=0.001, tip=0.002))
+    return sig("ours")
+
+
+def test_the_copied_wallets_own_pack_is_named_apart_and_is_nobody_ahead_of_us():
+    """19 Nov: 8D92Hh's buy is the second of four in its transaction and three more transactions of its operator run
+    right behind it, twelve more wallets' buys with no priority fee and no tip. A copy of ours in the next place of
+    such a block is first behind the wallet. The chain reading says "place 12, speed: a buyer ahead of us bid less
+    than we did and still got in first" of it, and the lesson read off that is "we are too slow". The transactions
+    right behind the copied one, back to back, that each carry buys of two or more wallets are the copied wallet's
+    pack (as on the tape: analysis.companions.pack_end): their buyers are listed apart, as its companions are, and
+    do not count."""
+    chain = Chain()
+    ours = _pack_block(chain)
+    r = _run(CL.read_landing(chain, ours, LEAD, mates=None, own={ME}))
+    assert r["leader"] == LEAD and r["leader_buy"]["index"] == 1 and r["blocks_after"] == 0 and r["complete"]
+    assert r["leader_buy"]["sol"] == pytest.approx(4.0)  # the copied wallet's own side of its transaction
+    assert r["place"] == 0 and r["buyers_ahead"] == [] and r["verdict"] == "first"
+    assert r["bid_less"] == 0 and r["highest_bid_ahead_sol"] is None
+    links = [w for wallets in _pack_wallets()[1:] for w in wallets]
+    assert [b["wallet"] for b in r["pack_ahead"]] == links and len(links) == 12
+    assert {b["bid_sol"] for b in r["pack_ahead"]} == {0.0} and r["companions_ahead"] == []
+    # the fills row: nobody behind the wallet but its own pack, and how many buys that was
+    cols = CL.fill_fields(r)
+    assert cols["trades_behind"] == 0 and cols["pack_ahead"] == 12 and cols["landing_verdict"] == "first"
+    assert json.loads(cols["ahead_bids"]) == []
+    assert "not counted: 12 buys of the wallet's own pack" in CL.render([r])
+
+
+def test_an_outsider_behind_the_pack_is_counted_and_a_pack_wallet_buying_again_is_not():
+    """19 Nov. Behind the pack, in the same block: a wallet of the pack buys once more, alone in its transaction, and
+    then an outsider buys at a higher bid than ours. The outsider is the one buyer ahead of us. The pack wallet's
+    second buy is its operator buying again, as the copied wallet's own second buy is (the lab counts a place the
+    same way: lab.pack_buyers); a block later it would be anybody's buy."""
+    again = _pack_wallets()[2][3]
+    behind = (swap("a pack wallet again", again, PACK_COIN, tokens=5_000_000, sol=0.3, held=20_000_000_000),
+              swap("an outsider", RICH, PACK_COIN, tokens=900_000_000, sol=2.0, priority=0.05, tip=0.3))  # fmt: skip
+    chain = Chain()
+    r = _run(CL.read_landing(chain, _pack_block(chain, behind), LEAD, mates=None, own={ME}))
+    assert r["place"] == 1 and [b["wallet"] for b in r["buyers_ahead"]] == [RICH] and r["verdict"] == "fees"
+    assert len(r["pack_ahead"]) == 13 and r["pack_ahead"][-1]["wallet"] == again
+    later = Chain()  # the same second buy a block later, and our buy behind it there
+    later.put(S + 1, swap("a pack wallet again", again, PACK_COIN, tokens=5_000_000, sol=0.3, held=20_000_000_000))
+    r = _run(CL.read_landing(later, _pack_block(later, our_slot=S + 1), LEAD, mates=None, own={ME}))
+    assert r["blocks_after"] == 1 and r["place"] == 1 and [b["wallet"] for b in r["buyers_ahead"]] == [again]
+    assert len(r["pack_ahead"]) == 12
+
+
+def test_one_wallet_a_transaction_right_behind_the_copied_buy_is_no_pack():
+    """19 Nov. Three transactions with no bid stand right behind the copied buy, one buying wallet in each. They may
+    be its operator's or three fast bots: a transaction is a link of a pack only when it carries two or more wallets'
+    buys (companions.PACK_TX_WALLETS), and one wallet's habit of standing there is the companions rule's to find. So
+    they count as buyers ahead of us, as they did: place 3, and nothing is named a pack."""
+    chain = Chain()
+    chain.put(S, swap("lead", LEAD, PACK_COIN, tokens=3_000_000_000, sol=3.0))
+    for k in range(3):
+        chain.put(S, swap(f"single {k}", key(f"a wallet alone {k}"), PACK_COIN, tokens=900_000_000, sol=1.0))
+    chain.put(S, swap("ours", ME, PACK_COIN, tokens=38_000_000, sol=0.2, priority=0.001, tip=0.002))
+    r = _run(CL.read_landing(chain, sig("ours"), LEAD, mates=None, own={ME}))
+    assert r["place"] == 3 and r["pack_ahead"] == [] and r["verdict"] == "speed"
+    assert CL.fill_fields(r)["pack_ahead"] == 0  # known: no pack stood there
+
+
+def test_a_transaction_of_several_wallets_that_is_not_right_behind_the_copied_one_is_somebody_elses():
+    """19 Nov. A pack runs back to back: a link stands in the very next place of the block. Here another transaction
+    stands between the copied one and a transaction of four wallets' buys, so the four are outsiders, as the tape
+    reading has it (one foreign transaction between two of an operator's ends the pack there)."""
+    chain = Chain()
+    wallets = _pack_wallets(2)
+    chain.put(S, pack("pack 0", wallets[0], PACK_COIN, tokens=20_000_000_000, sol=4.0))
+    chain.put(S, noise("in between", key("somebody else")))
+    chain.put(S, pack("pack 1", wallets[1], PACK_COIN, tokens=20_000_000_000, sol=4.0))
+    chain.put(S, swap("ours", ME, PACK_COIN, tokens=38_000_000, sol=0.2, priority=0.001, tip=0.002))
+    r = _run(CL.read_landing(chain, sig("ours"), LEAD, mates=None, own={ME}))
+    assert r["place"] == 4 and [b["wallet"] for b in r["buyers_ahead"]] == wallets[1] and r["pack_ahead"] == []

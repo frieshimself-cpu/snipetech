@@ -265,7 +265,7 @@
       <div class="card"><h2>Snipers</h2><div class="big">${snap.snipers_known ? Object.values(snap.snipers || {}).reduce((a, b) => a + b, 0) : "—"}</div>
       <div class="dim">${snap.snipers_known ? Object.entries(snap.snipers || {}).map(([k, v]) => v + " " + k).join(", ") || "none" : "OKTech not answering"} · book ${s.book && s.book.enabled ? "on" : "off"}</div></div></div>
       <div class="card wrap" style="margin-top:12px"><h2>Every buy and sell (newest first)</h2><table>
-      <tr><th>When</th><th>Side</th><th>Coin</th><th>Copied</th><th class="r">SOL</th><th class="r">Profit</th><th class="r">Behind</th><th class="r">Price gap</th><th>Exit</th></tr>
+      <tr><th>When</th><th>Side</th><th>Coin</th><th>Copied</th><th class="r">SOL</th><th class="r">Profit</th><th class="r" title="Buys by other wallets between the copied wallet's buy and ours. The copied wallet's own pack is not counted: the buys sent with its own, in its transaction and in the transactions right behind it. A row measured before 19 Nov may still count a pack.">Behind</th><th class="r">Price gap</th><th>Exit</th></tr>
       ${fills.map((f) => `<tr><td class="dim">${ago(f.ts, now)}</td><td>${f.side === "buy" ? '<span class="chip acc">buy</span>' : '<span class="chip">sell</span>'}</td>
         <td class="mono">${short(f.mint)}</td><td class="mono">${short(f.wallet_copied)}</td><td class="r">${num(f.sol, 3)}</td>
         <td class="r">${f.pnl_sol == null ? "" : signed(f.pnl_sol, 4)}</td><td class="r">${f.trades_behind ?? ""}</td>

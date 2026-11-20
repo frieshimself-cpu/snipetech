@@ -14,7 +14,11 @@ For one buy of ours and the wallet (or wallets) it may have copied, this reads:
 - **the blocks from that buy to ours** (MAX_BLOCKS at the most, and it says so when there were more): every other
   wallet whose balance of the coin went up in between, in the order the blocks ran them, each with what it paid and
   what it bid; the buys that failed in between, apart (they show who tried). The copied wallet's companions and our own
-  wallets are named and never counted as buyers ahead of us (no copy lands between one operator's wallets).
+  wallets are named and never counted as buyers ahead of us (no copy lands between one operator's wallets). Nor is
+  the copied wallet's pack (19 Nov 2026): the transactions right behind its own, back to back, that each carry buys
+  of several wallets (`analysis.companions.pack_end` on the tape), and a later buy in that block by a wallet of the
+  pack. On 19 Nov 8D92Hh's buy led twelve such buys with no bid at all: a copy in the next place of a block like
+  that one read "place 12, speed", the best place there is called too slow.
 
 A bid is the priority fee plus the tips to the landing services we have catalogued (`solana.tips`), as on the tape
 (`analysis.place_bids`). On our own fills a payment to an account nobody catalogued counts as a tip too, as the fills
@@ -36,6 +40,7 @@ from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import replace
 from typing import Any
 
+from ..analysis.companions import PACK_TX_WALLETS
 from ..solana.programs import LAUNCHLAB_PROGRAM, PUMP_AMM_PROGRAM, PUMP_PROGRAM
 from ..solana.tips import BASE_FEE_PER_SIGNATURE, SYSTEM
 from ..solana.tx import _account_keys
@@ -57,12 +62,14 @@ VENUES = {PUMP_PROGRAM: "pump.fun curve", PUMP_AMM_PROGRAM: "PumpSwap", LAUNCHLA
 _PLUMBING = frozenset({SYSTEM, COMPUTE_BUDGET, SPL_TOKEN, TOKEN_2022, ATA_PROGRAM}
                       | {p for p, name in PROGRAM_LABELS.items() if name.startswith(("memo", "pump-fees"))})  # fmt: skip
 VERDICT_WORDS = {
-    "first": "first behind the copied wallet: nobody bought in between",
+    "first": "first behind the copied wallet: no outsider bought in between",
     "ahead": "landed ahead of the copied wallet's own buy",
     "fees": "every buyer ahead of us bid more than we did",
     "speed": "a buyer ahead of us bid less than we did and still got in first",
     "unclear": "a buyer ahead of us paid an account nobody catalogued: a tip or a bot's fee, so more or less than our "
                "bid is not known",
+    # written by the tape reading alone (classify.pack_ahead): the chain reading stops at our buy and cannot see it
+    "inside": "landed inside the copied wallet's own pack, between transactions it sent together",
 }  # fmt: skip
 
 
@@ -351,7 +358,10 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
     The row: our own side as `read_fill` gives it and `our_bid_sol`; `leader`, `leader_buy` (None with `leader_note`
     when no copied wallet bought the coin before us); `blocks_after` (0: the leader's own block; the blocks that
     exist in between, `slots_after` the slots), `place` (the outsiders' buys between the leader's and ours; 0: first
-    behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`,
+    behind it), `buyers_ahead` in the order they ran, `failed_ahead`, `companions_ahead`, `own_ahead`, `pack_ahead`
+    (the buys of the leader's own pack: the transactions right behind its own, back to back, each with buys of
+    PACK_TX_WALLETS wallets or more, and a later buy in that block by a wallet that bought in the pack or in the
+    leader's own transaction; listed and not counted, like its companions'),
     `highest_bid_ahead_sol` / `median_bid_ahead_sol`, `bid_more` / `bid_less` / `bid_unclear` and the `verdict`
     (VERDICT_WORDS), `price_gap_pct` (our price over the leader's, percent) with `price_from`, and `complete`: False
     when more blocks lay between than MAX_BLOCKS (`blocks_unread`: the place is a floor then)."""
@@ -374,7 +384,8 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
         **fill, "sig": sig, "our_bid_sol": our_bid / LAMPORTS, "leader": None, "leader_buy": None, "leader_note": None,
         "blocks_after": None, "slots_after": None, "blocks_read": 0, "blocks_unread": 0, "complete": True,
         "ahead_of_leader": False, "place": None, "buyers_ahead": [], "failed_ahead": [], "companions_ahead": [],
-        "own_ahead": [], "companions": "unknown", "highest_bid_ahead_sol": None, "median_bid_ahead_sol": None,
+        "pack_ahead": [], "own_ahead": [], "companions": "unknown", "highest_bid_ahead_sol": None,
+        "median_bid_ahead_sol": None,
         "bid_more": 0, "bid_less": 0, "bid_unclear": 0, "verdict": None, "price_gap_pct": None,
     }  # fmt: skip
     del out["other_lamports"]
@@ -444,6 +455,10 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
             continue
         out["blocks_read"] += 1
         start = 0
+        # The copied wallet's pack, in its own block: `link` is the place the pack's next transaction would stand at
+        # (right behind the last one), `packers` the wallets that bought in the pack so far, its own transaction
+        # from its first buyer on. A transaction that is no link, or one that failed or names another coin, ends it.
+        link, packers = None, set()
         if s == lead["slot"]:
             at = _index(txs, lead["sig"])
             if at is None:
@@ -451,7 +466,8 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
                 unread += 1
                 continue
             out["leader_buy"]["index"] = at
-            start = at + 1
+            start = link = at + 1
+            packers = set(buyers(txs[at], mint))
         stop = our_at if s == slot else len(txs)
         for i in range(start, stop):
             t = txs[i]
@@ -468,12 +484,18 @@ async def read_landing(rpc, sig: str, leaders: str | Iterable[str], *, wallet: s
                     out["failed_ahead"].append({**tried, "label": labels.get(tried["wallet"]), "index": i,
                                                 "blocks_after": n})  # fmt: skip
                 continue
-            for w in buyers(t, mint):
+            who = buyers(t, mint)
+            packed = i == link and len(set(who)) >= PACK_TX_WALLETS
+            if packed:
+                link, packers = i + 1, packers | set(who)
+            for w in who:
                 if w == leader:
                     continue  # the wallet buying again is no buyer ahead of us
                 row = _ahead_row(read_fill(t, w, services), i, n, our_bid, labels)
                 if w in own_set:
                     out["own_ahead"].append(row)
+                elif packed or w in packers:  # its operator's own entry, or its operator buying again in the block
+                    out["pack_ahead"].append(row)
                 elif w in mates_set:
                     out["companions_ahead"].append(row)
                 else:
@@ -526,6 +548,7 @@ def own_wallets(store, cfg) -> set[str]:
 
 def fill_fields(res: Mapping[str, Any]) -> dict[str, Any]:
     """The `fills` columns a chain reading gives a buy of ours: the copied wallet, `trades_behind` (the place),
+    `pack_ahead` (how many buys of the copied wallet's own pack stood in between and are not in the place),
     `price_gap_pct`, `blocks_after`, the buyers ahead with their bids (`ahead_bids`: JSON, [{"w": wallet, "bid":
     lamports, "sol", "vs": more/less/unclear/same, "max": the bid with a payment nobody catalogued}], the first
     AHEAD_KEPT), the highest and the median bid ahead in lamports, the verdict, the venue ("other:<program>" for one
@@ -549,6 +572,7 @@ def fill_fields(res: Mapping[str, Any]) -> dict[str, Any]:
         return None if sol is None else round(sol * LAMPORTS)
 
     return out | {"wallet_copied": res["leader"], "trades_behind": res["place"], "price_gap_pct": res["price_gap_pct"],
+                  "pack_ahead": len(res["pack_ahead"]),
                   "blocks_after": res["blocks_after"], "ahead_bids": json.dumps(ahead, separators=(",", ":")),
                   "ahead_bid_max": lamports(res["highest_bid_ahead_sol"]),
                   "ahead_bid_p50": lamports(res["median_bid_ahead_sol"]), "landing_verdict": res["verdict"]}  # fmt: skip
@@ -664,8 +688,9 @@ def render(rows: list[dict[str, Any]]) -> str:
         if r["failed_ahead"]:
             extra.append("tried and failed in between: "
                          + ", ".join(f"{f['wallet'][:6]}…: {_g(f['bid_sol'])}" for f in r["failed_ahead"]))  # fmt: skip
-        if r["companions_ahead"] or r["own_ahead"]:
-            extra.append(f"not counted: {len(r['companions_ahead'])} of the wallet's companions, "
+        if r["companions_ahead"] or r["own_ahead"] or r["pack_ahead"]:
+            extra.append(f"not counted: {len(r['pack_ahead'])} buys of the wallet's own pack (the transactions sent "
+                         f"right behind its own), {len(r['companions_ahead'])} of the wallet's companions, "
                          f"{len(r['own_ahead'])} of our own wallets")  # fmt: skip
         if r.get("leader") and r["companions"] == "unknown":
             extra.append("the wallet's companions are unknown (the tape holds too few of its buys)")

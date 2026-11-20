@@ -407,3 +407,51 @@ def test_the_block_is_read_with_its_fee_records():
     assert [t.user for t in rows] == [LEAD1, BOT_A, BOT_B, BOT_C, RICH]
     assert rows[1].priority + rows[1].tip == 30_000_000 and rows[0].pos == 100 and rows[1].pos == 120
     assert all(t.is_buy for t in rows) and rows[-1].slot == slot + 2
+
+
+def test_the_model_check_agrees_on_a_buy_of_ours_right_behind_a_pack():
+    """19 Nov, a review of the pack rule. The followed wallet buys at block place 100, a transaction of two more
+    wallets of its operator stands at 101, and our copy at 102: first behind the wallet. The paper model has left the
+    pack out since that day (no outsider ahead of us), while the chain reader still counted its two wallets
+    (fills.trades_behind 2): the check called the model "too kind" on the best fill there is. The chain reading now
+    leaves the pack out too, so the same block reads 0 behind on both sides and the check agrees: with the tape's
+    block, and with only the buyers the fills row names where the tape does not hold the coin."""
+    import asyncio
+
+    from snipetech.measure import chain_landing as CL
+
+    from .chain import Chain, pack, sig, swap
+
+    link_a, link_b = addr("pbid-pack-link-a"), addr("pbid-pack-link-b")
+    st = _store()
+    try:
+        m = Market(st, addr("pbid-pack-coin"), addr("pbid-pack-dev"), NOW - 5000, 91_000_000)
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        rows = [(LEAD1, 2.0, None, 100, 0.002), (link_a, 1.0, "link", 101, 0.0), (link_b, 1.0, "link", 101, 0.0),
+                (OURS, 0.05, None, 102, 0.01), (BOT_C, 0.5, None, 130, 0.001)]  # fmt: skip
+        for who, sol, tx, place, bid in rows:
+            t = _bid(m.buy(who, sol, 50, sig=addr(f"pbid-pack-{tx}") if tx else None), bid)
+            t.pos = place
+        m.commit()
+        slot = m.slot0 + 50
+        chain = Chain(t0=NOW - 300, slot0=slot)  # the same block as the chain serves it
+        chain.put(slot, swap("lead", LEAD1, m.mint, tokens=2_000_000_000, sol=2.0, priority=0.002))
+        chain.put(slot, pack("link", [link_a, link_b], m.mint, tokens=900_000_000, sol=1.0))
+        chain.put(slot, swap("ours", OURS, m.mint, tokens=40_000_000, sol=0.05, priority=0.001, tip=0.009))
+        chain.put(slot, swap("later", BOT_C, m.mint, tokens=400_000_000, sol=0.5, priority=0.001))
+        landing = asyncio.run(CL.read_landing(chain, sig("ours"), LEAD1, mates=None, own={OURS}))
+        fill = {"ts": landing["ts"], "slot": slot, "wallet": OURS, "side": "buy", "sol": landing["sol"],
+                "priority_lamports": landing["priority_lamports"], "tip_lamports": landing["tip_lamports"],
+                **CL.fill_fields(landing)}  # fmt: skip
+        assert fill["trades_behind"] == 0 and fill["pack_ahead"] == 2 and fill["landing_src"] == "chain"
+        st.put_fill(fill | {"sig": "behind-a-pack", "mint": m.mint})
+        st.put_fill(fill | {"sig": "behind-a-pack-off-tape", "mint": addr("pbid-coin-not-on-tape")})
+        out = PB.model_check(st, st, Config(), now=NOW)
+    finally:
+        st.close()
+    rows = {r["sig"]: r for r in out["rows"]}
+    on_tape, off_tape = rows["behind-a-pack"], rows["behind-a-pack-off-tape"]
+    assert (on_tape["real_behind"], on_tape["model_behind"], on_tape["basis"]) == (0, 0, "tape")
+    assert (off_tape["real_behind"], off_tape["model_behind"], off_tape["basis"]) == (0, 0, "ahead")
+    assert on_tape["verdict"] == off_tape["verdict"] == "agrees" and on_tape["bid_sol"] == 0.01
+    assert out["bid"] == {"agrees": 2, "model_too_kind": 0, "model_too_harsh": 0}

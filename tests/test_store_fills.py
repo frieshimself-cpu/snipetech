@@ -133,6 +133,7 @@ def test_the_twin_fee_column_is_added_to_an_old_database(tmp_path):
 
 LANDING_COLUMNS = ["landing_src", "blocks_after", "ahead_bids", "ahead_bid_max", "ahead_bid_p50", "landing_verdict",
                    "venue"]  # fmt: skip
+PACK_COLUMN = "pack_ahead"  # added after them (19 Nov): the last column of fills
 
 
 def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
@@ -144,7 +145,7 @@ def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
 
     Store(tmp_path / "before.db").close()
     con = sqlite3.connect(tmp_path / "before.db")
-    for col in LANDING_COLUMNS:  # the file as the code of 11 Nov left it
+    for col in [*LANDING_COLUMNS, PACK_COLUMN]:  # the file as the code of 11 Nov left it
         con.execute(f"ALTER TABLE fills DROP COLUMN {col}")
     con.execute("INSERT INTO fills (sig, ts, side, sol, wallet_copied, trades_behind, price_gap_pct, leader_progress) "
                 "VALUES ('B0', ?, 'buy', 0.2, 'LEAD', 2, 25.0, 0.31)", (NOW,))  # fmt: skip
@@ -170,6 +171,40 @@ def test_the_landing_columns_are_added_to_a_database_of_before(tmp_path):
     fresh = Store(tmp_path / "fresh2.db")
     try:
         assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated
-        assert migrated[-len(LANDING_COLUMNS) :] == LANDING_COLUMNS
+        assert migrated[-len(LANDING_COLUMNS) - 1 :] == [*LANDING_COLUMNS, PACK_COLUMN]
+    finally:
+        fresh.close()
+
+
+def test_the_pack_column_is_added_to_a_database_of_before_and_an_old_row_does_not_know_its_pack(tmp_path):
+    """19 Nov: the measure stage counts the copied wallet's own pack as buyers ahead of our copy (on that day's tape
+    the first place behind 8D92Hh's pack reads 12 trades behind, where the paper model says none). The buys of the
+    pack are now left out of trades_behind and counted apart in `pack_ahead`. A database of before gets the column
+    appended on open. A row measured before reads None there: not known, never 0, because its trades_behind may
+    still hold a pack. A fresh database ends with the same columns in the same order."""
+    import sqlite3
+
+    Store(tmp_path / "before.db").close()
+    con = sqlite3.connect(tmp_path / "before.db")
+    con.execute(f"ALTER TABLE fills DROP COLUMN {PACK_COLUMN}")  # the file as the code of 18 Nov left it
+    con.execute("INSERT INTO fills (sig, ts, side, sol, wallet_copied, trades_behind, landing_src) "
+                "VALUES ('B0', ?, 'buy', 0.2, 'LEAD', 12, 'tape')", (NOW,))  # fmt: skip
+    con.commit()
+    assert PACK_COLUMN not in {r[1] for r in con.execute("PRAGMA table_info(fills)")}
+    con.close()
+    st = Store(tmp_path / "before.db")
+    try:
+        old = st.fill("B0")
+        assert old["trades_behind"] == 12 and old["landing_src"] == "tape" and old[PACK_COLUMN] is None
+        st.put_fill(_fill("B1", NOW + 1, trades_behind=0, pack_ahead=12))  # right behind a pack of twelve buys
+        st.put_fill(_fill("B2", NOW + 2, trades_behind=2, pack_ahead=0))  # the copied wallet bought alone: known, none
+        assert st.fill("B1")[PACK_COLUMN] == 12 and st.fill("B2")[PACK_COLUMN] == 0
+        assert [r[PACK_COLUMN] for r in st.fills(side="buy")] == [0, 12, None]  # newest first
+        migrated = [r[1] for r in st._q("PRAGMA table_info(fills)")]
+    finally:
+        st.close()
+    fresh = Store(tmp_path / "fresh3.db")
+    try:
+        assert [r[1] for r in fresh._q("PRAGMA table_info(fills)")] == migrated and migrated[-1] == PACK_COLUMN
     finally:
         fresh.close()

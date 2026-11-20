@@ -89,12 +89,21 @@ SQL_TABLES: dict[str, str] = {
     "verdict.ev_every_launch_sol)",
     "fills": "every transaction of our own sniper wallet. side = buy, sell or failed (a send that did not land); "
     "wallet_copied = the wallet a copy followed; sol = SOL (not lamports); pos_in_slot = its place in the block; "
-    "trades_behind = trades between the copied buy and ours; pnl_sol = on the sell; ts = unix seconds; landing_src = "
+    "trades_behind = other wallets' buys between the copied buy and ours, the copied wallet's own pack left out (19 "
+    "Nov: the buys sent with its own, in its transaction and in the transactions right behind it that each carry "
+    "several wallets' buys, are its operator's and never buyers ahead of us), and its known companions left out "
+    "(on the tape since 20 Nov, on the chain always); pack_ahead = how many buys that pack "
+    "was, 0 = it bought alone, NULL = not known: a row measured before, whose trades_behind may still count a pack "
+    "(on the tape of 19 Nov the first place behind 8D92Hh's pack read 12 behind: the best place there is, not a "
+    "slow one); landing_verdict = 'inside' on a tape row: our buy stood INSIDE the copied wallet's pack, between "
+    "transactions it sent together, and trades_behind counts the pack plainly there; every model assumes no copy "
+    "lands there, so such rows are the evidence to read before trusting a pack's landing; pnl_sol = on the sell; "
+    "ts = unix seconds; landing_src = "
     "where trades_behind and price_gap_pct came from: tape, chain (the blocks themselves: a coin or a copied buy the "
     "tape does not hold) or chain-none (no copied wallet had bought the coin); from the chain only: blocks_after "
     "(blocks after the copied buy's, 0 = the same), ahead_bids (JSON: the buyers between the copied buy and ours, "
     "bid in lamports, vs = more or less than our bid), ahead_bid_max and ahead_bid_p50 (lamports), landing_verdict "
-    "(first, fees, speed, unclear, ahead), venue",
+    "(first, fees, speed, unclear, ahead; and inside, from the tape), venue",
     "verdicts": "one row per wallet and qualify run (the newest computed_at is the wallet's verdict). status = "
     "qualified, candidate or retired; n_tape, mean_sol, lower_sol = its copies on the tape at landing_pos; "
     "copy_plan, forward, create_slot, kept_armed = JSON. A candidate whose reasons say 'same actor as <wallet>: one "
@@ -1873,10 +1882,16 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         and the result once sold. Its verdict: "fees" = every buyer ahead of us bid more than we did (a higher tip is
         the lever), "speed" = one bid less and still got in first (no tip buys that place), "first" = nobody was
         ahead, "unclear" = a buyer ahead paid an account nobody catalogued. The wallet's companions (when the tape
-        knows them) and our own wallets are never counted as buyers ahead. ["landing", "--sig", "<our buy>",
+        knows them) and our own wallets are never counted as buyers ahead. Nor is the wallet's own pack (19 Nov):
+        the transactions right behind its own, back to back, that each carry buys of several wallets are its
+        operator's. They are listed under pack_ahead, and a buy of ours right behind them is "first" (until then
+        such a buy read "12 behind, speed" behind a pack like 8D92Hh's; a fills row whose pack_ahead is NULL was
+        measured that way, so "too slow" or "bid more" is not read off it alone).
+        ["landing", "--sig", "<our buy>",
         "--leader", "<wallet>", "--json"] reads one buy. The measure stage writes the same numbers into fills for a
-        buy the tape cannot place (landing_src = 'chain': trades_behind, price_gap_pct, blocks_after, ahead_bids,
-        ahead_bid_max, ahead_bid_p50, landing_verdict, venue). It only reads; it starts and changes nothing.
+        buy the tape cannot place (landing_src = 'chain': trades_behind, pack_ahead, price_gap_pct, blocks_after,
+        ahead_bids, ahead_bid_max, ahead_bid_p50, landing_verdict, venue). It only reads; it starts and changes
+        nothing.
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at

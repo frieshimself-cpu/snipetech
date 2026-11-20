@@ -1222,3 +1222,75 @@ def test_a_landed_buy_of_a_non_coin_is_in_no_arms_row():
     failed = [{"bid_arm": "control", "priority_lamports": 1_000_000, "mint": addr("coin")}]
     (row,) = bid_model_rows(buys, failed, NOW)
     assert row["n"] == 2 and row["mean_behind"] is None and row["mean_overhead_sol"] == round(1_005_000 / 1e9 / 2, 6)
+
+
+def test_copies_right_behind_a_pack_do_not_push_the_measured_landing_back(tmp_path):
+    """19 Nov. The 75th percentile of trades_behind becomes the landing of every qualify lab once an arm has its
+    fills. A copy that lands in the next block place behind the copied wallet's own pack (here twelve buys in the
+    three transactions sent right behind its own) is first behind the wallet, and was written down as 12 trades
+    behind. With two such fills among four the measured landing read 12 buys behind: "+15" for every paper copy and
+    "+12x" for the qualify lab, where nothing measured gives +6 and +3x (a review of the pack rule ran it with 10 of
+    30 fills behind a pack). The pack is left out: the two fills say 0 behind with 12 in the pack, and the landing is
+    what the outsiders make it (2 behind, "+5")."""
+    from snipetech.qualify.run import effective_landing_pos, qualify_landing
+
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        cfg.measure.min_arm_fills = 4
+        _copy_row(st, created=NOW - 7200)
+        buys = []
+        for k in range(4):
+            m = Market(st, addr(f"p{k}"), D, NOW - 3600 + k * 600, SLOT + k * 1500)
+            m.buy(D, 1.0, 0)
+            if k < 2:  # the copied wallet's buy is the second of four in its transaction; three more follow it
+                for tx in range(4):
+                    for j in range(4):
+                        who = LEAD if (tx, j) == (0, 1) else addr(f"pack{k}-{tx}-{j}")
+                        m.buy(who, 1.0, 2, sig=addr(f"pack-tx-{k}-{tx}")).pos = 100 + tx
+                mine = m.buy(ME, 0.2, 2)
+                mine.pos = 104  # the very next block place behind the pack
+            else:  # two outsiders between the wallet and us
+                m.buy(LEAD, 1.0, 2)
+                m.buy(addr(f"x{k}"), 0.5, 3)
+                m.buy(addr(f"y{k}"), 0.5, 4)
+                mine = m.buy(ME, 0.2, 4)
+            m.buy(addr(f"z{k}"), 2.0, 6)
+            m.sell(ME, 1.0, 30)
+            m.commit()
+            buys.append(mine.sig)
+        out = asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200,
+                                      ensure_meta=_ensure(st, {b: _meta(b) for b in buys}), failed_sigs=_no_failed))  # fmt: skip
+        rows = [st.fill(b) for b in buys]
+        assert [(r["trades_behind"], r["pack_ahead"]) for r in rows] == [(0, 12), (0, 12), (2, 0), (2, 0)]
+        assert all(r["landing_src"] == "tape" and r["wallet_copied"] == LEAD for r in rows)
+        assert out["landing_pos"] == "+5" and st.coverage("measure:landing_pos")["behind_p75"] == 2
+        assert qualify_landing(st, cfg.qualify, now=NOW) == "+3x"
+        assert effective_landing_pos(st, cfg.qualify, now=NOW) == "+6"
+    finally:
+        st.close()
+
+
+def test_the_tape_reading_leaves_out_the_companions_the_tape_knows(tmp_path):
+    """CLAUDE.md rule 2 and a review of 19 Nov: the chain reading never counted the copied wallet's companions as
+    buyers ahead of us and the tape reading did, and both went into one measured landing. The run hands the tape
+    reading the companions it hands the chain reading (chain_landing.known_mates, read once a wallet): here LEAD's
+    companion buys right behind it in each of six coins, then one outsider, then us: 1 behind, not 2."""
+    svc, st, cfg = _svc(tmp_path)
+    try:
+        _copy_row(st, created=NOW - 7200)
+        mate = addr("mate")
+        buys = []
+        for k in range(6):
+            m = Market(st, addr(f"mc{k}"), D, NOW - 3600 + k * 300, SLOT + k * 1500)
+            m.buy(D, 1.0, 0)
+            m.buy(LEAD, 1.0, 2)
+            m.buy(mate, 0.5, 2)  # its own transaction, the next place: the companion rule's habit, no pack
+            m.buy(addr(f"out{k}"), 0.5, 3)
+            buys.append(m.buy(ME, 0.2, 3).sig)
+            m.commit()
+        asyncio.run(run_measure(svc, cfg, NOW, since_ts=NOW - 7200,
+                                ensure_meta=_ensure(st, {b: _meta(b) for b in buys}), failed_sigs=_no_failed))  # fmt: skip
+        rows = [st.fill(b) for b in buys]
+        assert [(r["trades_behind"], r["pack_ahead"]) for r in rows] == [(1, 0)] * 6
+    finally:
+        st.close()
