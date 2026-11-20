@@ -363,6 +363,10 @@ class OperatorConfig:
 class BirdeyeConfig:
     """Birdeye Data API (docs/birdeye.md). The key is BIRDEYE_API_KEY in the environment."""
 
+    # Switched off 20 Nov 2026 with the owner's yes ("As long as ur sure we no longer need it"): no wallet that ever
+    # passed qualify came from it, its history covers only its own finds, and its trending list loses as a buy signal
+    # (-0.010 SOL a 0.2 SOL trade over 210); GMGN covers discovery. Off: no call at all (provider_on).
+    enabled: bool = False
     daily_cu: int = 250_000  # compute units a day a scan may spend (plan: 8 M a month)
     top_coins: int = 30  # hottest coins from the tape whose top traders become candidates
     pnl_top: int = 100  # candidates that get a 30-day PnL summary (30 CU each)
@@ -375,6 +379,10 @@ class BirdeyeConfig:
 class SolanaTrackerConfig:
     """SolanaTracker Data API (Advanced plan: 200 k requests a month). Key: SOLANATRACKER_API_KEY."""
 
+    # Switched off 20 Nov 2026 with Birdeye (see BirdeyeConfig.enabled): 40 of the week's 50,685 candidates came from
+    # it, none ever qualified, and its trending and graduating lists lose as buy signals (-0.013 and -0.012 SOL a
+    # 0.2 SOL trade over 3,329 and 7,202).
+    enabled: bool = False
     daily_requests: int = 6000
     pages: int = 5  # leaderboard pages of 100 per scan
     days: int = 90
@@ -383,6 +391,16 @@ class SolanaTrackerConfig:
     max_single_share: float = 0.6  # profit share allowed from one coin
     min_realized_usd: float = 500.0
     max_single_token_pct: float = 60.0  # server-side filter
+
+
+# the data providers that can be switched off, by their section in the settings, and the key each one reads
+PROVIDER_KEYS = {"birdeye": "BIRDEYE_API_KEY", "solanatracker": "SOLANATRACKER_API_KEY"}
+
+
+def provider_on(cfg: Config, name: str) -> bool:
+    """Whether a data provider is to be called: switched on in its section ([birdeye] / [solanatracker] enabled) and
+    its key in the environment. Discovery, the events poll, the credit probe and every command that names one ask."""
+    return bool(getattr(getattr(cfg, name), "enabled", False)) and bool(os.environ.get(PROVIDER_KEYS[name]))
 
 
 @dataclass

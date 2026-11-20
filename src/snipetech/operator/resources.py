@@ -274,8 +274,10 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
 
     out.append(credit_row(cfg, store, ledger, now))
 
-    # Birdeye compute units for the billing cycle.
-    if birdeye_credits is None:
+    # Birdeye compute units for the billing cycle; no row while it is switched off (config.provider_on, 20 Nov).
+    if not cfg.birdeye.enabled:
+        pass
+    elif birdeye_credits is None:
         out.append(Resource("birdeye_cu", None, "cu", None, "unknown", "BIRDEYE_API_KEY not set or not probed"))
     else:
         try:
@@ -288,8 +290,8 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         except Exception as exc:  # noqa: BLE001
             out.append(Resource("birdeye_cu", None, "cu", None, "unknown", f"birdeye credits probe failed: {exc}"))
 
-    # Monthly counters we keep ourselves.
-    for name, provider, total, alert_pct, unit, url in (
+    # Monthly counters we keep ourselves (SolanaTracker's only while it is switched on: config.provider_on, 20 Nov).
+    counters = [
         (
             "solanatracker_requests",
             "solanatracker",
@@ -299,7 +301,9 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
             "https://www.solanatracker.io/data-api",
         ),
         ("vybe_credits", "vybe", rc.vybe_month_credits, rc.vybe_alert_pct, "credits", "https://vybe.fyi"),
-    ):
+    ]
+    for name, provider, total, alert_pct, unit, url in [c for c in counters
+                                                         if c[1] != "solanatracker" or cfg.solanatracker.enabled]:  # fmt: skip
         try:
             used = store.usage_month(provider, now)
             left = max(0, total - used)

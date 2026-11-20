@@ -15,7 +15,7 @@ from pathlib import Path
 
 from ..book.watch import watch_wallet
 from ..claude_client import has_claude_key
-from ..config import Config
+from ..config import Config, provider_on
 from ..ops import _pid_alive, redact
 from . import learning, live_test, outage, plain_sol, postmortem, risk_guard, roles
 from .budget import Ledger
@@ -324,7 +324,7 @@ async def operate(cfg: Config, svc, *, analyst: bool = False, dry_run: bool = Fa
         # Resources: checked by code, alerted once a day per resource, no model involved.
         try:
             ledger0 = Ledger(paths.spend, cfg.operator.prices)
-            birdeye_probe = _birdeye_credits_probe() if os.environ.get("BIRDEYE_API_KEY") else None
+            birdeye_probe = _birdeye_credits_probe() if provider_on(cfg, "birdeye") else None
             resources = check_resources(cfg, svc.store, snap, ledger0, disk_free_gb=disk_free_gb or (lambda: disk_free_gb_at(str(paths.data))),
                                         birdeye_credits=birdeye_probe, now=t0)  # fmt: skip
             snap.resources = [r.to_dict() for r in resources]

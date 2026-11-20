@@ -18,7 +18,7 @@ import httpx
 
 from . import __version__
 from . import report as R
-from .config import Config, dump_toml
+from .config import Config, dump_toml, provider_on
 from .oktech import OktechError
 from .service import Service
 from .solana.rpc import RpcError
@@ -60,20 +60,9 @@ def _discover(args, cfg) -> int:
     clients = []
     try:
         ctx = DiscoverContext(svc=svc, cfg=cfg, now=time.time(), log=lambda m: print(m, file=sys.stderr, flush=True))
-        if os.environ.get("BIRDEYE_API_KEY"):
-            from .birdeye import Birdeye
-
-            ctx.birdeye = Birdeye(
-                budget_cu=min(cfg.birdeye.daily_cu, ctx.budgets["birdeye_cu"]), counter=_usage(svc, "birdeye")
-            )
-            clients.append(ctx.birdeye)
-        if os.environ.get("SOLANATRACKER_API_KEY"):
-            from .solanatracker import SolanaTracker
-
-            ctx.solanatracker = SolanaTracker(
-                budget_requests=ctx.budgets["solanatracker"], counter=_usage(svc, "solanatracker")
-            )
-            clients.append(ctx.solanatracker)
+        made = _data_clients(cfg, svc, ctx.budgets)  # Birdeye and SolanaTracker: off since 20 Nov (provider_on)
+        ctx.birdeye, ctx.solanatracker = made.get("birdeye"), made.get("solanatracker")
+        clients += list(made.values())
         if os.environ.get("VYBE_API_KEY"):
             from .vybe import Vybe
 
@@ -221,14 +210,7 @@ def _events(args, cfg) -> int:
             out["dev"] = asyncio.run(dev())
             print(json.dumps(out, indent=1))
             return 0
-        if os.environ.get("SOLANATRACKER_API_KEY"):
-            from .solanatracker import SolanaTracker
-
-            clients["solanatracker"] = SolanaTracker(counter=_usage(svc, "solanatracker"))
-        if os.environ.get("BIRDEYE_API_KEY"):
-            from .birdeye import Birdeye
-
-            clients["birdeye"] = Birdeye(budget_cu=cfg.birdeye.daily_cu, counter=_usage(svc, "birdeye"))
+        clients.update(_data_clients(cfg, svc))  # their trending lists: off since 20 Nov (provider_on)
         if args.raw:
             out = {}
             st = clients.get("solanatracker")
@@ -273,6 +255,36 @@ async def dump_transaction(svc, signature: str) -> str:
         if tx is not None
         else json.dumps({"error": "not found", "signature": signature})
     )
+
+
+def _data_clients(cfg, svc, budgets: dict | None = None) -> dict:
+    """The Birdeye and SolanaTracker clients discovery and the events poll call: one for each provider that is switched
+    on and has its key (config.provider_on; both off since 20 Nov 2026), none otherwise. `budgets`: discovery's share
+    of the day (DiscoverContext.budgets); without it, the provider's own daily bound."""
+    out: dict = {}
+    if provider_on(cfg, "birdeye"):
+        from .birdeye import Birdeye
+
+        cu = cfg.birdeye.daily_cu if budgets is None else min(cfg.birdeye.daily_cu, budgets["birdeye_cu"])
+        out["birdeye"] = Birdeye(budget_cu=cu, counter=_usage(svc, "birdeye"))
+    if provider_on(cfg, "solanatracker"):
+        from .solanatracker import SolanaTracker
+
+        if budgets is None:
+            out["solanatracker"] = SolanaTracker(counter=_usage(svc, "solanatracker"))
+        else:
+            out["solanatracker"] = SolanaTracker(budget_requests=budgets["solanatracker"],
+                                                 counter=_usage(svc, "solanatracker"))  # fmt: skip
+    return out
+
+
+def _provider_or_exit(cfg, name: str) -> None:
+    """A command that names a switched-off provider says so and calls nothing (a cancelled plan would only refuse)."""
+    if not getattr(getattr(cfg, name), "enabled", False):
+        shown = {"birdeye": "Birdeye", "solanatracker": "SolanaTracker"}[name]
+        raise SystemExit(f"{shown} is switched off (20 Nov 2026: no wallet that passed the checks came from it and its "
+                         f"lists lose as buy signals; GMGN covers discovery): nothing was called. `enabled = true` "
+                         f"under [{name}] in the settings brings it back, with its key in /etc/snipetech/env.")  # fmt: skip
 
 
 def _usage(svc, provider: str):
@@ -1628,7 +1640,9 @@ async def doctor(svc: Service) -> dict:
 
     has_key, words = describe()
     out["agent"] = {"ok": has_key, "detail": words}
-    if os.environ.get("BIRDEYE_API_KEY"):
+    if os.environ.get("BIRDEYE_API_KEY") and not cfg.birdeye.enabled:
+        out["birdeye"] = {"ok": True, "detail": "switched off since 20 Nov ([birdeye] enabled = false): not called"}
+    elif os.environ.get("BIRDEYE_API_KEY"):
         try:
             from .birdeye import Birdeye
 
@@ -1642,7 +1656,12 @@ async def doctor(svc: Service) -> dict:
             out["birdeye"] = {"ok": False, "detail": f"BIRDEYE_API_KEY set but the API answered: {exc}"}
     else:
         out["birdeye"] = {"ok": False, "detail": "BIRDEYE_API_KEY not set (optional: market-wide wallet discovery)"}
-    if os.environ.get("SOLANATRACKER_API_KEY"):
+    if os.environ.get("SOLANATRACKER_API_KEY") and not cfg.solanatracker.enabled:
+        out["solanatracker"] = {
+            "ok": True,
+            "detail": "switched off since 20 Nov ([solanatracker] enabled = false): not called",
+        }
+    elif os.environ.get("SOLANATRACKER_API_KEY"):
         try:
             from .solanatracker import SolanaTracker
 
@@ -1762,6 +1781,7 @@ async def _run(args, cfg: Config) -> int:
                     w.strip() for w in Path(args.file).read_text().splitlines() if w.strip() and not w.startswith("#")
                 ]
             if args.source == "birdeye":
+                _provider_or_exit(cfg, "birdeye")
                 from .birdeye import Birdeye
 
                 be = Birdeye(budget_cu=cfg.birdeye.daily_cu, counter=_usage(svc, "birdeye"))
@@ -2282,6 +2302,8 @@ async def _run(args, cfg: Config) -> int:
             )
             _out(args, rep, R.render_study)
         elif c == "discover-wallets":
+            if args.source in ("birdeye", "solanatracker"):
+                _provider_or_exit(cfg, args.source)
             if args.source == "birdeye":
                 from .birdeye import Birdeye
 
@@ -2989,6 +3011,7 @@ def _main(args) -> int:
     if args.cmd == "ops-serve":
         return _ops_serve(args, cfg)
     if args.cmd == "solanatracker":
+        _provider_or_exit(cfg, "solanatracker")
         from .solanatracker import SolanaTracker
 
         stc = SolanaTracker(counter=_usage_from_cfg(cfg, "solanatracker"))
@@ -3491,6 +3514,7 @@ def _main(args) -> int:
         print(json.dumps(out, indent=1, default=str))
         return 0
     if args.cmd == "birdeye":
+        _provider_or_exit(cfg, "birdeye")
         from .birdeye import Birdeye
 
         be = Birdeye(counter=_usage_from_cfg(cfg, "birdeye"))

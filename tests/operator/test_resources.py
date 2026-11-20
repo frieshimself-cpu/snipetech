@@ -100,6 +100,7 @@ def test_disk_float_birdeye_and_requests_thresholds(tmp_store, ledger):
     cfg = Config()
     cfg.operator.wallet = W
     cfg.book.enabled, cfg.book.max_wallets, cfg.book.fill_max_sol = True, 6, 1.0
+    cfg.birdeye.enabled = cfg.solanatracker.enabled = True  # both off by default since 20 Nov (test_providers_off.py)
     tmp_store.usage_add("solanatracker", 180_000, now=NOW)
     tmp_store.usage_add("vybe", 1_000, now=NOW)
     rs = {x.name: x for x in check_resources(cfg, tmp_store, snap(native_sol=1.0, wsol=0.0, wallet=W), ledger, disk_free_gb=lambda: 12.0,
