@@ -402,6 +402,33 @@ def test_list_copy_sniper_fee_and_send_count_overrides():
     assert base.config["priorityFee"] == 0.001 and base.config["tipAmount"] == 0.002
 
 
+def test_copylist_cli_sends_a_market_cap_cap_given_in_sol(tmp_path, capsys, monkeypatch):
+    """`--max-mcap SOL` on copylist: copy the leader's buys only below this market cap, sent as OKTech's maxMcapUsd at
+    the SOL price (the service had it for the book; the command line could not ask for it). 20 Nov: behind Cupseyy
+    the paper's whole profit is in coins under 100 SOL (labs 3d13e5, fe1626 at 5 SOL; idea I442)."""
+    from snipetech import cli, meta
+    from snipetech.store import Store
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    st.put_asset(meta.WSOL, "SOL", 9, 140.0)
+    st.close()
+
+    async def stored(st, rpc_url, mints, max_age=3600):  # no RPC in a test: the stored price converts the cap
+        return None
+
+    monkeypatch.setattr(meta, "ensure_assets", stored)
+    rc = cli.main(["--db", str(db), "oktech", "copylist", "--copy",
+                   "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP:Cupseyy:0.95:hold12", "--buy", "5", "--bid", "0.2",
+                   "--max-mcap", "150", "--json"])  # fmt: skip
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    (sniper,) = out["snipers"]
+    assert sniper["config"]["ctbotWallets"][0]["maxMcapUsd"] == 21_000  # 150 SOL at 140 $
+    assert any("below $21,000 market cap" in line for line in sniper["summary"])
+    assert cli.build_parser().parse_args(["oktech", "copylist", "--copy", "W:x:1"]).max_mcap is None
+
+
 def test_copylist_cli_accepts_fee_test_flags():
     from snipetech.cli import build_parser
 

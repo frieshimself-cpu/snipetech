@@ -842,6 +842,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="copylist: extraParams.computeUnits (OKTech default 150000; our buys use 54-79k)",
     )
+    sp.add_argument("--max-mcap", type=float,
+                    help="copylist: copy the leaders' buys only below this market cap in SOL, sent as OKTech's "
+                         "maxMcapUsd at the SOL price (above it the buy fails on chain and pays its priority fee). "
+                         "20 Nov: behind Cupseyy the paper's profit is in coins under 100 SOL")  # fmt: skip
     sp.add_argument(
         "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
     )
@@ -2161,7 +2165,7 @@ async def _run(args, cfg: Config) -> int:
                                                 buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
                                                 compute_units=args.compute_units, allow_overlap=args.allow_overlap,
-                                                bid=args.bid)  # fmt: skip
+                                                bid=args.bid, max_mcap_sol=args.max_mcap)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
