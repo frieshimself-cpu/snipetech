@@ -350,6 +350,40 @@ def test_list_copy_sniper_hold60_exit():
     assert c["ctbotWallets"][0]["minSol"] == 0.1
 
 
+def test_a_copy_sniper_takes_a_sell_all_timer_of_any_length_by_name():
+    """The big-wallet lab of 20 Nov (f9cc32, 269 copies at 2 SOL) scored `hold12s copy50%`: sell everything 12 s after
+    the buy, or when the copied wallet sells half its bag in one sale; no stop-loss, no dead exit. A hand-made copy
+    sniper (`oktech copylist --copy ADDRESS:LABEL:MIN:hold12`, or `--exit hold12`) is sent exactly that, the way hold60
+    goes out; a name that is no exit is refused, never sent as another exit."""
+    from snipetech.oktech import EXITS, list_copy_sniper, named_exit
+
+    c = list_copy_sniper(
+        "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP", "Cupseyy", 2, 1.0, 1, exit_name="hold12"
+    ).config
+    sell = c["autoSell"]
+    assert sell["sellAfterSeconds"] == 12 and sell["stages"][0]["sellAfterMs"] == 12_000
+    assert "stopLoss" not in sell and "deadExit" not in sell and "trailingStopLoss" not in sell
+    assert c["ctbotCopyExit"]["enabled"] and c["ctbotCopyExit"]["sellThresholdPercent"] == 50
+    assert named_exit("hold12") == named_exit("hold12s") == {"max_hold_secs": 12.0}
+    assert named_exit("hold60") == EXITS["hold60"] and named_exit("lab") == EXITS["lab"]
+    for bad in ("hold0", "hold601", "hold", "hold12x", "ride", "", "SL-15% hold300s"):
+        with pytest.raises(ValueError, match="exit"):
+            named_exit(bad)
+    with pytest.raises(ValueError, match="exit"):
+        list_copy_sniper("6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP", "Cupseyy", 2, 1.0, 1, exit_name="hold2x")
+
+
+def test_copylist_refuses_what_it_cannot_send_in_plain_words(tmp_path, capsys):
+    """A mistyped exit (or any refusal of copylist's: an overlap, a bid beside --tip) comes back as one line and exit
+    code 2, the way the server's agents and the owner read a job, not as a stack trace; nothing is made."""
+    from snipetech import cli
+
+    rc = cli.main(["--db", str(tmp_path / "snipetech.db"), "oktech", "copylist", "--copy",
+                   "6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP:Cupseyy:2:hold2x"])  # fmt: skip
+    err = capsys.readouterr().err
+    assert rc == 2 and "no such exit 'hold2x'" in err and "Traceback" not in err
+
+
 def test_list_copy_sniper_fee_and_send_count_overrides():
     from snipetech.oktech import list_copy_sniper
 

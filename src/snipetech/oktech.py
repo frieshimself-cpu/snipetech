@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -583,6 +584,21 @@ EXIT_MIN_STALE_SECS = 1.0  # OKTech's deadExit takes whole seconds, 1 at least
 EXIT_MIN_TAKE_PROFIT = 0.05  # a take-profit under +5 % sells on noise and pays a second transaction to do it
 
 
+def named_exit(name: str) -> dict:
+    """The exit a hand-made copy sniper is sent, by name: a preset (`EXITS`: lab, hold60), or `holdN` / `holdNs`, a
+    sell-all timer of N seconds (1 to EXIT_MAX_HOLD_SECS) beside the copy exit every copy sniper carries: the lab's
+    `holdNs copy50%` (lab f9cc32, 20 Nov: hold12s made +0.121 SOL a 2 SOL copy behind the big wallets). It goes out the
+    way hold60 does, whose 60 s timer sold 7bDN at 61.2 s on 6 Nov. Any other name raises: an exit nobody named is
+    never sent in its place."""
+    if name in EXITS:
+        return dict(EXITS[name])
+    m = re.fullmatch(r"hold(\d+(?:\.\d+)?)s?", str(name or ""))
+    if m and 1 <= float(m[1]) <= EXIT_MAX_HOLD_SECS:
+        return {"max_hold_secs": float(m[1])}
+    raise ValueError(f"no such exit {name!r}: {', '.join(EXITS)}, or holdN (sell everything N seconds after the buy, "
+                     f"1 to {EXIT_MAX_HOLD_SECS:g})")  # fmt: skip
+
+
 def validate_exit(params: dict | None, cfg: Config | None = None) -> list[str]:
     """What is unsafe about an exit before a live sniper may run it, in plain words; empty when it may be sent: a
     stop-loss of at most 35 %, a sell-all timer of at most 600 s, a dead exit (if any) of 1 s or more, a take-profit
@@ -704,7 +720,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         hand_words += (f" (tip {tip:g} is above the [fees] bound of {tip_bound:g} that the automatic choice keeps: a "
                        "bid by hand is not held to it, and the bound is unchanged)")  # fmt: skip
     notes.append(choice.note() + hand_words)
-    ex = dict(exit_params or EXITS[exit_name])
+    ex = dict(exit_params or named_exit(exit_name))
     ex.setdefault("sell_on_dev_sell", False)
     config: dict[str, Any] = {
         "mode": "ctbot",

@@ -1360,7 +1360,8 @@ class Service:
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
                               exit_params: dict | None = None, fee_floor: dict | None = None,
                               max_mcap_sol: float | None = None, bid: float | None = None) -> dict:  # fmt: skip
-        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab|hold60).
+        """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab,
+        hold60 or holdN: oktech.named_exit).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
         is made, naming that sniper, unless `allow_overlap`. `exit_params`: the exit itself instead of a preset's name
         (the book's per-wallet exit, book/policy.exit_for), for every spec. Each sniper's fees are the fee policy's for
