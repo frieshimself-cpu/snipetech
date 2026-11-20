@@ -18,6 +18,7 @@ landing position OKTech was measured at (same slot as the trigger, ~1 trade in t
 
 | # | time (UTC) | wallet | coin | its buy | our place / the paper's | price vs the wallet | sold | result (SOL) |
 |---|---|---|---|---|---|---|---|---|
+| 1 | 23:03:21 | Gake Side | 7m7Cnc… (curve) | first in the coin, 6.91 | same block, 1 ahead (6Z91, the winning bot: 5 SOL at a 0.001 bid, the very next transaction after Gake Side's; verdict "speed") / the paper's `bid-` 2: closer | +14.0 % (`fills`; `landing` +22.5 %) | 23:03:33, 12 s (timer), for 1.0409; bought for 1.0, bid 0.05 by Jito | -0.0121 (`fills.pnl_sol`): the coin was +4.1 % after pump fees at 12 s, the 0.05 bid took it |
 
 ## The landing test behind the big wallets: approved 05:08, STARTED 14:39 UTC, RE-AIMED AT FIRST BUYS 15:25 UTC (20 Nov 2026, written 05:20 UTC)
 
