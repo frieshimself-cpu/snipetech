@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..analysis.actors import ACTOR_MAX, actor_of, group_actors, leader
-from ..analysis.companions import companions
+from ..analysis.companions import companions, pack_mates
 from ..analysis.twins import Pair, first_buys, pair, twins
 from ..config import QualifyConfig
 from ..store import _LATEST_VERDICT, Store
@@ -91,11 +91,18 @@ class Decision:
 class TwinTies:
     """A wallet's twins among the place-holders (OneActor._twin_ties). `found`: the ones the tape shows now, each with
     what the two have in common; `joined`: the ones it is one actor with (found now or named by their own record, as
-    many as the actor has room for); `capped`: some were left out."""
+    many as the actor has room for); `capped`: some were left out. `packs`: the place-holders it is one actor with by
+    the pack rule, each with the sentence that says how (OneActor._pack_ties); they are never among the twins."""
 
     found: dict[str, Pair] = field(default_factory=dict)
     joined: list[str] = field(default_factory=list)
     capped: bool = False
+    packs: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def tied(self) -> list[str]:
+        """Every place-holder it is one actor with by a tie of two: the wallets of its packs, then its twins."""
+        return [*self.packs, *self.joined]
 
 
 def same_actor(v: dict[str, Any], decision: Decision | None, cfg: QualifyConfig, now: float) -> dict[str, Any]:
@@ -141,10 +148,16 @@ def actor_links(block: Mapping[str, Any] | None) -> set[str]:
 
 
 def twin_links(block: Mapping[str, Any] | None) -> set[str]:
-    """The wallets a wallet's `actor` record ties it to through the twin rule (`twin_with`). Kept apart from
-    `actor_links`: those are grouped up to actors.ACTOR_MAX wallets, where one tie more can undo another, and a twin
-    must never undo a tie between companions. Twins are tied two by two, on top (book/policy.actor_members)."""
-    return {str(x) for x in (block or {}).get("twin_with") or () if x}
+    """The wallets a wallet's `actor` record ties it to two by two: through the twin rule (`twin_with`) and through
+    the pack rule (`pack_with`). Kept apart from `actor_links`: those are grouped up to actors.ACTOR_MAX wallets,
+    where one tie more can undo another, and a twin must never undo a tie between companions. These are tied two by
+    two, on top (book/policy.actor_members), so no cap refuses one."""
+    return _named(block, "twin_with") | _named(block, "pack_with")
+
+
+def _named(block: Mapping[str, Any] | None, key: str) -> set[str]:
+    """The wallets an `actor` record names under `key`."""
+    return {str(x) for x in (block or {}).get(key) or () if x}
 
 
 def _may_pass(row: dict | None, need: int) -> bool:
@@ -283,11 +296,11 @@ class OneActor:
         first = self._choose(w, rivals, block, led, lower, picked)
         # then the twin rule, among the place-holders that are not its companions: it can only take the place away
         ties = self._twin_ties(w, [r for r in others if r not in g.wallets], ACTOR_MAX - len(g.members))
-        more = [r for r in ties.joined if self.holds(r)]
+        more = [r for r in ties.tied if self.holds(r)]
         if first.same_as or not more:
             return self._with_twins(first, was, ties)
         second = self._choose(w, [*rivals, *more], block, led, lower, picked)
-        if second.same_as in ties.joined:
+        if second.same_as in ties.tied:
             second.how = self._twin_words(w, second.same_as, ties)
         return self._with_twins(second, was, ties)
 
@@ -332,14 +345,37 @@ class OneActor:
         `w` their twin (an earlier run's finding stands while that record does, as a companion's does). `room`: how
         many wallets `w`'s actor can still take before actors.ACTOR_MAX; the wallets that hold a place first, then by
         address, and the rest are left out (`capped`): `w` joins a crowd one actor's worth at a time."""
+        packs = self._pack_ties(w, others)  # the pack rule first: what it ties is no twin's to tie again
+        others = [r for r in others if r not in packs]
         found = twins(self.tape, w, others, self.since, self._firsts)
         kept = [r for r in others if r not in found and w in twin_links(actor_block(self.store, r))]
         ties = sorted([*found, *kept], key=lambda r: (not self.holds(r), r))
         joined = ties[: max(0, room)]
-        return TwinTies(found, joined, len(ties) > len(joined))
+        return TwinTies(found, joined, len(ties) > len(joined), packs)
+
+    def _pack_ties(self, w: str, others: list[str]) -> dict[str, str]:
+        """`w`'s ties by the pack rule among `others`, each with the sentence a verdict's reason carries: the wallets
+        in one pack with it on COMPANION_MIN of its first buys or more (analysis/companions.pack_mates: one read of
+        `w`'s buys and one small read a coin; the pack is read ahead of `w`'s buy and behind it, so nobody else's
+        buys are read, and nothing is read with nobody to compare it with), and the ones whose own record names `w`
+        (an earlier run's finding stands while that record does, as a twin's does). No room is asked of the actor: a
+        tie of two is not a join of sets."""
+        if not others:
+            return {}
+        seen = pack_mates(self.tape, w, self.since)
+        out: dict[str, str] = {}
+        for r in others:
+            if seen.tied(r):
+                out[r] = f"They {seen.words(r)}. "
+            elif w in _named(actor_block(self.store, r), "pack_with"):
+                out[r] = ("They were found to buy in one pack in an earlier run, and that stands: today they "
+                          f"{seen.words(r)}. ")  # fmt: skip
+        return out
 
     def _twin_words(self, w: str, other: str, ties: TwinTies) -> str:
-        """How `w` and `other` are twins, as the sentence a verdict's reason carries."""
+        """How `w` and `other` are twins (or wallets of one pack), as the sentence a verdict's reason carries."""
+        if other in ties.packs:
+            return ties.packs[other]
         if other in ties.found:
             return f"They are twins: {ties.found[other].words()}. "
         for x in (w, other):
@@ -355,12 +391,15 @@ class OneActor:
         wallet without twins keeps the record it always had."""
         over = set(d.block.get("over") or ())
         joined = set(ties.joined) if ties else set()
-        tied = sorted(joined | (twin_links(was) & over))
+        tied = sorted(joined | (_named(was, "twin_with") & over))
+        packed = sorted(set(ties.packs if ties else ()) | (_named(was, "pack_with") & over))
         extra: dict[str, Any] = {}
         if ties and ties.found:
             extra["twins"] = len(ties.found)
         if tied:
             extra["twin_with"] = tied
+        if packed:
+            extra["pack_with"] = packed
         if ties and ties.capped:
             extra["capped"] = True
         if extra:
