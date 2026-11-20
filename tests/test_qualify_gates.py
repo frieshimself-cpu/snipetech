@@ -170,6 +170,36 @@ def test_relationship_gate_vetoes_bundle_members():
     st.close()
 
 
+def test_without_fingerprints_the_tapes_fee_payers_tell_a_sniper_from_the_teams_bundle():
+    """20 Nov audit: the bundle check had a create-slot buy's fingerprint (tx_meta) or nothing, and the recorder
+    writes none, so every create-slot buyer was a bundle member (0 of 1,792 launches of 20 Nov 00:00-01:00 had one).
+    It retired the week's two best wallets, gip5VeKT and EJWMhFYN, for two create-slot buys each that paid their own
+    fee (a 420,000-lamport priority fee, no tip). The tape records who paid every trade's fee since 11 Nov: a buy the
+    team paid (the creator, the create's signer or its payer) is the bundle's, one the buyer paid is a sniper's. A
+    create-slot buy without a fee record is still counted as before."""
+    from snipetech.analysis.launches import classify_insiders
+    from snipetech.sim.market import MarketPath
+
+    st = Store(":memory:")
+    B, S, D = addr("bundle"), addr("sniper"), addr("dev")
+    for i in range(2):
+        m = Market(st, addr(f"f{i}"), D, NOW + i * 1000, SLOT + i * 2500)
+        dev = m.buy(D, 1.0, 0, sig=m.create_sig)
+        paid = m.buy(B, 0.5, 0)  # its fee paid by the creator
+        own = m.buy(S, 0.5, 0)  # its own fee, a sniper's priority fee, no tip
+        for t, payer, prio in ((dev, "", 0), (paid, D, 0), (own, "", 420_000)):
+            t.payer, t.priority, t.tip = payer, prio, 0
+        m.commit()
+    launch = st.launch(addr("f0"))
+    path = MarketPath.build(st.trades_for_mint(launch.mint, launch.ts - 2, launch.ts + 120), launch)
+    _dev, bundle, how = classify_insiders(st, launch, path)
+    assert (bundle, how) == ({B}, "payer")
+    assert relationship_gate(st, S) == (True, [])
+    ok, why = relationship_gate(st, B)
+    assert ok is False and "bundle member in 2 launches" in why
+    st.close()
+
+
 def test_relationship_gate_reads_edges_table_when_present():
     st = Store(":memory:")
     st.upsert_edge(addr("dev"), addr("paid"), "paid_by_dev", NOW, 10)

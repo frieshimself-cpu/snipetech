@@ -578,7 +578,10 @@ class Ops:
             [*sudo, SYSTEMCTL, "--no-block", "restart", "snipetech-tape"],
             [*sudo, SYSTEMCTL, "--no-block", "restart", "snipetech-ops"],  # last: this server restarts itself
         ]
-        script = " && ".join(" ".join(_sh(a) for a in s) for s in steps)
+        lines = [" ".join(_sh(a) for a in s) for s in steps]
+        # the events poll, a service the sudo rule cannot restart: ended, its unit starts the new code (EVENTS_POLL)
+        lines.insert(4, f"(pkill -TERM -f {_sh(EVENTS_POLL_PATTERN)} || true)")
+        script = " && ".join(lines)
         (self.data / DEPLOY_WAITS).unlink(missing_ok=True)  # it is going out: nothing waits any more
         return self._start(["/bin/sh", "-c", script], ["update"], 1800)
 
@@ -696,6 +699,13 @@ class Ops:
 def _check_id(jid: str) -> None:
     if not isinstance(jid, str) or not re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{6}", jid):
         raise OpsError(400, "bad job id")
+
+
+# `events poll` runs as a service (deploy/systemd/snipetech-events.service, Restart=always) that a deploy cannot
+# restart: the sudo rule names the recorder and this endpoint alone (deploy/setup.sh). 20 Nov audit: it ran its 12 Nov
+# code for eight days. A deploy ends it as the user both run as, and its unit starts it again on the new code ten
+# seconds later. "[p]oll" matches "poll" in the service's command line and never the deploy shell's own text.
+EVENTS_POLL_PATTERN = "snipetech .*events [p]oll"
 
 
 def _sh(arg: str) -> str:

@@ -51,8 +51,14 @@ def classify_insiders(store: Store, launch: Launch, path: MarketPath) -> tuple[s
     create transaction; creation-slot buyers whose tx was paid for or co-signed by the dev
     team; wallets the team funded; and, when the create tx carried a Jito tip, the
     untipped buys executing right after it in the same slot (bundled txs tip only once).
-    Everyone else who lands early is a real sniper. Without fingerprints every
-    creation-slot buyer is treated as a bundle wallet (conservative)."""
+    Everyone else who lands early is a real sniper. Without fingerprints the same is read
+    off the tape's own fee record of each trade ("payer": who paid, the tip; written by the
+    recorder since 11 Nov), without the co-signers the tape does not keep. A creation-slot
+    buy without either is treated as a bundle wallet (conservative).
+
+    20 Nov audit: the recorder writes no fingerprints, so every creation-slot buyer was a
+    bundle wallet (0 of 1,792 launches of 20 Nov 00:00-01:00 had one); the qualify gate
+    retired the week's two best wallets for two creation-slot buys each that paid their own fee."""
     dev = launch.deployers()
     slot0 = [
         i for i in range(1, path.n)
@@ -61,24 +67,52 @@ def classify_insiders(store: Store, launch: Launch, path: MarketPath) -> tuple[s
     cosigners = {path.users[i] for i in slot0 if path.sigs[i] == launch.sig}
     metas = store.tx_meta(list({launch.sig, *(path.sigs[i] for i in slot0)}))
     if launch.sig not in metas or any(path.sigs[i] not in metas for i in slot0):
-        return dev, {path.users[i] for i in slot0}, "heuristic"
+        fees = _tape_fees(store, launch)
+        if any(path.sigs[i] != launch.sig and path.sigs[i] not in fees for i in slot0):
+            return dev, {path.users[i] for i in slot0}, "heuristic"
+        create = fees.get(launch.sig)
+        team = dev | ({create[0]} if create else set())
+        return dev, _bundle(store, path, slot0, launch.sig, team, bool(create and create[1] > 0), cosigners,
+                            lambda i: fees[path.sigs[i]]), "payer"  # fmt: skip
     create = metas[launch.sig]
     team = dev | set(create.signers) | {create.fee_payer}
+
+    def paid(i: int) -> tuple[str, int, set[str]]:
+        m = metas[path.sigs[i]]
+        return m.fee_payer, m.tip_lamports, set(m.signers)
+
+    return dev, _bundle(store, path, slot0, launch.sig, team, create.tip_lamports > 0, cosigners, paid), "fingerprint"
+
+
+def _bundle(store: Store, path: MarketPath, slot0: list[int], create_sig: str, team: set[str], tipped_create: bool,
+            cosigners: set[str], paid) -> set[str]:  # fmt: skip
+    """The creation-slot buys that are the team's: co-signed with the create, paid, co-signed or funded by the team,
+    and, after a tipped create, the untipped buys right behind it. `paid(i)`: (fee payer, tip, signers) of buy i."""
     bundle = set(cosigners)
-    tipped_create = create.tip_lamports > 0
     contiguous = True
     for i in slot0:
-        if path.sigs[i] == launch.sig:
+        if path.sigs[i] == create_sig:
             continue
-        m = metas[path.sigs[i]]
+        payer, tip, signers = paid(i)
         funder = store.funder(path.users[i]) or {}
-        if m.fee_payer in team or set(m.signers) & team or funder.get("funder") in team:
+        if payer in team or set(signers) & team or funder.get("funder") in team:
             bundle.add(path.users[i])
-        elif tipped_create and contiguous and m.tip_lamports == 0:
+        elif tipped_create and contiguous and tip == 0:
             bundle.add(path.users[i])
         else:
             contiguous = False
-    return dev, bundle, "fingerprint"
+    return bundle
+
+
+def _tape_fees(store: Store, launch: Launch) -> dict[str, tuple[str, int, set[str]]]:
+    """{transaction: (fee payer, tip, no signers)} of the creation slot's trades the tape holds with a fee record (the
+    payer column is "" when the trader paid, so the trader then); a trade without one is left out. One small read."""
+    out: dict[str, tuple[str, int, set[str]]] = {}
+    for t in store.block_trades(launch.mint, int(launch.slot), int(launch.slot)):
+        if t.priority is None and t.tip is None:  # recorded before the fee record (11 Nov 16:34) or by a backfill
+            continue
+        out.setdefault(t.sig, (t.payer or t.user, int(t.tip or 0), set()))
+    return out
 
 
 def build_context(store: Store, launch: Launch, cfg: Config) -> LaunchContext:

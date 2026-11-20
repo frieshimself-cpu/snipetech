@@ -506,6 +506,27 @@ def test_update_waits_for_jobs_whose_numbers_come_from_the_code_they_started_wit
         assert O.holds_deploy(argv) is holds, argv
 
 
+def test_a_deploy_ends_the_events_poll_for_its_unit_to_start_the_new_code(env, monkeypatch):
+    """20 Nov audit: a deploy restarted the recorder and this endpoint only (the server's sudo rule allows no more), so
+    `events poll`, a service with Restart=always, ran its 12 Nov code for eight days. The deploy ends that process
+    (both run as one user, no sudo needed) before the restarts, and its unit starts it again on the new code ten
+    seconds later. The pattern matches the service's command line and never the deploy's own shell, and a poll that
+    is not running fails nothing."""
+    import re
+
+    ops, key = env
+    cmds: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: cmds.append(cmd) or {"id": "x", "argv": argv})
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": []})
+    req(ops, key, "update")
+    script = cmds[0][-1]
+    assert f"(pkill -TERM -f '{O.EVENTS_POLL_PATTERN}' || true)" in script
+    assert script.index("pkill") < script.index("restart snipetech-tape") < script.index("restart snipetech-ops")
+    unit = "/srv/snipetech/.venv/bin/snipetech --db /data/snipetech.db events poll --interval 60"
+    assert re.search(O.EVENTS_POLL_PATTERN, unit) and not re.search(O.EVENTS_POLL_PATTERN, script)
+    assert not re.search(O.EVENTS_POLL_PATTERN, "/srv/snipetech/.venv/bin/snipetech --db x events scan")
+
+
 def test_a_role_turn_holds_a_deploy(env, monkeypatch):
     """A research agent's turn (`operate agent --role <role>`, a job the round starts while the agents are on) is
     mid-run like the round itself: it has loaded half its modules and reads the rest from the new files, so an update
