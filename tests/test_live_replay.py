@@ -513,3 +513,43 @@ def test_the_valve_still_closes_on_a_recorder_that_gains_too_slowly_or_not_at_al
         assert v.observe(660 - 4 * k, 1000 + k) is None
     stalled = [v.observe(420, 1060 + k) for k in range(61)]
     assert "closed" in stalled and stalled.index("closed") <= 60
+
+
+def test_a_provider_that_refuses_our_key_is_written_down_and_cleared_once_it_lets_us_in(monkeypatch):
+    """19 Nov 2026 23:11 UTC: "PERMISSION_DENIED: Project is suspended" on every subscription, for hours, and nothing
+    but the log said why. A refusal of the key is written down (`tape:refused`: since when, the last time, the
+    provider's words), kept across the retries, and cleared at the first connection that works. A plain drop writes
+    nothing."""
+    suspended = ('<AioRpcError of RPC that terminated with:\n\tstatus = StatusCode.PERMISSION_DENIED\n\tdetails = '
+                 '"Project is suspended"\n\tdebug_error_string = "PERMISSION_DENIED:Project is suspended"\n>')  # fmt: skip
+
+    async def go():
+        streams = FakeLaserStream(monkeypatch)
+        st = Store(":memory:")
+        w = recorder(st)
+        clock = [A1_TS + 1.0]
+        w.clock = lambda: clock[0]
+        task = await started(w, streams)
+        drop(streams.subs[0])  # a plain drop
+        await until(lambda: len(streams.subs) == 2)
+        assert not st.coverage("tape:refused")
+        drop(streams.subs[1], suspended)
+        await until(lambda: len(streams.subs) == 3)
+        rec = st.coverage("tape:refused")
+        assert rec["why"] == "Project is suspended" and rec["code"] == "PERMISSION_DENIED"
+        assert rec["since"] == rec["last"] == int(A1_TS + 1.0)
+        clock[0] += 120
+        drop(streams.subs[2], suspended)
+        await until(lambda: len(streams.subs) == 4)
+        rec = st.coverage("tape:refused")
+        assert rec["since"] == int(A1_TS + 1.0) and rec["last"] == int(A1_TS + 121.0)  # since kept, last moved
+        streams.subs[3]["on_connect"]()
+        rec = st.coverage("tape:refused")
+        assert rec.get("cleared") == int(A1_TS + 121.0) and rec["why"] == "Project is suspended"
+        await stop(task)
+
+    from snipetech.operator.resources import REFUSED_KEY
+
+    assert L.REFUSED_KEY == REFUSED_KEY  # the round reads what the recorder writes
+
+    asyncio.run(go())

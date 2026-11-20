@@ -575,3 +575,37 @@ def test_a_spending_limit_reached_at_openrouter_is_not_an_empty_account():
         assert not says_limit_reached(said), said
     assert not says_limit_reached("402: x", {"metadata": {"limit_source": "openrouter_credits"}})
     assert says_no_credit("402: " + afford + "credits and upgrade to a paid account")
+
+
+def test_a_provider_that_refuses_our_key_is_named_with_where_the_owner_fixes_it(tmp_store, ledger):
+    """19 Nov 2026 23:11 UTC: Helius suspended the project. The recorder and every RPC call were refused ("Project is
+    suspended", 403) and the round's only word was "the tape is 19 min behind ... `snipetech remote update` restarts
+    it", a remedy that cannot help. The recorder writes down a refusal (`tape:refused`); the check names it, since
+    when, in the provider's own words, and the one place it is fixed. Its own row (`helius`) is said once a day apart
+    from the tape's, so the cause goes out even on a day the tape row was already sent."""
+    cfg = Config()
+    tmp_store.set_coverage("tape:refused", {"since": NOW - 1800, "last": NOW - 60, "why": "Project is suspended",
+                                            "code": "PERMISSION_DENIED"})  # fmt: skip
+    rows = {x.name: x for x in check_resources(cfg, tmp_store, snap(tape_last_ts=NOW - 1800), ledger,
+                                               disk_free_gb=lambda: 200.0, birdeye_credits=None, now=NOW)}  # fmt: skip
+    h = rows["helius"]
+    assert h.status == "crit" and "Project is suspended" in h.message and "dashboard.helius.dev" in h.message
+    assert "30 min" in h.message and "restart" not in h.message
+    assert "Helius refuses" in rows["tape"].message and "remote update" not in rows["tape"].message
+
+
+def test_a_refusal_that_is_over_or_brief_says_nothing(tmp_store, ledger):
+    """A refusal the recorder got past (it cleared the record on connecting) or one under five minutes old (10 Nov:
+    "Unable to verify project" for a while, then it let us in) is no alert; with no record there is no row at all."""
+    cfg = Config()
+
+    def rows():
+        return {x.name: x for x in check_resources(cfg, tmp_store, snap(tape_last_ts=NOW - 20), ledger,
+                                                   disk_free_gb=lambda: 200.0, birdeye_credits=None, now=NOW)}  # fmt: skip
+
+    assert "helius" not in rows()
+    tmp_store.set_coverage("tape:refused", {"since": NOW - 120, "last": NOW - 10, "why": "Unable to verify project"})
+    assert rows()["helius"].status == "warn"
+    tmp_store.set_coverage("tape:refused", {"since": NOW - 3600, "last": NOW - 1800, "why": "Project is suspended",
+                                            "cleared": NOW - 1700})  # fmt: skip
+    assert "helius" not in rows()

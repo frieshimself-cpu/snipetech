@@ -89,6 +89,14 @@ REPLAY_SLACK_SLOTS = 50  # a replay whose first message lies further past the sl
 # fails before a first message (the network, "Unable to verify project" for 33 minutes on 10 Nov) is tried again from
 # the same slot.
 REPLAY_REFUSALS = ("OUT_OF_RANGE", "oldest available slot", "past the valid range")
+# The provider turning our key away (19 Nov 2026 23:11 UTC: "PERMISSION_DENIED: Project is suspended" on every
+# subscription and a 403 on every RPC call, for hours; 10 Nov: "Unable to verify project" for 33 minutes). Nothing on
+# the server can fix it, so the recorder writes it down (REFUSED_KEY: since when, the last time, the provider's own
+# words) for the round to say to the owner with where it is fixed (operator.resources), and clears it at the first
+# connection that works.
+PROVIDER_REFUSALS = ("PERMISSION_DENIED", "UNAUTHENTICATED", "Project is suspended", "Unable to verify project",
+                     "API key")  # fmt: skip
+REFUSED_KEY = "tape:refused"
 TAPE_STALL_SECS = 30.0  # a tape stream that sent no slot for this long is dropped and subscribed again
 TAPE_STALL_CHECK_SECS = 5.0
 TAPE_BACKOFF_SECS = 1.0  # the first wait before a new subscription; doubled up to a minute while they fail
@@ -474,6 +482,7 @@ class LiveWatcher:
         self.tape_slot: int | None = None  # the newest slot handed over whole (its tick came)
         self.tape_at: float | None = None  # when its stream last sent anything (clock)
         self.tape_up = False  # its subscription has handed over its first message
+        self.refused_since: int | None = None  # the provider has turned our key away since then (REFUSED_KEY)
         self.tape_floor: int | None = None  # after a refusal: the oldest slot the server still has, plus a margin
         self.dup_until: int | None = None  # a replaying subscription hands slots up to here over again
         self.replay_from: int | None = None  # the slot a replaying subscription asked for, until its first message
@@ -612,6 +621,7 @@ class LiveWatcher:
             def on_connect(start: int | None = start) -> None:
                 nonlocal backoff
                 self.tape_up, self.tape_at, self.tape_floor, backoff = True, self.clock(), None, TAPE_BACKOFF_SECS
+                self._let_in()
                 if start is not None and self.head is not None:
                     # how far back the replay starts, before its first transaction is looked at (a launch of the
                     # outage must not seem long closed because the lag still says two seconds)
@@ -639,6 +649,7 @@ class LiveWatcher:
             self._disconnected()
             if start is not None and not self.tape_up and any(word in str(failed) for word in REPLAY_REFUSALS):
                 self._replay_refused(start, failed)
+            self._refused(failed)
             log.warning("LaserStream dropped (%s); reconnecting in %.0fs", str(failed)[:200], backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
@@ -689,6 +700,41 @@ class LiveWatcher:
         if self.tape_slot is None:
             return self.tape_floor  # after a refusal: the oldest slot the server has; else None, live
         return self.tape_slot - RESUME_BACK_SLOTS
+
+    def _refused(self, exc: Exception) -> None:
+        """A subscription that ended with the provider turning our key away: written down (REFUSED_KEY) with the time it
+        began, kept across the retries, the last time and the provider's own words (the error's details, never a URL:
+        an RPC error names the endpoint with its key). Any other drop writes nothing. A write that fails costs the tape
+        nothing."""
+        text = str(exc)
+        if not any(word in text for word in PROVIDER_REFUSALS):
+            return
+        now = int(self.clock())
+        if self.refused_since is None:
+            self.refused_since = now
+        said = re.search(r'details = "([^"]*)"', text)
+        code = re.search(r"StatusCode\.([A-Z_]+)", text)
+        why = said.group(1) if said else re.sub(r"(?i)(api[-_]?key=)[^&\s'\"]+", r"\1<redacted>", text)
+        rec = {"since": self.refused_since, "last": now, "why": why[:200]}
+        if code:
+            rec["code"] = code.group(1)
+        try:
+            self.store.set_coverage(REFUSED_KEY, rec)
+        except Exception as write:  # noqa: BLE001 - the round says less; the tape goes on
+            log.warning("tape: could not write down the provider's refusal (%s)", write)
+
+    def _let_in(self) -> None:
+        """The first connection that works after a refusal: the record says when it was cleared (the round stops
+        saying it). Nothing is written when there was no refusal."""
+        if self.refused_since is None:
+            return
+        self.refused_since = None
+        try:
+            rec = dict(self.store.coverage(REFUSED_KEY) or {})
+            rec["cleared"] = int(self.clock())
+            self.store.set_coverage(REFUSED_KEY, rec)
+        except Exception as write:  # noqa: BLE001
+            log.warning("tape: could not clear the provider's refusal (%s)", write)
 
     def _replay_refused(self, start: int, exc: Exception) -> None:
         """A replaying subscription failed before its first message. When the server names the oldest slot it still

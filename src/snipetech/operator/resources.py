@@ -336,15 +336,23 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
 
     # The tape (7 Nov 14:03-15:48: it recorded nothing for 1 h 45 min and only the operator's model would have said so,
     # while the API refused it): code says it, once a day like every critical row.
+    refused = provider_refusal(store, now)
     if snap.tape_last_ts is None:
         out.append(Resource("tape", None, "s", TAPE_ALERT_SECS, "unknown", "the tape's newest trade could not be read"))
     else:
         lag = max(0.0, now - float(snap.tape_last_ts))
         late = lag > TAPE_ALERT_SECS
-        out.append(Resource("tape", round(lag), "s", TAPE_ALERT_SECS, "crit" if late else "ok",
-                            f"the tape is {lag / 60:.0f} min behind: nothing new is recorded. The recorder opens a new "
-                            "connection after 3 minutes of refused writes and restarts itself after 10; if it stays behind, "
-                            "`snipetech remote update` restarts it" if late else f"the tape is {lag:.0f} s behind"))  # fmt: skip
+        if late and refused is not None:  # the cause is known and is no restart's to fix (the helius row says it)
+            why = f"the tape is {lag / 60:.0f} min behind: Helius refuses the recorder (the helius row)"
+        elif late:
+            why = (f"the tape is {lag / 60:.0f} min behind: nothing new is recorded. The recorder opens a new "
+                   "connection after 3 minutes of refused writes and restarts itself after 10; if it stays behind, "
+                   "`snipetech remote update` restarts it")  # fmt: skip
+        else:
+            why = f"the tape is {lag:.0f} s behind"
+        out.append(Resource("tape", round(lag), "s", TAPE_ALERT_SECS, "crit" if late else "ok", why))
+    if refused is not None:  # a row of its own: said once a day apart from the tape's (run.py: "resource <name>")
+        out.append(refused)
 
     # The machine's network setup: critical from the moment its manager gives up on a link.
     out.append(network_row(network_links or read_network_links))
@@ -436,6 +444,37 @@ def _failed_by_the_wallets_sol(cfg: Config, store: Store, snap: Snapshot, failed
     except Exception:  # noqa: BLE001 - a read that fails explains nothing: the alert stands as it was
         return 0, 0
     return unpaid, unread
+
+
+# The provider turning our key away, as the recorder wrote it down (live.REFUSED_KEY). Current while its last refusal
+# is under REFUSAL_CURRENT_SECS old and it was not cleared since; an alert once it has lasted REFUSAL_ALERT_SECS (10 Nov:
+# "Unable to verify project" came and went within minutes before it held for 33).
+REFUSED_KEY = "tape:refused"
+REFUSAL_CURRENT_SECS = 600
+REFUSAL_ALERT_SECS = 300
+
+
+def provider_refusal(store: Store, now: float) -> Resource | None:
+    """The `helius` row while Helius turns our key away (19 Nov 2026 23:11 UTC: "Project is suspended": the tape
+    recorded nothing and every RPC call was refused, and the round said only that the tape was behind and that a
+    restart would help, which it cannot): since when, the provider's own words and the one place it is fixed. None
+    when nothing was refused, the refusal was cleared, or the record cannot be read."""
+    try:
+        rec = store.coverage(REFUSED_KEY) or {}
+    except Exception:  # noqa: BLE001
+        return None
+    last, since = rec.get("last"), rec.get("since")
+    if last is None or since is None or (rec.get("cleared") or 0) >= last or now - float(last) > REFUSAL_CURRENT_SECS:
+        return None
+    lasted = max(0.0, now - float(since))
+    when = time.strftime("%H:%M UTC", time.gmtime(float(since)))
+    why = str(rec.get("why") or "refused")
+    msg = (f'Helius refuses our key since {when} ({lasted / 60:.0f} min): "{why}". The tape records nothing and no '
+           "job can read the chain. Nothing on the server can fix it: log in at dashboard.helius.dev, Billing / Usage "
+           "(this month's credits used up, a payment that did not go through, or a changed key). The recorder lets "
+           "itself back in within a minute of the fix; what it cannot replay stays a hole in the tape")  # fmt: skip
+    status = "crit" if lasted >= REFUSAL_ALERT_SECS else "warn"
+    return Resource("helius", round(lasted), "s", REFUSAL_ALERT_SECS, status, msg)
 
 
 def alert_lines(resources: list[Resource]) -> list[str]:
