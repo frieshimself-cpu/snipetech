@@ -825,3 +825,18 @@ def test_a_copy_of_the_world_is_left_alone(dbs, tmp_path):
     finally:
         store.close()
     assert src.read_bytes() == before
+
+
+def test_an_end_after_the_copy_says_when_copies_come(tmp_path):
+    """20 Nov 06:01: the analyst asked a lab for --until 05:00 while the copy it reads (taken at 04:00, written by 04:44)
+    ended at 04:00:15, and was told "the next hourly copy will hold more". Copies are made every three hours since
+    11 Nov and take about an hour (infra/snapshot_db.py), so a retry an hour later fails the same way. The refusal says
+    so, and where to end the lab instead."""
+    from snipetech.infra.snapshot_db import SNAPSHOT_EVERY_SECS
+
+    err = W._outside(1795150800, 1793937232, 1795147215, "the hourly copy taken at 2026-11-20T04:00:23Z")
+    said = str(err)
+    assert "next hourly copy" not in said and f"every {SNAPSHOT_EVERY_SECS // 3600} hours" in said
+    assert "at or before 2026-11-20T04:00:15Z" in said
+    live = str(W._outside(1795150800, 1793937232, 1795147215, W.LIVE))
+    assert "every" not in live  # the live file: no copy to wait for

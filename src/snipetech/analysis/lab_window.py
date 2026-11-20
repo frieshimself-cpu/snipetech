@@ -139,8 +139,14 @@ def _range(store) -> tuple[int, int] | None:
 
 
 def _outside(until: int, lo: int, hi: int, name: str) -> OutsideTape:
+    """The refusal of an end outside the tape. After the end of a copy: when copies come (every SNAPSHOT_EVERY_SECS,
+    each taking about an hour: 20 Nov 06:01 the analyst was told "the next hourly copy will hold more", which a retry
+    an hour later would have found false) and where to end the lab instead."""
+    from ..infra.snapshot_db import SNAPSHOT_EVERY_SECS
+
     where = "after the end" if until > hi else "before the start"
-    more = " (the next hourly copy will hold more)" if until > hi and name != LIVE else ""
+    more = (f" (copies are made every {SNAPSHOT_EVERY_SECS // 3600} hours and take about an hour each: end the lab at "
+            f"or before {utc(hi)}, or wait for the next copy)") if until > hi and name != LIVE else ""  # fmt: skip
     return OutsideTape(f"--until {utc(until)} ({until}) is {where} of the tape in {name}, which runs from "
                        f"{utc(lo)} to {utc(hi)} ({lo} to {hi}){more}")  # fmt: skip
 
