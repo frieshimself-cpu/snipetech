@@ -764,25 +764,34 @@ def landing_note(copy_pos: str) -> str:
 
 def strategy_venue(strategy: dict) -> str | None:
     """The launchpad a frozen strategy's record is made of: its trigger's venue for a launch, hunt, whale or burst rule
-    (pump.fun when it names none: every rule frozen before 8 Nov), None for a rule with no venue knob (a copy,
-    momentum, MIG), whose every trade counts."""
+    (pump.fun when it names none: every rule frozen before 8 Nov), pump.fun for a copy (20 Nov: what every copy sniper
+    is sent since 12 Nov, oktech.COPY_PLATFORMS; its LaunchLab rows from before stay and no longer count), None for a
+    rule with no launchpad (momentum, MIG), whose every trade counts."""
     trig = strategy.get("trigger") or {}
-    if trig.get("kind") not in LAUNCH_KINDS:
+    if trig.get("kind") not in LAUNCH_KINDS and trig.get("kind") not in COPY_EXIT_KINDS:
         return None
     return str(trig.get("venue") or PUMPFUN)
+
+
+def _asks_tape(strategy: dict) -> bool:
+    """Whether a row of the strategy without a launchpad tag is placed by the tape: a launch-type rule's (rows scored
+    before 8 Nov carry none). A copy rule's rows are read by their tags alone: every paper trade has carried its coin's
+    launchpad since 8 Nov, so an untagged one counts as before, and no report of a copy rule waits on the tape."""
+    return (strategy.get("trigger") or {}).get("kind") in LAUNCH_KINDS
 
 
 def record(store: Store, strategy: dict, rows: list[dict] | None = None) -> tuple[list[dict], int]:
     """(the strategy's paper trades that count in its record, how many others it has): until 8 Nov the paper test fired
     launch-type rules on Raydium LaunchLab launches too, which no OKTech sniper of ours buys (research round 4: all of
-    bbe92cca81's profit, 6 of f94add343f's 14 trades). Those rows stay in paper_trades; they never count. A row's venue
-    is the one `run` tagged it with, else the one the tape says (`tag_venues` has not reached it yet); a row whose coin
-    the tape no longer holds and that was never tagged counts (nothing says it was not the strategy's venue)."""
+    bbe92cca81's profit, 6 of f94add343f's 14 trades), and until 20 Nov copy rules too (a copy sniper is sent pump.fun
+    and PumpSwap). Those rows stay in paper_trades; they never count. A row's venue is the one `run` tagged it with,
+    else, for a launch-type rule, the one the tape says (`tag_venues` has not reached it yet); a row whose coin the tape
+    no longer holds and that was never tagged counts (nothing says it was not the strategy's venue)."""
     rows = store.paper_trades(strategy["id"]) if rows is None else rows
     want = strategy_venue(strategy)
     if want is None:
         return rows, 0
-    untagged = [r["mint"] for r in rows if not (r.get("data") or {}).get("venue")]
+    untagged = [r["mint"] for r in rows if not (r.get("data") or {}).get("venue")] if _asks_tape(strategy) else []
     seen = store.mint_venues(untagged) if untagged else {}
     kept = [r for r in rows if ((r.get("data") or {}).get("venue") or seen.get(r["mint"]) or want) == want]
     return kept, len(rows) - len(kept)
@@ -1954,7 +1963,7 @@ def _numbers(store: Store, strategy: dict, conf: float, samples: int, bounds: bo
     Not kept: numbers made from other rows than were counted (the paper run wrote some in between), and a launch-type
     rule's while a row of it carries no launchpad, for `record` then asks the tape, which forgets coins."""
     rows = store.paper_trades(strategy["id"])
-    asks_tape = strategy_venue(strategy) is not None and any(not (r.get("data") or {}).get("venue") for r in rows)
+    asks_tape = _asks_tape(strategy) and any(not (r.get("data") or {}).get("venue") for r in rows)
     kept, other = record(store, strategy, rows)
     pnl = np.array([r["pnl"] for r in kept], dtype=np.float64)
     roi = [float(r["roi"]) for r in kept if r.get("roi") is not None]

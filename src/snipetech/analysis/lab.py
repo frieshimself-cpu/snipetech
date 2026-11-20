@@ -1907,8 +1907,11 @@ def _fire(trig: Trigger, path: MarketPath, launch, kols, events: list[tuple] | N
     to PumpSwap as the tape recorded it (a MIG trigger fires on nothing else); `paid`: whether an earlier coin's creator
     paid its creator (`dev_paid_earlier`, read only for a MIG trigger with `dev_paid` set)."""
     dev = launch.deployers() if launch is not None else set()
-    if trig.kind in LAUNCH_KINDS and getattr(path, "venue", PUMPFUN) != trig.venue:
-        return None  # a launch-type rule buys only its own launchpad's coins (OKTech's snipers: pump.fun only)
+    if (trig.kind in LAUNCH_KINDS or trig.kind in COPY_EXIT_KINDS) and getattr(path, "venue", PUMPFUN) != trig.venue:
+        # a launch-type rule buys only its own launchpad's coins (OKTech's snipers: pump.fun only), and a copy only
+        # pump.fun's (20 Nov: every copy sniper is sent pump.fun and PumpSwap since 12 Nov, oktech.COPY_PLATFORMS; a
+        # copy was scored on LaunchLab coins too, and 22 of one pending wallet's 37 copies were)
+        return None
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return None
     if (trig.max_age or trig.min_age) and launch is None:

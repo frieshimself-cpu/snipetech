@@ -123,7 +123,9 @@ def test_a_venue_tag_written_later_recomputes_the_launch_rules(monkeypatch):
         seen = _counting(monkeypatch, st)
         after = {s["id"]: s for s in paper.report(st, cfg, now=NOW)["strategies"]}
         assert after["h"]["n"] == 31 and after["h"]["other_venue"] == 1
-        assert seen["reads"] == ["h"]  # a copy rule has no venue: nothing of a or b is read again
+        # since 20 Nov a copy rule has a launchpad too (pump.fun, what a copy sniper is sent): a pass that writes tags
+        # may move one of its rows out, so it is read again as well (the pass runs once: `tag_venues` keeps it done)
+        assert sorted(seen["reads"]) == ["a", "b", "h", "old"]
     finally:
         st.close()
 

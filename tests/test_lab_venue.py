@@ -66,10 +66,14 @@ def test_a_launchlab_launch_fires_no_default_launch_type_rule_and_the_launchlab_
         other = Trigger(**(trig.__dict__ | {"venue": "launchlab"}))
         assert _fires(store, ll, other), trig.kind  # the research option buys only LaunchLab coins
         assert not _fires(store, pump, other), trig.kind
-    # a copy follows a wallet wherever it buys: the venue is a launch-type knob only
+    # a copy buys only pump.fun coins too (20 Nov; until then "a copy follows a wallet wherever it buys"): every copy
+    # sniper is sent pump.fun and PumpSwap since 12 Nov (oktech.COPY_PLATFORMS), and the venue stays a launch-type knob
     launch = store.launch(ll)
     path = MarketPath.build(store.trades_for_mint(ll), launch)
-    assert _fire(Trigger("kol", sol=1.0), path, launch, {addr("v-ll-0-whale")}) is not None
+    assert _fire(Trigger("kol", sol=1.0), path, launch, {addr("v-ll-0-whale")}) is None
+    pump_launch = store.launch(pump)
+    pump_path = MarketPath.build(store.trades_for_mint(pump), pump_launch)
+    assert _fire(Trigger("kol", sol=1.0), pump_path, pump_launch, {addr("v-pump-0-whale")}) is not None
 
 
 def test_the_lab_fires_a_default_hunt_only_on_pumpfun_launches():
@@ -123,6 +127,34 @@ def test_a_record_with_launchlab_rows_counts_only_its_pumpfun_rows_and_deletes_n
     store._exec("DELETE FROM trades")  # retention pruned the tape: the tags hold the record
     (row,) = paper.report(store, Config(), now=NOW)["strategies"]
     assert (row["n"], row["other_venue"]) == (4, 3)
+
+
+def test_a_copy_rule_is_scored_only_on_the_coins_a_copy_sniper_buys_and_its_record_counts_only_those():
+    """20 Nov pipeline audit: a wallet rule had no venue, so the qualify lab and the paper test scored copies of Raydium
+    LaunchLab coins, which no copy sniper of ours buys (oktech.COPY_PLATFORMS, sent since 12 Nov: pump.fun's curve and
+    PumpSwap; on 9 Nov a copied wallet, 2Tp9sc, bought one LaunchLab coin of 0.3 SOL or more while we copied it, and our
+    sniper bought none). The pending 6utgPM's first buys at the copy floor were 22 LaunchLab, 9 curve and 6 PumpSwap: its
+    verdict rested mostly on coins it could never copy. A copy rule now fires on pump.fun coins alone, in the lab and in
+    the paper test, and a copy rule's record counts its pump.fun rows only (the others said, none deleted)."""
+    store = Store(":memory:")
+    pump, ll = _world(store)
+    lead = {addr(f"v-{v}-{k}-whale") for v in ("pump", "ll") for k in range(3)}
+    store.set_label(next(iter(lead)), "lead", "wallet")
+    copy = Trigger("kol", group="wallet", sol=1.0)
+    data = collect(store, Config(), 0.2, 0, "+0", min_trades=1, exits=[EXIT], triggers=[copy], workers=1,
+                   kols={"wallet": lead})  # fmt: skip
+    assert {r["mint"] for r in data["rows"]} == set(pump)
+    assert paper.strategy_venue({"trigger": copy.__dict__}) == "pumpfun"
+    assert paper.strategy_venue({"trigger": Trigger("momentum").__dict__}) is None  # no launchpad, every trade counts
+    s = _freeze(store, copy)
+    for k, mint in enumerate(ll + pump):  # rows scored before 20 Nov, tagged as every paper trade is: 3 LaunchLab copies
+        venue = "launchlab" if mint in ll else "pumpfun"
+        store.put_paper_trade({"strategy": s["id"], "mint": mint, "trigger_ts": T0 + k, "pnl": 0.05 if mint in ll else
+                               -0.01, "data": {"venue": venue}})  # fmt: skip
+    store.put_paper_trade({"strategy": s["id"], "mint": "gone", "trigger_ts": T0 + 9, "pnl": -0.01, "data": {}})
+    (row,) = paper.report(store, Config(), now=NOW)["strategies"]
+    assert (row["n"], row["other_venue"]) == (4, 3) and row["total"] == pytest.approx(-0.04)  # an untagged row counts
+    assert len(store.paper_trades(s["id"])) == 7  # nothing deleted
 
 
 def test_the_research_digest_counts_only_a_rules_own_venue():
