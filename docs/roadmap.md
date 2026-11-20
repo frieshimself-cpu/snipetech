@@ -6,6 +6,31 @@ as part of our signal, enter one step behind, and make the money where they make
 that keep running after the first seconds, with a scale-out exit. Everything below is paper-tested
 first on the server's recording and only then run live in capped batches.
 
+## 20 Nov, 20:00 UTC: what we were missing is size, and the speed to use it
+
+- **The finding (the owner, 19:2x: "there's something we are missing, and you have to find it").** The winning copy
+  bot on our tape, 6Z91, made about +93 SOL a day after its bids over the last 72 hours (1,319 buys into 1,155
+  coins, 4,075 SOL in, 4,549 SOL out, 195 SOL of bids; its failed sends are not on the tape), the last 24 hours +93
+  too; Fhbh1D about +26 a day. 6Z91 plays our game (copy known wallets, snipe launches) at about 3 SOL a buy, up to
+  10 behind the biggest wallets, bids 0.18 SOL a buy on average (0.03 behind ordinary wallets, up to 3.4 behind
+  Cupseyy), and makes about 500 buys a day behind hundreds of wallets. The place behind a wallet is worth about 10 %
+  of the SOL put in (docs/research/2026-11-12-winning-bots.md): at 5 SOL a 0.2 bid pays for it, at our 0.05 to 1 SOL
+  no bid does, and without one we land behind the bots that pay. We tested at the sizes where the game cannot pay;
+  the bid labs of 20 Nov ("a higher bid loses") were at 2 SOL.
+- **Paper at size** (labs 6a8a1a and 981ad1, 19:29 UTC: the big group's first buys of 0.95 SOL or more, `bid-`
+  landing, hold12s copy exit, 168 h to 15:00 UTC). 5 SOL a copy, 0.2 bid: +0.287 a copy on the newer 101 (lower
+  bound +0.139; our own buy moves the price 14 % at the median); over the week by wallet Cupseyy +0.318 over 105,
+  Gake Side +0.260 over 27, Cooker +0.335 over 26, Dior New Wallet +0.114 over 20, CupseyFriend -0.060 over 35.
+  10 SOL, 0.3 bid: +0.208 over 94 (lower -0.059; own impact 31 %). 2 SOL, 0.05 bid (f9cc32, 1677c2): +0.06 to
+  +0.12. About 36 such buys a day: about +10 SOL a day on paper at 5 SOL, if the landing holds. Running: the same 5
+  SOL lab at +3x and +5x (our live fills stood 1 to 5 buys behind; labs 1c1bf1 and 9d971f).
+- **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
+  mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
+  If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
+- **Live now:** the 1 SOL day on Gake Side and Cooker (since 19:25 UTC, stop at 2 SOL lost; docs/live-recipe.md).
+- **Not reachable, said plainly to the owner:** 100 SOL a day within a week from a 9 SOL wallet. 6Z91's 93 a day
+  comes with about 1,700 SOL bought a day, the first place in line, and nobody racing it for that place but us.
+
 ## 12 Nov, 14:00 UTC: twelve hours without a network (00:31 to 12:30 UTC); found, fixed in code, one command left for the owner
 
 - **What happened.** The server never crashed. On 11 Nov at 07:14 UTC, during that morning's 11-minute freeze, its
