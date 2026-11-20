@@ -295,6 +295,7 @@ def place_bids(store: Store, cfg: Config, now: float, *, trigger: Mapping[str, A
 
 MODEL_MIN_FILLS = 30  # under this many placed buys of ours the comparison is a mechanism, not a calibration
 PLACED_BY = ("chain", "tape")  # fills.landing_src of a buy of ours placed behind the wallet it copied, by whom
+WAITING = "waiting"  # a buy the tape placed whose block the tape copy does not hold yet (copied every three hours)
 MATES_HOURS = 72  # the stretch of tape a copied wallet's companions are found on (as the paper test)
 VERDICTS = ("agrees", "model too kind", "model too harsh")
 MODEL_READING = (
@@ -324,7 +325,8 @@ def _model_behind(tape: Store, fill: Mapping[str, Any], bid_sol: float, own: Col
     was read from). "tape": the copied wallet's block as the tape holds it, the buyers behind us too, so the model can
     be wrong either way. "ahead": the tape does not hold the coin, and the fills row names only the buyers that really
     stood ahead of us (`fills.ahead_bids`): those that bid at least as much are the model's, so there it can only be
-    shown too kind, never too harsh."""
+    shown too kind, never too harsh. WAITING (None): a buy the tape placed names no buyers ahead (only the chain
+    reader's rows do), so before the tape copy holds its block nothing can be read."""
     from ..measure.chain_landing import LEADER_WINDOW_SLOTS
 
     slot = int(fill.get("slot") or 0)
@@ -340,6 +342,8 @@ def _model_behind(tape: Store, fill: Mapping[str, Any], bid_sol: float, own: Col
         who = ahead(read, bid_sol) if read is not None else None
         if isinstance(who, dict):
             return int(who["place"]) - 1, "tape"
+    if fill.get("ahead_bids") is None:  # never an empty list: the tape's placing names nobody ahead
+        return None, WAITING
     try:
         named = json.loads(fill.get("ahead_bids") or "[]")
     except ValueError:
@@ -366,11 +370,13 @@ def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: in
     own = _own_wallets(store, cfg) | {f["wallet"] for f in fills if f.get("wallet")}
     since = int(now - MATES_HOURS * 3600)
     rows: list[dict[str, Any]] = []
+    waiting = 0
     tally = {key: dict.fromkeys(("agrees", "model_too_kind", "model_too_harsh"), 0) for key in (BID, CAUTIOUS)}
     for f in sorted(fills, key=lambda f: (int(f.get("ts") or 0), f["sig"])):
         bid_sol = (int(f.get("priority_lamports") or 0) + int(f.get("tip_lamports") or 0)) / LAMPORTS
         model, basis = _model_behind(tape, f, bid_sol, own, since)
         if model is None:
+            waiting += basis == WAITING
             continue
         real = int(f["trades_behind"])
         verdict = _verdict(model, real)
@@ -395,6 +401,6 @@ def model_check(store: Store, tape: Store, cfg: Config, now: float, since_ts: in
             "basis": {k: sum(1 for r in rows if r["basis"] == k) for k in ("tape", "ahead")},
             "placed_by": {k: sum(1 for r in rows if r["placed_by"] == k) for k in PLACED_BY},
             "same_block": _share(sum(1 for r in known if r["blocks_after"] == 0), len(known)),
-            "same_block_known": len(known),
+            "same_block_known": len(known), "waiting_for_block": waiting,
             "calibrated": False, "min_fills": MODEL_MIN_FILLS, "note": note, "rows": rows,
             "reading": list(MODEL_READING)}  # fmt: skip

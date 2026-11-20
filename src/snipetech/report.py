@@ -1007,6 +1007,11 @@ def _bid_landing_lines(b: dict) -> list[str]:
 def render_model_check(o: dict) -> str:
     """`place-bids --model-check` in words: the bid landing model against where our real buys landed."""
     out = ["The bid landing model against our real buys (lab --copy-position bid / bid-)", "=" * 72, o["note"] + "."]
+    if o.get("waiting_for_block"):
+        k = o["waiting_for_block"]
+        out.append(f"{k} {'buy' if k == 1 else 'buys'} the tape placed {'waits' if k == 1 else 'wait'} for the tape "
+                   f"copy to hold {'its block' if k == 1 else 'their blocks'} (it is made every three hours): not "
+                   "compared yet.")  # fmt: skip
     if not o.get("rows"):
         return "\n".join(out)
     for key, name in (("bid", "bid"), ("bid-", "bid- (one further back)")):

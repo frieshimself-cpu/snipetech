@@ -574,7 +574,8 @@ def _fill(st, sig, mint, slot, bid, behind, blocks_after=0, ahead=(), leader=LEA
                  "side": "buy", "sol": 0.05, "trades_behind": behind, "priority_lamports": round(bid * 1e9 / 7),
                  "tip_lamports": round(bid * 1e9) - round(bid * 1e9 / 7), "landing_src": src,
                  "blocks_after": blocks_after,
-                 "ahead_bids": json.dumps([{"w": w, "bid": round(b * 1e9), "sol": 1.0} for w, b in ahead])})  # fmt: skip
+                 "ahead_bids": None if ahead is None else  # the tape's placing names no buyers ahead
+                 json.dumps([{"w": w, "bid": round(b * 1e9), "sol": 1.0} for w, b in ahead])})  # fmt: skip
 
 
 def test_the_model_is_compared_with_where_our_real_buys_landed():
@@ -651,6 +652,24 @@ def test_the_model_check_also_reads_the_buys_the_tape_placed():
     assert out["same_block"] == 1.0 and out["same_block_known"] == 1
     text = R.render_model_check(out)
     assert "Placed by the chain reader: 1, by the tape: 1" in text and "1 of them with known blocks after" in text
+    st.close()
+
+
+def test_a_buy_the_tape_placed_waits_while_the_tape_copy_lacks_its_block():
+    """The check reads the blocks from the tape copy, made every three hours. A buy the tape placed names no buyers
+    ahead (only the chain reader's rows do), so until the copy holds its block there is nothing to compare it with:
+    it waits and is counted, never compared with an empty list. 20 Nov 18:31: the landing test's fill 5, 5 buys
+    behind, read "model 0, too kind" that way from a copy made before it."""
+    from snipetech import report as R
+
+    st = _store()
+    _fill(st, "fill-tape-later", addr("bl-tape-later"), 9, 0.001, 5, blocks_after=None, ahead=None, src="tape")
+    _fill(st, "fill-chain-none-ahead", addr("bl-chain-off"), 5, 0.035, 0, blocks_after=1)  # nobody ahead: "[]"
+    out = PB.model_check(st, st, Config(), now=NOW)
+    rows = {r["sig"]: r for r in out["rows"]}
+    assert set(rows) == {"fill-chain-none-ahead"} and rows["fill-chain-none-ahead"]["verdict"] == "agrees"
+    assert out["fills"] == 1 and out["waiting_for_block"] == 1 and out["placed_by"] == {"chain": 1, "tape": 0}
+    assert "1 buy the tape placed waits for the tape copy to hold its block" in R.render_model_check(out)
     st.close()
 
 
