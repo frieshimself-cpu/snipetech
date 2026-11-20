@@ -22,8 +22,12 @@ first on the server's recording and only then run live in capped batches.
   bound +0.139; our own buy moves the price 14 % at the median); over the week by wallet Cupseyy +0.318 over 105,
   Gake Side +0.260 over 27, Cooker +0.335 over 26, Dior New Wallet +0.114 over 20, CupseyFriend -0.060 over 35.
   10 SOL, 0.3 bid: +0.208 over 94 (lower -0.059; own impact 31 %). 2 SOL, 0.05 bid (f9cc32, 1677c2): +0.06 to
-  +0.12. About 36 such buys a day: about +10 SOL a day on paper at 5 SOL, if the landing holds. Running: the same 5
-  SOL lab at +3x and +5x (our live fills stood 1 to 5 buys behind; labs 1c1bf1 and 9d971f).
+  +0.12. About 36 such buys a day: about +10 SOL a day on paper at 5 SOL, if the landing holds. THE LANDING DECIDES IT (labs 1c1bf1 and 9d971f, 19:58, the same 5 SOL lab with the copy placed behind the 3rd
+  and the 5th buy after the wallet's): +3x +0.028 a copy on the newer 101 (lower -0.095; Cooker +0.202, Cupseyy
+  +0.040, Gake Side +0.009 over the week), +5x -0.158 (lower -0.275; Cooker +0.126, Cupseyy -0.201, Gake Side
+  -0.039). At 5 SOL each buyer ahead of us costs about 0.1 SOL a copy: the edge is in the first two places, and
+  only Cooker (cheap crowd, 26 copies a week) holds at every place. Our live fills behind Cupseyy at a 0.05 bid
+  stood 1, 2, 2, 5 and 5 behind.
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
