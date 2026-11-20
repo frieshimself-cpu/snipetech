@@ -47,6 +47,13 @@ are never pasted into chat, commits, notes or logs; `ops.redact` scrubs outputs.
    wallet, needs no further yes; each one is written into docs/live-recipe.md before it starts (what it tests, the
    sniper, the stop rule) and after (every fill). Anything larger, anything that is not a test (a rule run for
    profit, a bigger size, another wallet), and RISK / AUTOTEST still need the owner's yes for that step.
+   **The owner's ladder for the big-wallet copy (20 Nov 2026 ~15:10 UTC, "Do everything I agree"):** the system may
+   start such small tests by itself, inside the standing yes. If 7 or more of the 10 fills of the landing test behind
+   Cupseyy, Gake Side and Cooker (docs/live-recipe.md) land first or one behind, copies of those three at 1 SOL run
+   for a day, stopped at 2 SOL lost; if that day makes money, copies at 2 SOL, whose daily loss cap is still to be
+   agreed with the owner before they start. Asked at 15:27 UTC, not yet answered: start straight at 2 SOL instead of
+   1 SOL, with the same 2 SOL daily stop. Any step at size runs the exit and the copy floor the paper scored, never
+   others.
 2. **Measure at the real landing.** Live copies land in the leader's own block (20 of 24 since 7 Nov); the place
    inside it is a fee auction. At a 0.003 SOL bid: 0.3 trades behind at +1 % behind a quiet leader, 2–4 trades behind
    at +18–43 % behind a crowded one (the "+6 regime"). Launch snipes land a slot after the create. A paper result
