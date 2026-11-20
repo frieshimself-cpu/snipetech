@@ -3,10 +3,13 @@ lab job, never more often than `lab_interval_h`; wallets the tape has never seen
 
 from __future__ import annotations
 
+import fcntl
 import json
 import math
+import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
@@ -288,18 +291,55 @@ def _tape_start(store, now: float) -> int:
         return int(now - 7 * 86400)
 
 
+# One qualify run at a time (20 Nov 03:00:16 and 03:01:26: the agents' research rotation and the timer each started a
+# run, and both measured the same wallets in a lab; 17 Nov 08:16 and 08:30 the same): the last-lab mark is written when
+# a run ends, so a run that started meanwhile never saw it. A lock on this file in the data directory says one runs.
+QUALIFY_LOCK = "qualify.lock"
+
+
+@contextmanager
+def one_qualify_run(data_dir: Path) -> Iterator[bool]:
+    """True while this run holds the one qualify run, False when another run holds it (nothing is waited for)."""
+    fd = os.open(Path(data_dir) / QUALIFY_LOCK, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def _empty_answer() -> dict[str, Any]:
+    return {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0, "forward_failed": 0,
+            "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0, "too_few": 0, "unlabelled": 0,
+            "lab_wallets": 0}  # fmt: skip
+
+
 def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRunner | None = None,
                 max_wallets: int | None = None, early: bool = False,
                 budget_secs: float = RUN_BUDGET_SECS) -> dict[str, Any]:  # fmt: skip
     """`early`: the research rotation found the lab idle (no lab for 30 min) with wallets waiting, so the stage's own
     lab_interval_h does not defer this lab; a running lab job still does (one lab at a time). `budget_secs`: no new
-    chunk of wallets starts after this long."""
+    chunk of wallets starts after this long. While another qualify run runs this one does nothing (`one_qualify_run`)."""
+    with one_qualify_run(Path(jobs_dir).parent) as mine:
+        if not mine:
+            return _empty_answer() | {"deferred": True,
+                                      "reason": "another qualify run is running; this one waits for the next tick"}  # fmt: skip
+        return _run_qualify(svc, cfg, jobs_dir, now, lab_runner, max_wallets, early, budget_secs)
+
+
+def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRunner | None,
+                 max_wallets: int | None, early: bool, budget_secs: float) -> dict[str, Any]:  # fmt: skip
     store = svc.store
     q = cfg.qualify
     max_wallets = max_wallets or q.max_wallets
-    out: dict[str, Any] = {"evaluated": 0, "qualified": 0, "candidate": 0, "retired": 0, "forward_pending": 0,
-                           "forward_failed": 0, "kept_armed": 0, "armed_unknown": 0, "deferred": False, "no_tape": 0,
-                           "too_few": 0, "unlabelled": 0, "lab_wallets": 0}  # fmt: skip
+    out: dict[str, Any] = _empty_answer()
     # Until 11 Nov the stage labelled every wallet it measured `cand`, for the lab to find them by: 22,204 labels named
     # "cand:<address>", in every list of names and in the group a default lab fires its `cand` rule on. The lab is told
     # its wallets now; the labels this stage wrote go (a hand pick's, a research job's and every other kind stay).

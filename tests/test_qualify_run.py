@@ -1358,3 +1358,31 @@ def test_a_cost_kept_before_the_low_bid_was_told_from_other_bids_is_not_charged(
         assert lab_tx_cost_info(st, cfg)["per_tx_source"] == "last measured"
     finally:
         st.close()
+
+
+def test_a_second_qualify_run_waits_while_one_runs(tmp_path):
+    """20 Nov 03:00:16 and 03:01:26: the agents' research rotation and the timer each started a qualify run, 70 s
+    apart, and both measured the same wallets in a lab: the last-lab mark is written when a run ends, so neither saw
+    the other (17 Nov, 08:16 and 08:30, the same). One run at a time now: a second one does nothing and says why; the
+    next tick is its turn."""
+    from snipetech.qualify.run import one_qualify_run
+
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["W"])
+        st.upsert_candidate("W", "coinfirst", {}, NOW - 3600)
+        sent = []
+
+        def runner(ws, pos):
+            sent.extend(ws)
+            return [dict(_lab_row(), wallet=w) for w in ws]
+
+        with one_qualify_run(data) as mine:
+            assert mine
+            out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        assert out["deferred"] and "another qualify run" in out["reason"] and out["evaluated"] == 0 and sent == []
+        assert st.latest_verdicts() == []  # not even the count before the lab
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
+        assert sent == ["W"] and out["evaluated"] == 1
+    finally:
+        st.close()
