@@ -4,6 +4,23 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## The landing test behind the big wallets: approved, waits until the wallet can pay a copy (20 Nov 2026, written 05:20 UTC)
+
+**Why.** The one clear paper profit is copying the big wallets' opening buys: lab f9cc32 (20 Nov, 168 hours to 03:00 UTC, 269 copies, 2 SOL a copy, a 0.05 SOL bid, hold 12 s and the copy exit) made +0.121 SOL a copy, the newer 108 +0.141 (lower bound +0.079); idea I363 priced the sale at the end of its crowded block and it held (+0.278 to +0.236 a copy at +3, lower +0.122). By wallet nearly all of it is three: Cupseyy (113 copies, +0.166 a copy, lower +0.114), Gake Side (32, +0.097, lower +0.037), Cooker (21, +0.148, lower +0.012). But that place is the lab's MODEL of where a 0.05 bid lands (`bid-@0.05`: behind the wallet's companions, behind every outsider that bid as much, behind one outsider in the first two transactions behind it), not calibrated on real fills; the only live check, 12 Nov above, put 2 of 2 placed copies first behind Cupsey at a 0.035 bid. This test measures the place.
+
+**Under which yes.** The owner's explicit yes in chat, 20 Nov ~05:08 UTC ("1 yes"), to exactly this: the sniper wallet copying the big wallets' opening buys at 0.05 SOL a copy and a 0.05 SOL bid, stopped at 10 fills, 0.8 SOL lost or 12 hours, never stopping a sniper that holds a coin, each fill's landing read from the chain. Inside the standing yes of 12 Nov too (0.2 SOL a buy, 2 SOL lost a day). The yes is for this one test.
+
+**What runs** (dry run 05:14 UTC, job 20261120-051403-009ebe; nothing made on OKTech yet). Three copy snipers on the sniper wallet (6VFrZ15V...), one each for Cupseyy (6DQAGJT7VZPVBsuG4kn3AvpyHCEi7B2RFFvMZdbqQqqP), Gake Side (4Hq9UkSXjEwDZDBMAo9Lnri7VnbQCoomRAdrT6NGMh1c) and Cooker (8deJ9xeUvXSJwicYptA9mHsU2rN2pDx37KWzkDkEXhU6): only their buys of 0.95 SOL or more, 0.05 SOL a copy, one buy a start (singleSnipe), priority 0.001 + tip 0.049 a buy, sells at 0.002 tip + 0.0001 priority, preconfirmations on, pump.fun and PumpSwap with the 50 M$ ceiling, the lab exit (sell when the wallet sells, after 1 s without a trade, at -30 %, at 300 s). Made with `oktech copylist --copy 6DQAGJ...:Cupseyy:0.95 --copy 4Hq9Uk...:GakeSide:0.95 --copy 8deJ9x...:Cooker:0.95 --buy 0.05 --snipes 1 --bid 0.05 --tag arm:land05 --create`, then run by `oktech cycle --id <the three ids> --address 6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at --floor <the wallet's value at the start less 0.8, at least 0.1> --max-fills 10 --max-minutes 720 --rearm-after 1800`: it re-arms each sniper once its coin is sold, stops re-arming at 10 fills, 12 hours, the floor, the owner's /stop or the wallet-wide guard, and at the end stops a sniper only when the wallet holds nothing. Unlike the lab, OKTech copies any buy of 0.95 SOL or more, a top-up too: a fill on a top-up is read and said as one.
+
+**When it starts.** When the wallet can pay a copy and its fees (the round's snapshot: the wallet's value 0.25 SOL or more). Not before.
+
+**What is read.** For every fill: `remote --wait run landing --since-minutes N --leader <wallet>` (blocks after the wallet's buy, buys ahead of ours and what they bid, our price against the wallet's), and the exit that sold it. The answer: most fills first or one behind at 0.05 means the model holds and the big-wallet result stands at its place; two or more behind means it does not, and the idea stops here.
+
+**What it can lose.** About 0.055 SOL of fees a round trip (the tip 0.049 is most of it) plus at most 0.015 a position at the -30 % stop: about 0.5 to 0.7 SOL for 10 fills; the floor stops it at 0.8.
+
+| # | time (UTC) | wallet copied | coin | landed (blocks after, buys ahead) | highest bid ahead | price vs the wallet | exit | result (SOL) |
+|---|---|---|---|---|---|---|---|---|
+
 ## A copied wallet swapped into USDC and the copy followed: 54 failed sends, 0.05 SOL; the book now refuses such wallets (14 Nov 2026, 06:00-07:10 UTC)
 
 **What happened.** Not a test: the owner's standing book, by its own rules.
