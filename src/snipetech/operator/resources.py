@@ -361,6 +361,9 @@ def check_resources(cfg: Config, store: Store, snap: Snapshot, ledger: Ledger, *
         out.append(oktech_refused)
     # When each paid plan ends: a reminder before, as the owner recorded it (/renew).
     out.extend(renewal_rows(store, now))
+    copy_row = db_copy_row(cfg.storage.db_path, now)  # the copy labs read: how old, how slow (never an alert)
+    if copy_row is not None:
+        out.append(copy_row)
 
     # The machine's network setup: critical from the moment its manager gives up on a link.
     out.append(network_row(network_links or read_network_links))
@@ -732,6 +735,46 @@ def renewal_rows(store: Store, now: float) -> list[Resource]:
             msg += f": renew at {where}, or {effect}. If it renews by itself, nothing to do"
         out.append(Resource(f"renew_{svc}", round((due - now) / 86400, 1), "days", RENEW_ALERT_DAYS, status, msg))
     return out
+
+
+# The read-only copy labs, discovery and the events scan read (infra/snapshot_db.py; 20 Nov server audit: 41 to 69
+# minutes a copy on 18-20 Nov, longer each day). One is due every SNAPSHOT_EVERY_SECS and takes up to an hour, so it is
+# up to about 4 h old in the normal course; older means one was missed. One that took over COPY_STOP_SECS stops the next
+# under the operator's --limit-secs 7200 (snapshot_db.FIT_MARGIN), and five hours later the heavy readers fall back to
+# the live file. Said to the agents and in /status, never sent: the owner has nothing to do about it.
+DB_COPY_OLD_SECS = 5 * 3600
+DB_COPY_SLOW_SECS = 75 * 60
+DB_COPY_LIMIT_SECS = 7200  # what the operator's stand-in gives `snapshot-db --limit-secs`
+
+
+def db_copy_row(db_path, now: float) -> Resource | None:
+    """The `db_copy` row: how old the copy labs read is and how long the last one took; warn when it is older than a
+    missed copy or the copy grows slow, None when there is no copy (a fresh install) or it cannot be read."""
+    from ..infra.snapshot_db import FIT_MARGIN, last_copy
+
+    try:
+        rec = last_copy(db_path)
+    except Exception:  # noqa: BLE001 - said nothing rather than wrong
+        return None
+    if not rec.get("started"):
+        return None
+    age = max(0.0, now - float(rec["started"]))
+    took = float(rec.get("secs") or 0)
+    stop = DB_COPY_LIMIT_SECS / FIT_MARGIN
+    said = [f"the copy labs read is {age / 3600:.1f} h old"] + (
+        [f"the last one took {took / 60:.0f} min"] if took else []
+    )
+    status = "ok"
+    if age > DB_COPY_OLD_SECS:
+        status = "warn"
+        said.append("a copy is due every 3 h, so one was missed: labs and discovery read older data")
+    if took > stop:
+        status = "warn"
+        said.append(f"over {stop / 60:.0f} min, the next copy will not start (labs then fall back to the live file)")
+    elif took > DB_COPY_SLOW_SECS:
+        status = "warn"
+        said.append(f"copies are the machine's main load, and one over {stop / 60:.0f} min stops the next")
+    return Resource("db_copy", round(age / 3600, 1), "h", DB_COPY_OLD_SECS / 3600, status, "; ".join(said))
 
 
 def alert_lines(resources: list[Resource]) -> list[str]:
