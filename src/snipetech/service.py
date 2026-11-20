@@ -26,6 +26,7 @@ from .analysis.study import study_report
 from .config import Config
 from .ingest import Ingestor
 from .models import Launch
+from .positions import SPENT_STATUSES
 from .sim.exits import ExitParams
 from .solana.base58 import is_pubkey
 from .solana.rpc import SolanaRpc
@@ -33,6 +34,10 @@ from .store import Store
 
 Progress = Callable[[str], None]
 PICKED_KIND = "cand"  # `label --kind cand`: a copy candidate picked by hand, queued for qualify (`Service._pick`)
+# `oktech cycle`: how often it reads OKTech's task list, and how long a sniper OKTech reports spent must stay so with
+# nothing held before it is re-armed ahead of its timer (20 Nov: copies of swaps into USDC spend a shot, buy nothing)
+TASKS_READ_SECS = 15.0
+SPENT_REARM_SECS = 30.0
 
 
 class OverlapError(ValueError):
@@ -1145,11 +1150,38 @@ class Service:
                 return f"the tape could not be read ({type(exc).__name__})"
             return f"the tape is {age:.0f} s behind" if age is not None and age > TAPE_STALE_SECS else None
 
-        async def open_positions() -> list[dict]:
+        async def open_positions(unknown: list[dict] | None = None) -> list[dict]:
             # the wallet's actual holdings are the truth (the tape lags a few seconds: on 5 Nov 22:14 a sniper was
             # restarted 5 s after its buy because the fill was not on the tape yet, and the coin was left unmanaged);
-            # ignore_mints: positions no sniper manages (to be sold by hand)
-            return await self.open_positions(address, ignore=ignore_mints)
+            # ignore_mints: positions no sniper manages (to be sold by hand); `unknown` gets the tokens the tape cannot
+            # price (a coin past its window on PumpSwap is one), which a spent sniper's re-arm counts as held
+            return await self.open_positions(address, ignore=ignore_mints, unknown=unknown)
+
+        def tag(i: str) -> str:
+            # a sniper by its own end: OKTech's ids open with their creation second, the same for snipers made together
+            return i[-6:]
+
+        async def read_spent(now: float) -> None:
+            """Which of the snipers this run armed OKTech reports spent (finished, stopped, error, completed): a one-shot
+            sniper is spent by any send, a failed one too (a copy of a swap into USDC fails at the market-cap ceiling and
+            buys nothing), so it can sit spent with nothing held until its timer. `spent_at` keeps when each was first
+            seen so; a read that fails leaves it as it was, said once (the timer still re-arms)."""
+            nonlocal tasks_unread
+            try:
+                states = {str(t.get("id")): str(t.get("status")) for t in await client.tasks()}
+            except Exception as exc:  # noqa: BLE001 - a spent sniper then waits for its timer, as before
+                if not tasks_unread:
+                    log(
+                        f"OKTech's task list could not be read ({type(exc).__name__}): a spent sniper waits for its timer"
+                    )
+                tasks_unread = True
+                return
+            tasks_unread = False
+            for i in ids:
+                if i in armed and states.get(i) in SPENT_STATUSES:
+                    spent_at.setdefault(i, now)
+                else:
+                    spent_at.pop(i, None)
 
         async def guard_says(held: list[dict]) -> tuple[bool | None, str]:
             """The owner's wallet-wide guard now (operator/RISK: the day 1 SOL down or the wallet under 10 SOL), read at
@@ -1188,7 +1220,7 @@ class Service:
                     armed.discard(i)
                 except Exception as exc:  # noqa: BLE001 - said in the reason: the owner stops it by hand
                     failed.append(i)
-                    log(f"stop of {i[:8]} at the end failed: {exc}")
+                    log(f"stop of {tag(i)} at the end failed: {exc}")
             return f"{why}; the wallet holds nothing, so the snipers it armed are stopped" + (
                 f" except {', '.join(failed)} (stop them with /stop)" if failed else ""
             ), held
@@ -1198,6 +1230,8 @@ class Service:
         armed_at: dict[str, float] = {}
         armed: set[str] = set()  # the snipers this run started and has not stopped since
         seen: set[str] = set()  # the coins the wallet has held since the start: each one is at least one buy
+        spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
+        tasks_read_at, tasks_unread = 0.0, False
 
         def fills_now() -> int:
             return max(fills_since(t0), len(seen))
@@ -1229,7 +1263,7 @@ class Service:
                 ans = await client.start(i)
                 armed_at[i] = time.time()
                 armed.add(i)
-                log(f"started {i[:8]}: {ans.get('task', {}).get('status', ans)}")
+                log(f"started {tag(i)}: {ans.get('task', {}).get('status', ans)}")
             low, paused, unsure = b0, False, False
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
@@ -1238,7 +1272,8 @@ class Service:
                     break
                 try:
                     b = await balance()
-                    held = await open_positions()
+                    unpriced: list[dict] = []
+                    held = await open_positions(unpriced)
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
@@ -1265,12 +1300,18 @@ class Service:
                     log("the tape has caught up: re-arming again")
                     paused = False
                 now = time.time()
+                if now - tasks_read_at >= TASKS_READ_SECS:
+                    tasks_read_at = now
+                    await read_spent(now)
                 guarded = False
                 for i in ids:
                     since = now - armed_at.get(i, now)
                     if since < 20:  # a fresh shot may have just been fired and not reached the tape or the RPC yet
                         continue
-                    if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after:
+                    # spent with nothing held, an unpriced token included, for SPENT_REARM_SECS: the RPC has long shown
+                    # any coin it bought by then, so the shot bought nothing (20 Nov: copies of swaps into USDC)
+                    spent = i in spent_at and now - spent_at[i] >= SPENT_REARM_SECS and not unpriced
+                    if fills_since(armed_at.get(i, now)) >= 1 or since >= rearm_after or spent:
                         blocked, why = await guard_says(held)
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop
                             reason, guarded = f"the wallet-wide guard holds ({why}): no more re-arms", True
@@ -1286,16 +1327,19 @@ class Service:
                             armed.discard(i)
                             await asyncio.sleep(1.5)
                             if self.stop_flag_set():  # the owner's /stop came in the pause: it wins, the next tick ends
-                                log(f"/stop came while {i[:8]} was being re-armed: left stopped")
+                                log(f"/stop came while {tag(i)} was being re-armed: left stopped")
                                 break
                             ans = await client.start(i)
                             armed_at[i] = time.time()
                             armed.add(i)
+                            spent_at.pop(i, None)
                             restarts += 1
-                            log(f"re-armed {i[:8]} after {since:.0f}s (fills so far {fills}): "
+                            why_now = (f": OKTech had it spent {SPENT_REARM_SECS:g} s with nothing held (a send that "
+                                       "bought nothing)") if spent else ""  # fmt: skip
+                            log(f"re-armed {tag(i)} after {since:.0f}s (fills so far {fills}){why_now}: "
                                 f"{ans.get('task', {}).get('status', ans)}")  # fmt: skip
                         except Exception as exc:
-                            log(f"re-arm of {i[:8]} failed: {exc}")
+                            log(f"re-arm of {tag(i)} failed: {exc}")
                         break  # one restart per tick keeps the rate limits and the state readable
                 if guarded:
                     break

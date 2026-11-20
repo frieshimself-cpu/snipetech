@@ -800,6 +800,88 @@ def test_a_stop_during_a_rearm_is_never_undone_by_its_start(monkeypatch):
     store.close()
 
 
+class _SpentClient(_CycleClient):
+    """OKTech reporting a sniper spent: `spent(i, now, last_start)` says whether task i reads "finished" at `now`
+    (its last start was at `last_start`); every start and stop is timed on the fake clock."""
+
+    def __init__(self, clock, ids, spent):
+        super().__init__()
+        self.clock, self.ids, self.spent = clock, ids, spent
+        self.started_at: dict[str, float] = {}
+        self.timed: list[tuple[str, str, float]] = []
+
+    async def start(self, i):
+        self.started_at[i] = self.clock["t"]
+        self.timed.append(("start", i, self.clock["t"]))
+        return await super().start(i)
+
+    async def stop(self, i):
+        self.timed.append(("stop", i, self.clock["t"]))
+        return await super().stop(i)
+
+    async def tasks(self):
+        now = self.clock["t"]
+        return [{"id": i, "status": "finished" if self.spent(i, now, self.started_at.get(i, 0.0)) else "running"}
+                for i in self.ids]  # fmt: skip
+
+
+SNIPER_IDS = ["6b00664d3601fd350a856364", "6b00664d3601fd350a856370"]  # OKTech ids: the first 8 characters are shared
+
+
+def _spent_cycle(monkeypatch, spent, coins=None):
+    flag, clock = {"stop": False}, {"t": 1_794_045_600.0}
+    client = _SpentClient(clock, SNIPER_IDS, spent)
+    svc, store = _cycle_svc(monkeypatch, client, flag, clock=clock, coins=coins)
+    for i in SNIPER_IDS:
+        store.add_oktech_sniper(
+            {"id": i, "kind": "copy", "source": "x", "payload": {"singleSnipe": True, "totalSnipes": 1}}
+        )
+    return svc, store, client, clock["t"]
+
+
+def test_a_sniper_spent_on_a_failed_send_is_rearmed_soon_not_at_its_timer(monkeypatch):
+    """20 Nov: Cupseyy swapped SOL into USDC about 8 times a day for 2 SOL or more, and a copy sniper cannot refuse
+    USDC: the buy fails on chain at the market-cap ceiling and spends the sniper's one shot, with nothing held and
+    nothing on the tape. Under the landing test's 30-minute re-arm such a sniper sat spent for up to 30 minutes. The
+    cycler reads OKTech's task list and re-arms a sniper OKTech reports spent once it has stayed so 30 s with nothing
+    held, whatever its timer; the other sniper is left alone, and the log names each by its own end."""
+    t0 = 1_794_045_600.0
+
+    def spent(i, now, last_start):  # the first sniper's send fails 100 s in; a start after that arms it again
+        return i == SNIPER_IDS[0] and now >= t0 + 100 and last_start < t0 + 100
+
+    svc, store, client, t0 = _spent_cycle(monkeypatch, spent)
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 5, rearm_after=1800))
+    rearms = [t for kind, i, t in client.timed if kind == "start" and i == SNIPER_IDS[0] and t > t0 + 10]
+    assert len(rearms) == 1 and t0 + 130 <= rearms[0] <= t0 + 175  # about 30 s after OKTech first said it was spent
+    assert not [t for kind, i, t in client.timed if kind == "start" and i == SNIPER_IDS[1] and t > t0 + 10]
+    assert rep["restarts"] == 1 and rep["reason"].startswith("time limit") and rep["left_running"] == []
+    line = next(e for e in rep["events"] if "re-armed" in e)
+    assert "856364" in line and "spent" in line and "nothing held" in line
+    assert sum("856364" in e for e in rep["events"]) >= 2 and any("856370" in e for e in rep["events"])
+    store.close()
+
+
+def test_a_spent_sniper_that_holds_its_coin_is_never_rearmed_before_the_coin_is_sold(monkeypatch):
+    """Rule 1: a stopped sniper strands its coin. A sniper that filled reads "finished" too, while it still sells the
+    coin it bought: no re-arm while the wallet holds a coin, and the 30 s count starts only once it holds none."""
+    t0 = 1_794_045_600.0
+
+    def spent(i, now, last_start):
+        return i == SNIPER_IDS[0] and now >= t0 + 100 and last_start < t0 + 100
+
+    def coins(now):  # the fill is held from 100 s to 220 s
+        return [{"mint": "M1", "amount": 1.0, "value_sol": 0.2, "priced": True}] if t0 + 100 <= now < t0 + 220 else []
+
+    svc, store, client, t0 = _spent_cycle(monkeypatch, spent, coins=coins)
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800))
+    touched = [(kind, t) for kind, i, t in client.timed if i == SNIPER_IDS[0] and t > t0 + 10]
+    assert not [t for _kind, t in touched if t0 + 100 <= t < t0 + 250]  # nothing while held, nor in the 30 s after
+    assert [kind for kind, t in touched if t < t0 + 300] == ["stop", "start"]  # then re-armed once
+    assert rep["restarts"] == 1
+    store.close()
+
+
 def _tape_trade(store, ts: float, k: int = 0) -> None:
     """One trade by someone else on the tape at `ts`: the recorder was current then."""
     from snipetech.models import Trade
