@@ -174,19 +174,23 @@ def _signal_group(proc: subprocess.Popen, sig: int) -> None:
 
 # Commands whose result comes from the code they started with: an update while one runs leaves it on the files of
 # before (a lab's workers import the new ones and it falls back to one process; 7 Nov 07:44 a research search was
-# lost). The long exit runner, the idle research picker, the owner's commands and a read of state hold nothing back.
+# lost). The long exit runner, the idle research picker, the owner's commands and a read of state hold nothing back,
+# nor, since 20 Nov, the database copy (`snapshot-db`, 41 to 69 minutes, longer than any deploy waits): it loads no
+# code after it starts, and a copy finished on the code of before a deploy is a copy taken just before it, whose gaps
+# the readers on the new code see (Store.schema_gaps) and read the live file for, until the next copy.
 HOLDS_DEPLOY = frozenset({
-    "lab", "qualify", "paper", "rescore", "snapshot-db", "events", "study", "copy", "copy-rank", "follow",
+    "lab", "qualify", "paper", "rescore", "events", "study", "copy", "copy-rank", "follow",
     "discover-wallets", "early-leaders", "dip-buys", "fomo-wallets", "stopped-wallets", "winners", "leaders-of",
     "copy-context", "playbook", "launch-tools", "place-bids", "tips",
 })  # fmt: skip
 # The units a timer starts and that end by themselves. One that is mid-run keeps the modules it has loaded and reads
 # the rest from the new files (a command imports its module when it gets there), so an update waits for it too: the
-# agents' round, the book run that decides live snipers, the qualify lab, the nightly job, the hourly copy. The
-# services that never end are restarted by the update (the recorder, this endpoint) or keep their code.
+# agents' round, the book run that decides live snipers, the qualify lab, the nightly job. The services that never end
+# are restarted by the update (the recorder, this endpoint) or keep their code. The copy's unit holds nothing back,
+# as its command does not (HOLDS_DEPLOY, 20 Nov).
 HOLD_UNITS = (
     "snipetech-operator", "snipetech-book", "snipetech-qualify", "snipetech-measure", "snipetech-daily",
-    "snipetech-snapshot", "snipetech-discover", "snipetech-strategist", "snipetech-commands",
+    "snipetech-discover", "snipetech-strategist", "snipetech-commands",
 )  # fmt: skip
 UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # `systemctl is-active` of a unit mid-run
 # A deploy that was asked for and refused leaves this mark in the data directory, kept fresh by the client asking

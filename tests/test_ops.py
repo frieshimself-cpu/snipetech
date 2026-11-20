@@ -499,7 +499,7 @@ def test_update_waits_for_jobs_whose_numbers_come_from_the_code_they_started_wit
     running[:] = running[1:3]  # the long exit runner and the idle picker alone hold nothing back
     assert req(ops, key, "update")["argv"] == ["update"] and len(started) == 2
     for argv, holds in ((["--profile", "lab", "--hours", "72"], True), (["research", "search"], True),
-                        (["paper", "run"], True), (["events", "scan"], True), (["snapshot-db"], True),
+                        (["paper", "run"], True), (["events", "scan"], True), (["snapshot-db"], False),
                         (["rescore"], True), (["qualify", "run", "--max", "900"], True), (["winners"], True),
                         (["unwrap", "--dry-run"], False), (["operate", "idea"], False), (["update"], False),
                         (["doctor"], False), ([], False)):  # fmt: skip
@@ -580,8 +580,9 @@ def test_update_waits_for_a_timer_unit_that_is_mid_run(env, monkeypatch):
     monkeypatch.setattr(ops, "_run", run)
     assert req(ops, key, "update")["argv"] == ["update"]
     assert asked == [[O.SYSTEMCTL, "is-active", *O.HOLD_UNITS]]  # one call for all of them
-    assert {"snipetech-operator", "snipetech-book", "snipetech-qualify", "snipetech-daily", "snipetech-snapshot",
+    assert {"snipetech-operator", "snipetech-book", "snipetech-qualify", "snipetech-daily",
             "snipetech-measure"} <= set(O.HOLD_UNITS)  # fmt: skip
+    assert "snipetech-snapshot" not in O.HOLD_UNITS  # the database copy: test_the_database_copy_holds_no_deploy
     assert not {"snipetech-tape", "snipetech-ops", "snipetech-api", "snipetech-events"} & set(O.HOLD_UNITS)
     assert set(O.HOLD_UNITS) <= set(O.UNITS) and not any(u.endswith(".timer") for u in O.HOLD_UNITS)
     states["snipetech-operator"] = "activating"  # what systemd calls a oneshot unit while its command runs
@@ -809,3 +810,43 @@ def test_no_job_starts_while_a_code_update_goes_out(env, monkeypatch):
     (ops.data / O.UPDATE_OUT).write_text("{not json")  # a broken mark holds nothing either
     monkeypatch.setattr(O.time, "time", real)
     assert ops.op_run(["rescore"])["argv"] == ["rescore"]
+
+
+def test_the_database_copy_holds_no_deploy(env, monkeypatch):
+    """20 Nov audit (server health 2): the 3-hourly copy took 41 to 69 minutes on 18-20 Nov, longer than the deploy
+    hold (DEPLOY_HOLD_MAX_SECS, half an hour) and the client's wait, so a deploy asked during one gave up after holding
+    every new lab back for 20 minutes (00:59), or waited the copy out (04:08: 50 minutes). The copy loads no code after
+    it starts, and one finished on the code of before a deploy is what a copy finished just before it is: a reader on
+    the new code finds what the deploy added missing (`Store.schema_gaps`) and reads the live file until the next copy
+    (`Service.tape_store`). So the copy holds no deploy, as the round's job or as the timer's unit."""
+    ops, key = env
+    assert O.holds_deploy(["snapshot-db", "--limit-secs", "7200"]) is False and not O.holds_deploy(["snapshot-db"])
+    assert "snipetech-snapshot" not in O.HOLD_UNITS
+    started: list[list[str]] = []
+    monkeypatch.setattr(ops, "_start", lambda cmd, argv, timeout: started.append(argv) or {"id": "x", "argv": argv})
+    copy = {"id": "b", "argv": ["snapshot-db", "--limit-secs", "7200"], "running": True, "started": time.time() - 511}
+    monkeypatch.setattr(ops, "op_jobs", lambda: {"jobs": [copy]})
+    monkeypatch.setattr(ops, "_run", lambda cmd: "".join("inactive\n" for _ in cmd[2:]))
+    assert ops.deploy_waits_for() == [] and req(ops, key, "update")["argv"] == ["update"] and started == [["update"]]
+
+
+def test_a_copy_finished_on_the_code_of_before_a_deploy_is_never_read_for_what_it_lacks(tmp_path, monkeypatch):
+    """The other half of the rule above: a copy whose schema step ran on the code of before a deploy that added a
+    table (the copy's job keeps its code until it ends) lacks that table, and the heavy readers on the new code read the
+    live file instead, until the next copy brings it."""
+    from snipetech import store as S
+    from snipetech.config import Config
+    from snipetech.infra.snapshot_db import snapshot_db
+    from snipetech.service import Service
+
+    db = tmp_path / "snipetech.db"
+    live = S.Store(db)
+    try:
+        snapshot_db(db)  # on the code of before the deploy
+        monkeypatch.setattr(S, "SCHEMA", S.SCHEMA + "\nCREATE TABLE IF NOT EXISTS added_by_deploy (x INTEGER);\n")
+        cfg = Config()
+        cfg.storage.db_path = str(db)
+        svc = Service(cfg, store=live)
+        assert svc.tape_store is live  # the copy lacks the table: the live file is read
+    finally:
+        live.close()
