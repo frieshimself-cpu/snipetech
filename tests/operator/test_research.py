@@ -142,7 +142,7 @@ def test_discovery_runs_only_when_the_pipeline_has_run_dry_and_where_it_paid(env
 @pytest.mark.parametrize("busy", [
     {"metas": [_meta(["lab", "--latency", "0", "--position", "+6"], NOW - 600, running=True)]},
     {"metas": [_meta(["qualify", "run"], NOW - 600, running=True)]},
-    {"metas": [_meta(["paper", "run"], NOW - 60, running=True)]},
+    {"metas": [_meta(["paper", "freeze"], NOW - 60, running=True)]},
     {"metas": [_meta(["research", "search"], NOW - 600, running=True)]},
     {"metas": [_meta(["events", "edge"], NOW - 600, running=True)]},
     {"services": {"snipetech-qualify": "activating"}},
@@ -219,6 +219,43 @@ def test_the_rotation_never_starts_anything_that_trades(env):
     seen |= {u["argv"][0] for u in RS.UNITS.values()}
     assert seen <= {"qualify", "research", "discover"}
     assert not seen & {"oktech", "book", "sweep", "operate", "copy"}
+
+
+def test_a_paper_run_does_not_hold_back_the_research(env):
+    """20 Nov audit: the stand-in starts the paper run at :00 and :30 in the same second as `research next`, and the
+    picker answered "busy: paper run" every other round; the strategy search started 2 h 29 min late (4 h 29 min
+    between searches). The paper run takes no lab slot and lasts 3 to 15 minutes: it no longer counts as heavy. Its
+    freeze runs a lab and its rescore replays the kept trades: those still do."""
+    st, cfg, _ = env
+    _pipeline(st)
+    assert not RS.is_heavy(["paper", "run"]) and not RS.is_heavy(["paper", "report"])
+    assert RS.is_heavy(["paper", "freeze", "--top", "4"]) and RS.is_heavy(["paper", "rescore"])
+    calls = []
+    out = RS.run_next(st, cfg, NOW, metas=[_meta(["paper", "run"], NOW - 60, running=True)], services={},
+                      lab_held=False, start=lambda argv, limit: calls.append(argv) or {"id": "job2"})  # fmt: skip
+    assert calls and out["started"]["job"] == "job2"
+
+
+def test_a_waiting_deploy_defers_the_rotation_instead_of_crashing_it(env):
+    """20 Nov 00:16 and 01:45: while a `remote update --when-quiet` waited, the ops runner refused the unit's start
+    (409) and `research next` ended on the traceback; the round then reported a failed loop stage and paid an agent
+    turn to explain it. Now the step says the deploy waits and starts nothing."""
+    from snipetech.ops import OpsError
+
+    st, cfg, _ = env
+    _pipeline(st)
+
+    def refused(argv, limit):
+        raise OpsError(409, "a deploy is waiting for a quiet moment: no new job until it has gone out")
+
+    out = RS.run_next(st, cfg, NOW, metas=[], services={}, lab_held=False, start=refused)
+    assert out["started"] is None and "deploy" in out["deferred"]
+
+    def broken(argv, limit):
+        raise OpsError(500, "something else")
+
+    with pytest.raises(OpsError):  # any other refusal is still an error
+        RS.run_next(st, cfg, NOW, metas=[], services={}, lab_held=False, start=broken)
 
 
 def test_heavy_job_list_and_the_lab_lock(tmp_path):

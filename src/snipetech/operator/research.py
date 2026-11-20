@@ -29,6 +29,7 @@ from typing import Any
 from ..analysis.lab_lock import LabBusy
 from ..analysis.lab_lock import lab_lock as _lab_lock
 from ..config import Config
+from ..ops import OpsError
 from ..store import _LATEST_VERDICT, Store
 from . import roles
 from .learning import digest_lines as learning_lines
@@ -36,13 +37,16 @@ from .paths import OperatorPaths
 from .snapshot import systemd_services
 from .standin import STAGE_MEMORY_SECS, job_metas, loop_stage
 
-# what counts as a heavy job: anything that runs a lab or replays the tape at length (CLAUDE.md rule 3: one at a time)
+# what counts as a heavy job: anything that runs a lab or replays the tape at length (CLAUDE.md rule 3: one at a time).
+# Not the paper run (20 Nov audit): it takes no lab slot and lasts 3 to 15 minutes, and the stand-in starts it at :00 and
+# :30 in the same second as `research next`, so the picker answered "busy: paper run" every other round and the
+# strategy search started 2 h 29 min late. A paper freeze (a lab) and a rescore (the kept trades replayed) still count.
 HEAVY_COMMANDS = frozenset({
-    "lab", "qualify", "paper", "copy-rank", "copy", "strategist", "follow", "study", "discover-wallets",
+    "lab", "qualify", "copy-rank", "copy", "strategist", "follow", "study", "discover-wallets",
     "profitable-devs", "optimize", "backtest", "snipers", "sniper", "top-deployers", "deployer", "audit", "fees",
     "index-launches",
 })  # fmt: skip
-HEAVY_PREFIXES = (("events", "edge"), ("research", "search"))
+HEAVY_PREFIXES = (("events", "edge"), ("research", "search"), ("paper", "freeze"), ("paper", "rescore"))
 HEAVY_SERVICES = ("snipetech-qualify", "snipetech-daily", "snipetech-strategist")  # oneshot units that run labs
 BUSY_STATES = ("active", "activating", "deactivating", "reloading")
 
@@ -296,7 +300,14 @@ def run_next(store: Store, cfg: Config, now: float, *, metas: Iterable[dict], se
     top = options[0]
     if dry_run:
         return out | {"would_start": top}
-    job = start(list(top["argv"]), int(top["limit"]))
+    try:
+        job = start(list(top["argv"]), int(top["limit"]))
+    except OpsError as exc:
+        # a deploy waits for a quiet moment and the runner starts no job until it has gone out (20 Nov 00:16 and
+        # 01:45: the step ended on the traceback, and the round paid an agent turn to explain a failed loop stage)
+        if exc.code != 409:
+            raise
+        return out | {"deferred": f"a deploy is waiting, nothing started: {exc}"}
     return out | {"started": top | {"job": (job or {}).get("id") if isinstance(job, dict) else None}}
 
 
