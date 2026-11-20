@@ -1564,6 +1564,30 @@ def _seen_ended(st, snipers, now=NOW):
     st.set_coverage(ENDED_KEY, {"ids": [s["id"] for s in snipers], "ts": int(now) - 300})
 
 
+def test_a_stopped_sniper_of_a_wallet_the_book_no_longer_copies_is_deleted_too(tmp_path):
+    """19 Nov: after the clean-up of the ended snipers 9 tasks were left on the key, 8 of them the book's own, stopped
+    ("idle") when their wallets dropped out of the ranking (one since 9 Nov). Nothing ever deleted one: a slow leak
+    toward OKTech's 200. Such a sniper goes like an ended one (seen so by the run before, the wallet holding nothing,
+    the tape not behind); a wallet that comes back gets a new sniper in a second, with its buy counter at zero. The
+    stopped sniper of a wallet the book still ranks is started, never deleted."""
+    st, cfg = _env(tmp_path, enabled=True)
+    snipers = [
+        {"id": "d1", "name": "snipetech copy book DROPPD arm:control", "status": "idle"},
+        {"id": "r1", "name": f"snipetech copy book {L1[:6]} arm:control", "status": "idle"},
+    ]
+    svc = FakeSvc(st, snipers=snipers)
+    try:
+        _live(svc, cfg, [])
+        assert not [c for c in svc.calls if c[0] == "delete"]  # the first sight of it: nothing goes
+        assert ("start", "r1") in [(c[0], c[1]) for c in svc.calls]
+        _live(svc, cfg, [], now=NOW + 300)
+        assert [c[1] for c in svc.calls if c[0] == "delete"] == ["d1"]
+        notes = OperatorPaths(tmp_path / "data").notes.read_text()
+        assert "1 of them stopped, of a wallet it no longer copies" in notes
+    finally:
+        st.close()
+
+
 def test_an_ended_sniper_is_deleted_only_once_two_runs_have_seen_it_ended(tmp_path):
     """The review: OKTech counts a sniper's attempts, so it can read "finished" while its last buy is still on its
     way. The run read the wallet once, saw no coin and deleted it; the buy landed a moment later with no sniper left

@@ -518,7 +518,7 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         ):
             not_replaced.add(a.wallet or "")
     # the ended ones go before a new one is made: OKTech counts them against the key's 200 (19 Nov)
-    await _prune_ended(svc, wallet, notes, snipers, store, now, strays, tape_behind=tape_behind)
+    await _prune_ended(svc, wallet, notes, snipers, store, now, strays, tape_behind=tape_behind, wanted=plan.wanted)
     new_ids: list[tuple[str, Any]] = []
     from .switch import book_mcaps
 
@@ -668,8 +668,12 @@ def _one_sniper_refused(exc: BaseException) -> bool:
 
 
 async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], store, now: float,
-                       strays: set[str] | frozenset = frozenset(), tape_behind: bool = False) -> int:  # fmt: skip
-    """Delete the book's own snipers that have ended (positions.SPENT_STATUSES: they buy and sell nothing more), the
+                       strays: set[str] | frozenset = frozenset(), tape_behind: bool = False,
+                       wanted: set[str] | None = None) -> int:  # fmt: skip
+    """Delete the book's own snipers that have ended (positions.SPENT_STATUSES: they buy and sell nothing more), and,
+    given the wallets the plan keeps a sniper for (`wanted`, first six characters), its stopped ("idle") snipers of any
+    other wallet (19 Nov: 8 such tasks were left on the key, one since 9 Nov, a slow leak toward OKTech's 200; a wallet
+    that comes back gets a new sniper in a second, its buy counter at zero), the
     oldest first and at most PRUNE_PER_RUN a run; how many went. Only one the run before already saw ended
     (ENDED_KEY), only while the wallet holds nothing (a wallet that could not be read counts as holding) and the tape
     is not behind (`tape_behind`: it could not show a buy of ours that is seconds old). Never a sniper that is not the
@@ -677,10 +681,18 @@ async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], s
     at). Housekeeping: written down, never sent to the owner. A sniper OKTech will not delete is passed over
     (PRUNE_REFUSALS of them end the run's clean-up); no answer in PRUNE_SECS, or a failure that is not about the one
     sniper, ends it at once, and the next run goes on with the rest."""
+    dropped: set[str] = set()  # stopped snipers of wallets the plan no longer copies
+    for s in snipers:
+        m = BOOK_NAME_RE.match(str(s.get("name") or ""))
+        if s.get("id") and m and wanted is not None and str(s.get("status")) == "idle" and m["w6"] not in wanted:
+            dropped.add(str(s["id"]))
     ended = sorted(
-        str(s["id"])
-        for s in snipers
-        if s.get("id") and BOOK_NAME_RE.match(str(s.get("name") or "")) and str(s.get("status")) in SPENT_STATUSES
+        {
+            str(s["id"])
+            for s in snipers
+            if s.get("id") and BOOK_NAME_RE.match(str(s.get("name") or "")) and str(s.get("status")) in SPENT_STATUSES
+        }
+        | dropped
     )
     try:
         seen = {str(i) for i in (store.coverage(ENDED_KEY) or {}).get("ids") or []}
@@ -690,17 +702,20 @@ async def _prune_ended(svc, wallet: str, notes: NoteSink, snipers: list[dict], s
     due = [sid for sid in ended if sid in seen]
     if not due or tape_behind or await _holds_a_coin(svc, wallet, store, float(now or 0), strays):
         return 0
-    done, refused, until = 0, [], time.monotonic() + PRUNE_SECS
+    done, refused, until, gone_dropped = 0, [], time.monotonic() + PRUNE_SECS, 0
     for sid in due[:PRUNE_PER_RUN]:
         try:
             await asyncio.wait_for(svc.oktech_task("delete", sid), max(0.01, until - time.monotonic()))
             done += 1
+            gone_dropped += sid in dropped
         except Exception as exc:  # noqa: BLE001 - refused, or no answer in time
             refused.append(f"{type(exc).__name__}: {str(exc)[:120]}".rstrip(": "))
             if not _one_sniper_refused(exc) or len(refused) >= PRUNE_REFUSALS:
                 break
     line = (f"[book] deleted {done} of its ended snipers on OKTech ({len(ended) - done} left): each had ended by the "
             "run before and the wallet holds nothing")  # fmt: skip
+    if gone_dropped:
+        line += f"; {gone_dropped} of them stopped, of a wallet it no longer copies"
     if refused:
         line += f"; {len(refused)} would not go ({refused[0]})"
     if done or not notes.has_today("[book] deleted 0 of its ended snipers", now):

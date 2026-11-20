@@ -241,6 +241,9 @@ class BookPlan:
     ranked: list[dict] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     paused: dict[str, str] = field(default_factory=dict)  # wallets live-paused this run: kept paused by the runner
+    # the wallets (first six characters) the plan keeps a sniper for: a stopped book sniper of any other wallet is
+    # no longer wanted, and the runner's clean-up may delete it (run._prune_ended)
+    wanted: set[str] = field(default_factory=set)
 
 
 def _lab_version(q: dict) -> int | None:
@@ -501,6 +504,7 @@ def plan_book(inp: BookInputs, cfg: BookConfig) -> BookPlan:
             bookable.append(r)
     arms = assign_arms(bookable, inp.bid_model, cfg)
     wanted = {r["wallet"][:6]: (r["wallet"], arms.get(r["wallet"])) for r in bookable}
+    plan.wanted = {w6 for w6, (_, arm) in wanted.items() if arm is not None}
     seen_w6: set[str] = set()
     # One sniper an actor (idea I66, 13 Nov): no sniper is made, and no stopped one started, for a wallet while another
     # wallet of its actor has one. Only ever a refusal to add: every sniper that exists is kept, replaced and stopped
