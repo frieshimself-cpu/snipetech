@@ -1014,6 +1014,12 @@ class Store:
         coins = {mint for mint, is_buy, quote in rows[:scan] if is_buy and quote >= min_quote}
         return len(coins), len(rows) > scan
 
+    def first_trade_ts(self, wallet: str) -> int | None:
+        """When `wallet` first traded on this tape (its earliest slot's time), None without a trade: one read through
+        the wallet index. Qualify's pace for a wallet short of coins (gates.sample_review_hours)."""
+        rows = self._q("SELECT ts FROM trades WHERE user=? ORDER BY slot LIMIT 1", (wallet,))
+        return int(rows[0][0]) if rows else None
+
     def set_candidate_status(self, wallet: str, status: str) -> None:
         self._exec("UPDATE candidates SET status=? WHERE wallet=?", (status, wallet))
 

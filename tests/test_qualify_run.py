@@ -987,12 +987,13 @@ def test_a_copied_wallet_is_measured_at_the_next_lab_and_one_that_waits_is_not(t
                         "forward": {"status": "pending", "picked_at": picked, "n": 0},
                         "copy_plan": {"min_leader_sol": 0.3, "exit_name": "lab", "lab_version": 2}})  # fmt: skip
         wins = [[picked + 1800 * k + 60, 0.03 if k % 5 else -0.01] for k in range(30)]  # 30 copies since the pick
+        fresh = [[ts + 86400, p] for ts, p in wins[-25:]]  # WAITS copies until 90 min ago: it is picked (20 Nov)
         seen = []
 
         def runner(wallets, pos):
             seen.append(sorted(wallets))
             later = wins if len(seen) == 1 else wins + [[NOW + 600 * k + 60, -0.05] for k in range(10)]
-            return [_row(w, 30, 0.022, 0.012, later if w == "ARMED" else wins[-25:], 0.8) for w in wallets]
+            return [_row(w, 30, 0.022, 0.012, later if w == "ARMED" else fresh, 0.8) for w in wallets]
 
         run_qualify(svc, svc.cfg, data / "jobs", NOW, lab_runner=runner)
         by = {v["wallet"]: v for v in st.latest_verdicts()}
@@ -1056,9 +1057,10 @@ def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp
                           lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
         assert sent == ["MANY"] and out["too_few"] == 1 and out["lab_wallets"] == 1 and out["evaluated"] == 2
         few = next(v for v in st.latest_verdicts() if v["wallet"] == "FEW")
-        assert few["status"] == "candidate" and few["next_review"] == NOW + 72 * 3600
+        # looked at again at its own pace (20 Nov): 3 coins in its first two hours of tape, 7 more take 4.5 hours
+        assert few["status"] == "candidate" and NOW + 4 * 3600 < few["next_review"] < NOW + 5 * 3600
         why = "3 coins bought with 0.1 SOL or more on the tape: fewer than the 10 copies a wallet needs at the least"
-        assert few["reasons"] == [why + ", not measured"]
+        assert few["reasons"] == [why + ", not measured; looked at again in 4.5 h, at its pace on the tape"]
     finally:
         st.close()
 

@@ -268,11 +268,58 @@ FORWARD_MIN_HOURS = 6.0
 COLD_MIN_N = 10
 COLD_WINDOW = 20
 COLD_CONF = 0.9
+# Looked at while it still trades (20 Nov 2026 audit; the owner's standing rule that the system adapt within hours).
+# Every candidate verdict but 179 of 107,813 came back after the same 72 h; 11 of the 29 wallets on the forward check
+# were picked after a day or more without a trade (the 2UgKTq group: measured 50 h after it stopped), 14 of them no
+# longer traded, and a forward check never ended without 20 copies, so each held its actor's place for good. Now: a
+# wallet short of copies comes back when its own pace on the tape would have brought them (`sample_review_hours`); a
+# wallet every in-sample gate passes is picked only with a copy in the last IDLE_PICK_HOURS of tape (`not_picked_idle`);
+# a forward check that saw no copy for IDLE_END_HOURS of tape ends and gives up the place (`forward_gate`). Both are a
+# candidate under gate IDLE_GATE, without a forward check, looked at again after IDLE_REVIEW_H; a pick starts again once
+# it passes while copying. Hours of tape, not of clock: a hole in the tape is no time a wallet could trade in.
+IDLE_PICK_HOURS = 24
+IDLE_END_HOURS = 48
+IDLE_REVIEW_H = 6
+IDLE_GATE = "idle"
 
 
 def tape_hours_after(spans, since: float, now: float) -> float:
     """Hours of recorded tape between `since` and `now`: the spans the lab scored, holes left out."""
     return sum(max(0.0, min(float(b), float(now)) - max(float(a), float(since))) for a, b in spans) / 3600.0
+
+
+def sample_review_hours(have: int, need: int, first_ts: float | None, spans, cfg: QualifyConfig, now: float) -> float:
+    """When a wallet short of copies (or of coins, before the lab) is looked at again: when its own pace on the tape
+    (`have` since `first_ts`, over the hours of tape since) would have brought the `need` it lacks, never sooner than
+    the lab can measure it (lab_interval_h) and never later than review_candidate_h, which is also the answer without
+    a pace (nothing on the tape)."""
+    longest = float(cfg.review_candidate_h)
+    hours = tape_hours_after(spans or [], first_ts, now) if first_ts is not None else 0.0
+    if have <= 0 or hours <= 0:
+        return longest
+    return min(longest, max(float(cfg.lab_interval_h), (need - have) / (have / hours)))
+
+
+def idle_verdict(v: dict[str, Any], cfg: QualifyConfig, now: float, said: str) -> dict[str, Any]:
+    """`v` as a candidate under the idle gate: no forward check, looked at again after IDLE_REVIEW_H, `said` last."""
+    return dict(v, status="candidate", gate=IDLE_GATE, forward=None, next_review=int(now) + IDLE_REVIEW_H * 3600,
+                reasons=[*list(v.get("reasons") or []), said])  # fmt: skip
+
+
+def not_picked_idle(v: dict[str, Any], copies, spans, cfg: QualifyConfig, now: float) -> dict[str, Any]:
+    """`v`, a verdict every in-sample gate passed about to start a pick, as an idle candidate when its newest copy
+    (`copies`: [[the leader's buy ts, SOL a copy made], ...]) is IDLE_PICK_HOURS or more of tape old: a forward check
+    it cannot fill would only hold its actor's place. Any other verdict is returned as it is."""
+    if v.get("status") != "qualified" or not copies:
+        return v
+    last = max(float(ts) for ts, _ in copies)
+    idle = tape_hours_after(spans or [], last, now)
+    if idle < IDLE_PICK_HOURS:
+        return v
+    when = time.strftime("%d %b %H:%M UTC", time.gmtime(last))
+    return idle_verdict(v, cfg, now, f"passes every gate but is not picked: its newest copy ({when}) is {idle:.0f} h "
+                                     f"of tape old, and a pick needs one in the last {IDLE_PICK_HOURS} h; looked at "
+                                     f"again in {IDLE_REVIEW_H} h")  # fmt: skip
 
 
 def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None, spans, cfg: QualifyConfig,
@@ -348,9 +395,16 @@ def forward_gate(v: dict[str, Any], moments: list | None, picked_at: int | None,
         out["reasons"].append(f"loses since it was first picked on {then}: mean {first_mean:+.4f} SOL over "
                               f"{len(since_first)} copies since (picked again on {when})")  # fmt: skip
     elif len(later) < FORWARD_MIN_N or hours < FORWARD_MIN_HOURS:
-        out |= waits
-        out["reasons"].append(f"forward pending: {len(later)} later copies (needs {FORWARD_MIN_N}) over {hours:.1f} h of "
-                              f"tape since it was picked on {when} (needs {FORWARD_MIN_HOURS:g} h)")  # fmt: skip
+        last = max((ts for ts, _ in copies if ts > since), default=float(since))  # its newest copy, or the pick
+        idle = tape_hours_after(spans or [], last, now)
+        if idle >= IDLE_END_HOURS:  # it stopped copying: the check cannot fill, and its place is given up
+            out = idle_verdict(out, cfg, now, f"forward check ended: {len(later)} later copies (needs {FORWARD_MIN_N}) "
+                                              f"since it was picked on {when}, none in the last {idle:.0f} h of tape; "
+                                              "picked again once it passes while copying")  # fmt: skip
+        else:
+            out |= waits
+            out["reasons"].append(f"forward pending: {len(later)} later copies (needs {FORWARD_MIN_N}) over {hours:.1f} "
+                                  f"h of tape since it was picked on {when} (needs {FORWARD_MIN_HOURS:g} h)")  # fmt: skip
     elif round(float(mean), 9) < 0:
         fwd["status"] = "failed"
         out |= retires
@@ -482,9 +536,9 @@ def with_followed_note(v: dict[str, Any], info: dict | None) -> dict[str, Any]:
 
 
 # The gates these rules added or changed (research round 2, 7 Nov): what a copy makes where it lands ("tape": the lab
-# moved from the in-slot +6 to +3x), first buys in a create slot, and the forward check. A wallet the book copied before
-# them is never stopped by them (keep_armed); every other gate stops it as it always did.
-NEW_RULE_GATES = frozenset({"tape", "create_slot", "forward"})
+# moved from the in-slot +6 to +3x), first buys in a create slot, and the forward check; and since 20 Nov the idle rule.
+# A wallet the book copied before them is never stopped by them (keep_armed); every other gate stops it as it always did.
+NEW_RULE_GATES = frozenset({"tape", "create_slot", "forward", IDLE_GATE})
 # what a kept verdict says of the new evaluation (`kept_armed["new"]`)
 KEPT_NEW_FIELDS = ("status", "landing_pos", "n_tape", "mean_sol", "lower_sol", "score", "reasons")
 _NOT_KEPT = ("id", "computed_at", "next_review", "reasons", "forward", "create_slot", "kept_armed", "gate")

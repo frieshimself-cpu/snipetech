@@ -16,15 +16,19 @@ from ..analysis.lab_lock import want as lab_want
 from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import (
+    IDLE_GATE,
     armed_before_rules,
     companions,
     create_slot_share,
     crowding,
     followed_by,
     forward_gate,
+    history_gate,
     keep_armed,
     normalise_history,
+    not_picked_idle,
     relationship_gate,
+    sample_review_hours,
     venue_share,
     verdict_for,
     with_followed_note,
@@ -314,6 +318,7 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
 
     need = min(q.min_n_tape, q.min_n_tape_strong)
     tape = getattr(svc, "tape_store", store)
+    screen_spans = tape.tape_spans()  # a wallet short of coins comes back at its own pace on this tape
     measurable = []
     for c in due:
         if _lab_decides(c):
@@ -325,9 +330,12 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
         if coins:
+            hours = sample_review_hours(coins, need, tape.first_trade_ts(c["wallet"]), screen_spans, q, now)
             why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {KOL_MIN_SOL:g} SOL or more on the tape: "
-                   f"fewer than the {need} copies a wallet needs at the least, not measured")  # fmt: skip
+                   f"fewer than the {need} copies a wallet needs at the least, not measured; looked at again in "
+                   f"{hours:.1f} h, at its pace on the tape")  # fmt: skip
             v["reasons"] = [why]
+            v["next_review"] = int(now + hours * 3600)
         store.put_verdict(with_followed_note(v, _followed(store, c)))
         out["too_few" if coins else "no_tape"] += 1
         out["evaluated"] += 1
@@ -387,6 +395,13 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
         copies = with_recorded(record.get("copies"), moments, spans)
         first, latest, armed = _pick_record(store, w)
         v = verdict_for(w, hist, row, venue, crowd, rel_ok, rel_reasons, q_eff, now, create=create)
+        if v.get("gate") == "sample" and moments:  # short of copies: back when its own pace would have brought them
+            _, strong, _ = history_gate(hist, q_eff)
+            first_copy = min(float(ts) for ts, _ in moments)
+            want = q_eff.min_n_tape_strong if strong else q_eff.min_n_tape
+            v["next_review"] = int(now + 3600 * sample_review_hours(n_lab, want, first_copy, spans, q_eff, now))
+        if latest is None:  # about to start a pick: only while it still copies
+            v = not_picked_idle(v, copies, spans, q_eff, now)
         # every in-sample gate passed: is another wallet of its actor the candidate already? (never for a wallet a
         # sniper may copy.) A wallet that yields starts no forward record; one it has runs on, its history its own
         act = one.decide(w, lower_lab, c.get("verdict"), latest is not None) if v["status"] == "qualified" else None
@@ -429,6 +444,8 @@ def run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRun
                                                      "why": act.why, **how})  # fmt: skip
         out["evaluated"] += 1
         out[v["status"]] += 1
+        if v.get("gate") == IDLE_GATE:  # not picked, or its check ended: it stopped copying (said when it happens)
+            out["idle"] = out.get("idle", 0) + 1
         fwd = (v.get("forward") or {}).get("status")
         out["forward_pending"] += fwd == "pending"
         out["forward_failed"] += fwd == "failed"
