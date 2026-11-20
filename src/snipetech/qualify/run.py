@@ -20,6 +20,7 @@ from ..config import Config
 from ..operator.snapshot import running_jobs
 from .gates import (
     IDLE_GATE,
+    PUMP_VENUES,
     armed_before_rules,
     companions,
     create_slot_share,
@@ -349,13 +350,17 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
     if not due:
         return out
     since = _tape_start(store, now)
-    # The count before the lab. A copy is a coin the wallet bought with KOL_MIN_SOL or more, and a wallet needs
-    # `need` of them at the least: one that bought fewer coins than that cannot pass, and is told so here. 11 Nov: of
-    # 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20, each after a lab and four
-    # reads per wallet. The tape store is what the lab reads; a wallet with more trades than the count walks is
-    # measured.
-    from ..analysis.lab import KOL_MIN_SOL
-
+    # The count before the lab. A copy is a coin whose first buy by the wallet was at the book's floor ([book]
+    # min_copy_sol: the lab copies a wallet's first buy in a coin at its own floor, never below the book's, and never a
+    # top-up) on pump.fun's curve or PumpSwap (where the copy snipers buy: lab._fire, oktech.COPY_PLATFORMS), and a
+    # wallet needs `need` of them at the least: one with fewer such coins cannot pass, and is told so here. 11 Nov:
+    # of 9,808 verdicts in two days 7,425 had no copy on the tape and 8,835 fewer than 20, each after a lab and four
+    # reads per wallet. 20 Nov: the count still took every coin bought with 0.1 SOL or more, anywhere, and 11,364 of
+    # 18,266 lab verdicts had fewer than 20 copies (the 03:45 run: 109 of 214 under 10). It never counts fewer coins
+    # than the lab finds copies, so no wallet that could pass is held back. The tape store is what the lab reads; a
+    # wallet with more trades than the count walks is measured.
+    floor = float(cfg.book.min_copy_sol)
+    where = f"{floor:g} SOL or more on pump.fun (curve or PumpSwap) on the tape"
     need = min(q.min_n_tape, q.min_n_tape_strong)
     tape = getattr(svc, "tape_store", store)
     screen_spans = tape.tape_spans()  # a wallet short of coins comes back at its own pace on this tape
@@ -364,20 +369,25 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
         if _lab_decides(c):
             measurable.append(c)
             continue
-        coins, more = tape.coins_bought(c["wallet"], int(KOL_MIN_SOL * 1e9))
+        coins, more = tape.coins_bought(c["wallet"], round(floor * 1e9), venues=PUMP_VENUES)
         if coins >= need or more:
             measurable.append(c)
             continue
         v = verdict_for(c["wallet"], normalise_history(c["stats"]), None, None, dict(EMPTY_CROWD), True, [], q, now)
-        if coins:
-            hours = sample_review_hours(coins, need, tape.first_trade_ts(c["wallet"]), screen_spans, q, now)
-            why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {KOL_MIN_SOL:g} SOL or more on the tape: "
-                   f"fewer than the {need} copies a wallet needs at the least, not measured; looked at again in "
-                   f"{hours:.1f} h, at its pace on the tape")  # fmt: skip
+        first_ts = tape.first_trade_ts(c["wallet"])
+        if first_ts is not None:  # it trades on the tape: what it lacks is said, and when it is looked at again
+            hours = sample_review_hours(coins, need, first_ts, screen_spans, q, now)
+            if coins:
+                why = (f"{coins} coin{'s' if coins != 1 else ''} bought with {where}: fewer than the {need} copies a "
+                       f"wallet needs at the least, not measured; looked at again in {hours:.1f} h, at its pace on "
+                       "the tape")  # fmt: skip
+            else:
+                why = (f"no coin bought with {where}, the only buys a copy sniper copies: not measured; looked at "
+                       f"again in {hours:.1f} h")  # fmt: skip
             v["reasons"] = [why]
             v["next_review"] = int(now + hours * 3600)
         store.put_verdict(with_followed_note(v, _followed(store, c)))
-        out["too_few" if coins else "no_tape"] += 1
+        out["too_few" if first_ts is not None else "no_tape"] += 1
         out["evaluated"] += 1
         out[v["status"]] += 1
     measurable = measurable[:max_wallets]  # the rest stay due: the next lab's

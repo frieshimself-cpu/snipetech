@@ -1006,13 +1006,23 @@ class Store:
 
         self._write(do)
 
-    def coins_bought(self, wallet: str, min_quote: int, scan: int = 5000) -> tuple[int, bool]:
-        """How many coins `wallet` bought with `min_quote` lamports or more among its first `scan` trades here, and
-        whether it has more trades than that (the count is then a floor). One bounded read through the wallet index:
-        qualify's count before its lab, which says in milliseconds that a wallet cannot have the copies it needs."""
-        rows = self._q("SELECT mint, is_buy, quote FROM trades WHERE user=? LIMIT ?", (wallet, int(scan) + 1))
-        coins = {mint for mint, is_buy, quote in rows[:scan] if is_buy and quote >= min_quote}
-        return len(coins), len(rows) > scan
+    def coins_bought(self, wallet: str, min_quote: int, scan: int = 5000,
+                     venues: tuple[str, ...] | None = None) -> tuple[int, bool]:  # fmt: skip
+        """How many coins `wallet` first bought with `min_quote` lamports or more (its first buy in the coin, in tape
+        order: a copy sniper copies a wallet's first buy, never a top-up; on `venues` only, when given) among its first
+        `scan` trades here, and whether it has more trades than that (the count is then a floor). One bounded read
+        through the wallet index: qualify's count before its lab, which says in milliseconds that a wallet cannot have
+        the copies it needs."""
+        rows = self._q("SELECT mint, is_buy, quote, venue, slot, pos FROM trades WHERE user=? LIMIT ?",
+                       (wallet, int(scan) + 1))  # fmt: skip
+        first: dict[str, tuple[tuple[int, int], int, str]] = {}  # coin -> (its place on the tape, SOL, venue)
+        for mint, is_buy, quote, venue, slot, pos in rows[:scan]:
+            if is_buy and (mint not in first or (slot, pos) < first[mint][0]):
+                first[mint] = ((slot, pos), quote, venue)
+        coins = sum(
+            1 for _, quote, venue in first.values() if quote >= min_quote and (venues is None or venue in venues)
+        )
+        return coins, len(rows) > scan
 
     def first_trade_ts(self, wallet: str) -> int | None:
         """When `wallet` first traded on this tape (its earliest slot's time), None without a trade: one read through

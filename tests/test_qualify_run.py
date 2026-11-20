@@ -30,9 +30,11 @@ def _svc(tmp_path):
     return Service(cfg, store=st), st, data
 
 
-def _tape(st, wallets, coins=12):
+def _tape(st, wallets, coins=12, sol=0.5, venue="curve", topup=0.0):
     """Each wallet buys early in a dozen coins, so it has the buys a wallet needs to be measured at all (10 at the
-    least since 11 Nov: the count before the lab); the tape span covers them."""
+    least since 11 Nov: the count before the lab); the tape span covers them. `sol`: the wallet's buy in each coin;
+    `venue`: where the coins trade ("launchlab": Raydium LaunchLab's, which no copy sniper buys); `topup`: a second
+    buy of the wallet's after the crowd's (a copy sniper copies a first buy, never a top-up)."""
     D = addr("dev")
     for i, w in enumerate(wallets):
         for k in range(coins):
@@ -43,10 +45,13 @@ def _tape(st, wallets, coins=12):
                 NOW - 7000 + i * 100 + k * (3000 // coins),
                 SLOT + i * 250 + k * (7500 // coins),
             )
+            m.venue = venue
             m.buy(D, 1.0, 0)
-            m.buy(w, 0.5, 5)
+            m.buy(w, sol, 5)
             for j in range(4):  # a small crowd after it, so every coin has the trades a lab needs
                 m.buy(addr(f"f{i}{k}{j}"), 0.3 + 0.1 * j, 6 + j)
+            if topup:
+                m.buy(w, topup, 12)
             m.sell(w, 1.0, 30)
             m.sell(addr(f"f{i}{k}0"), 1.0, 40)
             m.commit()
@@ -1044,8 +1049,9 @@ def _lab_row(n=30, mean=0.02, lower=0.005):
 
 
 def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp_path):
-    """A wallet needs 10 scored copies at the least (20 without a strong history), and a copy is a coin it bought with
-    0.1 SOL or more: one that bought fewer coins than that cannot pass, and a bounded count says so in milliseconds."""
+    """A wallet needs 10 scored copies at the least (20 without a strong history), and a copy is a coin it bought at
+    the book's floor (0.3 SOL) on pump.fun: one that bought fewer coins than that cannot pass, and a bounded count says
+    so in milliseconds."""
     svc, st, data = _svc(tmp_path)
     try:
         _tape(st, ["FEW"], coins=3)
@@ -1059,8 +1065,54 @@ def test_a_wallet_with_too_few_buys_to_pass_gets_its_verdict_without_the_lab(tmp
         few = next(v for v in st.latest_verdicts() if v["wallet"] == "FEW")
         # looked at again at its own pace (20 Nov): 3 coins in its first two hours of tape, 7 more take 4.5 hours
         assert few["status"] == "candidate" and NOW + 4 * 3600 < few["next_review"] < NOW + 5 * 3600
-        why = "3 coins bought with 0.1 SOL or more on the tape: fewer than the 10 copies a wallet needs at the least"
+        why = (
+            "3 coins bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape: fewer than the 10 "
+            "copies a wallet needs at the least"
+        )
         assert few["reasons"] == [why + ", not measured; looked at again in 4.5 h, at its pace on the tape"]
+    finally:
+        st.close()
+
+
+def test_the_count_before_the_lab_takes_only_coins_a_copy_sniper_would_buy(tmp_path):
+    """20 Nov audit (pipeline 5): 11,364 of 18,266 lab verdicts had fewer than 20 copies, about half of every lab's
+    4 to 19 minutes. The count before the lab took every coin bought with 0.1 SOL or more, while the lab copies a
+    wallet's buys only at the book's floor ([book] min_copy_sol, 0.3 SOL; a wallet's own floor is never lower) and,
+    since 20 Nov 03:33, only on pump.fun's curve and PumpSwap, as the copy snipers buy; and it copies a wallet's first
+    buy in a coin, never a top-up. A coin counts now only when the wallet's first buy in it was at the floor there (on
+    the server's 20 Nov 03:45 run that count was the lab's own for 5 of 6 wallets the lab gave under 10 copies); a
+    wallet with trades but no such coin is told so, not "no tape data"."""
+    svc, st, data = _svc(tmp_path)
+    try:
+        _tape(st, ["SMALL"], coins=15, sol=0.2)  # 15 coins, every buy under the floor
+        _tape(st, ["LAUNCH"], coins=15, venue="launchlab")  # Raydium LaunchLab's coins: no copy sniper buys them
+        _tape(st, ["TOPUP"], coins=15, sol=0.2, topup=0.6)  # 0.6 SOL in each coin, but only after a 0.2 SOL first buy
+        _tape(st, ["EDGE"], coins=12, sol=0.3)  # exactly at the floor: copied
+        for i, w in enumerate(["SMALL", "LAUNCH", "TOPUP", "EDGE", "GONE"]):
+            st.upsert_candidate(w, "coinfirst", {}, NOW - 3600 + i)
+        sent = []
+        out = run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                          lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["EDGE"] and out["too_few"] == 3 and out["no_tape"] == 1 and out["lab_wallets"] == 1
+        by = {v["wallet"]: v for v in st.latest_verdicts()}
+        for w in ("SMALL", "LAUNCH", "TOPUP"):
+            assert by[w]["status"] == "candidate" and by[w]["next_review"] == NOW + 72 * 3600
+            said = ("no coin bought with 0.3 SOL or more on pump.fun (curve or PumpSwap) on the tape, the only buys a "
+                    "copy sniper copies: not measured; looked at again in 72.0 h")  # fmt: skip
+            assert by[w]["reasons"] == [said]
+        assert by["GONE"]["reasons"] == ["no tape data"]
+    finally:
+        st.close()
+    (tmp_path / "own").mkdir()
+    svc, st, data = _svc(tmp_path / "own")  # the floor is the book's, whatever it is set to
+    try:
+        _tape(st, ["SMALL"], coins=15, sol=0.2)
+        st.upsert_candidate("SMALL", "coinfirst", {}, NOW - 3600)
+        svc.cfg.book.min_copy_sol = 0.2
+        sent = []
+        run_qualify(svc, svc.cfg, data / "jobs", NOW,
+                    lab_runner=lambda ws, pos: sent.extend(ws) or [dict(_lab_row(), wallet=w) for w in ws])  # fmt: skip
+        assert sent == ["SMALL"]
     finally:
         st.close()
 
