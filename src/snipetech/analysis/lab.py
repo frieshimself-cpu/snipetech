@@ -2283,6 +2283,9 @@ class _Run:
     # every row keeps each exit's reason and seconds held (`exit_pnls`' `how`): asked by `lab --trades` alone, the
     # rows of a search being many
     exit_how: bool = False
+    # where in the slot after an exit fires its sale lands: "start" (EXIT_POSITION, ahead of that slot's trades) or
+    # "end" (behind all of them: the crowd that sells with a followed wallet stands ahead of us, the agents' I219)
+    exit_position: str = EXIT_POSITION
 
 
 def _plan(store: Store, spans, group_wallets: set[str] | None, min_trades: int, min_quote: int = 0) -> list[tuple]:
@@ -2460,7 +2463,7 @@ def _coin_rows(store: Store, run: _Run, a, b, slot_secs: float, mint: str) -> li
                 by_user = _trades_by_user(path) if by_user is None else by_user
                 own = by_user[path.users[i]]
                 frac = leader_sell_fractions(path, path.users[i], own)
-            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, EXIT_POSITION, leader_frac=frac,
+            prep = prepare(path, e, run.buy_sol, run.costs, EXIT_LATENCY_SLOTS, run.exit_position, leader_frac=frac,
                            migration_slot=None if mig is None else mig.slot)  # fmt: skip
             if prep is None:
                 if gap is not None:  # left out, and said why, as before 8 Nov: no exit scores it
@@ -2634,9 +2637,14 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
             triggers: Sequence[Trigger] | None = None, workers: int | None = None,
             mates: Mapping[str, Collection[str]] | None = None,
             sell_parts: tuple[int, float] | None = None, buy_bid_sol: float = 0.0,
-            same_sol: bool = False, exit_how: bool = False) -> dict[str, Any]:  # fmt: skip
+            same_sol: bool = False, exit_how: bool = False,
+            exit_position: str = EXIT_POSITION) -> dict[str, Any]:  # fmt: skip
     """Simulate every trigger x exit on every SOL-quoted token fully recorded on the tape.
     `exit_how`: every row also keeps what sold each exit's position and after how long (`lab --trades`).
+    `exit_position`: every exit's sale lands in the slot after it fires at its "start" (ahead of that slot's trades,
+    the default) or its "end" (behind all of them: the agents' I219, 15 Nov: 2 of our 19 live copy-exit sells sold
+    44-57 % under the price right after the wallet's sale, behind 20-36 other sales). The result says which
+    (`exit_position`).
     `sell_parts`: (parts, seconds apart): every exit, a MIG rule's too, sells out in that many parts (`in_parts`).
     `buy_bid_sol`: a bid paid once on every buy, on top of `per_tx_sol` (`Costs.entry_bid_lamports`).
     `position` "bid" or "bid-" (wallet rules only, latency 0): each copy lands where `buy_bid_sol` puts it among the
@@ -2753,7 +2761,7 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
                amm_backfill=_backfill(store, until) if wallet_runs else {}, until=until,
                bid_sol=bid_sol if is_bid(position) else 0.0,
                own=frozenset(own_wallets(store, cfg, **upto)) if is_bid(position) else frozenset(),
-               same_sol=bool(same_sol), exit_how=bool(exit_how))  # fmt: skip
+               same_sol=bool(same_sol), exit_how=bool(exit_how), exit_position=exit_position)  # fmt: skip
     plan_wallets, floor = group_wallets, (group_floor(triggers) if groups else 0)
     named = any(t.kind == "kol" and t.only for _, t in triggers)  # a rule that names its wallets (`only`)
     if ((plan_wallets is None or named) and triggers and isinstance(kols, dict)
@@ -2787,7 +2795,8 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     landing_of = {
         ti: list((landings or {}).get(t.kind, (latency_slots, position))) for ti, t in enumerate(all_triggers)
     }
-    out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "tape_hours": sum(b - a for a, b in spans) / 3600,
+    out = {"rows": rows, "exits": exits, "kind_exits": by_kind, "exit_position": exit_position,
+           "tape_hours": sum(b - a for a, b in spans) / 3600,
            "window": window, "triggers": all_triggers,
            "slot_secs": [slot_secs for _a, _b, slot_secs, _mints in plan], "landing_of": landing_of,
            "workers": n, "unscored": unscored, "mig_exits": mig_exits,

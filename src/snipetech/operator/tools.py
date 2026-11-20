@@ -1892,6 +1892,11 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         buy the tape cannot place (landing_src = 'chain': trades_behind, pack_ahead, price_gap_pct, blocks_after,
         ahead_bids, ahead_bid_max, ahead_bid_p50, landing_verdict, venue). It only reads; it starts and changes
         nothing.
+        CROWDED EXITS (your I219, 20 Nov): "--exit-position", "end" prices every exit's sale behind every trade of
+        the slot after it fires (the default, start, puts it ahead of them). Behind a busy wallet the crowd that
+        sells with it stands ahead of a live copy: 2 of our 19 live copy-exit sells sold 44-57 % under the price
+        right after the wallet's sale. Run the same lab both ways on one "--until" window (with "--trades": each
+        trade says what sold it): the difference is what a crowded exit costs that rule.
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at

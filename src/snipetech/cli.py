@@ -705,6 +705,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="replay every later buyer spending the SOL it spent on the tape and no more (a buyer of an "
                          "exact number of coins otherwise pays whatever they cost beside our buy): the tighter upper "
                          "end of a result at size. Run the same lab without it to compare")  # fmt: skip
+    sp.add_argument("--exit-position", choices=("start", "end"), default="start",
+                    help="where every exit's sale lands in the slot after it fires: start (ahead of that slot's "
+                         "trades, the default) or end (behind all of them: the crowd that sells with a followed "
+                         "wallet stands ahead of us; 2 of our 19 live copy-exit sells sold 44-57 %% under the price "
+                         "right after the wallet's sale). Run the same lab both ways on one --until window to see "
+                         "what a crowded exit costs")  # fmt: skip
 
     sp = cmd(
         "sweep",
@@ -1885,7 +1891,8 @@ async def _run(args, cfg: Config) -> int:
                                        triggers=hypotheses, kols=lab_groups(svc.store),
                                        exits=lab_recipe_exits(rec) if rec else None,
                                        sell_parts=sell_parts, buy_bid_sol=buy_bid,
-                                       same_sol=args.same_sol, exit_how=args.trades)  # fmt: skip
+                                       same_sol=args.same_sol, exit_how=args.trades,
+                                       exit_position=args.exit_position)  # fmt: skip
 
             try:
                 data = await asyncio.to_thread(_collect_locked)
@@ -1899,7 +1906,8 @@ async def _run(args, cfg: Config) -> int:
                    "copy_landing": copy_pos, "buy_sol": buy, **cost, "hours": args.hours,
                    # from when to when the lab read, and which file (the end is --until's, or the end of that tape)
                    "window": data.get("window"),
-                   "workers": data.get("workers"), "strategies": ranked}  # fmt: skip
+                   "workers": data.get("workers"), "exit_position": args.exit_position,
+                   "strategies": ranked}  # fmt: skip
             if buy_bid:  # a bid paid once on every buy, on top of per_tx_sol
                 res["buy_bid_sol"] = float(buy_bid)
             if rec is not None:

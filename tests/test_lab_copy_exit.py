@@ -331,3 +331,52 @@ def test_an_exit_scored_with_the_copy_exit_is_the_one_a_copy_sniper_is_sent():
     assert sent.config == plain.config
     assert sent.config["ctbotCopyExit"] == {"enabled": True, "sellThresholdPercent": 50.0, "sellPercent": 100,
                                             "triggerWalletOnly": True, "delayMs": 0}  # fmt: skip
+
+
+def _crowd_sells_world(store: Store, n: int = 24) -> None:
+    """As `_leader_sell_world`, but the six late buyers all sell out in the slot right after the wallet's sale (13):
+    a crowd that sells with the wallet, the way copiers of a busy wallet do."""
+    for i in range(n):
+        m = Market(store, addr(f"cs-{i}"), addr(f"cs-dev-{i}"), NOW - 3000 + i * 60, 71_000_000 + i * 150)
+        kol = addr(f"cs-kol-{i}")
+        m.buy(m.deployer, 0.5, 0, sig=m.create_sig)
+        m.buy(kol, 2.5, 1)
+        for k in range(3):
+            m.buy(addr(f"cs-early-{i}-{k}"), 0.3, 2)
+        for k in range(6):
+            m.buy(addr(f"cs-late-{i}-{k}"), 0.8, 5 + k)
+        m.sell(kol, 1.0, SELLS_AT)
+        for k in range(6):
+            m.sell(addr(f"cs-late-{i}-{k}"), 1.0, SELLS_AT + 1)
+        m.commit()
+        store.set_label(kol, f"cs-kol-{i}", "kol")
+    store.set_coverage("tape", {"spans": [[NOW - 3100, NOW]]})
+
+
+def test_the_copy_exit_can_be_priced_behind_the_crowd_that_sells_in_its_slot():
+    """The agents' I219 (15 Nov): of our 19 live copy-exit sells, 2 sold 44-57 % under the price right after the
+    wallet's sale, behind 20-36 other sales. The lab prices an exit's sale at the start of the slot after it fires,
+    ahead of that slot's trades. `exit_position` "end" prices it behind every trade of that slot instead: the crowd
+    that sells with the wallet stands ahead of us. Both labs say which they used; the default is as before."""
+    store = Store(":memory:")
+    _crowd_sells_world(store)
+    first = collect(store, _cfg(), 0.2, 1, "+3", triggers=[KOL], exits=[HOLD60])
+    behind = collect(store, _cfg(), 0.2, 1, "+3", triggers=[KOL], exits=[HOLD60], exit_position="end")
+    assert first["exit_position"] == "start" and behind["exit_position"] == "end"
+    assert len(first["rows"]) == len(behind["rows"]) == 24
+    for a, b in zip(first["rows"], behind["rows"]):
+        assert a["mint"] == b["mint"]
+        assert b["pnl"][0] < a["pnl"][0] - 0.01  # six sales of 0.8 SOL's worth of coins ahead of ours
+    store.close()
+
+
+def test_the_lab_command_takes_the_exit_position_and_says_it(tmp_path, capsys):
+    """`lab --exit-position end`: every exit's sale behind the trades of its slot; the output says which was used."""
+    store = Store(tmp_path / "t.db")
+    _crowd_sells_world(store)
+    store.close()
+    argv = ["--db", str(tmp_path / "t.db"), "lab", "--trigger", json.dumps({"kind": "kol", "sol": 2.0}), "--json"]
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out)["exit_position"] == "start"
+    assert cli.main([*argv, "--exit-position", "end"]) == 0
+    assert json.loads(capsys.readouterr().out)["exit_position"] == "end"

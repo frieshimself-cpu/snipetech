@@ -496,13 +496,14 @@ OLD_STRATEGY = {"trigger", "trigger_spec", "exit", "exit_params", "landing", "mo
                 "train_mean", "test", "test_sol_per_day", "size", "live_landing"}  # fmt: skip
 NEW_STRATEGY = {"train", "test_from_ts", "test_from_utc", "test_digest", "window_digest"}
 CREW = {"crew"}  # since 14 Nov: how many of a launch-type rule's moments are serial crews' coins (test_crew_as_live.py)
+EXIT_POS = {"exit_position"}  # since 20 Nov: where every exit's sale lands in its slot (test_lab_copy_exit.py, I219)
 
 
 def test_the_output_gains_the_window_and_the_cut_and_nothing_else(dbs, capsys):
     """What a lab without the new flags prints: every field it printed before, the window, and per strategy where its
     cut fell and the two digests. The trades come only when asked for."""
     out = _run(capsys, dbs[1], "--trigger", HUNT_JSON)
-    assert set(out) == OLD_TOP | {"window"} | CREW
+    assert set(out) == OLD_TOP | {"window"} | CREW | EXIT_POS
     (s,) = out["strategies"]
     assert set(s) == OLD_STRATEGY | NEW_STRATEGY | CREW
     # 114 moments (a launch a minute, the last one a minute before the tape's end is too late to judge): the older 68
