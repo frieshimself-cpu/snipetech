@@ -191,7 +191,10 @@ def start_standins(
             jobs.ops.op_run(argv, timeout=STAGE_LIMIT_SECS.get(" ".join(argv), 60 * 60))
             started.append(argv)
         except Exception as exc:  # noqa: BLE001 - one stage failing to start must not stop the round
-            if log:
+            if log and getattr(exc, "code", None) == 409:  # held back while a code update waits: no failure (20 Nov:
+                # each was read as a failing loop stage, and the round paid an operator turn to say so)
+                log(f"stand-in: {' '.join(argv)} waits for the code update to go out")
+            elif log:
                 log(f"stand-in: {' '.join(argv)} did not start: {type(exc).__name__}: {exc}")
     if started and log:
         log("stand-in for inactive timers: started " + ", ".join(" ".join(a) for a in started))

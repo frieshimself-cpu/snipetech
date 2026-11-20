@@ -770,3 +770,42 @@ def test_a_waiting_deploy_holds_new_number_producing_jobs_back(env, monkeypatch)
         req(ops, key, "update", force=False)  # asking again after the limit starts a new wait
     assert ops.deploy_waiting()
     assert req(ops, key, "update", force=True)["argv"] == ["update"] and not ops.deploy_waiting()
+
+
+def test_no_job_starts_while_a_code_update_goes_out(env, monkeypatch):
+    """20 Nov 03:30:50: the round's timer (RandomizedDelaySec=60) fired four seconds into a deploy, while pip was
+    putting the package back: the tester's turn died at once ("can't open file '/opt/snipetech/.venv/bin/snipetech'",
+    exit 2) and the next round paid the operator to look at a "loop stage failed". While an update is going out (its
+    job has not ended, and for no longer than UPDATE_OUT_MAX_SECS) no job of any kind starts: 409, nothing started,
+    and the round's stage starts again a round later. A second update waits for the first, force or not."""
+    ops, key = env
+    started: list[list[str]] = []
+
+    def start(cmd, argv, timeout):
+        started.append(argv)
+        return {"id": f"20261120-0330{len(started):02d}-18335{len(started)}", "argv": argv}
+
+    monkeypatch.setattr(ops, "_start", start)
+    assert req(ops, key, "update")["argv"] == ["update"]
+    for argv in (["operate", "agent", "--role", "tester"], ["operate", "idea", "--id", "I1"], ["lab", "--hours", "1"]):
+        with pytest.raises(O.OpsError, match="a code update is going out") as e:
+            ops.op_run(argv)
+        assert e.value.code == 409
+    with pytest.raises(O.OpsError, match="a code update is going out"):
+        req(ops, key, "run", argv=["rescore"])
+    for force in (False, True):
+        with pytest.raises(O.OpsError, match="a code update is going out"):
+            req(ops, key, "update", force=force)
+    assert started == [["update"]]
+    (ops.data / "jobs" / "20261120-033001-183351.exit").write_text("0\n")  # it is out
+    assert ops.op_run(["lab", "--hours", "1"])["argv"] == ["lab", "--hours", "1"]
+    # an update whose end was never written (the machine went down mid-update) holds nothing past the limit
+    assert req(ops, key, "update")["argv"] == ["update"]
+    with pytest.raises(O.OpsError, match="going out"):
+        ops.op_run(["rescore"])
+    real = time.time
+    monkeypatch.setattr(O.time, "time", lambda: real() + O.UPDATE_OUT_MAX_SECS + 5)
+    assert ops.op_run(["rescore"])["argv"] == ["rescore"]
+    (ops.data / O.UPDATE_OUT).write_text("{not json")  # a broken mark holds nothing either
+    monkeypatch.setattr(O.time, "time", real)
+    assert ops.op_run(["rescore"])["argv"] == ["rescore"]

@@ -389,3 +389,33 @@ def test_the_round_starts_the_role_turns_only_while_the_agents_are_on(tmp_path, 
         assert asked[2] == {}
     finally:
         st.close()
+
+
+def test_a_stage_held_back_by_a_waiting_deploy_is_no_failing_stage(tmp_path):
+    """20 Nov audit: while a `remote update --when-quiet` waited, the runner refused the stages that report numbers
+    (409); each refusal was logged "did not start", which the round reads as a loop stage failing, and it paid an
+    operator turn to say so (18:30, 00:30 and 01:00: 0.06 to 0.19 $ each). A stage held back by a waiting deploy now
+    says it waits, which the round does not read as a failure; any other refusal still says "did not start"."""
+    import sys
+
+    from snipetech import ops as O
+    from snipetech.operator.standin import start_standins
+
+    data = tmp_path / "data"
+    (data / "jobs").mkdir(parents=True)
+
+    class Jobs:
+        ops = O.Ops(repo=tmp_path, data=data, db=data / "x.db", keys_file=tmp_path / "k", branch="main",
+                    command=[sys.executable, "-c", "pass"])  # fmt: skip
+
+    def refuse(argv, timeout=6 * 3600):
+        if argv[:2] == ["measure", "run"]:
+            raise O.OpsError(500, "boom")
+        raise O.OpsError(409, "a code update is waiting for the running jobs to end: nothing was started")
+
+    Jobs.ops.op_run = refuse
+    said: list[str] = []
+    start_standins(Jobs(), {}, NOW, log=said.append)
+    waits = [m for m in said if "waits for the code update" in m]
+    assert waits and not any("did not start" in m for m in waits)
+    assert [m for m in said if "did not start" in m] == ["stand-in: measure run did not start: OpsError: boom"]

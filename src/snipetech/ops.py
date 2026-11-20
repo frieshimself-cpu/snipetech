@@ -197,6 +197,13 @@ UNIT_RUNS = frozenset({"activating", "active", "reloading", "deactivating"})  # 
 DEPLOY_WAITS = "DEPLOY_WAITS"
 DEPLOY_ASK_FRESH_SECS = 60
 DEPLOY_HOLD_MAX_SECS = 1800
+# An update going out (`op_update`'s job: fetch, reset, pip, restarts; 4 to 5 s) leaves this mark with its job's id.
+# 20 Nov 03:30:50: the round's timer fired four seconds into one (its RandomizedDelaySec) while pip was putting the
+# package back, and the tester's turn died at once (exit 2, the command's file not there). While the mark's job has
+# written no end no job starts (`op_run`), nor a second update; a mark whose job never wrote its end (the machine
+# went down mid-update) holds nothing after UPDATE_OUT_MAX_SECS.
+UPDATE_OUT = "UPDATE_OUT"
+UPDATE_OUT_MAX_SECS = 300
 
 
 def holds_deploy(argv: list[str]) -> bool:
@@ -396,6 +403,9 @@ class Ops:
         command = argv[1:] if argv and argv[0] == "--profile" else argv
         if not command or not all(isinstance(a, str) for a in argv) or command[0] not in ALLOWED:
             raise OpsError(403, f"command not allowed: {argv[:2]}")
+        if self.update_going_out():
+            raise OpsError(409, "a code update is going out right now (seconds): no job starts while the package is "
+                                "put back. Start this one again in a minute; nothing was started")  # fmt: skip
         if holds_deploy(argv) and self.deploy_waiting():
             raise OpsError(409, "a code update is waiting for the running jobs to end: no new job that reports numbers "
                                 "starts until it is out (minutes, half an hour at the most). Start this one again "
@@ -545,6 +555,17 @@ class Ops:
         now = time.time()
         return now - asked <= DEPLOY_ASK_FRESH_SECS and now - since <= DEPLOY_HOLD_MAX_SECS
 
+    def update_going_out(self) -> bool:
+        """Whether the update `op_update` started last is still going out (`UPDATE_OUT`): its job has written no exit
+        file yet, and it started at most UPDATE_OUT_MAX_SECS ago."""
+        try:
+            mark = json.loads((self.data / UPDATE_OUT).read_text())
+            jid, since = str(mark["id"]), float(mark["since"])
+            _check_id(jid)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, OpsError):  # none, or a broken one
+            return False
+        return time.time() - since <= UPDATE_OUT_MAX_SECS and not (self.data / "jobs" / f"{jid}.exit").exists()
+
     def _deploy_asked(self) -> None:
         """Note that a deploy was refused just now: a wait that is still fresh keeps its start, any other starts one."""
         now = time.time()
@@ -562,7 +583,10 @@ class Ops:
     def op_update(self, force: bool = False) -> dict[str, Any]:
         """Bring the checkout to the branch's tip and restart the recorder and this endpoint. Refused (409) while a job
         or a timer-run unit is mid-run that would go on with part old and part new code (`deploy_waits_for`), with
-        each named; `force` deploys all the same."""
+        each named; `force` deploys all the same. Never while another update is going out (`update_going_out`), force
+        or not: two at once would reset and reinstall the checkout under each other."""
+        if self.update_going_out():
+            raise OpsError(409, "a code update is going out right now: this one waits until it is out (seconds)")
         held = [] if force else self.deploy_waits_for()
         if held:
             self._deploy_asked()  # no new job that would hold it starts while the client keeps asking (`op_run`)
@@ -583,7 +607,12 @@ class Ops:
         lines.insert(4, f"(pkill -TERM -f {_sh(EVENTS_POLL_PATTERN)} || true)")
         script = " && ".join(lines)
         (self.data / DEPLOY_WAITS).unlink(missing_ok=True)  # it is going out: nothing waits any more
-        return self._start(["/bin/sh", "-c", script], ["update"], 1800)
+        job = self._start(["/bin/sh", "-c", script], ["update"], 1800)
+        try:  # its first step fetches over the network for a second or more: the mark is down before files change
+            (self.data / UPDATE_OUT).write_text(json.dumps({"id": job["id"], "since": time.time()}))
+        except OSError:
+            pass  # a mark that cannot be written holds nothing: jobs start during the update as they did before
+        return job
 
     def op_daily(self) -> dict[str, Any]:
         sudo = ["sudo", "-n"] if self.use_sudo else []
