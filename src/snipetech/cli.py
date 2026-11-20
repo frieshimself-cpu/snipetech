@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -628,6 +629,18 @@ def build_parser() -> argparse.ArgumentParser:
                          "/ --buy-bid say another. It follows the wallets the bot follows (our label groups), never "
                          "the bot. The result's `recipe` block scores the bot's own exit on every trigger. Research "
                          "only: no live sniper runs the bot's exit")  # fmt: skip
+    sp.add_argument("--exit", action="append", dest="exit_labels", metavar="LABEL",
+                    help="score exactly this exit and no other, named in the words a lab gives an exit, in any order: "
+                         "\"SL-15%% hold300s\", \"SL-15%% TRAIL25%% hold300s\", \"hold12s\", \"TP+20%%@50%%/+50%% "
+                         "SL-15%% hold300s\" (every exit names its timer). Repeatable: the lab scores the exits named "
+                         "and its ranking picks among them alone; `named_exits` shows each of them on every trigger, "
+                         "on all its moments and on the newer 40 %% the ranking judges, whichever the ranking picks. "
+                         "A wallet rule's exits carry the copy exit and the watch delay every copy sniper has (its "
+                         "name ends copy50%% watch1.3s) unless --no-copy-exit")  # fmt: skip
+    sp.add_argument("--no-copy-exit", action="store_true",
+                    help="with --exit: score the wallet rules without the copy exit (the followed wallet's sale does "
+                         "not sell the copy), to see what the copy exit adds. Every live copy sniper is sent one: "
+                         "research only")  # fmt: skip
     sp.add_argument(
         "--by-wallet",
         action="store_true",
@@ -1836,12 +1849,20 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab_lock import lab_lock
             from .operator.research import recent_tape
             from .qualify.run import lab_tx_cost_info
+            from .sim.exits import exit_from_label
 
             copy_pos = paper.copy_landing(svc.store, cfg, time.time())  # where our copies land live (as measured)
             try:  # refused before any tape is read
                 # a bot's recipe by name: its triggers ahead of any typed with it, its own exit among the exits, its
                 # size and bid unless told
                 rec = lab_recipe(args.recipe) if args.recipe else None
+                # the exits an agent names, read back from their words before any tape is read (I193, I313)
+                named = [exit_from_label(x) for x in args.exit_labels or ()]
+                if named and rec is not None:
+                    raise ValueError("--exit scores the exits named and no other, --recipe the search set and the "
+                                     "bot's own: give one of the two")  # fmt: skip
+                if args.no_copy_exit and not named:
+                    raise ValueError("--no-copy-exit goes with --exit: name the exits to score without the copy exit")
                 if rec is not None and args.sell_parts > 1:
                     raise ValueError("--recipe scores the bot's own exit, which has its own parts: leave --sell-parts "
                                      "out (or type the triggers with --trigger to put every exit in "
@@ -1875,6 +1896,9 @@ async def _run(args, cfg: Config) -> int:
                 else lab_tx_cost_info(svc.store, cfg)
             )
             per_tx = cost["per_tx_sol"]
+            # --no-copy-exit: the wallet rules' exits as handed, without the copy exit (a threshold of 0 sends none)
+            lab_cfg = (dataclasses.replace(cfg, oktech=dataclasses.replace(cfg.oktech, copy_exit_threshold_percent=0.0))
+                       if args.no_copy_exit else cfg)  # fmt: skip
 
             def _collect_locked():  # one lab at a time on the box: queue behind whoever holds the lock
                 with lab_lock(Path(cfg.storage.db_path).resolve().parent, wait=True):
@@ -1887,10 +1911,10 @@ async def _run(args, cfg: Config) -> int:
                     # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
                     # nothing and said so nowhere)
                     # (`--hunt-landing`: the hunt, whale and burst rules at the landing asked, `paper.hunt_landings`)
-                    return lab_collect(tape, cfg, buy, lat, pos, per_tx,
+                    return lab_collect(tape, lab_cfg, buy, lat, pos, per_tx,
                                        landings=paper.hunt_landings(args.hunt_landing),
                                        triggers=hypotheses, kols=lab_groups(svc.store),
-                                       exits=lab_recipe_exits(rec) if rec else None,
+                                       exits=lab_recipe_exits(rec) if rec else (named or None),
                                        sell_parts=sell_parts, buy_bid_sol=buy_bid,
                                        same_sol=args.same_sol, exit_how=args.trades,
                                        exit_position=args.exit_position)  # fmt: skip
@@ -1918,12 +1942,19 @@ async def _run(args, cfg: Config) -> int:
                                  "bot_bid_sol": rec.bid_sol, "exit": rec.exit.label(),
                                  "exit_params": rec.exit.to_dict(), "research_only": True,
                                  "scores": lab_exit_scores(data, cfg, rec.exit)}  # fmt: skip
+            if named:  # each exit named, on every trigger, whichever the ranking picked (I193, I313)
+                res["named_exits"] = [{"exit": ex.label(), "scores": lab_exit_scores(data, cfg, ex, k=j)}
+                                      for j, ex in enumerate(named)]  # fmt: skip
             if sell_parts:  # every exit sold out in parts (research only)
                 res["sell_parts"] = {"parts": int(sell_parts[0]), "secs": float(sell_parts[1])}
             if any(t.kind == "kol" for t in data["triggers"]):  # the wallets a copy was scored behind companions of
                 res["copy_companions"] = data["mates"]
             if data.get("copy_exit"):  # a wallet rule ran: the copy exit its exits carry, and what it is not
                 res["copy_exit"] = data["copy_exit"]
+                if args.no_copy_exit:  # none: said so, not the words of the one every live copy sniper is sent
+                    res["copy_exit"]["note"] = ("none scored (--no-copy-exit): a followed wallet's sale sells no "
+                                                "copy here; every live copy sniper is sent one, so this is research "
+                                                "only")  # fmt: skip
             if data.get("unscored"):  # e.g. MIG with an exit longer than 300 s
                 res["unscored"] = data["unscored"]
             if data.get("bid_landing"):  # the places the bid got, the moments with no fee record, the hours with bids

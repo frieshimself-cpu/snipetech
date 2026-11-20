@@ -1798,17 +1798,17 @@ def recipe_exits(rec: Recipe) -> list[ExitParams]:
     return exits if rec.exit in exits else [*exits, rec.exit]
 
 
-def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams) -> list[dict]:
+def exit_scores(data: dict[str, Any], cfg: Config, ex: ExitParams, k: int | None = None) -> list[dict]:
     """One exit of a lab on every trigger, whichever exit the ranking picks for it (`rank` shows a trigger's best exit
-    only): how a recipe's own exit did. Per trigger, in the lab's order: its moments, and the exit's trades, mean,
-    lower bound, share of wins and total on all of them (`all`) and on the newer 40 % the ranking judges on
-    (`newer`). A moment the exit was left out on (`exit_pnls`) is not counted.
+    only): how a recipe's own exit did, or an exit an agent named (`lab --exit`). Per trigger, in the lab's order: its
+    moments, and the exit's trades, mean, lower bound, share of wins and total on all of them (`all`) and on the newer
+    40 % the ranking judges on (`newer`). A moment the exit was left out on (`exit_pnls`) is not counted.
 
-    `ex` is looked up among the exits the lab was handed (its columns). Each row names the exit its trigger was
-    scored with (`exit`, `exit_params`; `scored_exits`): on a wallet rule and on a launch-type one the exit with
-    OKTech's watch delay, since that is what made the numbers (until 12 Nov a wallet rule's row named `ex` as handed,
-    watch_secs 0)."""
-    k = data["exits"].index(ex)
+    `ex` is looked up among the exits the lab was handed (its columns), or is column `k` (a lab that put every exit in
+    parts holds them as changed). Each row names the exit its trigger was scored with (`exit`, `exit_params`;
+    `scored_exits`): on a wallet rule and on a launch-type one the exit with OKTech's watch delay, since that is what
+    made the numbers (until 12 Nov a wallet rule's row named `ex` as handed, watch_secs 0)."""
+    k = data["exits"].index(ex) if k is None else int(k)
     conf, samples = cfg.verdict.confidence, cfg.verdict.bootstrap_samples
 
     def stats(part: list[dict]) -> dict[str, Any]:

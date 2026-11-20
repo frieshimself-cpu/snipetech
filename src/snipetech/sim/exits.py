@@ -7,6 +7,7 @@ pool), your bot/platform fee, and priority fee + tip per transaction.
 
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field, replace
 
 import numpy as np
@@ -174,6 +175,105 @@ class ExitParams:
         d["tp_stages"] = [list(s) for s in self.tp_stages]
         d["sl_stages"] = [list(s) for s in self.sl_stages]
         return d
+
+
+# An exit read back from its name (the agents' I193 and I313: a lab that scores exactly the exit named, e.g. `lab --exit
+# "SL-15% hold300s"`). The words are ExitParams.label's, in any order: every word at most once, a timer always.
+_NUM = r"(\d+(?:\.\d+)?(?:e[+-]?\d+)?)"
+_EXIT_WORDS = (
+    ("hold", re.compile(rf"hold{_NUM}s")),
+    ("stale", re.compile(rf"STALE{_NUM}s")),
+    ("trail", re.compile(rf"TRAIL{_NUM}%(?:>{_NUM}%)?")),
+    ("migsell", re.compile(rf"MIGSELL{_NUM}%(?:\+{_NUM}s)?")),
+    ("copy", re.compile(rf"copy{_NUM}%")),
+    ("watch", re.compile(rf"watch{_NUM}s")),
+    ("parts", re.compile(rf"parts(\d+)/{_NUM}s")),
+    ("first", re.compile(rf"first{_NUM}%")),
+    ("flat", re.compile(rf"flat<{_NUM}x")),
+    ("mom", re.compile(rf"MOM{_NUM}%/s@{_NUM}s<{_NUM}s(?:-{_NUM}%)?")),
+)
+
+
+def _ladder(word: str, sign: str) -> tuple[list[tuple[float, float]], tuple[float, float] | None]:
+    """A TP or SL word's stages (after its "TP" / "SL"): the stages that sell a share (`@`), and the last stage when it
+    sells everything left. Raises on a stage that is not "+20%", "+20%@50%" (or "-15%" ...)."""
+    stages: list[tuple[float, float]] = []
+    rest = None
+    parts = word.split("/")
+    for k, part in enumerate(parts):
+        m = re.fullmatch(rf"\{sign}{_NUM}%(?:@{_NUM}%)?", part)
+        if m is None:
+            raise ValueError(f"cannot read {part!r} in {word!r}")
+        level, share = float(m[1]) / 100, (float(m[2]) / 100 if m[2] else 1.0)
+        if stages and not level > stages[-1][0]:
+            raise ValueError(f"{word!r}: the stages come in rising order")
+        if share >= 1 and k == len(parts) - 1:
+            rest = (level, 1.0)
+        else:
+            stages.append((level, share))
+    return stages, rest
+
+
+def exit_from_label(text: str) -> ExitParams:
+    """The exit `text` names, in ExitParams.label's words and in any order: "SL-15% hold300s", "hold12s",
+    "SL-15% TRAIL25% hold300s", "TP+20%@50%/+50% SL-15% hold300s copy50% watch1.3s". A take-profit or stop ladder's
+    last stage without a share sells everything left; a single stage is the plain take profit or stop. Nothing named
+    is off: no take profit, no stop, no creator sale. Raises ValueError naming the word it cannot read, one named twice,
+    and an exit with no timer (every exit a lab scores ends on one)."""
+    kw: dict = {"take_profit": 0.0, "stop_loss": 0.0, "sell_on_dev_sell": False}
+    seen: set[str] = set()
+    for word in str(text).split():
+        kind, m = "devexit" if word == "devexit" else "", None
+        if word.startswith(("TP", "SL")):
+            kind = word[:2]
+        for name, pat in _EXIT_WORDS if not kind else ():
+            m = pat.fullmatch(word)
+            if m is not None:
+                kind = name
+                break
+        if not kind:
+            raise ValueError(f"cannot read {word!r}: an exit is named in the words a lab gives it, e.g. "
+                             "\"SL-15% TRAIL25% hold300s\" or \"hold12s copy50%\"")  # fmt: skip
+        if kind in seen:
+            raise ValueError(f"{word!r} twice: an exit names each rule once")
+        seen.add(kind)
+        if kind in ("TP", "SL"):
+            stages, rest = _ladder(word[2:], "+" if kind == "TP" else "-")
+            key = "tp" if kind == "TP" else "sl"
+            if rest is not None:  # the last stage sells everything left: the plain take profit or stop
+                kw["take_profit" if kind == "TP" else "stop_loss"] = rest[0]
+            elif len(stages) == 1 and kind == "TP":  # one stage of a share: the plain take profit and its share
+                kw["take_profit"], kw["tp_sell_fraction"] = stages.pop()
+            kw[f"{key}_stages"] = tuple(stages)
+        elif kind == "devexit":
+            kw["sell_on_dev_sell"] = True
+        elif kind == "hold":
+            kw["max_hold_secs"] = float(m[1])
+        elif kind == "stale":
+            kw["stale_secs"] = float(m[1])
+        elif kind == "trail":
+            kw["trailing_stop"] = float(m[1]) / 100
+            kw["trailing_activation"] = float(m[2]) / 100 if m[2] else 0.0
+        elif kind == "migsell":
+            kw["migration_sell_frac"] = float(m[1]) / 100
+            kw["migration_sell_delay"] = float(m[2]) if m[2] else 0.0
+        elif kind == "copy":
+            kw["copy_exit_pct"] = float(m[1]) / 100
+        elif kind == "watch":
+            kw["watch_secs"] = float(m[1])
+        elif kind == "parts":
+            kw["sell_parts"], kw["sell_part_secs"] = int(m[1]), float(m[2])
+        elif kind == "first":
+            kw["first_part"] = float(m[1]) / 100
+        elif kind == "flat":
+            kw["flat_below"] = float(m[1])
+        elif kind == "mom":
+            kw["momentum_hold"], kw["momentum_lookback"], kw["momentum_max_secs"] = (float(m[1]), float(m[2]),
+                                                                                    float(m[3]))  # fmt: skip
+            kw["momentum_peak_drop"] = float(m[4]) / 100 if m[4] else 0.0
+    if "hold" not in seen:
+        raise ValueError(f"{text!r} names no timer: every exit a lab scores ends on one, e.g. hold300s")
+    return ExitParams(**kw)
 
 
 @dataclass(frozen=True)

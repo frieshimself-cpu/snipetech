@@ -1911,6 +1911,13 @@ def make_operator_tools(svc, paths: OperatorPaths, jobs: OperatorJobs, cfg: Oper
         sells with it stands ahead of a live copy: 2 of our 19 live copy-exit sells sold 44-57 % under the price
         right after the wallet's sale. Run the same lab both ways on one "--until" window (with "--trades": each
         trade says what sold it): the difference is what a crowded exit costs that rule.
+        EXACTLY THE EXIT YOU NAME (your I193, I174, I313; 20 Nov): "--exit", "SL-15% hold300s" scores that exit and
+        no other, named in the words a lab gives an exit, in any order (every exit names its timer: "hold12s" is a
+        12 s hold). Repeat it to score several on the same moments ("--exit", "SL-15% hold300s", "--exit", "SL-15%
+        TRAIL25% hold300s"): `named_exits` in the output shows each one on every trigger, on all its moments and on
+        the newer 40 % the ranking judges, whichever the ranking picks. A wallet rule's exits carry the copy exit and
+        the watch delay every copy sniper has (the name ends "copy50% watch1.3s"); "--no-copy-exit" scores them
+        without it, to see what the copy exit adds (research only: every live copy sniper is sent one).
         SELLING OUT IN PARTS: "--sell-parts", "4", "--sell-part-secs", "15" makes every exit of the lab sell what it
         holds in 4 equal parts 15 s apart instead of one sale (each part priced into the pool the earlier parts left,
         each paying its own transaction). Run the same lab with and without it to see what selling slowly is worth at

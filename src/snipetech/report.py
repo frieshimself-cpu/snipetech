@@ -960,6 +960,14 @@ def render_lab(r: dict) -> str:
         heads = ["trigger", "moments", "n", "mean", "bound", "win", "newer n", "mean", "bound", "win"]
         out.append(table([[s["trigger"], s["moments"], *cells(s["all"]), *cells(s["newer"])] for s in rec["scores"]],
                          heads))  # fmt: skip
+    for named in r.get("named_exits") or ():  # each exit named (--exit), on every trigger, whatever the table picked
+        out.append("")
+        out.append(f"Named exit {named['exit']} on every trigger (all its moments, then the newer 40 % the ranking "
+                   "judges):")  # fmt: skip
+        out.append(table([[s["trigger"], s["exit"], s["moments"], s["all"].get("n", 0), sol(s["all"].get("mean")),
+                           sol(s["all"].get("ev_lower")), s["newer"].get("n", 0), sol(s["newer"].get("mean")),
+                           sol(s["newer"].get("ev_lower"))] for s in named["scores"]],
+                         ["trigger", "scored as", "moments", "n", "mean", "bound", "newer n", "mean", "bound"]))  # fmt: skip
     if r.get("wallets"):
         out += [
             "",
