@@ -1118,6 +1118,17 @@ def across_slots(position: Any) -> int | None:
     return int(p[1:-1]) if p.startswith("+") and p.endswith(ACROSS) and p[1:-1].isdigit() else None
 
 
+# The rule that places a buy on the tape (entry_at, copy_entry, bid_entry, own_entry_end, pack_end, create_block_entry),
+# written into every forward paper row ("land"), so a rule's record tells the rows one rule placed from another's.
+# A row without it was placed before 19 Nov 2026 22:00 UTC: by the rule before packs when its trigger came before the
+# pack rule's deploy (19 Nov 18:46:19 UTC, PACK_RULE_SINCE), else by the pack rule alone (a copy and "+Nx" behind
+# the leader's pack). 2: every kind behind its trigger's pack, no place inside a transaction or between transactions
+# sent together, "+Nx" at the dearest of the buys it stands behind, the leader's operator's own later buys in its
+# block part of its own entry. Whoever changes where a buy lands raises it.
+LANDING_VERSION = 2
+PACK_RULE_SINCE = 1795113979
+
+
 def pack_end(path: MarketPath, i: int) -> int:
     """The last state of the pack the trade at state i was sent in (`companions.pack_end`: the later trades of its
     own transaction, and of the transactions that follow it back to back while each carries several wallets' buys).

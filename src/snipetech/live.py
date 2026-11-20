@@ -710,8 +710,13 @@ class LiveWatcher:
         if not any(word in text for word in PROVIDER_REFUSALS):
             return
         now = int(self.clock())
-        if self.refused_since is None:
-            self.refused_since = now
+        if self.refused_since is None:  # a refusal the record holds and nothing cleared goes on across a restart
+            try:
+                had = self.store.coverage(REFUSED_KEY) or {}
+            except Exception:  # noqa: BLE001
+                had = {}
+            open_since = had.get("since") if had.get("last") and (had.get("cleared") or 0) < had["last"] else None
+            self.refused_since = int(open_since) if open_since is not None else now
         said = re.search(r'details = "([^"]*)"', text)
         code = re.search(r"StatusCode\.([A-Z_]+)", text)
         why = said.group(1) if said else re.sub(r"(?i)(api[-_]?key=)[^&\s'\"]+", r"\1<redacted>", text)

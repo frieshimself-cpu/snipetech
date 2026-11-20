@@ -553,3 +553,28 @@ def test_a_provider_that_refuses_our_key_is_written_down_and_cleared_once_it_let
     assert L.REFUSED_KEY == REFUSED_KEY  # the round reads what the recorder writes
 
     asyncio.run(go())
+
+
+def test_a_refusal_that_outlives_a_restart_keeps_the_time_it_began(monkeypatch):
+    """20 Nov 00:25 UTC: a deploy restarted the recorder an hour into Helius' suspension, and the record said the
+    refusal began at the restart. A refusal the record holds and nothing cleared goes on: its start is kept."""
+    suspended = 'status = StatusCode.PERMISSION_DENIED details = "Project is suspended"'
+
+    async def go():
+        streams = FakeLaserStream(monkeypatch)
+        st = Store(":memory:")
+        began = int(A1_TS) - 4000
+        st.set_coverage(L.REFUSED_KEY, {"since": began, "last": began + 3900, "why": "Project is suspended"})
+        w = recorder(st)
+        task = await started(w, streams)
+        drop(streams.subs[0], suspended)
+        await until(lambda: len(streams.subs) == 2)
+        assert st.coverage(L.REFUSED_KEY)["since"] == began
+        streams.subs[1]["on_connect"]()
+        st.set_coverage(L.REFUSED_KEY, dict(st.coverage(L.REFUSED_KEY)))
+        drop(streams.subs[1], suspended)  # a new refusal after one that was cleared starts anew
+        await until(lambda: len(streams.subs) == 3)
+        assert st.coverage(L.REFUSED_KEY)["since"] == int(A1_TS + 1.0)
+        await stop(task)
+
+    asyncio.run(go())

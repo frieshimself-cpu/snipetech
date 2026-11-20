@@ -62,6 +62,7 @@ from .lab import (
     EXIT_LATENCY_SLOTS,
     EXIT_POSITION,
     LAMPORTS,
+    LANDING_VERSION,
     LAUNCH_KINDS,
     MIG_CAP,
     MIG_LAND_SLOTS,
@@ -1707,7 +1708,7 @@ def run(store: Store, cfg: Config, now: float | None = None, min_trades: int = 5
                     "pnl": res.pnl_sol, "roi": res.roi, "reason": res.exit_reason,
                     "data": {"entry_mcap_sol": res.entry_mcap_sol, "hold_secs": res.hold_secs, "trigger_slot": t_slot,
                              "landing": landing_key(s["latency"], s["position"], bid_of(s)), "behind": e - i,
-                             "venue": path.venue, "model": FILL_MODEL,
+                             "venue": path.venue, "model": FILL_MODEL, "land": LANDING_VERSION,
                              # a copy: how many companions of the copied wallet it was scored behind (rows
                              # without the field were entered before 11 Nov 2026, companions counted as outsiders)
                              **({"mates": len(own or ())} if trig.kind == "kol" else {}),

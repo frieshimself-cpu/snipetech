@@ -337,6 +337,22 @@ def test_a_copied_wallet_that_buys_alone_is_scored_as_before():
     assert {r["data"]["behind"] for r in rows} == {6} and {r["data"]["mates"] for r in rows} == {0}
 
 
+def test_every_paper_row_says_which_landing_rule_placed_it():
+    """19 Nov 2026: the landing rule changed twice in one evening (a copy behind its leader's pack, deployed 18:46 UTC;
+    then every kind behind its trigger's pack and no place inside a transaction). paper.run keeps each row as the code
+    of its day placed it, so a rule's record holds rows of both rules and nothing told them apart (a review: `behind`
+    and `mates` were equal). Every row now carries the rule that placed it ("land", lab.LANDING_VERSION); a row
+    without it was placed before."""
+    from snipetech.analysis.lab import LANDING_VERSION
+
+    store = Store(":memory:")
+    _world(store)
+    s = _freeze(store, COPY, "+6", 0, T0)
+    paper.run(store, Config(), now=NOW)
+    rows = store.paper_trades(s["id"])
+    assert rows and {r["data"]["land"] for r in rows} == {LANDING_VERSION} and LANDING_VERSION == 2
+
+
 def test_the_paper_run_enters_a_copy_where_the_lab_enters_it():
     """One function places every curve entry for both (`lab.entry_at`): the forward record of a rule and the lab that
     froze it disagree about no trade's place."""
