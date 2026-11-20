@@ -126,23 +126,29 @@ def block(trades: Sequence[Trade], sig: str, mates: Collection[str] = (), own: C
     if k0 is None:
         return None
     lead = trades[k0]
-    # the wallet's own entry ends with its pack, or at its last companion's buy in the block (lab.own_entry_end)
-    packed = end = pack_end(k0, len(trades), lambda k: (int(trades[k].slot), trades[k].sig, int(trades[k].pos),
-                                                         bool(trades[k].is_buy), trades[k].user))  # fmt: skip
-    for k in range(end + 1, len(trades)):
-        if trades[k].slot != lead.slot:
-            break
-        if trades[k].is_buy and trades[k].user in mates:
-            end = k
-    p0 = _price(lead)
-    floor = _lamports(min_sol)
+
+    def at(k: int) -> tuple[int, str, int, bool, str]:
+        return int(trades[k].slot), trades[k].sig, int(trades[k].pos), bool(trades[k].is_buy), trades[k].user
+
+    packed = end = pack_end(k0, len(trades), at)
     # Whoever bought in the pack, or ahead of the wallet in its own transaction (the fee payer's small buy often comes
     # first), made its first buy there: a later buy of its own is nobody's first buy behind the wallet (19 Nov, a
     # review: the payer's second buy stood as an outsider, and a moment was refused where that row had no fee record).
     first = k0
     while first > 0 and trades[first - 1].sig == lead.sig and trades[first - 1].slot == lead.slot:
         first -= 1
-    seen = {lead.user} | {trades[k].user for k in range(first, packed + 1) if trades[k].is_buy}
+    pack_wallets = {trades[k].user for k in range(first, packed + 1) if trades[k].is_buy}
+    # the wallet's own entry ends with its pack, or at the last buy in the block by a companion or a wallet of the
+    # pack, itself included (lab.own_entry_end): the operator sent those with the rest
+    ours = set(mates) | pack_wallets
+    for k in range(end + 1, len(trades)):
+        if trades[k].slot != lead.slot:
+            break
+        if trades[k].is_buy and trades[k].user in ours:
+            end = max(end, pack_end(k, len(trades), at))  # behind its whole transaction (and pack)
+    p0 = _price(lead)
+    floor = _lamports(min_sol)
+    seen = {lead.user} | pack_wallets
     buyers: list[dict[str, Any]] = []
     after: list[dict[str, Any]] = []
     ours = first_later = None

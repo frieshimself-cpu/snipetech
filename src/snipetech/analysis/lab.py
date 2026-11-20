@@ -1150,17 +1150,20 @@ def pack_buyers(path: MarketPath, i: int, packed: int) -> set[str]:
 
 def own_entry_end(path: MarketPath, i: int, mates: Collection[str] | None) -> int:
     """The last state of a copied wallet's own entry, its buy at state i: the end of the pack it was sent in
-    (`pack_end`), or its last companion's buy in the same slot when that is later (`mates`: analysis.companions), or
-    i when it bought alone. No copy lands ahead of it."""
+    (`pack_end`), or the last buy in the same slot by one of its companions (`mates`: analysis.companions) or by a
+    wallet of that pack, itself included (`pack_buyers`), when that is later, or i when it bought alone. No copy lands
+    ahead of it: the operator sent those buys with the rest (19 Nov: counted out of a copy's n buys and nothing more, a
+    pack wallet's second buy let 2,921 copies of a fuzz of 150 tapes stand ahead of it, cheaper than any copy lands)."""
     last = pack_end(path, i)
-    if not mates:
+    who = set(mates or ()) | pack_buyers(path, i, last)
+    if not who:
         return last
     s = int(path.slot[i])
     for j in range(last + 1, path.n):
         if int(path.slot[j]) != s:
             break
-        if path.is_buy[j] and path.users[j] in mates:
-            last = j
+        if path.is_buy[j] and path.users[j] in who:
+            last = max(last, pack_end(path, j))  # behind its whole transaction (and pack): nobody buys inside one
     return last
 
 
@@ -1301,7 +1304,8 @@ def create_block_entry(path: MarketPath, i: int, e: int, latency: int, position:
     inside the create block: "+6" behind a sniper there stood ahead of every buyer of that block from the seventh on,
     a place nobody can buy. Nor is the copy priced under what the create block closed at: where the block after it
     opens lower (a bundle sells first), it pays the dearest price between the create block's end and its place
-    (`_dearest`, as a bid landing does), never the cheaper one.
+    (`_dearest`, as a bid landing does), never the cheaper one; a price inside a transaction is none it can pay, so
+    only the end of each transaction (and pack) in between counts.
 
     Nothing changes for a buy in any other block, for a coin whose create the tape does not hold (no create block
     is known), or for a landing that names a later block itself (`latency`). A place counted across blocks ("+Nx")
@@ -1311,7 +1315,9 @@ def create_block_entry(path: MarketPath, i: int, e: int, latency: int, position:
         return e
     last = int(np.searchsorted(path.slot, int(launch.slot), side="right")) - 1  # the create block's last trade
     land = pack_end(path, int(path.landing_index(int(launch.slot) + 1, position, last)))  # behind a whole transaction
-    return _dearest(path, last, range(last + 1, land + 1))
+    # the places a copy can stand at in between: the end of each transaction (and pack), never between two of its
+    # trades (19 Nov: a fuzz of 300 tapes priced 1,572 such copies inside a transaction)
+    return _dearest(path, last, {pack_end(path, j) for j in range(last + 1, land + 1)})
 
 
 def in_create_block(path: MarketPath, i: int) -> bool:

@@ -1256,8 +1256,11 @@ def test_a_copy_counted_across_blocks_pays_the_dearest_price_among_the_buys_it_s
 
 def test_a_pack_wallet_that_buys_again_in_the_block_is_not_a_buyer_ahead_of_the_copy():
     """A wallet of the leader's pack, or one that bought ahead of it in its own transaction, is the leader's operator
-    as a companion is: its second buy in that block is not one of the buys a copy is counted behind."""
-    from snipetech.analysis.lab import copy_entry
+    as a companion is: its second buy in that block is not one of the buys a copy is counted behind, and, as a
+    companion's, it is part of the leader's own entry: the operator sent it with the rest, so the copy lands behind it
+    (a fuzz of 150 tapes, 19 Nov: counted out of the n and nothing more, 2,921 copies stood ahead of such a buy, cheaper
+    than any copy can land)."""
+    from snipetech.analysis.lab import copy_entry, entry_at, own_entry_end
 
     st = Store(":memory:")
     lead, dev, payer, mate = addr("rb-lead"), addr("rb-dev"), addr("rb-payer"), addr("rb-mate")
@@ -1273,7 +1276,39 @@ def test_a_pack_wallet_that_buys_again_in_the_block_is_not_a_buyer_ahead_of_the_
     m.commit()
     path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
     assert path.users[3] == lead
-    assert [copy_entry(path, 3, n) for n in (0, 1, 3)] == [4, 7, 9]
+    assert own_entry_end(path, 3, None) == 6  # behind the payer's and the mate's own second buys
+    assert [copy_entry(path, 3, n) for n in (0, 1, 3)] == [6, 7, 9]
+    slot = int(path.slot[3])
+    assert entry_at("kol", path, 3, slot, 0, "+0") == 6 and entry_at("kol", path, 3, slot, 0, "+1") == 7
+    st.close()
+
+
+def test_a_copy_of_a_buy_in_the_create_block_never_stands_inside_a_transaction_of_the_next_block():
+    """A copy of a buy in the create block lands in the block after it, at the dearest price between the create block's
+    end and its place (13 Nov). That price was taken at any trade in between, a trade inside a transaction too: a fuzz
+    of 300 random tapes (19 Nov) found 1,572 copies priced between two trades of one transaction, every one a buy in a
+    create block. Only the places a copy can stand at count: the end of each transaction (and pack) in between."""
+    from snipetech.analysis.lab import entry_at
+
+    st = Store(":memory:")
+    dev = addr("cb-dev")
+    m = Market(st, addr("cb-coin"), dev, NOW - 4000, 41_000_000)
+    m.buy(dev, 1.0, 0, sig=m.create_sig).pos = 0  # state 1: the create, with the dev's buy
+    m.buy(addr("cb-lead"), 1.0, 0).pos = 1  # state 2: the followed buy, still in the create block
+    duo = addr("cb-duo")
+    m.buy(addr("cb-a"), 3.0, 1, sig=duo).pos = 0  # state 3: a big buy and ...
+    m.sell(addr("cb-lead"), 1.0, 1).sig = duo  # state 4: ... a sale in the same transaction (a bundler's round trip)
+    m.trades[-1].pos, m.trades[-1].ev = 0, 1
+    m.buy(addr("cb-b"), 0.3, 1).pos = 1  # state 5
+    m.buy(addr("cb-c"), 0.3, 1).pos = 2  # state 6
+    m.commit()
+    path = MarketPath.build(st.trades_for_mint(m.mint), st.launch(m.mint))
+    assert path.users[2] == addr("cb-lead") and path.sigs[3] == path.sigs[4]
+    assert path.q[3] / path.b[3] > path.q[4] / path.b[4]  # inside the transaction the price stood higher
+    slot = int(path.slot[2])
+    for position in ("+1", "+2"):
+        e = entry_at("kol", path, 2, slot, 0, position)
+        assert e != 3, (position, e)  # never between the two trades of one transaction
     st.close()
 
 

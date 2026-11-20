@@ -701,6 +701,9 @@ def test_a_pack_wallet_that_buys_again_is_no_outsider_and_a_gap_ends_the_pack():
     lead = next(t for t in trades if t.user == LEAD)
     read = BL.block(trades, lead.sig, user=LEAD)
     assert [b["user"] for b in read["buyers"]] == [RICH, SLOW]  # not the payer's and the link wallet's second buys
+    # and the wallet's own entry ends behind those second buys, as it does behind a companion's: RICH and SLOW bought
+    # between the wallet and its operator's own later buys, ahead of any copy whatever it bids
+    assert [b["between"] for b in read["buyers"]] == [True, True]
     far, _ = _packed_coin(st, gap=1)  # the second transaction two places behind the wallet's own: no link
     slot = far.trades[1].slot
     trades = _fix_slot_order(st.block_trades(far.mint, slot, slot + COPY_LAND_SLOTS))
