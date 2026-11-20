@@ -243,6 +243,19 @@ def test_sql_answers_a_wrong_column_with_the_tables_columns(toolbox):
     assert not _layout(_call(tools["sql"], query="select nope("))  # a syntax error names no table: nothing added
 
 
+def test_a_query_stopped_at_the_cap_is_answered_with_what_fits_in_it():
+    """19 Nov: 32 of the agents' 377 queries in a day came back "error: sql: interrupted" and nothing more, 30 of them
+    the scout's: day-wide counts over trades, LIKE on a wallet's address, max(ts) of the tape. The answer now says
+    why (about three million trades a day) and what fits in 30 s: one mint, one whole address (found in labels, which
+    LIKE may read), an hour of ts, the tape's span from coverage; and that a count over days is a job."""
+    from snipetech.operator.tools import sql_hint
+
+    hint = sql_hint("SELECT max(ts) mx FROM trades WHERE ts > 1794000000", "interrupted")
+    for words in ("30 s", "an hour", "labels", "coverage", "start_job"):
+        assert words in hint, words
+    assert sql_hint("select nope(", "near \"(\": syntax error") == ""  # other errors: nothing added, as before
+
+
 def test_start_job_tool_reports_refusals_as_text(toolbox):
     tools, _, _ = toolbox
     assert _call(tools["start_job"], argv=["oktech", "start"]).startswith("error")
@@ -1661,3 +1674,20 @@ def test_the_agents_are_told_that_a_copied_wallets_own_pack_is_not_counted_behin
     for words in ("Nor is the wallet's own pack", "each carry buys of several wallets", "pack_ahead",
                   'read "12 behind, speed"'):  # fmt: skip
         assert words in landing[0], words
+
+
+def test_a_labels_reason_may_hold_a_slash_and_only_its_file_is_read_as_a_path(jobs):
+    """19 Nov: the scout's `label <wallet> "winners 24h trader: +2.79 SOL / 59 coins own place ..." --kind cand` came
+    back "path not allowed" three times: every argument with a "/" was read as a path. A label reads one file, the
+    one --file names; the rest of its arguments are an address, a name (the reason, free text) and a kind."""
+    w = "D9KvWi3CeUc9hAQLpBMDeFwi8NfwiJATMiTFiCepHK3S"
+    started = jobs.start(["label", w, "winners 24h trader: +2.79 SOL / 59 coins own place, 35 wins", "--kind", "cand"])
+    assert started.get("id")
+    for argv in (["label", "--file", "/etc/snipetech/env", "--kind", "kol"],
+                 ["label", "--file=../../etc/passwd", "--kind", "kol"],
+                 ["label", "--kind", "kol", "--file", "~/keys.txt"]):  # fmt: skip
+        with pytest.raises(PermissionError, match="path not allowed"):
+            jobs.start(argv)
+    assert jobs.start(["label", "--file", "inputs/kols.txt", "--kind", "kol"]).get("id")  # under the data directory
+    with pytest.raises(PermissionError, match="path not allowed"):  # every other command keeps the whole check
+        jobs.start(["winners", "--out", "/tmp/x.json"])

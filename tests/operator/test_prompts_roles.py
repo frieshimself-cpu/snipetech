@@ -367,7 +367,8 @@ def test_a_roles_message_ends_with_one_line_on_what_to_do():
     now = DAY0 + 30 * H + 17 * 60
     last = _message(now, [])[-1]["text"]
     lines = last.splitlines()
+    # where it is, since 20 Nov: on 19 Nov ten reads guessed reports/<date>/ or reports/ and found nothing
     assert lines[-1] == "Do your role's turn (steps 1 to 3). Your table: tester-rules. Your journal today: " \
-                        "tester-journal-2026-11-07."  # fmt: skip
+                        "tester-journal-2026-11-07 (read_file operator/tester-journal-2026-11-07.md)."  # fmt: skip
     assert lines[-2].endswith("; keep the last calls for step 3.")
     assert "append=true" not in last and "headline" not in last

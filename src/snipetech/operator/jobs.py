@@ -46,6 +46,8 @@ RESEARCH_COMMANDS = frozenset(
         "tips",
     }
 )
+# the commands that open a file only through these flags: every other argument of theirs is text (`_check_paths`)
+FILE_FLAGS = {"label": frozenset({"--file"})}
 # never started by an agent, whatever RESEARCH_COMMANDS lists: `operate budget` writes the agents' own budget
 # (operator/BUDGET, the owner's /budget), oktech and sweep trade, book switches the live book, strategist and config
 # change settings. Named here so the refusal says whose they are and the model does not try variants
@@ -155,9 +157,18 @@ class OperatorJobs:
         return out
 
     def _check_paths(self, argv: list[str]) -> None:
-        """Any path-looking argument must resolve under the data directory's inputs/, reports/ or operator/."""
+        """Any path-looking argument must resolve under the data directory's inputs/, reports/ or operator/. A command
+        that reads files only through named flags (FILE_FLAGS) has only those flags' values checked: the rest of its
+        arguments are text (19 Nov: a label's reason, "+2.79 SOL / 59 coins", was refused three times as a path)."""
         roots = [(self.ops.data / d).resolve() for d in ("inputs", "reports", "operator")]
-        for a in argv[1:]:
+        flags = FILE_FLAGS.get(argv[0]) if argv else None
+        for k, a in enumerate(argv[1:], 1):
+            if flags is not None:  # only what such a command opens is a path
+                name, eq, value = a.partition("=")
+                if eq and name in flags:
+                    a = value
+                elif argv[k - 1] not in flags:
+                    continue
             if "/" in a or a.startswith(".") or a.startswith("~"):
                 p = Path(a).expanduser()
                 p = p if p.is_absolute() else self.ops.data / p

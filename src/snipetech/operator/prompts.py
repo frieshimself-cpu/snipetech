@@ -737,8 +737,9 @@ def role_message(role: str, snap: Snapshot, decision: Decision, learned: str = "
         parts.append(f"This turn stops at {ceiling['tool_calls']} tool calls or {ceiling['turn_usd']:g} $ "
                      f"({ceiling['spent_usd']:.2f} $ of your share of {ceiling['share_usd']:g} $ spent today); keep "
                      "the last calls for step 3.")  # fmt: skip
-    parts.append(f"Do your role's turn (steps 1 to 3). Your table: {TABLES[role]}. Your journal today: "
-                 f"{journal_prefix(role)}-{time.strftime('%Y-%m-%d', time.gmtime(snap.ts))}.")  # fmt: skip
+    journal = f"{journal_prefix(role)}-{time.strftime('%Y-%m-%d', time.gmtime(snap.ts))}"
+    parts.append(f"Do your role's turn (steps 1 to 3). Your table: {TABLES[role]}. Your journal today: {journal} "
+                 f"(read_file operator/{journal}.md).")  # fmt: skip
     blocks = [{"type": "text", "text": t} for t in (*front, "\n".join(parts))]
     if hour:
         blocks[-2]["cache_control"] = dict(HOUR_CACHE)

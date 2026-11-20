@@ -142,9 +142,23 @@ def sql_layout(tables: Iterable[str] | None = None) -> str:
     return "\n".join(out)
 
 
+# A query stopped at the cap (19 Nov: 32 of 377 in a day, 30 of them the scout's day-wide counts over trades, a LIKE
+# on a wallet's address and max(ts) of the tape) is answered with what fits in it, not the bare word "interrupted"
+SQL_CAP_HINT = (
+    "\nStopped at the 30 s cap: trades holds about 3 million rows a day, and a count over a day of them does not "
+    "finish. What fits: trades of one mint, of one user by its whole address (a prefix is found in labels: SELECT "
+    "address FROM labels WHERE address LIKE 'ANTUPU%'; a LIKE on trades reads every row), or at most an hour of ts. "
+    "The tape's span: SELECT data FROM coverage WHERE key='tape'. A count over days is a job (start_job: winners, "
+    "study, early-leaders, place-bids, gmgn), not a query."
+)
+
+
 def sql_hint(query: str, error: str) -> str:
     """What a failed query is answered with behind its error: the layout of the tables it named when a column is not
-    there, of every explained table when a table is not, nothing for any other error."""
+    there, of every explained table when a table is not, what fits in the cap when it was stopped at it (SQL_CAP_HINT),
+    nothing for any other error."""
+    if "interrupted" in error:
+        return SQL_CAP_HINT
     if "no such table" in error:
         return "\n" + sql_layout()
     if "no such column" not in error:
