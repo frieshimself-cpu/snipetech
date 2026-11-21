@@ -257,10 +257,11 @@ def test_role_stops_at_its_share(paths):
     from snipetech.operator.budget_switch import role_share_usd, room_for_role
 
     set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6}, "telegram", NOW)
-    assert [role_share_usd(ROLES_ON, paths, r) for r in ("scout", "tester", "fees", "oktech")] == [100, 175, 100, 50]
+    assert [role_share_usd(ROLES_ON, paths, r) for r in ("scout", "tester", "fees", "oktech", "exits")] == [
+        100, 125, 100, 50, 50]
     assert room_for_role(ROLES_ON, paths, "scout", spent_today=120.0, spent_by_role=99.99)
     assert not room_for_role(ROLES_ON, paths, "scout", spent_today=120.0, spent_by_role=100.0)
-    assert room_for_role(ROLES_ON, paths, "tester", spent_today=300.0, spent_by_role=174.0)  # its own share, not theirs
+    assert room_for_role(ROLES_ON, paths, "tester", spent_today=300.0, spent_by_role=124.0)  # its own share, not theirs
     assert not room_for_role(ROLES_ON, paths, "oktech", spent_today=60.0, spent_by_role=50.0)
     # at the config's 15 $ a day the shares are 3, 5.25, 3 and 1.5 $
     clear_budget(paths)
@@ -286,8 +287,9 @@ def test_budget_line_names_the_shares(paths):
     assert "share" not in off and "scout" not in off  # with the agents off the line is as it was
     set_budget(paths, ROLES_ON, {"daily_usd": 500, "turn_usd": 6, "analyst_every_h": 0.25}, "telegram", NOW)
     line = budget_line(ROLES_ON, paths, 3.2)
-    assert ("the research agents share the day: scout 20 % (100 $), tester 35 % (175 $), fees 20 % (100 $), oktech "
-            "10 % (50 $), each turn at most 5 $; the last 15 % (75 $) is kept for the alert rounds, the daily "
+    assert ("the research agents share the day: scout 20 % (100 $), tester 25 % (125 $), fees 20 % (100 $), oktech "
+            "10 % (50 $), exits 10 % (50 $), each turn at most 5 $; the last 15 % (75 $) is kept for the alert rounds, "
+            "the daily "
             "analysis and the post-mortems; /budget every 0 switches the research agents off") in line  # fmt: skip
     assert line.startswith("Claude budget: 500 $ a day (3.20 $ spent today)")
     set_budget(paths, ROLES_ON, {"analyst_every_h": 0}, "telegram", NOW)

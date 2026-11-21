@@ -20,13 +20,41 @@ def _flat(text: str) -> str:
 def test_every_role_has_its_own_instructions():
     assert set(P.ROLE_SYSTEM) == set(ROLES)
     assert P.ROLE_SYSTEM == {"scout": P.SCOUT_SYSTEM, "tester": P.TESTER_SYSTEM, "fees": P.FEES_SYSTEM,
-                             "oktech": P.OKTECH_SYSTEM}  # fmt: skip
+                             "oktech": P.OKTECH_SYSTEM, "exits": P.EXITS_SYSTEM}  # fmt: skip
     for role in ROLES:
         text = _flat(P.ROLE_SYSTEM[role])
         assert text.startswith(f"You are snipetech's {NAMES[role]}"), role
         assert _flat(P.ROLE_RULES) in text  # the shared core, whole
         assert f"operator/{TABLES[role]}.md" in text and f"{role}-journal-" in text
         assert len({P.ROLE_SYSTEM[r] for r in ROLES}) == len(ROLES)
+
+
+def test_every_role_knows_there_are_five():
+    for role in ROLES:
+        assert "one of five research agents" in _flat(P.ROLE_SYSTEM[role]), role
+        assert "one of four" not in _flat(P.ROLE_SYSTEM[role]), role
+
+
+def test_the_exit_analyst_is_told_its_question_its_bar_and_what_it_never_does():
+    """The owner, 21 Nov 2026: a sale that holds while the price only rises and gets out at once on a crash, found by
+    an agent of its own. Its bar keeps the best of many exits from passing on luck: better than the live exit in the
+    older and the newer part of the week, at the place the copies really land, before anything is proposed."""
+    text = _flat(P.EXITS_SYSTEM)
+    assert "if it's only upping we can hold a bit too but if it's js a crash we get out asap" in text
+    assert "when should a copy sell" in text
+    for word in ('"--exit"', "named_exits", '"--copy-position"', '"--buy"', '"--buy-bid"'):
+        assert word in text, word
+    for label in ("hold12s", "TP+20%@50%/+50%", "SL-25%", "TRAIL15%>10% hold30s", "TP+10% MOM2%/s@3s<30s-10% hold30s"):
+        assert label in text, label
+    assert "the older 60 %" in text and "the newer 40 %" in text and "lower bound above zero" in text
+    assert "the best of many exits" in text  # the luck of picking among many on the same moments
+    assert "research only until one tiny live test" in text  # OKTech's momentum hold: its timing is unknown
+    assert "docs/oktech-features.md" in text and "docs/live-recipe.md" in text
+    assert "never change a live sniper's exit" in text and "never freeze a rule" in text
+    assert "operator/exits-best.md" in text and "exits-journal-" in text
+    for command in ROLE_COMMANDS["exits"]:
+        assert command in text, command
+    assert "a fill of ours" in text  # every live sale is evidence: its exit against what every other exit made
 
 
 def test_every_role_is_told_it_never_trades():

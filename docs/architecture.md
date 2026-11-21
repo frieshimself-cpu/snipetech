@@ -447,7 +447,7 @@ What changed on 8 Nov (the review of the breakdown):
   the tape from measure, and `Ingestor.ingest` skips only signatures in `seen_sigs`, which the recorder never marks,
   so it would fetch every landed transaction of ours again each run.
 
-## The four research agents: built on 12 Nov, switched off
+## The research agents: four built on 12 Nov, the exit analyst on 21 Nov
 
 The owner asked on 12 Nov for specialised agents ("lookign for wallets", "an agent soley to analyse that specific
 wallet", "an agent that masters oktech's features an how to apply them"). Four are built. **None runs yet.** The
@@ -465,7 +465,22 @@ the analyst and the deploy guard do what they did before (tests pin each: `tests
 | question | Who is worth following, and who are they? | Which rule pays where we land? | What is a place worth, and which bid wins it? | Which OKTech feature would make a proven rule land or sell better, and what is its cheapest test? |
 | may start | `winners`, `gmgn`, `playbook`, `leaders-of`, `early-leaders`, `fomo-wallets`, `discover-wallets`, `follow`, `copy`, `copy-rank`, `copy-context`, `stopped-wallets`, `label`, `place-bids --each`, `history amm-backfill` | `lab`, `paper`, `dip-buys`, `launch-tools`, `study`, `copy-context` | `place-bids`, `tips`, `landing`, `playbook`, `copy-context`, and `lab` only with `--copy-position`, `--per-tx` or `--buy-bid` | only commands that read: `landing`, `copy-context`, `playbook`, `launch-tools` |
 | its table | `operator/scout-facts.md` | `operator/tester-rules.md` | `operator/fees-bids.md` | `operator/oktech-facts.md` |
-| share of the day's dollars | 20 % | 35 % | 20 % | 10 % |
+| share of the day's dollars | 20 % | 25 % (35 % until 21 Nov) | 20 % | 10 % |
+
+**The fifth, the exit analyst (`exits`, 21 Nov 2026).** The owner: "make sure you use momentum asw, find the best
+possible config for that, even add an agent for that ... if it's only upping we can hold a bit too but if it's js a
+crash we get out asap", then "Literally add an agent for that idc if costs are higher". Its question: when should
+a copy sell? It may start `lab` only with `--exit` (the exits it scores, by name: timers, take-profit ladders,
+stops, trailing stops that arm after a gain, OKTech's momentum hold), `landing` and `copy-context`; it reads our
+fills and each round trip's exit against every other exit (`read_fills`, `read_round_trips`), and
+`docs/oktech-features.md` and `docs/live-recipe.md`. A fill of ours wakes it. Its bar: an exit beats the live one in
+the older 60 % and the newer 40 % of the same lab at the live place, size and bid, with its newer lower bound above
+zero, and again on moments it was not picked on, before it hands the tester a freeze ("rule X with exit Y beside
+its exit") or the owner a proposal. It never changes a live sniper's exit and never freezes. Its table is
+`operator/exits-best.md`; its share is 10 % of the day, taken from the tester's 35 %. Its brief is
+`prompts.EXITS_SYSTEM`; the role is one more entry in each table of `roles.py` (tests:
+`test_the_five_roles`, `test_the_exit_analyst_scores_named_exits_at_a_named_place_and_freezes_nothing`,
+`test_the_exit_analyst_is_told_its_question_its_bar_and_what_it_never_does`).
 
 The last 15 % of the day is the reserve for the alert rounds, the daily analysis and the post-mortems. A role's turn
 stops at 5 $, or at the owner's dollars a turn when that is less.

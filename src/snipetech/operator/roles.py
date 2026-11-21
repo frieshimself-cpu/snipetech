@@ -26,13 +26,15 @@ from typing import Any
 from ..claude_client import has_claude_key
 from .paths import OperatorPaths
 
-ROLES = ("scout", "tester", "fees", "oktech")
+ROLES = ("scout", "tester", "fees", "oktech", "exits")
 NAMES = {"scout": "wallet scout", "tester": "strategy tester", "fees": "fee and place analyst",
-         "oktech": "OKTech features analyst"}  # fmt: skip
+         "oktech": "OKTech features analyst", "exits": "exit analyst"}  # fmt: skip
 
 # The share of the day's dollars (the owner's /budget, else [operator] daily_usd) each role may spend. The rest is the
-# reserve: the alert rounds, the daily analysis and the post-mortems. An unused share is not passed on.
-SHARES = {"scout": 0.20, "tester": 0.35, "fees": 0.20, "oktech": 0.10}
+# reserve: the alert rounds, the daily analysis and the post-mortems. An unused share is not passed on. The exit
+# analyst's tenth (21 Nov: the owner's "Literally add an agent for that idc if costs are higher") came out of the
+# tester's 35 %, whose exit work it took over.
+SHARES = {"scout": 0.20, "tester": 0.25, "fees": 0.20, "oktech": 0.10, "exits": 0.10}
 RESERVE_SHARE = 0.15
 ROLE_TURN_USD = 5.0  # a role's turn stops here (or at the owner's dollars a turn when that is less)
 MAX_OPEN_IDEAS = 15  # open research ideas a role's queue may hold: it closes or merges before it adds
@@ -67,6 +69,8 @@ ROLE_COMMANDS: dict[str, frozenset[str]] = {
     "fees": frozenset({"place-bids", "tips", "landing", "lab", "playbook", "copy-context"}),
     # which of OKTech's features would make a paper-proven rule land or sell better: commands that read, and no other
     "oktech": frozenset({"landing", "copy-context", "playbook", "launch-tools"}),
+    # when a copy sells: labs that name their exits, where our copies land and which buys pay; no freeze
+    "exits": frozenset({"lab", "landing", "copy-context"}),
 }
 # A command a role may start only with one of these flags: the fee analyst's lab prices a place or a bid (a rule's
 # own test is the tester's), and the scout's place-bids is the table of who is copied (`--each`: every wallet's own
@@ -74,6 +78,7 @@ ROLE_COMMANDS: dict[str, frozenset[str]] = {
 ROLE_NEEDS: dict[tuple[str, str], tuple[str, ...]] = {
     ("fees", "lab"): ("--copy-position", "--per-tx", "--buy-bid"),
     ("scout", "place-bids"): ("--each",),
+    ("exits", "lab"): ("--exit",),  # the exit analyst's lab scores the exits it names, and nothing else is its own
 }
 
 SHARED_TOOLS = frozenset({"read_job_log", "read_file", "sql", "read_lessons", "add_lesson", "list_ideas", "upsert_idea",
@@ -83,6 +88,7 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
     "tester": SHARED_TOOLS | {"read_verdicts", "read_events"},
     "fees": SHARED_TOOLS | {"read_fills", "read_fee_policy", "read_round_trips"},
     "oktech": SHARED_TOOLS | {"read_fills", "read_fee_policy", "read_round_trips"},
+    "exits": SHARED_TOOLS | {"read_fills", "read_round_trips"},  # each live trip's exit against every other exit
 }
 
 # The roles another role's table change never wakes (`role_due`): the OKTech analyst's subject is our fills and
@@ -93,25 +99,28 @@ ROLE_TOOLS: dict[str, frozenset[str]] = {
 TABLE_DEAF = frozenset({"oktech"})
 # The one table each role keeps current (operator/<name>.md), which the other roles' turns carry, and its journal
 # (operator/<role>-journal-<date>.md): the only two reports a role's write_report writes.
-TABLES = {"scout": "scout-facts", "tester": "tester-rules", "fees": "fees-bids", "oktech": "oktech-facts"}
+TABLES = {"scout": "scout-facts", "tester": "tester-rules", "fees": "fees-bids", "oktech": "oktech-facts",
+          "exits": "exits-best"}  # fmt: skip
 TABLE_CHARS = 2000  # what a turn carries of each other role's table
 # What a role's read_file reads of the checkout beside the research rounds every agent reads: exactly these files,
 # read-only. The OKTech analyst's subject is written down there (what each feature does as far as known, each
 # setting, the cheapest live tests).
 ROLE_DOCS: dict[str, tuple[str, ...]] = {
     "oktech": ("docs/oktech-playbook.md", "docs/oktech-features.md", "docs/oktech-settings.md"),
+    # what OKTech can sell with (its auto-sell, and the unknowns a tiny live test settles), and the live runs' exits
+    "exits": ("docs/oktech-features.md", "docs/live-recipe.md"),
 }
 # Whose queue a role's findings usually become work for (an idea added there; only the queue's own role moves or
 # closes it). Any role may add to any queue: this is what its instructions name.
 HANDOFF: dict[str, tuple[str, ...]] = {"scout": ("tester", "fees"), "tester": ("fees",), "fees": ("tester",),
-                                       "oktech": ("tester",)}  # fmt: skip
+                                       "oktech": ("tester",), "exits": ("tester", "oktech")}  # fmt: skip
 
 
 SWITCH = "ROLES_ON"  # operator/: the file that switches the agents on (`operate agent --switch on|off`)
 # operator/: the owner's word on whether another role's table change alone starts a role's turn ("on" or "off"; no
 # file: [operator] wake_on_table). Written by `/budget wake table on|off` and `operate budget --wake-table on|off`.
 WAKE_SWITCH = "WAKE_TABLE"
-ROLE_MAX_JOBS = 5  # research jobs at once while the agents run: four roles bounce off the analyst's three
+ROLE_MAX_JOBS = 5  # research jobs at once while the agents run: five roles bounce off the analyst's three
 
 
 def on(cfg, paths: OperatorPaths | None) -> bool:

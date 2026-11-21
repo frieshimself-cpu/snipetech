@@ -1105,14 +1105,14 @@ def build_parser() -> argparse.ArgumentParser:
                          "(operator/AUTOTEST); oktech: show or record what OKTech has confirmed (operator/OKTECH, the "
                          "owner's); idea: hand the server's agents a piece of research (operator/ideas.json), which "
                          "they run on the owner's Anthropic API credits; agent: one turn of a research agent (--role "
-                         "scout, tester, fees or oktech) when something is new for it; the round starts these itself "
-                         "while [operator] role_agents is on, and with it off this does nothing")  # fmt: skip
+                         "scout, tester, fees, oktech or exits) when something is new for it; the round starts these "
+                         "itself while [operator] role_agents is on, and with it off this does nothing")  # fmt: skip
     for flag in ("id", "status", "title", "why", "test", "expected", "kind", "priority", "result"):
         sp.add_argument(f"--{flag}", dest=f"idea_{flag}",
                         help=f"idea: its {flag}")  # fmt: skip
     sp.add_argument("--role", dest="idea_role",
-                    help="idea: the research agent whose queue it goes to (scout, tester, fees, oktech; a research "
-                         "idea without one is the tester's); agent: whose turn to run")  # fmt: skip
+                    help="idea: the research agent whose queue it goes to (scout, tester, fees, oktech, exits; a "
+                         "research idea without one is the tester's); agent: whose turn to run")  # fmt: skip
     sp.add_argument("--switch", metavar="on|off",
                     help="agent: switch the research agents on or off by the file operator/ROLES_ON, without a "
                          "deploy (the owner's /budget every 0 switches them off either way)")  # fmt: skip

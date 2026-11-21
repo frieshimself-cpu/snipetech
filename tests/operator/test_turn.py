@@ -796,7 +796,7 @@ def test_role_turn_stops_at_the_role_cap(env):
     out = _run(env, Decision(True, "tester", ["first turn"]), handler, role="tester")
     assert out["stopped"] == "turn_usd" and len(requests) == 1 and out["usd"] == pytest.approx(5.6)
     message = requests[0]["messages"][0]["content"][-1]["text"]  # the last block: what moves from turn to turn
-    assert "This turn stops at 40 tool calls or 5 $" in message and "of your share of 175 $" in message
+    assert "This turn stops at 40 tool calls or 5 $" in message and "of your share of 125 $" in message
     set_budget(env["paths"], env["cfg"], {"turn_usd": 2}, "telegram", NOW)  # the owner allows less a turn: that holds
     small = {"input_tokens": 300_000, "output_tokens": 0}  # 2.4 $
     handler, requests = _scripted(([{"type": "tool_use", "id": "t1", "name": "list_ideas", "input": {}}], "tool_use",
@@ -1513,9 +1513,10 @@ def test_a_refusal_the_guard_cannot_cure_is_told_as_an_api_error_and_the_guards_
     notes = env["paths"].notes.read_text().splitlines()
     guard = [n for n in notes if "refused the turn's cache markers" in n]
     errors = [n for n in notes if "api error" in n]
-    assert len(guard) == 4 and len(errors) == 1 and len(notes) == 5
+    n = len(roles.ROLES)  # one guard note a role, at its first refused turn
+    assert len(guard) == n and len(errors) == 1 and len(notes) == n + 1
     assert "[decision] api error: 400: system.0.cache_control.ttl" in errors[0] and len(env["sent"]) == 1
-    assert [bool(_marks(r)) for r in seen] == [True] * 4 + [False] * 28  # the marker left out from the second round on
+    assert [bool(_marks(r)) for r in seen] == [True] * n + [False] * 7 * n  # left out from the second round on
     # a role whose list goes out without the marker anyway (its last two waits were over an hour): its refusal sets
     # no guard and is told as an api error at once
     for f in (env["paths"].notes, env["paths"].root / roles.AGENTS_FILE):

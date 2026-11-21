@@ -299,7 +299,7 @@ def test_a_stage_due_every_half_hour_runs_every_second_round_not_every_third():
 
 # -- the research agents' turns (operator/roles.py): started by the round while they are switched on -------------------
 
-AGENTS = ("scout", "tester", "fees", "oktech")
+AGENTS = ("scout", "tester", "fees", "oktech", "exits")
 
 
 def _agent(role):
@@ -314,7 +314,8 @@ def test_role_turns_start_each_round_after_the_idle_research():
 
     argvs = [tuple(a) for a in due_standins({}, [], NOW, agents=AGENTS)]
     at = argvs.index(("research", "next"))
-    assert argvs[at + 1 : at + 5] == [_agent(r) for r in AGENTS] and argvs[at + 5] == ("research", "digest")
+    k = len(AGENTS)  # one turn a research agent, right after the idle research and before the digest
+    assert argvs[at + 1 : at + 1 + k] == [_agent(r) for r in AGENTS] and argvs[at + 1 + k] == ("research", "digest")
     assert [a for a in argvs if a[:2] != ("operate", "agent")] == [tuple(a) for a in due_standins({}, [], NOW)]
     services = {unit: "active" for _, unit, _ in STANDIN if unit}
     assert [_agent(r) for r in AGENTS] == [a for a in map(tuple, due_standins(services, [], NOW, agents=AGENTS))

@@ -11,7 +11,7 @@ _MILLION = 1_000_000.0
 
 TIERS = {"analyst": "analyst", "postmortem": "analyst", "strategist": "strategist"}  # a turn's mode -> its price rows
 # a research agent's turn (operator/roles.py) runs on the analyst's model: priced at its rows, recorded under its role
-TIERS |= {"scout": "analyst", "tester": "analyst", "fees": "analyst", "oktech": "analyst"}
+TIERS |= {"scout": "analyst", "tester": "analyst", "fees": "analyst", "oktech": "analyst", "exits": "analyst"}
 
 
 # Which rows of the price table (config.DEFAULT_OPERATOR_PRICES) a model's tokens are billed at: the three models the

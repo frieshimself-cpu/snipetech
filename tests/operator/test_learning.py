@@ -849,13 +849,14 @@ def test_digest_names_one_next_test_a_role(paths):
     week = {"tests": 212, "frozen": 9, "passed": 1}
     lines = L.digest_lines(paths, NOW - 6 * H, NOW, week=week)
     i = lines.index("Testing next, one for each research agent:")
-    assert lines[i + 1 : i + 5] == [
+    assert lines[i + 1 : i + 6] == [
         "- scout: who copies Cupsey",  # not tested yet comes before what is already being tested
         "- tester: score the 6z91 recipe at +1 (being tested)",
         "- fees: price the first place behind Cupsey",
         "- oktech: nothing in its queue",
+        "- exits: nothing in its queue",
     ]
-    assert lines[i + 5 : i + 7] == ["Waits for your yes:", "- a tip ladder behind Cupsey"]
+    assert lines[i + 6 : i + 8] == ["Waits for your yes:", "- a tip ladder behind Cupsey"]
     assert lines[-1] == ("This week: 212 tests started, 9 rules frozen for the forward paper test, 1 passing it (30+ "
                          "trades, total and lower bound above zero)")  # fmt: skip
     assert L.digest_lines(paths, NOW - 6 * H, NOW, week={"tests": 3, "frozen": None, "passed": None})[-1] == (

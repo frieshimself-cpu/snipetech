@@ -1404,7 +1404,8 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
         Args:
             status: "open" (open and being tested, best first), "all", or one of testing, adopted, rejected.
             limit: At most this many ideas.
-            queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech.
+            queue: "mine" (your own queue), "all" (every queue and the ideas in none), or scout, tester, fees, oktech,
+                exits.
             id: One idea whole, or several ("I20" or "I20, I31"), from any queue, as JSON.
             full: True gives every listed idea whole, as JSON (long: about 1,250 characters an idea).
         """
@@ -1437,7 +1438,7 @@ def _queue_tools(paths: OperatorPaths, now_fn: Callable[[], float], source: str,
             status: open | testing | adopted | rejected (adopted or rejected together with the result that decided it).
             owner_needed: True when it needs the owner's yes (live tests, code, config outside the bounds).
             priority: 1 (low) to 5 (high): what testing it is worth.
-            role: The queue a research idea goes to: scout, tester, fees or oktech (yours when left out).
+            role: The queue a research idea goes to: scout, tester, fees, oktech or exits (yours when left out).
             id: The idea's id (e.g. "I3") to update it; omit to add a new one.
             result: What the test found, in numbers, with n and the job (800): what an idea is closed with.
         """

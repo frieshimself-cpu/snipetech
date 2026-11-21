@@ -22,9 +22,28 @@ NEVER = {"oktech", "sweep", "unwrap", "book", "operate", "strategist", "config",
          "qualify", "measure", "discover"}  # fmt: skip
 
 
-def test_the_four_roles():
-    assert R.ROLES == ("scout", "tester", "fees", "oktech")
+def test_the_five_roles():
+    """The fifth, the exit analyst (the owner, 21 Nov 2026 ~23:35 UTC: "make sure you use momentum asw, find the best
+    possible config for that, even add an agent for that ... if it's only upping we can hold a bit too but if it's js
+    a crash we get out asap", then "Literally add an agent for that idc if costs are higher")."""
+    assert R.ROLES == ("scout", "tester", "fees", "oktech", "exits")
     assert set(R.ROLE_COMMANDS) == set(R.ROLE_TOOLS) == set(R.SHARES) == set(R.TABLES) == set(R.ROLES)
+    assert set(R.NAMES) == set(R.ROLES) and R.NAMES["exits"] == "exit analyst"
+
+
+def test_the_exit_analyst_scores_named_exits_at_a_named_place_and_freezes_nothing():
+    """Its question is when a copy sells: every lab it starts names the exits it scores (`--exit`), so a lab of a rule's
+    own (the tester's) or of a place (the fee analyst's) stays theirs. It reads our landings and which buys pay, and
+    never freezes (the tester's), studies a wallet (the scout's) or starts anything that reaches OKTech."""
+    exits = R.ROLE_COMMANDS["exits"]
+    assert exits == {"lab", "landing", "copy-context"}
+    assert R.ROLE_NEEDS[("exits", "lab")] == ("--exit",)
+    assert not exits & {"paper", "winners", "place-bids", "oktech", "label"}
+    assert {"read_fills", "read_round_trips"} <= R.ROLE_TOOLS["exits"]
+    assert "set_candidates" not in R.ROLE_TOOLS["exits"] and "read_fee_policy" not in R.ROLE_TOOLS["exits"]
+    assert R.TABLES["exits"] == "exits-best"
+    assert R.ROLE_DOCS["exits"] == ("docs/oktech-features.md", "docs/live-recipe.md")
+    assert "exits" not in R.TABLE_DEAF  # the tester's rules and the fee analyst's places are its subject too
 
 
 def test_every_role_command_is_a_research_command_and_never_an_owners():
@@ -43,7 +62,7 @@ def test_every_research_command_has_a_role():
 
 
 def test_who_may_start_what():
-    scout, tester, fees, oktech = (R.ROLE_COMMANDS[r] for r in R.ROLES)
+    scout, tester, fees, oktech, exits = (R.ROLE_COMMANDS[r] for r in R.ROLES)
     assert {"winners", "gmgn", "history amm-backfill", "leaders-of", "playbook", "label"} <= scout
     assert {"lab", "paper", "dip-buys", "study"} <= tester
     assert {"place-bids", "tips", "landing", "lab"} <= fees
@@ -51,6 +70,7 @@ def test_who_may_start_what():
     assert "paper" not in fees  # only the tester freezes a rule
     assert not {"winners", "follow", "discover-wallets", "label"} & tester  # the tester starts no wallet study
     assert not {"lab", "paper"} & oktech  # the OKTech analyst scores nothing
+    assert "lab" in exits and "paper" not in exits  # the exit analyst scores exits and freezes nothing
 
 
 def test_the_oktech_role_only_reads():
@@ -65,7 +85,9 @@ def test_the_oktech_role_only_reads():
 
 
 def test_shares_leave_the_alert_reserve():
-    assert R.SHARES == {"scout": 0.20, "tester": 0.35, "fees": 0.20, "oktech": 0.10}
+    """The exit analyst's tenth comes out of the tester's share, whose exit work it takes over; the reserve for the
+    alert rounds, the daily analysis and the post-mortems is untouched."""
+    assert R.SHARES == {"scout": 0.20, "tester": 0.25, "fees": 0.20, "oktech": 0.10, "exits": 0.10}
     assert R.RESERVE_SHARE == 0.15
     assert abs(sum(R.SHARES.values()) + R.RESERVE_SHARE - 1.0) < 1e-9
     assert R.ROLE_TURN_USD == 5.0
@@ -101,6 +123,8 @@ def test_role_tools_exist_today(tmp_path):
 def test_a_role_hands_work_to_another_roles_queue():
     assert R.HANDOFF["scout"] == ("tester", "fees") and R.HANDOFF["tester"] == ("fees",)
     assert R.HANDOFF["fees"] == ("tester",) and R.HANDOFF["oktech"] == ("tester",)
+    # a better exit becomes a forward record (the tester's freeze); an OKTech feature it needs, its cheapest test
+    assert R.HANDOFF["exits"] == ("tester", "oktech")
     for role, to in R.HANDOFF.items():
         assert role not in to and set(to) <= set(R.ROLES)
 
@@ -524,7 +548,7 @@ def test_while_the_account_is_empty_one_role_a_round_asks(box):
     refused = _refused(box)
     assert box.run("scout", turn=refused)["stopped"] == "api_error"  # the account runs dry: the refusal records it
     asked = []
-    for k in range(1, 5):
+    for k in range(1, len(R.ROLES) + 1):
         box.calls.clear()
         outs = {r: box.run(r, now=NOW + k * 900, turn=refused) for r in R.ROLES}
         (asker,) = [c["role"] for c in box.calls]
@@ -535,7 +559,8 @@ def test_while_the_account_is_empty_one_role_a_round_asks(box):
                                    "why": f"the account is empty: the {asker} asks this round"}  # fmt: skip
     assert sorted(asked) == sorted(R.ROLES)  # each role is tried in turn
     assert f"agent {asked[0]}: turn: first turn" in box.paths.log.read_text()
-    assert box.paths.log.read_text().count("skip: the account is empty: the ") == 12
+    n = len(R.ROLES)  # each round one role asks and every other skips in a few words
+    assert box.paths.log.read_text().count("skip: the account is empty: the ") == n * (n - 1)
     # the role whose round it is has nothing new: the next one that has asks, so a round is never lost
     k = 5
     first = R.ROLES[(R.ROLES.index(asked[-1]) + 1) % len(R.ROLES)]  # the turn goes round by who asked last
@@ -604,8 +629,9 @@ def test_one_role_asks_whichever_process_decides_first_and_while_its_request_is_
         asked = _round(box, order, lambda role, k=k: NOW + k * 900, refused)
         assert len(asked) == 1, (order, asked)
         seen.append(asked[0])
-    assert all(seen[i + 1] == R.ROLES[(R.ROLES.index(seen[i]) + 1) % 4] for i in range(len(seen) - 1))  # in turn
-    # two processes on two sides of a quarter of an hour: still one, and the same one for all four
+    n = len(R.ROLES)
+    assert all(seen[i + 1] == R.ROLES[(R.ROLES.index(seen[i]) + 1) % n] for i in range(len(seen) - 1))  # in turn
+    # two processes on two sides of a quarter of an hour: still one, and the same one for all five
     edge = (NOW // 900 + 40) * 900
     asked = _round(box, R.ROLES, lambda role: edge + (2 if role in R.ROLES[:2] else -2), refused)
     assert len(asked) == 1
@@ -1031,7 +1057,7 @@ def test_run_role_runs_one_turn_and_writes_it_down(box):
     state = R.read_state(box.paths)["tester"]
     assert state["last"] == NOW and state["reason"] == "first turn" and state["usd"] == 0.5 and state["idle"] == 1
     assert state["stopped"] == "end_turn" and state["turns"] == 1 and state["day"] == "2026-11-06"
-    assert state["spent_usd"] == 0.5 and state["share_usd"] == 5.25  # today's dollars of its 35 % of 15 $
+    assert state["spent_usd"] == 0.5 and state["share_usd"] == 3.75  # today's dollars of its 25 % of 15 $
     log = box.paths.log.read_text().splitlines()
     assert log[0] == "2026-11-06T12:00:00Z agent tester: turn: first turn"
     assert log[1].startswith('2026-11-06T12:00:00Z agent tester: done: {"usd": 0.5, "tool_calls": 3')
