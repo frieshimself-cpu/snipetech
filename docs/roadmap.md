@@ -66,6 +66,16 @@ first on the server's recording and only then run live in capped batches.
   looking, so expect less. Proposed to the owner at 03:5x for the 5 SOL day in place of Gake Side and Cooker.
   Running: labs 18c575 and 45326a, the same week with the copy placed by its bid (0.2 and 0.5 SOL), to see what
   place the tape's other bidders leave a 0.2 bid behind these wallets.
+- **Each wallet on its own buys, and the landing probe (21 Nov 03:53-04:32).** Scored the way its own copy sniper
+  copies (each wallet's own first buys, 0.95 SOL or more under 100 SOL, labs a5f6b5 and 15062c, 168 h): Decu +1.85 a
+  copy at 1st in line (lower +1.72) and +0.74 at 2nd (+0.63); Cented +1.62 (+1.42) and +0.46 (+0.29). The bid model
+  puts a 0.2 bid first in 86 % of their blocks and a 0.5 bid barely more (labs 18c575, 45326a), but our real fills
+  stood 2nd or worse, so 2nd is the place to plan on. The live probe at a 0.3 fee (docs/live-recipe.md): one real
+  fill, 2nd in winner+59's block; two fills copied CREATE-BAIT, new coins made with Cupseyy's address in their create
+  transaction, bought by his copy sniper at a fresh coin's 28-29 SOL, and OKTech left one of them unsold. So Cupseyy
+  is out at size; every copy at size carries a 35 SOL market-cap floor (`--min-mcap`, cuts about 2 % of Cented's and
+  Decu's buys) and the runner sells what OKTech leaves (`--sweep-after`). The daily wallet test now also scores every
+  wallet at 5 SOL (fc79283), and `lab --each` scores what a copy sniper really copies, repeats included (314fdcd).
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
