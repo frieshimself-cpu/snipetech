@@ -97,6 +97,34 @@ def test_a_copy_no_copied_wallet_bought_before_is_out_of_place(monkeypatch):
     store.close()
 
 
+def test_a_copy_of_the_copied_wallets_own_coin_with_no_first_buy_is_no_miss(monkeypatch):
+    """Cented created 38 coins from 7 to 21 Nov, 17 of them with no dev buy (no buy at all in their first minute).
+    A copy sniper that buys such a create has no copied buy before it, but that is no place and no bait: the copied
+    wallet signed the create itself. Said, kept apart (`own_create`), and never counted against the rule; a create
+    signed by anybody else (create-bait, which can put the copied wallet in the coin's creator field) still is."""
+    from snipetech.models import Launch
+
+    fills = [(100, 0, False, 0), (300, 0, False, 0), (500, 0, False, 0)]
+    sigs = {"M0": "lead-create-0", "M1": "lead-create-1", "M2": "bait-create-2"}
+    signers = {"M0": LEAD, "M1": LEAD, "M2": "BaitDev1111111111111111111111111111111111111"}
+    real = _place_run.__globals__["_cycle_svc"]
+
+    def wrapped(*a, **k):
+        svc, store = real(*a, **k)
+        store.add_launches([Launch(mint=m, user=signers[m], creator=LEAD, name="x", symbol="x", uri="", bonding_curve="",
+                                   slot=2_000 + 10 * k, ts=int(T0 + at), sig=sigs[m])
+                            for k, (m, at) in enumerate(zip(sigs, (100, 300, 500), strict=True))])  # fmt: skip
+        return svc, store
+
+    monkeypatch.setitem(_place_run.__globals__, "_cycle_svc", wrapped)
+    rep, _client, store = _place_run(monkeypatch, fills, place_stop=(2, 3), place_max=1, minutes=12)
+    assert [p["own_create"] for p in rep["places"]] == [True, True, False]
+    assert [p["bad"] for p in rep["places"]] == [False, False, True]
+    assert rep["reason"].startswith("time limit")  # one miss (the bait), two own coins: the rule holds
+    assert sum("its own coin" in e for e in rep["events"]) == 2
+    store.close()
+
+
 def test_the_copied_wallets_companions_are_no_buyers_ahead(monkeypatch):
     """Rule 2 of CLAUDE.md: a copied wallet's companions are never buyers ahead of us. Two of the three buys between
     LEAD's and ours are its companion's: one outsider ahead, in place at --place-max 1."""

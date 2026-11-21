@@ -1326,6 +1326,14 @@ class Service:
                     mates_of[leader] = None
             return mates_of[leader]
 
+        def _own_create(mint: str) -> bool:
+            """Whether a copied wallet signed the coin's create (the tape's launch row; False when it holds none)."""
+            try:
+                rows = self.store._q("SELECT user FROM launches WHERE mint=?", (mint,))
+            except Exception:  # noqa: BLE001 - not known: counted as a miss, as before
+                return False
+            return bool(rows) and str(rows[0][0]) in copied
+
         def place_new(now: float) -> str | None:
             """Place each of our buys on the tape that no reading has placed yet (PLACE_SETTLE_SECS after it ran), say
             each, and say why the re-arms end once N of the last M placed were out of place (None while they go on)."""
@@ -1348,11 +1356,18 @@ class Service:
                     log(f"the copy in {t.mint} could not be placed ({type(exc).__name__}: {exc})")
                     continue
                 leader, behind = row.get("wallet_copied"), row.get("trades_behind")
-                bad = leader is None or behind is None or int(behind) > place_max
+                # no copied buy before ours, in a coin a copied wallet created itself (signed the create: bait can name
+                # the copied wallet as the coin's creator, never sign for it) with no dev buy: no place and no bait,
+                # Cented's empty launches (17 of his 38 coins, 7-21 Nov), kept apart and never counted as a miss
+                own = leader is None and _own_create(t.mint)
+                bad = not own and (leader is None or behind is None or int(behind) > place_max)
                 places.append({"sig": t.sig, "mint": t.mint, "ts": int(t.ts), "leader": leader,
                                "trades_behind": behind, "pack_ahead": row.get("pack_ahead"),
-                               "verdict": row.get("landing_verdict"), "bad": bad})  # fmt: skip
-                if leader is None:
+                               "verdict": row.get("landing_verdict"), "own_create": own, "bad": bad})  # fmt: skip
+                if own:
+                    log(f"copy in {t.mint}: a copied wallet created it itself with no dev buy (its own coin, nobody "
+                        "to stand behind): not counted for the place rule")  # fmt: skip
+                elif leader is None:
                     log(f"copy in {t.mint}: no buy of a copied wallet before ours on the tape (create-bait, or the "
                         "tape missed it): out of place")  # fmt: skip
                 else:
