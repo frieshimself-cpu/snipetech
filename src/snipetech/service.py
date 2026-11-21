@@ -1681,7 +1681,8 @@ class Service:
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
                               exit_params: dict | None = None, fee_floor: dict | None = None,
                               max_mcap_sol: float | None = None, bid: float | None = None,
-                              min_mcap_sol: float | None = None, smart_fees: bool = False) -> dict:  # fmt: skip
+                              min_mcap_sol: float | None = None, smart_fees: bool = False,
+                              platforms: tuple[str, ...] | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab,
         hold60 or holdN: oktech.named_exit).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
@@ -1750,7 +1751,7 @@ class Service:
                                      priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
                                      compute_units=compute_units, salt=salt, exit_params=exit_params, fees=choice,
                                      max_mcap_usd=max_mcap_usd, min_mcap_usd=min_mcap_usd,
-                                     smart_fees=smart_fees)  # fmt: skip
+                                     smart_fees=smart_fees, platforms=platforms)  # fmt: skip
                 row = {
                     "id": address,
                     "label": label,

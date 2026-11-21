@@ -249,17 +249,20 @@ COPY_PLATFORMS: tuple[str, ...] = ("pumpfun", "pumpswap")
 COPY_MAX_MCAP_USD = 50_000_000
 
 
-def keep_to_coins(config: dict[str, Any], notes: list[str]) -> str:
+def keep_to_coins(config: dict[str, Any], notes: list[str], platforms: tuple[str, ...] | None = None) -> str:
     """Give a copy-mode (ctbot) payload what keeps it from buying a stablecoin, wrapped SOL or another major when the
     copied wallet swaps into one: the platforms and the market-cap ceiling above. A tighter cap already on a wallet
     (the owner's, a verdict's) stays; a looser one is brought down to the ceiling (a note says so). Every builder of a
     copy sniper calls this, so the book's snipers and the hand-made ones carry the same. Returns the line for the
     sniper's summary: what was sent, and that it is unverified in copy mode (whether `platforms` applies to a copy
-    sniper is a question for OKTech; the measure stage's `non_coin_buys` is the net under it)."""
+    sniper is a question for OKTech; the measure stage's `non_coin_buys` is the net under it). `platforms`: the venues
+    instead of COPY_PLATFORMS (`copylist --platforms pumpfun`: OKTech tops the wallet's wrapped SOL up to 1.1 times the
+    buy at each start for PumpSwap buys, and a curve buy is paid in plain SOL only; 21 Nov, the 5 SOL day)."""
     sent = []
-    if COPY_PLATFORMS:
-        config["platforms"] = list(COPY_PLATFORMS)
-        sent.append(f"platforms {', '.join(COPY_PLATFORMS)}")
+    plats = COPY_PLATFORMS if platforms is None else tuple(platforms)
+    if plats:
+        config["platforms"] = list(plats)
+        sent.append(f"platforms {', '.join(plats)}")
     if COPY_MAX_MCAP_USD:
         for w in config.get("ctbotWallets") or []:
             cap = w.get("maxMcapUsd")
@@ -276,9 +279,14 @@ def keep_to_coins(config: dict[str, Any], notes: list[str]) -> str:
     )
     if not sent:
         return f"NOT kept to coins: both are switched off (platforms, the market-cap ceiling). {why}"
+    left_out = ""
+    if plats and "pumpswap" not in plats:
+        left_out = (". PumpSwap left out: OKTech tops the wallet's wrapped SOL up to 1.1 times the buy at each start "
+                    "for PumpSwap buys (6 Nov 0.22 beside 0.2 SOL buys; 20 Nov 0.055 beside 0.05 and 1.1 beside 1), "
+                    "and a buy on pump.fun's curve is paid in plain SOL only")  # fmt: skip
     return (f"kept to coins, UNVERIFIED in copy mode: sent {' and '.join(sent)}. {why}. Whether a copy sniper reads "
             "platforms is not known, and that USDC was bought on PumpSwap: check the first fills and the measure "
-            "stage's non_coin_buys")  # fmt: skip
+            f"stage's non_coin_buys{left_out}")  # fmt: skip
 
 
 def fees(bribe_sol: float | None, tip_share: float, notes: list[str]) -> tuple[float, float]:
@@ -697,7 +705,8 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
                      tag: str = "", compute_units: int | None = None, salt: str = "",
                      fees: FeeChoice | None = None, max_mcap_usd: int | None = None,
-                     min_mcap_usd: int | None = None, smart_fees: bool = False) -> PlannedSniper:  # fmt: skip
+                     min_mcap_usd: int | None = None, smart_fees: bool = False,
+                     platforms: tuple[str, ...] | None = None) -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
     the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). The four fees come from the fee policy
@@ -746,7 +755,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         config["ctbotWallets"][0]["maxMcapUsd"] = int(max_mcap_usd)
     if min_mcap_usd:
         config["ctbotWallets"][0]["minMcapUsd"] = int(min_mcap_usd)
-    kept = keep_to_coins(config, notes)
+    kept = keep_to_coins(config, notes, platforms=platforms)
     cu = compute_units if compute_units is not None else cfg.oktech.compute_units
     config["extraParams"] = execution_params(send_count, cu, smart_fees=smart_fees)
     if cfg.oktech.preconf:

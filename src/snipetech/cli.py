@@ -457,6 +457,18 @@ def _place_rule(v: str) -> tuple[int, int]:
     return n, m
 
 
+COPY_VENUES = ("pumpfun", "pumpswap")  # OKTech's keys for the venues a copy sniper may buy on (oktech.COPY_PLATFORMS)
+
+
+def _platforms(v: str) -> tuple[str, ...]:
+    """oktech copylist --platforms pumpfun[,pumpswap]: the venues the copy snipers may buy on, OKTech's own keys."""
+    names = tuple(x.strip() for x in str(v).split(",") if x.strip())
+    bad = [x for x in names if x not in COPY_VENUES]
+    if not names or bad:
+        raise argparse.ArgumentTypeError(f"{v!r}: one or both of {', '.join(COPY_VENUES)}, comma-separated")
+    return names
+
+
 def build_parser() -> argparse.ArgumentParser:
     # allow_abbrev=False, here and on every command's parser below (a sub-parser does not inherit it): a flag is
     # written in full. Until 12 Nov any prefix of one was read as the flag, so `--max-cred 9e9 --month 1e12` lifted
@@ -904,6 +916,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="copylist: OKTech's smart fees (extraParams.globalSmartFees): the same bid, re-split between "
                          "priority and tip per block by extra sends (OKTech, 21 Nov: which part orders a block depends "
                          "on the validator that builds it)")  # fmt: skip
+    sp.add_argument("--platforms", type=_platforms, default=None, metavar="pumpfun[,pumpswap]",
+                    help="copylist: the venues the copy snipers may buy on (default both). pumpfun alone keeps a "
+                         "big copy paid: OKTech tops the wrapped SOL up to 1.1 times the buy at each start for PumpSwap "
+                         "buys, and a curve buy is paid in plain SOL only")  # fmt: skip
     sp.add_argument(
         "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
     )
@@ -2234,7 +2250,8 @@ async def _run(args, cfg: Config) -> int:
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
                                                 compute_units=args.compute_units, allow_overlap=args.allow_overlap,
                                                 bid=args.bid, max_mcap_sol=args.max_mcap,
-                                                min_mcap_sol=args.min_mcap, smart_fees=args.smart_fees)  # fmt: skip
+                                                min_mcap_sol=args.min_mcap, smart_fees=args.smart_fees,
+                                                platforms=args.platforms)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
