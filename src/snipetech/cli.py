@@ -886,6 +886,10 @@ def build_parser() -> argparse.ArgumentParser:
                          "saw a sniper sent 35 SOL buy fresh coins at 29 SOL, two of them the copied wallet's own "
                          "creates with 0.487 SOL dev buys under its minSol 0.95; OKTech applies neither to a copy of a "
                          "coin's creation, and bait is a create that names the copied wallet")  # fmt: skip
+    sp.add_argument("--smart-fees", action="store_true",
+                    help="copylist: OKTech's smart fees (extraParams.globalSmartFees): the same bid, re-split between "
+                         "priority and tip per block by extra sends (OKTech, 21 Nov: which part orders a block depends "
+                         "on the validator that builds it)")  # fmt: skip
     sp.add_argument(
         "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
     )
@@ -2216,7 +2220,7 @@ async def _run(args, cfg: Config) -> int:
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
                                                 compute_units=args.compute_units, allow_overlap=args.allow_overlap,
                                                 bid=args.bid, max_mcap_sol=args.max_mcap,
-                                                min_mcap_sol=args.min_mcap)  # fmt: skip
+                                                min_mcap_sol=args.min_mcap, smart_fees=args.smart_fees)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0

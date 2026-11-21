@@ -206,7 +206,8 @@ def _bucket_usd(x: float) -> int:
     return int(round(x / step) * step)
 
 
-def execution_params(send_count: int | None = None, compute_units: int | None = None) -> dict[str, Any]:
+def execution_params(send_count: int | None = None, compute_units: int | None = None,
+                     smart_fees: bool = False) -> dict[str, Any]:  # fmt: skip
     """`extraParams` for every sniper we make.
 
     * seedAccount off: with it on (OKTech's default) every buy goes through an ephemeral account and a second
@@ -216,13 +217,18 @@ def execution_params(send_count: int | None = None, compute_units: int | None = 
     * globalSendCount 1 is also OKTech's form default. It does not explain the 2-3 sell transactions per exit seen
       on chain (separate nonce accounts; the losers fail with 6023 and pay their fee): that is an open question for
       OKTech, see docs/oktech-audit-2026-11-06.md.
-    * computeUnits only when asked: OKTech's default is 150,000; the leader ranks by fee per CU."""
+    * computeUnits only when asked: OKTech's default is 150,000; the leader ranks by fee per CU.
+    * globalSmartFees only when asked: OKTech "keeps the total the same, it just creates other transactions with
+      rebalanced tip/prio for the more ideal ratios" (OKTech, 21 Nov); which part of a bid orders a block depends on
+      the validator that builds it (docs/live-recipe.md, the 5 SOL day's entry)."""
     out: dict[str, Any] = {
         "globalSendCount": max(1, int(send_count)) if send_count is not None else 1,
         "seedAccount": False,
     }
     if compute_units:
         out["computeUnits"] = int(compute_units)
+    if smart_fees:
+        out["globalSmartFees"] = True
     return out
 
 
@@ -691,7 +697,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
                      tag: str = "", compute_units: int | None = None, salt: str = "",
                      fees: FeeChoice | None = None, max_mcap_usd: int | None = None,
-                     min_mcap_usd: int | None = None) -> PlannedSniper:  # fmt: skip
+                     min_mcap_usd: int | None = None, smart_fees: bool = False) -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
     the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). The four fees come from the fee policy
@@ -742,7 +748,7 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
         config["ctbotWallets"][0]["minMcapUsd"] = int(min_mcap_usd)
     kept = keep_to_coins(config, notes)
     cu = compute_units if compute_units is not None else cfg.oktech.compute_units
-    config["extraParams"] = execution_params(send_count, cu)
+    config["extraParams"] = execution_params(send_count, cu, smart_fees=smart_fees)
     if cfg.oktech.preconf:
         config["preconf"] = True
     sell = autosell(ex | {"copy_exit": True}, notes, **choice.autosell_fees())
@@ -761,7 +767,9 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "
                f"send count {config['extraParams']['globalSendCount']}, no seed account"
-               + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else ""),
+               + (f", {cu:,} compute units" if cu else "") + (", preconfs requested" if config.get("preconf") else "")
+               + (", smart fees on (OKTech re-splits the same bid between priority and tip per block)"
+                  if smart_fees else ""),
                "the test: every fill is checked on the tape for the slot it landed in relative to the copied buy",
                # 12 Nov: sniper 6af5f176… was sent totalSnipes 3 with singleSnipe true and bought four times (`fills`:
                # 17:04:54, 17:05:56, 17:12:12, 17:24:31 UTC). Unknown OKTech behaviour: nothing in what is sent changes
