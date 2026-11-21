@@ -1313,6 +1313,11 @@ class Service:
         # gone (20 Nov 17:31:32: a fill on a PumpSwap coin the tape held no trade of was no fill to the re-arm, and the
         # sniper sat spent while OKTech said "running")
         first_seen: dict[str, float] = {}
+        # each coin held now and when this holding of it began: a coin that left the wallet and comes back (the copied
+        # wallet bought it again: repeats are in the paper) is a new holding, a new buy, with its own sweep timer
+        held_since: dict[str, float] = {}
+        arrivals, last_arrival = 0, 0.0  # holdings seen begin since the start (each one a buy), and the latest
+        empty_n = 0  # readings in a row with nothing held and no buy on its way: a re-arm waits for two
         # when the SOL last fell with no coin seen held: a buy on its way (FRESH_HOLD_SECS)
         fresh_at: float | None = None
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
@@ -1321,15 +1326,16 @@ class Service:
         sweep_tried: dict[str, float] = {}  # when each coin's last sale was sent or failed: one try a minute
 
         async def sweep_stuck(held: list[dict], now: float) -> None:
-            """Sell each coin held `sweep_after` seconds since first seen that no try in the last minute covers."""
+            """Sell each coin held `sweep_after` seconds since this holding of it began that no try in the last minute
+            covers."""
             for h in held:
                 mint = str(h.get("mint") or "")
-                if not mint or now - first_seen.get(mint, now) < float(sweep_after or 0):
+                if not mint or now - held_since.get(mint, now) < float(sweep_after or 0):
                     continue
                 if now - sweep_tried.get(mint, -1e18) < SWEEP_RETRY_SECS:
                     continue
                 sweep_tried[mint] = now
-                age = now - first_seen[mint]
+                age = now - held_since[mint]
                 try:
                     result = await self.sweep_coin(mint)
                 except Exception as exc:  # noqa: BLE001 - said, tried again in a minute; the run goes on
@@ -1340,7 +1346,7 @@ class Service:
                     f"{result}")  # fmt: skip
 
         def fills_now() -> int:
-            return max(fills_since(t0), len(first_seen))
+            return max(fills_since(t0), arrivals, len(first_seen))
 
         places: list[dict] = []  # our buys placed behind the copied wallets (`place_stop`), in the order they ran
         placed: set[str] = set()  # their signatures, each read once
@@ -1529,9 +1535,15 @@ class Service:
                     fresh_at = now_t
                 prev_b = b
                 fresh = not held and fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS
-                for h in held:
-                    if h.get("mint"):
-                        first_seen.setdefault(str(h["mint"]), time.time())
+                mints_now = {str(h["mint"]) for h in held if h.get("mint")}
+                for m in mints_now:
+                    first_seen.setdefault(m, now_t)
+                    if m not in held_since:  # a holding begins: a buy (the same coin again is a new one)
+                        held_since[m] = now_t
+                        arrivals, last_arrival = arrivals + 1, now_t
+                for m in [m for m in held_since if m not in mints_now]:
+                    del held_since[m]
+                empty_n = 0 if held or fresh else empty_n + 1
                 if held and sweep_after is not None:  # a coin OKTech left unsold: the run sells it itself
                     await sweep_stuck(held, time.time())
                 if b < low - 0.005:
@@ -1573,6 +1585,8 @@ class Service:
                     continue  # a position is open, one the tape cannot price too: never restart now
                 if fresh:
                     continue  # a buy on its way: a reading shows its coin within FRESH_HOLD_SECS
+                if empty_n < 2:
+                    continue  # one reading with nothing held is no proof: a node can leave a coin out of one reply
                 lag = tape_lag()
                 if lag:  # a re-arm now could buy without being counted
                     if not paused:
@@ -1595,7 +1609,7 @@ class Service:
                     # any coin it bought by then, so the shot bought nothing (20 Nov: copies of swaps into USDC)
                     spent = i in spent_at and now - spent_at[i] >= SPENT_REARM_SECS
                     at = armed_at.get(i, now)
-                    bought = fills_since(at) >= 1 or any(ts > at for ts in first_seen.values())
+                    bought = fills_since(at) >= 1 or last_arrival > at
                     if bought or since >= rearm_after or spent:
                         blocked, why = await guard_says(held)
                         if blocked:  # the owner's guard holds: this run re-arms nothing more, as at /stop

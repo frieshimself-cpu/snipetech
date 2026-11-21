@@ -24,10 +24,11 @@ def _coin(value=5.0):
     return [{"mint": "M1", "amount": 1.0, "value_sol": value, "priced": True}]
 
 
-def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, **kw):
+def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, minutes=5, stop_at=None, sweeps=None,
+         **kw):  # fmt: skip
     """The runner over two copy snipers on the fake clock, with `sol(now)` SOL in the wallet, the coins `coins(now)`
     lists (priced) and `unpriced(now)` lists (not on the tape), `wsol(now)` wrapped SOL, and the owner's /stop from
-    `stop_at` on."""
+    `stop_at` on. The run's own sales (`sweep_coin`) go to the list `sweeps` as (mint, time)."""
     clock, flag = {"t": T0}, {"stop": False}
     client = _SpentClient(clock, SNIPER_IDS, lambda i, now, last_start: False)
 
@@ -45,7 +46,13 @@ def _run(monkeypatch, sol, *, coins=None, unpriced=None, wsol=None, floor=5.0, m
     async def wrapped(address):
         return wsol(clock["t"]) if wsol else 0.0
 
+    async def sweep(mint):
+        if sweeps is not None:
+            sweeps.append((mint, clock["t"]))
+        return {"sold": mint}
+
     monkeypatch.setattr(svc, "wsol_balance", wrapped)
+    monkeypatch.setattr(svc, "sweep_coin", sweep)
     try:
         rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, floor, minutes, rearm_after=kw.pop("rearm_after", 1800),
                                            **kw))  # fmt: skip
@@ -239,6 +246,70 @@ def test_the_owners_stop_during_the_wait_arms_nothing(monkeypatch):
     rep, client = _run(monkeypatch, lambda now: 0.4 if now < T0 + 900 else 10.4, floor=None, max_loss=5.0,
                        wait_for_sol=9.5, wait_minutes=60, stop_at=T0 + 300)  # fmt: skip
     assert client.timed == [] and "/stop" in rep["reason"]
+
+
+def test_a_coin_bought_again_is_a_new_holding_for_the_sweep_and_the_rearm(monkeypatch):
+    """Cented and Decu buy the same coin again (repeats are in the paper). The run knew a coin by its first sight: the
+    second holding read as held for minutes, so the sweep sold it at once (before its 12 s exit), and with the tape
+    behind no buy was seen to re-arm after its sale. A coin that left the wallet and comes back is a new holding."""
+
+    def coins(now):  # M1 bought at 100 s and at 400 s, held 12 s each time
+        return _coin() if T0 + 100 <= now < T0 + 112 or T0 + 400 <= now < T0 + 412 else []
+
+    def sol(now):
+        if now < T0 + 100 or T0 + 112 <= now < T0 + 400:
+            return 10.0
+        return 4.8 if now < T0 + 412 else 9.9
+
+    sweeps: list = []
+    rep, client = _run(monkeypatch, sol, coins=coins, sweeps=sweeps, sweep_after=45, minutes=10)
+    assert sweeps == []  # no holding lasted 45 s
+    assert {i for kind, i, t in client.timed if kind == "start" and T0 + 412 <= t < T0 + 445} == set(client.ids)
+    assert rep["fills"] == 2
+
+
+def test_the_owners_10_sol_night_end_to_end(monkeypatch):
+    """The 5 SOL day as it runs (21 Nov): the runner waits, the owner's 10 SOL lands at 300 s, four copies of 5 SOL.
+    1 wins a little (its coin shows 3 s after the SOL left and is unpriced for 5 s more); 2 loses 0.42 while the other
+    sniper fires as well and fails for want of SOL; 3 loses 1.1; 4 is a rug that takes the wallet under its floor of
+    10.37 - 5 = 5.37 while the coin is still held. Nothing is touched before the SOL lands or while a coin is on its way
+    or held; both snipers are re-armed after each sale; the run ends on the floor with the rug's coin held, so both
+    snipers are left running to sell it (a stopped sniper strands its coin)."""
+    s = T0 + 302  # the first reading of the wait at or past 300 s, and the start
+
+    def sol(now):
+        steps = [(T0 + 300, 10.37), (s + 400, 5.16), (s + 412, 10.42), (s + 700, 5.21), (s + 704, 5.209),
+                 (s + 712, 10.0), (s + 1000, 4.79), (s + 1012, 8.9), (s + 1300, 3.69)]  # fmt: skip
+        out = 0.37
+        for at, v in steps:
+            if now >= at:
+                out = v
+        return out
+
+    def coins(now):
+        if s + 408 <= now < s + 412:
+            return _coin(5.1)
+        if s + 702 <= now < s + 712:
+            return _coin(4.9)
+        if s + 1003 <= now < s + 1012:
+            return _coin(4.0)
+        return _coin(0.3) if now >= s + 1305 else []
+
+    def unpriced(now):  # copy 1's coin shows at 403 s and the tape prices it from 408 s
+        return [{"mint": "M1", "amount": 1.0}] if s + 403 <= now < s + 408 else []
+
+    rep, client = _run(monkeypatch, sol, coins=coins, unpriced=unpriced, floor=None, max_loss=5.0, wait_for_sol=9.5,
+                       wait_minutes=60, minutes=30, max_fills=200)  # fmt: skip
+    touched = [t for _k, _i, t in client.timed]
+    assert min(touched) >= T0 + 300  # nothing before the owner's SOL
+    assert any("floor 5.37 (10.3700 at the start less the 5 SOL max loss)" in e for e in rep["events"])
+    for a, b in ((s + 400, s + 412), (s + 700, s + 712), (s + 1000, s + 1012)):
+        assert not [t for t in touched if a <= t < b], (a - s, b - s)  # never while a coin is on its way or held
+    for sale in (s + 412, s + 712, s + 1012):  # both snipers re-armed within half a minute of each sale
+        assert {i for kind, i, t in client.timed if kind == "start" and sale <= t < sale + 30} == set(client.ids)
+    assert not [t for t in touched if t >= s + 1300]  # the rug: nothing touched, and nothing stopped at the end
+    assert rep["reason"].startswith("EMERGENCY") and "coin is held" in rep["reason"], rep["reason"]
+    assert sorted(rep["left_running"]) == sorted(client.ids)
 
 
 def test_cycle_cli_hands_the_max_loss_and_the_wait_to_the_runner(tmp_path, monkeypatch, capsys):
