@@ -4,6 +4,13 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## Floor test on a fresh-coin buyer: does OKTech refuse a copy under minMcapUsd? (21 Nov 2026, written 07:25 UTC, before anything is made)
+
+**Why.** The bait test (below) ended with no verdict: no bait came. The floor can be tested without bait: FKe2sRCMzLPTJvArXeTonxAH259C6JotdsaHhbrKN54v made 47 first buys of 0.95 SOL or more in fresh pump.fun coins in the 3 hours to 07:20 (market cap after its buy 31.6 SOL on average, under the 35 SOL floor). **Under which yes:** the standing yes of 12 Nov (0.01 SOL buys; the day stands at -0.93 SOL). **What runs:** `oktech copylist --copy FKe2sR...:fresh:0.95:hold12 --buy 0.011 --snipes 1 --bid 0.003 --compute-units 100000 --max-mcap 150 --min-mcap 35 --tag arm:floor1 --allow-overlap --create` and the control at `--buy 0.010` without `--min-mcap` (tag arm:floor0); runner `oktech cycle --id <both> --address 6VFrZ15V... --floor 0.15 --max-fills 8 --max-minutes 40 --rearm-after 1800 --sweep-after 45`. **Read:** each fill's sniper by its amount (0.011 floored, 0.010 control) and the market cap at our buy (tape). The floor works if the control fills under 35 SOL and the floored sniper never does; it fails if the floored one ever fills under 35. **Stop rules:** 8 fills, 40 minutes, the 0.15 floor, /stop; never stop a sniper that holds a coin.
+
+| # | time (UTC) | sniper (by amount) | coin | market cap at our buy (SOL) | result (SOL) |
+|---|---|---|---|---|---|
+
 ## Bait test: does OKTech's market-cap floor stop create-bait? (21 Nov 2026, written 04:55 UTC, before anything is made)
 
 **Why.** Two of the landing probe's three fills (below) were create-bait: new coins whose create transaction carries Cupseyy's address, bought by his copy sniper at a fresh coin's 28-29 SOL. Every copy at size is to carry a 35 SOL floor (`oktech copylist --min-mcap 35`, OKTech's `minMcapUsd`, c7a051d), but how OKTech applies that field is not known. This shows it before 5 SOL relies on it.
