@@ -76,7 +76,9 @@ first on the server's recording and only then run live in capped batches.
   is out at size, and the runner sells what OKTech leaves (`--sweep-after`). A 35 SOL market-cap floor was to keep bait
   out, but OKTech ignores it in fresh coins, and the minimum buy size too (the floor test, 21 Nov 08:02: three buys at
   29-30 SOL under a 35 SOL floor, two of them the wallet's own creates under its minSol): no setting we send stops
-  bait, so the bait rate behind Cented and Decu is measured before 5 SOL. The daily wallet test now also scores every
+  bait. The bait scan (no SOL) narrows it: OKTech does not copy another wallet's buy that names the copied wallet
+  (two such 3-6 SOL buys came while our Cupseyy copy was armed and it sent nothing), only a coin's creation that
+  names it, and none named Cented or Decu in their busiest hour. The daily wallet test now also scores every
   wallet at 5 SOL (fc79283), and `lab --each` scores what a copy sniper really copies, repeats included (314fdcd).
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.

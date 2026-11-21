@@ -545,9 +545,10 @@ For the owner to paste to their support. Each is one sentence, and each changes 
    to CTBot, or is there a mint blacklist?
 6. Does a CTBot wallet entry take `minMcapUsd`, `maxSol` and a buy multiplier, what are the exact keys, and do they
    skip the buy or fail it on chain? (21 Nov floor test: in coins seconds old neither `minMcapUsd` nor `minSol` stopped
-   a copy, and a create transaction that only names the copied wallet's address was copied, docs/live-recipe.md.)
-   Asks now: can copy mode follow only transactions the copied wallet signs, and do `minSol` and `minMcapUsd` apply to
-   a coin's create and to coins seconds old?
+   a copy, and a create transaction that only names the copied wallet's address was copied; another wallet's plain
+   buy that names it is not copied, docs/live-recipe.md, the bait scan.) Asks now: can copy mode skip a coin's
+   creation that the copied wallet did not sign, and do `minSol` and `minMcapUsd` apply to a create and to coins
+   seconds old?
 7. How many wallets can one CTBot sniper hold, and does `totalSnipes` count per sniper or per wallet (sniper
    `6af5f176fe29cb0d8b704239` bought 4 times on a cap of 3 on 12 Nov)?
 8. Are preconfirmations on for CTBot on our account, and with them does the sniper buy even when the copied wallet's
