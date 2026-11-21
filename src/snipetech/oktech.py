@@ -264,8 +264,10 @@ def keep_to_coins(config: dict[str, Any], notes: list[str]) -> str:
                 w["maxMcapUsd"] = COPY_MAX_MCAP_USD
         sent.append(f"a ${COPY_MAX_MCAP_USD:,} market-cap ceiling on the copied wallet (above it the buy fails on "
                     "chain and pays its priority fee instead of filling)")  # fmt: skip
-    why = ("OKTech's copy mode has no setting on record that refuses a coin by its address "
-           f"({', '.join(NON_COIN_MINTS.values())}), and a copy followed a swap into USDC twice on 12 Nov")
+    why = (
+        "OKTech's copy mode has no setting on record that refuses a coin by its address "
+        f"({', '.join(NON_COIN_MINTS.values())}), and a copy followed a swap into USDC twice on 12 Nov"
+    )
     if not sent:
         return f"NOT kept to coins: both are switched off (platforms, the market-cap ceiling). {why}"
     return (f"kept to coins, UNVERIFIED in copy mode: sent {' and '.join(sent)}. {why}. Whether a copy sniper reads "
@@ -688,7 +690,8 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                      exit_params: dict | None = None, cfg: Config | None = None, exit_name: str = "lab",
                      priority_fee: float | None = None, tip: float | None = None, send_count: int | None = None,
                      tag: str = "", compute_units: int | None = None, salt: str = "",
-                     fees: FeeChoice | None = None, max_mcap_usd: int | None = None) -> PlannedSniper:  # fmt: skip
+                     fees: FeeChoice | None = None, max_mcap_usd: int | None = None,
+                     min_mcap_usd: int | None = None) -> PlannedSniper:  # fmt: skip
     """One capped `ctbot` sniper copying a wallet from the lab's by-wallet ranking (the live landing test):
     only its buys >= min_sol, buy_sol per copy, stops after max_buys buys, sells when it sells (copy exit) or on
     the lab's own exit (default: dead exit 1 s, stop-loss 30 %, 300 s). The four fees come from the fee policy
@@ -697,7 +700,8 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     flags) win over the policy's buy bid and are said so. `send_count` / `compute_units` go to extraParams (see
     execution_params); `salt` makes a fresh externalId for a replacement with the same settings. `max_mcap_usd`: copy only
     the leader's buys below this market cap (OKTech's per-wallet maxMcapUsd; 8 Nov I15: a leader's early buys pay, its
-    late re-buys lose). Every such sniper is kept to coins (`keep_to_coins`: platforms pump.fun + PumpSwap and a
+    late re-buys lose); `min_mcap_usd` only above this one (minMcapUsd; 21 Nov: create-bait is bought at a fresh coin's
+    28-29 SOL, so a floor keeps a coin's create from being copied; how OKTech applies it is unverified). Every such sniper is kept to coins (`keep_to_coins`: platforms pump.fun + PumpSwap and a
     market-cap ceiling where no tighter cap is given), and a buy priority above OKTech's minimum is sent as asked and
     warned about in the summary (OKTech charges it again on every sell: the bid belongs in the tip)."""
     cfg = cfg or Config()
@@ -733,6 +737,8 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
     }  # fmt: skip
     if max_mcap_usd:
         config["ctbotWallets"][0]["maxMcapUsd"] = int(max_mcap_usd)
+    if min_mcap_usd:
+        config["ctbotWallets"][0]["minMcapUsd"] = int(min_mcap_usd)
     kept = keep_to_coins(config, notes)
     cu = compute_units if compute_units is not None else cfg.oktech.compute_units
     config["extraParams"] = execution_params(send_count, cu)
@@ -747,7 +753,9 @@ def list_copy_sniper(address: str, label: str, min_sol: float, buy_sol: float, m
                          "that long before it sells); the lab's stop fires at once, so a live stop can sell later "
                          "and lower than the lab scored")  # fmt: skip
     # the cap asked for (the owner's), as it is sent; the ceiling alone is no rule about which coins to copy
-    cap = f" below ${int(config['ctbotWallets'][0]['maxMcapUsd']):,} market cap" if max_mcap_usd else ""
+    floor = f" above ${int(min_mcap_usd):,}" if min_mcap_usd else ""
+    ceiling = f" below ${int(config['ctbotWallets'][0]['maxMcapUsd']):,}" if max_mcap_usd else ""
+    cap = f"{floor}{' and' if floor and ceiling else ''}{ceiling} market cap" if floor or ceiling else ""
     summary = [f"copies {label} ({address[:6]}…): only its buys >= {min_sol:g} SOL{cap}, {buy_sol:g} SOL per copy, "
                f"stops after {config['totalSnipes']} buys", f"exit: when it sells, or {_describe_exit(ex)}",
                f"fees: priority {prio:g} SOL + tip {tip:g} SOL per buy, sells at {choice.sell_tip:g} tip + {choice.sell_priority:g} priority SOL, "

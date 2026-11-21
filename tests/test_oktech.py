@@ -1,6 +1,7 @@
 """OKTech integration: settings translation, sync planning, and the exact requests sent (mocked API)."""
 
 import asyncio
+import itertools
 import json
 
 import httpx
@@ -427,6 +428,63 @@ def test_copylist_cli_sends_a_market_cap_cap_given_in_sol(tmp_path, capsys, monk
     assert sniper["config"]["ctbotWallets"][0]["maxMcapUsd"] == 21_000  # 150 SOL at 140 $
     assert any("below $21,000 market cap" in line for line in sniper["summary"])
     assert cli.build_parser().parse_args(["oktech", "copylist", "--copy", "W:x:1"]).max_mcap is None
+
+
+def test_copylist_cli_sends_a_market_cap_floor_given_in_sol(tmp_path, capsys, monkeypatch):
+    """`--min-mcap SOL` on copylist: copy the leader's buys only above this market cap, sent as OKTech's minMcapUsd at
+    the SOL price. 21 Nov: two of the landing probe's three fills were create-bait, new coins whose create transaction
+    carries Cupseyy's address, bought by his copy sniper at about 28-29 SOL of market cap (a fresh pump.fun coin's);
+    a floor of 35 SOL cuts 7 of Cented's 360 first buys of the week and 5 of Decu's 368. A floor at or above the
+    ceiling copies nothing: refused, nothing made."""
+    from snipetech import cli, meta
+    from snipetech.store import Store
+
+    db = tmp_path / "snipetech.db"
+    st = Store(db)
+    st.put_asset(meta.WSOL, "SOL", 9, 140.0)
+    st.close()
+
+    async def stored(st, rpc_url, mints, max_age=3600):
+        return None
+
+    monkeypatch.setattr(meta, "ensure_assets", stored)
+    base = ["--db", str(db), "oktech", "copylist", "--copy",
+            "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o:Cented:0.95:hold12", "--buy", "5", "--bid", "0.2"]  # fmt: skip
+    rc = cli.main([*base, "--min-mcap", "35", "--max-mcap", "150", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    (sniper,) = out["snipers"]
+    wallet = sniper["config"]["ctbotWallets"][0]
+    assert wallet["minMcapUsd"] == 4_900 and wallet["maxMcapUsd"] == 21_000  # 35 and 150 SOL at 140 $
+    assert any("above $4,900 and below $21,000 market cap" in line for line in sniper["summary"])
+    rc = cli.main([*base, "--min-mcap", "35", "--json"])  # a floor alone: no ceiling of the owner's
+    (sniper,) = json.loads(capsys.readouterr().out)["snipers"]
+    assert rc == 0 and sniper["config"]["ctbotWallets"][0]["minMcapUsd"] == 4_900
+    assert any("above $4,900 market cap" in line for line in sniper["summary"])
+    assert cli.main([*base, "--min-mcap", "200", "--max-mcap", "150"]) != 0  # a floor over the ceiling copies nothing
+    assert "min-mcap" in capsys.readouterr().err
+    assert cli.build_parser().parse_args(["oktech", "copylist", "--copy", "W:x:1"]).min_mcap is None
+
+
+def test_cycle_cli_hands_sweep_after_to_the_cycler(tmp_path, monkeypatch, capsys):
+    """`oktech cycle --sweep-after SECS`: the cycler sells a coin OKTech left unsold that long (21 Nov 04:25); without
+    the flag it sells nothing, as before."""
+    from snipetech import cli
+    from snipetech.service import Service
+
+    seen: list[dict] = []
+
+    async def cycle(self, ids, address, floor_sol, max_minutes, max_fills=10, rearm_after=60.0, ignore_mints=None,
+                    sweep_after=None):  # fmt: skip
+        seen.append({"ids": ids, "sweep_after": sweep_after})
+        return {"events": ["done"]}
+
+    monkeypatch.setattr(Service, "oktech_cycle", cycle)
+    base = ["--db", str(tmp_path / "snipetech.db"), "oktech", "cycle", "--id", "a", "--address", W6, "--floor", "0.1"]
+    assert cli.main([*base, "--sweep-after", "45"]) == 0
+    assert cli.main(base) == 0
+    assert [s["sweep_after"] for s in seen] == [45.0, None] and seen[0]["ids"] == ["a"]
+    capsys.readouterr()
 
 
 def test_copylist_cli_accepts_fee_test_flags():
@@ -898,6 +956,71 @@ def test_a_sniper_spent_on_a_failed_send_is_rearmed_soon_not_at_its_timer(monkey
     line = next(e for e in rep["events"] if "re-armed" in e)
     assert "856364" in line and "spent" in line and "nothing held" in line
     assert sum("856364" in e for e in rep["events"]) >= 2 and any("856370" in e for e in rep["events"])
+    store.close()
+
+
+def test_a_coin_oktech_leaves_unsold_is_sold_by_the_cycler_after_sweep_after(monkeypatch):
+    """21 Nov 04:25:22: Cupseyy's one-shot copy sniper bought, read "finished" 13 s later and never sold (OKTech's
+    last-buy fault, the 12 s exit never fired); the cycler never restarts while a coin is held and sat seven minutes with
+    it until it was swept by hand. With `sweep_after` the cycler sells a coin held that long itself (the `sweep` sale,
+    the exit OKTech can drop), says so, and goes on re-arming once the wallet holds nothing; without it nothing is ever
+    sold, as before."""
+    import snipetech.service as S
+
+    t0 = 1_794_045_600.0
+    sold: dict[str, float] = {}
+
+    def coins(now):  # bought 100 s in, held until the cycler sells it
+        held = t0 + 100 <= now and "M1" not in sold
+        return [{"mint": "M1", "amount": 1.0, "value_sol": 0.05, "priced": True}] if held else []
+
+    svc, store, client, t0 = _spent_cycle(monkeypatch, lambda i, now, last_start: False, coins=coins)
+
+    async def sweep_coin(mint):
+        sold[mint] = S.time.time()
+        return {"wallet": W6, "holdings": 1, "results": [{"mint": mint, "sent": "SIGSWEEP"}]}
+
+    monkeypatch.setattr(svc, "sweep_coin", sweep_coin)
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800, sweep_after=45))
+    assert list(sold) == ["M1"] and t0 + 145 <= sold["M1"] <= t0 + 160  # 45 s after it was first seen, not before
+    (swept,) = rep["swept"]
+    assert swept["mint"] == "M1" and 45 <= swept["held_secs"] <= 60 and "SIGSWEEP" in str(swept["result"])
+    line = next(e for e in rep["events"] if "swept" in e)
+    assert "M1" in line and "unsold" in line and "45" in line
+    rearmed = [t for kind, _i, t in client.timed if kind == "start" and t > sold["M1"]]
+    assert len(rearmed) == 2 and rep["left_running"] == []  # both re-armed once it was gone, nothing left armed
+    store.close()
+
+    sold.clear()  # the same run without sweep_after: the coin stays, nothing sells it, the snipers keep it
+    svc, store, client, t0 = _spent_cycle(monkeypatch, lambda i, now, last_start: False, coins=coins)
+    monkeypatch.setattr(svc, "sweep_coin", sweep_coin)
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800))
+    assert sold == {} and rep["swept"] == [] and "coin is held" in rep["reason"]
+    store.close()
+
+
+def test_a_sweep_that_fails_is_said_and_tried_again_later_never_every_tick(monkeypatch):
+    """A sale the chain refuses (or a wallet the seller cannot read) is said once in the log and tried again a minute
+    later; the run goes on, and the coin keeps the snipers running at the end (a stopped sniper strands its coin)."""
+    import snipetech.service as S
+
+    t0 = 1_794_045_600.0
+    tries: list[float] = []
+
+    def coins(now):
+        return [{"mint": "M1", "amount": 1.0, "value_sol": 0.05, "priced": True}] if now >= t0 + 100 else []
+
+    svc, store, _client, t0 = _spent_cycle(monkeypatch, lambda i, now, last_start: False, coins=coins)
+
+    async def sweep_coin(mint):
+        tries.append(S.time.time())
+        raise RuntimeError("blockhash not found")
+
+    monkeypatch.setattr(svc, "sweep_coin", sweep_coin)
+    rep = asyncio.run(svc.oktech_cycle(SNIPER_IDS, W6, 1.0, 6, rearm_after=1800, sweep_after=45))
+    assert 2 <= len(tries) <= 5 and all(b - a >= 60 for a, b in itertools.pairwise(tries))
+    assert any("sweep of M1" in e and "failed" in e for e in rep["events"])
+    assert rep["swept"] == [] and "coin is held" in rep["reason"] and sorted(rep["left_running"]) == sorted(SNIPER_IDS)
     store.close()
 
 
@@ -1986,8 +2109,9 @@ def test_a_rule_no_sniper_runs_as_scored_is_refused_not_sent_as_every_launch():
                  {"kind": "momentum", "ret": 0.2, "window": 5.0},
                  {"kind": "event", "event": "trending"}):  # fmt: skip
         with pytest.raises(ValueError, match="every launch"):
-            strategy_sniper({"id": "x", "every_coin": True,
-                             "label": "l", "buy_sol": 0.2, "exit": exit_params, "trigger": trig}, 10)
+            strategy_sniper(
+                {"id": "x", "every_coin": True, "label": "l", "buy_sol": 0.2, "exit": exit_params, "trigger": trig}, 10
+            )
     plain = strategy_sniper({"id": "x", "every_coin": True, "label": "l", "buy_sol": 0.2, "exit": exit_params,
                              "trigger": {"kind": "launch"}}, 10)  # fmt: skip
     assert plain.config["mode"] == "normal" and plain.config["monitorProgram"] is True

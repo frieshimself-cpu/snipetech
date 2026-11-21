@@ -800,6 +800,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--rearm-after", type=float, default=60, help="cycle: re-arm an idle sniper after this many seconds"
     )
+    sp.add_argument("--sweep-after", type=float, default=None, metavar="SECS",
+                    help="cycle: sell a coin the wallet has held this long itself (the sweep sale), when OKTech left "
+                         "it unsold: 21 Nov a one-shot copy sniper bought and never ran its 12 s exit. Above the "
+                         "snipers' longest exit (a 12 s timer: 45). Default: never")  # fmt: skip
     sp.add_argument(
         "--ignore-mint",
         action="append",
@@ -852,6 +856,12 @@ def build_parser() -> argparse.ArgumentParser:
                     help="copylist: copy the leaders' buys only below this market cap in SOL, sent as OKTech's "
                          "maxMcapUsd at the SOL price (above it the buy fails on chain and pays its priority fee). "
                          "20 Nov: behind Cupseyy the paper's profit is in coins under 100 SOL")  # fmt: skip
+    sp.add_argument("--min-mcap", type=float,
+                    help="copylist: copy the leaders' buys only above this market cap in SOL, sent as OKTech's "
+                         "minMcapUsd at the SOL price: a fresh pump.fun coin is about 28 SOL, so 35 keeps a coin's "
+                         "create from being copied (21 Nov: two of three probe fills were new coins whose create "
+                         "carried Cupseyy's address); it cut about 2 %% of Cented's and Decu's first buys of a week. "
+                         "How OKTech applies it is unverified until a capped test shows it")  # fmt: skip
     sp.add_argument(
         "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
     )
@@ -2173,11 +2183,16 @@ async def _run(args, cfg: Config) -> int:
             if args.action == "copylist":
                 if not args.copy:
                     raise SystemExit("copylist: give --copy ADDRESS[:LABEL[:MIN_SOL]] (one or more)")
+                if args.min_mcap and args.max_mcap and args.min_mcap >= args.max_mcap:
+                    print(f"copylist: --min-mcap {args.min_mcap:g} is at or above --max-mcap {args.max_mcap:g}: no coin "
+                          "fits; no sniper was made", file=sys.stderr)  # fmt: skip
+                    return 2
                 rep = await svc.oktech_copylist(args.copy, args.wallet or cfg.oktech.wallet or "SNIPER", create=args.create,
                                                 buy_sol=args.buy or 0.05, max_buys=args.snipes, exit_name=args.exit,
                                                 priority_fee=args.priority, tip=args.tip, send_count=args.send_count, tag=args.tag,
                                                 compute_units=args.compute_units, allow_overlap=args.allow_overlap,
-                                                bid=args.bid, max_mcap_sol=args.max_mcap)  # fmt: skip
+                                                bid=args.bid, max_mcap_sol=args.max_mcap,
+                                                min_mcap_sol=args.min_mcap)  # fmt: skip
                 if args.json:
                     print(json.dumps(rep, indent=1, default=str))
                     return 0
@@ -2249,6 +2264,7 @@ async def _run(args, cfg: Config) -> int:
                     args.max_fills,
                     args.rearm_after,
                     args.ignore_mint,
+                    sweep_after=args.sweep_after,
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0

@@ -38,6 +38,8 @@ PICKED_KIND = "cand"  # `label --kind cand`: a copy candidate picked by hand, qu
 # nothing held before it is re-armed ahead of its timer (20 Nov: copies of swaps into USDC spend a shot, buy nothing)
 TASKS_READ_SECS = 15.0
 SPENT_REARM_SECS = 30.0
+# `oktech cycle --sweep-after`: a sale of a coin OKTech left unsold that failed is tried again this many seconds later
+SWEEP_RETRY_SECS = 60.0
 
 
 class OverlapError(ValueError):
@@ -1095,8 +1097,16 @@ class Service:
         finally:
             await client.close()
 
+    async def sweep_coin(self, mint: str) -> dict:
+        """Sell one coin the sniper wallet holds, as `snipetech sweep --mint` does: on its curve, or on its PumpSwap pool
+        once it has left it (the exit OKTech can drop)."""
+        from .solana.sell import sweep
+
+        return await sweep(self.rpc, [mint], store=self.store)
+
     async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, max_fills: int = 10,
-                           rearm_after: float = 60.0, ignore_mints: list[str] | None = None) -> dict:  # fmt: skip
+                           rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
+                           sweep_after: float | None = None) -> dict:  # fmt: skip
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
@@ -1113,7 +1123,13 @@ class Service:
         armed buys once more at the next launch that qualifies, past the time limit or under the floor, with nobody
         watching); a coin held, or a wallet that cannot be read, keeps them running to sell it (a stopped sniper strands
         its coin). The report's `held` is the wallet's coins by the shared rule (positions.py), and `left_running` the
-        snipers this run armed and did not stop."""
+        snipers this run armed and did not stop.
+
+        `sweep_after` (seconds; None: never): a coin the wallet has held that long since it was first seen is sold by the
+        run itself (`sweep_coin`), and said (`swept` in the report). 21 Nov 04:25: a one-shot copy sniper bought, read
+        "finished" 13 s later and never sold (the buy that uses up a sniper's cap can be left with no exit), and the run,
+        which never restarts while a coin is held, sat seven minutes with it. Set it above the snipers' longest exit (a
+        12 s timer: 45 s). A sale that fails is said and tried again a minute later."""
         from .book.run import TAPE_STALE_SECS, _tape_age
         from .oktech import OktechError
 
@@ -1237,6 +1253,27 @@ class Service:
         first_seen: dict[str, float] = {}
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
+        swept: list[dict] = []  # the coins this run sold itself (`sweep_after`)
+        sweep_tried: dict[str, float] = {}  # when each coin's last sale was sent or failed: one try a minute
+
+        async def sweep_stuck(held: list[dict], now: float) -> None:
+            """Sell each coin held `sweep_after` seconds since first seen that no try in the last minute covers."""
+            for h in held:
+                mint = str(h.get("mint") or "")
+                if not mint or now - first_seen.get(mint, now) < float(sweep_after or 0):
+                    continue
+                if now - sweep_tried.get(mint, -1e18) < SWEEP_RETRY_SECS:
+                    continue
+                sweep_tried[mint] = now
+                age = now - first_seen[mint]
+                try:
+                    result = await self.sweep_coin(mint)
+                except Exception as exc:  # noqa: BLE001 - said, tried again in a minute; the run goes on
+                    log(f"sweep of {mint} failed ({type(exc).__name__}: {exc}); trying again in {SWEEP_RETRY_SECS:g} s")
+                    continue
+                swept.append({"mint": mint, "held_secs": round(age, 1), "result": result})
+                log(f"swept {mint}: held {age:.0f} s, past --sweep-after {sweep_after:g} s, so OKTech left it unsold: "
+                    f"{result}")  # fmt: skip
 
         def fills_now() -> int:
             return max(fills_since(t0), len(first_seen))
@@ -1284,6 +1321,8 @@ class Service:
                 for h in held:
                     if h.get("mint"):
                         first_seen.setdefault(str(h["mint"]), time.time())
+                if held and sweep_after is not None:  # a coin OKTech left unsold: the run sells it itself
+                    await sweep_stuck(held, time.time())
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
@@ -1373,7 +1412,7 @@ class Service:
             elif held is not None:
                 log("no coins held")
             return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills, "restarts": restarts,
-                    "held": held or [], "left_running": sorted(armed), "events": events}  # fmt: skip
+                    "held": held or [], "left_running": sorted(armed), "swept": swept, "events": events}  # fmt: skip
         finally:
             await client.close()
 
@@ -1417,7 +1456,8 @@ class Service:
                               tip: float | None = None, send_count: int | None = None, tag: str = "",
                               compute_units: int | None = None, salt: str = "", allow_overlap: bool = False,
                               exit_params: dict | None = None, fee_floor: dict | None = None,
-                              max_mcap_sol: float | None = None, bid: float | None = None) -> dict:  # fmt: skip
+                              max_mcap_sol: float | None = None, bid: float | None = None,
+                              min_mcap_sol: float | None = None) -> dict:  # fmt: skip
         """Capped copy snipers for a hand-picked wallet list: each spec is ADDRESS[:LABEL[:MIN_SOL[:EXIT]]] (EXIT lab,
         hold60 or holdN: oktech.named_exit).
         With `create`, a leader that an active sniper already copies (or that is listed twice) is refused before anything
@@ -1430,7 +1470,10 @@ class Service:
         died). An RPC that gives none leaves the stored price in use; with no price at all the sniper is refused, so
         a cap the owner set is never silently dropped. `bid` (SOL): the whole buy bid, sent with the priority at
         OKTech's minimum and the rest as the tip (fees.bid_in_tip: OKTech charges the buy priority again on every
-        sell and failed duplicate sell); refused under the two minimums together, or next to `priority_fee` / `tip`."""
+        sell and failed duplicate sell); refused under the two minimums together, or next to `priority_fee` / `tip`.
+        `min_mcap_sol`: copy only the leaders' buys above this market cap (OKTech's minMcapUsd), converted the same way:
+        21 Nov two of three probe fills were create-bait bought at a fresh coin's 28-29 SOL; a floor at or above the
+        ceiling is refused."""
         from . import fees as fee_policy
         from .meta import WSOL, ensure_assets
         from .oktech import _bucket_usd, list_copy_sniper
@@ -1441,8 +1484,11 @@ class Service:
                                  "it without --tip and --priority; no sniper was made")  # fmt: skip
             priority_fee, tip = fee_policy.bid_in_tip(bid)
 
-        max_mcap_usd = None
-        if max_mcap_sol:
+        if min_mcap_sol and max_mcap_sol and float(min_mcap_sol) >= float(max_mcap_sol):
+            raise ValueError(f"the market-cap floor ({float(min_mcap_sol):g} SOL) is at or above the ceiling "
+                             f"({float(max_mcap_sol):g} SOL): no coin fits; no sniper was made")  # fmt: skip
+        max_mcap_usd = min_mcap_usd = None
+        if max_mcap_sol or min_mcap_sol:
             try:
                 await ensure_assets(self.store, self.cfg.rpc.http_url, [])
             except Exception as exc:  # noqa: BLE001 - the stored price converts the cap; no price at all refuses below
@@ -1450,7 +1496,10 @@ class Service:
             sol_usd = (self.store.asset(WSOL) or {}).get("price_usd")
             if not sol_usd:
                 raise ValueError("a market-cap cap needs the SOL price, and the tape has none: no sniper was made")
-            max_mcap_usd = _bucket_usd(float(max_mcap_sol) * float(sol_usd))
+            if max_mcap_sol:
+                max_mcap_usd = _bucket_usd(float(max_mcap_sol) * float(sol_usd))
+            if min_mcap_sol:
+                min_mcap_usd = _bucket_usd(float(min_mcap_sol) * float(sol_usd))
 
         evidence = fee_policy.evidence_fills(self.store, self.cfg.operator.wallet, time.time())
         out = []
@@ -1476,7 +1525,7 @@ class Service:
                 p = list_copy_sniper(address, label, min_sol, buy_sol, max_buys, cfg=self.cfg, exit_name=ex_name,
                                      priority_fee=priority_fee, tip=tip, send_count=send_count, tag=tag,
                                      compute_units=compute_units, salt=salt, exit_params=exit_params, fees=choice,
-                                     max_mcap_usd=max_mcap_usd)  # fmt: skip
+                                     max_mcap_usd=max_mcap_usd, min_mcap_usd=min_mcap_usd)  # fmt: skip
                 row = {
                     "id": address,
                     "label": label,
