@@ -17,6 +17,7 @@ landing position OKTech was measured at (same slot as the trigger, ~1 trade in t
 | # | time (UTC) | sniper | coin | Cupseyy's buy? | market cap at our buy | result (SOL) |
 |---|---|---|---|---|---|---|
 | - | 05:27:4x | both spent, neither bought | USDC on PumpSwap | his swap into USDC (no coin) | far above the $9,900 ceiling | one send failed at the ceiling (3ie4Zvg…, PumpSwap 6040, 0.001 SOL); OKTech then sold 0.0002 USDC of old dust for 0.000003 SOL at 0.003 SOL of fees (2qYHrgX…, SellV2). No bait: the ceiling refused a dollar coin as built |
+| - | 05:32:1x | both spent, neither bought | USDC on PumpSwap | his swap into USDC again | far above the ceiling | one send failed at the ceiling (2vcrx6HW…, 6040, 0.001 SOL) |
 
 ## Landing probe behind Cented, Decu, Cupseyy and winner+59 at a 0.3 SOL fee (21 Nov 2026, written 03:40 UTC, before anything is made)
 
