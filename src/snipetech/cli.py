@@ -854,6 +854,10 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MIN",
         help="cycle --wait-for-sol: how long to wait before giving up with nothing armed (default 480)",
     )
+    sp.add_argument("--keep-plain", type=float, default=None, metavar="SOL",
+                    help="cycle: one curve copy's plain SOL (buy, bid, rent: 3.75 for 3.5 SOL copies at a 0.2 bid). "
+                         "OKTech keeps 1.1x the buy wrapped while its snipers run and a curve buy is paid in plain SOL "
+                         "only: with less plain SOL than this between copies, the run ends. Default: off")  # fmt: skip
     sp.add_argument(
         "--ignore-mint",
         action="append",
@@ -2329,6 +2333,7 @@ async def _run(args, cfg: Config) -> int:
                     max_loss=args.max_loss,
                     wait_for_sol=args.wait_for_sol,
                     wait_minutes=args.wait_minutes,
+                    keep_plain=args.keep_plain,
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0

@@ -1125,7 +1125,7 @@ class Service:
                            max_fills: int = 10, rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
                            sweep_after: float | None = None, place_stop: tuple[int, int] | None = None,
                            place_max: int = 1, max_loss: float | None = None, wait_for_sol: float | None = None,
-                           wait_minutes: float = 480.0) -> dict:  # fmt: skip
+                           wait_minutes: float = 480.0, keep_plain: float | None = None) -> dict:  # fmt: skip
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
@@ -1165,7 +1165,14 @@ class Service:
         21 Nov, a 5 SOL copy from 10 SOL read as a loss in the second its SOL had left and its coin did not show).
         `wait_for_sol`: nothing is armed until the wallet holds that much plain SOL (read every WAIT_POLL_SECS), for at
         most `wait_minutes`; the run's minutes, its fills and its floor count from then (the owner funds the wallet when
-        the copied wallets trade)."""
+        the copied wallets trade).
+
+        `keep_plain` (SOL; None: off): one curve copy's plain SOL (the buy with pump.fun's fee inside, the bid, the
+        token account's rent). OKTech keeps the wrapped SOL at 1.1 times the buy the whole time a sniper runs, whatever
+        its platforms (the wrap test, 21 Nov 21:51-22:00: turned back into plain SOL, it was wrapped again within two
+        seconds), and a curve buy is paid in plain SOL only: with nothing held, no buy on its way and less plain SOL than
+        this, every copy would fail, so the run ends and says so. A fall of the SOL that went into wrapped SOL is that
+        top-up, never a buy on its way."""
         from .book.run import TAPE_STALE_SECS, _tape_age
         from .oktech import OktechError
 
@@ -1175,6 +1182,8 @@ class Service:
                              "--max-loss N: under the wallet at the start less N SOL); nothing cycled")  # fmt: skip
         if max_loss is not None and not float(max_loss) > 0:
             raise SystemExit(f"--max-loss {max_loss:g}: the max loss is a number of SOL above 0; nothing cycled")
+        if keep_plain is not None and not float(keep_plain) >= 0.01:
+            raise SystemExit(f"--keep-plain {keep_plain:g}: one copy's plain SOL, 0.01 or more; nothing cycled")
         if wait_for_sol is not None and float(wait_for_sol) <= float(max_loss if max_loss is not None else floor_sol):
             raise SystemExit(f"--wait-for-sol {wait_for_sol:g} is not above the "
                              + (f"{max_loss:g} SOL max loss" if max_loss is not None else f"floor {floor_sol}")
@@ -1320,6 +1329,7 @@ class Service:
         empty_n = 0  # readings in a row with nothing held and no buy on its way: a re-arm waits for two
         # when the SOL last fell with no coin seen held: a buy on its way (FRESH_HOLD_SECS)
         fresh_at: float | None = None
+        w_last = 0.0  # the wrapped SOL as last read: a fall of the SOL into it is OKTech's top-up, not a buy
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
         swept: list[dict] = []  # the coins this run sold itself (`sweep_after`)
@@ -1514,6 +1524,8 @@ class Service:
                 log(f"started {tag(i)}: {ans.get('task', {}).get('status', ans)}")
             low, paused, unsure = b0, False, False
             prev_b, under_n = b0, 0  # the last reading's SOL; the readings in a row under the floor
+            w_last = w0
+
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
                 if self.stop_flag_set():
@@ -1532,7 +1544,13 @@ class Service:
                 if held:
                     fresh_at = None
                 elif b < prev_b - FRESH_BUY_SOL:
-                    fresh_at = now_t
+                    w_now = await wrapped_sol()
+                    if w_now - w_last >= 0.9 * (prev_b - b):  # into wrapped SOL: OKTech's top-up at a start
+                        log(f"OKTech wrapped {w_now - w_last:.4f} SOL (its top-up at a start, for PumpSwap buys): "
+                            "no buy")  # fmt: skip
+                    else:
+                        fresh_at = now_t
+                    w_last = w_now
                 prev_b = b
                 fresh = not held and fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS
                 mints_now = {str(h["mint"]) for h in held if h.get("mint")}
@@ -1587,6 +1605,12 @@ class Service:
                     continue  # a buy on its way: a reading shows its coin within FRESH_HOLD_SECS
                 if empty_n < 2:
                     continue  # one reading with nothing held is no proof: a node can leave a coin out of one reply
+                if keep_plain is not None and b < float(keep_plain):  # the next copy cannot be paid in plain SOL
+                    w_last = await wrapped_sol()
+                    reason = (f"the wallet's plain SOL ({b:.4f}) cannot pay the next copy ({keep_plain:g}): OKTech keeps "
+                              f"{w_last:.4f} SOL wrapped beside its snipers (1.1 times the buy), which a buy on pump.fun's "
+                              "curve cannot use; no more re-arms")  # fmt: skip
+                    break
                 lag = tape_lag()
                 if lag:  # a re-arm now could buy without being counted
                     if not paused:
