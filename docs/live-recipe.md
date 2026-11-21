@@ -4,6 +4,17 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## Bait test: does OKTech's market-cap floor stop create-bait? (21 Nov 2026, written 04:55 UTC, before anything is made)
+
+**Why.** Two of the landing probe's three fills (below) were create-bait: new coins whose create transaction carries Cupseyy's address, bought by his copy sniper at a fresh coin's 28-29 SOL. Every copy at size is to carry a 35 SOL floor (`oktech copylist --min-mcap 35`, OKTech's `minMcapUsd`, c7a051d), but how OKTech applies that field is not known. This shows it before 5 SOL relies on it.
+
+**Under which yes.** The standing yes of 12 Nov (a live TEST up to 0.2 SOL a buy and 2 SOL lost a day, from the sniper wallet): 0.01 SOL buys. The day stands at -0.92 SOL (the probe); this test adds at most about 0.1.
+
+**What runs (after the deploy of c7a051d; the server is on aa12db8 until snipetech-daily ends).** Two Cupseyy copy snipers at once, the same in every setting but the floor: `oktech copylist --copy 6DQAGJ...:Cupseyy:0.95:hold12 --buy 0.01 --snipes 1 --bid 0.003 --compute-units 100000 --max-mcap 150 --min-mcap 35 --tag arm:bait1 --create` and the control, the same with no `--min-mcap`, tag arm:bait0, made with `--allow-overlap`. Runner: `oktech cycle --id <both> --address 6VFrZ15V... --floor 0.15 --max-fills 12 --max-minutes 120 --rearm-after 1800 --sweep-after 45`. **Read:** each fill on the tape against Cupseyy's own buys: a fill in a coin he did not buy, at under 35 SOL of market cap, is bait. The floor works if the control buys bait and the floored sniper never does; it fails if the floored one buys bait even once. **Stop rules:** 12 fills, 120 minutes, the floor (0.15 SOL), /stop; never stop a sniper that holds a coin (the runner sells a coin held 45 s itself).
+
+| # | time (UTC) | sniper | coin | Cupseyy's buy? | market cap at our buy | result (SOL) |
+|---|---|---|---|---|---|---|
+
 ## Landing probe behind Cented, Decu, Cupseyy and winner+59 at a 0.3 SOL fee (21 Nov 2026, written 03:40 UTC, before anything is made)
 
 **Why.** The 5 SOL recipe (bid 0.2, 100 SOL ceiling, hold12s) over every candidate (labs ecf5ea, 4c7f3a, 168 h): at 1st in line Cented +1.65 a copy over 220 (lower +1.52), Decu +1.96 over 144 (+1.84), Cupseyy +5.63 over 28 (+5.25), ardinR "winner +59" +1.31 over 133 (+1.16); at 2nd Cupseyy +2.46 (lower +2.07), Decu +0.62 (+0.53), Cented +0.43 (+0.33), ardinR +0.25 (+0.12); at 3rd (+3x) Cented and Decu lose (-0.26 and -0.33 a copy). So the only question before money goes behind them is where OKTech lands us with a big fee. This measures it: the place does not depend on the copy's size.
