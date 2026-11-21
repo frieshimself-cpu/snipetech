@@ -52,6 +52,9 @@ PLACE_MATES_DAYS = 7
 # then either (a sniper stopped in that second strands the coin it just bought)
 FLOOR_READINGS = 2
 FRESH_BUY_SOL = 0.05
+# and for this long after such a fall, with no coin seen yet, the buy is on its way: no floor reading counts, nothing is
+# re-armed, and an end of the run waits for the coin before it stops any sniper (a slow node shows it late)
+FRESH_HOLD_SECS = 30.0
 # `oktech cycle --wait-for-sol`: how often the wallet is read while the run waits for the owner's SOL
 WAIT_POLL_SECS = 15.0
 
@@ -1274,6 +1277,10 @@ class Service:
             keeps them running to sell. (The reason with what was done, the coins held or None when unreadable.)"""
             try:
                 held = await open_positions()
+                # a buy on its way (the SOL left, its coin not shown yet) is a coin: wait for it before stopping any
+                while not held and fresh_at is not None and time.time() - fresh_at < FRESH_HOLD_SECS:
+                    await asyncio.sleep(3.0)
+                    held = await open_positions()
             except Exception as exc:  # noqa: BLE001 - unknown holdings never stop a sniper
                 log(f"holdings check at the end failed ({exc})")
                 return (
@@ -1306,6 +1313,8 @@ class Service:
         # gone (20 Nov 17:31:32: a fill on a PumpSwap coin the tape held no trade of was no fill to the re-arm, and the
         # sniper sat spent while OKTech said "running")
         first_seen: dict[str, float] = {}
+        # when the SOL last fell with no coin seen held: a buy on its way (FRESH_HOLD_SECS)
+        fresh_at: float | None = None
         spent_at: dict[str, float] = {}  # when OKTech was first seen reporting an armed sniper spent (`read_spent`)
         tasks_read_at, tasks_unread = 0.0, False
         swept: list[dict] = []  # the coins this run sold itself (`sweep_after`)
@@ -1511,9 +1520,15 @@ class Service:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
                 # the SOL left and no coin shows: a buy on its way (the SOL is read at processed, the coins at
-                # confirmed), so no sniper is touched in this reading
-                fresh = not held and b < prev_b - FRESH_BUY_SOL
+                # confirmed; a slow node shows the coin late), so for FRESH_HOLD_SECS no sniper is touched, no floor
+                # reading counts and no end of the run stops anything before the coin shows
+                now_t = time.time()
+                if held:
+                    fresh_at = None
+                elif b < prev_b - FRESH_BUY_SOL:
+                    fresh_at = now_t
                 prev_b = b
+                fresh = not held and fresh_at is not None and now_t - fresh_at < FRESH_HOLD_SECS
                 for h in held:
                     if h.get("mint"):
                         first_seen.setdefault(str(h["mint"]), time.time())
@@ -1526,7 +1541,7 @@ class Service:
                 # the tape has not priced the wallet's worth is unknown, and nothing is re-armed while it is held anyway
                 priced = sum(float(h["value_sol"]) for h in held if h.get("value_sol") is not None)
                 under, eq = False, b + priced
-                if not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
+                if not fresh and not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
                     eq += await wrapped_sol()
                     under = eq < floor_sol
                 if under:
@@ -1551,13 +1566,13 @@ class Service:
                             "run; the floor, the fills cap, /stop and the wallet-wide guard still hold")  # fmt: skip
                     if place_stopped and held:  # a sniper still sells its coin: the run ends once it has
                         log(f"{place_stopped}; the run ends once the wallet holds nothing")
-                if place_stopped and not held:
+                if place_stopped and not held and not fresh:
                     reason = place_stopped
                     break
                 if held:
                     continue  # a position is open, one the tape cannot price too: never restart now
                 if fresh:
-                    continue  # a buy on its way: the next reading shows its coin
+                    continue  # a buy on its way: a reading shows its coin within FRESH_HOLD_SECS
                 lag = tape_lag()
                 if lag:  # a re-arm now could buy without being counted
                     if not paused:

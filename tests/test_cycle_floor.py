@@ -131,6 +131,41 @@ def test_a_sniper_is_not_rearmed_while_its_buy_shows_in_the_sol_only(monkeypatch
     assert rep["reason"].startswith("time limit")
 
 
+def test_a_buy_whose_coin_shows_late_never_ends_the_run(monkeypatch):
+    """The coins are read at "confirmed", the SOL at "processed": a slow node can show the coin many seconds after the
+    SOL left. Until FRESH_HOLD_SECS after the fall no reading of the floor counts (two readings alone ended the run when
+    the coin showed after the second one)."""
+
+    def coins(now):  # the coin shows 18 s after the SOL left (three readings), sold at 130 s
+        return _coin() if T0 + 118 <= now < T0 + 130 else []
+
+    def sol(now):
+        if now < T0 + 100:
+            return 10.0
+        return 4.8 if now < T0 + 130 else 9.95
+
+    rep, client = _run(monkeypatch, sol, coins=coins)
+    assert rep["reason"].startswith("time limit"), rep["reason"]
+    assert not [t for _k, _i, t in client.timed if T0 + 100 <= t < T0 + 130]  # nothing touched before it was sold
+
+
+def test_an_end_while_a_buy_is_on_its_way_leaves_the_snipers_running(monkeypatch):
+    """The owner's /stop came as a copy landed, its coin not yet shown. Every end stops the snipers only once the
+    wallet holds nothing, and a buy on its way is a coin: the end waits for it to show (a stopped sniper strands its
+    coin: here 5 SOL with nobody selling it)."""
+
+    def coins(now):  # bought at 100 s, the coin shows at 112 s and is held from then on
+        return _coin() if now >= T0 + 112 else []
+
+    def sol(now):
+        return 10.0 if now < T0 + 100 else 4.8
+
+    rep, client = _run(monkeypatch, sol, coins=coins, stop_at=T0 + 103)
+    assert "/stop" in rep["reason"] and "coin is held" in rep["reason"], rep["reason"]
+    assert sorted(rep["left_running"]) == sorted(client.ids)
+    assert not [t for kind, _i, t in client.timed if kind == "stop" and t >= T0 + 100]
+
+
 def test_max_loss_puts_the_floor_at_the_wallet_at_the_start_less_it(monkeypatch):
     """`--max-loss 5` on 10.4 SOL (beside no wrapped SOL): the floor is 5.4, said at the start; a copy that loses
     5.4 SOL ends the run there."""
