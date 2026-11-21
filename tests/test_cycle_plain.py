@@ -88,6 +88,20 @@ def test_a_wallet_that_can_pay_runs_on(monkeypatch):
     assert any("OKTech wrapped" in e for e in rep["events"])
 
 
+def test_the_end_line_counts_the_wrapped_sol_beside_the_plain(monkeypatch):
+    """21 Nov 22:36:58: the night's last line read "wallet 9.9793 -> 6.3333 SOL (-3.6461)" for a run whose two copies
+    made +1.63: 3.63 of the plain SOL had gone into wrapped SOL beside the snipers. The end line names both, and the
+    change of the two together; the report carries the wrapped SOL at both ends."""
+    w = Wallet(plain=10.154, wsol=0.22, buy=3.5)
+    rep, _client = _run(monkeypatch, w, minutes=3)
+    end = next(e for e in rep["events"] if "fills;" in e and "re-arms" in e)
+    assert "10.1540 plain + 0.2200 wrapped -> 6.5240 plain + 3.8500 wrapped" in end, end
+    assert "10.3740 -> 10.3740 SOL (+0.0000" in end, end
+    assert "(-3.6300)" not in end, end
+    assert rep["start_wrapped"] == pytest.approx(0.22) and rep["end_wrapped"] == pytest.approx(3.85)
+    assert rep["start_sol"] == pytest.approx(10.154) and rep["end_sol"] == pytest.approx(6.524)
+
+
 def test_the_top_up_is_no_buy_on_its_way(monkeypatch):
     """The fall of the SOL at a start went into wrapped SOL: no 30 s pause of the re-arms."""
     w = Wallet(plain=10.154, wsol=0.22, buy=3.5)

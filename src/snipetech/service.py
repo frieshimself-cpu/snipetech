@@ -1680,16 +1680,25 @@ class Service:
                 b1 = None
                 log(f"final balance check failed ({exc})")
             fills = fills_now()
-            moved = f"{b0:.4f} -> {b1:.4f} SOL ({b1 - b0:+.4f})" if b1 is not None else f"{b0:.4f} -> unknown"
+            # Both kinds of SOL at both ends: OKTech parks 1.1 times the buy as wrapped SOL beside a running sniper,
+            # so the plain SOL alone read -3.65 on 21 Nov for a night whose two copies made +1.63.
+            w1: float | None = await wrapped_sol() if b1 is not None else None
+            if b1 is None or w1 is None:
+                moved = f"{b0:.4f} plain + {w0:.4f} wrapped -> unknown"
+            else:
+                e0, e1 = b0 + w0, b1 + w1
+                moved = (f"{b0:.4f} plain + {w0:.4f} wrapped -> {b1:.4f} plain + {w1:.4f} wrapped: {e0:.4f} -> "
+                         f"{e1:.4f} SOL ({e1 - e0:+.4f}; SOL sent into or out of the wallet during the run counts "
+                         "in it)")  # fmt: skip
             log(f"wallet {moved}; {fills} fills; {restarts} re-arms")
             if held:
                 log("still held (the running snipers manage them): "
                     + ", ".join(f"{h['mint']} ({float(h.get('amount') or 0):,.0f})" for h in held))  # fmt: skip
             elif held is not None:
                 log("no coins held")
-            return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills, "restarts": restarts,
-                    "held": held or [], "left_running": sorted(armed), "swept": swept, "places": places,
-                    "events": events}  # fmt: skip
+            return {"start_sol": b0, "end_sol": b1, "start_wrapped": w0, "end_wrapped": w1, "reason": reason,
+                    "fills": fills, "restarts": restarts, "held": held or [], "left_running": sorted(armed),
+                    "swept": swept, "places": places, "events": events}  # fmt: skip
         finally:
             await client.close()
 
