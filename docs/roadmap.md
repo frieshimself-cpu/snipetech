@@ -37,6 +37,13 @@ first on the server's recording and only then run live in capped batches.
   and Gake Side's gain. OKTech's ceiling (`maxMcapUsd`, `oktech copylist --max-mcap SOL` since 2ea7bd7) is a min-out
   on OUR buy, so it also refuses the copies that land too late (fill 5 paid +76 % over Cupseyy). The bands were
   picked on this week: the live result will be lower.
+- **It does not spread to other wallets (21 Nov 03:04-03:08, labs 7c0be4 and 472721, the same 5 SOL recipe with the 100 SOL
+  ceiling at +3x).** The 18 KOLs: -0.561 a copy on the newer 171 (lower -0.636), every KOL negative or flat (Gfree -0.190
+  over 60, Lynk -0.619 over 75, Pengu -1.172 over 40). The owner's tracker list: -0.796 a copy on the newer 3,692 (lower
+  -0.819); its best are Cupseyy (+0.765 over 29) and wallets with 4 to 10 copies (nyhrox +1.90 over 8, Bean Side +0.50 over
+  10: at that count, out of hundreds of wallets, the best few look good by chance). 6Z91's own leaders over 72 h (`leaders-of`)
+  are each 1-2 % of its coins: its edge is breadth plus speed, not a short list we can borrow. So scaling by more wallets is
+  slow; the edge we have is narrow (Cupseyy's early-curve buys).
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
