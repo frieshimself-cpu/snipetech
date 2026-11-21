@@ -48,6 +48,16 @@ first on the server's recording and only then run live in capped batches.
   0.5, +3x, hold12s: -1.88 a copy on the newer 72 (lower -2.38); our own buy moves the price 70 % at the median (90 % of
   copies: 109 %), 94 of 180 moments left out for size; every wallet negative (Cupseyy -2.25 over 82, -185 SOL). 5 SOL is the
   size: the fee is worth paying and our own impact (14 %) is small.
+- **THE PLACE IN LINE IS THE WHOLE GAME (21 Nov 03:15-03:31, labs ff6ca6, ecf5ea, 4c7f3a: the 5 SOL recipe, bid 0.2, 100 SOL
+  ceiling, hold12s, over every candidate wallet, 168 h).** Behind the 3rd buy (+3x): -0.772 a copy on the newer 5,001, only
+  Cupseyy pays (+0.823 over 28). 2nd in line (+1x): 20 of 141 wallets with 10+ copies positive; Cented +95.5 SOL in the week
+  (220 copies), Decu +89.0 (144), Cupseyy +68.9 (28), winner +59 SOL/106 +33.5, Yugi +24.9; the ten best about +360 SOL a
+  week. 1st in line (+0, right behind the wallet): 40 of 142 positive; Cented +363.2 (+1.65 a copy over 220), Decu +281.8
+  (+1.96 over 144), winner +59 SOL/106 +174.0, Cupseyy +157.8 (+5.63 over 28), theo side +129.6, the ten best about +1,345 SOL
+  a week (about 190 a day). Read with care: the best ten are picked after seeing the week, so the real figure is lower; the
+  overall mean is still negative at every place (-0.348 at 1st) because most wallets lose; first place is what 6Z91 holds
+  (first outsider in 61 % of its copies on 12 Nov). So the money is there in the data, and the gate is the place in line,
+  not more data: at our measured places (2nd to 5th) it is about 3 SOL a day; at 1st it is the order of 100+.
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
