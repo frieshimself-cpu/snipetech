@@ -233,8 +233,9 @@ def _events(args, cfg) -> int:
                 )
             )
             return 0
-        poll_loop(svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True),
-                  version=installed_code)  # a deploy restarts nothing else: ends for its unit to restart it
+        poll_loop(
+            svc.store, clients, interval=args.interval, log=lambda m: print(m, flush=True), version=installed_code
+        )  # a deploy restarts nothing else: ends for its unit to restart it
         return 0
     except KeyboardInterrupt:
         return 0
@@ -608,7 +609,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["service", "router", "wallet", "kol", "smart", "dev", "own", "bundler", "cand", "sniper"],
         default="service",
         help="cand: a wallet picked by hand as a copy candidate; it is queued for qualify ahead of the backlog. "
-             "sniper: a launch sniper, the group a lab wallet rule reads with group sniper (`winners --snipers`)",
+        "sniper: a launch sniper, the group a lab wallet rule reads with group sniper (`winners --snipers`)",
     )
     sp.add_argument(
         "--file", help="bulk: one address per line, optional name after it (e.g. a KOL list with --kind kol)"
@@ -658,6 +659,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also rank the labeled wallets (kol / tracked list) whose first buy in a coin is worth our exit",
     )
+    sp.add_argument("--each", action="store_true",
+                    help="with --trigger wallet rules only: every followed wallet's own buys are moments, as its own "
+                         "copy sniper copies them (the qualify lab's form), not one moment a coin at the first "
+                         "followed wallet in (21 Nov: Cented's 220 copies of a week were only the coins no other "
+                         "candidate bought first). With \"repeats\": \"also\" every buy at the rule's size")  # fmt: skip
     sp.add_argument("--trigger", action="append", type=_trigger, metavar="JSON",
                     help="run only this trigger (repeatable), an agent's own hypothesis: a JSON object with the "
                          'trigger\'s fields, e.g. \'{"kind": "hunt", "sol": 4, "window": 1.5, "dev_max": 1}\'; each is '
@@ -1348,8 +1354,10 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--x-max", type=int, default=0, help="scan/table: look up at most this many X accounts the organised "
                     "launches link to (twitterapi.io, paid; kept, so never twice); 0 = none")  # fmt: skip
     sp.add_argument(
-        "--min-sol", type=float, help="follow: the smallest first buy that is scored as a copy (default 0.5); "
-        "amm-backfill: the smallest PumpSwap buy whose pool is backfilled (default 1)"
+        "--min-sol",
+        type=float,
+        help="follow: the smallest first buy that is scored as a copy (default 0.5); "
+        "amm-backfill: the smallest PumpSwap buy whose pool is backfilled (default 1)",
     )
     sp.add_argument(
         "--test-weeks", type=int, default=1, help="follow: the last weeks, on which picked wallets are judged"
@@ -1862,6 +1870,7 @@ async def _run(args, cfg: Config) -> int:
             from .analysis.lab import check_bid_landing as lab_check_bid
             from .analysis.lab import collect as lab_collect
             from .analysis.lab import crew_fields as lab_crew_fields
+            from .analysis.lab import each_groups as lab_each_groups
             from .analysis.lab import exit_scores as lab_exit_scores
             from .analysis.lab import exit_set as lab_exit_set
             from .analysis.lab import in_parts as lab_in_parts
@@ -1905,6 +1914,9 @@ async def _run(args, cfg: Config) -> int:
                 if lab_is_bid(pos):  # a place that follows the bid: it needs the bid, and wallet rules
                     copies = [t for t in hypotheses or () if t.kind not in paper.LAUNCH_LANDINGS]
                     lab_check_bid(pos, lat, buy_bid, copies)
+                # --each: the label groups whose wallets each give their own moments (lab.collect `groups`), which
+                # runs wallet rules only: any other rule beside it would be left out without a word
+                each = lab_each_groups(hypotheses) if args.each else None
                 if args.hunt_landing is not None:  # a landing no rule of the run could use: refused, never a no-op
                     paper.check_hunt_landing(hypotheses)
                 _lab_window_flags(args, hypotheses, svc.store)  # --trades without its triggers, an end past the tape
@@ -1936,7 +1948,7 @@ async def _run(args, cfg: Config) -> int:
                     # the labels written since it was taken (11 Nov: a rule on wallets labelled minutes before fired on
                     # nothing and said so nowhere)
                     # (`--hunt-landing`: the hunt, whale and burst rules at the landing asked, `paper.hunt_landings`)
-                    return lab_collect(tape, lab_cfg, buy, lat, pos, per_tx,
+                    return lab_collect(tape, lab_cfg, buy, lat, pos, per_tx, groups=each,
                                        landings=paper.hunt_landings(args.hunt_landing),
                                        triggers=hypotheses, kols=lab_groups(svc.store),
                                        exits=lab_recipe_exits(rec) if rec else (named or None),
@@ -1953,7 +1965,7 @@ async def _run(args, cfg: Config) -> int:
             ranked = [r | paper.landing_fields(r, copy_pos, buy_bid)
                       for r in lab_rank(data, cfg, top, trades=args.trades)]  # fmt: skip
             res = {"tape_hours": data["tape_hours"], "moments": len(data["rows"]), "latency_slots": lat, "position": pos,
-                   "copy_landing": copy_pos, "buy_sol": buy, **cost, "hours": args.hours,
+                   "copy_landing": copy_pos, "buy_sol": buy, **cost, "hours": args.hours, "each": bool(args.each),
                    # from when to when the lab read, and which file (the end is --until's, or the end of that tape)
                    "window": data.get("window"),
                    "workers": data.get("workers"), "exit_position": args.exit_position,
@@ -3391,7 +3403,9 @@ def _main(args) -> int:
                                      top=args.top, min_sol_per_day=args.min_sol_per_day, kind=args.kind, labels=names,
                                      snipe_secs=args.snipe_secs, confidence=cfg.verdict.confidence)  # fmt: skip
                 # a wallet with a name of another kind (a KOL, the owner's list) keeps it: it is judged already
-                fresh = [r for r in out["wallets"] if worth_judging(r) and names.get(r["wallet"], ("cand",))[0] == "cand"]
+                fresh = [
+                    r for r in out["wallets"] if worth_judging(r) and names.get(r["wallet"], ("cand",))[0] == "cand"
+                ]
                 out["labelled"] = []
                 for r in fresh[: max(0, args.label)]:
                     svc.store.set_label(r["wallet"], f"winner {r['kind']} {r['pnl_sol']:+.0f} SOL/{r['trips']}", "cand",

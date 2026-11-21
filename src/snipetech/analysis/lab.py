@@ -714,9 +714,11 @@ def parse_trigger(spec: Mapping[str, Any] | str) -> Trigger:
 #   before that stretch gives it no moment.
 # The landing is the MIG landing for every form (`mig_entry`): no window is scored at a better place than another.
 MIG_WINDOW_MAX_SECS = 7 * 86400
-MIG_NEEDS_WINDOW = ("a MIG trigger says its Migration Window: \"window\": N, whole seconds from the create to the "
-                    f"migration (OKTech migrationExpirySec, 10 by default, at most {MIG_WINDOW_MAX_SECS}), or "
-                    "\"window\": 0 for a coin of any age, which is research only (OKTech cannot be sent no window)")
+MIG_NEEDS_WINDOW = (
+    'a MIG trigger says its Migration Window: "window": N, whole seconds from the create to the '
+    f"migration (OKTech migrationExpirySec, 10 by default, at most {MIG_WINDOW_MAX_SECS}), or "
+    '"window": 0 for a coin of any age, which is research only (OKTech cannot be sent no window)'
+)
 MIG_ANY_AGE_NAME = "MIG, research only (no OKTech setting buys a coin of any age)"
 MIG_ANY_AGE_WHY = ("research only: OKTech MIG buys a migration only within its Migration Window of the coin's create "
                    "(migrationExpirySec, 10 s by default) and how to send it no window is not known, so no sniper "
@@ -939,13 +941,14 @@ COPY_EXIT_NOTE = (
     "holds at that moment in one sale (its buys less its sales on the tape: OKTech fired 11 of our 19 live copy-exit "
     "sells on a full sale, 5 on a sale of exactly half of what the wallet held, 0 of 3 on half less one raw unit), "
     "as every copy sniper is sent it; a wallet that sells in N equal parts trips it at its next-to-last part; the "
-    "exit's name says so (\"copy50%\" at 50). A row or a "
+    'exit\'s name says so ("copy50%" at 50). A row or a '
     "frozen wallet rule from before 13 Nov has no copy exit: it is another exit, run or freeze the rule again. A "
     "recipe's own exit is the bot's and carries none. The sale is priced a slot after the wallet's sale and ahead "
     "of that slot's trades, like every exit's sale: other bots that copy the same wallet sell then too, so behind a "
     "crowded wallet a live sale can land lower (not measured). A sale of the wallet's in the first 1.3 s after our "
     "buy is followed only when no other trade came before OKTech watches; several smaller sales never add up to "
-    "the share")
+    "the share"
+)
 
 
 def copy_exit_report(cfg: Config | None = None) -> dict[str, Any]:
@@ -1851,12 +1854,9 @@ CURVE_VIRTUAL_SOL = 30.0  # a pump.fun curve's virtual SOL reserve before any bu
 
 
 def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -> bool:
-    """A KOL trigger's gates beyond the wallet and the smallest buy, at the group wallet's first buy `i`: the buy is
-    at most `max_sol`, at least `known` group wallets have made a first buy in the coin (this one included; all within
-    the last `within` seconds when set), the SOL in the curve after the buy is inside `min_curve` / `max_curve`, and
-    the coin's market cap after it inside `min_mcap` / `max_mcap`."""
-    if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
-        return False
+    """A KOL trigger's gates beyond the wallet and the smallest buy, at the group wallet's first buy `i`: at least
+    `known` group wallets have made a first buy in the coin (this one included; all within the last `within` seconds
+    when set), and the buy's own gates (`_buy_gates`)."""
     if trig.known > 1:
         ts = float(path.ts[i])
         n = sum(1 for t in known_at if t >= ts - trig.within) if trig.within else len(known_at)
@@ -1864,6 +1864,17 @@ def _kol_gates(trig: Trigger, path: MarketPath, i: int, known_at: list[float]) -
             return False
     if trig.gap and (len(known_at) < 2 or float(path.ts[i]) - known_at[-2] < trig.gap):
         return False  # the first known wallet in, or one that came right behind the previous
+    return _buy_gates(trig, path, i)
+
+
+def _buy_gates(trig: Trigger, path: MarketPath, i: int) -> bool:
+    """A wallet rule's gates on the followed buy `i` itself, whoever else bought: the buy is at most `max_sol`, the
+    SOL in the curve after it inside `min_curve` / `max_curve`, the coin's market cap after it inside `min_mcap` /
+    `max_mcap` (a copy sniper's ceiling), and the SOL traded before it inside `min_vol` / `max_vol`. The one-a-coin
+    rule (`_fire`) and each wallet's own moments (`_first_buys`) both ask here; until 21 Nov the second asked only the
+    volume, so a per-wallet score with a ceiling scored buys the sniper refuses."""
+    if trig.max_sol and path.quote[i] > trig.max_sol * LAMPORTS:
+        return False
     if trig.min_curve or trig.max_curve:
         curve = float(path.q[i]) / LAMPORTS - CURVE_VIRTUAL_SOL
         if curve < trig.min_curve or (trig.max_curve and curve > trig.max_curve):
@@ -2021,8 +2032,12 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
     """`_fire`'s KOL rule for every wallet of the trigger's group (or every wallet it names, `only`), not only the
     first one in: the index of each such wallet's first buy in the coin when that buy is at least the trigger's size,
     in tape order. Each wallet's own copy sniper copies its own first buy, so the qualify lab gives each wallet its
-    own moment in a coin. Of a rule's gates only the volume gate is applied here (`_vol_gate`, 12 Nov); the consensus,
-    size-cap, curve and market-cap gates are `_fire`'s alone, as before."""
+    own moment in a coin. Every gate on the buy itself is applied here as in `_fire` (`_buy_gates`: the largest buy,
+    the curve, the market cap, the volume; until 21 Nov only the volume), and so is the launchpad (a copy buys
+    pump.fun's coins only: `_fire` passed over a LaunchLab coin, this form scored it); the consensus gates (`known`,
+    `gap`) are about the other wallets in and stay `_fire`'s alone."""
+    if trig.kind in COPY_EXIT_KINDS and getattr(path, "venue", PUMPFUN) != trig.venue:
+        return []
     if trig.plain and (launch is None or launch.mayhem or launch.holder_reward):
         return []
     if (trig.max_age or trig.min_age) and launch is None:
@@ -2044,7 +2059,7 @@ def _first_buys(trig: Trigger, path: MarketPath, launch, kols) -> list[int]:
             continue
         if trig.min_age and path.ts[i] < launch.ts + trig.min_age:
             continue  # the buy came while the coin was too young
-        if u in group and path.quote[i] >= floor and _vol_gate(trig, path, i):
+        if u in group and path.quote[i] >= floor and _buy_gates(trig, path, i):
             out.append(i)
     return out
 
@@ -2845,8 +2860,15 @@ def collect(store: Store, cfg: Config, buy_sol: float, latency_slots: int, posit
     if amm_runs or mig_sell or skipped:  # `skipped` alone: a wallet rule's PumpSwap buys the tape does not hold whole
         horizon = run.mig_horizon if amm_runs else run.horizon
         # (a moment a bid landing could not place is the bid report's, below: the PumpSwap tape has no part in it)
-        out["amm_tape"] = _amm_report(amm_cov, spans, triggers, rows,
-                                      [r for r in skipped if r["skipped"] not in BID_SKIP_WORDS], horizon, mig_sell)
+        out["amm_tape"] = _amm_report(
+            amm_cov,
+            spans,
+            triggers,
+            rows,
+            [r for r in skipped if r["skipped"] not in BID_SKIP_WORDS],
+            horizon,
+            mig_sell,
+        )
         out["amm_tape"]["mig"] = bool(amm_runs)  # whether a MIG rule ran (the report's first line is about those)
     if is_bid(position):
         out["bid_landing"] = _bid_report(store, spans, position, bid_sol, rows, skipped)
@@ -2917,6 +2939,21 @@ def check_bid_landing(position: str, latency: int, bid_sol: float, triggers: Seq
     if other:
         raise ValueError(f"the copy position {position} is a place behind a followed wallet: it takes a wallet rule (a "
                          f"kol trigger), not {', '.join(other)}")  # fmt: skip
+
+
+def each_groups(triggers: Sequence[Trigger] | None) -> tuple[str, ...]:
+    """The label groups `lab --each` hands `collect` (its `groups`: every followed wallet gives its own moments, as
+    its own copy sniper copies them), refused in words before any tape is read where that would drop a rule without a
+    word: `collect` with groups runs wallet rules only, so --each takes named rules (--trigger) and wallet rules
+    alone."""
+    if not triggers:
+        raise ValueError("--each scores each followed wallet's own buys under the wallet rules named with --trigger: "
+                         "name one")  # fmt: skip
+    other = sorted({t.kind for t in triggers if t.kind != "kol"})
+    if other:
+        raise ValueError(f"--each scores wallet rules (kol triggers) only; {', '.join(other)} would be left out: run "
+                         "those without --each")  # fmt: skip
+    return tuple(dict.fromkeys(t.group for t in triggers))
 
 
 def bid_hours(store: Store, spans) -> tuple[int | None, float]:
@@ -3478,4 +3515,3 @@ def rank_wallets(data: dict[str, Any], cfg: Config, labels: dict[str, str] | Non
             best[w] = row
     out = sorted(best.values(), key=lambda r: r["ev_lower"] if r["ev_lower"] is not None else -1e9, reverse=True)
     return out[:top]
-

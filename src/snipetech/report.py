@@ -870,6 +870,9 @@ def render_lab(r: dict) -> str:
              else f"landing {r['latency_slots']} slot(s) after the trigger ({r['position']} of the slot)")  # fmt: skip
     out = [f"Strategy lab: {r['moments']} trigger moments on {r['tape_hours']:.1f} h of tape; buying {r['buy_sol']:g} SOL{cost}, "
            f"{where}", "=" * 72]  # fmt: skip
+    if r.get("each"):  # lab --each: the moments a copy sniper of each wallet copies, not one a coin
+        out.insert(1, "Moments: each followed wallet's own buys, as its own copy sniper copies them (--each), not one "
+                      "moment a coin at the first followed wallet in.")  # fmt: skip
     rows = [[s["trigger"], s["exit"], f"{s['per_hour']:.0f}", s["test"]["n"], sol(s["test"]["mean"]), sol(s["test"]["ev_lower"]),
              pct(s["test"]["win_rate"]), f"{s['test_sol_per_day']:+.0f}"] for s in r["strategies"]]  # fmt: skip
     out.append(table(rows, ["trigger", "exit (picked on older)", "/hour", "test n", "mean", "bound", "win", "SOL/day"]))
@@ -1437,7 +1440,9 @@ def render_winners(o: dict) -> str:
     if not rows:
         return "\n".join(out + ["  no wallet has enough closed round trips"])
     if not o.get("fees_on_tape"):
-        out.append("  this tape file has no priority fees or tips: the SOL made is before what the wallets paid to land")
+        out.append(
+            "  this tape file has no priority fees or tips: the SOL made is before what the wallets paid to land"
+        )
     cells = [
         [r["wallet"], (r["name"] or "-")[:18], r["kind"], f"{r['pnl_sol']:+.2f}", f"{r['sol_per_day']:+.2f}", r["trips"],
          f"{r['trips_per_day']:.0f}", pct(r["win_rate"]), "-" if r["lower_sol"] is None else f"{r['lower_sol']:+.4f}",
