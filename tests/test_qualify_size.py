@@ -4,8 +4,8 @@ The qualify lab scores every wallet at the book's smallest fill (0.2 SOL) with n
 place behind a wallet is worth about a tenth of the SOL put in, and at 0.2 SOL no bid buys it (docs/roadmap.md, the
 top section). The edge is at 5 SOL with a 0.2 SOL bid, a market-cap ceiling, in the first two places: Cented and Decu
 pay there on their own first buys over a week (labs a5f6b5, 15062c). Beside its verdict's numbers each measured
-wallet now carries `size`: its first buys of 0.95 SOL or more between the floor and the ceiling a live copy carries
-(35 and 100 SOL of market cap), scored at 5 SOL with the 0.2 bid at 2nd in line (+1x) on the money step's exit
+wallet now carries `size`: its first buys of 0.95 SOL or more under the ceiling a live copy carries (100 SOL of
+market cap; no floor, since OKTech's minMcapUsd does not stop a copy in a fresh coin), scored at 5 SOL with the 0.2 bid at 2nd in line (+1x) on the money step's exit
 (hold12). It qualifies nothing: the verdict is still the small fill's, and the run says which wallets pay at size."""
 
 from snipetech.qualify.run import default_lab_runner, run_qualify
@@ -23,7 +23,6 @@ def _world(tmp_path):
 def test_each_measured_wallet_also_carries_a_score_at_the_size_that_pays(tmp_path):
     svc, st, _data = _world(tmp_path)
     try:
-        svc.cfg.qualify.size_min_mcap_sol = 0.0  # these coins are fresh: about 30 SOL at the wallet's buy
         rows = {r["wallet"]: r for r in default_lab_runner(svc, svc.cfg)(["BIG", "SMALL"], "+6")}
         size = rows["BIG"]["size"]
         assert size["n"] == 12 and size["buy_sol"] == 5.0 and size["bid_sol"] == 0.2 and size["position"] == "+1x"
@@ -35,13 +34,18 @@ def test_each_measured_wallet_also_carries_a_score_at_the_size_that_pays(tmp_pat
         st.close()
 
 
-def test_the_size_score_keeps_the_market_cap_floor_a_live_copy_carries(tmp_path):
-    """A floor of 35 SOL keeps a coin's create from being copied (21 Nov: create-bait bought at a fresh coin's 28-29
-    SOL); the paper leaves out what the sniper would refuse, and says so."""
+def test_the_size_score_has_no_market_cap_floor_because_a_live_copy_has_none(tmp_path):
+    """21 Nov 08:02, the floor test: OKTech's minMcapUsd did not stop a copy sniper buying fresh coins at 29 SOL of
+    market cap (nor minSol a 0.487 SOL dev buy), so a live copy at size buys a wallet's buys in fresh coins too and
+    the paper scores them: no floor by default. One can still be asked for ([qualify] size_min_mcap_sol), and the
+    record says which was used."""
     svc, st, _data = _world(tmp_path)
     try:
         (row,) = default_lab_runner(svc, svc.cfg)(["BIG"], "+6")
-        assert row["size"]["min_mcap_sol"] == 35.0 and row["size"]["n"] == 0  # every buy here is in a fresh coin
+        assert row["size"]["min_mcap_sol"] == 0.0 and row["size"]["n"] == 12  # its buys in fresh coins count
+        svc.cfg.qualify.size_min_mcap_sol = 35.0  # asked for: every buy here is in a fresh coin
+        (row,) = default_lab_runner(svc, svc.cfg)(["BIG"], "+6")
+        assert row["size"]["min_mcap_sol"] == 35.0 and row["size"]["n"] == 0
         svc.cfg.qualify.size_sol = 0.0  # off: no size score at all
         (row,) = default_lab_runner(svc, svc.cfg)(["BIG"], "+6")
         assert "size" not in row

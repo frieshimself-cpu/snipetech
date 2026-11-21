@@ -73,8 +73,10 @@ first on the server's recording and only then run live in capped batches.
   stood 2nd or worse, so 2nd is the place to plan on. The live probe at a 0.3 fee (docs/live-recipe.md): one real
   fill, 2nd in winner+59's block; two fills copied CREATE-BAIT, new coins made with Cupseyy's address in their create
   transaction, bought by his copy sniper at a fresh coin's 28-29 SOL, and OKTech left one of them unsold. So Cupseyy
-  is out at size; every copy at size carries a 35 SOL market-cap floor (`--min-mcap`, cuts about 2 % of Cented's and
-  Decu's buys) and the runner sells what OKTech leaves (`--sweep-after`). The daily wallet test now also scores every
+  is out at size, and the runner sells what OKTech leaves (`--sweep-after`). A 35 SOL market-cap floor was to keep bait
+  out, but OKTech ignores it in fresh coins, and the minimum buy size too (the floor test, 21 Nov 08:02: three buys at
+  29-30 SOL under a 35 SOL floor, two of them the wallet's own creates under its minSol): no setting we send stops
+  bait, so the bait rate behind Cented and Decu is measured before 5 SOL. The daily wallet test now also scores every
   wallet at 5 SOL (fc79283), and `lab --each` scores what a copy sniper really copies, repeats included (314fdcd).
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.

@@ -1471,9 +1471,9 @@ class Service:
         a cap the owner set is never silently dropped. `bid` (SOL): the whole buy bid, sent with the priority at
         OKTech's minimum and the rest as the tip (fees.bid_in_tip: OKTech charges the buy priority again on every
         sell and failed duplicate sell); refused under the two minimums together, or next to `priority_fee` / `tip`.
-        `min_mcap_sol`: copy only the leaders' buys above this market cap (OKTech's minMcapUsd), converted the same way:
-        21 Nov two of three probe fills were create-bait bought at a fresh coin's 28-29 SOL; a floor at or above the
-        ceiling is refused."""
+        `min_mcap_sol`: copy only the leaders' buys above this market cap (OKTech's minMcapUsd), converted the same way;
+        a floor at or above the ceiling is refused. It does not stop create-bait: the 21 Nov floor test saw a sniper
+        sent 35 SOL buy fresh coins at 29 SOL (docs/live-recipe.md)."""
         from . import fees as fee_policy
         from .meta import WSOL, ensure_assets
         from .oktech import _bucket_usd, list_copy_sniper

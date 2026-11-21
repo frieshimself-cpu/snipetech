@@ -857,11 +857,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "maxMcapUsd at the SOL price (above it the buy fails on chain and pays its priority fee). "
                          "20 Nov: behind Cupseyy the paper's profit is in coins under 100 SOL")  # fmt: skip
     sp.add_argument("--min-mcap", type=float,
-                    help="copylist: copy the leaders' buys only above this market cap in SOL, sent as OKTech's "
-                         "minMcapUsd at the SOL price: a fresh pump.fun coin is about 28 SOL, so 35 keeps a coin's "
-                         "create from being copied (21 Nov: two of three probe fills were new coins whose create "
-                         "carried Cupseyy's address); it cut about 2 %% of Cented's and Decu's first buys of a week. "
-                         "How OKTech applies it is unverified until a capped test shows it")  # fmt: skip
+                    help="copylist: sent as OKTech's minMcapUsd at the SOL price (the leaders' buys only above this "
+                         "market cap in SOL). DOES NOT STOP create-bait: the 21 Nov floor test (docs/live-recipe.md) "
+                         "saw a sniper sent 35 SOL buy fresh coins at 29 SOL, two of them the copied wallet's own "
+                         "creates with 0.487 SOL dev buys under its minSol 0.95; OKTech applies neither to a copy of a "
+                         "coin's creation, and bait is a create that names the copied wallet")  # fmt: skip
     sp.add_argument(
         "--since-minutes", type=float, default=120, help="copyaudit: look at our buys in the last N minutes"
     )

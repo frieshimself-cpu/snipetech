@@ -121,7 +121,7 @@ under mode `shapes`.
 | Wallet list (`ctbotWallets[]`) | the wallets one sniper copies; a list, so one sniper can hold many (F:58, S) | yes, always exactly one wallet a sniper | yes | works | 8 |
 | Smallest buy to copy (`minSol` per wallet) | skip the wallet's buys under this size (S) | yes (the book: 0.3 SOL or the wallet's own floor) | yes | sent on all 59; arm A, with a 1 SOL floor, copied a swap of Cupsey's into USDC: the floor looks at the SOL spent, not at what is bought (L 12 Nov) | 7 |
 | Largest buy to copy (`maxSol` per wallet) | skip the wallet's buys over this size (S) | no | partly | unknown | 4: two thirds of the buys 6Z91 follows are 1 to 3 SOL (W) |
-| Market-cap floor (`minMcapUsd` per wallet) | skip buys in coins under this market cap (S) | no | yes (`min_mcap`, since 12 Nov) | unknown | 6: the owner asked for it; also the cheapest test of a guard |
+| Market-cap floor (`minMcapUsd` per wallet) | skip buys in coins under this market cap (S) | no | yes (`min_mcap`, since 12 Nov) | ignored in fresh coins (21 Nov floor test: three buys at 29-30 SOL under a 35 SOL floor) | 6: the owner asked for it; also the cheapest test of a guard |
 | Market-cap ceiling (`maxMcapUsd` per wallet) | see 1b; on a copy it fails the buy on chain, it does not skip it (A) | once | yes | sent once | 7: at a stablecoin's market cap the copy would fail for a failed send's fee instead of buying |
 | Buy multiplier (key unknown; F:58) | size our copy as a multiple of the leader's buy | no | no (a rule has one size) | unknown | 5: the winners size per wallet and per buy (W) |
 | Consensus (`ctbotMinWallets` within `ctbotTimeWindowMs`) | buy only when N of the listed wallets bought the coin inside the window (S) | sent as 1 wallet, 10,000 ms | partly (the "2nd known wallet in" rule) | never above 1 | 6: the analyst's best paper lead today is a second-wallet-in rule (docs/autopilot.md, 12 Nov) |
@@ -270,7 +270,7 @@ makes; at 2 SOL the step from second to first is worth 0.1 SOL.
 | `ctbotWallets[].address` | the wallet itself, never a bot that copies it | the owner: "we cant copy a wallet that is copying because we are filled above" |
 | `ctbotWallets[].minSol` | 1 | two thirds of the buys the winners follow are 1 to 3 SOL (W); below 1 SOL the wallet is testing |
 | `ctbotWallets[].maxSol` | leave open until a lab says otherwise | never sent; unknown |
-| `ctbotWallets[].minMcapUsd` | the low end of the band where that wallet's copies paid on paper | never sent; unknown whether it skips or fails on chain |
+| `ctbotWallets[].minMcapUsd` | the low end of the band where that wallet's copies paid on paper | sent since 21 Nov (`copylist --min-mcap`); does not stop a copy in a fresh coin: the 21 Nov floor test bought three at 29-30 SOL under a 35 SOL floor (docs/live-recipe.md) |
 | `ctbotWallets[].maxMcapUsd` | about twice the market cap the wallet usually buys at; never above a few million dollars | the only price limit the buy has; also makes a stablecoin swap fail for a failed send's fee instead of buying |
 | `platforms` | `["pumpfun", "pumpswap"]` | never sent on a copy; unknown whether a copy honours it (test T4) |
 | `buyAmount` | 2, up to 10 behind the few wallets where both winners pay up | the owner's yes for each size |
@@ -544,7 +544,10 @@ For the owner to paste to their support. Each is one sentence, and each changes 
 5. How do we stop a CTBot sniper from copying a wallet's swap into USDC, USDT or wrapped SOL: does `platforms` apply
    to CTBot, or is there a mint blacklist?
 6. Does a CTBot wallet entry take `minMcapUsd`, `maxSol` and a buy multiplier, what are the exact keys, and do they
-   skip the buy or fail it on chain?
+   skip the buy or fail it on chain? (21 Nov floor test: in coins seconds old neither `minMcapUsd` nor `minSol` stopped
+   a copy, and a create transaction that only names the copied wallet's address was copied, docs/live-recipe.md.)
+   Asks now: can copy mode follow only transactions the copied wallet signs, and do `minSol` and `minMcapUsd` apply to
+   a coin's create and to coins seconds old?
 7. How many wallets can one CTBot sniper hold, and does `totalSnipes` count per sniper or per wallet (sniper
    `6af5f176fe29cb0d8b704239` bought 4 times on a cap of 3 on 12 Nov)?
 8. Are preconfirmations on for CTBot on our account, and with them does the sniper buy even when the copied wallet's
