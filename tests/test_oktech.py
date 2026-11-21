@@ -475,7 +475,7 @@ def test_cycle_cli_hands_sweep_after_to_the_cycler(tmp_path, monkeypatch, capsys
     seen: list[dict] = []
 
     async def cycle(self, ids, address, floor_sol, max_minutes, max_fills=10, rearm_after=60.0, ignore_mints=None,
-                    sweep_after=None):  # fmt: skip
+                    sweep_after=None, **_kw):  # fmt: skip
         seen.append({"ids": ids, "sweep_after": sweep_after})
         return {"events": ["done"]}
 

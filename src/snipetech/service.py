@@ -40,6 +40,11 @@ TASKS_READ_SECS = 15.0
 SPENT_REARM_SECS = 30.0
 # `oktech cycle --sweep-after`: a sale of a coin OKTech left unsold that failed is tried again this many seconds later
 SWEEP_RETRY_SECS = 60.0
+# `oktech cycle --place-stop`: a buy of ours is placed this long after it ran (the recorder writes a block's trades in
+# batches; the buys between the copied one and ours ran before ours, so they are on the tape once ours is, and settled)
+PLACE_SETTLE_SECS = 10.0
+# and the copied wallet's companions are read from this many days of its buys on the tape (the measure stage's week)
+PLACE_MATES_DAYS = 7
 
 
 class OverlapError(ValueError):
@@ -1106,7 +1111,8 @@ class Service:
 
     async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, max_fills: int = 10,
                            rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
-                           sweep_after: float | None = None) -> dict:  # fmt: skip
+                           sweep_after: float | None = None, place_stop: tuple[int, int] | None = None,
+                           place_max: int = 1) -> dict:  # fmt: skip
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
@@ -1129,7 +1135,16 @@ class Service:
         run itself (`sweep_coin`), and said (`swept` in the report). 21 Nov 04:25: a one-shot copy sniper bought, read
         "finished" 13 s later and never sold (the buy that uses up a sniper's cap can be left with no exit), and the run,
         which never restarts while a coin is held, sat seven minutes with it. Set it above the snipers' longest exit (a
-        12 s timer: 45 s). A sale that fails is said and tried again a minute later."""
+        12 s timer: 45 s). A sale that fails is said and tried again a minute later.
+
+        `place_stop` (N, M; None: off): each of our buys on the tape is placed behind the wallets these copy snipers
+        copy, as the measure stage places it (`measure.classify.classify_trade`: the other wallets' buys between the
+        copied buy and ours, the copied wallet's companions and its own pack left out); a buy with more than
+        `place_max` buyers ahead is out of place, and so is one with no buy of a copied wallet before it (create-bait:
+        21 Nov 04:07 and 04:25). Once N of the last M placed buys were out of place the run re-arms nothing more and
+        ends as soon as the wallet holds nothing (the 1 SOL day's "2 of the first 3 fills further back than the paper's
+        place", kept by hand until now; the 5 SOL recipe pays in the first two places and loses behind the third
+        buyer, docs/roadmap.md). Each placing is said, and the report lists them (`places`)."""
         from .book.run import TAPE_STALE_SECS, _tape_age
         from .oktech import OktechError
 
@@ -1140,6 +1155,19 @@ class Service:
         uncapped = [i for i in ids if not ((mine.get(i) or {}).get("payload") or {}).get("singleSnipe")]
         if uncapped:
             raise SystemExit(f"refusing to cycle {uncapped}: not capped or not made by snipetech")
+        copies_of = {i: {str(w["address"]) for w in ((mine.get(i) or {}).get("payload") or {}).get("ctbotWallets") or []
+                         if isinstance(w, dict) and w.get("address")} for i in ids}  # fmt: skip
+        copied = sorted(set().union(*copies_of.values())) if copies_of else []
+        if place_stop is not None:
+            bad_n, of_n = (int(x) for x in place_stop)
+            if not 1 <= bad_n <= of_n or place_max < 0:
+                raise SystemExit(f"--place-stop {bad_n}/{of_n} --place-max {place_max}: the place rule needs 1 <= N "
+                                 "<= M and a place of 0 or more; nothing cycled")  # fmt: skip
+            nobody = [i[-6:] for i in ids if not copies_of.get(i)]
+            if nobody:  # a hunt or strategy sniper's buy has no copied buy before it: it would read as create-bait
+                raise SystemExit(f"--place-stop reads our place behind the copied wallet, and {', '.join(nobody)} "
+                                 "is no copy sniper (a hunt or strategy sniper copies no wallet): run it without "
+                                 "--place-stop; nothing cycled")  # fmt: skip
         client = self._oktech()
         events: list[str] = []
 
@@ -1278,6 +1306,65 @@ class Service:
         def fills_now() -> int:
             return max(fills_since(t0), len(first_seen))
 
+        places: list[dict] = []  # our buys placed behind the copied wallets (`place_stop`), in the order they ran
+        placed: set[str] = set()  # their signatures, each read once
+        placed_blocks: set[tuple[str, int]] = set()  # (coin, slot) of each placed buy: a duplicate send is one copy
+        place_stopped: str | None = None  # why the place rule ended the re-arms, once it has
+        place_off = False  # the rule failed and is off for the rest of the run (said once)
+        mates_of: dict[str, Any] = {}
+
+        def mates(leader: str):
+            """The copied wallet's companions as the tape knows them (as the measure stage reads them), once a wallet:
+            None when the tape cannot say, and then they are counted, as there."""
+            if leader not in mates_of:
+                from .measure import chain_landing
+
+                try:  # the hourly read-only copy when fresh (a week of reads kept off the live file), else the live one
+                    tape = self.tape_store
+                    mates_of[leader] = chain_landing.known_mates(tape, leader, int(t0 - PLACE_MATES_DAYS * 86400))
+                except Exception:  # noqa: BLE001 - not known: counted, and not asked again this run
+                    mates_of[leader] = None
+            return mates_of[leader]
+
+        def place_new(now: float) -> str | None:
+            """Place each of our buys on the tape that no reading has placed yet (PLACE_SETTLE_SECS after it ran), say
+            each, and say why the re-arms end once N of the last M placed were out of place (None while they go on)."""
+            from .measure.classify import classify_trade
+
+            try:
+                buys = [t for t in self.store.trades_for_user(address, int(t0)) if t.is_buy]
+            except Exception:  # noqa: BLE001 - read again at the next tick
+                return None
+            for t in buys:
+                if t.sig in placed or now - t.ts < PLACE_SETTLE_SECS:
+                    continue
+                placed.add(t.sig)
+                if (t.mint, int(t.slot)) in placed_blocks:  # OKTech sends a buy more than once: two landed, one copy
+                    continue
+                placed_blocks.add((t.mint, int(t.slot)))
+                try:
+                    row = classify_trade(self.store, t, set(copied), None, mates=mates)
+                except Exception as exc:  # noqa: BLE001 - said; that buy counts neither way
+                    log(f"the copy in {t.mint} could not be placed ({type(exc).__name__}: {exc})")
+                    continue
+                leader, behind = row.get("wallet_copied"), row.get("trades_behind")
+                bad = leader is None or behind is None or int(behind) > place_max
+                places.append({"sig": t.sig, "mint": t.mint, "ts": int(t.ts), "leader": leader,
+                               "trades_behind": behind, "pack_ahead": row.get("pack_ahead"),
+                               "verdict": row.get("landing_verdict"), "bad": bad})  # fmt: skip
+                if leader is None:
+                    log(f"copy in {t.mint}: no buy of a copied wallet before ours on the tape (create-bait, or the "
+                        "tape missed it): out of place")  # fmt: skip
+                else:
+                    log(f"copy in {t.mint}: {behind} buyer(s) between {leader[:6]}… and us: "
+                        + ("out of place" if bad else "in place") + f" (at most {place_max} behind)")  # fmt: skip
+            window = places[-of_n:]
+            misses = sum(1 for p in window if p["bad"])
+            if misses >= bad_n:
+                return (f"place stop: {misses} of the last {len(window)} placed copies stood more than {place_max} "
+                        "buyer(s) behind the copied wallet, or behind no buy of it: no more re-arms")  # fmt: skip
+            return None
+
         try:
             b0 = await balance()
             held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
@@ -1332,6 +1419,18 @@ class Service:
                 fills = fills_now()
                 if fills >= max_fills:
                     reason = f"cap reached: {fills} fills since start"
+                    break
+                if place_stop is not None and place_stopped is None and not place_off:
+                    try:
+                        place_stopped = place_new(time.time())
+                    except Exception as exc:  # noqa: BLE001 - the run must reach its own end, where it disarms
+                        place_off = True
+                        log(f"the place rule failed ({type(exc).__name__}: {exc}) and is off for the rest of this "
+                            "run; the floor, the fills cap, /stop and the wallet-wide guard still hold")  # fmt: skip
+                    if place_stopped and held:  # a sniper still sells its coin: the run ends once it has
+                        log(f"{place_stopped}; the run ends once the wallet holds nothing")
+                if place_stopped and not held:
+                    reason = place_stopped
                     break
                 if held:
                     continue  # a position is open, one the tape cannot price too: never restart now
@@ -1412,7 +1511,8 @@ class Service:
             elif held is not None:
                 log("no coins held")
             return {"start_sol": b0, "end_sol": b1, "reason": reason, "fills": fills, "restarts": restarts,
-                    "held": held or [], "left_running": sorted(armed), "swept": swept, "events": events}  # fmt: skip
+                    "held": held or [], "left_running": sorted(armed), "swept": swept, "places": places,
+                    "events": events}  # fmt: skip
         finally:
             await client.close()
 

@@ -446,6 +446,17 @@ def _sol_or_off(v: str) -> float | str:
         raise argparse.ArgumentTypeError("a number of SOL, or off") from None
 
 
+def _place_rule(v: str) -> tuple[int, int]:
+    """oktech cycle --place-stop N/M: N misses among the last M placed copies, 1 <= N <= M."""
+    try:
+        n, m = (int(x) for x in str(v).split("/"))
+    except ValueError:
+        raise argparse.ArgumentTypeError("N/M, two whole numbers: 2/3 stops at 2 misses in the last 3") from None
+    if not 1 <= n <= m:
+        raise argparse.ArgumentTypeError(f"{n}/{m}: N must be 1 or more and no more than M")
+    return n, m
+
+
 def build_parser() -> argparse.ArgumentParser:
     # allow_abbrev=False, here and on every command's parser below (a sub-parser does not inherit it): a flag is
     # written in full. Until 12 Nov any prefix of one was read as the flag, so `--max-cred 9e9 --month 1e12` lifted
@@ -804,6 +815,19 @@ def build_parser() -> argparse.ArgumentParser:
                     help="cycle: sell a coin the wallet has held this long itself (the sweep sale), when OKTech left "
                          "it unsold: 21 Nov a one-shot copy sniper bought and never ran its 12 s exit. Above the "
                          "snipers' longest exit (a 12 s timer: 45). Default: never")  # fmt: skip
+    sp.add_argument("--place-stop", type=_place_rule, default=None, metavar="N/M",
+                    help="cycle: no more re-arms once N of the last M of our copies stood out of place: more than "
+                         "--place-max buyers between the copied wallet's buy and ours (its companions and pack left "
+                         "out, as the measure stage counts), or no buy of a copied wallet before ours (create-bait). "
+                         "The run ends once the wallet holds nothing. The 5 SOL recipe pays in the first two places: "
+                         "2/3. Default: off")  # fmt: skip
+    sp.add_argument(
+        "--place-max",
+        type=int,
+        default=1,
+        metavar="K",
+        help="cycle --place-stop: the most buyers ahead of ours that is still in place (1: 2nd in line)",
+    )
     sp.add_argument(
         "--ignore-mint",
         action="append",
@@ -2265,6 +2289,8 @@ async def _run(args, cfg: Config) -> int:
                     args.rearm_after,
                     args.ignore_mint,
                     sweep_after=args.sweep_after,
+                    place_stop=args.place_stop,
+                    place_max=args.place_max,
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0
