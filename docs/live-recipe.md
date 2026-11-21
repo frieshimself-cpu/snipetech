@@ -4,6 +4,17 @@ All numbers are paper trades on market data recorded **after** each strategy was
 landing position OKTech was measured at (same slot as the trigger, ~1 trade in that coin ahead of us),
 0.2 SOL per buy, fees and tips included (0.0035 SOL per transaction).
 
+## Landing probe behind Cented, Decu, Cupseyy and winner+59 at a 0.3 SOL fee (21 Nov 2026, written 03:40 UTC, before anything is made)
+
+**Why.** The 5 SOL recipe (bid 0.2, 100 SOL ceiling, hold12s) over every candidate (labs ecf5ea, 4c7f3a, 168 h): at 1st in line Cented +1.65 a copy over 220 (lower +1.52), Decu +1.96 over 144 (+1.84), Cupseyy +5.63 over 28 (+5.25), ardinR "winner +59" +1.31 over 133 (+1.16); at 2nd Cupseyy +2.46 (lower +2.07), Decu +0.62 (+0.53), Cented +0.43 (+0.33), ardinR +0.25 (+0.12); at 3rd (+3x) Cented and Decu lose (-0.26 and -0.33 a copy). So the only question before money goes behind them is where OKTech lands us with a big fee. This measures it: the place does not depend on the copy's size.
+
+**Under which yes.** Asked at 03:3x: "a landing test behind Cented, Decu, Cupseyy and theo side: tiny 0.05 SOL copies with a big 0.3 SOL fee, only to see whether OKTech can put us first; about 0.3 SOL per fill, stopped at 2 SOL a day; 6 or 7 fills". The owner: "You have so much power use it" (after "do whatever you want, as long as it's accelerating"). Read as the yes. theo side swapped for ardinR (winner +59): theo loses at 2nd place (-0.15), ardinR pays there and buys more often. Inside the standing yes's 2 SOL a day.
+
+**What runs.** `oktech copylist --copy CyaE1V...:Cented:0.95:hold12 --copy 4vw54B...:Decu:0.95:hold12 --copy 6DQAGJ...:Cupseyy:0.95:hold12 --copy ardinR...:winner59:0.95:hold12 --buy 0.05 --snipes 1 --bid 0.3 --compute-units 100000 --max-mcap 150 --tag arm:land1 --create`, run by `oktech cycle --id <the four> --address 6VFrZ15V... --floor 0.1 --max-fills 7 --max-minutes 720 --rearm-after 1800`. Each fill: `landing --sig`, `place-bids --model-check`, the row below, the owner told. Never stop a sniper that holds a coin.
+
+| # | time (UTC) | wallet | its buy | our place (buyers ahead) | who was ahead, their fee | price vs the wallet | result (SOL) |
+|---|---|---|---|---|---|---|---|
+
 ## The 5 SOL day with market-cap ceilings: the owner's yes 21 Nov 02:2x, PREPARED, starts when the wallet holds the owner's 20 SOL (written 02:35 UTC)
 
 **Under which yes.** Asked at 02:2x: "5 SOL copies with a 0.2 SOL fee, sold after 12 seconds or as soon as the wallet sells; Cupseyy, only while his coins are small (the market-cap ceiling); Cooker and Gake Side, with a looser ceiling; one day, stopped at 3 SOL lost". The owner: "Okay but when 100 sol a day", after "20 SOL is fine bro we js rlly need to get it profitable assp". Read as the yes to that step. It starts only once the wallet can pay a 5 SOL copy (at 02:30 it could not: the guard read 1.78 SOL; never ask the owner for SOL, the 20 is the owner's own plan).
