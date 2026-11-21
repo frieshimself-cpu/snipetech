@@ -58,10 +58,20 @@ first on the server's recording and only then run live in capped batches.
   overall mean is still negative at every place (-0.348 at 1st) because most wallets lose; first place is what 6Z91 holds
   (first outsider in 61 % of its copies on 12 Nov). So the money is there in the data, and the gate is the place in line,
   not more data: at our measured places (2nd to 5th) it is about 3 SOL a day; at 1st it is the order of 100+.
+- **Still true on the newest three days (lab bdc3c6, 18-21 Nov 02:15 UTC, 2nd in line, the same recipe).** Cented
+  +0.726 a copy over 77 (lower +0.534), Decu +0.834 over 48 (+0.658), Cupseyy +2.846 over 7 (+2.585); the week's
+  first four days alone give Cented +0.28, Decu +0.51, Cupseyy +2.33 a copy, so both halves agree for these three.
+  winner +59 SOL/106 faded at 2nd (+0.064, lower -0.127); Tim5 flips sign between the halves (-1.58, then +1.43 a
+  copy): left out. The three together: about 35-40 SOL a day on paper at 2nd in line, about 115 at 1st; picked after
+  looking, so expect less. Proposed to the owner at 03:5x for the 5 SOL day in place of Gake Side and Cooker.
+  Running: labs 18c575 and 45326a, the same week with the copy placed by its bid (0.2 and 0.5 SOL), to see what
+  place the tape's other bidders leave a 0.2 bid behind these wallets.
 - **The open question is speed.** The landing test found the paper's place too kind in 3 of 5 fills behind Cupseyy,
   mostly from arriving late (a block after the wallet; buyers bidding 0.001 ahead of our 0.05), which no bid fixes.
   If OKTech cannot stand first behind these wallets, a faster way to send our buys is the build.
-- **Live now:** the 1 SOL day on Gake Side and Cooker (since 19:25 UTC, stop at 2 SOL lost; docs/live-recipe.md).
+- **Live now: nothing.** The 1 SOL day on Gake Side and Cooker ended 21 Nov 01:49:18 by its floor (its one fill
+  -0.012). Prepared: the landing probe behind Cented, Decu, Cupseyy and winner +59 at a 0.3 fee (waits for a little
+  plain SOL) and the 5 SOL day on the owner's 20 SOL (docs/live-recipe.md, both entries).
 - **Not reachable, said plainly to the owner:** 100 SOL a day within a week from a 9 SOL wallet. 6Z91's 93 a day
   comes with about 1,700 SOL bought a day, the first place in line, and nobody racing it for that place but us.
 
