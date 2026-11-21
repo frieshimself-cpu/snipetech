@@ -301,6 +301,34 @@ def test_the_owners_book_switch_makes_the_book_live(tmp_path):
         st.close()
 
 
+def test_the_book_adds_no_sniper_while_a_runner_drives_the_wallet(tmp_path):
+    """The owner's 5 SOL day (21 Nov) runs its own two copy snipers through `oktech cycle` on the book's wallet. A book
+    sniper armed beside them buys from the same wallet: the runner reads its buys as its own (a coin held holds its
+    re-arms back; a buy with no Cented or Decu buy before it is out of place, and two of them end the day). So while a
+    cycler or a guard drives the wallet the book creates, starts and replaces nothing; once the job has ended it does."""
+    import json
+    import os
+
+    st, cfg = _env(tmp_path, enabled=True)
+    paths = OperatorPaths(tmp_path / "data")
+    meta = {"id": "20261121-230000-aaaaaa", "argv": ["oktech", "cycle", "--id", "x", "--address", W], "started": NOW - 60,
+            "running": True, "pid": os.getpid()}  # fmt: skip
+    paths.jobs.mkdir(parents=True, exist_ok=True)
+    (paths.jobs / f"{meta['id']}.json").write_text(json.dumps(meta))
+    post = lambda u, d: None
+    try:
+        svc = FakeSvc(st)
+        asyncio.run(run_book(svc, cfg, NOW, notifier=Notifier("T", 7, post=post), balances=lambda w: (10.0, 0.0, [])))
+        assert not [c for c in svc.calls if c[0] in ("create", "start")], svc.calls
+        (paths.jobs / f"{meta['id']}.exit").write_text("0")  # the run ended
+        svc2 = FakeSvc(st)
+        asyncio.run(run_book(svc2, cfg, NOW + 300, notifier=Notifier("T", 7, post=post),
+                             balances=lambda w: (10.0, 0.0, [])))  # fmt: skip
+        assert any(c[0] == "create" for c in svc2.calls)
+    finally:
+        st.close()
+
+
 def test_cli_book_switch_parses():
     p = build_parser()
     assert p.parse_args(["book", "on"]).action == "on" and p.parse_args(["book", "off"]).action == "off"

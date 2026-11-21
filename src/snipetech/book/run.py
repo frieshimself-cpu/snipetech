@@ -444,6 +444,23 @@ async def _run_book(svc, cfg: Config, now: float, *, notifier: Notifier | None =
         if held_back and not notes.has_today(sig, now):
             notes.write(f"{sig} {int(age // 60)} min behind: no new sniper, start or replacement until it catches up "
                         f"({len(held_back)} held back)", "info")  # fmt: skip
+    # one live run on the wallet at a time: a cycler or a guard started by hand or by a test (the owner's 5 SOL day,
+    # 21 Nov) reads every buy of the wallet as its own, so a book sniper armed beside it holds its re-arms back and its
+    # buys count against its place rule. Stops of the book's own snipers that hold nothing still go out (safety)
+    from ..operator.live_test import _drivers
+
+    try:
+        drivers = _drivers(paths)
+    except Exception:  # noqa: BLE001 - not known this run: when in doubt the book adds no sniper
+        drivers = [{"id": "unknown", "argv": ["a job list that could not be read"]}]
+    if drivers:
+        held_back = [a for a in plan.actions if a.kind in ("create", "start", "retire")]
+        plan.actions = [a for a in plan.actions if a.kind not in ("create", "start", "retire")]
+        sig = "[book] a live run drives the wallet"
+        if held_back and not notes.has_today(sig, now):
+            d = drivers[0]
+            notes.write(f"{sig} ({' '.join(str(x) for x in (d.get('argv') or [])[:2])}, job {d.get('id')}): no new "
+                        f"sniper, start or replacement until it ends ({len(held_back)} held back)", "info")  # fmt: skip
     effective_dry = (not live_mode) or plan.kill_reason is not None
     stops = [a for a in plan.actions if a.kind == "stop" and a.sniper_id]
     kept = [a for a in plan.actions if a.kind == "keep" and "never stop a holder" in a.reason]
