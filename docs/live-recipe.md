@@ -15,6 +15,8 @@ landing position OKTech was measured at (same slot as the trigger, ~1 trade in t
 | # | time (UTC) | wallet | its buy | our place (buyers ahead) | who was ahead, their fee | price vs the wallet | result (SOL) |
 |---|---|---|---|---|---|---|---|
 
+**NOT STARTED (03:34-03:42).** The four snipers were made at 03:33 (Cented 6b011125ca420f45d702c008, Decu ...c014, Cupseyy ...c022, winner59 6b011126ca420f45d702c02e; idle). The runner (job 20261121-033420-3356dd) refused at once: the wallet held 0.0000 plain SOL. Its 1.1 SOL is all wrapped (PumpSwap sales pay wrapped SOL), and `unwrap --sol 0.85 --dry-run` (03:41) was refused too: no plain SOL for the conversion's own fee (1.1e-05). Nothing traded. It starts once the wallet holds a little plain SOL (the unwrap then frees the 1.1, under the owner's "Yes, convert as needed" of 11 Nov). Said to the owner once, as why the test did not start.
+
 ## The 5 SOL day with market-cap ceilings: the owner's yes 21 Nov 02:2x, PREPARED, starts when the wallet holds the owner's 20 SOL (written 02:35 UTC)
 
 **Under which yes.** Asked at 02:2x: "5 SOL copies with a 0.2 SOL fee, sold after 12 seconds or as soon as the wallet sells; Cupseyy, only while his coins are small (the market-cap ceiling); Cooker and Gake Side, with a looser ceiling; one day, stopped at 3 SOL lost". The owner: "Okay but when 100 sol a day", after "20 SOL is fine bro we js rlly need to get it profitable assp". Read as the yes to that step. It starts only once the wallet can pay a 5 SOL copy (at 02:30 it could not: the guard read 1.78 SOL; never ask the owner for SOL, the 20 is the owner's own plan).
