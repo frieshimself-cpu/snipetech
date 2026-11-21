@@ -541,6 +541,8 @@ For the owner to paste to their support. Each is one sentence, and each changes 
    `sellPriorityFeeSol` to 0.0001: which setting prices a sell, and can a sell be sent once?
 4. Inside a block, is our place decided by `tipAmount`, by `priorityFee`, or by both, and what does `globalSmartFees`
    change?
+   (21 Nov: an experienced sniper says it depends on the block's leader and the winning bots set their bid per block
+   from p99 stats; ask whether `globalSmartFees` does that per leader.)
 5. How do we stop a CTBot sniper from copying a wallet's swap into USDC, USDT or wrapped SOL: does `platforms` apply
    to CTBot, or is there a mint blacklist?
 6. Does a CTBot wallet entry take `minMcapUsd`, `maxSol` and a buy multiplier, what are the exact keys, and do they
