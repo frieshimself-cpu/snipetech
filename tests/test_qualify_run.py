@@ -252,11 +252,13 @@ def test_the_lab_scores_wallets_with_the_exit_the_book_sends(tmp_path, monkeypat
         real = L.collect
 
         def spy(*args, **kw):
-            seen["kw"] = kw
+            seen.setdefault("calls", []).append(kw)
+            seen.setdefault("kw", kw)  # the first lab: the verdict's (the second is the size score, test_qualify_size)
             return real(*args, **kw)
 
         monkeypatch.setattr(L, "collect", spy)
         (row,) = default_lab_runner(svc, cfg)(["W1"], "+6")
+        assert len(seen["calls"]) == 2 and seen["calls"][1]["buy_bid_sol"] == cfg.qualify.size_bid_sol
         # every exit on the menu is scored, lab first; the gating numbers are lab's, what book/run.py sends by default
         assert seen["kw"]["exits"] == list(L.menu_exits(cfg).values())
         assert seen["kw"]["exits"][0] == L.live_exits(cfg)["lab"] and row["exit"] == L.live_exits(cfg)["lab"].label()
@@ -1030,7 +1032,7 @@ def test_a_run_says_where_its_time_went(tmp_path):
         assert out["evaluated"] == 1 and set(out["secs"]) == {"lab", "gates"}
         assert all(v >= 0 for v in out["secs"].values())
         assert out["lab"]["workers"] >= 1 and out["lab"]["moments"] == 12
-        assert set(out["lab"]["secs"]) == {"companions", "collect", "rank"}
+        assert set(out["lab"]["secs"]) == {"companions", "collect", "rank", "size"}  # size: the 5 SOL score (21 Nov)
         assert out["lab"]["mates"] == 0  # how many of the measured wallets were scored behind companions
         run = default_lab_runner(svc, svc.cfg)
         run(["W1"], "+6")
@@ -1363,7 +1365,9 @@ def test_a_wallet_can_be_called_up_for_review_now(tmp_path, capsys):
     assert a.action == "run" and a.wallets == []
 
 
-def test_qualify_runs_beside_one_lab_on_a_two_slot_machine_and_is_owed_a_slot_when_both_are_taken(tmp_path, monkeypatch):
+def test_qualify_runs_beside_one_lab_on_a_two_slot_machine_and_is_owed_a_slot_when_both_are_taken(
+    tmp_path, monkeypatch
+):
     """13 Nov evening: the research agents may hold both lab slots while nothing else asks for one. Qualify used to
     give up whenever any lab job ran at all (a rule from the one-slot machine), without saying it wanted a slot: with
     the agents on both slots most of the time it would never have run. Beside one lab it runs (the second slot is

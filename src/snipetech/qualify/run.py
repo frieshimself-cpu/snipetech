@@ -133,10 +133,16 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
         t1 = time.monotonic()
         rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=4, wallets=wallets,
                               gate=menu["lab"], with_moments=True)  # fmt: skip
+        t2 = time.monotonic()
+        if cfg.qualify.size_sol > 0 and rows:  # the size that pays, beside the verdict's numbers (`size_scores`)
+            measured = [r["wallet"] for r in rows if r.get("wallet")]
+            size = size_scores(svc, cfg, tape, measured, dict(kols, cand=set(measured)), mates)
+            for r in rows:
+                r["size"] = size.get(r.get("wallet")) or size_record(cfg)
         # where the lab's time went and on how many processes (the run's output carries it: `run_qualify`)
         run.info = {"workers": data.get("workers"), "moments": len(data["rows"]), "mates": len(mates),
                     "secs": {"companions": round(t0 - tc, 1), "collect": round(t1 - t0, 1),
-                             "rank": round(time.monotonic() - t1, 1)}}  # fmt: skip
+                             "rank": round(t2 - t1, 1), "size": round(time.monotonic() - t2, 1)}}  # fmt: skip
         # each measured wallet's companions, read once: the one-candidate-an-actor rule takes them (one_actor.OneActor)
         run.mates = {w: frozenset(mates.get(w) or ()) for w in wallets}
         return rows
@@ -144,6 +150,43 @@ def default_lab_runner(svc, cfg: Config) -> LabRunner:
     run.info = None
     run.mates = None
     return run
+
+
+def _size_exit(cfg: Config):
+    """The size score's exit as a copy sniper runs it (the copy exit, OKTech's watch delay): `[qualify] size_exit`."""
+    from ..analysis import lab as L
+    from ..oktech import named_exit
+
+    return L._as_live(named_exit(cfg.qualify.size_exit), float(cfg.oktech.copy_exit_threshold_percent) / 100.0)
+
+
+def size_record(cfg: Config, stats: dict | None = None) -> dict[str, Any]:
+    """A wallet's size score: what it was scored at ([qualify] size_*) and its numbers (n 0 and no mean when none of
+    its first buys fits the size rule)."""
+    q = cfg.qualify
+    base = {"buy_sol": q.size_sol, "bid_sol": q.size_bid_sol, "position": q.size_position, "floor_sol": q.size_floor_sol,
+            "min_mcap_sol": q.size_min_mcap_sol, "max_mcap_sol": q.size_max_mcap_sol, "exit": _size_exit(cfg).label()}  # fmt: skip
+    nums = {"n": 0, "mean": None, "ev_lower": None, "win_rate": None, "total": 0.0}
+    return base | nums | {k: stats.get(k) for k in nums if stats and k in stats}
+
+
+def size_scores(svc, cfg: Config, tape, wallets: list[str], kols: dict, mates: dict) -> dict[str, dict]:
+    """Each wallet's score at the size that pays (21 Nov 2026), {wallet: size_record}: its own first buys of
+    `[qualify] size_floor_sol` or more between the two market caps, at `size_sol` with `size_bid_sol` at
+    `size_position`, on `size_exit`. The verdict is scored at the book's smallest fill with no bid, where nothing can
+    pay (docs/roadmap.md, the top section); this one is said beside it and gates nothing. A wallet none of whose buys
+    fits is left out (the caller gives it an empty record)."""
+    from ..analysis import lab as L
+
+    q = cfg.qualify
+    ex = _size_exit(cfg)
+    rule = L.Trigger("kol", sol=q.size_floor_sol, group="cand", min_mcap=q.size_min_mcap_sol,
+                     max_mcap=q.size_max_mcap_sol)  # fmt: skip
+    data = L.collect(tape, cfg, q.size_sol, 0, q.size_position, per_tx_sol=lab_tx_cost(svc.store, cfg),
+                     groups=("cand",), triggers=[rule], exits=[ex], kols=kols, mates=mates,
+                     buy_bid_sol=q.size_bid_sol)  # fmt: skip
+    rows = L.rank_wallets(data, cfg, svc.store.labels(), top=len(wallets), min_n=1, wallets=wallets, gate=ex)
+    return {r["wallet"]: size_record(cfg, r) for r in rows if r.get("wallet")}
 
 
 def pick_times(store, wallet: str) -> tuple[int | None, int | None]:
@@ -482,6 +525,12 @@ def _run_qualify(svc, cfg: Config, jobs_dir: Path, now: float, lab_runner: LabRu
             v = not_a_coin_trader(v, swaps, q_eff, now)
             out["non_coin"] = out.get("non_coin", 0) + (v["status"] != "qualified")
         one.release(w, v, now)  # it was its actor's candidate and no longer is: the wallets behind it are due at once
+        # the score at the size that pays: kept in the score record with the lab row it rides on, named in the run's
+        # answer when it pays on enough copies, never a gate
+        size = (row.get("size") if row else None) or {}
+        if int(size.get("n") or 0) >= need and size.get("ev_lower") is not None and float(size["ev_lower"]) > 0:
+            out.setdefault("size_pass", []).append({"wallet": w, "n": size["n"], "mean": size["mean"],
+                                                    "ev_lower": size["ev_lower"]})  # fmt: skip
         store.put_verdict(v)
         store.put_score("qualify", w, {"verdict": v, "lab": row, "crowding": crowd, "history": hist,
                                        "computed_at": int(now), "record": record or None,
