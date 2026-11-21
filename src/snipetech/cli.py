@@ -828,6 +828,20 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="K",
         help="cycle --place-stop: the most buyers ahead of ours that is still in place (1: 2nd in line)",
     )
+    sp.add_argument("--max-loss", type=float, default=None, metavar="SOL",
+                    help="cycle: instead of --floor, the floor is the wallet at the start (SOL and wrapped SOL) less "
+                         "this many SOL (the owner's 10 SOL day, 21 Nov: 5). The copy open when it is reached can add "
+                         "to it")  # fmt: skip
+    sp.add_argument("--wait-for-sol", type=float, default=None, metavar="SOL",
+                    help="cycle: arm nothing until the wallet holds this many SOL (plain SOL, read every 15 s); the "
+                         "floor, the minutes and the fills count from then. Default: start at once")  # fmt: skip
+    sp.add_argument(
+        "--wait-minutes",
+        type=float,
+        default=480,
+        metavar="MIN",
+        help="cycle --wait-for-sol: how long to wait before giving up with nothing armed (default 480)",
+    )
     sp.add_argument(
         "--ignore-mint",
         action="append",
@@ -2282,8 +2296,8 @@ async def _run(args, cfg: Config) -> int:
                         )
                 return 0
             if args.action == "cycle":
-                if not (args.id and args.address and args.floor is not None):
-                    raise SystemExit("cycle: give --id (one or more), --address and --floor")
+                if not (args.id and args.address and (args.floor is not None or args.max_loss is not None)):
+                    raise SystemExit("cycle: give --id (one or more), --address and --floor or --max-loss")
                 rep = await svc.oktech_cycle(
                     args.id,
                     args.address,
@@ -2295,6 +2309,9 @@ async def _run(args, cfg: Config) -> int:
                     sweep_after=args.sweep_after,
                     place_stop=args.place_stop,
                     place_max=args.place_max,
+                    max_loss=args.max_loss,
+                    wait_for_sol=args.wait_for_sol,
+                    wait_minutes=args.wait_minutes,
                 )
                 print(json.dumps(rep, indent=1, default=str) if args.json else "\n".join(rep["events"]))
                 return 0

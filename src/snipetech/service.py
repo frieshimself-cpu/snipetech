@@ -45,6 +45,15 @@ SWEEP_RETRY_SECS = 60.0
 PLACE_SETTLE_SECS = 10.0
 # and the copied wallet's companions are read from this many days of its buys on the tape (the measure stage's week)
 PLACE_MATES_DAYS = 7
+# `oktech cycle`'s floor ends the run only when this many readings in a row are under it (21 Nov: the SOL balance, read
+# at "processed", shows a buy a second before the wallet's coins, read at "confirmed", show the coin; with 10 SOL in
+# the wallet and copies of 5 SOL that one reading was under a floor of 5 at every buy), and a reading under it holds
+# the re-arms back. A fall of the SOL by more than FRESH_BUY_SOL with no coin seen held is a buy on its way: no re-arm
+# then either (a sniper stopped in that second strands the coin it just bought)
+FLOOR_READINGS = 2
+FRESH_BUY_SOL = 0.05
+# `oktech cycle --wait-for-sol`: how often the wallet is read while the run waits for the owner's SOL
+WAIT_POLL_SECS = 15.0
 
 
 class OverlapError(ValueError):
@@ -1109,10 +1118,11 @@ class Service:
 
         return await sweep(self.rpc, [mint], store=self.store)
 
-    async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, max_fills: int = 10,
-                           rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
+    async def oktech_cycle(self, ids: list[str], address: str, floor_sol: float | None, max_minutes: float,
+                           max_fills: int = 10, rearm_after: float = 60.0, ignore_mints: list[str] | None = None,
                            sweep_after: float | None = None, place_stop: tuple[int, int] | None = None,
-                           place_max: int = 1) -> dict:  # fmt: skip
+                           place_max: int = 1, max_loss: float | None = None, wait_for_sol: float | None = None,
+                           wait_minutes: float = 480.0) -> dict:  # fmt: skip
         """Keep one-shot hunt snipers armed. Measured 5 Nov: a hunt sniper fires once per start and then never again,
         so after its position has closed (nothing held in the wallet) the sniper is stopped and started again. A sniper
         is never restarted while the wallet holds tokens (a stopped sniper stops selling). Re-arming also happens when a
@@ -1144,11 +1154,28 @@ class Service:
         21 Nov 04:07 and 04:25). Once N of the last M placed buys were out of place the run re-arms nothing more and
         ends as soon as the wallet holds nothing (the 1 SOL day's "2 of the first 3 fills further back than the paper's
         place", kept by hand until now; the 5 SOL recipe pays in the first two places and loses behind the third
-        buyer, docs/roadmap.md). Each placing is said, and the report lists them (`places`)."""
+        buyer, docs/roadmap.md). Each placing is said, and the report lists them (`places`).
+
+        The floor (`floor_sol`, or with `max_loss` the wallet at the start less it) is on the wallet's SOL, wrapped SOL
+        and the tape value of its priced coins. A coin the tape has not priced yet is no reading (positions.py), and a
+        reading under the floor holds the re-arms back and ends the run only when the next one agrees (FLOOR_READINGS:
+        21 Nov, a 5 SOL copy from 10 SOL read as a loss in the second its SOL had left and its coin did not show).
+        `wait_for_sol`: nothing is armed until the wallet holds that much plain SOL (read every WAIT_POLL_SECS), for at
+        most `wait_minutes`; the run's minutes, its fills and its floor count from then (the owner funds the wallet when
+        the copied wallets trade)."""
         from .book.run import TAPE_STALE_SECS, _tape_age
         from .oktech import OktechError
 
         address = self._check(address)
+        if (floor_sol is None) == (max_loss is None):
+            raise SystemExit("give the floor or the max loss, one of the two (--floor N: the run ends under N SOL; "
+                             "--max-loss N: under the wallet at the start less N SOL); nothing cycled")  # fmt: skip
+        if max_loss is not None and not float(max_loss) > 0:
+            raise SystemExit(f"--max-loss {max_loss:g}: the max loss is a number of SOL above 0; nothing cycled")
+        if wait_for_sol is not None and float(wait_for_sol) <= float(max_loss if max_loss is not None else floor_sol):
+            raise SystemExit(f"--wait-for-sol {wait_for_sol:g} is not above the "
+                             + (f"{max_loss:g} SOL max loss" if max_loss is not None else f"floor {floor_sol}")
+                             + ": the run would start with nothing to lose but the floor; nothing cycled")  # fmt: skip
         if self.stop_flag_set():
             raise SystemExit("the owner's /stop flag is set: /resume first; nothing cycled")
         mine = {r["id"]: r for r in self.store.oktech_snipers()}
@@ -1380,18 +1407,80 @@ class Service:
                         "buyer(s) behind the copied wallet, or behind no buy of it: no more re-arms")  # fmt: skip
             return None
 
+        def waited_out(why: str) -> dict:
+            """The report of a run that ended in its wait for the owner's SOL: nothing was touched."""
+            log(why)
+            return {"start_sol": None, "end_sol": None, "reason": why, "fills": 0, "restarts": 0, "held": [],
+                    "left_running": [], "swept": [], "places": [], "events": events}  # fmt: skip
+
+        async def wrapped_sol() -> float:
+            """The wallet's wrapped SOL; 0 when it cannot be read (said): the plain SOL alone is then the reading."""
+            try:
+                return await self.wsol_balance(address)
+            except Exception as exc:  # noqa: BLE001 - said; the SOL alone is the more careful reading
+                log(f"the wrapped SOL could not be read ({type(exc).__name__}): counted as 0")
+                return 0.0
+
+        async def settled(read):
+            """A read at the start, tried three times two seconds apart: the moment the owner's SOL lands is no moment
+            for one refused RPC call to end the run."""
+            for attempt in range(3):
+                try:
+                    return await read()
+                except Exception as exc:  # noqa: BLE001 - the third failure ends the run, as before
+                    if attempt == 2:
+                        raise
+                    log(f"a read at the start failed ({type(exc).__name__}); trying again")
+                    await asyncio.sleep(2.0)
+
         try:
-            b0 = await balance()
-            held0 = await open_positions()  # before any sniper is touched: a stopped sniper strands its coin
+            if wait_for_sol is not None:
+                want, until, said = float(wait_for_sol), time.time() + float(wait_minutes) * 60, ""
+                log(f"waiting up to {wait_minutes:g} min for the wallet to hold {want:g} SOL before arming anything")
+                while True:
+                    if self.stop_flag_set():
+                        return waited_out(f"the owner's /stop came during the wait for {want:g} SOL: nothing armed")
+                    try:  # the plain SOL alone, the owner's transfer: one cheap read a poll for hours
+                        have: float | None = await balance()
+                    except Exception:  # noqa: BLE001 - read again at the next poll
+                        have = None
+                    if have is not None and have >= want:
+                        not_yet = tape_lag()
+                        if not_yet is None:
+                            try:
+                                blocked, why = await guard_says(await open_positions())
+                            except Exception as exc:  # noqa: BLE001 - read again at the next poll
+                                blocked, why = None, f"the wallet's coins could not be read ({type(exc).__name__})"
+                            if blocked:
+                                return waited_out(f"the wallet holds {have:.4f} SOL, but the wallet-wide guard holds "
+                                                  f"({why}): nothing armed")  # fmt: skip
+                            not_yet = why if blocked is None else None
+                        if not_yet is None:
+                            log(f"the wallet holds {have:.4f} SOL: starting")
+                            break
+                        if not_yet != said:
+                            log(f"the wallet holds {have:.4f} SOL; {not_yet}: not arming yet")
+                            said = not_yet
+                    if time.time() >= until:
+                        return waited_out(f"waited {wait_minutes:g} min for the wallet to hold {want:g} SOL: "
+                                          "nothing armed")  # fmt: skip
+                    await asyncio.sleep(WAIT_POLL_SECS)
+                t0 = time.time()  # the run's minutes and fills count from its start, not from the wait
+            b0 = await settled(balance)
+            w0 = await wrapped_sol()
+            how = ""
+            if max_loss is not None:
+                floor_sol = round(b0 + w0 - float(max_loss), 4)
+                how = f" ({b0 + w0:.4f} at the start less the {max_loss:g} SOL max loss)"
+            held0 = await settled(open_positions)  # before any sniper is touched: a stopped sniper strands its coin
             if held0:
                 raise SystemExit("the wallet holds " + ", ".join(f"{h['mint']} ({h.get('value_sol', 0):.4f} SOL)" for h in held0)
                                  + ": not cycling (stopping a sniper strands its coin). Sell by hand, or "
                                  "pass --ignore-mint MINT for a position no sniper manages.")  # fmt: skip
-            log(
-                f"wallet {address[:6]}… holds {b0:.4f} SOL; floor {floor_sol}; cap {max_fills} fills; {max_minutes:g} min"
-            )
-            if b0 <= floor_sol:
-                raise SystemExit(f"balance {b0:.4f} is at or below the floor {floor_sol}")
+            log(f"wallet {address[:6]}… holds {b0:.4f} SOL" + (f" and {w0:.4f} wrapped" if w0 else "")
+                + f"; floor {floor_sol}{how}; cap {max_fills} fills; {max_minutes:g} min")  # fmt: skip
+            if b0 + w0 <= floor_sol:
+                raise SystemExit(f"balance {b0 + w0:.4f} is at or below the floor {floor_sol}")
             lag = tape_lag()
             if lag:  # the fills cap is counted on the tape: a run that cannot count them does not start
                 raise SystemExit(f"{lag} (more than {TAPE_STALE_SECS} s): not cycling, its fills are counted there")
@@ -1409,6 +1498,7 @@ class Service:
                 armed.add(i)
                 log(f"started {tag(i)}: {ans.get('task', {}).get('status', ans)}")
             low, paused, unsure = b0, False, False
+            prev_b, under_n = b0, 0  # the last reading's SOL; the readings in a row under the floor
             while time.time() - t0 < max_minutes * 60:
                 await asyncio.sleep(5)
                 if self.stop_flag_set():
@@ -1420,6 +1510,10 @@ class Service:
                 except Exception as exc:
                     log(f"rpc check failed ({exc}); still watching")
                     continue
+                # the SOL left and no coin shows: a buy on its way (the SOL is read at processed, the coins at
+                # confirmed), so no sniper is touched in this reading
+                fresh = not held and b < prev_b - FRESH_BUY_SOL
+                prev_b = b
                 for h in held:
                     if h.get("mint"):
                         first_seen.setdefault(str(h["mint"]), time.time())
@@ -1428,9 +1522,22 @@ class Service:
                 if b < low - 0.005:
                     log(f"balance {b:.4f} SOL")
                 low = min(low, b)
-                if b < floor_sol and b + sum(float(h.get("value_sol") or 0) for h in held) < floor_sol:
-                    reason = f"EMERGENCY: equity below floor {floor_sol} (balance {b:.4f}); stopped re-arming"
-                    break
+                # the floor: SOL, wrapped SOL (read only when the rest is under it) and the priced coins; with a coin
+                # the tape has not priced the wallet's worth is unknown, and nothing is re-armed while it is held anyway
+                priced = sum(float(h["value_sol"]) for h in held if h.get("value_sol") is not None)
+                under, eq = False, b + priced
+                if not any(h.get("value_sol") is None for h in held) and eq < floor_sol:
+                    eq += await wrapped_sol()
+                    under = eq < floor_sol
+                if under:
+                    under_n += 1
+                    if under_n >= FLOOR_READINGS:
+                        reason = f"EMERGENCY: equity below floor {floor_sol} (balance {b:.4f}); stopped re-arming"
+                        break
+                    log(f"the wallet reads {eq:.4f} SOL, under the floor {floor_sol}: no re-arm; the run ends if the "
+                        "next reading agrees (a buy shows in the SOL before its coin shows)")  # fmt: skip
+                    continue
+                under_n = 0
                 fills = fills_now()
                 if fills >= max_fills:
                     reason = f"cap reached: {fills} fills since start"
@@ -1449,6 +1556,8 @@ class Service:
                     break
                 if held:
                     continue  # a position is open, one the tape cannot price too: never restart now
+                if fresh:
+                    continue  # a buy on its way: the next reading shows its coin
                 lag = tape_lag()
                 if lag:  # a re-arm now could buy without being counted
                     if not paused:
