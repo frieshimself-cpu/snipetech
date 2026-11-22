@@ -189,3 +189,34 @@ def test_measure_2_the_copied_buy_is_looked_for_in_the_chain_readings_window():
         assert classify_trade(st, outside, {LEAD}, None)["wallet_copied"] is None
     finally:
         st.close()
+
+
+# -- runner#4: the owner's own tool pays the snipers' 0.001 SOL priority -----------------------------------------------
+
+
+def _payload(prio, tip):
+    return {"priorityFee": prio, "tipAmount": tip, "autoSell": {"sellTipAmount": 0.002, "sellPriorityFeeSol": 0.0001}}
+
+
+def test_runner_4_a_hand_buy_at_a_snipers_priority_is_the_owners_whatever_wallet_it_follows():
+    """runner#4: bot_buy counted a buy with a copied wallet on it and a sniper's priority as the bot's, whatever its
+    tip. The owner's own tool pays the same 0.001 SOL priority (2Y2StBPj, 21 Nov 23:07: 1,000,000 priority and a
+    16,000,000 tip, no sniper armed), and the guard then counted the owner's trade, a coin sent out as lost in full. A
+    buy is the bot's by the whole (priority, tip) pair one of our snipers pays, as on the tape (bot_tape_buy)."""
+    from snipetech.measure.ours import bot_buy, bot_tape_buy, sniper_marks
+
+    marks = sniper_marks([_payload(0.001, t) for t in (0.002, 0.049, 0.199, 0.299)] + [_payload(0.005, 0.03)])
+    hand = {"sig": "2Y2StBPj", "side": "buy", "priority_lamports": 1_000_000, "tip_lamports": 16_000_000}
+    cented = "CyaE1VxvBrahnPWkqm5VsdCvyS2QmNht2UFrKJHga54o"
+    assert bot_buy(hand, marks) is False
+    assert bot_buy(hand | {"wallet_copied": cented}, marks) is False
+
+    class T:
+        priority, tip = 1_000_000, 16_000_000
+
+    assert bot_tape_buy(T(), marks) is False
+    # every pair a sniper's payload pays on a buy (its tip, or none) is the bot's, copied wallet or not
+    for prio, tip in ((1_000_000, 2_000_000), (1_000_000, 49_000_000), (1_000_000, 199_000_000), (1_000_000, 0),
+                      (1_000_000, 299_000_000), (5_000_000, 30_000_000)):  # fmt: skip
+        assert bot_buy(hand | {"priority_lamports": prio, "tip_lamports": tip, "wallet_copied": cented}, marks)
+        assert bot_buy(hand | {"priority_lamports": prio, "tip_lamports": tip}, marks)
