@@ -1036,8 +1036,10 @@ def test_no_agent_starts_a_freeze_that_drops_every_rule_under_forward_test(jobs,
                  ["paper", "freeze", "--trigger", KOL, "--replace"]):  # fmt: skip
         with pytest.raises(PermissionError, match="--replace"):
             jobs.start(argv, role=role, idea=idea)
-    with pytest.raises(PermissionError, match="paper rescore is not an agent's job"):
-        jobs.start(["paper", "--min-buy", "0.5", "rescore"], role=role, idea=idea)
+    # read as the job reads them, word for word: " --x" is a value of --id there, and the job a rescore
+    for argv in (["paper", "--min-buy", "0.5", "rescore"], ["paper", "--id", " --x", "rescore"]):
+        with pytest.raises(PermissionError, match="paper rescore is not an agent's job"):
+            jobs.start(argv, role=role, idea=idea)
     assert not _job_files(jobs)
     assert jobs.start(["paper", "freeze", "--trigger", KOL, "--hours", "24"], role=role, idea=idea)["id"]  # beside them
 
@@ -1056,6 +1058,7 @@ def test_an_agents_sends_asks_for_a_bounded_number_of_helius_credits(jobs, role)
     for argv in (["sends", BOT, "--hours", "72", "--max-credits", "50000000", "--json"],
                  ["sends", BOT, "--max-credits=200001"],
                  ["sends", BOT, "--max-credits", "1", "--max-credits", "9999999"],
+                 ["sends", BOT, "--leader", " --x", "--max-credits", "99999999"],  # " --x" is the job's leader
                  ["sends", BOT, "--hours", "337"], ["sends", BOT, "--hours", "inf"], ["sends", BOT, "--hours", "nan"],
                  ["sends", BOT, "--hours=0"]):  # fmt: skip
         with pytest.raises(PermissionError, match="refused, no job started"):

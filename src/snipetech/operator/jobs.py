@@ -117,6 +117,15 @@ def _parsed(words: tuple[str, ...]) -> str | None:
     return json.dumps(vars(parsed), sort_keys=True, default=str)
 
 
+def as_run(argv: list[str]) -> dict | None:
+    """What the job will make of `argv`: the command line's parser on the words exactly as `Ops.op_run` hands them
+    on (`job_key` strips them, which is right for comparing two jobs and wrong for a limit: " --x" is a value to the
+    job, a flag once stripped, and the stripped words then parse as nothing while the job runs). None when the parser
+    refuses them: the job ends before it does anything."""
+    parsed = _parsed(tuple(str(a) for a in argv))
+    return json.loads(parsed) if parsed is not None else None
+
+
 def job_key(argv: list[str]) -> str:
     """The form two jobs' arguments are compared in (the running twin, the run that ended within its window): two
     command lines are the same job when the command line's own parser makes the same of them. A job runs
@@ -307,8 +316,7 @@ class OperatorJobs:
         if argv[:1] != ["paper"]:
             return
         words = [str(a).strip() for a in argv]
-        parsed = _parsed(tuple(words))
-        said = json.loads(parsed) if parsed else {}
+        said = as_run(argv) or {}
         if said.get("action") == "rescore" or words[:2] == ["paper", "rescore"]:
             raise PermissionError("paper rescore is not an agent's job: it rewrites kept paper records. Say in an idea "
                                   "which rule needs pricing again and why")  # fmt: skip
@@ -366,10 +374,9 @@ class OperatorJobs:
         the command line refuses start a job that ends before its first request."""
         if argv[:1] not in (["sends"], ["launch-tools"]):
             return
-        parsed = _parsed(tuple(str(a).strip() for a in argv))
-        if parsed is None:
+        said = as_run(argv)
+        if said is None:
             return
-        said = json.loads(parsed)
         if argv[0] == "launch-tools":
             n, coins = said.get("max"), len(said.get("mint") or [])
             if not (isinstance(n, int) and 1 <= n <= AGENT_LAUNCH_TOOLS_MAX and coins <= AGENT_LAUNCH_TOOLS_COINS):
