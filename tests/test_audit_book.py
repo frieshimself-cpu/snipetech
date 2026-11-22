@@ -160,6 +160,51 @@ def test_book0_the_watch_tells_the_owners_own_coin_once_a_day_never_as_nobody_se
         st.close()
 
 
+MIXED = "Mixd" + "m" * 40  # a coin both the bot and the owner bought
+BOT_FEES = (1_000_000, 2_000_000)  # a book sniper's buy: BOOK_PAYLOAD's priority and tip
+BOT_SALE_FEES = (1_000_000, 2_000_000)  # what OKTech pays on a book sniper's sale: the buy's priority, the sale's tip
+
+
+def _tape_trade(st, sig, ts, slot, is_buy, fees, mint=MIXED):
+    st.add_trades([Trade(sig=sig + "x" * (88 - len(sig)), ev=0, slot=slot, pos=3, ts=int(ts), mint=mint, venue="curve",
+                         user=W, is_buy=is_buy, quote=200_000_000, base=10**12, fee=2_000_000, fee_bps=125,
+                         q_after=40 * 10**9, b_after=800 * 10**12, priority=fees[0], tip=fees[1])])  # fmt: skip
+
+
+def test_book0_review_a_coin_bought_by_both_is_told_by_whose_part_is_left(tmp_path):
+    """Review of the book#0 fix: the watch matched each sale of the wallet's to its buys oldest first, whoever paid
+    them, then told the coin by the buys left open. The bot bought a coin, the owner bought it too by hand and sold his
+    part by hand: his sale closed the bot's older buy, his own buy read open, and the bot's unsold coin was told as "a
+    trade of your own", once a day and with no /sell line. The other way round (the owner first, then the bot, whose
+    sniper sold its part) the owner's coin was told "Nobody is selling ... Sell it now" every 15 minutes, as before the
+    fix. A sale goes to the buys of its own side first (the owner's sale to the owner's buys, the bot's to the bot's)."""
+    from snipetech.book.watch import watch_pass
+
+    held = [{"mint": MIXED, "amount": 1e6, "value_sol": 0.2, "priced": True}]
+    for k, (first, second, sale, theirs) in enumerate((
+        (BOT_FEES, OWNER_FEES, OWNER_FEES, False),  # the bot's part is left: the alert, with its /sell line
+        (OWNER_FEES, BOT_FEES, BOT_SALE_FEES, True),  # the owner's part is left: his, once a day
+    )):  # fmt: skip
+        st, cfg = _env(tmp_path / str(k))
+        _book_sniper(st)
+        _tape_trade(st, "FIRST", NOW - 1800, 400_500_000, True, first)
+        _tape_trade(st, "SECOND", NOW - 1700, 400_500_400, True, second)
+        _tape_trade(st, "SALE", NOW - 1600, 400_500_800, False, sale)
+        _fresh_tape(st)
+        _seen(tmp_path / str(k), MIXED, NOW - 1800)
+        sent: list[str] = []
+        try:
+            hits = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW)
+            again = watch_pass(cfg, st, _notifier(sent), W, held, [], NOW + 15 * 60)
+            assert hits and bool(hits[0].get("stray")) is theirs and bool(again[0].get("stray")) is theirs, (k, hits)
+            if theirs:
+                assert len(sent) == 1 and "your own" in sent[0] and "/sell" not in sent[0], sent
+            else:
+                assert len(sent) == 2 and all("Nobody is selling" in t and t.endswith(f"/sell {MIXED}") for t in sent)
+        finally:
+            st.close()
+
+
 # -- book#1: a retire undone by a coin bought while it stopped, and a start again that fails -------------------------
 
 LATE = [{"mint": "Late" + "n" * 40, "amount": 1.0, "value_sol": 0.2, "priced": True}]

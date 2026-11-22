@@ -190,39 +190,45 @@ def _trades(store: Store, sql: str, params: tuple) -> list[Trade]:
             for r in store._q(sql, params)]  # fmt: skip
 
 
-def _open_buys(ours: list[Trade]) -> list[tuple[Trade, bool]]:
+def _open_buys(ours: list[Trade], owner: set[str] | frozenset = frozenset()) -> list[tuple[Trade, bool]]:
     """Our buys in a coin that still hold tokens once our sales are matched to them oldest first, each with whether a
     sale of ours took tokens from it. A sale matched wholly to an older buy leaves a younger one unsold: that buy (a
-    sniper's cap-using second lot) is judged by its own exits."""
+    sniper's cap-using second lot) is judged by its own exits. `owner`: the owner's own trades by hand (`_owner_sigs`).
+    A sale goes to the buys of its own side first (the owner's sale to the owner's buys, the bot's to the bot's), then
+    to the others: review of 22 Nov, the owner sold his part of a coin the bot held too, his sale closed the bot's older
+    buy, and the bot's unsold coin was told as his."""
     lots: list[list] = []  # [buy, tokens left, sold since]
     for t in ours:
         if t.is_buy:
             lots.append([t, int(t.base), False])
             continue
-        left = int(t.base)
-        for lot in lots:
+        left, side = int(t.base), t.sig in owner
+        for lot in sorted(lots, key=lambda lot: (lot[0].sig in owner) != side):  # its own side first, each oldest first
             take = min(lot[1], left)
             if take > 0:
                 lot[1], left, lot[2] = lot[1] - take, left - take, True
     return [(b, sold) for b, rest, sold in lots if rest > b.base * OPEN_SHARE]
 
 
-def _owner_buys(store: Store, wallet: str, mint: str, now: float, marks: dict) -> set[str]:
-    """The wallet's buys of `mint` on the tape (in `unmanaged`'s window) whose fees are known and are no sniper's of
-    ours: the owner's own trades by hand (measure/ours.bot_tape_buy; `marks`: fee_marks). None with no sniper on record,
-    or when the tape's fees cannot be read: every buy then counts as the bot's, as before."""
+def _owner_sigs(store: Store, wallet: str, mint: str, now: float, marks: dict) -> set[str]:
+    """The wallet's trades of `mint` on the tape (in `unmanaged`'s window) whose fees are known and are no sniper's of
+    ours: the owner's own trades by hand, buys and sales (measure/ours.py: a buy not at a sniper's buy fees, a sale not
+    at a sniper's or the fallback sale's; `marks`: fee_marks). None with no sniper on record, or when the tape's fees
+    cannot be read: every trade then counts as the bot's, as before."""
     from types import SimpleNamespace
 
-    from ..measure.ours import bot_tape_buy
+    from ..measure.ours import bot_sale_fees, bot_tape_buy
 
     if not marks["buy"]:
         return set()
     try:
-        rows = store._q("SELECT sig, priority, tip FROM trades WHERE user=? AND +mint=? AND is_buy=1 AND +ts>=? "
-                        "AND +ts<=?", (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
+        rows = store._q("SELECT sig, is_buy, priority, tip FROM trades WHERE user=? AND +mint=? AND +ts>=? AND +ts<=?",
+                        (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
     except Exception:  # noqa: BLE001 - not known: the bot's, as before
         return set()
-    return {str(sig) for sig, prio, tip in rows if not bot_tape_buy(SimpleNamespace(priority=prio, tip=tip), marks)}
+    return {str(sig) for sig, is_buy, prio, tip in rows
+            if not (bot_tape_buy(SimpleNamespace(priority=prio, tip=tip), marks) if is_buy
+                    else bot_sale_fees({"priority_lamports": prio, "tip_lamports": tip}, marks))}  # fmt: skip
 
 
 _FILL_KEYS = ("sig", "ts", "sol", "wallet_copied", "sniper_id", "priority_lamports", "tip_lamports")
@@ -356,8 +362,8 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
         # our wallet's index (`+mint`, `+ts`): a coin can have 100,000 trades, the book wallet trades a few a day
         ours = _trades(store, f"SELECT {_COLS} FROM trades WHERE user=? AND +mint=? AND +ts>=? AND +ts<=? "
                               "ORDER BY slot, pos, ev LIMIT 2000", (wallet, mint, int(now - LOOKBACK_SECS), int(now)))  # fmt: skip
-        owner = _owner_buys(store, wallet, mint, now, marks)
-        lots = _open_buys(ours)
+        owner = _owner_sigs(store, wallet, mint, now, marks)
+        lots = _open_buys(ours, owner)
         bots = [(b, sold) for b, sold in lots if b.sig not in owner]  # the open buys of the bot's
         if bots:
             hit = min((_position(store, mint, b, sold, status, now, tape_last, lagging, grace_s) for b, sold in bots),
@@ -372,7 +378,8 @@ def unmanaged(store: Store, wallet: str, holdings: list[dict], tasks: list[dict]
             # stray: no buy of the bot's at all (an airdrop), or the open buys are all the owner's own (22 Nov audit:
             # the owner's hand-bought coin was told "Sell it now" every 15 minutes): said once a day
             stray = mine is None and (bool(lots) or not bot_bought)
-            theirs = bool(lots) or bool(owner) or any(not bot_buy(f, marks) for f in fills)
+            theirs = (bool(lots) or any(t.is_buy and t.sig in owner for t in ours)
+                      or any(not bot_buy(f, marks) for f in fills))  # fmt: skip
             hit = {"mint": mint, "reason": "not_on_tape", "flag_at": start + UNKNOWN_HOLD_SECS, "start": start,
                    "held_secs": now - start, "bought_at": float(mine["ts"]) if mine else None,
                    "buy_sig": mine["sig"] if mine else None, "buy_slot": None,
