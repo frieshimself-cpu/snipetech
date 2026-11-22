@@ -735,21 +735,35 @@ def test_a_withdrawal_never_drops_a_strategy_and_its_floor_moves_with_the_wallet
     assert not _said(env, "Automatic live test dropped") and AT.read_autotest(env.paths)["on"] is True
 
 
-def test_a_block_whose_cycler_would_refuse_its_floor_holds_and_never_loops(env):
-    """The cycler reads the wallet's SOL without its wrapped SOL and refuses to start at or below its floor. With 1.5 SOL
-    of the wallet wrapped, the next block's floor (10.90, from the wallet's 12.1 SOL in all) is above the 10.6 SOL the
-    cycler would read: no block is asked for (each would make a sniper that never runs), the wallet holds it like one
-    with no room, said once a day, and the block starts once the SOL is unwrapped."""
+def test_a_block_whose_plain_sol_pays_a_curve_buy_starts_though_part_of_the_wallet_is_wrapped(env):
+    """Audit of 22 Nov (livetest#6): this block was held, as "the cycler reads the SOL without the wrapped SOL", but the
+    cycler reads both at its start since 1d327ca (21 Nov 21:18): with 10.6 SOL and 1.5 wrapped, the next block's floor
+    (10.90, from the wallet's 12.1 SOL in all) is under what it reads, and 10.6 SOL pays a 0.2 SOL curve buy many times
+    over. The block starts at its floor."""
     _start(env)
     _play(env, [0.02] * 10)  # 12.0 SOL and 0.1 wrapped
     env.sol -= 1.4  # OKTech wrapped 1.4 SOL more
     _round(env, NOW + 60 + 2 * HOUR, wsol=1.5)
     _round(env, NOW + 60 + 2 * HOUR + 900, wsol=1.5)
+    t = LT.load(env.paths)
+    assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9
+    assert not _seq(env).get("hold") and not _said(env, "Automatic live test holds")
+
+
+def test_a_block_whose_plain_sol_cannot_pay_a_curve_buy_holds_and_never_loops(env):
+    """A curve buy is paid in plain SOL only: with nearly all of the wallet wrapped, no block is asked for (its sniper's
+    buys would fail and pay their fees), the wallet holds it like one with no room, said once a day, and the block
+    starts once the SOL is unwrapped."""
+    _start(env)
+    _play(env, [0.02] * 10)  # 12.0 SOL and 0.1 wrapped
+    env.sol -= 11.9  # OKTech wrapped nearly all of it
+    _round(env, NOW + 60 + 2 * HOUR, wsol=12.0)
+    _round(env, NOW + 60 + 2 * HOUR + 900, wsol=12.0)
     seq = _seq(env)
     assert len(env.svc.created) == 1 and seq["state"] == "running" and seq["hold"]["kind"] == "room"
     (held,) = _said(env, "Automatic live test holds")
-    assert "wrapped" in held and "10.90" in held
-    env.sol += 1.4
+    assert "plain SOL" in held and "0.10" in held and "0.25" in held
+    env.sol += 11.9
     _round(env, NOW + 60 + 2 * HOUR + 1800)
     t = LT.load(env.paths)
     assert t["sequence"]["block"] == 2 and t["state"] == "running" and t["floor"] == 10.9

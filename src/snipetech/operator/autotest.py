@@ -1379,12 +1379,14 @@ async def _next_block(r: _Round, seq: dict) -> dict:
                                      f"under {live_test.MIN_FLOOR_SOL:g} SOL, a buy of {size:g} SOL and its fees)",
                      daily=True)  # fmt: skip
     native = r.snap.native_sol if r.snap is not None else None
-    if native is not None and float(native) <= p["floor"] + 1e-9:
-        # the cycler reads the SOL without the wrapped SOL and refuses to start at or below its floor (oktech_cycle): a
-        # block asked for now makes a sniper that never runs, every round (the floor end is judged, never a drop)
-        return _hold(r, seq, "room", f"the wallet's SOL is {float(native):.2f} without its wrapped SOL, as the cycler "
-                                     f"reads it, at or below the block's {p['floor']:.2f} SOL floor, so the cycler "
-                                     "would not start", daily=True)  # fmt: skip
+    if native is not None and float(native) + 1e-9 < room:
+        # a curve buy is paid in plain SOL only: with less of it than one buy, its fees and the token account's rent, the
+        # block's sniper would only send buys that fail and pay their fees. The cycler's own start reads plain and wrapped
+        # SOL together against the floor since 1d327ca (21 Nov 21:18): wrapped SOL never held a block there (audit of 22
+        # Nov: it was held here as "the cycler reads the SOL without the wrapped SOL")
+        return _hold(r, seq, "room", f"the wallet's plain SOL is {float(native):.2f} and a curve buy is paid in plain SOL "
+                                     f"only: one buy of {size:g} SOL with its fees and rent needs {room:.2f} SOL",
+                     daily=True)  # fmt: skip
     if live_test.in_progress(r.paths, r.now):
         return _wait(r, seq, "another live test is in progress")
     n = int(seq["blocks"][-1]["n"]) + 1 if seq["blocks"] else 1
