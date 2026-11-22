@@ -66,6 +66,34 @@ def test_signature_replay_and_age(env, tmp_path):
         ops.handle(old, sig)
 
 
+def test_one_bad_line_in_the_keys_file_never_locks_the_other_keys_out(env):
+    """22 Nov audit (ops#1): one line of the keys file that was no key (one pasted short, a stray character) made every
+    request a 500 with every key, the update that would bring the fixed file too: the endpoint stayed locked until
+    someone logged in over SSH. A line that is no key is skipped; the keys listed still work."""
+    ops, key = env
+    ops.keys_file.write_text(ops.keys_file.read_text() + "ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI new-session-key-pasted-short\n"
+                             "ed25519 not*base64! stray\ned25519 QUJD short-but-valid-base64\n")  # fmt: skip
+    assert len(O.load_keys(ops.keys_file)) == 1
+    server = O.make_server(ops, "127.0.0.1", 0)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        assert O.call(f"http://127.0.0.1:{server.server_address[1]}", key, "status")["branch"] == "main"
+    finally:
+        server.shutdown()
+
+
+def test_every_line_of_the_repo_s_keys_file_is_a_key():
+    """The file a deploy brings (deploy/ops_authorized_keys): a bad line there is what locks a key out."""
+    import base64
+
+    path = Path(__file__).resolve().parents[1] / "deploy" / "ops_authorized_keys"
+    lines = [ln for ln in path.read_text().splitlines() if ln.strip() and not ln.lstrip().startswith("#")]
+    assert lines
+    for ln in lines:
+        kind, b64 = ln.split()[:2]
+        assert kind == "ed25519" and len(base64.b64decode(b64, validate=True)) == 32, ln
+
+
 def test_run_allowlist_jobs_and_scrubbing(env, monkeypatch):
     ops, key = env
     monkeypatch.setenv("HELIUS_API_KEY", "super-secret-helius-key")

@@ -111,13 +111,18 @@ def public_line(path: str | Path, comment: str = "snipetech-ops") -> str:
 
 
 def load_keys(path: Path) -> list[bytes]:
+    """The public keys the keys file lists. A line that is no key (one pasted short, a stray character) is skipped:
+    22 Nov audit, one such line made every request a 500, the update that would bring the fixed file too."""
     out = []
     if not path.exists():
         return out
     for line in path.read_text().splitlines():
         parts = line.split()
         if len(parts) >= 2 and parts[0] == "ed25519":
-            raw = base64.b64decode(parts[1])
+            try:
+                raw = base64.b64decode(parts[1], validate=True)
+            except (binascii.Error, ValueError):
+                continue
             if len(raw) == 32:
                 out.append(raw)
     return out
