@@ -2183,6 +2183,8 @@ def report(store: Store, cfg: Config, now: float | None = None) -> dict[str, Any
                     "venue": strategy_venue(s), "other_venue": other, **robust,
                     # its trades that rest on a price outside the model, as the lab counts them (`_outside_count`)
                     "outside_model": nums.get("outside_model")})  # fmt: skip
+        if s.get("refuted"):  # dropped by the paper test (`retire_refuted`): its row and numbers stay, scored no more
+            out[-1]["refuted"] = s["refuted"]
         if any_buyer(s.get("trigger")):  # why its place is no live landing, in the row itself
             out[-1]["landing_note"] = ANY_BUYER_NOTE
         if sniper_rule(s.get("trigger")):

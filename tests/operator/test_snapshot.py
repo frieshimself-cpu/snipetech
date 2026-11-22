@@ -146,6 +146,48 @@ def test_paper_top_ranks_only_rules_at_our_landing_and_every_row_names_its_landi
     json.dumps(compact)
 
 
+def test_a_refuted_rule_is_never_among_the_best_of_the_paper_test(tmp_path, fake_service):
+    """Review of paper#0 (22 Nov): a refuted rule keeps its row in the paper report and its total, and is scored no
+    more; no row said so, in the report or the snapshot. With `paper_top` the rules at our landing alone (12 under
+    test and 18 refuted on the server that day, the best refuted one at -4.4 SOL and three under test between -0.2 and
+    -0.7), a rule dropped days ago would stand among the six best as soon as fewer than six under test had a bigger
+    total. The report's row carries the refutal, the snapshot keeps it, and both lists rank the rules under test alone;
+    `paper_refuted` counts the ones left out."""
+    from snipetech.analysis import paper
+    from snipetech.operator.prompts import _compact_snapshot
+    from tests.operator.test_live_test import BEST, FOURTH, SECOND, THIRD, _freeze
+
+    copy_exit = {"copy_exit_pct": 0.5, "watch_secs": 1.3, "max_hold_secs": 10.0, "stop_loss": 0.0, "take_profit": 0.0}
+    store = fake_service.store
+    _freeze(store, THIRD, kind="kol", pnl=-0.01, landing=(0, "+6"))  # at our landing, refuted: -1.5 SOL
+    _freeze(store, SECOND, kind="kol", pnl=-0.02, landing=(0, "+6"))  # at our landing, under test: -3.0 SOL
+    _freeze(store, FOURTH, kind="kol", pnl=0.10, landing=(0, "bid-"), buy=5.0)  # at a bid landing, refuted
+    _freeze(store, BEST, kind="kol", pnl=0.05, landing=(0, "bid-"), buy=5.0)  # at a bid landing, under test
+    gone = {"at": 1_795_000_000, "trades": 400, "mean_sol": -0.03}
+    cov = store.coverage("paper_strategies")
+    for s in cov["strategies"]:
+        s["exit"] = dict(copy_exit)
+        if s["id"] in (FOURTH, BEST):
+            s |= {"buy_bid_sol": 0.05, "landing_asked": True}
+        if s["id"] in (THIRD, FOURTH):
+            s["refuted"] = dict(gone)
+    store.set_coverage("paper_strategies", cov)
+    cfg = Config()
+    cfg.operator.wallet = W
+    report = {r["id"]: r for r in paper.report(store, cfg, now=2_000)["strategies"]}
+    assert report[THIRD]["refuted"] == gone and report[FOURTH]["refuted"] == gone
+    assert not report[SECOND].get("refuted") and not report[BEST].get("refuted")
+    snap = asyncio.run(take_snapshot(fake_service, OperatorPaths(tmp_path).ensure(), cfg, prev=None, now=2_000,
+                                     services=dict, balances=lambda w: (1.5, 0.25, [])))  # fmt: skip
+    rows = {s["id"]: s for s in snap.paper["strategies"]}
+    assert rows[THIRD]["refuted"] is True and rows[FOURTH]["refuted"] is True and "refuted" not in rows[SECOND]
+    compact = _compact_snapshot(snap)
+    assert [s["id"] for s in compact["paper_top"]] == [SECOND]  # the refuted rule's bigger total is no best
+    assert [s["id"] for s in compact["paper_own_landing"]] == [BEST]
+    assert compact["paper_refuted"] == 2 and compact["paper_research_only"] == 0
+    json.dumps(compact)
+
+
 def test_equity_is_none_when_a_balance_is_unknown():
     s = Snapshot(ts=1, native_sol=None, wsol=0.1)
     assert s.equity is None

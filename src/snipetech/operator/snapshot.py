@@ -409,6 +409,8 @@ async def take_snapshot(svc, paths: OperatorPaths, cfg: Config, prev: Snapshot |
                                      # a record no sniper would trade says so, in a few words (paper.row_note)
                                      | ({"research_only": True, "exit_note": str(s.get("exit_note") or "")[:120]}
                                         if s.get("research_only") else {})
+                                     # a rule the paper test dropped: scored no more (its row and numbers stay)
+                                     | ({"refuted": True} if s.get("refuted") else {})
                                      for s in rep.get("strategies", [])]}  # fmt: skip
     except Exception as exc:  # noqa: BLE001
         snap.errors.append(f"paper: {exc}")
