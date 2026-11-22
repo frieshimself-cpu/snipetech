@@ -2504,6 +2504,7 @@ def _ops_serve(args, cfg: Config) -> int:
                                            capture_output=True, text=True).stdout.strip() or "main"  # fmt: skip
     ops = Ops(repo=repo, data=Path(args.data or db.parent), db=db,
               keys_file=Path(args.keys or repo / "deploy" / "ops_authorized_keys"), branch=branch)  # fmt: skip
+    ops.endpoint_code = ops._git("log", "-1", "--format=%h %s %cI")  # the code this process runs until it restarts
     server = make_server(ops, args.host, args.port)
     print(f"ops endpoint on {args.host}:{args.port} (repo {repo}, branch {branch}, data {ops.data})", flush=True)
     try:

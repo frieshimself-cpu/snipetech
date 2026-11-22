@@ -928,6 +928,86 @@ def test_two_updates_asked_at_once_never_both_go_out(env, monkeypatch):
     assert refused[0].code == 409 and "going out" in str(refused[0])
 
 
+def _checkouts(tmp_path):
+    """An origin with the old commit, the server's checkout of it, and the new commit pushed from elsewhere."""
+    import subprocess as sp
+
+    def git(*a, cwd):
+        return sp.run(["git", *a], cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+    origin, checkout, other = tmp_path / "origin.git", tmp_path / "checkout", tmp_path / "other"
+    sp.run(["git", "init", "-q", "--bare", "-b", "main", str(origin)], check=True)
+    for d in (checkout, other):
+        sp.run(["git", "clone", "-q", str(origin), str(d)], check=True, capture_output=True)
+        git("config", "user.email", "a@b", cwd=d), git("config", "user.name", "a", cwd=d)
+    (checkout / "f").write_text("old\n")
+    git("add", "f", cwd=checkout), git("commit", "-qm", "old code", cwd=checkout)
+    git("push", "-q", "origin", "HEAD:main", cwd=checkout)
+    git("pull", "-q", "origin", "main", cwd=other)
+    (other / "f").write_text("new\n")
+    git("commit", "-qam", "new code", cwd=other), git("push", "-q", "origin", "HEAD:main", cwd=other)
+    return checkout, git("rev-parse", "--short", "HEAD", cwd=checkout), git("rev-parse", "--short", "HEAD", cwd=other)
+
+
+def test_an_update_whose_install_fails_puts_the_checkout_back(env, tmp_path, monkeypatch):
+    """22 Nov audit (ops#3): an update reset the checkout to the new commit, then installed it. When the install failed
+    (pip asks the package index for its build tools on every editable install) the chain stopped before the restarts:
+    the recorder and this endpoint ran the code of before, every timer unit and new job started on the new files, and
+    `status` named the new commit as the code. A failed install now puts the checkout back on its commit and the
+    update fails, saying so."""
+    ops, _key = env
+    checkout, old, new = _checkouts(tmp_path)
+    pip = checkout / ".venv" / "bin" / "pip"
+    pip.parent.mkdir(parents=True)
+    pip.write_text("#!/bin/sh\necho 'ERROR: Could not find a version that satisfies the requirement setuptools>=77' >&2\n"
+                   "exit 1\n")  # fmt: skip
+    pip.chmod(0o755)
+    monkeypatch.setattr(O, "SYSTEMCTL", "/bin/true")  # nothing on this machine is restarted
+    up = O.Ops(repo=checkout, data=ops.data, db=ops.db, keys_file=ops.keys_file, branch="main", use_sudo=False)
+    monkeypatch.setattr(up, "deploy_waits_for", list)  # nothing mid-run
+
+    def update():
+        job = up.op_update()
+        for _ in range(200):
+            st = up.op_job(job["id"])
+            if not st["running"]:
+                return st
+            time.sleep(0.05)
+        raise AssertionError("the update did not end")
+
+    st = update()
+    assert st["exit_code"] == 1 and "deployed" not in st["output"] and f"back on {old}" in st["output"]
+    assert (checkout / "f").read_text() == "old\n" and up.op_status()["code"].startswith(old)
+    pip.write_text("#!/bin/sh\nexit 0\n")  # the package index answers again: the next update goes out
+    st = update()
+    assert st["exit_code"] == 0 and f"deployed {new}" in st["output"] and (checkout / "f").read_text() == "new\n"
+
+
+def test_status_names_the_code_this_endpoint_runs(tmp_path, monkeypatch):
+    """Beside the checkout's commit (`code`, what the next job runs), the commit this endpoint started on: a deploy
+    that changed the files but did not restart it shows as two commits."""
+    from types import SimpleNamespace
+
+    from snipetech import cli
+    from snipetech.config import Config
+
+    checkout, old, _new = _checkouts(tmp_path)
+    served = {}
+
+    class Server:
+        def serve_forever(self):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(O, "make_server", lambda ops, host, port: served.setdefault("ops", ops) and Server())
+    cfg = Config()
+    cfg.storage.db_path = str(tmp_path / "data" / "snipetech.db")
+    args = SimpleNamespace(repo=str(checkout), branch="main", data=None, keys=None, host="127.0.0.1", port=0)
+    assert cli._ops_serve(args, cfg) == 0
+    monkeypatch.setattr(O, "CGROUP_ROOT", tmp_path / "no-cgroup")
+    st = served["ops"].op_status()
+    assert st["endpoint_code"].startswith(old) and st["code"] == st["endpoint_code"]
+
+
 def test_the_database_copy_holds_no_deploy(env, monkeypatch):
     """20 Nov audit (server health 2): the 3-hourly copy took 41 to 69 minutes on 18-20 Nov, longer than the deploy
     hold (DEPLOY_HOLD_MAX_SECS, half an hour) and the client's wait, so a deploy asked during one gave up after holding

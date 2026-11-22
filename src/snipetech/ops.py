@@ -372,6 +372,7 @@ class Ops:
     branch: str
     command: list[str] = field(default_factory=list)  # prefix for allowlisted commands
     use_sudo: bool = True
+    endpoint_code: str | None = None  # the commit this endpoint started on (cli._ops_serve); it runs it until restarted
     jobs: dict[str, Job] = field(default_factory=dict)
     _nonces: dict[str, float] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -426,7 +427,8 @@ class Ops:
         out: dict[str, Any] = {
             "time": int(time.time()),
             "branch": self.branch,
-            "code": self._git("log", "-1", "--format=%h %s %cI"),
+            "code": self._git("log", "-1", "--format=%h %s %cI"),  # the checkout's: what the next job runs
+            "endpoint_code": self.endpoint_code,  # this endpoint's own: another while a deploy has not restarted it
         }
         from .infra import nightly
 
@@ -670,9 +672,15 @@ class Ops:
             [*sudo, SYSTEMCTL, "--no-block", "restart", "snipetech-ops"],  # last: this server restarts itself
         ]
         lines = [" ".join(_sh(a) for a in s) for s in steps]
+        # an install that fails (no package index for pip's build tools, a dependency it cannot get) puts the checkout
+        # back on its commit: nothing is restarted, and the timer units and new jobs keep the files the installed code
+        # came from (22 Nov audit: they ran the new files beside the old services, and `status` named the new commit)
+        repo = _sh(str(self.repo))
+        lines[2] = (f'{{ {lines[2]} || {{ git -C {repo} reset -q --hard "$old"; echo "the install failed: the checkout '
+                    'is back on $old and nothing was restarted" >&2; exit 1; }; }')  # fmt: skip
         # the events poll, a service the sudo rule cannot restart: ended, its unit starts the new code (EVENTS_POLL)
         lines.insert(4, f"(pkill -TERM -f {_sh(EVENTS_POLL_PATTERN)} || true)")
-        script = " && ".join(lines)
+        script = f"old=$(git -C {repo} rev-parse HEAD) && " + " && ".join(lines)
         (self.data / DEPLOY_WAITS).unlink(missing_ok=True)  # it is going out: nothing waits any more
         job = self._start(["/bin/sh", "-c", script], ["update"], 1800)
         try:  # its first step fetches over the network for a second or more: the mark is down before files change
