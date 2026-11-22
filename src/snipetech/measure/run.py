@@ -50,16 +50,27 @@ LANDING_KEY = "measure:landing_pos"
 LANDING_OFFSET = 3  # lab position = buys behind the leader + 3 (calibrated on the 6 Nov copy test)
 BASE_FEE_LAMPORTS = 5000
 SHADOW_MAX_PER_RUN = 200  # buys replayed in one run at most, newest first (a replay reads the coin's tape)
+# What a replay charges changed: since the 22 Nov audit each sale pays a sale's own fee and the buy's bid is paid once
+# (exits._sale_fee_sol). A replay made before the version below is made again, newest first, as a new one is (a new
+# EXIT_MENU_VERSION would reset the verdicts' exits too); the record says from when the replays are of this version.
+SHADOW_COST_KEY = "measure:shadow_costs"
+SHADOW_COST_VERSION = 2
 
 
 def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts: int,
                     limit: int = SHADOW_MAX_PER_RUN, marks: dict | None = None) -> int:  # fmt: skip
     """Replay every exit on the menu from each copy buy of ours since `since_ts` that is old enough and not replayed
-    under this menu yet (measure/exits.py shadow_exits); how many were. Newest first, so an old buy the tape missed
-    never holds up a new one; one slot time, measured around the newest, for all of them. Only the bot's buys
-    (measure/ours.bot_buy, by `marks`): an owner's hand buy right after a copied wallet's is no copy of ours."""
+    under this menu and its costs yet (measure/exits.py shadow_exits, at the buying sniper's fees); how many were.
+    Newest first, so an old buy the tape missed never holds up a new one; one slot time, measured around the newest,
+    for all of them. Only the bot's buys (measure/ours.bot_buy, by `marks`): an owner's hand buy right after a copied
+    wallet's is no copy of ours."""
     marks = fee_marks(store) if marks is None else marks
-    done = store.shadowed_buys(EXIT_MENU_VERSION)
+    mark = store.coverage(SHADOW_COST_KEY)
+    if mark.get("version") != SHADOW_COST_VERSION or mark.get("ts") is None:
+        mark = {"version": SHADOW_COST_VERSION, "ts": int(now)}
+        store.set_coverage(SHADOW_COST_KEY, mark)
+    done = {r[0] for r in store._q("SELECT DISTINCT buy_sig FROM exit_shadow WHERE menu_version=? AND computed_at>=?",
+                                   (EXIT_MENU_VERSION, int(mark["ts"])))}  # fmt: skip
     due = [b for b in store.fills(wallet=wallet, since_ts=int(since_ts), side="buy", limit=100_000)
            if b.get("wallet_copied") and b["sig"] not in done and float(b["ts"]) <= now - SHADOW_AFTER_SECS
            and bot_buy(b, marks)]  # fmt: skip
@@ -68,7 +79,9 @@ def shadow_new_buys(store: Store, cfg: Config, wallet: str, now: float, since_ts
     due.sort(key=lambda b: (-float(b["ts"]), b["sig"]))
     newest = int(float(due[0]["ts"]))
     slot_secs = span_slot_secs(store, newest - 1800, newest + SHADOW_AFTER_SECS)
-    return sum(1 for b in due[:limit] if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs))
+    rows = copy_sniper_rows(store)  # the buying sniper's config: what each replayed sale pays
+    return sum(1 for b in due[:limit] if shadow_exits(store, b, cfg=cfg, now=now, slot_secs=slot_secs,
+                                                      payload=(buying_sniper(rows, b) or {}).get("payload")))  # fmt: skip
 
 
 def _weights(ts_list: list[float], now: float, half_life_days: float) -> list[float]:

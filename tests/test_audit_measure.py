@@ -438,3 +438,69 @@ def test_agents_3_the_owners_hand_fills_are_no_news_of_ours(role):
         assert roles._news(role, st, {"seen": {}}, float(last), []) == "a new fill of ours (read_fills)"
     finally:
         st.close()
+
+
+# -- measure#6: a replayed sale pays a sale's fee, the buy's bid is paid once ------------------------------------------
+
+
+class _Tape(Market):
+    def _ts(self, slot: int) -> int:
+        return self.ts0 + int((slot - self.slot0) * 0.214)
+
+
+def _shadow_world(st):
+    m = _Tape(st, addr("audit-shadow"), D, NOW, SLOT)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 2.0, 0)
+    ours = m.buy(W, 0.2, 0)
+    for k in range(1, 11):
+        m.buy(addr(f"audit-up{k}"), 1.0, 4 * k)
+    for k in range(1, 11):
+        m.sell(addr(f"audit-up{k}"), 1.0, 40 + 4 * k)
+    m.sell(W, 1.0, 90)
+    m.buy(addr("audit-late"), 0.05, 300)
+    m.buy(addr("audit-later"), 0.05, 1450)
+    m.commit()
+    st.set_coverage("tape", {"spans": [[NOW - 60, NOW + 4000]]})
+    return {"sig": ours.sig, "ts": ours.ts, "slot": ours.slot, "mint": ours.mint, "side": "buy", "sol": 0.2025,
+            "tokens": float(ours.base), "wallet": W, "wallet_copied": LEAD, "priority_lamports": 1_000_000,
+            "tip_lamports": 2_000_000}  # fmt: skip
+
+
+def test_measure_6_a_bigger_buy_tip_lowers_each_replay_by_the_tip_once():
+    """measure#6: shadow_exits charged every replayed SALE the buy's whole fee, its tip included: each replay of a
+    copy bought at a 0.199 tip read 0.197 SOL too low (more for an exit that sells in parts), where its live sales paid
+    0.001 + 0.002. A replayed sale pays what the buying sniper's sale pays (the buy's priority and its sell tip), the
+    buy's bid is paid once (sim.exits.Costs.entry_bid_lamports)."""
+    from snipetech.measure.exits import shadow_exits
+
+    st = Store(":memory:")
+    try:
+        buy = _shadow_world(st)
+        low = {r["exit_name"]: r["sim_pnl_sol"] for r in shadow_exits(st, buy, now=NOW + 400, slot_secs=0.214)}
+        high = {r["exit_name"]: r["sim_pnl_sol"]
+                for r in shadow_exits(st, buy | {"tip_lamports": 199_000_000}, now=NOW + 400, slot_secs=0.214)}  # fmt: skip
+        assert low and set(low) == set(high)
+        assert all(abs(low[n] - high[n] - 0.197) < 1e-6 for n in low), {n: low[n] - high[n] for n in low}
+    finally:
+        st.close()
+
+
+def test_measure_6_a_replay_made_at_the_old_costs_is_made_again_once(tmp_path):
+    """measure#6: the replays on record were made at the old costs; each is made again once, newest first (a marker of
+    the costs' version, not a new menu version, which would reset the verdicts' exits too)."""
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+    from snipetech.measure.run import SHADOW_COST_KEY, SHADOW_COST_VERSION, shadow_new_buys
+
+    st, cfg = _svc(tmp_path)[1:]
+    try:
+        buy = _shadow_world(st)
+        st.put_fill(buy)
+        st.put_exit_shadow([{"buy_sig": buy["sig"], "exit_name": "lab", "menu_version": EXIT_MENU_VERSION,
+                             "sim_pnl_sol": -9.0, "sim_reason": "timer", "computed_at": NOW + 100}])  # fmt: skip
+        assert shadow_new_buys(st, cfg, W, NOW + 400, NOW - 3600) == 1
+        assert st.coverage(SHADOW_COST_KEY)["version"] == SHADOW_COST_VERSION
+        assert {r["exit_name"]: r["sim_pnl_sol"] for r in st.exit_shadow([buy["sig"]])}["lab"] != -9.0
+        assert shadow_new_buys(st, cfg, W, NOW + 500, NOW - 3600) == 0  # once
+    finally:
+        st.close()

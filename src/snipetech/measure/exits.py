@@ -328,22 +328,37 @@ def tape_without(trades: Iterable[Trade], wallet: str) -> list[Trade]:
 
 
 def _fee_sol(fill: dict) -> float:
-    """What the buy paid to land (priority + tip + base fee): what the replay charges a transaction; the flat cost when
-    its fingerprint is unknown."""
+    """What the buy paid to land (priority + tip + base fee): what the replay charges its buy; the flat cost when its
+    fingerprint is unknown."""
     if fill.get("priority_lamports") is None:
         return SHADOW_TX_SOL
     return (int(fill["priority_lamports"]) + int(fill.get("tip_lamports") or 0) + BASE_FEE_LAMPORTS) / 1e9
 
 
+def _sale_fee_sol(fill: dict, payload: dict | None, cfg: Config | None) -> float:
+    """What one sale of the position pays: the buy's priority (OKTech charges a task's buy priority on every exit),
+    the buying sniper's sell tip (its autoSell.sellTipAmount; [oktech] sell_tip_sol when its config is not on record)
+    and the base fee; the flat cost when the buy's fingerprint is unknown. 22 Nov audit: every replayed sale was
+    charged the buy's whole bid, 0.197 SOL too much on a copy bought at a 0.199 tip whose sales paid 0.001 + 0.002."""
+    if fill.get("priority_lamports") is None:
+        return SHADOW_TX_SOL
+    tip = _num(_part(payload or {}, "autoSell").get("sellTipAmount"))
+    if tip is None:
+        tip = float((cfg or Config()).oktech.sell_tip_sol)
+    return (int(fill["priority_lamports"]) + _lamports(tip) + BASE_FEE_LAMPORTS) / 1e9
+
+
 def shadow_exits(store: Store, buy_fill: dict, menu: Sequence[MenuExit] = COPY_EXIT_MENU, *, cfg: Config | None = None,
-                 now: float | None = None, slot_secs: float | None = None) -> list[dict[str, Any]]:  # fmt: skip
+                 now: float | None = None, slot_secs: float | None = None,
+                 payload: dict | None = None) -> list[dict[str, Any]]:  # fmt: skip
     """What every exit on the menu would have made of one live copy buy, replayed from its real entry: the coin's tape as
     if we had never traded it (`tape_without`), entered at the state just before our buy with the SOL we spent, the
     copied wallet's own sales for the copy exit, each exit as the live sniper runs it (analysis/lab.py menu_exits: the
-    watch delay, a sell a slot after its exit), at the buy's own fee a transaction. One row per exit (buy_sig,
-    exit_name, menu_version, sim_pnl_sol, sim_reason in classify_exit's words, computed_at), written to exit_shadow in
-    place of an earlier replay. Nothing for a buy younger than SHADOW_AFTER_SECS at `now`, one the tape did not record
-    the whole time after, one that copied nobody, or one with no trade before it on the tape."""
+    watch delay, a sell a slot after its exit), the buy at its own fee and each sale at what a sale of the buying
+    sniper pays (`payload`: its config, `_sale_fee_sol`). One row per exit (buy_sig, exit_name, menu_version,
+    sim_pnl_sol, sim_reason in classify_exit's words, computed_at), written to exit_shadow in place of an earlier
+    replay. Nothing for a buy younger than SHADOW_AFTER_SECS at `now`, one the tape did not record the whole time after,
+    one that copied nobody, or one with no trade before it on the tape."""
     sig, mint, wallet, leader = (buy_fill.get(k) for k in ("sig", "mint", "wallet", "wallet_copied"))
     if buy_fill.get("side") not in (None, "buy") or not (sig and mint and wallet and leader):
         return []
@@ -364,7 +379,9 @@ def shadow_exits(store: Store, buy_fill: dict, menu: Sequence[MenuExit] = COPY_E
     entry = max((i for i in range(path.n) if path.sigs[i] in before), default=None)
     if entry is None:
         return []
-    costs = Costs(per_tx_lamports=_fee_sol(buy_fill) * 1e9)
+    # every transaction (each sale) at a sale's fee, the rest of the buy's own fee once, on the buy (it may be less)
+    sale = _sale_fee_sol(buy_fill, payload, cfg)
+    costs = Costs(per_tx_lamports=sale * 1e9, entry_bid_lamports=(_fee_sol(buy_fill) - sale) * 1e9)
     prep = prepare(path, entry, sol, costs, EXIT_LATENCY_SLOTS, EXIT_POSITION,
                    leader_frac=leader_sell_fractions(path, leader))  # fmt: skip
     if prep is None:
