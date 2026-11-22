@@ -244,6 +244,39 @@ def test_a_new_process_that_cannot_work_out_its_days_prunes_nothing(monkeypatch)
     assert w.retain_days == 9.0 and _days_left(st, now) == [1, 8]  # the days worked out stay in force
 
 
+def test_a_new_process_prunes_no_learned_destination_before_its_days_are_worked_out(monkeypatch):
+    """Review of the fix above: a prune that failed before it worked the days out (the day's walk record could not be
+    read) still pruned the learned payment destinations, at the configured floor: 6 days where 14 were asked for."""
+    import sqlite3
+
+    from snipetech import live as L
+
+    now = float(T0)
+    st = Store(":memory:")
+    R.ask(st, 14, now, "db retain")
+    w = watcher(store=st)
+    w.cfg.storage.retain_days = 6.0
+    w.retain_days = 6.0
+    assert w.pay_dests is not None
+    cuts: list[int] = []
+    monkeypatch.setattr(st, "prune_pay_dests", lambda before, learned: cuts.append(before) or 0)
+    real = st.coverage
+
+    def coverage(key):
+        if key == L.PRUNE_KEY:
+            raise sqlite3.OperationalError("disk I/O error")
+        return real(key)
+
+    monkeypatch.setattr(st, "coverage", coverage)
+    monkeypatch.setattr("snipetech.live.PRUNE_REST", 0.0)
+    asyncio.run(w._prune(now))
+    assert cuts == []  # was [now - 6 days]: the configured floor, not the 14 days asked for
+    monkeypatch.setattr(st, "coverage", real)
+    monkeypatch.setattr(R, "current", lambda *_a, **_k: {"effective": 14.0})
+    asyncio.run(w._prune(now))
+    assert cuts == [int(now - 14 * DAY)]
+
+
 def test_the_command_shows_the_state_and_sets_the_days(tmp_path, capsys, monkeypatch):
     db = tmp_path / "snipetech.db"
     Store(db).close()

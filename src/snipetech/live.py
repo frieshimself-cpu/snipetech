@@ -1811,10 +1811,11 @@ class LiveWatcher:
                 self.store.set_coverage(PRUNE_KEY, {"walked": int(now)})
         except Exception as exc:  # noqa: BLE001 - the tape goes on; the next hour's prune tries again
             log.warning("tape: the hourly prune failed (%s); the next one goes on from there", exc)
-        if self.pay_dests is not None:
+        if self.pay_dests is not None and self.retain_known:
             # the learned destinations last paid before the tape's own cutoff go with it (the table only grew
             # otherwise); a tip account goes only after PAY_DESTS_KEEP_LEARNED_SECS unseen. A batch a call, by an
-            # index, and the loop's turn after each, as for the trades above.
+            # index, and the loop's turn after each, as for the trades above. Never before the days have been worked
+            # out once: a new process holds the configured floor until then (review of 22 Nov: 6 of the 14 days).
             try:
                 before, learned = int(now - self.retain_days * 86400), int(now - PAY_DESTS_KEEP_LEARNED_SECS)
                 while True:
