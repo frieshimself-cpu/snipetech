@@ -220,3 +220,73 @@ def test_runner_4_a_hand_buy_at_a_snipers_priority_is_the_owners_whatever_wallet
                       (1_000_000, 299_000_000), (5_000_000, 30_000_000)):  # fmt: skip
         assert bot_buy(hand | {"priority_lamports": prio, "tip_lamports": tip, "wallet_copied": cented}, marks)
         assert bot_buy(hand | {"priority_lamports": prio, "tip_lamports": tip}, marks)
+
+
+# -- measure#2 / server#0: measure's own outputs hold the bot's trades only -------------------------------------------
+
+HAND_FEES = (6121, 26_993_879)  # the owner's hand buy of 22 Nov 02:40 (H8WTvo), a bid no sniper pays
+
+
+def _copies_and_a_hand_trip(tmp_path):
+    """Three copies of LEAD by our sniper at its payload's fees, and a round trip by hand (the owner's fees) in a coin
+    LEAD bought 10 slots before: inside the window, so the tape reading puts it behind LEAD like a copy."""
+    from snipetech.exits_menu import EXIT_MENU_VERSION
+
+    svc, st, cfg = _svc(tmp_path)
+    t0 = NOW - 5400
+    _sniper(st, created=t0 - 3600, tip=0.002)
+    metas = {}
+    for k in range(3):
+        m = Market(st, addr(f"audit-c{k}"), D, t0 + k * 600, SLOT + k * 1500)
+        m.buy(D, 1.0, 0)
+        m.buy(LEAD, 1.0, 2)
+        m.buy(addr(f"audit-x{k}"), 0.5, 3)
+        tb = m.buy(W, 0.2, 4)
+        ts = m.sell(W, 1.0, 30)
+        m.commit()
+        metas[tb.sig], metas[ts.sig] = _meta(tb.sig, (1_000_000, 2_000_000)), _meta(ts.sig, BOT_SALE_FEES)
+    m = Market(st, addr("audit-hand"), D, t0 + 300, SLOT + 9000)
+    m.buy(D, 1.0, 0)
+    m.buy(LEAD, 1.0, 2)
+    m.buy(addr("audit-hx"), 0.5, 5)
+    hb = m.buy(W, 2.5, 12)  # the owner's hand buy, 4 s after LEAD's
+    hs = m.sell(W, 1.0, 400)
+    m.commit()
+    metas[hb.sig], metas[hs.sig] = _meta(hb.sig, HAND_FEES), _meta(hs.sig, (HAND_FEES[0], 0))
+    # a failed send of the owner's (Axiom's 4,500 lamports, no tip) and one of a sniper's sale (its 0.001, untipped)
+    for sig, prio in (("owner-failed", 4500), ("bot-failed", 1_000_000)):
+        st.put_fill({"sig": sig, "ts": t0 + 900, "slot": SLOT + 9500, "wallet": W, "side": "failed", "sol": 0.0,
+                     "tokens": 0.0, "mint": addr("audit-hand"), "bid_arm": "control", "priority_lamports": prio,
+                     "tip_lamports": 0})  # fmt: skip
+    # a dust "buy" of USDC another wallet paid for, as the chain reading wrote one before 22 Nov (3kA7a2QS)
+    st.put_fill({"sig": "dust", "ts": t0 + 950, "slot": SLOT + 9600, "wallet": W, "side": "buy", "sol": 0.0,
+                 "tokens": 100.0, "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", "priority_lamports": 50,
+                 "tip_lamports": 0, "venue": "other", "landing_src": "chain-none"})  # fmt: skip
+    st.set_coverage("tape", {"spans": [[t0 - 600, NOW + 600]]})  # the tape recorded the whole time: buys are replayed
+    cfg.measure.min_arm_fills = 3
+    out = _measure(svc, cfg, metas, since=NOW - 9000)
+    return st, out, hb, hs, st.shadowed_buys(EXIT_MENU_VERSION)
+
+
+def test_server_0_the_owners_hand_trip_shapes_none_of_measures_outputs(tmp_path):
+    """measure#2 / server#0: run_measure fed every buy and sale of the wallet to the bid model (the book's arm choice,
+    qualify's cost a transaction), wallet_live (the book's pause and rank), the measured landing, the landings by curve
+    progress and the exit shadow. 22 Nov: the owner's three H8WTvo hand buys were 3 of the 'paid' arm's 8 fills. The
+    hand trip's rows are still written; only the bot's trades are counted."""
+    from snipetech.measure.ours import bot_buy, fee_marks
+
+    st, out, hb, hs, shadowed = _copies_and_a_hand_trip(tmp_path)
+    try:
+        hand = st.fill(hb.sig)
+        assert hand is not None and st.fill(hs.sig)["buy_sig"] == hb.sig  # written and paired, as every fill is
+        assert hand["wallet_copied"] == LEAD and not bot_buy(hand, fee_marks(st))
+        assert sum(r["n"] for r in st.bid_model()) == 3
+        assert sum(r["failed_n"] for r in st.bid_model()) == 1  # the sniper's failed send; the owner's is no arm's cost
+        assert out["non_coin_buys"]["n"] == 0  # no sniper bought USDC: no alert
+        assert {r["wallet"]: r["n"] for r in st.wallet_live()} == {LEAD: 3}
+        assert out["trips"] == 3
+        assert st.coverage("measure:landing_pos")["n"] == 3
+        assert sum(b["n"] for b in out["landing_by_progress"].values()) == 3
+        assert hb.sig not in shadowed and len(shadowed) == 3
+    finally:
+        st.close()

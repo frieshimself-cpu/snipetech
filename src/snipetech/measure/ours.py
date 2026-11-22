@@ -115,6 +115,15 @@ def bot_tape_buy(t, marks: dict[str, frozenset]) -> bool:
     return True if paid is None else paid
 
 
+def bot_send(row: dict, marks: dict[str, frozenset]) -> bool:
+    """Whether a failed send in `fills` is the bot's, by its own fees: a sniper's buy or sale fees, the run's fallback
+    sale's, or fees not known (with no sniper on record, every send). The owner's failed hand sends pay other fees."""
+    if not marks["buy"]:
+        return True
+    paid = _paid(row.get("priority_lamports"), row.get("tip_lamports"), marks["buy"] | marks["sell"])
+    return True if paid is None else paid
+
+
 def bot_fill(row: dict, marks: dict[str, frozenset]) -> bool:
     """Whether a buy or a sale in `fills` is the bot's by its own record, before any pairing: a buy by `bot_buy`, a
     sale by its own fees (`bot_sale_fees`). What the measure stage pairs each sale's lots by
