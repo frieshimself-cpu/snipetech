@@ -1054,6 +1054,28 @@ class Service:
     # for five hours, and the floor waited on it for as long as it stayed (22 Nov audit)
     GUARD_UNPRICED_WAIT_SECS = 120.0
 
+    async def start_refusal(self, address: str, plain_sol: float | None = None,
+                            held: list[dict] | None = None) -> str | None:  # fmt: skip
+        """Why the owner's wallet-wide guard (operator/RISK: the day stop, the wallet's floor) refuses a start of a
+        sniper on `address` now, or None when it is clear; a guard that cannot tell refuses too, as for the cycle, the
+        book and /test (22 Nov audit: `oktech guard` and `oktech start` armed snipers while it held). `plain_sol` and
+        `held`: the wallet's plain SOL and its coins, the owner's ignore_mints left out, when the caller has read them."""
+        try:
+            sol = None
+            if address and self.risk_guard_reads_balance():
+                sol = (await self.wallet_sol(address) if plain_sol is None
+                       else float(plain_sol) + await self.wsol_balance(address))  # fmt: skip
+            if held is None and address:
+                held = await self.open_positions(address, ignore=self.cfg.operator.ignore_mints)
+            g = self.risk_guard(address, sol, held)
+        except Exception as exc:  # noqa: BLE001 - cannot tell is never clear
+            return f"the owner's wallet-wide guard cannot tell (the wallet could not be read: {type(exc).__name__})"
+        if g.tripped:
+            return f"the owner's wallet-wide guard holds ({g.reason})"
+        if not g.known:
+            return f"the owner's wallet-wide guard cannot tell ({g.reason})"
+        return None
+
     async def oktech_guard(self, ids: list[str], address: str, floor_sol: float, max_minutes: float, start: bool = True,
                            allow_uncapped: bool = False, native_reserve_sol: float = 0.005) -> dict:  # fmt: skip
         """Start capped snipers and watch the wallet. A running sniper is the only thing that sells its positions, so
@@ -1184,6 +1206,9 @@ class Service:
             if eq0 <= floor_sol:
                 raise SystemExit(f"equity {eq0:.4f} is already at or below the floor {floor_sol}")
             if start:
+                why = await self.start_refusal(address, b0, held0)
+                if why:
+                    raise SystemExit(f"{why}: nothing started (the owner's /risk changes it)")
                 for i in ids:
                     try:
                         ans = await client.start(i)
@@ -3114,12 +3139,17 @@ async def oktech_tasks(
     svc: Service, action: str, ids: list[str], force: bool = False
 ) -> tuple[list[dict], list[tuple[str, str]]]:
     """`action` on every id, continuing past failures: (answers as {id, answer}, failures as (id, reason)).
-    `start` is refused while the owner's /stop flag is set; `stop` and `delete` are refused while the sniper wallet
-    holds a coin (a stopped sniper strands it) unless `force`."""
+    `start` is refused while the owner's /stop flag is set, or while the owner's wallet-wide guard holds or cannot tell
+    (`Service.start_refusal`, on the sniper wallet); `stop` and `delete` are refused while the sniper wallet holds a coin
+    (a stopped sniper strands it), the owner's ignore_mints left out. `force` overrides each."""
     results: list[dict] = []
     failures: list[tuple[str, str]] = []
     if action == "start" and not force and svc.stop_flag_set():
         return [], [(i, "the owner's /stop flag is set: /resume first (or --force)") for i in ids]
+    if action == "start" and not force:
+        why = await svc.start_refusal(svc.cfg.operator.wallet or "")
+        if why:
+            return [], [(i, f"{why}: nothing started (the owner's /risk changes it, or --force)") for i in ids]
     if action in ("stop", "delete") and not force and svc.cfg.operator.wallet:
         try:
             held = await svc.open_positions(svc.cfg.operator.wallet)

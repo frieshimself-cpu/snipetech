@@ -479,3 +479,31 @@ def test_book3_the_floor_holds_beside_an_airdrop_the_tape_never_prices_and_reads
     # sniper running only until it was a stray, as for the book
     assert rep["stopped"] and NOW + STRAY_AFTER_SECS <= stopped_at[0] <= NOW + Service.GUARD_UNPRICED_WAIT_SECS + 900
     store.close()
+
+
+def test_book4_neither_the_guard_nor_a_manual_start_arms_a_sniper_while_the_owners_wallet_wide_guard_holds(monkeypatch):
+    """The owner's wallet-wide guard (operator/RISK: no new live trade once the day is down by its day stop or the
+    wallet is under its floor) holds back the cycle, the book and /test; `oktech guard` and `oktech start` started
+    snipers all the same. Now both refuse while it holds or cannot tell, as the cycle does; --force (start) still
+    starts, as it does under the /stop flag, and a --watch-only guard starts nothing and reads no guard."""
+    import pytest
+
+    from snipetech.service import oktech_tasks
+
+    for says in ("the wallet holds 2.00 SOL (SOL and coins), under the 10 SOL floor", "unknown"):
+        svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0, says=says)
+        with pytest.raises(SystemExit, match="wallet-wide guard"):
+            asyncio.run(svc.oktech_guard(["a"], W, 0.5, 1))
+        _results, failures = asyncio.run(oktech_tasks(svc, "start", ["a"]))
+        assert client.calls == [] and failures and "wallet-wide guard" in failures[0][1], failures
+        store.close()
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0, says="under the floor")
+    _results, failures = asyncio.run(oktech_tasks(svc, "start", ["a"], force=True))
+    assert client.calls == [("start", "a")] and not failures
+    asyncio.run(svc.oktech_guard(["a"], W, 0.5, 0.1, start=False))
+    assert [c for c in client.calls if c[0] == "start"] == [("start", "a")]
+    store.close()
+    svc, store, client, _ = _guard(monkeypatch, sol=lambda t: 2.0)  # the guard is clear: started as before
+    _results, failures = asyncio.run(oktech_tasks(svc, "start", ["a"]))
+    assert client.calls == [("start", "a")] and not failures
+    store.close()

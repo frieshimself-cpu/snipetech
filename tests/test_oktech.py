@@ -271,6 +271,7 @@ def test_guard_only_stops_in_an_emergency_and_lists_what_is_left(monkeypatch):
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: FakeClient())
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    monkeypatch.setattr(svc, "risk_guard", _clear_guard)  # the owner's wallet-wide guard is clear here (book#4)
     monkeypatch.setattr(
         store, "last_price", lambda mint: 0.002
     )  # the held coin is worth 0.002 SOL: above dust, below the floor
@@ -645,8 +646,18 @@ def _guard_env(monkeypatch, balances, client, holdings_value=None, price=None):
     svc = Service(Config(), store=store)
     monkeypatch.setattr(svc, "_oktech", lambda: client)
     monkeypatch.setattr("snipetech.service.asyncio.sleep", no_sleep)
+    # book#4 (22 Nov audit): the guard reads the owner's wallet-wide guard before it starts anything; these wallets
+    # hold under its 10 SOL floor, so it is clear here and tested on its own (tests/test_audit_book.py)
+    monkeypatch.setattr(svc, "risk_guard", _clear_guard)
     svc._rpc = FakeRpc()
     return svc, store
+
+
+def _clear_guard(address, sol, held):
+    from snipetech.operator.risk_guard import Guard
+
+    return Guard(tripped=False, known=True, reason="", kinds=(), day=None, equity_sol=sol, day_stop_sol=1.0,
+                 floor_sol=10.0, owner_set=False)  # fmt: skip
 
 
 W6 = "6VFrZ15Vi3cfZCL2MxiSrFBMdqphamoCmh8bc1UJF6at"
