@@ -173,17 +173,22 @@ def owner_coins(store, wallet: str, held: list[dict], marks: dict[str, frozenset
     in the measure stage's fills (22 Nov: the owner's hand buys of H8WTvo3Z are in the fills and not on the tape), paid
     fees that are none of `marks`, and those buys brought in at least what the wallet holds of it now. A coin with no
     buy on record since its last sale (an airdrop, a buy not written yet), with a buy of ours or one of unknown fees
-    among them, or with more of it held than they explain (a buy of ours not recorded yet) is not. With no marks none
-    is; a coin whose records cannot be read is not."""
+    among them, or with more of it held than they explain (a buy of ours not recorded yet) is not: what is held counts
+    across every token account of the coin (a row each; a seed account is a second one). With no marks none is; a coin
+    whose records cannot be read is not."""
     if not marks["buy"]:
         return set()
-    return {str(h["mint"]) for h in held or [] if h.get("mint") and _owners_holding(store, wallet, h, marks)}
+    rows: dict[str, list[dict]] = {}
+    for h in held or []:
+        if h.get("mint"):
+            rows.setdefault(str(h["mint"]), []).append(h)
+    return {m for m, coin in rows.items() if _owners_holding(store, wallet, m, coin, marks)}
 
 
-def _owners_holding(store, wallet: str, coin: dict, marks: dict[str, frozenset]) -> bool:
-    """owner_coins for one coin (an open_positions row)."""
+def _owners_holding(store, wallet: str, mint: str, coin: list[dict], marks: dict[str, frozenset]) -> bool:
+    """owner_coins for one coin (its open_positions rows)."""
     try:
-        return _owners(store, wallet, str(coin["mint"]), int(coin["raw"]), marks)
+        return _owners(store, wallet, mint, sum(int(h["raw"]) for h in coin), marks)
     except Exception:  # noqa: BLE001 - not known: the coin may be ours
         return False
 
